@@ -51,10 +51,11 @@ Commands:
   personal-sync status --json             Print redacted Personal Sync status
   personal-sync --help   Show Personal Sync usage and advanced recovery help
   setup core --json      Prepare Koed core services and local credential
-  setup codex --json     Configure the supported Codex integration
+  setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration (deferred recall by default; blocking on Windows)
     --without-memory-guidance  Do not install the recommended global guidance
     --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration
+  setup claude --background-recall --json    Opt in to 500 ms backgrounding for all main-Conversation MCP calls
   setup pi --json        Configure the supported Pi integration
   check <client> --json  Check one AI Client integration without mutation
   repair codex --json    Rewrite Codex integration for the active local API
@@ -102,4 +103,6 @@ Options:
 Environment:
   KOED_HOME              Directory for local Koed config, logs, and runtime state
   KOED_REPO_ROOT         Koed checkout path used by this development build
+  KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_PEM
+                         Ed25519 public key PEM used to verify package provenance signatures
 `;

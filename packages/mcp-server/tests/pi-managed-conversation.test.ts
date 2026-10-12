@@ -283,6 +283,16 @@ describe("Pi managed RPC conversation", () => {
     }
   );
 
+  it("keeps Memory Answer recall blocking for the managed host", async () => {
+    const { session } = fixture(0, true);
+    await session.start();
+    const options = mocks.spawn.mock.calls[0]?.[2] as {
+      env: NodeJS.ProcessEnv;
+    };
+    expect(options.env.KOED_PI_MEMORY_ANSWER_MODE).toBe("blocking");
+    await session.closeAndWait();
+  });
+
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({

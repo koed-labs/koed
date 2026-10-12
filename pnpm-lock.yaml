@@ -142,12 +142,6 @@ importers:
       '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@xterm/addon-fit':
-        specifier: 0.11.0
-        version: 0.11.0
-      '@xterm/xterm':
-        specifier: 6.0.0
-        version: 6.0.0
       ws:
         specifier: 8.21.3
         version: 8.21.3
@@ -185,6 +179,12 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.0.2
         version: 6.0.2(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.1)(yaml@2.9.0))
+      '@xterm/addon-fit':
+        specifier: 0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
       electron:
         specifier: ^39.2.7
         version: 39.8.10

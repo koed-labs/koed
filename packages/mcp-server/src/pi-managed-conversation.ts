@@ -240,7 +240,10 @@ export class PiManagedConversationSession {
       ...(this.config.env.KOED_HOME
         ? { KOED_HOME: this.config.env.KOED_HOME }
         : {}),
-      KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode
+      KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode,
+      // This session presents only the turn it prompted. A deferred completion
+      // would start a later turn that has no output owner, so recall blocks.
+      KOED_PI_MEMORY_ANSWER_MODE: "blocking"
     };
     const child = spawn(invocation.command, invocation.args, {
       cwd: fs.realpathSync(this.config.cwd),

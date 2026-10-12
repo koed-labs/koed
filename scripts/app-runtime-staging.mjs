@@ -30,6 +30,7 @@ export const appRuntimePackages = [
     entries: [
       "dist/cli.js",
       "dist/capture-hook.js",
+      "dist/codex-memory-hook.js",
       "dist/local-runtime-cli.js"
     ]
   },

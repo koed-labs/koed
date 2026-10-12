@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
+import { URL } from "node:url";
 import {
   classifyAsarEntries,
   evaluateDesktopArtifactPolicy
@@ -36,16 +36,20 @@ test("enforces Desktop distribution reduction against the fixed baseline", () =>
 
 test("keeps renderer-only packages out of Electron production dependencies", () => {
   const manifest = JSON.parse(
-    readFileSync(resolve("apps/desktop/package.json"), "utf8")
+    readFileSync(new URL("../package.json", import.meta.url), "utf8")
   );
   assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
     "@koed-labs/server",
+    "@koed/mcp-server",
     "@koed/shared",
+    "ws",
     "zod"
   ]);
   for (const dependency of [
     "@koed/memory-ui",
     "@koed/ui",
+    "@xterm/addon-fit",
+    "@xterm/xterm",
     "lucide-react",
     "qrcode",
     "react",
@@ -54,7 +58,7 @@ test("keeps renderer-only packages out of Electron production dependencies", () 
     assert.equal(typeof manifest.devDependencies[dependency], "string");
   }
   const builder = readFileSync(
-    resolve("apps/desktop/electron-builder.yml"),
+    new URL("../electron-builder.yml", import.meta.url),
     "utf8"
   );
   assert.match(builder, /from: \.koed-runtime\/node_modules/);

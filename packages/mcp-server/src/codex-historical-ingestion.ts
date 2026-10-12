@@ -12,12 +12,14 @@ import {
 import {
   buildCodexTranscriptConversationItems,
   parseTranscriptJournalBytes,
+  transcriptJournalParserState,
   type TranscriptContext,
   type TranscriptJournalParserState
 } from "./codex-transcript-parser.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import {
   type HistoricalCandidateSelection,
+  type HistoricalProviderBatchResult,
   type HistoricalProviderAdapter
 } from "./historical-ingestion-coordinator.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
@@ -28,6 +30,10 @@ const AUTOMATIC_CONVERSATION_CAP = 50;
 export interface CodexHistoricalCandidate {
   sourceSessionId: string;
   transcriptPath: string;
+  redactedSourceLabel?: string;
+  withTranscript?: <T>(
+    consume: (readablePath: string) => Promise<T>
+  ) => Promise<T>;
   context: TranscriptContext;
   sourceSession: ConversationSourceSessionRegistration;
   frontierOffset: number;
@@ -272,15 +278,7 @@ const historicalItem = (item: RawConversationItemRequest) => ({
 
 const parserState = (
   checkpoint: ReturnType<typeof parseTranscriptJournalBytes>["checkpoint"]
-): TranscriptJournalParserState => ({
-  ...(checkpoint.lastEventTime
-    ? { lastEventTime: checkpoint.lastEventTime }
-    : {}),
-  ...(checkpoint.activeTurnId ? { activeTurnId: checkpoint.activeTurnId } : {}),
-  ...(checkpoint.assistantMessagePreference
-    ? { assistantMessagePreference: checkpoint.assistantMessagePreference }
-    : {})
-});
+): TranscriptJournalParserState => transcriptJournalParserState(checkpoint);
 
 const verifiedSegmentBytes = async (
   client: MemoryApiClient,
@@ -357,6 +355,14 @@ export const buildCodexHistoricalBatch = (input: {
   let state = input.prior;
   let malformedRecordCount = 0;
   let items: ReturnType<typeof historicalItem>[] = [];
+  const context: TranscriptContext = {
+    threadKind:
+      input.selection.adapterState?.threadKind === "subagent"
+        ? "subagent"
+        : "conversation",
+    transcriptSessionId: input.source.sourceSessionId,
+    transcriptMetadata: {}
+  };
   recordLoop: while (localOffset < input.bytes.byteLength) {
     // A trailing event_msg/agent_message with no stable response_item yet
     // must not become its own item: a later page could still supply the
@@ -393,6 +399,7 @@ export const buildCodexHistoricalBatch = (input: {
           absoluteStartOffset: input.absoluteStartOffset + localOffset,
           lineIndexOffset: line,
           prior: state,
+          context,
           deferPageEndingAssistantEvent: !atGrowthCap
         });
       } catch (error) {
@@ -410,7 +417,8 @@ export const buildCodexHistoricalBatch = (input: {
             bytes: input.bytes.subarray(localOffset, lastGoodPageEnd),
             absoluteStartOffset: input.absoluteStartOffset + localOffset,
             lineIndexOffset: line,
-            prior: state
+            prior: state,
+            context
           });
           const goodItems = historicalItemsFor(input, goodParsed.records, line);
           items = [...items, ...goodItems];
@@ -656,167 +664,177 @@ export const createCodexHistoricalProviderAdapter = (input: {
         }));
     },
     async processNextBatch({ candidate, selection, runId }) {
-      let currentSelection = selection;
-      if (currentSelection.frontierLine < 0) {
-        if (!candidate) {
-          return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+      const process = async (
+        readablePath?: string
+      ): Promise<HistoricalProviderBatchResult> => {
+        let currentSelection = selection;
+        if (currentSelection.frontierLine < 0) {
+          if (!candidate) {
+            return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+          }
+          currentSelection = {
+            ...currentSelection,
+            frontierLine: await countTranscriptLines(
+              readablePath ?? candidate.transcriptPath,
+              currentSelection.frontierOffset
+            )
+          };
         }
-        currentSelection = {
-          ...currentSelection,
-          frontierLine: await countTranscriptLines(
-            candidate.transcriptPath,
-            currentSelection.frontierOffset
-          )
-        };
-      }
-      let artifact: ConversationSourceArtifact | undefined;
-      if (!currentSelection.artifactId || candidate) {
-        if (!candidate) {
-          return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+        let artifact: ConversationSourceArtifact | undefined;
+        if (!currentSelection.artifactId || candidate) {
+          if (!candidate) {
+            return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+          }
+          const registered = await ingestCodexTranscriptJournal({
+            client: input.client,
+            sourceSession: candidate.sourceSession,
+            sourceSessionId: candidate.sourceSessionId,
+            transcriptPath: readablePath ?? candidate.transcriptPath,
+            ...(candidate.redactedSourceLabel
+              ? { redactedSourceLabel: candidate.redactedSourceLabel }
+              : {}),
+            context: candidate.context,
+            maxBytesPerBatch: config.maxJournalBytesPerBatch,
+            journalStartOffset: 0,
+            journalStartLine: 0,
+            liveStartOffset: currentSelection.frontierOffset,
+            liveStartLine: currentSelection.frontierLine
+          });
+          artifact = registered.artifact;
+          currentSelection = { ...currentSelection, artifactId: artifact.id };
+          if (artifact.providerCursorOffset < currentSelection.frontierOffset) {
+            return {
+              state: "progress",
+              selection: currentSelection,
+              ...(runId ? { runId } : {})
+            };
+          }
         }
-        const registered = await ingestCodexTranscriptJournal({
-          client: input.client,
-          sourceSession: candidate.sourceSession,
-          sourceSessionId: candidate.sourceSessionId,
-          transcriptPath: candidate.transcriptPath,
-          context: candidate.context,
-          maxBytesPerBatch: config.maxJournalBytesPerBatch,
-          journalStartOffset: 0,
-          journalStartLine: 0,
-          liveStartOffset: currentSelection.frontierOffset,
-          liveStartLine: currentSelection.frontierLine
-        });
-        artifact = registered.artifact;
-        currentSelection = { ...currentSelection, artifactId: artifact.id };
-        if (artifact.providerCursorOffset < currentSelection.frontierOffset) {
+        const artifactId = currentSelection.artifactId;
+        if (!artifactId) {
+          return { state: "waiting", selection: currentSelection };
+        }
+        const source = await lookupSource(input.client, artifactId);
+        let activeRunId = source?.runId ?? runId;
+        if (!source) {
+          if (!activeRunId) activeRunId = await createRun(input.client);
+          objectValue<HistoricalSource>(
+            await input.client.createHistoricalImportSource({
+              runId: activeRunId,
+              artifactId,
+              aiClient: "codex",
+              detectedProject: {
+                ...(typeof currentSelection.adapterState?.projectId === "string"
+                  ? { projectId: currentSelection.adapterState.projectId }
+                  : {}),
+                name:
+                  typeof currentSelection.adapterState?.projectName === "string"
+                    ? currentSelection.adapterState.projectName
+                    : "Unassigned",
+                ...(typeof currentSelection.adapterState?.projectFingerprint ===
+                "string"
+                  ? {
+                      fingerprint:
+                        currentSelection.adapterState.projectFingerprint
+                    }
+                  : {})
+              }
+            }),
+            "source",
+            "historical_source_response_missing"
+          );
           return {
             state: "progress",
             selection: currentSelection,
-            ...(runId ? { runId } : {})
+            runId: activeRunId
           };
         }
-      }
-      const artifactId = currentSelection.artifactId;
-      if (!artifactId) {
-        return { state: "waiting", selection: currentSelection };
-      }
-      const source = await lookupSource(input.client, artifactId);
-      let activeRunId = source?.runId ?? runId;
-      if (!source) {
-        if (!activeRunId) activeRunId = await createRun(input.client);
-        objectValue<HistoricalSource>(
-          await input.client.createHistoricalImportSource({
-            runId: activeRunId,
-            artifactId,
-            aiClient: "codex",
-            detectedProject: {
-              ...(typeof currentSelection.adapterState?.projectId === "string"
-                ? { projectId: currentSelection.adapterState.projectId }
-                : {}),
-              name:
-                typeof currentSelection.adapterState?.projectName === "string"
-                  ? currentSelection.adapterState.projectName
-                  : "Unassigned",
-              ...(typeof currentSelection.adapterState?.projectFingerprint ===
-              "string"
-                ? {
-                    fingerprint:
-                      currentSelection.adapterState.projectFingerprint
-                  }
-                : {})
-            }
-          }),
-          "source",
-          "historical_source_response_missing"
-        );
+        activeRunId = source.runId;
+        if (source.state === "completed") {
+          return {
+            state: "completed",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (source.state === "skipped") {
+          return {
+            state: "skipped",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (["paused", "failed"].includes(source.state)) {
+          return {
+            state: "waiting",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (!(await policyAdmits(input.client, currentSelection))) {
+          return {
+            state: "waiting",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        const admission = await rawAdmission(input.client);
+        if (!admission.admitted) {
+          return {
+            state: "waiting",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (["discovered", "eligible", "queued"].includes(source.state)) {
+          await transitionSourceOneStep(input.client, source);
+          return {
+            state: "progress",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (source.state !== "importing") {
+          return {
+            state: "waiting",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        let progressed: boolean;
+        try {
+          progressed = await importNextBatch({
+            client: input.client,
+            source,
+            selection: currentSelection,
+            config
+          });
+        } catch (error) {
+          if (!isUnrepresentableRecordError(error)) throw error;
+          await skipUnrepresentableSource(input.client, source);
+          return {
+            state: "skipped",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (progressed) {
+          return {
+            state: "progress",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        const completed = await tryComplete(input.client, source);
         return {
-          state: "progress",
+          state: completed ? "completed" : "source_exhausted",
           selection: currentSelection,
           runId: activeRunId
         };
-      }
-      activeRunId = source.runId;
-      if (source.state === "completed") {
-        return {
-          state: "completed",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (source.state === "skipped") {
-        return {
-          state: "skipped",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (["paused", "failed"].includes(source.state)) {
-        return {
-          state: "waiting",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (!(await policyAdmits(input.client, currentSelection))) {
-        return {
-          state: "waiting",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      const admission = await rawAdmission(input.client);
-      if (!admission.admitted) {
-        return {
-          state: "waiting",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (["discovered", "eligible", "queued"].includes(source.state)) {
-        await transitionSourceOneStep(input.client, source);
-        return {
-          state: "progress",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (source.state !== "importing") {
-        return {
-          state: "waiting",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      let progressed: boolean;
-      try {
-        progressed = await importNextBatch({
-          client: input.client,
-          source,
-          selection: currentSelection,
-          config
-        });
-      } catch (error) {
-        if (!isUnrepresentableRecordError(error)) throw error;
-        await skipUnrepresentableSource(input.client, source);
-        return {
-          state: "skipped",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (progressed) {
-        return {
-          state: "progress",
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      const completed = await tryComplete(input.client, source);
-      return {
-        state: completed ? "completed" : "source_exhausted",
-        selection: currentSelection,
-        runId: activeRunId
       };
+      return candidate?.withTranscript
+        ? candidate.withTranscript(process)
+        : process();
     },
     async completeRun(runId) {
       try {

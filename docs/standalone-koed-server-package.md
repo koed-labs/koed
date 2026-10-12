@@ -120,7 +120,7 @@ koed-server-<version>-<platform>-<arch>/
   koed-server-package-manifest.json
   README.txt
   bin/
-    koed-server                       # platform launcher or wrapper
+    koed                              # platform launcher or wrapper
   koed-runtime/
     api/
     worker/
@@ -243,7 +243,7 @@ KOED_HOME/
       versions/
         <version>/
           koed-server-package-manifest.json
-          bin/koed-server
+          bin/koed
           koed-runtime/
     postgres/
     llama.cpp/

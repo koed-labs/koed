@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -770,7 +770,7 @@ export const statusFromApiReady = async (
     checks.find((check) => check.service === service);
   const actionFor = (service: string, fallback: string): string => {
     if (service === "migrations") {
-      return "Run pnpm db:migrate:check or restart koed-server so startup migrations run.";
+      return "Run pnpm db:migrate:check or run koed restart so startup migrations run.";
     }
     if (service === "pgvector") {
       return "Install and enable pgvector in the Koed database.";
@@ -1161,6 +1161,110 @@ export const inspectCodex = async (
       configured: true
     };
   }
+  if (tomlStringValue(mcpEnvBlock, "KOED_CODEX_STOP_DELIVERY") === "1") {
+    const memoryHook = resolve(dirname(runtime.mcpCli), "codex-memory-hook.js");
+    const memoryTool = `mcp__${mcpName}__memory_answer`;
+    const quote = (value: string): string =>
+      process.platform === "win32"
+        ? JSON.stringify(value)
+        : "'" + value.replaceAll("'", "'\\''") + "'";
+    const commandPrefix =
+      [
+        environment.MEMORY_NODE_COMMAND ?? "node",
+        memoryHook,
+        "--koed-home",
+        paths.koedHome,
+        "--memory-tool",
+        memoryTool,
+        "--wait-ms"
+      ]
+        .map(quote)
+        .join(" ") + " ";
+    // Match the decoded command: quoting and TOML escaping change the raw path.
+    const quotedHook = quote(memoryHook);
+    const groups = ownedBlock
+      .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
+      .filter((group) => {
+        try {
+          const command = JSON.parse(
+            /^command = (.+)$/m.exec(group)?.[1] ?? "null"
+          ) as unknown;
+          return typeof command === "string" && command.includes(quotedHook);
+        } catch {
+          return false;
+        }
+      });
+    let waitMs: number | undefined;
+    let valid =
+      deps.existsSync(memoryHook) &&
+      tomlStringValue(mcpEnvBlock, "KOED_CODEX_MEMORY_TOOL") === memoryTool &&
+      groups.length === 5;
+    for (const [event, timeout, matcher] of [
+      ["PreToolUse", 10, `^${memoryTool}$`],
+      ["PostToolUse", 10, `^${memoryTool}$`],
+      ["Stop", 0],
+      ["SessionEnd", 10],
+      ["Interrupt", 3]
+    ] as const) {
+      const matches = groups.filter((group) =>
+        group.startsWith(`[[hooks.${event}]]`)
+      );
+      if (matches.length !== 1) {
+        valid = false;
+        continue;
+      }
+      const group = matches[0]!;
+      try {
+        const command = JSON.parse(
+          /^command = (.+)$/m.exec(group)?.[1] ?? "null"
+        ) as unknown;
+        if (typeof command !== "string" || !command.startsWith(commandPrefix)) {
+          valid = false;
+          continue;
+        }
+        const suffix = command.slice(commandPrefix.length);
+        const value = Number(
+          process.platform === "win32"
+            ? JSON.parse(suffix)
+            : /^'(\d+)'$/.exec(suffix)?.[1]
+        );
+        if (
+          !Number.isInteger(value) ||
+          value < 1000 ||
+          value > 1800000 ||
+          (waitMs !== undefined && waitMs !== value)
+        )
+          valid = false;
+        waitMs = value;
+        const configuredTimeout = Number(/^timeout = (\d+)$/m.exec(group)?.[1]);
+        if (
+          configuredTimeout !==
+          (event === "Stop" ? Math.ceil(value / 1000) + 5 : timeout)
+        )
+          valid = false;
+        const configuredMatcher = JSON.parse(
+          /^matcher = (.+)$/m.exec(group)?.[1] ?? "null"
+        ) as unknown;
+        if (
+          configuredMatcher !== (matcher ?? null) ||
+          /^async\s*=\s*true\s*$/m.test(group) ||
+          !/^type = "command"$/m.test(group)
+        )
+          valid = false;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid)
+      return {
+        ...needsAttention(
+          "Codex deferred recall hook configuration is incomplete or mismatched.",
+          "Run koed setup codex --deferred-recall --json, then restart Codex and review hook trust.",
+          { codexConfigPath, memoryHook }
+        ),
+        configured: true
+      };
+  }
   const codexInstructionsPath = resolveCodexGlobalInstructionsPath(environment);
   const guidancePath = resolveCodexGuidancePath(runtime.mcpCli);
   const instructions = deps.existsSync(codexInstructionsPath)
@@ -1409,7 +1513,7 @@ const inspectLocalAiRuntime = (
   if (!pid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in runtime state.",
-      "Restart koed-server and inspect Koed logs."
+      "Run koed restart and inspect Koed logs."
     );
   }
   return deps.checkPid(pid)
@@ -1445,7 +1549,7 @@ const inspectCodexTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }
@@ -1486,7 +1590,7 @@ const inspectClaudeTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }
@@ -1527,7 +1631,7 @@ const inspectPiTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }

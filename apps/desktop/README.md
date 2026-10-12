@@ -94,6 +94,10 @@ anything with a clear macOS-only message; set
 `KOED_DESKTOP_PACKAGE_SMOKE_SKIP_NON_DARWIN=1` only in jobs that intentionally
 skip this smoke.
 
+Electron's production dependencies include the MCP command contract and `ws`
+used by the main process. Renderer-only libraries, including xterm and its fit
+addon, are build-time dependencies bundled into the renderer assets by Vite.
+
 This local package bundles the Electron shell, packaged renderer assets, the
 `@koed-labs/server` control-plane CLI, JS/service artifacts for API, Worker,
 MCP Server, Supported Capture Hook, DB migrations, the built

@@ -6,7 +6,7 @@ Related decisions:
 
 - [0004 Team Memory Uses User-Owned Share Grants And Workspaces](./0004-team-memory-workspaces.md)
 - [0014 Hosted Personal Source Replication](./0014-hosted-personal-source-replication.md)
-- [0029 Selective PII Team Representations](./0029-selective-pii-team-representations.md)
+- [0049 Selective PII Team Representations](./0049-selective-pii-team-representations.md)
 - [0032 First-Class Revisioned Personal Notes](./0032-first-class-revisioned-personal-notes.md)
 
 ## Context

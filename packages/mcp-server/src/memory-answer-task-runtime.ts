@@ -1,3 +1,4 @@
+import { MemoryAnswerDelivery } from "../integrations/pi/memory-answer-delivery.mjs";
 import type http from "node:http";
 import {
   memoryAnswerTaskIsTerminal,
@@ -5,6 +6,7 @@ import {
 } from "@koed/shared";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
+import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
 
 export interface MemoryAnswerTaskRuntimeExecutor {
   durableMemoryAnswerEligible?(
@@ -25,6 +27,48 @@ type JsonWriter = (
   body: Record<string, unknown>
 ) => void;
 
+export class MemoryAnswerDetachedIneligibleError extends Error {
+  readonly statusCode = 409;
+  readonly code = "memory_answer_team_ineligible";
+
+  constructor() {
+    super("Team Workspace Memory Answer does not support detached tasks");
+    this.name = "MemoryAnswerDetachedIneligibleError";
+  }
+}
+
+/** A blocking recall failure whose message is static and safe to return. */
+export class MemoryAnswerBlockingError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number
+  ) {
+    super(message);
+    this.name = "MemoryAnswerBlockingError";
+  }
+}
+
+// Keyed by the task's bounded error code. The raw failure message can contain
+// provider or memory content, so it is never returned.
+const blockingFailureMessages = new Map<string, string>([
+  [
+    "hard_timeout",
+    "Memory Answer exceeded its time limit. Try a narrower question."
+  ],
+  [
+    "no_progress_timeout",
+    "Memory Answer stopped making progress and was ended. Try again."
+  ],
+  [
+    "shutdown",
+    "Memory Answer stopped because the Local AI Runtime shut down. Try again."
+  ],
+  [
+    "personal_route_changed",
+    "Memory Answer was no longer eligible for Personal execution. Try again."
+  ]
+]);
+
 export class MemoryAnswerTaskRuntime {
   constructor(
     private readonly scheduler: MemoryAnswerTaskScheduler,
@@ -41,18 +85,20 @@ export class MemoryAnswerTaskRuntime {
   async start(
     request: MemoryAnswerTaskStartRequest
   ): Promise<MemoryAnswerTask> {
-    if (!this.eligible(request)) {
-      throw Object.assign(
-        new Error(
-          "Team Workspace Memory Answer does not support detached tasks"
-        ),
-        { statusCode: 409 }
-      );
+    const parsed = memoryAnswerInputSchema.safeParse(request.input);
+    if (!parsed.success) {
+      throw Object.assign(new Error("Invalid Memory Answer task input"), {
+        statusCode: 400
+      });
+    }
+    const normalized = { ...request, input: parsed.data };
+    if (!this.eligible(normalized)) {
+      throw new MemoryAnswerDetachedIneligibleError();
     }
     return await this.scheduler.start({
       origin: request.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",
       invocationKey: request.invocationKey,
-      toolInput: request.input,
+      toolInput: normalized.input,
       caller: request.caller
     });
   }
@@ -61,19 +107,45 @@ export class MemoryAnswerTaskRuntime {
     request: MemoryAnswerTaskStartRequest,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
-    const task = await this.start(request);
-    const terminal = await this.scheduler.waitForTerminal(task.id, signal);
+    const delivery = new MemoryAnswerDelivery<
+      MemoryAnswerTask,
+      Record<string, unknown>,
+      LocalRuntimeCallerContext
+    >({
+      start: (input, caller, invocationKey) =>
+        this.start({ input, caller, invocationKey }),
+      get: (taskId) => this.scheduler.get(taskId),
+      cancel: (taskId) => this.scheduler.cancel(taskId),
+      // In-process scheduler events end the poll wait without supplying state.
+      subscribe: (taskId, wake) =>
+        this.scheduler.subscribe(taskId, () => wake())
+    });
+    const task = await delivery.accept(
+      request.input,
+      request.caller,
+      request.invocationKey,
+      signal
+    );
+    const observed = await delivery.observe(task.id, { signal });
+    if (observed.kind === "detached") {
+      throw observed.reason === "expired"
+        ? new MemoryAnswerBlockingError("Memory Answer task expired", 410)
+        : new MemoryAnswerBlockingError(
+            "Memory Answer observation ended before a result was available",
+            409
+          );
+    }
+    const terminal = observed.task;
     if (terminal.status === "completed" && terminal.result) {
       return terminal.result;
     }
-    throw Object.assign(
-      new Error(
-        terminal.lastErrorMessage ??
-          (terminal.status === "cancelled"
-            ? "Memory Answer task was cancelled"
-            : "Memory Answer task failed")
-      ),
-      { statusCode: terminal.status === "cancelled" ? 409 : 500 }
+    if (terminal.status === "cancelled") {
+      throw new MemoryAnswerBlockingError("Memory Answer was cancelled.", 409);
+    }
+    throw new MemoryAnswerBlockingError(
+      blockingFailureMessages.get(terminal.lastErrorCode ?? "") ??
+        "Memory Answer failed. Try again.",
+      500
     );
   }
 
@@ -99,29 +171,103 @@ export class MemoryAnswerTaskRuntime {
     }
     if (request.method !== "GET" || action !== "events") return false;
 
-    const writeTask = (task: MemoryAnswerTask) => {
-      if (response.writableEnded) return;
-      response.write(
-        `id: ${task.version}\nevent: task\ndata: ${JSON.stringify(task)}\n\n`
-      );
-      if (memoryAnswerTaskIsTerminal(task)) response.end();
+    // Resolve ownership and retention before committing a successful stream.
+    const initial = await this.scheduler.get(taskId);
+    if (Date.parse(initial.expiresAt) <= Date.now()) {
+      throw Object.assign(new Error("Memory Answer task expired"), {
+        statusCode: 410
+      });
+    }
+    if (response.destroyed || response.writableEnded) return true;
+    const resume = request.headers["last-event-id"];
+    let lastVersion =
+      typeof resume === "string" &&
+      /^\d+$/.test(resume) &&
+      Number.isSafeInteger(Number(resume))
+        ? Number(resume)
+        : 0;
+    let closed = false;
+    let pending = false;
+    let keepalivePending = false;
+    let checking = false;
+    let unsubscribe = () => undefined as void;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(keepalive);
+      clearTimeout(expiry);
+      unsubscribe();
     };
+    const finish = () => {
+      cleanup();
+      if (!response.destroyed && !response.writableEnded) response.end();
+    };
+    const writeTask = (task: MemoryAnswerTask, heartbeat = false) => {
+      if (closed || response.destroyed || response.writableEnded) return;
+      if (Date.parse(task.expiresAt) <= Date.now()) {
+        finish();
+        return;
+      }
+      if (task.version > lastVersion) {
+        lastVersion = task.version;
+        response.write(
+          `id: ${task.version}\nevent: task\ndata: ${JSON.stringify(task)}\n\n`
+        );
+      } else if (heartbeat && !memoryAnswerTaskIsTerminal(task)) {
+        response.write(": keepalive\n\n");
+      }
+      if (memoryAnswerTaskIsTerminal(task)) finish();
+    };
+    // Notifications are wakeups only. Never deliver their cached payloads.
+    // Coalesce wakeups and serialize current-authority reads to prevent both
+    // unbounded queues and delayed-read version regressions.
+    const refresh = (heartbeat = false) => {
+      if (closed) return;
+      pending = true;
+      keepalivePending ||= heartbeat;
+      if (checking) return;
+      checking = true;
+      void (async () => {
+        try {
+          while (pending && !closed) {
+            pending = false;
+            const sendHeartbeat = keepalivePending;
+            keepalivePending = false;
+            writeTask(await this.scheduler.get(taskId), sendHeartbeat);
+          }
+        } catch {
+          // Authority denial, expiry and backend failures end observation.
+          // They never fall back to a previously admitted result.
+          finish();
+        } finally {
+          checking = false;
+        }
+      })();
+    };
+    response.once("close", cleanup);
     response.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-store",
       connection: "keep-alive",
       "x-content-type-options": "nosniff"
     });
-    const unsubscribe = this.scheduler.subscribe(taskId, writeTask);
-    const keepalive = setInterval(() => {
-      if (!response.writableEnded) response.write(": keepalive\n\n");
-    }, 15_000);
+    unsubscribe = this.scheduler.subscribe(taskId, () => refresh());
+    const keepalive = setInterval(() => refresh(true), 15_000);
     keepalive.unref?.();
-    response.once("close", () => {
-      clearInterval(keepalive);
-      unsubscribe();
-    });
-    writeTask(await this.scheduler.get(taskId));
+    // Retention must end observation even without another scheduler event.
+    const expiry = setTimeout(
+      finish,
+      Math.min(
+        2_147_483_647,
+        Math.max(1, Date.parse(initial.expiresAt) - Date.now())
+      )
+    );
+    expiry.unref?.();
+    writeTask(initial);
+    if (!closed) {
+      response.flushHeaders();
+      refresh(); // Reconcile changes between the preflight read and subscription.
+    }
     return true;
   }
 }

@@ -193,6 +193,40 @@ describe("conversation source replication content protocol", () => {
     expect(parseConversationSourceReplicationSourceDescriptor(source)).toEqual(
       source
     );
+    const paginated = {
+      ...source,
+      sourceAdapterVersion: "codex-transcript-v2",
+      codexHistory: {
+        historyMode: "paginated",
+        externalThreadId: "native-thread",
+        threadKind: "subagent",
+        subagentHistoryStartOrdinal: 12
+      }
+    } as const;
+    expect(
+      parseConversationSourceReplicationSourceDescriptor(paginated)
+    ).toEqual(paginated);
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...source,
+        codexHistory: paginated.codexHistory
+      })
+    ).toThrow();
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...paginated,
+        codexHistory: undefined
+      })
+    ).toThrow();
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...paginated,
+        codexHistory: {
+          ...paginated.codexHistory,
+          subagentHistoryStartOrdinal: -1
+        }
+      })
+    ).toThrow();
     const digest = calculateConversationSourceGenerationRegistrationDigest(
       registration,
       source

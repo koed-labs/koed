@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   conversationSourceArtifactLookupSchema,
   conversationSourceArtifactSchema,
+  conversationSourceCursorSchema,
   conversationSourceGenerationLookupSchema
 } from "./conversation-source-journal-schemas.js";
 
@@ -28,6 +29,33 @@ const artifact = {
 } as const;
 
 describe("conversation source journal component schemas", () => {
+  it("accepts canonical paginated checkpoint initialization at its live boundary", () => {
+    const checkpoint = {
+      consumerKind: "canonical_live",
+      expectedSourceOffset: 200,
+      sourceOffset: 200,
+      sourceLine: 2,
+      segmentIndex: 0,
+      lastVerifiedDigest: "1".repeat(64),
+      parserState: { historyMode: "paginated", lastRecordOrdinal: 2 }
+    };
+    expect(conversationSourceCursorSchema.parse(checkpoint)).toEqual(
+      checkpoint
+    );
+    expect(
+      conversationSourceCursorSchema.parse({ ...checkpoint, sourceOffset: 300 })
+    ).toMatchObject({ sourceOffset: 300 });
+    for (const input of [
+      { ...checkpoint, sourceOffset: 100 },
+      { ...checkpoint, consumerKind: "remote_processing" },
+      { ...checkpoint, parserState: {} },
+      { ...checkpoint, parserState: { historyMode: "legacy" } }
+    ]) {
+      expect(conversationSourceCursorSchema.safeParse(input).success).toBe(
+        false
+      );
+    }
+  });
   it("defaults existing artifacts and lookups to the canonical main component", () => {
     expect(conversationSourceArtifactSchema.parse(artifact)).toMatchObject({
       sourceComponentId: "main",

@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  renameSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
@@ -59,6 +60,7 @@ const createPackageRoot = () => {
     "privacy-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
+    "mcp-server/dist/codex-memory-hook.js",
     "mcp-server/dist/prompts/codex-global-agent-guidance.md",
     "node_modules/@koed/db/dist/index.js",
     "node_modules/@koed/db/dist/connection.js",
@@ -71,7 +73,7 @@ const createPackageRoot = () => {
     JSON.stringify({ version: "7", entries: [{ when: 20260708000000 }] })
   );
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
-  writeExecutable(resolve(root, "bin", "koed-server"));
+  writeExecutable(resolve(root, "bin", "koed"));
   writeFile(resolve(runtime, "koed-server", "dist", "cli.js"));
   return root;
 };
@@ -162,6 +164,14 @@ test("builds canonical signed component manifests with interoperable Ed25519 dom
     ),
     true
   );
+});
+
+test("validates a previously released archive with the legacy launcher", () => {
+  const root = createPackageRoot();
+  renameSync(resolve(root, "bin", "koed"), resolve(root, "bin", "koed-server"));
+  writeManifest(root);
+  const result = validatePackageRoot(root);
+  assert.equal(result.ok, true, result.errors.join("\n"));
 });
 
 test("builds provenance for package archive and manifest hashes", () => {

@@ -105,5 +105,47 @@ describe("Local AI Runtime task client", () => {
       result: { markdown: "remembered" }
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({
+      "last-event-id": "1"
+    });
+    expect(fetchMock.mock.calls[3]?.[1]?.headers).toMatchObject({
+      "last-event-id": "2"
+    });
+  });
+  it("propagates terminal stream denial instead of retrying observation", async () => {
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-task-denied-"));
+    roots.push(koedHome);
+    mkdirSync(join(koedHome, "run"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      localRuntimeRegistrationPath(koedHome),
+      JSON.stringify({
+        protocolVersion: 1,
+        url: "http://127.0.0.1:32123",
+        authorization: `Bearer ${"a".repeat(32)}`,
+        pid: process.pid,
+        startedAt: new Date().toISOString()
+      }),
+      { mode: 0o600 }
+    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ task: task() }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "Access denied" }), {
+          status: 401
+        })
+      );
+    await expect(
+      new LocalAiRuntimeClient(
+        { KOED_HOME: koedHome },
+        fetchMock
+      ).waitForMemoryAnswerTask(task().id)
+    ).rejects.toMatchObject({
+      name: "LocalAiRuntimeError",
+      statusCode: 401
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -11,6 +11,11 @@ import {
   codexCanonicalConversationItemKey,
   koedClientUserMessageId
 } from "./codex-conversation-source-adapter.js";
+import {
+  adaptCodexPersistedCompletedItem,
+  codexPersistedUserMessageText,
+  isCodexPersistedCompletedItem
+} from "./codex-persisted-item.js";
 
 export interface CaptureItem {
   actor: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
@@ -44,6 +49,11 @@ const transcriptEventTimeAccuracySymbol = Symbol(
 const transcriptAssignedTurnIdSymbol = Symbol("koedTranscriptAssignedTurnId");
 const transcriptAssistantMessagePreferenceSymbol = Symbol(
   "koedTranscriptAssistantMessagePreference"
+);
+const inheritedCodexContextSymbol = Symbol("koedInheritedCodexContext");
+const transcriptHistoryModeSymbol = Symbol("koedTranscriptHistoryMode");
+const approvalHelperConversationSymbol = Symbol(
+  "koedApprovalHelperConversation"
 );
 
 const attachTranscriptRecordPosition = (
@@ -366,6 +376,11 @@ export const extractTranscriptSessionMetadata = (
       "source",
       "originator",
       "cli_version",
+      "history_mode",
+      "history_base",
+      "forked_from_id",
+      "forked_from_ordinal_exclusive",
+      "subagent_history_start_ordinal",
       "thread_source",
       "agent_nickname",
       "agent_role",
@@ -965,25 +980,154 @@ const parseTranscriptLineRecords = (
   return records;
 };
 
+const transcriptRecordIsExcludedHistory = (
+  record: unknown,
+  context: TranscriptContext
+): boolean => {
+  if (!isRecord(record)) return false;
+  const ownHistoryStart =
+    context.transcriptMetadata.subagent_history_start_ordinal;
+  return (
+    (record as { [inheritedCodexContextSymbol]?: boolean })[
+      inheritedCodexContextSymbol
+    ] === true ||
+    (context.transcriptMetadata.history_mode === "paginated" &&
+      typeof ownHistoryStart === "number" &&
+      typeof record.ordinal === "number" &&
+      record.ordinal < ownHistoryStart) ||
+    (rawRecordType(record) === "response_item" &&
+      (context.transcriptMetadata.history_mode === "paginated" ||
+        (record as { [transcriptHistoryModeSymbol]?: string })[
+          transcriptHistoryModeSymbol
+        ] === "paginated"))
+  );
+};
+
+const transcriptHasApprovalEnvelope = (
+  records: unknown[],
+  context: TranscriptContext
+): boolean =>
+  context.threadKind === "subagent" &&
+  records.some((record) => {
+    if (!isRecord(record) || transcriptRecordIsExcludedHistory(record, context))
+      return false;
+    let content: string | undefined;
+    if (isCodexPersistedCompletedItem(record)) {
+      content = codexPersistedUserMessageText(record);
+    } else {
+      const item = isRecord(record.payload) ? record.payload : record;
+      if (item.type !== "user_message") return false;
+      const message = isRecord(item.message) ? item.message : undefined;
+      content = stringifyContent(
+        item.content ??
+          item.text ??
+          (typeof item.message === "string" ? item.message : undefined) ??
+          message?.content ??
+          message?.text
+      );
+    }
+    return Boolean(content && approvalReviewTranscriptDisplayFromText(content));
+  });
+
 export const parseTranscriptRecords = (
   records: unknown[],
-  indexOffset = 0
+  indexOffset = 0,
+  retainedContext?: TranscriptContext
 ): CaptureItem[] => {
   if (records.length === 0) {
     return [];
   }
 
   const preferEventMessages = transcriptPrefersEventMessages(records);
-  const context = extractTranscriptSessionMetadata(records);
+  const discoveredContext = extractTranscriptSessionMetadata(records);
+  const retainedApprovalHelper = records.some(
+    (record) =>
+      isRecord(record) &&
+      (record as { [approvalHelperConversationSymbol]?: boolean })[
+        approvalHelperConversationSymbol
+      ] === true
+  );
+  const context: TranscriptContext = retainedContext
+    ? {
+        ...retainedContext,
+        transcriptMetadata: {
+          ...retainedContext.transcriptMetadata,
+          ...discoveredContext.transcriptMetadata
+        }
+      }
+    : {
+        ...discoveredContext,
+        ...(retainedApprovalHelper ? { threadKind: "subagent" as const } : {})
+      };
 
-  return records
-    .flatMap((record, index) =>
-      extractTranscriptItems(record, index + indexOffset, {
+  const items = records
+    .flatMap((record, index) => {
+      if (transcriptRecordIsExcludedHistory(record, context)) return [];
+      if (isCodexPersistedCompletedItem(record)) {
+        const payload = rawRecordPayload(record);
+        const source: RawConversationItemRequest = {
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-transcript-v1",
+          sourceTransport: "transcript",
+          sourceRecordType: "event_msg",
+          sourceEventType: "item_completed",
+          rawJson: record,
+          externalThreadId:
+            context.transcriptSessionId ?? asString(payload?.thread_id),
+          sourceHash: hash(record),
+          idempotencyKey: `parsed:${index + indexOffset}`,
+          projectionStatus: "pending",
+          projectionVersion: "codex-transcript-v1",
+          metadata: contextMetadata(context),
+          eventTime: rawEventTime(record)
+        };
+        return adaptCodexPersistedCompletedItem(source, context.threadKind)
+          .filter(
+            (item) =>
+              Boolean(item.rawText) && item.projectionStatus === "pending"
+          )
+          .map(
+            (item): CaptureItem => ({
+              actor: /function_call/.test(String(item.metadata.transcriptType))
+                ? "tool"
+                : rawRecordPayload(record)?.item &&
+                    isRecord(rawRecordPayload(record)?.item) &&
+                    (rawRecordPayload(record)!.item as Record<string, unknown>)
+                      .type === "UserMessage"
+                  ? context.threadKind === "subagent"
+                    ? "agent"
+                    : "user"
+                  : context.threadKind === "subagent"
+                    ? "subagent"
+                    : "agent",
+              eventType: `codex_transcript_${item.metadata.transcriptType}`,
+              content: item.rawText!,
+              metadata: item.metadata
+            })
+          );
+      }
+      return extractTranscriptItems(record, index + indexOffset, {
         preferEventMessages,
         context
-      }).map((parsed) => parsed.item)
-    )
+      }).map((parsed) => parsed.item);
+    })
     .filter((item): item is CaptureItem => Boolean(item));
+  const approvalReview =
+    context.threadKind === "subagent" &&
+    (retainedApprovalHelper ||
+      items.some(
+        (item) => item.metadata.approvalReviewTranscriptDisplay !== undefined
+      ));
+  return approvalReview
+    ? items.map((item) => ({
+        ...item,
+        metadata: approvalActivityMetadata({
+          actor: item.actor,
+          content: item.content,
+          metadata: { ...item.metadata, approvalReview: true }
+        })
+      }))
+    : items;
 };
 
 const transcriptPrefersEventMessages = (records: unknown[]): boolean =>
@@ -1098,10 +1242,20 @@ const unresolvedAssistantEventIndex = (
   return undefined;
 };
 
+export {
+  verifyCodexTranscriptRewrite,
+  verifyCodexTranscriptContinuation,
+  collectCodexTranscriptContinuationAncestors
+} from "./codex-transcript-rewrite.js";
+
 export type TranscriptJournalParserState = {
   lastEventTime?: string;
   activeTurnId?: string;
   assistantMessagePreference?: "response_item";
+  historyMode?: "legacy" | "paginated";
+  subagentHistoryStartOrdinal?: number;
+  lastRecordOrdinal?: number;
+  approvalHelperConversation?: boolean;
 };
 
 export const parseTranscriptJournalBytes = (input: {
@@ -1109,6 +1263,7 @@ export const parseTranscriptJournalBytes = (input: {
   absoluteStartOffset: number;
   lineIndexOffset: number;
   prior?: TranscriptJournalParserState;
+  context?: TranscriptContext;
   deferPageEndingAssistantEvent?: boolean;
 }): {
   records: unknown[];
@@ -1119,9 +1274,18 @@ export const parseTranscriptJournalBytes = (input: {
     lastEventTime?: string;
     activeTurnId?: string;
     assistantMessagePreference?: "response_item";
+    historyMode?: "legacy" | "paginated";
+    subagentHistoryStartOrdinal?: number;
+    lastRecordOrdinal?: number;
+    approvalHelperConversation?: boolean;
   };
 } => {
-  const text = Buffer.from(input.bytes).toString("utf8");
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(input.bytes);
+  } catch {
+    throw new Error("codex_transcript_invalid_encoding");
+  }
   const split = splitCompleteTranscriptLines(text, true);
   if (split.consumedBytes !== input.bytes.byteLength) {
     throw new Error("journal_segment_incomplete");
@@ -1132,6 +1296,66 @@ export const parseTranscriptJournalBytes = (input: {
     input.lineIndexOffset,
     true
   );
+  let historyMode = input.prior?.historyMode;
+  let subagentHistoryStartOrdinal = input.prior?.subagentHistoryStartOrdinal;
+  let lastRecordOrdinal = input.prior?.lastRecordOrdinal;
+  if (
+    lastRecordOrdinal !== undefined &&
+    (!Number.isSafeInteger(lastRecordOrdinal) || lastRecordOrdinal < 0)
+  )
+    throw new Error("codex_transcript_invalid_ordinal_checkpoint");
+  const header = parsedRecords.find(
+    (raw) =>
+      isRecord(raw) && raw.type === "session_meta" && isRecord(raw.payload)
+  );
+  const metadata =
+    isRecord(header) && isRecord(header.payload)
+      ? header.payload
+      : input.context?.transcriptMetadata;
+  if (metadata) {
+    const mode = metadata.history_mode;
+    if (mode !== undefined && mode !== "legacy" && mode !== "paginated") {
+      throw new Error("codex_transcript_unsupported_history_mode");
+    }
+    historyMode ??= mode ?? "legacy";
+    if (mode !== undefined && mode !== historyMode)
+      throw new Error("codex_transcript_history_mode_changed");
+    const base = metadata.history_base;
+    if (base != null) {
+      if (
+        historyMode !== "paginated" ||
+        !isRecord(base) ||
+        typeof base.thread_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          base.thread_id
+        ) ||
+        typeof base.end_ordinal_exclusive !== "number" ||
+        !Number.isSafeInteger(base.end_ordinal_exclusive) ||
+        base.end_ordinal_exclusive < 0 ||
+        typeof base.end_byte_offset !== "number" ||
+        !Number.isSafeInteger(base.end_byte_offset) ||
+        base.end_byte_offset < 0 ||
+        (isRecord(header) && header.ordinal !== base.end_ordinal_exclusive)
+      )
+        throw new Error("codex_transcript_invalid_history_base");
+    }
+    const boundary = metadata.subagent_history_start_ordinal;
+    if (boundary !== undefined && boundary !== null) {
+      if (
+        typeof boundary !== "number" ||
+        !Number.isSafeInteger(boundary) ||
+        boundary < 0
+      ) {
+        throw new Error("codex_transcript_invalid_history_boundary");
+      }
+      if (
+        subagentHistoryStartOrdinal !== undefined &&
+        subagentHistoryStartOrdinal !== boundary
+      )
+        throw new Error("codex_transcript_history_boundary_changed");
+      subagentHistoryStartOrdinal ??= boundary;
+    }
+  }
   const priorAssistantMessagePreference =
     input.prior?.assistantMessagePreference;
   const pageHasProviderResponseMessage =
@@ -1153,9 +1377,39 @@ export const parseTranscriptJournalBytes = (input: {
   const records = resolvedRecords.records;
   const assistantMessagePreference =
     priorAssistantMessagePreference ??
-    (pageHasProviderResponseMessage ? "response_item" : undefined);
+    (pageHasProviderResponseMessage || historyMode === "paginated"
+      ? "response_item"
+      : undefined);
   let activeTurnId = input.prior?.activeTurnId;
   for (const record of records) {
+    if (historyMode === "paginated") {
+      Object.defineProperty(record, transcriptHistoryModeSymbol, {
+        value: historyMode
+      });
+      const ordinal = isRecord(record) ? record.ordinal : undefined;
+      if (
+        typeof ordinal !== "number" ||
+        !Number.isSafeInteger(ordinal) ||
+        ordinal < 0 ||
+        (lastRecordOrdinal !== undefined && ordinal <= lastRecordOrdinal)
+      ) {
+        throw new Error("codex_transcript_invalid_ordinal");
+      }
+      lastRecordOrdinal = ordinal;
+      if (
+        subagentHistoryStartOrdinal !== undefined &&
+        ordinal < subagentHistoryStartOrdinal
+      ) {
+        Object.defineProperty(record, inheritedCodexContextSymbol, {
+          value: true
+        });
+        attachTranscriptAssistantMessagePreference(
+          record,
+          assistantMessagePreference
+        );
+        continue;
+      }
+    }
     const explicitTurnId = transcriptTurnId(record);
     if (explicitTurnId && transcriptRecordStartsTurn(record)) {
       activeTurnId = explicitTurnId;
@@ -1172,6 +1426,19 @@ export const parseTranscriptJournalBytes = (input: {
     ) {
       activeTurnId = undefined;
     }
+  }
+  const approvalHelperConversation =
+    input.prior?.approvalHelperConversation === true ||
+    transcriptHasApprovalEnvelope(
+      records,
+      input.context ?? extractTranscriptSessionMetadata(records)
+    );
+  if (approvalHelperConversation) {
+    for (const record of records)
+      if (isRecord(record))
+        Object.defineProperty(record, approvalHelperConversationSymbol, {
+          value: true
+        });
   }
   const heldRecord =
     pageEndingAssistantEventIndex !== undefined
@@ -1199,10 +1466,40 @@ export const parseTranscriptJournalBytes = (input: {
           ? { lastEventTime: input.prior.lastEventTime }
           : {}),
       ...(activeTurnId ? { activeTurnId } : {}),
-      ...(assistantMessagePreference ? { assistantMessagePreference } : {})
+      ...(assistantMessagePreference ? { assistantMessagePreference } : {}),
+      ...(historyMode ? { historyMode } : {}),
+      ...(subagentHistoryStartOrdinal !== undefined
+        ? { subagentHistoryStartOrdinal }
+        : {}),
+      ...(lastRecordOrdinal !== undefined ? { lastRecordOrdinal } : {}),
+      ...(approvalHelperConversation
+        ? { approvalHelperConversation: true }
+        : {})
     }
   };
 };
+
+export const transcriptJournalParserState = (
+  checkpoint: TranscriptJournalParserState
+): TranscriptJournalParserState => ({
+  ...(checkpoint.lastEventTime
+    ? { lastEventTime: checkpoint.lastEventTime }
+    : {}),
+  ...(checkpoint.activeTurnId ? { activeTurnId: checkpoint.activeTurnId } : {}),
+  ...(checkpoint.assistantMessagePreference
+    ? { assistantMessagePreference: checkpoint.assistantMessagePreference }
+    : {}),
+  ...(checkpoint.historyMode ? { historyMode: checkpoint.historyMode } : {}),
+  ...(checkpoint.subagentHistoryStartOrdinal !== undefined
+    ? { subagentHistoryStartOrdinal: checkpoint.subagentHistoryStartOrdinal }
+    : {}),
+  ...(checkpoint.lastRecordOrdinal !== undefined
+    ? { lastRecordOrdinal: checkpoint.lastRecordOrdinal }
+    : {}),
+  ...(checkpoint.approvalHelperConversation === true
+    ? { approvalHelperConversation: true }
+    : {})
+});
 
 const rawRecordPayload = (record: unknown): Record<string, unknown> | null =>
   isRecord(record)
@@ -1564,6 +1861,7 @@ export const buildCodexTranscriptConversationItems = (
   const managedTranscript = transcriptHasKoedManagedUserIdentity(input.records);
   const preferProviderResponseItems =
     input.preferStableResponseItems ||
+    input.records.some(isCodexPersistedCompletedItem) ||
     managedTranscript ||
     input.records.some(
       (record) =>
@@ -1582,10 +1880,17 @@ export const buildCodexTranscriptConversationItems = (
       : {})
   };
 
+  const parsedItemsByRecord: ParsedTranscriptItem[][] = [];
   const observations: CodexTranscriptObservation[] = input.records.map(
     (record, index) => {
       const sourceLineNumber =
         transcriptRecordLineIndex(record) ?? index + (input.indexOffset ?? 0);
+      const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
+        preferEventMessages,
+        preferStableResponseItems: preferProviderResponseItems,
+        context
+      });
+      parsedItemsByRecord.push(parsedItems);
       return {
         record,
         sourceLineNumber,
@@ -1600,23 +1905,20 @@ export const buildCodexTranscriptConversationItems = (
         eventTime: effectiveRawEventTime(record),
         eventTimeAccuracy: rawEventTimeAccuracy(record),
         fallbackRawText: rawText(record),
-        parsedItems: extractTranscriptItems(record, sourceLineNumber, {
-          preferEventMessages,
-          preferStableResponseItems: preferProviderResponseItems,
-          context
-        })
+        parsedItems
       };
     }
   );
   const approvalReview =
     input.threadKind === "subagent" &&
-    observations.some((observation) =>
-      observation.parsedItems.some(
-        (parsedItem) =>
-          parsedItem.item?.metadata.approvalReviewTranscriptDisplay !==
-          undefined
-      )
-    );
+    (input.records.some(
+      (record) =>
+        isRecord(record) &&
+        (record as { [approvalHelperConversationSymbol]?: boolean })[
+          approvalHelperConversationSymbol
+        ] === true
+    ) ||
+      transcriptHasApprovalEnvelope(input.records, context));
   const adaptedItems = adaptCodexTranscriptV1({
     observations,
     sessionId: input.sessionId,
@@ -1646,11 +1948,7 @@ export const buildCodexTranscriptConversationItems = (
       activeTranscriptTurnId = explicitTurnId;
       activeSemanticTurnId = explicitTurnId;
     }
-    const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
-      preferEventMessages,
-      preferStableResponseItems: preferProviderResponseItems,
-      context
-    });
+    const parsedItems = parsedItemsByRecord[index]!;
     const hasLogicalUserPrompt = parsedItems.some(
       (parsedItem) => parsedItem.item.actor === "user"
     );
@@ -1870,5 +2168,55 @@ export const buildCodexTranscriptConversationItems = (
     );
   }
 
-  return items;
+  return items.flatMap((item) => {
+    if (
+      item.rawJson &&
+      typeof item.rawJson === "object" &&
+      (item.rawJson as { [inheritedCodexContextSymbol]?: boolean })[
+        inheritedCodexContextSymbol
+      ]
+    ) {
+      return [
+        {
+          ...item,
+          projectionStatus: "raw_only",
+          metadata: {
+            ...item.metadata,
+            inheritedCodexContext: true
+          }
+        }
+      ];
+    }
+    // Responses records are model-context snapshots, not the paginated timeline.
+    // Migration can synthesize completed-item IDs independently of response IDs.
+    if (
+      item.sourceRecordType === "response_item" &&
+      (context.transcriptMetadata.history_mode === "paginated" ||
+        (item.rawJson as { [transcriptHistoryModeSymbol]?: string })[
+          transcriptHistoryModeSymbol
+        ] === "paginated")
+    ) {
+      const raw = { ...item, metadata: { ...item.metadata } };
+      delete raw.canonicalItemKey;
+      delete raw.canonicalStableItemId;
+      delete raw.observationComponent;
+      delete raw.metadata.canonicalIdentityBasis;
+      delete raw.metadata.managedConversationReconciliation;
+      return [
+        {
+          ...raw,
+          observationOnly: true,
+          projectionStatus: "raw_only" as const,
+          metadata: {
+            ...raw.metadata,
+            projectionPolicyKey: "paginated_model_context",
+            paginatedModelContext: true
+          }
+        }
+      ];
+    }
+    return isCodexPersistedCompletedItem(item.rawJson)
+      ? adaptCodexPersistedCompletedItem(item, input.threadKind)
+      : [item];
+  });
 };

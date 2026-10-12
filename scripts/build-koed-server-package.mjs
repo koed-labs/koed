@@ -89,7 +89,7 @@ const run = (label, command, args, options = {}) => {
 };
 
 const writeLauncher = (packageRoot) => {
-  const launcher = resolve(packageRoot, "bin", "koed-server");
+  const launcher = resolve(packageRoot, "bin", "koed");
   mkdirSync(resolve(packageRoot, "bin"), { recursive: true });
   writeFileSync(
     launcher,
@@ -151,7 +151,7 @@ const writeReadme = (packageRoot) => {
       "It excludes the retired Explorer service, native runtime assets, model files, and Python embedding runtime files.",
       "",
       "Contents:",
-      "- bin/koed-server",
+      "- bin/koed",
       "- koed-runtime/api",
       "- koed-runtime/worker",
       "- koed-runtime/embedding-service",

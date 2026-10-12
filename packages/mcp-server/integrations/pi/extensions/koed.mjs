@@ -5,7 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { Type } from "typebox";
 import { resolveInstalledKoedHome } from "../koed-home.mjs";
-import { callLocalRuntimeTool } from "../runtime-client.mjs";
+import {
+  callLocalRuntimeTool,
+  createRuntimeTaskPort
+} from "../runtime-client.mjs";
+import { createPiMemoryDelivery } from "../pi-memory-delivery.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
@@ -82,11 +86,23 @@ const answerParameters = Type.Object(
     project_id: Type.Optional(Type.String()),
     session_id: Type.Optional(Type.String()),
     team_workspace_id: Type.Optional(Type.String()),
+    team_backend_id: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160 })
+    ),
     recent_days: Type.Optional(Type.Integer({ minimum: 1, maximum: 36500 })),
     source_after: Type.Optional(Type.String()),
     source_before: Type.Optional(Type.String()),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     include_evidence: Type.Optional(Type.Boolean())
+  },
+  { additionalProperties: false }
+);
+
+const workspaceParameters = Type.Object(
+  {
+    team_backend_id: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160 })
+    )
   },
   { additionalProperties: false }
 );
@@ -131,6 +147,15 @@ const intakeParameters = Type.Object(
 
 export default function koedExtension(pi) {
   let sessionController;
+  const delivery = createPiMemoryDelivery(pi, {
+    port: createRuntimeTaskPort(koedHome),
+    mode:
+      process.env.KOED_PI_MEMORY_ANSWER_MODE === "blocking"
+        ? "blocking"
+        : "auto",
+    blocking: (input, ctx, signal, invocation) =>
+      callTool("memory_answer", input, ctx, signal, invocation)
+  });
   const register = (name, label, description, parameters) =>
     pi.registerTool({
       name,
@@ -142,6 +167,8 @@ export default function koedExtension(pi) {
           [signal, sessionController?.signal].filter(Boolean)
         );
         try {
+          if (name === "memory_answer")
+            return await delivery.execute(id, params, combined, ctx);
           const result = await callTool(
             name,
             params,
@@ -154,8 +181,14 @@ export default function koedExtension(pi) {
             details: result
           };
         } catch (error) {
+          if (error?.code === "runtime_feature_unavailable") {
+            throw new Error(
+              "The running Koed Local AI Runtime does not support this Team recall feature. Restart the runtime through koed-server or Koed Desktop and retry.",
+              { cause: error }
+            );
+          }
           throw new Error(
-            `Koed unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            "Koed unavailable; check the Local AI Runtime and retry",
             { cause: error }
           );
         }
@@ -164,8 +197,14 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Recall Koed memory evidence for answer synthesis.",
+    "Recall Koed memory evidence for answer synthesis. Personal recall in persistent Pi returns a receipt promptly and the result arrives automatically. Continue useful independent work; wait for the result before a memory-dependent decision. Do not poll for status. Other routes return the result directly. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
     answerParameters
+  );
+  register(
+    "memory_workspaces",
+    "Discover Team Workspaces",
+    "Discover authorized Team Workspaces from existing Desktop or headless Koed enrollment. Select the relevant Workspace and pass its team_workspace_id and team_backend_id to memory_answer with search_domain=global to search all shared memory in that Workspace. Query multiple relevant Workspaces separately. Unavailable backends do not mean Team Memory is empty. Returns IDs and names, never credentials.",
+    workspaceParameters
   );
   register(
     "memory_intake_propose",
@@ -173,16 +212,20 @@ export default function koedExtension(pi) {
     "Propose curated Personal Memory backed by evidence.",
     intakeParameters
   );
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();
+    delivery.start(event, ctx);
     try {
       signalWatcher(ctx, "session_start");
     } catch {
       /* correctness comes from filesystem discovery */
     }
   });
-  pi.on("agent_settled", (_event, ctx) => {
+  // Confirms delivered recall completions and replaces late duplicates.
+  pi.on("message_end", (event, ctx) => delivery.messageEnd(event, ctx));
+  pi.on("agent_settled", (event, ctx) => {
+    delivery.agentSettled(event, ctx);
     try {
       signalWatcher(ctx, "agent_settled");
     } catch {
@@ -190,18 +233,23 @@ export default function koedExtension(pi) {
     }
   });
   pi.on("session_tree", (_event, ctx) => {
+    delivery.detach(true);
+    sessionController?.abort();
+    sessionController = new AbortController();
+    delivery.start({ reason: "fork" }, ctx);
     try {
       signalWatcher(ctx, "session_tree");
     } catch {
       /* correctness comes from filesystem discovery */
     }
   });
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", (event, ctx) => {
     try {
       signalWatcher(ctx, "session_shutdown");
     } catch {
       /* correctness comes from filesystem discovery */
     }
+    delivery.detach(["new", "resume", "fork"].includes(event.reason));
     sessionController?.abort();
     sessionController = undefined;
   });

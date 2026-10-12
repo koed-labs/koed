@@ -7,7 +7,7 @@ Related decisions:
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0019 Same-Network Personal Device Enrollment](./0019-same-network-personal-device-enrollment.md)
 - [0021 Portable Semantic Work Ownership](./0021-portable-semantic-work-ownership.md)
-- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
+- [0051 Personal Semantic Work Is Computed Once And Replicated](./0051-single-personal-semantic-computation.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 ## Context
@@ -125,7 +125,7 @@ This does not make raw database replication the protocol. PDS exchanges
 immutable, signed, encrypted source and artifact records. The direct hosted
 path uses its separately authenticated, recipient-encrypted package contract;
 an enrolled device signs an artifact only if it later serves that verified
-result through PDS. Both transports follow the semantic-work rules in ADR 0030.
+result through PDS. Both transports follow the semantic-work rules in ADR 0051.
 
 ## Consequences
 

@@ -748,14 +748,24 @@ export const runKoedServerCli = async (
           "Use only one of --with-memory-guidance or --without-memory-guidance."
         );
       }
+      const deferredRecall = args.includes("--deferred-recall");
+      const blockingRecall = args.includes("--blocking-recall");
+      if (deferredRecall && blockingRecall)
+        throw new Error(
+          "Use only one of --deferred-recall or --blocking-recall."
+        );
       const result = await setup({
-        environment:
-          withoutGuidance || withGuidance
+        environment: {
+          ...process.env,
+          ...(withoutGuidance || withGuidance
             ? {
-                ...process.env,
                 KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(withGuidance)
               }
-            : process.env
+            : {}),
+          ...(deferredRecall || blockingRecall
+            ? { KOED_CODEX_STOP_DELIVERY: deferredRecall ? "1" : "0" }
+            : {})
+        }
       });
       if (wantsJson) {
         printJson(stdout, result);
@@ -786,7 +796,11 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = await setupClaudeIntegration();
+      const result = await (args.includes("--background-recall")
+        ? setupClaudeIntegration(undefined, undefined, {
+            backgroundRecall: true
+          })
+        : setupClaudeIntegration());
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -798,6 +812,8 @@ export const runKoedServerCli = async (
             : `${result.error ?? "Claude Code setup failed."}\n`
         );
       }
+      if (!wantsJson && result.backgroundRecall)
+        stdout.write(`${result.backgroundRecall.message}\n`);
       return result.ok ? 0 : 1;
     }
 

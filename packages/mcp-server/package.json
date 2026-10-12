@@ -7,7 +7,8 @@
   "bin": {
     "koed-mcp": "dist/cli.js",
     "koed-capture-hook": "dist/capture-hook.js",
-    "koed-local-ai-runtime": "dist/local-runtime-cli.js"
+    "koed-local-ai-runtime": "dist/local-runtime-cli.js",
+    "koed-codex-memory-hook": "dist/codex-memory-hook.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,6 +28,14 @@
     "./runtime-contracts": {
       "types": "./dist/runtime-contracts.d.ts",
       "import": "./dist/runtime-contracts.js"
+    },
+    "./memory-answer-delivery": {
+      "types": "./integrations/pi/memory-answer-delivery.d.mts",
+      "import": "./integrations/pi/memory-answer-delivery.mjs"
+    },
+    "./codex-memory-delivery": {
+      "types": "./dist/codex-memory-delivery.d.ts",
+      "import": "./dist/codex-memory-delivery.js"
     },
     "./managed-conversation-command-types": {
       "types": "./dist/managed-conversation-command-types.d.ts",

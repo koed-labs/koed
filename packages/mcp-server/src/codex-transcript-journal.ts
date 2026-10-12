@@ -3,7 +3,19 @@ import fs, { createReadStream, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
-import { CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES } from "@koed/shared";
+import {
+  CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES,
+  CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
+  conversationSourceRewriteProofWithinLimit,
+  conversationSourceRewriteGenerationId,
+  type ConversationSourceRewriteFrontier
+} from "@koed/shared";
+import {
+  verifyCodexTranscriptRewrite,
+  verifyCodexTranscriptContinuation,
+  collectCodexTranscriptContinuationAncestors,
+  type CodexTranscriptContinuationEvidence
+} from "./codex-transcript-rewrite.js";
 
 import { MemoryApiError } from "./index.js";
 import { rawConversationItemBatches } from "./raw-conversation-items.js";
@@ -11,6 +23,7 @@ import {
   buildCodexTranscriptConversationItems,
   extractTranscriptSessionMetadata,
   parseTranscriptJournalBytes,
+  transcriptJournalParserState,
   type TranscriptContext,
   type TranscriptJournalParserState
 } from "./codex-transcript-parser.js";
@@ -32,6 +45,13 @@ export interface ConversationSourceArtifact {
   providerCursorLine: number;
   currentSourceLength: number;
   sourceModifiedAt: string | null;
+  sourceGenerationId?: string;
+  priorGenerationClosure?: {
+    sourceGenerationId: string;
+    contentDigest: string;
+  } | null;
+  closureHash?: string | null;
+  redactedSourceLabel?: string;
 }
 
 interface ConversationSourceSegment {
@@ -100,6 +120,19 @@ const sourceCreatedAt = (
 };
 
 export interface CodexTranscriptJournalClient {
+  createConversationSourceSuccessorGeneration?(
+    artifactId: string,
+    input: {
+      expectedParentClosureHash: string;
+      sourceGenerationId: string;
+      originKeyId: string;
+      sourceRewrite?: ConversationSourceRewriteFrontier;
+    }
+  ): Promise<Record<string, unknown>>;
+  getConversationSourceArtifactByGeneration?(
+    sourceGenerationId: string,
+    sourceComponentId?: string
+  ): Promise<Record<string, unknown>>;
   ensureConversationSourceArtifact(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>>;
@@ -381,6 +414,201 @@ const verifyJournalledPrefix = async (
   }
 };
 
+const recoverNativeRewrite = async (input: {
+  client: CodexTranscriptJournalClient;
+  artifact: ConversationSourceArtifact;
+  transcriptPath: string;
+  boundary: number;
+  context: TranscriptContext;
+  redactedSourceLabel: string;
+  authorize?: () => Promise<void>;
+}): Promise<ConversationSourceArtifact> => {
+  if (
+    input.context.transcriptMetadata.history_mode !== "paginated" ||
+    !input.artifact.sourceGenerationId ||
+    !input.client.createConversationSourceSuccessorGeneration
+  )
+    throw new Error("codex_rollout_rewrite_unsupported");
+  const cursor = await canonicalCursor(input.client, input.artifact);
+  if (cursor.sourceOffset !== input.artifact.providerCursorOffset)
+    throw new Error("codex_rollout_rewrite_capture_incomplete");
+  let total = 0;
+  let pages = 0;
+  const evidenceCache = new Map<
+    string,
+    CodexTranscriptContinuationEvidence & {
+      artifact: ConversationSourceArtifact;
+    }
+  >();
+  const loadEvidence = async (artifact: ConversationSourceArtifact) => {
+    if (!artifact.sourceGenerationId)
+      throw new Error("codex_rollout_continuation_ancestor_unproven");
+    const cached = evidenceCache.get(artifact.id);
+    if (cached) return cached;
+    const parts: Buffer[] = [];
+    let offset = artifact.journalStartOffset;
+    while (offset < artifact.providerCursorOffset) {
+      if (++pages > 4_096)
+        throw new Error("codex_rollout_continuation_ancestry_limit");
+      const segments = await listSegments(
+        input.client,
+        artifact.id,
+        offset,
+        20
+      );
+      if (!segments.length) throw new Error("journal_segment_chain_incomplete");
+      for (const segment of segments) {
+        if (
+          segment.sourceStartOffset !== offset ||
+          segment.sourceEndOffset > artifact.providerCursorOffset
+        )
+          throw new Error("journal_segment_chain_conflict");
+        total += segment.plaintextSize;
+        if (
+          total > CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES ||
+          input.boundary > CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES
+        )
+          throw new Error("codex_rollout_rewrite_input_limit");
+        parts.push(await segmentBytes(input.client, artifact.id, segment));
+        offset = segment.sourceEndOffset;
+      }
+    }
+    const evidence = {
+      artifact,
+      bytes: Buffer.concat(parts),
+      startOffset: artifact.journalStartOffset,
+      sourceLabel: artifact.redactedSourceLabel ?? "",
+      sourceGenerationId: artifact.sourceGenerationId,
+      logicalThreadId: artifact.externalSessionId,
+      priorGenerationClosure: artifact.priorGenerationClosure,
+      closureHash: artifact.closureHash
+    };
+    evidenceCache.set(artifact.id, evidence);
+    return evidence;
+  };
+  const previousEvidence = await loadEvidence(input.artifact);
+  const rewrittenBytes = readSourceRange(
+    input.transcriptPath,
+    0,
+    input.boundary
+  );
+  const continuation = input.context.transcriptMetadata.history_base != null;
+  if (continuation && cursor.parserState.historyMode !== "paginated")
+    throw new Error("codex_rollout_continuation_parent_unproven");
+  const ancestors = continuation
+    ? await collectCodexTranscriptContinuationAncestors({
+        previous: previousEvidence,
+        rewrittenBytes,
+        loadGeneration: async (generationId, from) => {
+          if (!input.client.getConversationSourceArtifactByGeneration)
+            return null;
+          try {
+            const response =
+              await input.client.getConversationSourceArtifactByGeneration(
+                generationId
+              );
+            const artifact = responseValue<ConversationSourceArtifact>(
+              response,
+              "artifact"
+            );
+            if (
+              artifact.sessionId !== from.artifact.sessionId ||
+              artifact.externalSessionId !== from.artifact.externalSessionId
+            )
+              throw new Error(
+                "codex_rollout_continuation_ancestor_identity_mismatch"
+              );
+            return loadEvidence(artifact);
+          } catch (error) {
+            if (error instanceof MemoryApiError && error.status === 404)
+              return null;
+            throw error;
+          }
+        },
+        loadThread: async (threadId) => {
+          const artifact = await lookupArtifact(input.client, threadId);
+          return artifact ? loadEvidence(artifact) : null;
+        }
+      })
+    : [];
+  const frontier = continuation
+    ? verifyCodexTranscriptContinuation({
+        previousBytes: previousEvidence.bytes,
+        previousStartOffset: input.artifact.journalStartOffset,
+        previousSourceLabel: input.artifact.redactedSourceLabel ?? "",
+        rewrittenBytes,
+        rewrittenSourceLabel: input.redactedSourceLabel,
+        externalSessionId: input.artifact.externalSessionId,
+        ancestors,
+        previousHistory: {
+          subagentHistoryStartOrdinal:
+            cursor.parserState.subagentHistoryStartOrdinal ?? null
+        }
+      })
+    : verifyCodexTranscriptRewrite({
+        previousBytes: previousEvidence.bytes,
+        rewrittenBytes,
+        externalSessionId: input.artifact.externalSessionId
+      });
+  if (
+    !conversationSourceRewriteProofWithinLimit([
+      total,
+      frontier.liveStartOffset - frontier.journalStartOffset
+    ])
+  )
+    throw new Error("codex_rollout_rewrite_input_limit");
+  await input.authorize?.();
+  const finalized = responseValue<ConversationSourceArtifact>(
+    await input.client.finalizeConversationSourceArtifact(input.artifact.id, {
+      expectedProviderOffset: input.artifact.providerCursorOffset,
+      expectedProviderLine: input.artifact.providerCursorLine
+    }),
+    "artifact"
+  );
+  if (!finalized.closureHash)
+    throw new Error("codex_rollout_rewrite_closure_missing");
+  if (
+    sha256Bytes(
+      readSourceRange(
+        input.transcriptPath,
+        frontier.journalStartOffset,
+        frontier.liveStartOffset
+      )
+    ) !== frontier.prefixDigest
+  )
+    throw new Error("codex_rollout_rewrite_source_changed");
+  const sourceGenerationId = conversationSourceRewriteGenerationId(
+    input.artifact.sourceGenerationId,
+    frontier.prefixDigest
+  );
+  const originKeyId = conversationSourceRewriteGenerationId(
+    sourceGenerationId,
+    frontier.prefixDigest
+  );
+  await input.authorize?.();
+  return responseValue<ConversationSourceArtifact>(
+    await input.client.createConversationSourceSuccessorGeneration(
+      input.artifact.id,
+      {
+        expectedParentClosureHash: finalized.closureHash,
+        sourceGenerationId,
+        originKeyId,
+        sourceRewrite: {
+          kind: continuation
+            ? "codex_paginated_continuation"
+            : "codex_legacy_to_paginated",
+          ...frontier,
+          currentSourceLength: input.boundary,
+          ...(continuation
+            ? { redactedSourceLabel: input.redactedSourceLabel }
+            : {})
+        }
+      }
+    ),
+    "artifact"
+  );
+};
+
 const canonicalCursor = async (
   client: CodexTranscriptJournalClient,
   artifact: ConversationSourceArtifact
@@ -511,6 +739,7 @@ export const ingestCodexTranscriptJournal = async (input: {
   sourceSession: ConversationSourceSessionRegistration;
   sourceSessionId: string;
   transcriptPath: string;
+  redactedSourceLabel?: string;
   context: TranscriptContext;
   maxBytesPerBatch: number;
   journalStartOffset?: number;
@@ -533,17 +762,117 @@ export const ingestCodexTranscriptJournal = async (input: {
     input.transcriptPath,
     CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES
   );
+  if (boundary > 0) {
+    const headBytes = nextCompleteSourceSegment(
+      input.transcriptPath,
+      0,
+      boundary,
+      BOUNDARY_SCAN_BYTES
+    );
+    const firstLine = headBytes.subarray(0, headBytes.indexOf(10));
+    let header: unknown;
+    try {
+      header = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(firstLine)
+      );
+    } catch {
+      /* The normal journal parser reports malformed complete records. */
+    }
+    if (
+      header &&
+      typeof header === "object" &&
+      (header as Record<string, unknown>).type === "session_meta"
+    ) {
+      const nativeContext = extractTranscriptSessionMetadata([header]);
+      if (nativeContext.transcriptSessionId !== input.sourceSessionId)
+        throw new Error("codex_transcript_source_identity_mismatch");
+      const metadata = {
+        ...input.context.transcriptMetadata,
+        ...nativeContext.transcriptMetadata
+      };
+      input = {
+        ...input,
+        context: { ...input.context, transcriptMetadata: metadata },
+        sourceSession: {
+          ...input.sourceSession,
+          metadata: {
+            ...input.sourceSession.metadata,
+            ...(metadata.history_mode !== undefined
+              ? { history_mode: metadata.history_mode }
+              : {}),
+            ...(metadata.subagent_history_start_ordinal !== undefined
+              ? {
+                  subagent_history_start_ordinal:
+                    metadata.subagent_history_start_ordinal
+                }
+              : {})
+          }
+        }
+      };
+    }
+  }
   let artifact =
     input.existingArtifact === undefined
       ? await lookupArtifact(input.client, input.sourceSessionId)
       : input.existingArtifact;
+  let rewriteParentParserState: TranscriptJournalParserState | undefined;
   if (artifact) {
-    await verifyJournalledPrefix(
-      input.client,
-      artifact,
-      input.transcriptPath,
-      file.size
-    );
+    try {
+      const previousCursor = await canonicalCursor(input.client, artifact);
+      if (
+        previousCursor.parserState?.historyMode === "legacy" &&
+        input.context.transcriptMetadata.history_mode === "paginated"
+      )
+        throw new Error("transcript_prefix_mutated");
+      await verifyJournalledPrefix(
+        input.client,
+        artifact,
+        input.transcriptPath,
+        file.size
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !["transcript_prefix_mutated", "transcript_truncated"].includes(
+          error.message
+        ) ||
+        input.context.transcriptMetadata.history_mode !== "paginated" ||
+        !input.client.createConversationSourceSuccessorGeneration
+      )
+        throw error;
+      rewriteParentParserState = (await canonicalCursor(input.client, artifact))
+        .parserState;
+      artifact = await recoverNativeRewrite({
+        client: input.client,
+        artifact,
+        transcriptPath: input.transcriptPath,
+        boundary,
+        context: input.context,
+        redactedSourceLabel:
+          input.redactedSourceLabel ?? path.basename(input.transcriptPath),
+        authorize: input.authorize
+      });
+    }
+    if (
+      artifact.priorGenerationClosure &&
+      artifact.liveStartOffset > artifact.journalStartOffset
+    ) {
+      const prefixDigest = sha256Bytes(
+        readSourceRange(
+          input.transcriptPath,
+          artifact.journalStartOffset,
+          artifact.liveStartOffset
+        )
+      );
+      if (
+        artifact.sourceGenerationId !==
+        conversationSourceRewriteGenerationId(
+          artifact.priorGenerationClosure.sourceGenerationId,
+          prefixDigest
+        )
+      )
+        throw new Error("codex_rollout_rewrite_source_changed");
+    }
   }
   const response = await input.client.ensureConversationSourceArtifact({
     sourceSession: input.sourceSession,
@@ -564,7 +893,8 @@ export const ingestCodexTranscriptJournal = async (input: {
       boundary
     ),
     sourceModifiedAt: file.mtime.toISOString(),
-    redactedSourceLabel: path.basename(input.transcriptPath)
+    redactedSourceLabel:
+      input.redactedSourceLabel ?? path.basename(input.transcriptPath)
   });
   artifact = responseValue<ConversationSourceArtifact>(response, "artifact");
   const providerOffsetBefore = artifact.providerCursorOffset;
@@ -601,6 +931,92 @@ export const ingestCodexTranscriptJournal = async (input: {
     }
   }
 
+  if (
+    artifact.priorGenerationClosure &&
+    artifact.liveStartOffset > artifact.journalStartOffset &&
+    artifact.providerCursorOffset >= artifact.liveStartOffset
+  ) {
+    const current = await input.client.getConversationSourceCursor(
+      artifact.id,
+      "canonical_live"
+    );
+    if (!current.cursor) {
+      if (!rewriteParentParserState) {
+        if (!input.client.getConversationSourceArtifactByGeneration)
+          throw new Error("codex_rollout_rewrite_parent_cursor_unavailable");
+        const parent = responseValue<ConversationSourceArtifact>(
+          await input.client.getConversationSourceArtifactByGeneration(
+            artifact.priorGenerationClosure.sourceGenerationId
+          ),
+          "artifact"
+        );
+        rewriteParentParserState = (await canonicalCursor(input.client, parent))
+          .parserState;
+      }
+      const prefixBytes = readSourceRange(
+        input.transcriptPath,
+        artifact.journalStartOffset,
+        artifact.liveStartOffset
+      );
+      if (
+        artifact.sourceGenerationId !==
+        conversationSourceRewriteGenerationId(
+          artifact.priorGenerationClosure.sourceGenerationId,
+          sha256Bytes(prefixBytes)
+        )
+      )
+        throw new Error("codex_rollout_rewrite_source_changed");
+      const parsedPrefix = parseTranscriptJournalBytes({
+        bytes: prefixBytes,
+        absoluteStartOffset: artifact.journalStartOffset,
+        lineIndexOffset: artifact.journalStartLine,
+        prior: {
+          historyMode: "paginated",
+          ...(rewriteParentParserState.approvalHelperConversation === true
+            ? { approvalHelperConversation: true }
+            : {})
+        },
+        context: input.context
+      });
+      if (
+        parsedPrefix.checkpoint.offset !== artifact.liveStartOffset ||
+        parsedPrefix.checkpoint.lineCount !== artifact.liveStartLine
+      )
+        throw new Error("codex_rollout_rewrite_boundary_invalid");
+      const [frontierSegment] = await listSegments(
+        input.client,
+        artifact.id,
+        artifact.liveStartOffset - 1,
+        1
+      );
+      if (
+        !frontierSegment ||
+        frontierSegment.sourceStartOffset >= artifact.liveStartOffset ||
+        frontierSegment.sourceEndOffset < artifact.liveStartOffset
+      )
+        throw new Error("journal_checkpoint_outside_segment");
+      await segmentBytes(input.client, artifact.id, frontierSegment);
+      await input.authorize?.();
+      try {
+        await input.client.advanceConversationSourceCursor(artifact.id, {
+          consumerKind: "canonical_live",
+          expectedSourceOffset: artifact.liveStartOffset,
+          sourceOffset: artifact.liveStartOffset,
+          sourceLine: artifact.liveStartLine,
+          segmentIndex: frontierSegment.segmentIndex,
+          lastVerifiedDigest: frontierSegment.plaintextDigest,
+          parserState: transcriptJournalParserState(parsedPrefix.checkpoint)
+        });
+      } catch (error) {
+        if (!isConcurrentCanonicalCursorAdvance(error)) throw error;
+        const winner = await input.client.getConversationSourceCursor(
+          artifact.id,
+          "canonical_live"
+        );
+        if (!winner.cursor) throw error;
+      }
+    }
+  }
   const cursor = await canonicalCursor(input.client, artifact);
   const hasTurnBoundary =
     input.turnBoundaryObservedAt !== undefined &&
@@ -705,6 +1121,7 @@ export const ingestCodexTranscriptJournal = async (input: {
     absoluteStartOffset: cursor.sourceOffset,
     lineIndexOffset: cursor.sourceLine,
     prior: cursor.parserState,
+    context: input.context,
     deferPageEndingAssistantEvent: !turnBoundaryInPage
   });
   if (parsed.checkpoint.offset <= cursor.sourceOffset) {
@@ -800,16 +1217,10 @@ export const ingestCodexTranscriptJournal = async (input: {
       segmentIndex: checkpointSegment.segmentIndex,
       lastVerifiedDigest: checkpointSegment.plaintextDigest,
       parserState: {
-        ...(parsed.checkpoint.lastEventTime
-          ? { lastEventTime: parsed.checkpoint.lastEventTime }
-          : {}),
-        ...(activeTurnId ? { activeTurnId } : {}),
-        ...(parsed.checkpoint.assistantMessagePreference
-          ? {
-              assistantMessagePreference:
-                parsed.checkpoint.assistantMessagePreference
-            }
-          : {})
+        ...transcriptJournalParserState(parsed.checkpoint),
+        ...(activeTurnId && (!completedTurn || parsed.checkpoint.activeTurnId)
+          ? { activeTurnId }
+          : { activeTurnId: undefined })
       }
     });
   } catch (error) {

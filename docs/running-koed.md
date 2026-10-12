@@ -1,5 +1,21 @@
 # Running Koed
 
+## CLI help
+
+`koed --help`, command help, and Personal Sync recovery help load without
+initializing service-start modules. Commands load the existing implementation
+when dispatched; help does not provision runtimes, models, or components.
+
+## Command migration
+
+The Server workspace package is now `@koed-labs/server`. Use `koed` instead of
+`koed-server`, or `pnpm koed` instead of `pnpm koed-server` in a source checkout.
+The old command is not retained as an alias. The package remains private; public
+npm installation will be delivered separately. Existing Desktop and standalone
+archives continue to include the complete service runtime. New standalone
+archives expose `bin/koed`; installers still accept the legacy launcher in
+previously released archives.
+
 ## Approval Activity remediation
 
 After upgrading an existing database, an Operator can inventory legacy

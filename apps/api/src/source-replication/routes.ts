@@ -959,6 +959,7 @@ export const registerConversationSourceReplicationRoutes = (
         {
           logicalSessionId: source.logicalSessionId,
           externalSessionId: targetExternalSessionId,
+          externalThreadId: source.codexHistory?.externalThreadId,
           sourceRuntime: source.sourceRuntime,
           captureMethod: "transcript",
           sourceKind: source.sourceKind,
@@ -968,6 +969,9 @@ export const registerConversationSourceReplicationRoutes = (
           sourceHash: `hosted-source:${registration.sourceGenerationId}`,
           ...(source.project ? { projectId: source.project.id } : {}),
           metadata: {
+            ...(source.codexHistory
+              ? { codexHistory: source.codexHistory }
+              : {}),
             sourceReplication: {
               protocol: registration.protocol,
               logicalSourceId: registration.logicalSourceId,

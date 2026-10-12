@@ -30,6 +30,33 @@ import {
   resolveExecutablePathWithPlatformFallbacks
 } from "./ai-client-registry.js";
 
+import {
+  captureClaudeBackgroundJournal,
+  configureClaudeBackgroundRecall,
+  removeClaudeBackgroundRecall,
+  writeClaudeBackgroundJournal,
+  writeClaudeSettingsFileAtomic,
+  type ClaudeBackgroundJournalSnapshot,
+  type ClaudeBackgroundRecallStatus
+} from "./claude-background-settings.mjs";
+
+import {
+  parseClaudeOwnedMcpEntry,
+  type ClaudeMcpEntry
+} from "./claude-mcp-entry.mjs";
+
+const writeClaudeSettings = (
+  path: string,
+  content: string,
+  atomic: boolean
+): void => {
+  if (atomic) writeClaudeSettingsFileAtomic(path, content);
+  else {
+    writeFileSync(path, content, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  }
+};
+
 export const resolveClaudeExecutablePath = (
   environment: NodeJS.ProcessEnv,
   dependencies: ExecutablePathDependencies = {},
@@ -63,6 +90,7 @@ export interface KoedServerSetupClaudeResult {
   checkedAt: string;
   settingsPath: string;
   profileConfigured?: boolean;
+  backgroundRecall?: ClaudeBackgroundRecallStatus;
   authenticationState?: "authenticated" | "unauthenticated" | "unknown";
   executionCapabilities?: "ready" | "unavailable";
   stdout?: string;
@@ -201,51 +229,12 @@ export const claudeProcessEnvironment = (
   );
 };
 
-const unquote = (value: string): string => {
-  const trimmed = value.trim();
-  return trimmed.length >= 2 &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'")))
-    ? trimmed.slice(1, -1)
-    : trimmed;
-};
-
-type ClaudeMcpEntry = {
-  command: string;
-  args: string[];
-  environment: Array<[string, string]>;
-};
-
-const parseClaudeMcpEntry = (output: string): ClaudeMcpEntry | null => {
-  const command = output.match(/^\s*Command:\s+(.+)$/m)?.[1];
-  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
-  if (!args) return null;
-  const environment = [
-    ...output.matchAll(/^\s*([A-Z_][A-Z0-9_]*)=(.+)$/gm)
-  ].map(([, name, value]) => [name!, unquote(value!)] as [string, string]);
-  return {
-    command: unquote(command ?? "node"),
-    args: [unquote(args)],
-    environment
-  };
-};
-
 export const claudeMcpEntryIsKoedOwned = (
   output: string,
   expectedMcpCli: string,
   expectedKoedHome: string
-): boolean => {
-  const entry = parseClaudeMcpEntry(output);
-  const koedHome = entry?.environment.find(
-    ([name]) => name === "KOED_HOME"
-  )?.[1];
-  return Boolean(
-    entry?.args[0] &&
-    koedHome &&
-    resolve(entry.args[0]) === resolve(expectedMcpCli) &&
-    resolve(koedHome) === resolve(expectedKoedHome)
-  );
-};
+): boolean =>
+  Boolean(parseClaudeOwnedMcpEntry(output, expectedMcpCli, expectedKoedHome));
 
 const claudeMcpAddArgs = (mcpName: string, entry: ClaudeMcpEntry) => [
   "mcp",
@@ -289,6 +278,8 @@ export const removeClaude = (
   let originalSettings: string | null = null;
   let registrySnapshot;
   let removedMcp = false;
+  let previousMcp: ClaudeMcpEntry | null = null;
+  let backgroundSnapshot: ClaudeBackgroundJournalSnapshot | undefined;
   try {
     assertAiClientRegistryWritable(environment);
     executable = resolveClaudeExecutablePath(environment);
@@ -299,6 +290,12 @@ export const removeClaude = (
     const settings: ClaudeSettings = originalSettings
       ? (JSON.parse(originalSettings) as ClaudeSettings)
       : {};
+    backgroundSnapshot = captureClaudeBackgroundJournal(paths.koedHome);
+    const backgroundRemoval = removeClaudeBackgroundRecall(
+      settings,
+      settingsPath,
+      backgroundSnapshot
+    );
     const childEnvironment = claudeProcessEnvironment(environment);
     const runtime = resolveKoedAppRuntime(paths, environment);
     const existingMcp = spawnClaude(
@@ -336,6 +333,11 @@ export const removeClaude = (
       );
     }
     if (existingMcp.status === 0) {
+      previousMcp = parseClaudeOwnedMcpEntry(
+        existingMcp.stdout ?? "",
+        runtime.mcpCli,
+        paths.koedHome
+      );
       const removed = spawnClaude(
         spawnSync,
         executable,
@@ -363,11 +365,13 @@ export const removeClaude = (
       delete settings.hooks;
     }
     if (existsSync(settingsPath)) {
-      writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, {
-        mode: 0o600
-      });
-      chmodSync(settingsPath, 0o600);
+      writeClaudeSettings(
+        settingsPath,
+        `${JSON.stringify(settings, null, 2)}\n`,
+        backgroundSnapshot.content !== null
+      );
     }
+    writeClaudeBackgroundJournal(backgroundSnapshot, backgroundRemoval.journal);
     removeExplicitAiClient({ environment, driverId: "claude" });
     return {
       ...base,
@@ -380,32 +384,35 @@ export const removeClaude = (
     const failures = [error instanceof Error ? error.message : String(error)];
     if (originalSettings !== null) {
       try {
-        writeFileSync(settingsPath, originalSettings, { mode: 0o600 });
-        chmodSync(settingsPath, 0o600);
+        writeClaudeSettings(
+          settingsPath,
+          originalSettings,
+          Boolean(backgroundSnapshot?.content)
+        );
       } catch (restoreError) {
         failures.push(
           `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
         );
       }
     }
-    if (removedMcp) {
+    if (backgroundSnapshot) {
       try {
-        const runtime = resolveKoedAppRuntime(paths, environment);
+        writeClaudeBackgroundJournal(
+          backgroundSnapshot,
+          backgroundSnapshot.content
+        );
+      } catch (restoreError) {
+        failures.push(
+          `Claude background recall journal rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (removedMcp && previousMcp) {
+      try {
         const restored = spawnClaude(
           spawnSync,
           executable,
-          [
-            "mcp",
-            "add",
-            "--scope",
-            "user",
-            mcpName,
-            "--env",
-            `KOED_HOME=${paths.koedHome}`,
-            "--",
-            environment.MEMORY_NODE_COMMAND?.trim() || "node",
-            runtime.mcpCli
-          ],
+          claudeMcpAddArgs(mcpName, previousMcp),
           {
             encoding: "utf8",
             env: claudeProcessEnvironment(environment),
@@ -445,7 +452,8 @@ export const removeClaude = (
 
 export const setupClaude = async (
   environment: NodeJS.ProcessEnv = process.env,
-  spawnSync: SpawnSyncLike = nodeSpawnSync
+  spawnSync: SpawnSyncLike = nodeSpawnSync,
+  options: { backgroundRecall?: boolean } = {}
 ): Promise<KoedServerSetupClaudeResult> => {
   const paths = resolveKoedServerPaths(environment);
   const runtime =
@@ -467,6 +475,7 @@ export const setupClaude = async (
   let originalSettings: string | null = null;
   let registrySnapshot;
   let previousMcp: ClaudeMcpEntry | null = null;
+  let backgroundSnapshot: ClaudeBackgroundJournalSnapshot | undefined;
   let previousMcpJson: string | undefined;
   let previousMcpConfigPath: string | undefined;
   let attemptedMcpRemoval = false;
@@ -536,6 +545,17 @@ export const setupClaude = async (
     const settings: ClaudeSettings = originalSettings
       ? (JSON.parse(originalSettings) as ClaudeSettings)
       : {};
+    const background = options.backgroundRecall
+      ? (() => {
+          backgroundSnapshot = captureClaudeBackgroundJournal(paths.koedHome);
+          return configureClaudeBackgroundRecall(
+            settings,
+            environment,
+            settingsPath,
+            backgroundSnapshot
+          );
+        })()
+      : undefined;
     settings.hooks ??= {};
     const hookCommand = [
       nodeCommand,
@@ -572,7 +592,11 @@ export const setupClaude = async (
         const entry = config.mcpServers?.[mcpName];
         if (entry) previousMcpJson = JSON.stringify(entry);
       }
-      previousMcp = parseClaudeMcpEntry(existingMcp.stdout ?? "");
+      previousMcp = parseClaudeOwnedMcpEntry(
+        existingMcp.stdout ?? "",
+        runtime.mcpCli,
+        paths.koedHome
+      );
       if (!previousMcpJson && !previousMcp) {
         return failure(
           "Claude Code MCP entry could not be read for safe replacement.",
@@ -635,10 +659,13 @@ export const setupClaude = async (
       ];
     }
     mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
-    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, {
-      mode: 0o600
-    });
-    chmodSync(settingsPath, 0o600);
+    if (backgroundSnapshot && background)
+      writeClaudeBackgroundJournal(backgroundSnapshot, background.journal);
+    writeClaudeSettings(
+      settingsPath,
+      `${JSON.stringify(settings, null, 2)}\n`,
+      Boolean(options.backgroundRecall)
+    );
     const registered = registerExplicitAiClient({
       environment,
       driverId: "claude",
@@ -657,6 +684,7 @@ export const setupClaude = async (
       checkedAt,
       settingsPath,
       profileConfigured: true,
+      ...(background ? { backgroundRecall: background.report } : {}),
       authenticationState,
       executionCapabilities: authenticated ? "ready" : "unavailable",
       ...(!authenticated
@@ -670,6 +698,18 @@ export const setupClaude = async (
     };
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
+    if (backgroundSnapshot) {
+      try {
+        writeClaudeBackgroundJournal(
+          backgroundSnapshot,
+          backgroundSnapshot.content
+        );
+      } catch (restoreError) {
+        failures.push(
+          `Claude background recall journal rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
     let previousMcpUnchanged = false;
     if (!attemptedMcpAdd && previousMcpJson && previousMcpConfigPath) {
       try {
@@ -741,8 +781,11 @@ export const setupClaude = async (
     }
     if (originalSettings !== null) {
       try {
-        writeFileSync(settingsPath, originalSettings, { mode: 0o600 });
-        chmodSync(settingsPath, 0o600);
+        writeClaudeSettings(
+          settingsPath,
+          originalSettings,
+          Boolean(options.backgroundRecall)
+        );
       } catch (restoreError) {
         failures.push(
           `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`

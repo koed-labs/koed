@@ -96,6 +96,23 @@ const field = (
   return undefined;
 };
 
+const commandField = (source: Record<string, unknown>): string | undefined => {
+  for (const key of ["command", "cmd"]) {
+    const value = source[key];
+    if (Array.isArray(value)) {
+      if (
+        value.length &&
+        value.every((argument) => typeof argument === "string")
+      )
+        return JSON.stringify(value);
+      continue;
+    }
+    const command = scalar(value);
+    if (command) return command;
+  }
+  return undefined;
+};
+
 const firstLine = (value: string | undefined): string | undefined => {
   const line = value?.split(/\r?\n/u).find((candidate) => candidate.trim());
   return line ? bounded(line.trim(), 2_048) : undefined;
@@ -154,8 +171,7 @@ export const buildConversationToolDisplay = (
       "",
     256
   );
-  const command =
-    field(metadata, ["command", "cmd"]) ?? field(input, ["command", "cmd"]);
+  const command = commandField(metadata) ?? commandField(input);
   const path =
     field(metadata, ["path", "filePath", "filename"]) ??
     field(input, ["path", "filePath", "filename"]);

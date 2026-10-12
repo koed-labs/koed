@@ -24,6 +24,7 @@ export const requiredRuntimeFiles = [
   "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
+  "mcp-server/dist/codex-memory-hook.js",
   "mcp-server/dist/prompts/codex-global-agent-guidance.md",
   "node_modules/@koed/db/dist/index.js",
   "node_modules/@koed/db/dist/connection.js",
@@ -542,7 +543,10 @@ export const validatePackageRoot = (packageRoot) => {
   const missing = [
     !existsSync(manifestPath) ? "koed-server-package-manifest.json" : null,
     !existsSync(resolve(root, "README.txt")) ? "README.txt" : null,
-    !existsSync(resolve(root, "bin", "koed-server")) ? "bin/koed-server" : null,
+    !existsSync(resolve(root, "bin", "koed")) &&
+    !existsSync(resolve(root, "bin", "koed-server"))
+      ? "bin/koed"
+      : null,
     !existsSync(resolve(runtimeRoot, "koed-server", "dist", "cli.js"))
       ? "koed-runtime/koed-server/dist/cli.js"
       : null,

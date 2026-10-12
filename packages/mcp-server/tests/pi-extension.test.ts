@@ -9,6 +9,8 @@ describe("Koed Pi extension package", () => {
       "utf8"
     );
     expect(source).toContain('"memory_answer"');
+    expect(source).toContain('"memory_workspaces"');
+    expect(source).toContain("team_backend_id: Type.Optional");
     expect(source).toContain('"memory_intake_propose"');
     expect(source).toContain('pi.on("session_start"');
     expect(source).toContain('pi.on("session_shutdown"');

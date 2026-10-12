@@ -42,7 +42,8 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "apps/privacy-service/dist/index.js",
     "packages/mcp-server/dist/cli.js",
     "packages/mcp-server/dist/local-runtime-cli.js",
-    "packages/mcp-server/dist/capture-hook.js"
+    "packages/mcp-server/dist/capture-hook.js",
+    "packages/mcp-server/dist/codex-memory-hook.js"
   ],
   copiedTrees: [
     { source: "prompts", output: "packages/mcp-server/dist/prompts" }

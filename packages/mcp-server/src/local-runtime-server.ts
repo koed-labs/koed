@@ -35,6 +35,7 @@ import { startCuratedMemoryReviewService } from "./curated-memory-review-service
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
   MemoryApiClient,
+  MemoryApiError,
   defaultConfig,
   type McpServerConfig
 } from "./index.js";
@@ -53,12 +54,130 @@ import {
 } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 import {
+  rateLimitSourceFrom,
+  type RateLimitSource
+} from "./rate-limit-metadata.js";
+import {
   AnswerExecutionCapacity,
   BlockingAnswerAdmission
 } from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
-import { MemoryAnswerTaskRuntime } from "./memory-answer-task-runtime.js";
+import {
+  MemoryAnswerBlockingError,
+  MemoryAnswerTaskRuntime,
+  MemoryAnswerDetachedIneligibleError
+} from "./memory-answer-task-runtime.js";
+
+const httpErrorStatus = (value: unknown): number | undefined =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 400 &&
+  value <= 599
+    ? value
+    : undefined;
+
+const boundedRetryAfterMs = (value: unknown): number | undefined =>
+  typeof value === "number" &&
+  Number.isSafeInteger(value) &&
+  value > 0 &&
+  value <= 300_000
+    ? value
+    : undefined;
+
+const runtimeStatusMessages = new Map<number, string>([
+  [400, "Invalid local AI runtime request"],
+  [401, "Local AI runtime access denied"],
+  [403, "Local AI runtime operation forbidden"],
+  [404, "Memory Answer task not found"],
+  [410, "Memory Answer task expired"],
+  [413, "Local AI runtime request body is too large"],
+  [429, "Koed Memory Answer queue is full"]
+]);
+
+interface RuntimeFailure {
+  statusCode: number;
+  message: string;
+  errorCode?: string;
+  retryAfterMs?: number;
+  rateLimitSource?: RateLimitSource;
+}
+
+// Error bodies use static text only: exception messages can carry memory,
+// provider or credential content. Runtime-owned errors set `statusCode`.
+// Memory API errors carry `.status`; task routes pass it through so delivery
+// adapters can stop on denial or expiry, and other routes report an upstream
+// API failure instead of runtime or task wording.
+const runtimeFailure = (error: unknown, taskRoute: boolean): RuntimeFailure => {
+  const record =
+    error && typeof error === "object"
+      ? (error as { statusCode?: unknown; retryAfterMs?: unknown })
+      : {};
+  const retryAfterMs = boundedRetryAfterMs(record.retryAfterMs);
+  const withRetry = (failure: RuntimeFailure): RuntimeFailure =>
+    failure.statusCode === 429 && retryAfterMs !== undefined
+      ? { ...failure, retryAfterMs }
+      : failure;
+  if (error instanceof MemoryAnswerBlockingError) {
+    return { statusCode: error.statusCode, message: error.message };
+  }
+  const ownedStatus = httpErrorStatus(record.statusCode);
+  if (ownedStatus !== undefined) {
+    return withRetry({
+      statusCode: ownedStatus,
+      message:
+        runtimeStatusMessages.get(ownedStatus) ??
+        "Local AI runtime request failed",
+      ...(error instanceof MemoryAnswerDetachedIneligibleError
+        ? { errorCode: error.code }
+        : {})
+    });
+  }
+  if (error instanceof MemoryApiError) {
+    const upstreamStatus = httpErrorStatus(error.status);
+    if (upstreamStatus === 429) {
+      const source = rateLimitSourceFrom(error.rateLimitSource);
+      return withRetry({
+        statusCode: 429,
+        message:
+          source === "local"
+            ? "Local Koed API request limit reached. Retry later."
+            : source === "remote"
+              ? "Remote Team Backend request limit reached. Retry later."
+              : "Koed memory API is busy. Retry later.",
+        ...(source ? { rateLimitSource: source } : {})
+      });
+    }
+    if (taskRoute && upstreamStatus !== undefined) {
+      return withRetry({
+        statusCode: upstreamStatus,
+        message:
+          runtimeStatusMessages.get(upstreamStatus) ??
+          "Local AI runtime request failed"
+      });
+    }
+    if (upstreamStatus === undefined) {
+      return {
+        statusCode: 503,
+        message:
+          "Koed memory API is unavailable or did not respond. Check that Koed is running."
+      };
+    }
+    return {
+      statusCode: 502,
+      message:
+        upstreamStatus === 401
+          ? "Koed memory API rejected the configured API Token."
+          : upstreamStatus === 403
+            ? "Koed memory API denied this memory operation."
+            : "Koed memory API request failed."
+    };
+  }
+  if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    return { statusCode: 400, message: "Invalid local AI runtime request" };
+  }
+  return { statusCode: 500, message: "Local AI runtime request failed" };
+};
 
 export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
 export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
@@ -291,10 +410,17 @@ export const startDefaultLocalAiRuntimeServices = async (
   dependencies: LocalAiRuntimeServiceDependencies = defaultServiceDependencies
 ): Promise<LocalAiRuntimeServices> => {
   await dependencies.recoverPendingDesktopAsks?.(apiClient);
-  const lcmSummaryService = dependencies.startLcmSummaryService(apiClient, {
-    serviceConfig: resolveLcmSummaryServiceConfig(environment),
-    workerConfig: resolveLcmSummaryWorkerConfig(environment)
+  const backgroundClient = new MemoryApiClient({
+    ...apiClient.config,
+    requestClass: "background"
   });
+  const lcmSummaryService = dependencies.startLcmSummaryService(
+    backgroundClient,
+    {
+      serviceConfig: resolveLcmSummaryServiceConfig(environment),
+      workerConfig: resolveLcmSummaryWorkerConfig(environment)
+    }
+  );
   let lcmWorkWatcher: Awaited<ReturnType<typeof watchKoedLocalWork>> | null =
     null;
   let curatedMemoryReviewService: ReturnType<
@@ -323,7 +449,7 @@ export const startDefaultLocalAiRuntimeServices = async (
         )
       : null;
     curatedMemoryReviewService = dependencies.startCuratedMemoryReviewService(
-      apiClient,
+      backgroundClient,
       {
         workerConfig: resolveCuratedMemoryReviewConfig(environment)
       }
@@ -349,7 +475,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalEnabled && codexWatcherEnabled
         ? startHistoricalIngestionCoordinator({
             adapter: createCodexHistoricalProviderAdapter({
-              client: apiClient,
+              client: backgroundClient,
               config: resolveCodexHistoricalIngestionConfig(environment)
             }),
             koedHome,
@@ -373,7 +499,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalIngestions.push(
         startHistoricalIngestionCoordinator({
           adapter: dependencies.createClaudeHistoricalProviderAdapter({
-            client: apiClient,
+            client: backgroundClient,
             env: environment
           }),
           koedHome,
@@ -395,7 +521,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalIngestions.push(
         startHistoricalIngestionCoordinator({
           adapter: dependencies.createPiHistoricalProviderAdapter({
-            client: apiClient,
+            client: backgroundClient,
             env: environment
           }),
           koedHome,
@@ -412,17 +538,20 @@ export const startDefaultLocalAiRuntimeServices = async (
     codexTranscriptWatcher = !codexWatcherEnabled
       ? null
       : dependencies.startCodexTranscriptWatcher(
-          apiClient,
+          backgroundClient,
           resolveCodexTranscriptWatcherConfig(environment),
           codexHistoricalIngestion ?? undefined
         );
     claudeTranscriptWatcher = !claudeWatcherEnabled
       ? null
-      : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+      : dependencies.startClaudeTranscriptWatcher(
+          backgroundClient,
+          environment
+        );
     piTranscriptWatcher =
       !piWatcherEnabled || !dependencies.startPiTranscriptWatcher
         ? null
-        : dependencies.startPiTranscriptWatcher(apiClient, environment);
+        : dependencies.startPiTranscriptWatcher(backgroundClient, environment);
     if (dependencies.startAiClientCapabilityPublisher) {
       capabilityPublisher = dependencies.startAiClientCapabilityPublisher(
         apiClient,
@@ -443,6 +572,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       executor,
       capabilityPublisher: capabilityPublisher ?? undefined,
       async close() {
+        backgroundClient.closeBackgroundRequests();
         capabilityPublisher?.stop();
         lcmWorkWatcher?.stop();
         lcmSummaryService?.stop();
@@ -456,6 +586,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       }
     };
   } catch (error) {
+    backgroundClient.closeBackgroundRequests();
     lcmWorkWatcher?.stop();
     lcmSummaryService?.stop();
     curatedMemoryReviewService?.stop();
@@ -565,7 +696,9 @@ export const startLocalAiRuntime = async ({
           json(response, 200, {
             protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
             curatedMemoryIntakeAvailable:
-              capabilities.curatedMemoryIntakeAvailable
+              capabilities.curatedMemoryIntakeAvailable,
+            supportedTools: localRuntimeToolNames,
+            memoryAnswerTeamBackendAvailable: true
           });
           return;
         }
@@ -689,22 +822,27 @@ export const startLocalAiRuntime = async ({
         }
       } catch (error) {
         if (requestAbort.signal.aborted) return;
-        const statusCode =
-          error &&
-          typeof error === "object" &&
-          "statusCode" in error &&
-          typeof (error as { statusCode?: unknown }).statusCode === "number"
-            ? (error as { statusCode: number }).statusCode
-            : error instanceof z.ZodError || error instanceof SyntaxError
-              ? 400
-              : 500;
+        const failure = runtimeFailure(
+          error,
+          (request.url ?? "").startsWith("/v1/tasks/")
+        );
         logger.warn(
-          { err: error, statusCode },
+          { err: error, statusCode: failure.statusCode },
           "local AI runtime request failed"
         );
-        json(response, statusCode, {
-          error:
-            error instanceof Error ? error.message : "Local AI runtime error"
+        if (response.headersSent) {
+          response.end();
+          return;
+        }
+        json(response, failure.statusCode, {
+          ...(failure.errorCode ? { errorCode: failure.errorCode } : {}),
+          ...(failure.retryAfterMs !== undefined
+            ? { retryAfterMs: failure.retryAfterMs }
+            : {}),
+          ...(failure.rateLimitSource
+            ? { rateLimitSource: failure.rateLimitSource }
+            : {}),
+          error: failure.message
         });
       } finally {
         activeRequests.delete(requestAbort);

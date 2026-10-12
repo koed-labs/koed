@@ -311,6 +311,8 @@ export {
   assertConversationSourceReplicationJsonlSegment,
   CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS,
   CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES,
+  CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
+  conversationSourceRewriteProofWithinLimit,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION,
   assertConversationSourceOriginKeyAcceptsManifest,
@@ -323,6 +325,7 @@ export {
   calculateConversationSourceGenerationRegistrationDigest,
   calculateConversationSourceOriginKeyRegistrationDigest,
   calculateConversationSourceRootDigest,
+  conversationSourceRewriteGenerationId,
   calculateConversationSourceComponentSetDigest,
   calculateConversationSourceSetClosureDigest,
   calculateConversationSourceReplicationContentDigest,
@@ -356,6 +359,7 @@ export {
   verifyConversationSourceSetClosureManifestSignature
 } from "./conversation-source-replication.js";
 export type {
+  ConversationSourceRewriteFrontier,
   ConversationSourceComponentIdentity,
   ConversationSourceComponentRole,
   ConversationSourceContentFraming,
