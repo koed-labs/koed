@@ -1626,6 +1626,7 @@ describe("memory answer worker", () => {
             throw new Error("pending summary should not expand");
           }
         },
+        responseDetail: "internal",
         config: {
           ...resolveMemoryAnswerWorkerConfig({}),
           provider: "claude",
