@@ -9,7 +9,10 @@ import {
   callLocalRuntimeTool,
   createRuntimeTaskPort
 } from "../runtime-client.mjs";
-import { createPiMemoryDelivery } from "../pi-memory-delivery.mjs";
+import {
+  ACCEPTANCE_UNCERTAIN,
+  createPiMemoryDelivery
+} from "../pi-memory-delivery.mjs";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
@@ -204,7 +207,7 @@ export default function koedExtension(pi) {
               { cause: error }
             );
           }
-          if (name === "memory_answer")
+          if (error?.code === ACCEPTANCE_UNCERTAIN)
             throw new Error(
               "Koed Memory Answer could not be completed. Acceptance may be uncertain; do not resubmit this request.",
               { cause: error }

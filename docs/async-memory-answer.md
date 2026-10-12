@@ -34,6 +34,28 @@ without memory content, credentials, or receipt nonces. Ordinary MCP delivery
 is recorded as `mcp_result`; this does not describe whether Claude's host
 backgrounds the call.
 
+### Validated scope and known gaps
+
+Native host checks covered delayed, fast, not-found, failed, interrupted,
+explicit-blocking, and fallback cases for each AI Client below. The
+`eval:memory-delivery:codex`, `eval:memory-delivery:pi`, and
+`eval:memory-delivery:claude` scripts in `packages/evals` reproduce them against
+synthetic task responses.
+
+- **Codex**: Stop-hook delivery through the real MCP factory and hook entry
+  point. The fixture selects MCP protocol 2026-07-28 explicitly.
+- **Pi**: follow-up delivery through the real extension runner and persistent
+  Conversations, including mixed, concurrent, and redelivered recalls.
+- **Claude Code**: print-host execution with the noninteractive
+  `CLAUDE_AUTO_BACKGROUND_TASKS=1` opt-in, which normal Koed setup does not
+  enable.
+
+These checks do not establish default MCP protocol negotiation, legacy-profile
+transport migration, the interactive Claude TUI, Claude IDE, subagent, or
+reopened-session behavior, Windows Codex Stop delivery, or managed
+Conversations. Configured blocking defaults and opt-outs remain in effect where
+delivery is unproven. `TODO.md` tracks the follow-up validation.
+
 ## Shared lifecycle
 
 `@koed/mcp-server/memory-answer-delivery` exports `MemoryAnswerDelivery` and its

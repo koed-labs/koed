@@ -11,6 +11,13 @@ import {
 } from "./memory-answer-delivery-policy.mjs";
 
 export const RECEIPT = "koed-memory-answer-receipt-v1";
+// Failures after a deferred acceptance was attempted: the runtime may own the
+// task, so the caller must not resubmit. Earlier failures accepted nothing.
+export const ACCEPTANCE_UNCERTAIN = "memory_answer_acceptance_uncertain";
+const acceptanceUncertain = (message, cause) =>
+  Object.assign(new Error(message, cause ? { cause } : undefined), {
+    code: ACCEPTANCE_UNCERTAIN
+  });
 export const DISPOSITION = "koed-memory-answer-disposition-v1";
 export const COMPLETION = "koed-memory-answer-completion";
 // A second copy of an already delivered completion is replaced by this note.
@@ -447,12 +454,15 @@ export function createPiMemoryDelivery(
         );
         return blockingResult(input, ctx, signal, invocation);
       }
-      throw error;
+      throw acceptanceUncertain(
+        "Koed Memory Answer acceptance is uncertain",
+        error
+      );
     } finally {
       accepting.delete(reservation);
     }
     if (!alive || epoch !== ownEpoch || !matches(origin, ctx))
-      throw new Error("Koed Memory Answer observer detached");
+      throw acceptanceUncertain("Koed Memory Answer observer detached");
     const binding = {
       schema: 1,
       ...origin,
@@ -480,7 +490,7 @@ export function createPiMemoryDelivery(
         normalizeMemoryAnswerDeliveryMode(existing.data.deliveryMode) !==
           requestedMode)
     )
-      throw new Error(
+      throw acceptanceUncertain(
         "Koed Memory Answer receipt does not match this invocation"
       );
     const saved = existing?.data ?? binding;

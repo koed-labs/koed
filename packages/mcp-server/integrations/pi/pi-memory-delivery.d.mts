@@ -4,6 +4,7 @@ import type {
 } from "./memory-answer-delivery.mjs";
 import type { MemoryAnswerDeliveryDecision } from "./memory-answer-delivery-policy.mjs";
 export declare const RECEIPT: string;
+export declare const ACCEPTANCE_UNCERTAIN: "memory_answer_acceptance_uncertain";
 export declare const DISPOSITION: string;
 export declare const COMPLETION: string;
 export declare const DUPLICATE: string;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ACCEPTANCE_UNCERTAIN,
   createPiMemoryDelivery,
   COMPLETION,
   DUPLICATE,
@@ -401,7 +402,7 @@ describe("supported Pi Memory Answer delivery", () => {
     f.port.start.mockRejectedValueOnce(failure);
     await expect(
       f.delivery.execute("one-call", { query: "original" }, undefined, f.ctx)
-    ).rejects.toBe(failure);
+    ).rejects.toMatchObject({ code: ACCEPTANCE_UNCERTAIN, cause: failure });
     expect(f.port.start).toHaveBeenCalledTimes(1);
     expect(f.blocking).not.toHaveBeenCalled();
     expect(f.port.get).not.toHaveBeenCalled();
@@ -851,6 +852,34 @@ describe("supported Pi Memory Answer delivery", () => {
     ).toBe(true);
   });
 
+  it("marks only failures after attempted deferred acceptance as uncertain", async () => {
+    const f = fixture();
+    const cause = new Error("connection reset");
+    f.port.start.mockRejectedValueOnce(cause);
+    const uncertain = await f.delivery
+      .execute("call", { query: "q" }, undefined, f.ctx)
+      .catch((error: unknown) => error);
+    expect(uncertain).toMatchObject({ code: ACCEPTANCE_UNCERTAIN, cause });
+
+    f.blocking.mockRejectedValueOnce(new Error("runtime down"));
+    const blocked = await f.delivery
+      .execute(
+        "call-2",
+        { query: "q", delivery_mode: "blocking" },
+        undefined,
+        f.ctx
+      )
+      .catch((error: unknown) => error);
+    expect(blocked).toBeInstanceOf(Error);
+    expect((blocked as { code?: unknown }).code).toBeUndefined();
+
+    await f.delivery.execute("call-3", { query: "original" }, undefined, f.ctx);
+    const mismatch = await f.delivery
+      .execute("call-3", { query: "changed" }, undefined, f.ctx)
+      .catch((error: unknown) => error);
+    expect((mismatch as { code?: unknown }).code).toBeUndefined();
+    f.delivery.detach();
+  });
   it("rejects an invocation reused with a different query before new acceptance", async () => {
     const f = fixture();
     await f.delivery.execute(
