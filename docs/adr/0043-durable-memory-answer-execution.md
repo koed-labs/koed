@@ -8,7 +8,7 @@ Related decisions:
 - [0001 AI Client Synthesis Only](./0001-ai-client-synthesis-only.md)
 - [0025 MCP V2 Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
 - [0026 Pre-Launch Schema Reset And Processing Epochs](./0026-pre-launch-schema-reset-and-processing-epochs.md)
-- [0032 AI Client Instance, Capability, And Permission Contracts](./0032-ai-client-instance-capability-and-permission-contracts.md)
+- [0054 AI Client Instance, Capability, And Permission Contracts](./0054-ai-client-instance-capability-and-permission-contracts.md)
 
 ## Context
 

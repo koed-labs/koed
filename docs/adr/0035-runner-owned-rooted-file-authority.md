@@ -7,9 +7,9 @@ Related decisions:
 
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0017 Verified Development Workspace Snapshots](./0017-verified-development-workspace-snapshots.md)
-- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
-- [0032 AI Client Instance, Capability, And Permission Contracts](./0032-ai-client-instance-capability-and-permission-contracts.md)
-- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
+- [0054 AI Client Instance, Capability, And Permission Contracts](./0054-ai-client-instance-capability-and-permission-contracts.md)
+- [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 
 ## Context
 
@@ -143,7 +143,7 @@ revision identity.
 Koed supports two explicit read classes:
 
 1. **Checkpoint reads** resolve an immutable, server-selected execution
-   checkpoint and its captured object id under ADR 0033. They are used for
+   checkpoint and its captured object id under ADR 0055. They are used for
    recorded historical inspection and diff-adjacent views.
 2. **Live reads** resolve the current checkout through the assigned runner and
    return an opaque checkout observation plus per-entry content identity. The

@@ -1,4 +1,4 @@
-# ADR 0032: AI Client Instance, Capability, And Permission Contracts
+# ADR 0054: AI Client Instance, Capability, And Permission Contracts
 
 - Status: Accepted
 - Date: 2026-08-18
@@ -9,7 +9,7 @@ Related decisions:
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0024 Tiered Desktop Action Approval](./0024-tiered-desktop-action-approval.md)
 - [0025 MCP V2 Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
-- [0028 Claude Agent SDK Local Transport](./0028-claude-agent-sdk-local-transport.md)
+- [0048 Claude Agent SDK Local Transport](./0048-claude-agent-sdk-local-transport.md)
 
 ## Context
 

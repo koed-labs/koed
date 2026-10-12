@@ -6,8 +6,8 @@ Related decisions:
 
 - [0008 Explorer-First Auth And Device Enrollment](./0008-explorer-first-auth-and-device-enrollment.md)
 - [0012 Personal Device Sync Protocol](./0012-personal-device-sync-protocol.md)
-- [0030 Shared Durable Realtime Client Runtime](./0030-shared-durable-realtime-client-runtime.md)
-- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
+- [0052 Shared Durable Realtime Client Runtime](./0052-shared-durable-realtime-client-runtime.md)
+- [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
 
 ## Context
 

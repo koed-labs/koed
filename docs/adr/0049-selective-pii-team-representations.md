@@ -9,9 +9,9 @@ Related decisions:
 - [0010 Managed SaaS queryable vectors](./0010-managed-saas-queryable-vectors.md)
 - [0012 Symmetric replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0020 Portable Personal derived artifact replication](./0020-portable-personal-derived-artifact-replication.md)
-- [0025 Team Conversation Source Access](./0025-team-conversation-source-access.md)
+- [0047 Team Conversation Source Access](./0047-team-conversation-source-access.md)
 - [0028 Agent-directed Memory Answer retrieval](./0028-agent-directed-memory-answer-retrieval.md)
-- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
+- [0051 Personal Semantic Work Is Computed Once And Replicated](./0051-single-personal-semantic-computation.md)
 
 ## Context
 

@@ -1,4 +1,4 @@
-# ADR 0030: Shared Durable Realtime Client Runtime
+# ADR 0052: Shared Durable Realtime Client Runtime
 
 Status: Accepted.
 
@@ -8,7 +8,7 @@ Related decisions:
 - [0014 Hosted Personal Source Replication](./0014-hosted-personal-source-replication.md)
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0023 Team Member Presence](./0023-team-member-presence.md)
-- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
+- [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
 - [0040 Portable Client State And Credential Custody](./0040-portable-client-state-and-credential-custody.md)
 
 ## Context
@@ -80,7 +80,7 @@ The runtime is published from a browser-safe `@koed/shared/durable-realtime`
 entry point. Browser-safe collaboration state is published from
 `@koed/shared/collaboration-client-runtime`. Future WebTransport and WebSocket
 adapters must implement the same lifecycle boundary and the allocation rules in
-ADR 0031. Adopting either does not change durable server authority: events
+ADR 0053. Adopting either does not change durable server authority: events
 remain replayable, ordered, acknowledged, and reauthorized. HTTPS remains the
 bulk-transfer path. Future audio or video uses a media-specific transport such
 as WebRTC rather than the durable application-event channel.

@@ -515,7 +515,7 @@ attestation, source binding, payload hash, artifact schema, claim-completion
 receipt, and contract compatibility before a transactional, idempotent upsert.
 A compatible PDS artifact producer is an active explicitly enrolled Personal
 device. A device may serve an exact hosted-produced embedding only after it has
-verified the owner-bound, recipient-encrypted hosted package under ADR 0030;
+verified the owner-bound, recipient-encrypted hosted package under ADR 0051;
 its PDS signature attests that verified import and preserves hosted origin
 provenance. An incompatible or unavailable artifact is ignored without
 weakening source replication and remains eligible for one newly claimed

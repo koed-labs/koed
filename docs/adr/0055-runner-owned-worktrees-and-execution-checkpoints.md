@@ -1,4 +1,4 @@
-# ADR 0033: Runner-Owned Checkouts And Local Execution Checkpoints
+# ADR 0055: Runner-Owned Checkouts And Local Execution Checkpoints
 
 - Status: Accepted
 - Date: 2026-08-18
@@ -8,7 +8,7 @@ Related decisions:
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Exclusive Execution Handoff And Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
 - [0017 Verified Development Workspace Snapshots](./0017-verified-development-workspace-snapshots.md)
-- [0032 AI Client Instance, Capability, And Permission Contracts](./0032-ai-client-instance-capability-and-permission-contracts.md)
+- [0054 AI Client Instance, Capability, And Permission Contracts](./0054-ai-client-instance-capability-and-permission-contracts.md)
 - [0035 File Access Uses Runner-Owned Rooted Capabilities](./0035-runner-owned-rooted-file-authority.md)
 - [0036 Runner-Owned Scoped Terminal Authority](./0036-runner-owned-scoped-terminal-authority.md)
 

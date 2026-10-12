@@ -11,7 +11,7 @@ Related decisions:
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](0013-team-collaboration-authority.md)
 - [0020 Portable Personal Derived Artifact Replication](0020-portable-personal-derived-artifact-replication.md)
 - [0021 Portable Semantic Work Ownership](0021-portable-semantic-work-ownership.md)
-- [0023 Collaboration Receipts Use Versioned Audiences](0023-collaboration-receipts-use-versioned-audiences.md)
+- [0046 Collaboration Receipts Use Versioned Audiences](0046-collaboration-receipts-use-versioned-audiences.md)
 - [0023 Team Member Presence](0023-team-member-presence.md)
 - [0024 Tiered Desktop Action Approval](0024-tiered-desktop-action-approval.md)
 - [0025 MCP v2 and Local AI Runtime Ownership](0025-mcp-v2-local-ai-runtime-ownership.md)
