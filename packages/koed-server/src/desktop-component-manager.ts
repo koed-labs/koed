@@ -259,6 +259,10 @@ export const createDesktopComponentManagerBridge = (input: {
   isRunning: boolean;
   target: ArtifactTarget;
   controlPlaneVersion: string;
+  // The supervisor's own validated environment. Required components (Base,
+  // and Privacy when Team is enabled) are derived from it, so it must not be
+  // empty here.
+  environment: NodeJS.ProcessEnv;
 }) => {
   const { capability } = input;
   if (
@@ -286,7 +290,7 @@ export const createDesktopComponentManagerBridge = (input: {
     owner,
     isRunning: input.isRunning,
     execution: "packaged",
-    environment: {}
+    environment: input.environment
   };
   const operations = new Map<string, AbortController>();
   const requireRequestId = (requestId: unknown): string => {

@@ -105,11 +105,11 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     capability.target,
     capability.productVersion
   );
+  const supervisorEnvironment = createDesktopSupervisorEnvironment(process.env);
   const privacyManager = createDesktopComponentManagerBridge({
     capability: componentCapability,
-    paths: resolveKoedServerPaths(
-      createDesktopSupervisorEnvironment(process.env)
-    ),
+    paths: resolveKoedServerPaths(supervisorEnvironment),
+    environment: supervisorEnvironment,
     runtime: discoverActualRuntimeIdentity(),
     isRunning: handshake.mode !== "privacy-activation",
     target: capability.target,

@@ -16,6 +16,7 @@ export interface DesktopDistributionManagerOptions {
   runtime: RuntimeIdentity;
   target: ArtifactTarget;
   controlPlaneVersion: string;
+  environment: NodeJS.ProcessEnv;
   isRunning: () => boolean;
 }
 
@@ -36,6 +37,7 @@ export const createDesktopDistributionManager = async (
     runtime: options.runtime,
     target: options.target,
     controlPlaneVersion: options.controlPlaneVersion,
+    environment: options.environment,
     isRunning: options.isRunning()
   });
   return Object.freeze({

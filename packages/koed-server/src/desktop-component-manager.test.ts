@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   createDesktopComponentManagerBridge,
   createDesktopPrivacyRpcHandler,
@@ -101,7 +102,8 @@ describe("Desktop bundled component capability", () => {
       runtime: {} as never,
       isRunning: false,
       target: { platform: "macos", architecture: "arm64" },
-      controlPlaneVersion: "0.8.1"
+      controlPlaneVersion: "0.8.1",
+      environment: {}
     });
     expect(manager.owner).toEqual(
       resolveDesktopRuntimeOwner(
@@ -127,6 +129,37 @@ describe("Desktop bundled component capability", () => {
     ).toEqual(manager.owner);
   });
 
+  it("requires Privacy in status when the supervisor environment enables Team", async () => {
+    const { root, manifestPath } = fixture();
+    const capability = validateDesktopBundle(
+      root,
+      manifestPath,
+      { platform: "macos", architecture: "arm64" },
+      "0.8.1"
+    );
+    const bridge = (environment: NodeJS.ProcessEnv) =>
+      createDesktopComponentManagerBridge({
+        capability,
+        paths: resolveKoedServerPaths({
+          ...environment,
+          KOED_HOME: resolve(realpathSync.native(root), "home")
+        }),
+        runtime: {} as never,
+        isRunning: false,
+        target: { platform: "macos", architecture: "arm64" },
+        controlPlaneVersion: "0.8.1",
+        environment
+      });
+    const teamStatus = await bridge({
+      KOED_TEAM_COLLABORATION_ENABLED: "true"
+    }).status();
+    expect(teamStatus.required).toEqual(
+      expect.arrayContaining(["base", "privacy"])
+    );
+    const personalStatus = await bridge({}).status();
+    expect(personalStatus.required).not.toContain("privacy");
+  });
+
   it("routes private cancel RPC by validated request ID and rejects extra fields", () => {
     const { root, manifestPath } = fixture();
     const capability = validateDesktopBundle(
@@ -141,7 +174,8 @@ describe("Desktop bundled component capability", () => {
       runtime: {} as never,
       isRunning: true,
       target: { platform: "macos", architecture: "arm64" },
-      controlPlaneVersion: "0.8.1"
+      controlPlaneVersion: "0.8.1",
+      environment: {}
     });
     const messages: Record<string, unknown>[] = [];
     const nonce = "a".repeat(64);
@@ -204,7 +238,8 @@ describe("Desktop bundled component capability", () => {
       runtime: {} as never,
       isRunning: true,
       target: { platform: "macos", architecture: "arm64" },
-      controlPlaneVersion: "0.8.1"
+      controlPlaneVersion: "0.8.1",
+      environment: {}
     });
     await expect(
       manager.install({
@@ -241,7 +276,8 @@ describe("Desktop bundled component capability", () => {
         runtime: {} as never,
         isRunning: false,
         target: { platform: "macos", architecture: "arm64" },
-        controlPlaneVersion: "0.8.1"
+        controlPlaneVersion: "0.8.1",
+        environment: {}
       })
     ).toThrow("Desktop bundled runtime capability is invalid");
   });
