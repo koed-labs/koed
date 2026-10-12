@@ -74,14 +74,6 @@ To stop Koed, run:
 pnpm koed stop --json
 ```
 
-> [!TIP]
-> If setup fails with a path such as `/path/to`, clear old overrides and start
-> again:
->
-> ```bash
-> unset KOED_HOME KOED_EMBEDDING_MODEL_PATH KOED_RERANKER_MODEL_PATH
-> ```
-
 <details>
 <summary>Set up without Desktop</summary>
 
