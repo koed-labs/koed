@@ -366,7 +366,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Restore verified Linux native runtime payload
         id: native-cache
@@ -500,7 +500,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Build native runtime artifact
         env:

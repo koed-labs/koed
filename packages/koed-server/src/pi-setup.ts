@@ -410,8 +410,7 @@ export const setupPi = (
       koedHome: paths.koedHome,
       checkedAt,
       error: "Koed Pi integration package is missing from this installation.",
-      action:
-        "Repair Koed installation, then rerun koed-server setup pi --json."
+      action: "Repair Koed installation, then rerun koed setup pi --json."
     };
   }
   try {
@@ -563,10 +562,10 @@ export const setupPi = (
                 : transaction.restorationError
                   ? `The previous package could not be restored (${transaction.restorationError}). It remains at ${transaction.backupPath ?? "the backup path"}; repair the filesystem before retrying.`
                   : rollbackError
-                    ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
+                    ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed setup pi --json.`
                     : hadPrevious
-                      ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
-                      : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+                      ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed setup pi --json."
+                      : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed setup pi --json."
             }
           : {})
     };
@@ -581,7 +580,7 @@ export const setupPi = (
       authenticationState: "unknown",
       executionCapabilities: "unavailable",
       error: error instanceof Error ? error.message : String(error),
-      action: "Install supported Pi, then rerun koed-server setup pi --json."
+      action: "Install supported Pi, then rerun koed setup pi --json."
     };
   }
 };

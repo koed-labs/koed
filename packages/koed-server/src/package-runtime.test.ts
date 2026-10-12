@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -137,8 +138,8 @@ const createPackageRoot = (
     writeFile(resolve(root, "koed-runtime", file), `${file}\n`);
   }
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
-  writeFile(resolve(root, "bin", "koed-server"), "#!/usr/bin/env sh\n");
-  chmodSync(resolve(root, "bin", "koed-server"), 0o755);
+  writeFile(resolve(root, "bin", "koed"), "#!/usr/bin/env sh\n");
+  chmodSync(resolve(root, "bin", "koed"), 0o755);
   writeFile(resolve(root, "koed-runtime", "koed-server", "dist", "cli.js"));
   writeManifest(root, version, migrationTimestamp);
   return root;
@@ -209,7 +210,7 @@ const writeArchive = (packageRoot: string, outDir: string): string => {
         `${packageName}/${file}`,
         content.length,
         "0",
-        file === "bin/koed-server" ? 0o755 : 0o644
+        file === "bin/koed" ? 0o755 : 0o644
       ),
       padded(content)
     );
@@ -334,6 +335,16 @@ afterEach(() => {
 });
 
 describe("standalone koed-server package runtime", () => {
+  it("accepts the launcher in previously released archives", () => {
+    const root = createPackageRoot(tempDir(), "0.8.1");
+    renameSync(
+      resolve(root, "bin", "koed"),
+      resolve(root, "bin", "koed-server")
+    );
+    writeManifest(root, "0.8.1");
+    expect(validateServerPackageRoot(root)).toMatchObject({ ok: true });
+  });
+
   it("reports missing status before a package is installed", () => {
     const home = tempDir();
     const paths = resolveKoedServerPaths({
@@ -343,7 +354,11 @@ describe("standalone koed-server package runtime", () => {
 
     const status = collectServerPackageStatus(paths);
 
-    expect(status).toMatchObject({ ok: false, state: "missing" });
+    expect(status).toMatchObject({
+      ok: false,
+      state: "missing",
+      action: "Run koed package install --source <artifact> --sha256 <sha256>."
+    });
   });
 
   it("validates a package root and rejects incompatible platforms", () => {

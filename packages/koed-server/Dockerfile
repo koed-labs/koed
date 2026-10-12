@@ -21,7 +21,7 @@ COPY . .
 
 RUN pnpm install --frozen-lockfile \
   && pnpm source-runtime:prepare \
-  && pnpm --filter @koed/koed-server build
+  && pnpm --filter @koed-labs/server build
 
 ENV KOED_HOME=/data/koed
 ENV KOED_DEVICE_PROOF_DIR=/data/koed-device-proof/device-proof

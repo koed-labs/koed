@@ -489,7 +489,10 @@ export const validatePackageRoot = (packageRoot) => {
   const missing = [
     !existsSync(manifestPath) ? "koed-server-package-manifest.json" : null,
     !existsSync(resolve(root, "README.txt")) ? "README.txt" : null,
-    !existsSync(resolve(root, "bin", "koed-server")) ? "bin/koed-server" : null,
+    !existsSync(resolve(root, "bin", "koed")) &&
+    !existsSync(resolve(root, "bin", "koed-server"))
+      ? "bin/koed"
+      : null,
     !existsSync(resolve(runtimeRoot, "koed-server", "dist", "cli.js"))
       ? "koed-runtime/koed-server/dist/cli.js"
       : null,

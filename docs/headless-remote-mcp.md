@@ -66,14 +66,14 @@ enrollment at an existing local-personal profile or copy another profile's
 watcher state. Keep the same home when restarting: it retains the capture
 activation frontier and credential binding.
 
-With the installed `koed-server` and supported AI Client available:
+With the installed `koed` CLI and supported AI Client available:
 
 ```bash
 export KOED_HOME=/path/to/dedicated-remote-profile
-koed-server remote login --backend https://memory.example --consent
-koed-server remote setup codex --consent
-koed-server remote check codex
-koed-server remote start
+koed remote login --backend https://memory.example --consent --local-runtime
+koed remote setup codex --consent
+koed remote check codex
+koed remote start
 ```
 
 Use `claude` or `pi` in place of `codex` for those harnesses. `remote start` is
@@ -83,6 +83,9 @@ closes the shared Local AI Runtime. This command does not start local backend
 dependencies. Source checkouts must build the runtime artifacts before use.
 
 Login opens the browser authorization flow when possible or reports its URL.
+Without `--local-runtime`, login requests read-only Personal Memory access;
+the flag explicitly requests the capture and local-execution scopes needed by
+this helper. Add `--team-read` only when Team recall is wanted.
 Unattended access-token renewal never opens a browser. Expired or revoked
 grants require an explicit login rather than fallback to another credential
 or deployment.
@@ -96,12 +99,14 @@ Do not copy the credential file between Users or deployments, put it in source
 control, or paste it into AI-client configuration.
 
 ```bash
-koed-server remote remove codex --consent
-koed-server remote logout --consent
+koed remote remove codex --consent
+koed remote logout --consent
 ```
 
 Removing a harness removes its Koed-owned integration. Logging out removes
 remote authorization; neither operation deletes retained backend Memory.
+Logout clears local tokens but retains the non-secret backend and User binding.
+Use a new dedicated profile when changing either identity or backend.
 
 ## Capture Consent
 

@@ -145,7 +145,7 @@ describe("Devices modal", () => {
         button.textContent?.includes("Add device")
       ) ?? null
     );
-    expect(container.textContent).toContain("koed-server pair");
+    expect(container.textContent).toContain("koed pair");
     expect(
       container.querySelector('input[aria-label="Device request link"]')
     ).not.toBeNull();

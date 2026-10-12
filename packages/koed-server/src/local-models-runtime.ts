@@ -173,7 +173,7 @@ export const collectLocalModelStatus = async (
       action:
         mode === "external"
           ? modelDownloadBlockedAction(manifest)
-          : `Run koed-server models install --kind ${kind}. Override ${manifest.urlEnv} and ${manifest.sha256Env} only when using a custom model artifact.`,
+          : `Run koed models install --kind ${kind}. Override ${manifest.urlEnv} and ${manifest.sha256Env} only when using a custom model artifact.`,
       modelPath: manifest.modelPath,
       manifest
     };
@@ -196,7 +196,7 @@ export const collectLocalModelStatus = async (
     return {
       state: "checksum_mismatch",
       message: `${manifest.key} model checksum mismatch.`,
-      action: `Remove ${manifest.modelPath}, verify ${manifest.sha256Env}, then run koed-server models install --kind ${kind}.`,
+      action: `Remove ${manifest.modelPath}, verify ${manifest.sha256Env}, then run koed models install --kind ${kind}.`,
       modelPath: manifest.modelPath,
       sizeBytes,
       sha256: actual,

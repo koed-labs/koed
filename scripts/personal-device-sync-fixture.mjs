@@ -58,7 +58,7 @@ run("@koed/shared", [
   "src/personal-device-peer.test.ts",
   "src/personal-device-sync-relay.test.ts"
 ]);
-run("@koed/koed-server", ["src/personal-sync.test.ts"]);
+run("@koed-labs/server", ["src/personal-sync.test.ts"]);
 run("@koed/api", [
   "src/personal-device-sync/local-source.test.ts",
   "src/personal-device-sync/relay-routes.test.ts",

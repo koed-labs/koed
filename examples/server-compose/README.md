@@ -77,7 +77,7 @@ for Team-authority operations.
 
 The Embedding Service container mounts `${KOED_MODELS_DIR}` at `/models`; when
 `KOED_MODELS_DIR` is unset it mounts `$HOME/.koed/models`, which matches the
-default `koed-server models install --kind embedding` destination.
+default `koed models install --kind embedding` destination.
 
 This wrapper is the remote/server side of the topology. Normal Codex MCP Server
 and Supported Capture Hook configuration should stay pointed at each User's

@@ -7,7 +7,7 @@ import {
 import {
   DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
   type DesktopCollaborationBrokerParentMessage
-} from "@koed/koed-server";
+} from "@koed-labs/server";
 import { describe, expect, it, vi } from "vitest";
 import { createKoedServerManager } from "./manager.js";
 

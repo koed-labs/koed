@@ -15,8 +15,8 @@ Do not use raw Homebrew/Linuxbrew bottle snapshots as release artifacts. Keep Ho
 The release artifact must be self-contained enough for clean machines without Homebrew and must validate through the existing packaged runtime provider:
 
 ```bash
-koed-server runtime status --provider packaged --json
-koed-server runtime install --provider packaged --dependency-mode bundled-local --json
+koed runtime status --provider packaged --json
+koed runtime install --provider packaged --dependency-mode bundled-local --json
 ```
 
 A Homebrew-staged macOS arm64 prototype was quick to assemble, but showed release-blocking relocation issues:

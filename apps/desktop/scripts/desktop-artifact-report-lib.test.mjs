@@ -12,7 +12,7 @@ test("distinguishes Electron main, preload, and metadata bytes", () => {
     classifyAsarEntries([
       { path: "/dist-electron/main.js", size: 10 },
       { path: "/dist-electron/preload.cjs", size: 20 },
-      { path: "/node_modules/@koed/koed-server/dist/cli.js", size: 30 },
+      { path: "/node_modules/@koed-labs/server/dist/cli.js", size: 30 },
       { path: "/package.json", size: 5 }
     ]),
     { main: 40, preload: 20, metadata: 5 }
@@ -39,7 +39,7 @@ test("keeps renderer-only packages out of Electron production dependencies", () 
     readFileSync(resolve("apps/desktop/package.json"), "utf8")
   );
   assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
-    "@koed/koed-server",
+    "@koed-labs/server",
     "@koed/shared",
     "zod"
   ]);
