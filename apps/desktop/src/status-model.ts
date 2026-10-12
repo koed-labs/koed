@@ -181,7 +181,7 @@ export const statusCards = [
     title: "Server Package",
     role: "Installs and activates the standalone koed-server app-runtime package.",
     impact:
-      "Desktop falls back to its embedded koed-server runtime until a standalone package is installed.",
+      "Desktop falls back to its embedded koed runtime until a standalone package is installed.",
     componentKeys: ["serverPackage"],
     primaryAction: {
       label: "Install package",

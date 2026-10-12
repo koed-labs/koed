@@ -282,7 +282,7 @@ const assertRunningSmokeProfile = () => {
     [
       "Running Docker Compose services do not match the LCM smoke profile.",
       "Start a smoke-profile stack first:",
-      "Run koed-server start with scripts/lcm-smoke.env loaded, or set LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE=1 for the legacy Compose app profile."
+      "Run koed start with scripts/lcm-smoke.env loaded, or set LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE=1 for the legacy Compose app profile."
     ].join("\n"),
     { composeProject, mismatches }
   );

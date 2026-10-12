@@ -103,7 +103,7 @@ const fixture = () => {
   });
   const synchronizedPackageNames = new Map([
     ["package.json", "koed"],
-    ["packages/koed-server/package.json", "@koed/koed-server"],
+    ["packages/koed-server/package.json", "@koed-labs/server"],
     ["apps/desktop/package.json", "@koed/desktop"]
   ]);
   for (const [, relativePath] of synchronizedProductPackagePaths) {

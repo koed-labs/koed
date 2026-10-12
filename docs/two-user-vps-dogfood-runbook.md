@@ -480,7 +480,7 @@ For each User independently:
    approval binds the local source deployment and owner to the authenticated
    remote User without starting sync or sharing content.
 5. Wait for Desktop to finish the exchange. If diagnosing outside Desktop,
-   `koed-server upstream enroll status --id <backend-id> --json` must report
+   `koed upstream enroll status --id <backend-id> --json` must report
    `exchanged`; `upstream list --json` must report the credential as
    `configured`.
 6. Confirm Desktop stores a credential reference, not credential plaintext.

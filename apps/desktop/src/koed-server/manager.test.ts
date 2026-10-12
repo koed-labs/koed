@@ -3883,7 +3883,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         state: "healthy",
         source: "bundled-fallback",
         message:
-          "Using the bundled fallback koed-server runtime; a standalone package is optional for this Desktop build."
+          "Using the bundled fallback koed runtime; a standalone package is optional for this Desktop build."
       }
     });
   });
@@ -4316,7 +4316,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const manager = createKoedServerManager({
       repoRoot: "/Applications/Koed.app/Contents/Resources",
       cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js",
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js",
       environment: {},
       createCliInvocation: (args) => ({
         command: "/Applications/Koed.app/Contents/MacOS/Koed",
@@ -4416,7 +4416,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(JSON.stringify(status)).not.toContain("/Users/operator");
   });
 
-  it("reconnects without requesting koed-server start --daemon again once healthy", async () => {
+  it("reconnects without requesting koed start --daemon again once healthy", async () => {
     const calls: string[][] = [];
     let statusCalls = 0;
     const manager = createKoedServerManager({
