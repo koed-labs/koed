@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
 import {
-  createEncryptedPayloadRepository,
+  assertMemoryAnswerTeamAuthorityWithClient,
+  type MemoryAnswerTeamAuthority
+} from "./memory-answer-team-authority.js";
+import {
+  decryptAuthorizedEncryptedFieldPayloadWithClient,
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
 import { truncateDisplayText } from "./value-helpers.js";
+import { SharedMemoryAuthorizationError } from "./shared-memory-repository.js";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type {
   ActorContext,
@@ -24,9 +30,22 @@ export interface MemoryQuestionRepositoryOptions {
   encryptedMemoryQuestionSearchBatchSize?: number;
 }
 
+export interface MemoryQuestionActorContext extends ActorContext {
+  allowTeam?: boolean;
+}
+
 export interface MemoryQuestionRepository {
+  createFinalMemoryQuestionWithClient(
+    client: pg.PoolClient,
+    actor: MemoryQuestionActorContext,
+    input: CreateFinalMemoryQuestionInput,
+    options?: {
+      teamAuthority?: MemoryAnswerTeamAuthority;
+      strictIdempotencyBoundary?: boolean;
+    }
+  ): Promise<{ id: string }>;
   createPendingDesktopAsk(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input: {
       askThreadId?: string;
       idempotencyKey: string;
@@ -34,7 +53,7 @@ export interface MemoryQuestionRepository {
     }
   ): Promise<MemoryQuestionDetailRecord>;
   completePendingDesktopAsk(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input: {
       attemptCount?: number;
       localMemoryWorker?: Record<string, unknown>;
@@ -52,19 +71,19 @@ export interface MemoryQuestionRepository {
     )
   ): Promise<MemoryQuestionDetailRecord>;
   recoverPendingDesktopAsks(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input: { errorMessage: string }
   ): Promise<{ recovered: number }>;
   listDesktopAskThreads(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input?: { cursor?: DesktopAskThreadCursor; limit?: number }
   ): Promise<DesktopAskThreadPage>;
   getDesktopAskThread(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     askThreadId: string
   ): Promise<MemoryQuestionDetailRecord[]>;
   createFinalMemoryQuestion(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input: {
       idempotencyKey: string;
       query: string;
@@ -96,7 +115,7 @@ export interface MemoryQuestionRepository {
     )
   ): Promise<MemoryQuestionDetailRecord>;
   listMemoryQuestions(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input?: {
       query?: string;
       searchDomain?: MemoryQuestionSearchDomain;
@@ -108,10 +127,14 @@ export interface MemoryQuestionRepository {
     }
   ): Promise<MemoryQuestionShellRecord[]>;
   getMemoryQuestion(
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     questionId: string
   ): Promise<MemoryQuestionDetailRecord | null>;
 }
+
+export type CreateFinalMemoryQuestionInput = Parameters<
+  MemoryQuestionRepository["createFinalMemoryQuestion"]
+>[1];
 
 type MemoryQuestionShellRow = {
   id: string;
@@ -120,6 +143,7 @@ type MemoryQuestionShellRow = {
   origin: MemoryQuestionOrigin;
   retrieval_scope: MemoryQuestionRetrievalScope;
   team_workspace_id: string | null;
+  team_authorization?: MemoryAnswerTeamAuthority | null;
   search_domain: MemoryQuestionSearchDomain;
   project_id: string | null;
   project_name: string | null;
@@ -245,7 +269,6 @@ export const createMemoryQuestionRepository = (
   pool: pg.Pool,
   options: MemoryQuestionRepositoryOptions = {}
 ): MemoryQuestionRepository => {
-  const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
   const encryptedSearchBatchSize = Math.min(
     Math.max(options.encryptedMemoryQuestionSearchBatchSize ?? 500, 1),
     500
@@ -253,7 +276,7 @@ export const createMemoryQuestionRepository = (
 
   const persistEncryptedQuestionField = async (
     client: pg.Pool | pg.PoolClient,
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     input: {
       questionId: string;
       visibility: Visibility;
@@ -293,7 +316,7 @@ export const createMemoryQuestionRepository = (
 
   const persistEncryptedQuestionFields = async (
     client: pg.Pool | pg.PoolClient,
-    actor: ActorContext,
+    actor: MemoryQuestionActorContext,
     questionId: string,
     visibility: Visibility,
     fields: Partial<Record<MemoryQuestionEncryptedColumn, unknown>>
@@ -308,36 +331,43 @@ export const createMemoryQuestionRepository = (
     }
   };
 
-  const decryptQuestionField = async (
-    actor: ActorContext,
+  const decryptQuestionFieldWithClient = async (
+    actor: MemoryQuestionActorContext,
     row: MemoryQuestionShellRow,
-    sourceColumn: MemoryQuestionEncryptedColumn
+    sourceColumn: MemoryQuestionEncryptedColumn,
+    client: pg.Pool | pg.PoolClient
   ): Promise<unknown> => {
     if (!options.envelopeEncryptionProvider) {
       throw new Error(
         "Envelope encryption provider is required to expand encrypted Memory Questions"
       );
     }
-    const decrypted =
-      await encryptedPayloadRepository.decryptAuthorizedEncryptedField(
-        actor,
-        options.envelopeEncryptionProvider,
-        {
-          sourceTable: "memory_questions",
-          sourceId: row.id,
-          sourceColumn
-        }
-      );
+    const decrypted = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+      client,
+      actor,
+      options.envelopeEncryptionProvider,
+      {
+        sourceTable: "memory_questions",
+        sourceId: row.id,
+        sourceColumn
+      }
+    );
     if (!decrypted) {
       throw new Error(`Encrypted Memory Question ${sourceColumn} is missing`);
     }
     return decrypted.plaintext;
   };
 
-  const hydrateQuestionRow = async <T extends MemoryQuestionShellRow>(
-    actor: ActorContext,
-    row: T
+  const expandQuestionRow = async <T extends MemoryQuestionShellRow>(
+    actor: MemoryQuestionActorContext,
+    row: T,
+    client: pg.Pool | pg.PoolClient = pool
   ): Promise<T> => {
+    const decryptQuestionField = (
+      actor: MemoryQuestionActorContext,
+      row: MemoryQuestionShellRow,
+      column: MemoryQuestionEncryptedColumn
+    ) => decryptQuestionFieldWithClient(actor, row, column, client);
     const hydrated: MemoryQuestionShellRow = { ...row };
     if (row.query === ENCRYPTED_MEMORY_QUESTION_TEXT) {
       const plaintext = await decryptQuestionField(actor, row, "query");
@@ -410,7 +440,54 @@ export const createMemoryQuestionRepository = (
     return hydrated as T;
   };
 
-  return {
+  const hydrateQuestionRow = async <T extends MemoryQuestionShellRow>(
+    actor: MemoryQuestionActorContext,
+    row: T
+  ): Promise<T> => {
+    // Legacy Team history is retained; task-bound history rechecks its frozen authority.
+    if (!row.team_authorization) {
+      return expandQuestionRow(actor, row);
+    }
+    if (!actor.allowTeam) {
+      throw new SharedMemoryAuthorizationError();
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await assertMemoryAnswerTeamAuthorityWithClient(
+        client,
+        actor,
+        row.team_authorization
+      );
+      const hydrated = await expandQuestionRow(actor, row, client);
+      await client.query("commit");
+      return hydrated;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  const hydrateVisibleQuestionRows = async <T extends MemoryQuestionShellRow>(
+    actor: MemoryQuestionActorContext,
+    rows: T[]
+  ): Promise<T[]> => {
+    const hydrated: T[] = [];
+    for (const row of rows) {
+      try {
+        hydrated.push(await hydrateQuestionRow(actor, row));
+      } catch (error) {
+        if (!(error instanceof SharedMemoryAuthorizationError)) {
+          throw error;
+        }
+      }
+    }
+    return hydrated;
+  };
+
+  const repository: MemoryQuestionRepository = {
     async createPendingDesktopAsk(actor, input) {
       const suppressPlaintextPayload =
         memoryQuestionSensitiveFieldsRequireEncryption();
@@ -426,7 +503,7 @@ export const createMemoryQuestionRepository = (
           `
             select
               id, owner_user_id, visibility, origin, retrieval_scope,
-              team_workspace_id, search_domain, project_id, project_name,
+              team_workspace_id, team_authorization, search_domain, project_id, project_name,
               project_path, session_id, thread_id, thread_name, ask_thread_id,
               ask_turn_index, query, answer_markdown, error_message, evidence,
               citations, retrieval, local_memory_worker, response, status,
@@ -490,7 +567,7 @@ export const createMemoryQuestionRepository = (
             )
             returning
               id, owner_user_id, visibility, origin, retrieval_scope,
-              team_workspace_id, search_domain, project_id, project_name,
+              team_workspace_id, team_authorization, search_domain, project_id, project_name,
               project_path, session_id, thread_id, thread_name, ask_thread_id,
               ask_turn_index, query, answer_markdown, error_message, evidence,
               citations, retrieval, local_memory_worker, response, status,
@@ -563,7 +640,7 @@ export const createMemoryQuestionRepository = (
               and status = 'pending'
             returning
               id, owner_user_id, visibility, origin, retrieval_scope,
-              team_workspace_id, search_domain, project_id, project_name,
+              team_workspace_id, team_authorization, search_domain, project_id, project_name,
               project_path, session_id, thread_id, thread_name, ask_thread_id,
               ask_turn_index, query, answer_markdown, error_message, evidence,
               citations, retrieval, local_memory_worker, response, status,
@@ -629,7 +706,7 @@ export const createMemoryQuestionRepository = (
               `
                 select
                   id, owner_user_id, visibility, origin, retrieval_scope,
-                  team_workspace_id, search_domain, project_id, project_name,
+                  team_workspace_id, team_authorization, search_domain, project_id, project_name,
                   project_path, session_id, thread_id, thread_name,
                   ask_thread_id, ask_turn_index, query, answer_markdown,
                   error_message, evidence, citations, retrieval,
@@ -762,7 +839,7 @@ export const createMemoryQuestionRepository = (
           select
             first_question.id, first_question.owner_user_id,
             first_question.visibility, first_question.origin,
-            first_question.retrieval_scope, first_question.team_workspace_id,
+            first_question.retrieval_scope, first_question.team_workspace_id, first_question.team_authorization,
             first_question.search_domain, first_question.project_id,
             first_question.project_name, first_question.project_path,
             first_question.session_id, first_question.thread_id,
@@ -830,7 +907,7 @@ export const createMemoryQuestionRepository = (
         `
           select
             id, owner_user_id, visibility, origin, retrieval_scope,
-            team_workspace_id, search_domain, project_id, project_name,
+            team_workspace_id, team_authorization, search_domain, project_id, project_name,
             project_path, session_id, thread_id, thread_name, ask_thread_id,
             ask_turn_index, query, answer_markdown, error_message, evidence,
             citations, retrieval, local_memory_worker, response, status,
@@ -853,6 +930,37 @@ export const createMemoryQuestionRepository = (
     },
 
     async createFinalMemoryQuestion(actor, input) {
+      const client = await pool.connect();
+      let questionId: string;
+      try {
+        await client.query("begin");
+        const result = await repository.createFinalMemoryQuestionWithClient(
+          client,
+          actor,
+          input,
+          { strictIdempotencyBoundary: false }
+        );
+        questionId = result.id;
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      const question = await repository.getMemoryQuestion(actor, questionId);
+      if (!question) {
+        throw new Error("Final Memory Question is missing");
+      }
+      return question;
+    },
+
+    async createFinalMemoryQuestionWithClient(
+      client,
+      actor,
+      input,
+      finalOptions = {}
+    ) {
       const suppressPlaintextPayload =
         memoryQuestionSensitiveFieldsRequireEncryption();
       if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
@@ -860,17 +968,28 @@ export const createMemoryQuestionRepository = (
           "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
         );
       }
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const result = await client.query<MemoryQuestionDetailRow>(
-          `
+      const teamAuthority = finalOptions.teamAuthority;
+      if (teamAuthority) {
+        if (
+          input.teamWorkspaceId !== teamAuthority.recallBoundary.teamWorkspaceId
+        ) {
+          throw new Error("Final Memory Question Team boundary does not match");
+        }
+        await assertMemoryAnswerTeamAuthorityWithClient(
+          client,
+          actor,
+          teamAuthority
+        );
+      }
+      const result = await client.query<MemoryQuestionDetailRow>(
+        `
         insert into memory_questions (
           owner_user_id,
           visibility,
           origin,
           retrieval_scope,
           team_workspace_id,
+          team_authorization,
           search_domain,
           project_id,
           project_name,
@@ -894,93 +1013,94 @@ export const createMemoryQuestionRepository = (
           attempt_count
         )
         values (
-          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, null, null, $12, $13,
+          $1, 'personal', $2, $3, $4, $23::jsonb, $5, $6, $7, $8, $9, $10, $11, null, null, $12, $13,
           $14::memory_question_status, $15, $16, $17::jsonb, $18::jsonb,
           $19::jsonb, $20::jsonb, $21::jsonb, now(), $22
         )
         on conflict (owner_user_id, idempotency_key) do nothing
         returning
-          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, team_authorization, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
           created_at, updated_at, answered_at, attempt_count,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
-          [
-            actor.userId,
-            input.origin ?? "mcp_memory_answer",
-            input.retrievalScope ?? "personal",
-            input.teamWorkspaceId ?? null,
-            input.searchDomain,
-            input.projectId ?? null,
-            input.projectName ?? null,
-            input.projectPath ?? null,
-            input.sessionId ?? null,
-            input.threadId ?? null,
-            input.threadName ?? null,
-            input.idempotencyKey,
-            suppressPlaintextPayload
+        [
+          actor.userId,
+          input.origin ?? "mcp_memory_answer",
+          input.retrievalScope ?? "personal",
+          input.teamWorkspaceId ?? null,
+          input.searchDomain,
+          input.projectId ?? null,
+          input.projectName ?? null,
+          input.projectPath ?? null,
+          input.sessionId ?? null,
+          input.threadId ?? null,
+          input.threadName ?? null,
+          input.idempotencyKey,
+          suppressPlaintextPayload
+            ? ENCRYPTED_MEMORY_QUESTION_TEXT
+            : input.query,
+          input.status,
+          input.status === "answered"
+            ? suppressPlaintextPayload
               ? ENCRYPTED_MEMORY_QUESTION_TEXT
-              : input.query,
-            input.status,
-            input.status === "answered"
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.answerMarkdown
-              : null,
-            input.status === "error"
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.errorMessage
-              : null,
-            input.response
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.response
-                )
-              : null,
-            input.status === "answered" && input.evidence
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionArrayMarker()
-                    : input.evidence
-                )
-              : null,
-            input.status === "answered" && input.citations
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionArrayMarker()
-                    : input.citations
-                )
-              : null,
-            input.retrieval
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.retrieval
-                )
-              : null,
-            input.localMemoryWorker
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.localMemoryWorker
-                )
-              : null,
-            input.attemptCount ?? 1
-          ]
-        );
-        const inserted = result.rows[0];
-        const row =
-          inserted ??
-          (
-            await client.query<MemoryQuestionDetailRow>(
-              `
+              : input.answerMarkdown
+            : null,
+          input.status === "error"
+            ? suppressPlaintextPayload
+              ? ENCRYPTED_MEMORY_QUESTION_TEXT
+              : input.errorMessage
+            : null,
+          input.response
+            ? JSON.stringify(
+                suppressPlaintextPayload
+                  ? encryptedMemoryQuestionJsonMarker()
+                  : input.response
+              )
+            : null,
+          input.status === "answered" && input.evidence
+            ? JSON.stringify(
+                suppressPlaintextPayload
+                  ? encryptedMemoryQuestionArrayMarker()
+                  : input.evidence
+              )
+            : null,
+          input.status === "answered" && input.citations
+            ? JSON.stringify(
+                suppressPlaintextPayload
+                  ? encryptedMemoryQuestionArrayMarker()
+                  : input.citations
+              )
+            : null,
+          input.retrieval
+            ? JSON.stringify(
+                suppressPlaintextPayload
+                  ? encryptedMemoryQuestionJsonMarker()
+                  : input.retrieval
+              )
+            : null,
+          input.localMemoryWorker
+            ? JSON.stringify(
+                suppressPlaintextPayload
+                  ? encryptedMemoryQuestionJsonMarker()
+                  : input.localMemoryWorker
+              )
+            : null,
+          input.attemptCount ?? 1,
+          teamAuthority ? JSON.stringify(teamAuthority) : null
+        ]
+      );
+      const inserted = result.rows[0];
+      const row =
+        inserted ??
+        (
+          await client.query<MemoryQuestionDetailRow>(
+            `
                 select
                   id, owner_user_id, visibility, origin, retrieval_scope,
-                  team_workspace_id, search_domain, project_id, project_name, project_path,
+                  team_workspace_id, team_authorization, search_domain, project_id, project_name, project_path,
                   session_id, thread_id, thread_name, ask_thread_id, ask_turn_index, query, answer_markdown,
                   error_message, evidence, citations, retrieval,
                   local_memory_worker, response, status, created_at,
@@ -990,40 +1110,104 @@ export const createMemoryQuestionRepository = (
                 where owner_user_id = $1 and idempotency_key = $2
                 limit 1
               `,
-              [actor.userId, input.idempotencyKey]
-            )
-          ).rows[0]!;
-        if (inserted && suppressPlaintextPayload) {
-          await persistEncryptedQuestionFields(
-            client,
-            actor,
-            row.id,
-            row.visibility,
-            {
-              query: input.query,
-              answer_markdown:
-                input.status === "answered" ? input.answerMarkdown : undefined,
-              error_message:
-                input.status === "error" ? input.errorMessage : undefined,
-              response: input.response,
-              evidence:
-                input.status === "answered" ? input.evidence : undefined,
-              citations:
-                input.status === "answered" ? input.citations : undefined,
-              retrieval: input.retrieval,
-              local_memory_worker: input.localMemoryWorker
-            }
+            [actor.userId, input.idempotencyKey]
+          )
+        ).rows[0]!;
+      const strictIdempotencyBoundary =
+        finalOptions.strictIdempotencyBoundary !== false ||
+        Boolean(teamAuthority || row.team_authorization);
+      if (
+        strictIdempotencyBoundary &&
+        (row.retrieval_scope !== (input.retrievalScope ?? "personal") ||
+          row.team_workspace_id !== (input.teamWorkspaceId ?? null) ||
+          (teamAuthority &&
+            !isDeepStrictEqual(row.team_authorization, teamAuthority)) ||
+          (!teamAuthority && row.team_authorization))
+      ) {
+        throw new Error(
+          "Final Memory Question idempotency boundary does not match"
+        );
+      }
+      if (row.team_authorization) {
+        await assertMemoryAnswerTeamAuthorityWithClient(
+          client,
+          actor,
+          row.team_authorization
+        );
+      }
+      if (!inserted && strictIdempotencyBoundary) {
+        const existing = await expandQuestionRow(actor, row, client);
+        const storedFinal = {
+          origin: existing.origin,
+          searchDomain: existing.search_domain,
+          projectId: existing.project_id,
+          projectName: existing.project_name,
+          projectPath: existing.project_path,
+          sessionId: existing.session_id,
+          threadId: existing.thread_id,
+          threadName: existing.thread_name,
+          query: existing.query,
+          status: existing.status,
+          answerMarkdown: existing.answer_markdown,
+          errorMessage: existing.error_message,
+          attemptCount: Number(existing.attempt_count),
+          response: existing.response,
+          evidence: existing.evidence,
+          citations: existing.citations,
+          retrieval: existing.retrieval,
+          localMemoryWorker: existing.local_memory_worker
+        };
+        const expectedFinal = {
+          origin: input.origin ?? "mcp_memory_answer",
+          searchDomain: input.searchDomain,
+          projectId: input.projectId ?? null,
+          projectName: input.projectName ?? null,
+          projectPath: input.projectPath ?? null,
+          sessionId: input.sessionId ?? null,
+          threadId: input.threadId ?? null,
+          threadName: input.threadName ?? null,
+          query: input.query,
+          status: input.status,
+          answerMarkdown:
+            input.status === "answered" ? input.answerMarkdown : null,
+          errorMessage: input.status === "error" ? input.errorMessage : null,
+          attemptCount: input.attemptCount ?? 1,
+          response: input.response ?? null,
+          evidence:
+            input.status === "answered" ? (input.evidence ?? null) : null,
+          citations:
+            input.status === "answered" ? (input.citations ?? null) : null,
+          retrieval: input.retrieval ?? null,
+          localMemoryWorker: input.localMemoryWorker ?? null
+        };
+        if (!isDeepStrictEqual(storedFinal, expectedFinal)) {
+          throw new Error(
+            "Final Memory Question idempotency content does not match"
           );
         }
-        await client.query("commit");
-
-        return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
       }
+      if (inserted && suppressPlaintextPayload) {
+        await persistEncryptedQuestionFields(
+          client,
+          actor,
+          row.id,
+          row.visibility,
+          {
+            query: input.query,
+            answer_markdown:
+              input.status === "answered" ? input.answerMarkdown : undefined,
+            error_message:
+              input.status === "error" ? input.errorMessage : undefined,
+            response: input.response,
+            evidence: input.status === "answered" ? input.evidence : undefined,
+            citations:
+              input.status === "answered" ? input.citations : undefined,
+            retrieval: input.retrieval,
+            local_memory_worker: input.localMemoryWorker
+          }
+        );
+      }
+      return { id: row.id };
     },
 
     async listMemoryQuestions(actor, input = {}) {
@@ -1041,7 +1225,7 @@ export const createMemoryQuestionRepository = (
         await pool.query<MemoryQuestionShellRow>(
           `
           select
-            id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
+            id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, team_authorization, search_domain,
             project_id, project_name, project_path, session_id, thread_id,
             thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
             error_message, status, created_at, updated_at, answered_at,
@@ -1077,8 +1261,8 @@ export const createMemoryQuestionRepository = (
           ]
         );
 
-      if (suppressPlaintextPayload && searchText) {
-        const needle = searchText.toLowerCase();
+      if (suppressPlaintextPayload) {
+        const needle = searchText?.toLowerCase();
         const matchedRows: MemoryQuestionShellRow[] = [];
         let rawOffset = 0;
 
@@ -1091,18 +1275,21 @@ export const createMemoryQuestionRepository = (
           if (result.rows.length === 0) {
             break;
           }
-          const hydratedRows = await Promise.all(
-            result.rows.map((row) => hydrateQuestionRow(actor, row))
+          const hydratedRows = await hydrateVisibleQuestionRows(
+            actor,
+            result.rows
           );
           matchedRows.push(
-            ...hydratedRows.filter((row) =>
-              [
-                row.query,
-                row.answer_markdown ?? "",
-                row.error_message ?? "",
-                row.project_name ?? "",
-                row.thread_name ?? ""
-              ].some((value) => value.toLowerCase().includes(needle))
+            ...hydratedRows.filter(
+              (row) =>
+                !needle ||
+                [
+                  row.query,
+                  row.answer_markdown ?? "",
+                  row.error_message ?? "",
+                  row.project_name ?? "",
+                  row.thread_name ?? ""
+                ].some((value) => value.toLowerCase().includes(needle))
             )
           );
           rawOffset += result.rows.length;
@@ -1116,7 +1303,7 @@ export const createMemoryQuestionRepository = (
       const result = await pool.query<MemoryQuestionShellRow>(
         `
         select
-          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, team_authorization, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
@@ -1152,9 +1339,7 @@ export const createMemoryQuestionRepository = (
         ]
       );
 
-      const hydratedRows = await Promise.all(
-        result.rows.map((row) => hydrateQuestionRow(actor, row))
-      );
+      const hydratedRows = await hydrateVisibleQuestionRows(actor, result.rows);
       return hydratedRows.map(mapMemoryQuestionShell);
     },
 
@@ -1162,7 +1347,7 @@ export const createMemoryQuestionRepository = (
       const result = await pool.query<MemoryQuestionDetailRow>(
         `
         select
-          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, team_authorization, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
@@ -1184,4 +1369,5 @@ export const createMemoryQuestionRepository = (
         : null;
     }
   };
+  return repository;
 };

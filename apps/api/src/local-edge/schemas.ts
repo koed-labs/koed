@@ -2,6 +2,13 @@ import { z } from "zod";
 import { expandMemoryNodeQuerySchema } from "../memory/graph-schemas.js";
 import { finalMemoryQuestionSchema } from "../memory/questions-schemas.js";
 import { searchMemorySchema } from "../memory/recall-schemas.js";
+import {
+  acceptMemoryAnswerTaskSchema,
+  claimMemoryAnswerTaskSchema,
+  heartbeatMemoryAnswerTaskSchema,
+  completeMemoryAnswerTaskSchema,
+  failMemoryAnswerTaskSchema
+} from "@koed/shared";
 
 const operationFamilySchema = z
   .string()
@@ -29,6 +36,36 @@ const localCollaborationDeliveryIdSchema = z
   .min(32)
   .max(86)
   .regex(/^[A-Za-z0-9_-]+$/);
+const localEdgeTaskTargetSchema = z
+  .object({
+    upstream_backend_id: localEdgeBackendIdSchema,
+    task_id: z.string().uuid()
+  })
+  .strict();
+export const localEdgeMemoryAnswerTaskSchemas = {
+  accept: z
+    .object({
+      upstream_backend_id: localEdgeBackendIdSchema,
+      input: acceptMemoryAnswerTaskSchema
+    })
+    .strict(),
+  get: localEdgeTaskTargetSchema,
+  cancel: localEdgeTaskTargetSchema,
+  claim: z
+    .object({
+      upstream_backend_id: localEdgeBackendIdSchema,
+      input: claimMemoryAnswerTaskSchema
+    })
+    .strict(),
+  heartbeat: localEdgeTaskTargetSchema.extend({
+    input: heartbeatMemoryAnswerTaskSchema
+  }),
+  complete: localEdgeTaskTargetSchema.extend({
+    input: completeMemoryAnswerTaskSchema
+  }),
+  fail: localEdgeTaskTargetSchema.extend({ input: failMemoryAnswerTaskSchema }),
+  expired: z.object({ upstream_backend_id: localEdgeBackendIdSchema }).strict()
+} as const;
 
 const localPersonalCollaborationBindingSchema = z
   .object({
@@ -61,6 +98,7 @@ export const localEdgeOperationFamilySchema = z.enum([
   "capture_writes",
   "sync",
   "managed_execution",
+  "memory_answer_execution",
   "managed_file_read",
   "managed_terminal",
   "admin"

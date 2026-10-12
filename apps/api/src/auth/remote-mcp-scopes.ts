@@ -19,7 +19,7 @@ const rules: ReadonlyArray<{
   },
   {
     methods: ["GET"],
-    path: /^\/v1\/memory\/(local-agent-settings|ai-client-instances|questions\/[^/]+|graph\/overview)$/,
+    path: /^\/v1\/memory\/(local-agent-settings|ai-client-instances|questions(?:\/[^/]+)?|graph\/overview)$/,
     scope: "koed:memory:read"
   },
   {

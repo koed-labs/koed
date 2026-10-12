@@ -62,11 +62,14 @@ import {
   BlockingAnswerAdmission
 } from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
-import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
+import {
+  MemoryAnswerTaskScheduler,
+  type MemoryAnswerTaskExecutionContext
+} from "./memory-answer-task-scheduler.js";
+import { createMemoryAnswerTaskCoordinator } from "./memory-answer-task-coordinator.js";
 import {
   MemoryAnswerBlockingError,
-  MemoryAnswerTaskRuntime,
-  MemoryAnswerDetachedIneligibleError
+  MemoryAnswerTaskRuntime
 } from "./memory-answer-task-runtime.js";
 
 const httpErrorStatus = (value: unknown): number | undefined =>
@@ -127,10 +130,7 @@ const runtimeFailure = (error: unknown, taskRoute: boolean): RuntimeFailure => {
       statusCode: ownedStatus,
       message:
         runtimeStatusMessages.get(ownedStatus) ??
-        "Local AI runtime request failed",
-      ...(error instanceof MemoryAnswerDetachedIneligibleError
-        ? { errorCode: error.code }
-        : {})
+        "Local AI runtime request failed"
     });
   }
   if (error instanceof MemoryApiError) {
@@ -320,6 +320,7 @@ export interface StartLocalAiRuntimeOptions {
   host?: "127.0.0.1";
   port?: number;
   serviceFactory?: LocalAiRuntimeServiceFactory;
+  allowTeamRuntime?: boolean;
 }
 
 export interface LocalAiRuntimeToolExecutor {
@@ -340,12 +341,12 @@ export interface LocalAiRuntimeToolExecutor {
     caller: z.infer<typeof callerSchema>,
     taskId: string,
     signal?: AbortSignal,
-    onProgress?: (status: string) => void
-  ): Promise<{ questionId: string; result: Record<string, unknown> }>;
-  durableMemoryAnswerEligible?(
-    input: Record<string, unknown>,
-    caller: z.infer<typeof callerSchema>
-  ): boolean;
+    onProgress?: (status: string) => void,
+    context?: MemoryAnswerTaskExecutionContext
+  ): Promise<{
+    finalQuestion: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>;
 }
 
 export interface LocalAiRuntimeServices {
@@ -609,7 +610,8 @@ export const startLocalAiRuntime = async ({
   config = defaultConfig(environment),
   host = "127.0.0.1",
   port = 0,
-  serviceFactory = startDefaultLocalAiRuntimeServices
+  serviceFactory = startDefaultLocalAiRuntimeServices,
+  allowTeamRuntime = false
 }: StartLocalAiRuntimeOptions = {}): Promise<LocalAiRuntimeHandle> => {
   const koedHome = resolveKoedHome(environment);
   const registrationPath = localRuntimeRegistrationPath(koedHome);
@@ -629,27 +631,37 @@ export const startLocalAiRuntime = async ({
     answerCapacity,
     maxQueuedAnswers
   );
+  const taskCoordinator = executor.executeMemoryAnswerTask
+    ? createMemoryAnswerTaskCoordinator(
+        apiClient,
+        environment,
+        allowTeamRuntime
+      )
+    : null;
   const taskScheduler = executor.executeMemoryAnswerTask
     ? new MemoryAnswerTaskScheduler(
-        apiClient,
+        taskCoordinator!,
         {
           executeMemoryAnswerTask: (
             input,
             caller,
             taskId,
             signal,
-            onProgress
+            onProgress,
+            context
           ) =>
             executor.executeMemoryAnswerTask!(
               input,
               caller,
               taskId,
               signal,
-              onProgress
+              onProgress,
+              context
             )
         },
         {
           executionCapacity: answerCapacity,
+          executionContextForTask: taskCoordinator!.executionContextForTask,
           maxQueued: maxQueuedAnswers,
           noProgressTimeoutMs: positiveInteger(
             environment.MEMORY_ANSWER_NO_PROGRESS_TIMEOUT_MS,
@@ -663,7 +675,7 @@ export const startLocalAiRuntime = async ({
       )
     : null;
   const taskRuntime = taskScheduler
-    ? new MemoryAnswerTaskRuntime(taskScheduler, executor)
+    ? new MemoryAnswerTaskRuntime(taskScheduler)
     : null;
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
   const activeRequests = new Set<AbortController>();
@@ -796,11 +808,7 @@ export const startLocalAiRuntime = async ({
           return;
         }
         const parsed = toolRequestSchema.parse(await readJsonBody(request));
-        if (
-          toolName === "memory_answer" &&
-          taskRuntime &&
-          taskRuntime.eligible(parsed)
-        ) {
+        if (toolName === "memory_answer" && taskRuntime) {
           const result = await taskRuntime.executeBlocking(
             parsed,
             requestAbort.signal

@@ -13,6 +13,7 @@ import {
 import {
   assertCleanRemoteMcpEnrollment,
   hasRemoteMcpLocalRuntimeScopes,
+  hasRemoteMcpTeamRuntimeScopes,
   normalizeRemoteMcpBackend,
   readRemoteMcpCredential,
   remoteMcpCredentialPath,
@@ -32,6 +33,7 @@ import {
 } from "./headless-remote-integration.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { isTeamMemoryAnswerTaskCapability } from "./upstream-registry.js";
 
 export interface RemoteMcpClientOptions {
   environment?: NodeJS.ProcessEnv;
@@ -43,6 +45,45 @@ export interface RemoteMcpClientOptions {
 
 const fail = (): Error =>
   new Error("Remote authentication is unavailable; explicitly log in again.");
+class RemoteMcpAttentionError extends Error {}
+
+const verifyTeamRuntimeCapability = async (
+  credential: RemoteMcpCredential,
+  options: RemoteMcpClientOptions
+): Promise<void> => {
+  if (!hasRemoteMcpTeamRuntimeScopes(credential)) return;
+  const response = await pinnedFetch(credential.backendUrl, options)(
+    `${credential.backendUrl}/v1/capabilities`,
+    {
+      headers: { authorization: `Bearer ${credential.tokens!.accessToken}` }
+    }
+  );
+  if (!response.ok)
+    throw new RemoteMcpAttentionError(
+      "Team Memory Answer capability is unavailable. Refresh remote authorization with --local-runtime --team-read; Team read alone cannot authorize execution."
+    );
+  const text = await response.text();
+  if (text.length > 128_000) throw fail();
+  let body: { capabilities?: Record<string, unknown> } | null;
+  try {
+    body = JSON.parse(text) as {
+      capabilities?: Record<string, unknown>;
+    } | null;
+  } catch {
+    throw new RemoteMcpAttentionError(
+      "Team Memory Answer capability metadata could not be verified. Refresh the upgraded backend before enabling Team execution."
+    );
+  }
+  if (
+    !isTeamMemoryAnswerTaskCapability(
+      body?.capabilities?.["memory.answerTasks"]
+    )
+  ) {
+    throw new RemoteMcpAttentionError(
+      "Upgrade the backend to memory.answerTasks version 2 with Team support, then re-authorize with --local-runtime --team-read. No Team read fallback is used."
+    );
+  }
+};
 const pinnedFetch =
   (backendUrl: string, options: RemoteMcpClientOptions): typeof fetch =>
   async (input, init) => {
@@ -490,6 +531,7 @@ export const startRemoteMcpLocalRuntime = async (
       refreshed.userId
   )
     throw fail();
+  await verifyTeamRuntimeCapability(refreshed, options);
   const runtime = resolveKoedAppRuntime(
     resolveKoedServerPaths(environment),
     environment
@@ -509,6 +551,7 @@ export const startRemoteMcpLocalRuntime = async (
       descriptor: HeadlessRemoteIntegrationDescriptor;
       environment: NodeJS.ProcessEnv;
       authorizationProvider: () => Promise<string>;
+      allowTeamRuntime: boolean;
     }) => Promise<{ close(): Promise<void> }>;
   };
   if (typeof contracts.startHeadlessRemoteLocalAiRuntime !== "function")
@@ -518,6 +561,7 @@ export const startRemoteMcpLocalRuntime = async (
   return contracts.startHeadlessRemoteLocalAiRuntime({
     descriptor,
     environment,
+    allowTeamRuntime: hasRemoteMcpTeamRuntimeScopes(refreshed),
     authorizationProvider: () => remoteMcpAuthorization(options)
   });
 };
@@ -598,6 +642,8 @@ export const runRemoteMcpCommand = async (
         Boolean(
           credential?.tokens && hasRemoteMcpLocalRuntimeScopes(credential)
         );
+      if (command !== "remove" && credential)
+        await verifyTeamRuntimeCapability(credential, { environment });
       const common = { environment, harness, consent, credentialAvailable };
       output =
         command === "setup"
@@ -615,9 +661,11 @@ export const runRemoteMcpCommand = async (
       `${JSON.stringify(output, null, args.includes("--json") ? 2 : undefined)}\n`
     );
     return ok ? 0 : 1;
-  } catch {
+  } catch (cause) {
     const error =
-      "Remote integration needs attention. Check explicit consent, dedicated KOED_HOME, authentication scopes, and local integration artifacts.";
+      cause instanceof RemoteMcpAttentionError
+        ? cause.message
+        : "Remote integration needs attention. Check explicit consent, dedicated KOED_HOME, authentication scopes, and local integration artifacts.";
     if (args.includes("--json")) {
       options.stdout.write(
         `${JSON.stringify({ ok: false, state: "needs_attention", error })}\n`

@@ -246,11 +246,16 @@ export {
   type RealtimeTransportTicketAuthKind,
   type RealtimeTransportTicketRepository
 } from "./realtime-transport-ticket-repository.js";
-export { createMemoryQuestionRepository } from "./memory-question-repository.js";
+export {
+  createMemoryQuestionRepository,
+  type CreateFinalMemoryQuestionInput,
+  type MemoryQuestionActorContext
+} from "./memory-question-repository.js";
 export {
   createMemoryAnswerTaskRepository,
   type ClaimedMemoryAnswerTask,
   type MemoryAnswerTaskOrigin,
+  type MemoryAnswerTaskActor,
   type MemoryAnswerTaskRecord,
   type MemoryAnswerTaskRepository,
   type MemoryAnswerTaskStatus
@@ -445,6 +450,7 @@ export { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
 export * from "./types.js";
+export * from "./memory-answer-team-authority.js";
 
 export {
   verifyManagedJournalTerminal,

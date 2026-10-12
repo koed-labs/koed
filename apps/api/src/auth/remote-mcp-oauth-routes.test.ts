@@ -110,7 +110,7 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
     await pool.end();
     await admin.query(`drop schema if exists ${schema} cascade`);
     await admin.end();
-  });
+  }, 30_000);
 
   const pending = async (scope = "koed:memory:read") => {
     const query = new URLSearchParams({

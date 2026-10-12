@@ -42,15 +42,16 @@ the HTTPS `/mcp` transport and persistent OAuth repository on the existing
 backend. The User approves resource-bound OAuth PKCE scopes and installs a
 supported harness in a clean dedicated `KOED_HOME`.
 
-`koed-server remote start` loads the non-secret integration descriptor and
+`koed remote start` loads the non-secret integration descriptor and
 protected credentials, then starts only the existing Local AI Runtime. It
 does not bootstrap a local API, Worker, Postgres, Embedding Service, Privacy
 Filter, or Electron. The runtime renews credentials per request and reuses its
 existing scheduler, provider workers, LCM service, and Transcript Watchers
 against the remote backend. Historical coordination is disabled and source
-journal uploads begin at retained consent frontiers. Personal durable tasks
-remain backend records serviced by this User-owned runtime; Team requests return
-evidence for synthesis by the invoking AI Client. Ingestion, Projection,
+journal uploads begin at retained consent frontiers. Personal and Team durable
+tasks remain records on their authoritative backend, serviced by this User-owned
+runtime under explicit execution consent and current scope authorization.
+Team retrieval uses a frozen, revalidated grant boundary. Ingestion, Projection,
 embedding, retrieval, and authority checks use the same backend services as
 other clients. No backend synthesis or parallel queue is added.
 

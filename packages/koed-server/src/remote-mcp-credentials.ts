@@ -215,3 +215,9 @@ export const hasRemoteMcpLocalRuntimeScopes = (
     (scope) => scopes.has(scope)
   );
 };
+
+export const hasRemoteMcpTeamRuntimeScopes = (
+  credential: RemoteMcpCredential
+): boolean =>
+  hasRemoteMcpLocalRuntimeScopes(credential) &&
+  (credential.tokens?.scope.split(/\s+/).includes("koed:team:read") ?? false);

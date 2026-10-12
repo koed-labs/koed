@@ -7,9 +7,9 @@ memory service or a general remote API proxy.
 
 The remote backend still owns storage, Projection, embeddings, recall, and
 authorization. It never runs LLM synthesis. A User-owned Local AI Runtime is
-still required for automatic capture, durable Personal Memory Answer work,
-LCM Summaries, and other persistent local AI-client work. Team recall returns
-authorized evidence for synthesis by the invoking AI Client.
+still required for automatic capture, durable Personal and Team Memory Answers,
+LCM Summaries, and other persistent local AI-client work. Neither answer scope
+returns raw retrieval to the invoking agent as a substitute for helper synthesis.
 
 ## Operator Setup
 
@@ -85,7 +85,12 @@ dependencies. Source checkouts must build the runtime artifacts before use.
 Login opens the browser authorization flow when possible or reports its URL.
 Without `--local-runtime`, login requests read-only Personal Memory access;
 the flag explicitly requests the capture and local-execution scopes needed by
-this helper. Add `--team-read` only when Team recall is wanted.
+this helper. Add `--team-read` only when Team recall is wanted. Team execution
+also requires the backend to advertise version 2 of `memory.answerTasks` with
+Team support. Missing support fails explicitly rather than changing executors.
+Deploy the backend and local helper from compatible releases: version 2 task
+completion sends a prepared final question, not a previously persisted question
+ID. Older helpers cannot service this completion contract.
 Unattended access-token renewal never opens a browser. Expired or revoked
 grants require an explicit login rather than fallback to another credential
 or deployment.
@@ -127,11 +132,41 @@ separate explicit consent and is not provided by these remote setup commands.
 ## Runtime Boundary
 
 Remote MCP exposes the existing typed memory tools over an authenticated HTTP
-transport. Personal Memory Answer tasks use the backend's existing durable task
+transport. Personal and Team Memory Answer tasks use the backend's existing durable task
 records and are serviced by the User's Local AI Runtime with the existing
 scheduler and local provider workers. No parallel answer queue or backend LLM
-worker is introduced. Team Memory Answer provides evidence to the invoking
-AI Client and does not claim durable Personal task ownership.
+worker is introduced. Team tasks are accepted by the backend that owns the
+Team Workspace, not by a Personal backend acting on its behalf. The same worker
+uses that backend's existing authorized retrieval routes.
+
+Task claims default to Personal only. Team execution requires explicit scoped
+claims and trusted credential authority. Enrolled native devices additionally
+require the `memory_answer_execution` family, granted through explicit
+`--memory-answers` enrollment consent; read-only enrollment is not silently
+upgraded. OAuth helpers require the local-execution and Team-read scopes.
+
+Native local-edge task forwarding is Team-only and requires both local execution
+and Team-read authority. It narrows the stored upstream credential before the
+backend reads protected task data, even when that credential has additional
+permissions. Personal requests are not forwarded through this adapter.
+Expired-task cleanup is restricted to this User's expired terminal Team tasks;
+it cannot remove Personal tasks through a broader stored credential.
+
+Team tasks freeze the existing Share Grant boundary at acceptance. New grants
+cannot widen a running task. Current membership, Workspace access, and the
+original grants and representations are checked before protected reads and
+completion. A heartbeat renews the same boundary, not a broader one. Final
+Memory Question persistence and the fenced task completion commit atomically.
+Permission loss denies delivery of completed task-bound history as well as
+pending work. Older Team history without task authority retains its existing
+access policy; this change does not rewrite those historical rows.
+
+The frozen Team boundary is bounded to 128 grants. Oversized boundaries fail
+explicitly rather than silently dropping evidence. Validation reuses the
+existing representation authorization checks and holds transaction locks through
+protected work. Large Workspaces therefore add database round trips; measure
+this cost with representative data before production rollout. This integration
+does not replace those checks with a cross-request authorization cache.
 
 The local helper binds its typed contract to authenticated loopback only. It
 does not expose a public inbound endpoint or forward arbitrary remote API

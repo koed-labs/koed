@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const MEMORY_ANSWER_TASK_CONTRACT_VERSION = 2;
+
 export const memoryAnswerTaskOrigins = ["mcp", "pi_extension"] as const;
 export const memoryAnswerTaskStatuses = [
   "accepted",
@@ -13,9 +15,27 @@ export const memoryAnswerTaskStatuses = [
 const boundedRecordSchema = z.record(z.string().max(128), z.unknown());
 const nullableTimestampSchema = z.string().datetime().nullable();
 
+export const memoryAnswerTaskExecutionAuthoritySchema = z.discriminatedUnion(
+  "scope",
+  [
+    z.object({ scope: z.literal("personal") }).strict(),
+    z
+      .object({
+        scope: z.literal("team"),
+        teamWorkspaceId: z.string().uuid(),
+        authorizationBoundary: z.string().min(1)
+      })
+      .strict()
+  ]
+);
+export type MemoryAnswerTaskExecutionAuthority = z.infer<
+  typeof memoryAnswerTaskExecutionAuthoritySchema
+>;
+
 export const memoryAnswerTaskSchema = z
   .object({
     id: z.string().uuid(),
+    teamWorkspaceId: z.string().uuid().nullable().optional(),
     origin: z.enum(memoryAnswerTaskOrigins),
     invocationKey: z.string().nullable(),
     questionId: z.string().uuid().nullable(),
@@ -43,11 +63,19 @@ export const memoryAnswerTaskSchema = z
 export const claimedMemoryAnswerTaskSchema = memoryAnswerTaskSchema.extend({
   leaseOwner: z.string(),
   leaseUntil: z.string().datetime(),
-  request: boundedRecordSchema
+  request: boundedRecordSchema,
+  executionAuthority: memoryAnswerTaskExecutionAuthoritySchema.optional()
 });
 
 export const memoryAnswerTaskResponseSchema = z
   .object({ task: memoryAnswerTaskSchema })
+  .strict();
+
+export const memoryAnswerTaskHeartbeatResponseSchema = z
+  .object({
+    task: memoryAnswerTaskSchema,
+    executionAuthority: memoryAnswerTaskExecutionAuthoritySchema.optional()
+  })
   .strict();
 
 export const memoryAnswerTaskClaimResponseSchema = z
@@ -69,6 +97,7 @@ export const acceptMemoryAnswerTaskSchema = z
 
 export const claimMemoryAnswerTaskSchema = z
   .object({
+    scope_filter: z.enum(["personal", "team"]).optional(),
     lease_owner: z.string().trim().min(16).max(256),
     lease_ms: z.number().int().min(1_000).max(300_000)
   })
@@ -89,7 +118,7 @@ export const heartbeatMemoryAnswerTaskSchema = fencedTaskMutationSchema
 
 export const completeMemoryAnswerTaskSchema = fencedTaskMutationSchema
   .extend({
-    question_id: z.string().uuid(),
+    final_question: boundedRecordSchema,
     result: boundedRecordSchema
   })
   .strict();

@@ -1006,6 +1006,9 @@ export const runKoedServerCli = async (
       const result =
         enrollCommand === "start"
           ? await startUpstreamEnroll(paths, id, {
+              memoryAnswers:
+                args.includes("--memory-answers") ||
+                args.includes("--enable-memory-answers"),
               sourceOwnerPrincipalId: requireFlagValue(
                 args,
                 "--source-owner-principal-id"

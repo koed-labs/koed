@@ -216,7 +216,7 @@ describe("supported Pi Memory Answer delivery", () => {
       f.delivery.detach();
     }
   );
-  it("Team input and authoritative 409 use blocking without a detached Team task", async () => {
+  it("accepts Team input through the same deferred task and fresh-result delivery", async () => {
     const f = fixture();
     await f.delivery.execute(
       "call",
@@ -224,35 +224,29 @@ describe("supported Pi Memory Answer delivery", () => {
       undefined,
       f.ctx
     );
-    expect(f.port.start).not.toHaveBeenCalled();
-    f.port.start.mockRejectedValueOnce(
-      Object.assign(new Error("ineligible"), {
-        statusCode: 409,
-        code: "memory_answer_team_ineligible"
-      })
-    );
-    await f.delivery.execute("call-2", { query: "q" }, undefined, f.ctx);
-    expect(f.blocking).toHaveBeenCalledTimes(2);
-    expect(f.entries).toHaveLength(0);
+    expect(f.port.start).toHaveBeenCalledOnce();
+    expect(f.port.start.mock.calls[0]?.[0]).toMatchObject({
+      team_workspace_id: "team"
+    });
+    f.complete();
+    await f.delivery.settle();
+    expect(f.pi.sendMessage).toHaveBeenCalledOnce();
+    expect(f.blocking).not.toHaveBeenCalled();
+    f.delivery.detach();
   });
-  it("classified pre-acceptance Team rejection falls back once with the original request", async () => {
+  it("propagates a current Team authority rejection without executing or resubmitting", async () => {
     const f = fixture();
     const input = { query: "original", search_domain: "global", limit: 3 };
     const signal = new AbortController().signal;
-    f.port.start.mockRejectedValueOnce(
-      Object.assign(new Error("Team is ineligible"), {
-        statusCode: 409,
-        code: "memory_answer_team_ineligible"
-      })
-    );
-    await f.delivery.execute("one-call", input, signal, f.ctx);
+    const denied = Object.assign(new Error("Team access denied"), {
+      statusCode: 403
+    });
+    f.port.start.mockRejectedValueOnce(denied);
+    await expect(
+      f.delivery.execute("one-call", input, signal, f.ctx)
+    ).rejects.toBe(denied);
     expect(f.port.start).toHaveBeenCalledTimes(1);
-    expect(f.blocking).toHaveBeenCalledExactlyOnceWith(
-      input,
-      f.ctx,
-      signal,
-      "conversation-1:one-call"
-    );
+    expect(f.blocking).not.toHaveBeenCalled();
     expect(f.entries).toHaveLength(0);
     expect(f.port.get).not.toHaveBeenCalled();
     f.delivery.detach();
@@ -260,10 +254,7 @@ describe("supported Pi Memory Answer delivery", () => {
   it.each([
     ["status-only conflict", { statusCode: 409 }],
     ["unknown conflict", { statusCode: 409, code: "other" }],
-    [
-      "spoofed Team code on another status",
-      { statusCode: 503, code: "memory_answer_team_ineligible" }
-    ],
+    ["unavailable execution backend", { statusCode: 503 }],
     ["network failure", {}],
     ["uncertain start", { statusCode: 500 }]
   ])("does not fall back or reaccept after %s", async (_name, fields) => {

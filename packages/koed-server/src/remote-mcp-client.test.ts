@@ -7,6 +7,7 @@ import {
   loginRemoteMcp,
   logoutRemoteMcp,
   remoteMcpAuthorization,
+  startRemoteMcpLocalRuntime,
   runRemoteMcpCommand
 } from "./remote-mcp-client.js";
 import {
@@ -14,6 +15,10 @@ import {
   remoteMcpCredentialPath,
   writeRemoteMcpCredential
 } from "./remote-mcp-credentials.js";
+import {
+  HEADLESS_REMOTE_CREDENTIAL_REF,
+  writeHeadlessRemoteIntegration
+} from "./headless-remote-integration.js";
 
 const roots: string[] = [];
 const backend = "https://koed.example.test";
@@ -25,6 +30,11 @@ const fixture = () => {
   let userId = "user-1";
   let refreshes = 0;
   let denied = false;
+  let taskCapability: unknown = {
+    availability: "available",
+    version: 2,
+    supportedScopes: ["personal", "team"]
+  };
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const url = new URL(String(input));
     expect(init?.redirect).toBe("error");
@@ -96,6 +106,10 @@ const fixture = () => {
     if (url.pathname === "/v1/access/check")
       return Response.json({ ok: true, user: { id: userId } });
     if (url.pathname === "/revoke") return new Response(null, { status: 200 });
+    if (url.pathname === "/v1/capabilities")
+      return Response.json({
+        capabilities: { "memory.answerTasks": taskCapability }
+      });
     throw new Error(`Unexpected request path: ${url.pathname}`);
   });
   const openAuthorization = async (url: URL) => {
@@ -119,7 +133,10 @@ const fixture = () => {
     denyRefresh: () => {
       denied = true;
     },
-    refreshes: () => refreshes
+    refreshes: () => refreshes,
+    setTaskCapability: (value: unknown) => {
+      taskCapability = value;
+    }
   };
 };
 afterEach(() => {
@@ -128,6 +145,47 @@ afterEach(() => {
 });
 
 describe("remote MCP OAuth client", () => {
+  it.each([
+    {
+      availability: "available",
+      version: 1,
+      supportedScopes: ["personal", "team"]
+    },
+    { availability: "available", version: 2, supportedScopes: ["personal"] },
+    {
+      availability: "partial",
+      version: 2,
+      supportedScopes: ["personal", "team"]
+    }
+  ])(
+    "requires the available Team task contract before starting an OAuth Team worker: %j",
+    async (capability) => {
+      const context = fixture();
+      await loginRemoteMcp({
+        ...context,
+        backendUrl: backend,
+        consent: true,
+        localRuntime: true,
+        teamRead: true
+      });
+      writeHeadlessRemoteIntegration(context.environment, {
+        version: 1,
+        backendUrl: backend,
+        credentialRef: HEADLESS_REMOTE_CREDENTIAL_REF,
+        harnesses: ["codex"],
+        futureCaptureOnly: true
+      });
+      context.setTaskCapability(capability);
+      await expect(startRemoteMcpLocalRuntime(context)).rejects.toThrow(
+        "No Team read fallback is used"
+      );
+      expect(
+        context.fetch.mock.calls.some(
+          ([input]) => new URL(String(input)).pathname === "/v1/capabilities"
+        )
+      ).toBe(true);
+    }
+  );
   it("uses SDK public PKCE login, pins resource and issuer, and validates loopback state", async () => {
     const context = fixture();
     const loggedIn = await loginRemoteMcp({

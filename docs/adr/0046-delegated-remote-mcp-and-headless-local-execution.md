@@ -24,12 +24,15 @@ short-lived credentials and revocable grants. Scope restrictions supplement,
 rather than replace, current User lifecycle and Team access checks. A delegated
 credential is neither a Personal API Token nor an enrolled device credential.
 
-Keep Personal Memory Answer execution in the existing User-owned Local AI
+Keep Personal and Team Memory Answer execution in the existing User-owned Local AI
 Runtime and durable task system. Request closure detaches a waiter; it does not
 cancel accepted work. No available local executor means a bounded pending
 outcome, not backend synthesis or retrieval pushed into the main agent context.
-This extends transport reach without changing the Personal-only eligibility
-of the current durable answer system.
+Extend the existing durable task system rather than retaining a separate Team
+executor. Team acceptance and terminal history belong to the authoritative
+Team backend. Explicit scoped claims and credential permissions select eligible
+helpers; task ownership alone never confers Team access. The amendment to
+ADR 0043 defines frozen Team authorization and atomic terminal persistence.
 
 With separate capture and local-execution consent, a dedicated local profile
 can run the same runtime against the remote backend. Initial capture is
@@ -55,5 +58,9 @@ proof of a particular capture device or native harness file.
 - Server and local helper deployment identity, backup, credential revocation,
   offline behavior, and capture activation frontiers are explicit operational
   concerns.
-- Extending durable execution to Team answers requires a separate decision and
-  authorization design; Team access must not be inferred from task ownership.
+- Team execution requires explicitly enrolled device execution authority or
+  delegated local-execution and Team-read consent. Older read-only credentials
+  and backends without the versioned task capability cannot silently opt in.
+- Task-bound Team history is checked against current access and its original
+  frozen grant boundary before decryption. This does not migrate legacy history
+  to a different retention or access policy.

@@ -9,6 +9,7 @@ import {
 import {
   memoryAnswerTaskClaimResponseSchema,
   memoryAnswerTaskResponseSchema,
+  memoryAnswerTaskHeartbeatResponseSchema,
   type AcceptMemoryAnswerTaskInput,
   type AiClientModelCapability,
   type ClaimMemoryAnswerTaskInput,
@@ -923,8 +924,8 @@ export class MemoryApiClient {
   async heartbeatMemoryAnswerTask(
     taskId: string,
     input: HeartbeatMemoryAnswerTaskInput
-  ): Promise<{ task: MemoryAnswerTask }> {
-    return memoryAnswerTaskResponseSchema.parse(
+  ) {
+    return memoryAnswerTaskHeartbeatResponseSchema.parse(
       await this.request(
         "POST",
         `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/heartbeat`,

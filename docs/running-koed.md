@@ -212,6 +212,14 @@ leave package-manager child processes listening on Koed ports.
 Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
 
+For native Team Memory Answer execution, add `--memory-answers` to enrollment
+start and approve the additional execution permission in the browser. The
+backend must advertise version 2 of `memory.answerTasks` with Team support.
+Existing read-only enrollment is not automatically upgraded: cancel a pending
+read-only request and start a new request with this flag. Execution routing is
+enabled only after credential activation succeeds; denial, expiry, cancellation,
+or disconnection leaves it disabled. This does not grant Personal Memory reads.
+
 ```bash
 SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
 node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json

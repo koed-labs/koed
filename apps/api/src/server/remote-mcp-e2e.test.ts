@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
 import cookie from "@fastify/cookie";
@@ -8,6 +7,7 @@ import {
   createDbPool,
   createMemoryAnswerTaskRepository,
   createRemoteMcpOAuthRepository,
+  runDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
 import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
@@ -24,16 +24,16 @@ import { registerRemoteMcpRoutes } from "./remote-mcp.js";
 const databaseUrl = process.env.KOED_OAUTH_TEST_DATABASE_URL;
 
 // Only OAuth and task repositories are real here. User/session lookups use the
-// isolated SQL tables below; no semantic recall or Team fixture is simulated.
+// isolated database below; no semantic recall or Team fixture is simulated.
 describe.skipIf(!databaseUrl)(
   "remote MCP HTTP and durable local execution",
   () => {
-    const schema = `mcp_e2e_${randomUUID().replaceAll("-", "")}`;
+    const database = `mcp_e2e_${randomUUID().replaceAll("-", "")}`;
     const admin = createDbPool({
       connectionString: databaseUrl ?? "postgresql://localhost/postgres"
     });
     const scopedUrl = new URL(databaseUrl ?? "postgresql://localhost/postgres");
-    scopedUrl.searchParams.set("options", `-csearch_path=${schema}`);
+    scopedUrl.pathname = `/${database}`;
     const pool = createDbPool({ connectionString: scopedUrl.toString() });
     const ownerId = randomUUID();
     const otherId = randomUUID();
@@ -80,40 +80,12 @@ describe.skipIf(!databaseUrl)(
     let base: string;
     let clientId: string;
 
-    const migration = async (name: string) =>
-      readFile(
-        new URL(`../../../../packages/db/drizzle/${name}`, import.meta.url),
-        "utf8"
-      );
     beforeAll(async () => {
-      await admin.query(`create schema ${schema}`);
-      await pool.query(
-        "create type visibility_scope as enum ('personal','shared'); create table users(id uuid primary key,email text,disabled_at timestamptz,deleted_at timestamptz); create table audit_events(actor_user_id uuid,owner_user_id uuid,visibility text,action text,target_table text,target_id uuid,metadata jsonb)"
-      );
+      await admin.query(`create database ${database}`);
+      await runDbMigrations(pool);
       await pool.query(
         "insert into users(id,email) values($1,'owner@koed.example'),($2,'other@koed.example')",
         [ownerId, otherId]
-      );
-      const encryptionMigration = await migration("0008_mean_gressill.sql");
-      const encryptedTable = encryptionMigration
-        .split("--> statement-breakpoint")
-        .find((statement) =>
-          statement.includes('CREATE TABLE "encrypted_field_payloads"')
-        )!;
-      await pool.query(encryptedTable);
-      await pool.query(
-        "alter table encrypted_field_payloads add column owner_principal_id text; alter table encrypted_field_payloads drop constraint encrypted_field_payloads_source_table_check; create unique index on encrypted_field_payloads(source_table,source_id,source_column)"
-      );
-      const taskMigration = await migration("0038_tough_harpoon.sql");
-      await pool.query(taskMigration.split("--> statement-breakpoint")[0]!);
-      await pool.query(
-        "create unique index on memory_answer_tasks(owner_user_id,origin,invocation_key) where invocation_key is not null"
-      );
-      await pool.query(
-        (await migration("0043_remote_mcp_oauth.sql")).replaceAll(
-          '"public".',
-          `"${schema}".`
-        )
       );
       await app.register(cookie);
       registerRemoteMcpOAuthRoutes(app, {
@@ -164,14 +136,14 @@ describe.skipIf(!databaseUrl)(
       });
       expect(response.status).toBe(201);
       clientId = ((await response.json()) as { client_id: string }).client_id;
-    });
+    }, 60000);
     afterAll(async () => {
       await Promise.all(clients.map((client) => client.close()));
       await app.close();
       await pool.end();
-      await admin.query(`drop schema if exists ${schema} cascade`);
+      await admin.query(`drop database if exists ${database}`);
       await admin.end();
-    });
+    }, 60000);
 
     const authorize = async (scopes: string, session = "owner-session") => {
       const verifier = randomBytes(32).toString("base64url");
@@ -311,7 +283,8 @@ describe.skipIf(!databaseUrl)(
       expect(
         (
           await api(token, "/v1/memory/answer-tasks/claim", {
-            lease_owner: "local-worker"
+            lease_owner: "owner-local-worker",
+            lease_ms: 30000
           })
         ).status
       ).toBe(403);
@@ -380,17 +353,56 @@ describe.skipIf(!databaseUrl)(
         markdown: "Synthetic local AI Client result",
         citations: []
       };
+      const completion = {
+        lease_owner: "owner-local-worker",
+        fence_generation: claimed.task.fenceGeneration,
+        final_question: {
+          idempotency_key: `task:${accepted}`,
+          query: "Recall the synthetic decision",
+          origin: "mcp_memory_answer",
+          search_domain: "global",
+          retrieval_scope: "personal",
+          status: "answered",
+          answer_markdown: result.markdown,
+          response: result
+        },
+        result
+      };
       const completed = await api(
         workerToken,
         `/v1/memory/answer-tasks/${accepted}/complete`,
-        {
-          lease_owner: "owner-local-worker",
-          fence_generation: claimed.task.fenceGeneration,
-          question_id: randomUUID(),
-          result
-        }
+        completion
       );
       expect(completed.status).toBe(200);
+      const completedTask = (await completed.json()) as {
+        task: { questionId: string };
+      };
+      expect(completedTask.task.questionId).toBeTruthy();
+      expect(
+        (
+          await api(
+            workerToken,
+            `/v1/memory/answer-tasks/${accepted}/complete`,
+            {
+              ...completion,
+              final_question: {
+                ...completion.final_question,
+                idempotency_key: "stale-lease-should-not-create-history"
+              }
+            }
+          )
+        ).status
+      ).toBe(409);
+      const questions = await pool.query(
+        "select id,query,answer_markdown from memory_questions where owner_user_id=$1",
+        [ownerId]
+      );
+      expect(questions.rows).toHaveLength(1);
+      expect(questions.rows[0].id).toBe(completedTask.task.questionId);
+      expect(JSON.stringify(questions.rows)).not.toContain(
+        "Recall the synthetic decision"
+      );
+      expect(JSON.stringify(questions.rows)).not.toContain(result.markdown);
       expect(JSON.stringify(await answer)).toContain(result.markdown);
       const rows = await pool.query(
         "select request_snapshot,result_snapshot from memory_answer_tasks where id=$1",

@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assertCleanRemoteMcpEnrollment,
   hasRemoteMcpLocalRuntimeScopes,
+  hasRemoteMcpTeamRuntimeScopes,
   normalizeRemoteMcpBackend,
   readRemoteMcpCredential,
   remoteMcpCredentialPath,
@@ -89,6 +90,26 @@ describe("remote MCP credential custody", () => {
       0o600
     );
     expect(hasRemoteMcpLocalRuntimeScopes(credential)).toBe(true);
+    expect(hasRemoteMcpTeamRuntimeScopes(credential)).toBe(false);
+    expect(
+      hasRemoteMcpTeamRuntimeScopes({
+        ...credential,
+        tokens: {
+          ...credential.tokens!,
+          scope:
+            "koed:memory:read koed:capture koed:local-execution koed:team:read"
+        }
+      })
+    ).toBe(true);
+    expect(
+      hasRemoteMcpTeamRuntimeScopes({
+        ...credential,
+        tokens: {
+          ...credential.tokens!,
+          scope: "koed:memory:read koed:team:read"
+        }
+      })
+    ).toBe(false);
     expect(
       hasRemoteMcpLocalRuntimeScopes({
         ...credential,

@@ -1,12 +1,9 @@
-import os from "node:os";
 import path from "node:path";
-import { readLocalEdgeClientCredentialAuthorization } from "@koed/shared";
 import {
   answerWithMemoryWorker,
   type MemoryAnswerConversationTurn,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerResponseDetail,
-  type MemoryAnswerWorkerResponse,
   resolveMemoryAnswerWorkerConfig
 } from "./answer-worker.js";
 import type { CuratedMemoryReviewServiceHandle as LocalCuratedMemoryReviewServiceHandle } from "./curated-memory-review-service.js";
@@ -19,6 +16,7 @@ import {
   type BackendToolCapabilities
 } from "./index.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
+import type { MemoryAnswerTaskExecutionContext } from "./memory-answer-task-scheduler.js";
 import { logger } from "./logger.js";
 import { resolveLocalMemoryAgentConfig } from "./ai-client-assignment.js";
 import {
@@ -41,10 +39,7 @@ import {
   type MemoryAnswerToolInput
 } from "./memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
-import {
-  discoverTeamWorkspaces,
-  backendForDiscoveredWorkspace
-} from "./team-workspace-discovery.js";
+import { discoverTeamWorkspaces } from "./team-workspace-discovery.js";
 import type {
   LocalRuntimeCallerContext,
   LocalRuntimeToolName
@@ -80,54 +75,6 @@ const normalizeProjectId = (
     ? projectId
     : path.resolve(caller.cwd);
 
-class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
-  constructor(
-    private readonly client: MemoryApiClient,
-    private readonly upstreamBackendId: string,
-    private readonly authorization: string
-  ) {}
-
-  async search(
-    input: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return await this.client.teamMemorySearch(
-      this.upstreamBackendId,
-      input,
-      this.authorization
-    );
-  }
-
-  async expand(
-    nodeId: string,
-    input: {
-      searchDomain?: string;
-      sessionId?: string;
-      projectId?: string;
-      teamWorkspaceId?: string;
-      recentDays?: number;
-      sourceAfter?: string;
-      sourceBefore?: string;
-      authorizationBoundary?: string;
-    } = {}
-  ): Promise<Record<string, unknown>> {
-    return await this.client.teamMemoryExpand(
-      this.upstreamBackendId,
-      nodeId,
-      {
-        search_domain: input.searchDomain,
-        session_id: input.sessionId,
-        project_id: input.projectId,
-        team_workspace_id: input.teamWorkspaceId,
-        recent_days: input.recentDays,
-        source_after: input.sourceAfter,
-        source_before: input.sourceBefore,
-        authorization_boundary: input.authorizationBoundary
-      },
-      this.authorization
-    );
-  }
-}
-
 export interface MemoryToolExecutorServices {
   lcmSummaryService?: LcmSummaryServiceHandle | null;
   curatedMemoryReviewService?: LocalCuratedMemoryReviewServiceHandle | null;
@@ -142,6 +89,8 @@ export interface TrustedMemoryAnswerExecutionOptions {
   onProgress?: (status: string) => void;
   origin: "desktop_ask" | "mcp_memory_answer";
   pendingQuestionId?: string;
+  taskContext?: MemoryAnswerTaskExecutionContext;
+  onFinalQuestionPrepared?: (question: Record<string, unknown>) => void;
 }
 
 export interface DesktopAskExecutionInput {
@@ -244,7 +193,7 @@ export class MemoryToolExecutor {
     return backendToolCapabilitiesFrom(await this.client.capabilities());
   }
 
-  durableMemoryAnswerEligible(
+  private personalMemoryAnswerEligible(
     rawInput: Record<string, unknown>,
     caller: LocalRuntimeCallerContext
   ): boolean {
@@ -388,9 +337,20 @@ export class MemoryToolExecutor {
     caller: LocalRuntimeCallerContext,
     taskId: string,
     signal?: AbortSignal,
-    onProgress?: (status: string) => void
-  ): Promise<{ questionId: string; result: Record<string, unknown> }> {
-    if (!this.durableMemoryAnswerEligible(input, caller)) {
+    onProgress?: (status: string) => void,
+    context?: MemoryAnswerTaskExecutionContext
+  ): Promise<{
+    finalQuestion: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }> {
+    input = memoryAnswerInputSchema.parse(input);
+    const authority = context?.getExecutionAuthority() ?? {
+      scope: "personal" as const
+    };
+    if (
+      authority.scope === "personal" &&
+      !this.personalMemoryAnswerEligible(input, caller)
+    ) {
       throw Object.assign(
         new Error(
           "Memory Answer task is no longer eligible for Personal execution"
@@ -401,48 +361,37 @@ export class MemoryToolExecutor {
         }
       );
     }
-    let recordedQuestion: McpMemoryQuestion | undefined;
+    if (
+      authority.scope === "team" &&
+      input.team_workspace_id &&
+      input.team_workspace_id !== authority.teamWorkspaceId
+    ) {
+      throw Object.assign(
+        new Error(
+          "Memory Answer task Team Workspace does not match its authority"
+        ),
+        { memoryAnswerTaskErrorCode: "team_scope_changed", retryable: false }
+      );
+    }
+    let finalQuestion: Record<string, unknown> | undefined;
     const result = await this.executeMemoryAnswer(
       input,
       caller,
       {
         origin: "mcp_memory_answer",
         idempotencyKey: `memory-answer-task:${taskId}`,
-        requireQuestionPersistence: true,
+        taskContext: context,
         onProgress,
-        onQuestionRecorded: (question) => {
-          recordedQuestion = question;
+        onFinalQuestionPrepared: (question) => {
+          finalQuestion = question;
         }
       },
       signal
     );
-    if (!recordedQuestion) {
-      throw new Error("Memory Answer task did not persist a final question");
+    if (!finalQuestion) {
+      throw new Error("Memory Answer task did not prepare a final question");
     }
-    const persisted = recordedQuestion.response;
-    const persistedWorker =
-      recordedQuestion.localMemoryWorker ?? persisted?.localMemoryWorker;
-    const authoritativeResult =
-      persisted && persistedWorker
-        ? toolAnswerResponse(
-            {
-              ...persisted,
-              markdown:
-                recordedQuestion.answerMarkdown ?? persisted.markdown ?? "",
-              evidence: recordedQuestion.evidence ?? undefined,
-              citations: recordedQuestion.citations ?? undefined,
-              retrieval: recordedQuestion.retrieval ??
-                (persisted.retrieval as
-                  | Record<string, unknown>
-                  | undefined) ?? {
-                  evidenceCount: recordedQuestion.evidence?.length ?? 0
-                },
-              localMemoryWorker: persistedWorker
-            } as MemoryAnswerWorkerResponse,
-            input.include_evidence ? "with_evidence" : input.response_detail
-          )
-        : result;
-    return { questionId: recordedQuestion.id, result: authoritativeResult };
+    return { finalQuestion, result };
   }
 
   async executeMemoryAnswer(
@@ -453,6 +402,29 @@ export class MemoryToolExecutor {
   ): Promise<Record<string, unknown>> {
     if (execution.origin === "desktop_ask" && !execution.pendingQuestionId) {
       throw new Error("Desktop Ask requires a durable pending question");
+    }
+    const taskAuthority = execution.taskContext?.getExecutionAuthority();
+    if (
+      taskAuthority?.scope !== "team" &&
+      (input.team_workspace_id ||
+        input.team_backend_id ||
+        (!taskAuthority &&
+          resolveProjectTeamWorkspaceRoute({
+            projectRoot:
+              input.search_domain === "project"
+                ? normalizeProjectId(input.project_id, caller)
+                : undefined,
+            env: this.environment
+          }).teamWorkspaceId))
+    ) {
+      throw Object.assign(
+        new Error("Team Memory Answer requires an authorized durable task"),
+        {
+          statusCode: 403,
+          memoryAnswerTaskErrorCode: "team_task_authority_required",
+          retryable: false
+        }
+      );
     }
     const requestedResponseDetail: MemoryAnswerResponseDetail =
       input.include_evidence ? "with_evidence" : input.response_detail;
@@ -465,6 +437,7 @@ export class MemoryToolExecutor {
     } = input;
     void include_evidence;
     void response_detail;
+    void team_backend_id;
     const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
     const workerConfig = await resolveLocalMemoryAgentConfig({
       client: this.client,
@@ -478,109 +451,94 @@ export class MemoryToolExecutor {
     }).then((config) => ({
       ...config,
       cwd:
+        execution.taskContext ||
         this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
           ? config.cwd
           : caller.cwd
     }));
+    if (
+      taskAuthority?.scope === "team" &&
+      input.search_domain === "project" &&
+      (!input.project_id ||
+        (!path.isAbsolute(input.project_id) &&
+          !path.win32.isAbsolute(input.project_id)))
+    ) {
+      throw Object.assign(
+        new Error(
+          "Team Memory Answer task requires an explicit source Project"
+        ),
+        { memoryAnswerTaskErrorCode: "invalid_project_scope", retryable: false }
+      );
+    }
     const projectId =
       input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)
         : input.project_id;
-    const teamWorkspaceRoute = resolveProjectTeamWorkspaceRoute({
-      projectRoot: input.search_domain === "project" ? projectId : undefined,
-      requestedTeamWorkspaceId: input.team_workspace_id,
-      env: this.environment
-    });
-    const teamWorkspaceId = teamWorkspaceRoute.teamWorkspaceId;
-    let upstreamBackendId = team_backend_id ?? teamWorkspaceRoute.backendId;
-    if (teamWorkspaceId && !upstreamBackendId) {
-      const discovery = await discoverTeamWorkspaces(
-        this.client,
-        this.environment,
-        undefined,
-        signal
-      );
-      upstreamBackendId = backendForDiscoveredWorkspace(
-        discovery,
-        teamWorkspaceId
-      );
-      if (!upstreamBackendId) {
-        return {
-          markdown:
-            "Koed could not resolve a unique authorized Team Backend for this Workspace. Call memory_workspaces and pass both team_workspace_id and team_backend_id; reconnect unavailable backends if needed.",
-          retrieval: {
-            evidenceCount: 0,
-            mode: "team_workspace_upstream_backend_unavailable",
-            teamWorkspaceId,
-            unavailableBackends: discovery.unavailable_backends
-          }
-        };
+    const teamWorkspaceId =
+      taskAuthority?.scope === "team"
+        ? taskAuthority.teamWorkspaceId
+        : undefined;
+    const retrievalClient = execution.taskContext?.taskBackend ?? this.client;
+    const currentTeamAuthority = () => {
+      const authority = execution.taskContext?.getExecutionAuthority();
+      if (!taskAuthority || taskAuthority.scope !== "team") return undefined;
+      if (
+        !authority ||
+        authority.scope !== "team" ||
+        authority.teamWorkspaceId !== taskAuthority.teamWorkspaceId
+      ) {
+        throw Object.assign(new Error("Memory Answer task authority changed"), {
+          memoryAnswerTaskErrorCode: "team_scope_changed",
+          retryable: false
+        });
       }
-    }
-    const localEdgeClientCredential = upstreamBackendId
-      ? readLocalEdgeClientCredentialAuthorization(
-          path.resolve(
-            this.environment.KOED_HOME?.trim() ||
-              path.join(os.homedir(), ".koed")
-          ),
-          upstreamBackendId
-        )
-      : null;
-    if (teamWorkspaceId && upstreamBackendId && !localEdgeClientCredential) {
-      return {
-        markdown:
-          "Team Workspace recall is configured, but this local Koed runtime has no scoped local-edge client credential. Reconnect the Team Backend through Koed Desktop or headless koed-server enrollment.",
-        retrieval: {
-          evidenceCount: 0,
-          mode: "team_workspace_local_credential_unavailable",
-          teamWorkspaceId,
-          upstreamBackendId
-        }
-      };
-    }
-    const retrievalClient =
-      teamWorkspaceId && upstreamBackendId
-        ? new LocalEdgeTeamMemoryClient(
-            this.client,
-            upstreamBackendId,
-            localEdgeClientCredential!.authorization
-          )
-        : this.client;
+      return authority;
+    };
     const progressAwareRetrievalClient: MemoryAnswerRetrievalClient = {
       search: async (searchInput) => {
-        const result = await retrievalClient.search(searchInput);
+        const authority = currentTeamAuthority();
+        const result = await retrievalClient.search(
+          authority
+            ? {
+                ...searchInput,
+                team_workspace_id: authority.teamWorkspaceId,
+                authorization_boundary: authority.authorizationBoundary
+              }
+            : searchInput
+        );
         execution.onProgress?.("retrieval search completed");
         return result;
       },
       expand: async (nodeId, expandInput) => {
-        const result = await retrievalClient.expand(nodeId, expandInput);
+        const authority = currentTeamAuthority();
+        const result = await retrievalClient.expand(
+          nodeId,
+          authority
+            ? {
+                ...expandInput,
+                teamWorkspaceId: authority.teamWorkspaceId,
+                authorizationBoundary: authority.authorizationBoundary
+              }
+            : expandInput
+        );
         execution.onProgress?.("memory expansion completed");
         return result;
       }
     };
     execution.onProgress?.("answer synthesis started");
-    const evidence =
-      teamWorkspaceId && upstreamBackendId
-        ? await this.client.teamMemoryAnswer(
-            upstreamBackendId,
-            {
-              ...answerInput,
-              team_workspace_id: teamWorkspaceId,
-              project_id: projectId,
-              retrieval_stage: "score_scan"
-            },
-            localEdgeClientCredential!.authorization
-          )
-        : {
-            markdown: "",
-            evidenceBundle: {
-              query: answerInput.query,
-              instructions:
-                "Use Koed memory RAG tools to gather and judge evidence before answering.",
-              evidence: [],
-              retrieval: { mode: "app_server_dynamic_tools" }
-            }
-          };
+    const evidence = {
+      markdown: "",
+      ...(taskAuthority?.scope === "team"
+        ? { authorizationBoundary: taskAuthority.authorizationBoundary }
+        : {}),
+      evidenceBundle: {
+        query: answerInput.query,
+        instructions:
+          "Use Koed memory RAG tools to gather and judge evidence before answering.",
+        evidence: [],
+        retrieval: { mode: "app_server_dynamic_tools" }
+      }
+    };
     const answer = await (
       this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
     )(evidence, {
@@ -643,7 +601,9 @@ export class MemoryToolExecutor {
           retrieval: retrievalFromAnswer(answer),
           local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
         };
-    if (execution.pendingQuestionId) {
+    if (execution.onFinalQuestionPrepared) {
+      execution.onFinalQuestionPrepared(finalQuestionInput);
+    } else if (execution.pendingQuestionId) {
       recordedQuestion = questionFromResponse(
         await this.client.completePendingDesktopAsk(
           execution.pendingQuestionId,
@@ -671,13 +631,7 @@ export class MemoryToolExecutor {
     } else {
       try {
         recordedQuestion = questionFromResponse(
-          teamWorkspaceId && upstreamBackendId
-            ? await this.client.createFinalTeamQuestion(
-                upstreamBackendId,
-                finalQuestionInput,
-                localEdgeClientCredential!.authorization
-              )
-            : await this.client.createFinalQuestion(finalQuestionInput)
+          await this.client.createFinalQuestion(finalQuestionInput)
         );
       } catch (error) {
         if (execution.requireQuestionPersistence) {
@@ -689,13 +643,7 @@ export class MemoryToolExecutor {
         );
       }
     }
-    await this.recordTokenUsage(
-      answer,
-      input,
-      projectId,
-      recordedQuestion,
-      upstreamBackendId
-    );
+    await this.recordTokenUsage(answer, input, projectId, recordedQuestion);
     if (recordedQuestion) {
       execution.onQuestionRecorded?.(recordedQuestion);
     }
@@ -706,15 +654,9 @@ export class MemoryToolExecutor {
     answer: Awaited<ReturnType<typeof answerWithMemoryWorker>>,
     input: MemoryAnswerToolInput,
     projectId: string | undefined,
-    recordedQuestion: McpMemoryQuestion | null,
-    upstreamBackendId: string | undefined
+    recordedQuestion: McpMemoryQuestion | null
   ): Promise<void> {
-    const upstreamQuestionId = upstreamBackendId
-      ? recordedQuestion?.id
-      : undefined;
-    const localQuestionId = upstreamBackendId
-      ? undefined
-      : recordedQuestion?.id;
+    const localQuestionId = recordedQuestion?.id;
     const executions = answer.localMemoryWorker.appServerExecutions?.length
       ? answer.localMemoryWorker.appServerExecutions
       : [
@@ -757,8 +699,6 @@ export class MemoryToolExecutor {
                 execution.primaryThreadId ?? execution.threadId,
               appServerTurnId: execution.turnId,
               questionId: localQuestionId,
-              upstreamQuestionId,
-              upstreamBackendId,
               answerJobId: answer.localMemoryWorker.jobId,
               primaryAppServerThreadId: execution.primaryThreadId,
               executionThreadId: execution.threadId,

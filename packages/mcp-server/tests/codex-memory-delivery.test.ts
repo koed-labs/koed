@@ -18,7 +18,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
 import {
   CODEX_DELIVERY_NONCE,
-  CodexDetachedMemoryIneligible,
   CodexMemoryDelivery,
   CodexMemoryReceiptStore,
   canonicalCodexMemoryInput,
@@ -386,23 +385,24 @@ describe("Codex protected native-call delivery", () => {
       "stale"
     );
   });
-  it("explicit Team scope keeps blocking; only authoritative pre-acceptance ineligibility permits fallback", async () => {
+  it("accepts explicit Team recall into the same deferred receipt lifecycle", async () => {
     const f = fixture();
-    expect(
-      f.prepare(
-        hook({
-          tool_input: {
-            query: "prior decision",
-            team_workspace_id: "11111111-1111-4111-8111-111111111111"
-          }
-        })
-      )[CODEX_DELIVERY_NONCE]
-    ).toBeUndefined();
-    const input = f.prepare();
-    f.port.start.mockRejectedValueOnce(new CodexDetachedMemoryIneligible());
-    expect(
-      await f.delivery.accept(input, caller, undefined, meta())
-    ).toBeUndefined();
+    const { response: receipt } = await f.accept(
+      hook({
+        tool_input: {
+          query: "prior decision",
+          team_workspace_id: "11111111-1111-4111-8111-111111111111"
+        }
+      })
+    );
+    expect(receipt).toMatchObject({ status: "pending" });
+    expect(f.port.start).toHaveBeenCalledOnce();
+    expect(f.port.start.mock.calls[0]?.[0]).toMatchObject({
+      team_workspace_id: "11111111-1111-4111-8111-111111111111"
+    });
+    expect((await f.delivery.stop(hook())).reason).toContain(
+      "authorized decision"
+    );
   });
   it("uncertain start failure consumes the nonce and cannot resubmit", async () => {
     const f = fixture();

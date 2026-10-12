@@ -4,7 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { storeLocalEdgeClientCredential } from "@koed/shared";
+import {
+  readLocalEdgeClientCredentialAuthorization,
+  storeLocalEdgeClientCredential
+} from "@koed/shared";
 import {
   MemoryApiClient,
   allTools,
@@ -45,6 +48,7 @@ import {
   teamWorkspaceAutoResolutionEnabled
 } from "../src/project-team-workspace-links.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
+import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
 
 const servers: http.Server[] = [];
 const identityHash = "f".repeat(64);
@@ -1583,7 +1587,7 @@ describe("LCM summary background service", () => {
     }
   });
 
-  it("routes a Memory Answer Team request through the scoped local-edge credential", async () => {
+  it("executes a trusted durable Team task through the scoped local-edge credential", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-team-"));
     const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
     const backendId = "fixture-team-backend";
@@ -1594,9 +1598,6 @@ describe("LCM summary background service", () => {
       authorization: string | undefined;
       body: Record<string, unknown>;
     }> = [];
-    const answerBootstrapRequests: Record<string, unknown>[] = [];
-    const persistedQuestions: Record<string, unknown>[] = [];
-    const remoteQuestionId = randomUUID();
     let personalSearchCount = 0;
     storeLocalEdgeClientCredential(directory, {
       backendId,
@@ -1708,32 +1709,12 @@ describe("LCM summary background service", () => {
           );
           return;
         }
-        if (request.url === "/v1/local-edge/team-memory/answer") {
-          answerBootstrapRequests.push(parsed);
-          response.end(
-            JSON.stringify({
-              markdown: "",
-              authorizationBoundary,
-              evidenceBundle: {
-                query: "What did the Team decide?",
-                evidence: [],
-                retrieval: { mode: "team_shared_semantic_score_scan" }
-              }
-            })
-          );
-          return;
-        }
         if (request.url === "/v1/memory/search") {
           personalSearchCount += 1;
           response.statusCode = 500;
           response.end(
             JSON.stringify({ error: "personal route must not run" })
           );
-          return;
-        }
-        if (request.url === "/v1/local-edge/team-memory/questions/final") {
-          persistedQuestions.push(parsed.input as Record<string, unknown>);
-          response.end(JSON.stringify({ question: { id: remoteQuestionId } }));
           return;
         }
         response.end(JSON.stringify({}));
@@ -1752,31 +1733,48 @@ describe("LCM summary background service", () => {
       MEMORY_ANSWER_MAX_SEARCHES: "6",
       MEMORY_ANSWER_MAX_EXPANSIONS: "0"
     } as NodeJS.ProcessEnv;
-    const executor = new MemoryToolExecutor(
-      new MemoryApiClient({ apiUrl, apiToken: personalToken }),
-      environment
-    );
+    const client = new MemoryApiClient({ apiUrl, apiToken: personalToken });
+    const executor = new MemoryToolExecutor(client, environment);
+    const authorization = readLocalEdgeClientCredentialAuthorization(
+      directory,
+      backendId
+    )!.authorization;
     try {
-      const result = await executor.execute(
-        "memory_answer",
-        {
+      const { result, finalQuestion } = await executor.executeMemoryAnswerTask(
+        memoryAnswerInputSchema.parse({
           query: "What did the Team decide?",
           retrieval_hints: { exact: [hintSentinel] },
           search_domain: "project",
           project_id: "/repo/koed",
           team_workspace_id: teamWorkspaceId
-        },
-        { cwd: "/repo/koed" }
+        }),
+        { cwd: "/repo/koed" },
+        randomUUID(),
+        undefined,
+        undefined,
+        {
+          getExecutionAuthority: () => ({
+            scope: "team",
+            teamWorkspaceId,
+            authorizationBoundary
+          }),
+          taskBackend: {
+            search: (input) =>
+              client.teamMemorySearch(backendId, input, authorization),
+            expand: (nodeId, input) =>
+              client.teamMemoryExpand(
+                backendId,
+                nodeId,
+                {
+                  team_workspace_id: input?.teamWorkspaceId,
+                  authorization_boundary: input?.authorizationBoundary
+                },
+                authorization
+              )
+          }
+        }
       );
       expect(result.markdown).toEqual(expect.any(String));
-      expect(answerBootstrapRequests).toHaveLength(1);
-      expect(answerBootstrapRequests[0]).toMatchObject({
-        upstream_backend_id: backendId,
-        input: {
-          team_workspace_id: teamWorkspaceId,
-          retrieval_stage: "score_scan"
-        }
-      });
       expect(teamRequests.length).toBeGreaterThan(0);
       expect(personalSearchCount).toBe(0);
       expect(
@@ -1805,8 +1803,7 @@ describe("LCM summary background service", () => {
               .authorization_boundary === authorizationBoundary
         )
       ).toBe(true);
-      expect(persistedQuestions).toHaveLength(1);
-      expect(persistedQuestions[0]).toMatchObject({
+      expect(finalQuestion).toMatchObject({
         team_workspace_id: teamWorkspaceId,
         query: "What did the Team decide?"
       });

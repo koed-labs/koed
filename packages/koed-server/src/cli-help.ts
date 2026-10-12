@@ -83,6 +83,7 @@ Commands:
   upstream activate --json Select the registered upstream used for remote work
   upstream remove --json Remove an upstream backend
   upstream enroll start --json Start enrollment with --source-owner-principal-id
+    --memory-answers | --enable-memory-answers  Request Memory Answer execution through explicit browser approval
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state

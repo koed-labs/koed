@@ -1,4 +1,5 @@
-import { defaultConfig } from "./index.js";
+import { defaultConfig, MemoryApiClient } from "./index.js";
+import { supportsTeamMemoryAnswerTasks } from "./memory-answer-task-coordinator.js";
 import {
   startLocalAiRuntime,
   type LocalAiRuntimeHandle,
@@ -18,12 +19,15 @@ export const startHeadlessRemoteLocalAiRuntime = async ({
   descriptor,
   authorizationProvider,
   environment = process.env,
-  serviceFactory
+  serviceFactory,
+  allowTeamRuntime = false
 }: {
   descriptor: HeadlessRemoteRuntimeDescriptor;
   authorizationProvider: () => Promise<string>;
   environment?: NodeJS.ProcessEnv;
   serviceFactory?: LocalAiRuntimeServiceFactory;
+  /** Granted by credential bootstrap after explicit Team and execution consent. */
+  allowTeamRuntime?: boolean;
 }): Promise<LocalAiRuntimeHandle> => {
   const remoteEnvironment = {
     ...environment,
@@ -41,14 +45,26 @@ export const startHeadlessRemoteLocalAiRuntime = async ({
       descriptor.harnesses.includes("pi")
     )
   };
+  const config = {
+    ...defaultConfig(remoteEnvironment),
+    apiUrl: descriptor.backendUrl,
+    apiToken: undefined,
+    authorizationProvider
+  };
+  if (
+    allowTeamRuntime &&
+    !supportsTeamMemoryAnswerTasks(
+      await new MemoryApiClient(config).capabilities()
+    )
+  ) {
+    throw new Error(
+      "The Team Backend does not support durable Team Memory Answer tasks"
+    );
+  }
   return startLocalAiRuntime({
     environment: remoteEnvironment,
-    config: {
-      ...defaultConfig(remoteEnvironment),
-      apiUrl: descriptor.backendUrl,
-      apiToken: undefined,
-      authorizationProvider
-    },
-    serviceFactory
+    config,
+    serviceFactory,
+    allowTeamRuntime
   });
 };

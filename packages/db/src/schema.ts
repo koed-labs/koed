@@ -11405,6 +11405,7 @@ export const memoryQuestions = pgTable(
     visibility: visibilityScope("visibility").notNull().default("personal"),
     origin: text("origin").notNull().default("mcp_memory_answer"),
     retrievalScope: text("retrieval_scope").notNull().default("personal"),
+    teamAuthorization: jsonb("team_authorization"),
     teamWorkspaceId: uuid("team_workspace_id").references(
       () => teamWorkspaces.id,
       { onDelete: "set null" }
@@ -11507,6 +11508,10 @@ export const memoryAnswerTasks = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     visibility: visibilityScope("visibility").notNull().default("personal"),
+    teamWorkspaceId: uuid("team_workspace_id").references(
+      () => teamWorkspaces.id
+    ),
+    teamAuthorization: jsonb("team_authorization"),
     origin: text("origin").notNull(),
     invocationKey: text("invocation_key"),
     requestSnapshot: jsonb("request_snapshot")
@@ -11565,6 +11570,10 @@ export const memoryAnswerTasks = pgTable(
     check(
       "memory_answer_tasks_origin_check",
       sql`${table.origin} in ('mcp', 'pi_extension')`
+    ),
+    check(
+      "memory_answer_tasks_team_authority_check",
+      sql`(${table.teamWorkspaceId} is null and ${table.teamAuthorization} is null) or (${table.teamWorkspaceId} is not null and ${table.teamAuthorization} is not null)`
     ),
     check(
       "memory_answer_tasks_status_check",

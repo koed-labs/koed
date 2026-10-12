@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type pg from "pg";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
@@ -12,6 +13,16 @@ import type {
   MemoryAnswerTaskStatus
 } from "@koed/shared";
 import type { ActorContext } from "./types.js";
+import {
+  createMemoryQuestionRepository,
+  type CreateFinalMemoryQuestionInput
+} from "./memory-question-repository.js";
+import {
+  assertMemoryAnswerTeamAuthorityWithClient,
+  freezeMemoryAnswerTeamAuthorityWithClient,
+  MemoryAnswerTeamAuthorityError,
+  type MemoryAnswerTeamAuthority
+} from "./memory-answer-team-authority.js";
 
 export type {
   ClaimedMemoryAnswerTask,
@@ -23,6 +34,20 @@ export type {
 export interface MemoryAnswerTaskClaimBatch {
   task: ClaimedMemoryAnswerTask | null;
   reconciled: MemoryAnswerTaskRecord[];
+  teamAuthority?: MemoryAnswerTeamAuthority;
+}
+
+export type MemoryAnswerTaskActor = ActorContext & {
+  allowTeam?: boolean;
+  allowPersonal?: boolean;
+};
+
+export class MemoryAnswerTaskAuthorizationError extends Error {
+  readonly statusCode = 403;
+  constructor() {
+    super("Credential cannot access Personal Memory Answer tasks");
+    this.name = "MemoryAnswerTaskAuthorizationError";
+  }
 }
 
 export class MemoryAnswerTaskQueueFullError extends Error {
@@ -36,26 +61,36 @@ export class MemoryAnswerTaskQueueFullError extends Error {
 
 export interface MemoryAnswerTaskRepository {
   acceptMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     input: {
       origin: MemoryAnswerTaskOrigin;
       invocationKey?: string;
       request: Record<string, unknown>;
+      teamWorkspaceId?: string;
       maxAttempts?: number;
       maxQueued: number;
       retentionMs?: number;
     }
   ): Promise<MemoryAnswerTaskRecord>;
   getMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     taskId: string
   ): Promise<MemoryAnswerTaskRecord | null>;
+  getMemoryAnswerTaskTeamAuthority(
+    actor: MemoryAnswerTaskActor,
+    taskId: string
+  ): Promise<MemoryAnswerTeamAuthority | null>;
   claimMemoryAnswerTask(
-    actor: ActorContext,
-    input: { leaseOwner: string; leaseMs: number }
+    actor: MemoryAnswerTaskActor,
+    input: {
+      leaseOwner: string;
+      leaseMs: number;
+      allowTeam?: boolean;
+      scopeFilter?: "personal" | "team";
+    }
   ): Promise<MemoryAnswerTaskClaimBatch>;
   heartbeatMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     input: {
       taskId: string;
       leaseOwner: string;
@@ -66,21 +101,21 @@ export interface MemoryAnswerTaskRepository {
     }
   ): Promise<MemoryAnswerTaskRecord | null>;
   cancelMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     taskId: string
   ): Promise<MemoryAnswerTaskRecord | null>;
   completeMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     input: {
       taskId: string;
       leaseOwner: string;
       fenceGeneration: number;
-      questionId: string;
+      finalQuestion: CreateFinalMemoryQuestionInput;
       result: Record<string, unknown>;
     }
   ): Promise<MemoryAnswerTaskRecord | null>;
   failMemoryAnswerTask(
-    actor: ActorContext,
+    actor: MemoryAnswerTaskActor,
     input: {
       taskId: string;
       leaseOwner: string;
@@ -91,7 +126,7 @@ export interface MemoryAnswerTaskRepository {
       retryDelayMs?: number;
     }
   ): Promise<MemoryAnswerTaskRecord | null>;
-  deleteExpiredMemoryAnswerTasks(actor: ActorContext): Promise<number>;
+  deleteExpiredMemoryAnswerTasks(actor: MemoryAnswerTaskActor): Promise<number>;
 }
 
 export interface MemoryAnswerTaskRepositoryOptions {
@@ -101,6 +136,8 @@ export interface MemoryAnswerTaskRepositoryOptions {
 type TaskRow = {
   id: string;
   owner_user_id: string;
+  team_workspace_id: string | null;
+  team_authorization: MemoryAnswerTeamAuthority | null;
   origin: MemoryAnswerTaskOrigin;
   invocation_key: string | null;
   request_snapshot: Record<string, unknown>;
@@ -129,7 +166,7 @@ type TaskRow = {
 };
 
 const TASK_COLUMNS = `
-  id, owner_user_id, origin, invocation_key, request_snapshot,
+  id, owner_user_id, team_workspace_id, team_authorization, origin, invocation_key, request_snapshot,
   result_snapshot, question_id, status, status_message, attempt_count,
   max_attempts, available_at, lease_owner, lease_until, fence_generation,
   cancel_requested_at, cancelled_at, started_at, last_progress_at,
@@ -155,6 +192,7 @@ const mapTask = (
   } = {}
 ): MemoryAnswerTaskRecord => ({
   id: row.id,
+  teamWorkspaceId: row.team_workspace_id ?? null,
   origin: row.origin,
   invocationKey: row.invocation_key,
   questionId: row.question_id,
@@ -194,6 +232,7 @@ export const createMemoryAnswerTaskRepository = (
   options: MemoryAnswerTaskRepositoryOptions = {}
 ): MemoryAnswerTaskRepository => {
   const provider = options.envelopeEncryptionProvider;
+  const questions = createMemoryQuestionRepository(pool, options);
   const requireProvider = (): EnvelopeEncryptionProvider => {
     if (!provider) {
       throw new Error(
@@ -247,20 +286,41 @@ export const createMemoryAnswerTaskRepository = (
     return value.plaintext;
   };
 
-  const decrypt = (
-    actor: ActorContext,
-    taskId: string,
-    sourceColumn: "request_snapshot" | "result_snapshot" | "last_error_message"
-  ): Promise<unknown> => decryptWithClient(pool, actor, taskId, sourceColumn);
+  const assertAuthority = async (
+    client: pg.PoolClient,
+    actor: MemoryAnswerTaskActor,
+    row: TaskRow
+  ) => {
+    if (!row.team_workspace_id) {
+      if (actor.allowPersonal === false)
+        throw new MemoryAnswerTaskAuthorizationError();
+      return;
+    }
+    if (!actor.allowTeam) throw new MemoryAnswerTeamAuthorityError();
+    if (!row.team_authorization)
+      throw new Error("Memory Answer Team authority is missing");
+    await assertMemoryAnswerTeamAuthorityWithClient(
+      client,
+      actor,
+      row.team_authorization
+    );
+  };
 
   const hydrateTask = async (
-    actor: ActorContext,
+    client: pg.PoolClient,
+    actor: MemoryAnswerTaskActor,
     row: TaskRow
   ): Promise<MemoryAnswerTaskRecord> => {
+    await assertAuthority(client, actor, row);
     let result: Record<string, unknown> | null | undefined;
     let errorMessage: string | null | undefined;
     if (row.result_snapshot) {
-      const plaintext = await decrypt(actor, row.id, "result_snapshot");
+      const plaintext = await decryptWithClient(
+        client,
+        actor,
+        row.id,
+        "result_snapshot"
+      );
       if (
         !plaintext ||
         typeof plaintext !== "object" ||
@@ -271,7 +331,12 @@ export const createMemoryAnswerTaskRepository = (
       result = plaintext as Record<string, unknown>;
     }
     if (row.last_error_message === ENCRYPTED_TASK_VALUE) {
-      const plaintext = await decrypt(actor, row.id, "last_error_message");
+      const plaintext = await decryptWithClient(
+        client,
+        actor,
+        row.id,
+        "last_error_message"
+      );
       if (typeof plaintext !== "string") {
         throw new Error("Encrypted Memory Answer task error is invalid");
       }
@@ -281,22 +346,66 @@ export const createMemoryAnswerTaskRepository = (
   };
 
   const selectOwned = async (
+    client: pg.PoolClient,
     actor: ActorContext,
     taskId: string
   ): Promise<TaskRow | null> => {
-    const result = await pool.query<TaskRow>(
+    const result = await client.query<TaskRow>(
       `select ${TASK_COLUMNS}
          from memory_answer_tasks
         where id = $2 and owner_user_id = $1 and visibility = 'personal'
-        limit 1`,
+        limit 1 for update`,
       [actor.userId, taskId]
     );
     return result.rows[0] ?? null;
   };
 
+  const withOwnedTask = async (
+    actor: MemoryAnswerTaskActor,
+    taskId: string,
+    operation: (
+      client: pg.PoolClient,
+      row: TaskRow
+    ) => Promise<MemoryAnswerTaskRecord | null>
+  ): Promise<MemoryAnswerTaskRecord | null> => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const row = await selectOwned(client, actor, taskId);
+      let result: MemoryAnswerTaskRecord | null = null;
+      if (row) {
+        await assertAuthority(client, actor, row);
+        result = await operation(client, row);
+      }
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
   return {
     async acceptMemoryAnswerTask(actor, input) {
       requireProvider();
+      if (!input.teamWorkspaceId && actor.allowPersonal === false)
+        throw new MemoryAnswerTaskAuthorizationError();
+      if (input.teamWorkspaceId && !actor.allowTeam)
+        throw new MemoryAnswerTeamAuthorityError();
+      const requestInput = input.request.input;
+      if (
+        requestInput &&
+        typeof requestInput === "object" &&
+        !Array.isArray(requestInput)
+      ) {
+        const requestedWorkspace = (requestInput as Record<string, unknown>)
+          .team_workspace_id;
+        if ((requestedWorkspace ?? null) !== (input.teamWorkspaceId ?? null)) {
+          throw new Error("Memory Answer request scope does not match task");
+        }
+      }
       const taskId = randomUUID();
       const maxAttempts = Math.min(positiveInteger(input.maxAttempts, 3), 10);
       const retentionMs = Math.min(
@@ -319,8 +428,15 @@ export const createMemoryAnswerTaskRepository = (
             [actor.userId, input.origin, input.invocationKey]
           );
           if (existing.rows[0]) {
+            if (
+              (existing.rows[0].team_workspace_id ?? null) !==
+              (input.teamWorkspaceId ?? null)
+            ) {
+              throw new Error("Memory Answer invocation scope does not match");
+            }
+            const task = await hydrateTask(client, actor, existing.rows[0]);
             await client.query("commit");
-            return await hydrateTask(actor, existing.rows[0]);
+            return task;
           }
         }
         const queued = await client.query<{ count: string }>(
@@ -335,13 +451,18 @@ export const createMemoryAnswerTaskRepository = (
         ) {
           throw new MemoryAnswerTaskQueueFullError();
         }
+        const teamAuthority = input.teamWorkspaceId
+          ? await freezeMemoryAnswerTeamAuthorityWithClient(client, actor, {
+              teamWorkspaceId: input.teamWorkspaceId
+            })
+          : null;
         const inserted = await client.query<TaskRow>(
           `insert into memory_answer_tasks (
              id, owner_user_id, visibility, origin, invocation_key,
-             request_snapshot, status, max_attempts, expires_at
+             request_snapshot, status, max_attempts, expires_at, team_workspace_id, team_authorization
            ) values (
              $1, $2, 'personal', $3, $4, $5::jsonb, 'accepted', $6,
-             now() + ($7::text::interval)
+             now() + ($7::text::interval), $8, $9::jsonb
            )
            returning ${TASK_COLUMNS}`,
           [
@@ -351,7 +472,9 @@ export const createMemoryAnswerTaskRepository = (
             input.invocationKey ?? null,
             JSON.stringify(encryptedTaskMarker("request_snapshot")),
             maxAttempts,
-            `${retentionMs} milliseconds`
+            `${retentionMs} milliseconds`,
+            input.teamWorkspaceId ?? null,
+            teamAuthority ? JSON.stringify(teamAuthority) : null
           ]
         );
         const row = inserted.rows[0];
@@ -363,8 +486,9 @@ export const createMemoryAnswerTaskRepository = (
           "request_snapshot",
           input.request
         );
+        const task = await hydrateTask(client, actor, row);
         await client.query("commit");
-        return await hydrateTask(actor, row);
+        return task;
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -374,8 +498,18 @@ export const createMemoryAnswerTaskRepository = (
     },
 
     async getMemoryAnswerTask(actor, taskId) {
-      const row = await selectOwned(actor, taskId);
-      return row ? await hydrateTask(actor, row) : null;
+      return withOwnedTask(actor, taskId, (client, row) =>
+        hydrateTask(client, actor, row)
+      );
+    },
+
+    async getMemoryAnswerTaskTeamAuthority(actor, taskId) {
+      let authority: MemoryAnswerTeamAuthority | null = null;
+      await withOwnedTask(actor, taskId, (_client, row) => {
+        authority = row.team_authorization ?? null;
+        return Promise.resolve(mapTask(row));
+      });
+      return authority;
     },
 
     async claimMemoryAnswerTask(actor, input) {
@@ -383,14 +517,39 @@ export const createMemoryAnswerTaskRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const eligible = await client.query<TaskRow>(
+          `select ${TASK_COLUMNS} from memory_answer_tasks
+            where owner_user_id = $1 and visibility = 'personal'
+              and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
+              and ($4::text is null or ($4 = 'personal' and team_workspace_id is null) or ($4 = 'team' and team_workspace_id is not null))
+              and status in ('accepted', 'running', 'cancel_requested')
+            order by available_at, created_at, id for update skip locked`,
+          [
+            actor.userId,
+            input.allowTeam === true && actor.allowTeam === true,
+            actor.allowPersonal !== false,
+            input.scopeFilter ?? "personal"
+          ]
+        );
+        const authorizedIds: string[] = [];
+        for (const candidate of eligible.rows) {
+          try {
+            await assertAuthority(client, actor, candidate);
+            authorizedIds.push(candidate.id);
+          } catch (error) {
+            // Revoked Team tasks remain inaccessible without blocking Personal work.
+            if (!(error instanceof MemoryAnswerTeamAuthorityError)) throw error;
+          }
+        }
         const cancelled = await client.query<TaskRow>(
           `update memory_answer_tasks
               set status = 'cancelled', lease_owner = null, lease_until = null,
                   cancelled_at = now(), updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
+              and id = any($2::uuid[])
               and status = 'cancel_requested' and lease_until < now()
            returning ${TASK_COLUMNS}`,
-          [actor.userId]
+          [actor.userId, authorizedIds]
         );
         const exhausted = await client.query<TaskRow>(
           `update memory_answer_tasks
@@ -398,16 +557,18 @@ export const createMemoryAnswerTaskRepository = (
                   failed_at = now(), last_error_code = 'attempts_exhausted',
                   last_error_message = null, updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
+              and id = any($2::uuid[])
               and status = 'running' and lease_until < now()
               and attempt_count >= max_attempts
            returning ${TASK_COLUMNS}`,
-          [actor.userId]
+          [actor.userId, authorizedIds]
         );
         const result = await client.query<TaskRow>(
           `with candidate as (
              select id as candidate_id
                from memory_answer_tasks
               where owner_user_id = $1 and visibility = 'personal'
+                and id = any($4::uuid[])
                 and available_at <= now()
                 and attempt_count < max_attempts
                 and (status = 'accepted' or (status = 'running' and lease_until < now()))
@@ -417,7 +578,7 @@ export const createMemoryAnswerTaskRepository = (
            )
            update memory_answer_tasks task
               set status = 'running', lease_owner = $2,
-                  lease_until = now() + ($3::text::interval),
+                  lease_until = clock_timestamp() + ($3::text::interval),
                   fence_generation = fence_generation + 1,
                   attempt_count = attempt_count + 1,
                   started_at = coalesce(started_at, now()),
@@ -426,11 +587,17 @@ export const createMemoryAnswerTaskRepository = (
              from candidate
             where task.id = candidate.candidate_id
            returning ${TASK_COLUMNS}`,
-          [actor.userId, input.leaseOwner, `${leaseMs} milliseconds`]
+          [
+            actor.userId,
+            input.leaseOwner,
+            `${leaseMs} milliseconds`,
+            authorizedIds
+          ]
         );
         const row = result.rows[0];
         let task: ClaimedMemoryAnswerTask | null = null;
         if (row) {
+          await assertAuthority(client, actor, row);
           const request = await decryptWithClient(
             client,
             actor,
@@ -454,6 +621,9 @@ export const createMemoryAnswerTaskRepository = (
         await client.query("commit");
         return {
           task,
+          ...(row?.team_authorization
+            ? { teamAuthority: row.team_authorization }
+            : {}),
           reconciled: [...cancelled.rows, ...exhausted.rows].map((item) =>
             mapTask(item)
           )
@@ -468,32 +638,37 @@ export const createMemoryAnswerTaskRepository = (
 
     async heartbeatMemoryAnswerTask(actor, input) {
       const leaseMs = Math.min(positiveInteger(input.leaseMs, 60_000), 300_000);
-      const result = await pool.query<TaskRow>(
-        `update memory_answer_tasks
-            set lease_until = now() + ($5::text::interval),
+      return withOwnedTask(actor, input.taskId, async (client) => {
+        const result = await client.query<TaskRow>(
+          `update memory_answer_tasks
+            set lease_until = clock_timestamp() + ($5::text::interval),
                 last_progress_at = case when $6 then now() else last_progress_at end,
                 status_message = coalesce($7, status_message),
                 updated_at = now(), version = version + 1
           where owner_user_id = $1 and id = $2 and visibility = 'personal'
             and lease_owner = $3 and fence_generation = $4
-            and lease_until >= now() and status in ('running', 'cancel_requested')
+            and lease_until >= clock_timestamp() and status in ('running', 'cancel_requested')
          returning ${TASK_COLUMNS}`,
-        [
-          actor.userId,
-          input.taskId,
-          input.leaseOwner,
-          input.fenceGeneration,
-          `${leaseMs} milliseconds`,
-          input.madeProgress === true,
-          input.statusMessage ?? null
-        ]
-      );
-      return result.rows[0] ? await hydrateTask(actor, result.rows[0]) : null;
+          [
+            actor.userId,
+            input.taskId,
+            input.leaseOwner,
+            input.fenceGeneration,
+            `${leaseMs} milliseconds`,
+            input.madeProgress === true,
+            input.statusMessage ?? null
+          ]
+        );
+        return result.rows[0]
+          ? await hydrateTask(client, actor, result.rows[0])
+          : null;
+      });
     },
 
     async cancelMemoryAnswerTask(actor, taskId) {
-      const result = await pool.query<TaskRow>(
-        `update memory_answer_tasks
+      return withOwnedTask(actor, taskId, async (client, existing) => {
+        const result = await client.query<TaskRow>(
+          `update memory_answer_tasks
             set status = case when status = 'accepted' then 'cancelled' else 'cancel_requested' end,
                 cancel_requested_at = coalesce(cancel_requested_at, now()),
                 cancelled_at = case when status = 'accepted' then now() else cancelled_at end,
@@ -502,22 +677,111 @@ export const createMemoryAnswerTaskRepository = (
           where owner_user_id = $1 and id = $2 and visibility = 'personal'
             and status in ('accepted', 'running')
          returning ${TASK_COLUMNS}`,
-        [actor.userId, taskId]
-      );
-      const row = result.rows[0] ?? (await selectOwned(actor, taskId));
-      return row ? await hydrateTask(actor, row) : null;
+          [actor.userId, taskId]
+        );
+        return hydrateTask(client, actor, result.rows[0] ?? existing);
+      });
     },
 
     async completeMemoryAnswerTask(actor, input) {
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const current = await selectOwned(client, actor, input.taskId);
+        if (current) await assertAuthority(client, actor, current);
+        if (
+          !current ||
+          current.status !== "running" ||
+          current.lease_owner !== input.leaseOwner ||
+          current.fence_generation !== input.fenceGeneration
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const liveLease = await client.query<{ valid: boolean }>(
+          `select lease_until >= clock_timestamp() as valid from memory_answer_tasks where id = $1`,
+          [current.id]
+        );
+        if (!liveLease.rows[0]?.valid) {
+          await client.query("rollback");
+          return null;
+        }
+        if (
+          (input.finalQuestion.teamWorkspaceId ?? null) !==
+            (current.team_workspace_id ?? null) ||
+          (input.finalQuestion.retrievalScope ?? "personal") !== "personal"
+        ) {
+          throw new Error("Final Memory Question scope does not match task");
+        }
+        const request = await decryptWithClient(
+          client,
+          actor,
+          current.id,
+          "request_snapshot"
+        );
+        const acceptedInput =
+          request && typeof request === "object" && !Array.isArray(request)
+            ? (request as Record<string, unknown>).input
+            : undefined;
+        if (
+          !acceptedInput ||
+          typeof acceptedInput !== "object" ||
+          Array.isArray(acceptedInput) ||
+          typeof (acceptedInput as Record<string, unknown>).query !==
+            "string" ||
+          (
+            (acceptedInput as Record<string, unknown>).query as string
+          ).trim() !== input.finalQuestion.query.trim()
+        ) {
+          throw new Error("Final Memory Question query does not match task");
+        }
+        const snapshot = acceptedInput as Record<string, unknown>;
+        if (
+          (snapshot.search_domain !== undefined &&
+            snapshot.search_domain !== input.finalQuestion.searchDomain) ||
+          (snapshot.session_id ?? null) !==
+            (input.finalQuestion.sessionId ?? null)
+        ) {
+          throw new Error(
+            "Final Memory Question search scope does not match task"
+          );
+        }
+        let expectedProject = snapshot.project_id;
+        if (
+          snapshot.search_domain === "project" &&
+          (typeof expectedProject !== "string" ||
+            (!path.isAbsolute(expectedProject) &&
+              !path.win32.isAbsolute(expectedProject)))
+        ) {
+          const caller = (request as Record<string, unknown>).caller;
+          const cwd =
+            caller && typeof caller === "object" && !Array.isArray(caller)
+              ? (caller as Record<string, unknown>).cwd
+              : undefined;
+          if (typeof cwd !== "string")
+            throw new Error("Memory Answer task project context is missing");
+          expectedProject = path.resolve(cwd);
+        }
+        if (
+          (expectedProject ?? null) !== (input.finalQuestion.projectId ?? null)
+        ) {
+          throw new Error("Final Memory Question project does not match task");
+        }
+        const question = await questions.createFinalMemoryQuestionWithClient(
+          client,
+          actor,
+          {
+            ...input.finalQuestion,
+            idempotencyKey: `memory-answer-task:${current.id}`
+          },
+          { teamAuthority: current.team_authorization ?? undefined }
+        );
         await encryptWithClient(
           client,
           actor,
           input.taskId,
           "result_snapshot",
-          input.result
+          { ...input.result, question_id: question.id }
         );
         const result = await client.query<TaskRow>(
           `update memory_answer_tasks
@@ -528,14 +792,14 @@ export const createMemoryAnswerTaskRepository = (
                   updated_at = now(), version = version + 1
             where owner_user_id = $1 and id = $2 and visibility = 'personal'
               and lease_owner = $3 and fence_generation = $4
-              and lease_until >= now() and status = 'running'
+              and lease_until >= clock_timestamp() and status = 'running'
            returning ${TASK_COLUMNS}`,
           [
             actor.userId,
             input.taskId,
             input.leaseOwner,
             input.fenceGeneration,
-            input.questionId,
+            question.id,
             JSON.stringify(encryptedTaskMarker("result_snapshot"))
           ]
         );
@@ -550,8 +814,9 @@ export const createMemoryAnswerTaskRepository = (
               and source_column = 'last_error_message'`,
           [actor.userId, input.taskId]
         );
+        const task = await hydrateTask(client, actor, result.rows[0]);
         await client.query("commit");
-        return await hydrateTask(actor, result.rows[0]);
+        return task;
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;
@@ -568,6 +833,17 @@ export const createMemoryAnswerTaskRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const current = await selectOwned(client, actor, input.taskId);
+        if (current) await assertAuthority(client, actor, current);
+        if (
+          !current ||
+          current.lease_owner !== input.leaseOwner ||
+          current.fence_generation !== input.fenceGeneration ||
+          !["running", "cancel_requested"].includes(current.status)
+        ) {
+          await client.query("rollback");
+          return null;
+        }
         await encryptWithClient(
           client,
           actor,
@@ -604,7 +880,7 @@ export const createMemoryAnswerTaskRepository = (
                   updated_at = now(), version = version + 1
             where owner_user_id = $1 and id = $2 and visibility = 'personal'
               and lease_owner = $3 and fence_generation = $4
-              and lease_until >= now() and status in ('running', 'cancel_requested')
+              and lease_until >= clock_timestamp() and status in ('running', 'cancel_requested')
            returning ${TASK_COLUMNS}`,
           [
             actor.userId,
@@ -621,8 +897,9 @@ export const createMemoryAnswerTaskRepository = (
           await client.query("rollback");
           return null;
         }
+        const task = await hydrateTask(client, actor, result.rows[0]);
         await client.query("commit");
-        return await hydrateTask(actor, result.rows[0]);
+        return task;
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;
@@ -638,10 +915,15 @@ export const createMemoryAnswerTaskRepository = (
         const tasks = await client.query<{ id: string }>(
           `delete from memory_answer_tasks
             where owner_user_id = $1 and visibility = 'personal'
+              and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
               and status in ('completed', 'failed', 'cancelled')
               and expires_at <= now()
           returning id`,
-          [actor.userId]
+          [
+            actor.userId,
+            actor.allowTeam === true,
+            actor.allowPersonal !== false
+          ]
         );
         if (tasks.rows.length > 0) {
           await client.query(

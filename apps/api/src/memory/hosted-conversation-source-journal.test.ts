@@ -162,7 +162,7 @@ describe.skipIf(!databaseUrl)(
       await pool.end();
       await admin.query(`drop database if exists ${name}`);
       await admin.end();
-    });
+    }, 30_000);
 
     const sourcePayload = () => {
       const externalSessionId = randomUUID();

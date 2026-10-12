@@ -9,7 +9,6 @@ import {
   REMOTE_MCP_MAX_BODY_BYTES
 } from "@koed/mcp-server/runtime-contracts";
 import type { AuthHelpers } from "../auth/index.js";
-import { searchMemorySchema } from "../memory/recall-schemas.js";
 
 const remoteBackendId = "remote";
 const workspaceContextsSchema = z.object({
@@ -65,13 +64,13 @@ class RequestBoundMemoryApiClient extends MemoryApiClient {
       throw new LocalAiRuntimeError(
         "Authorized memory API operation was unavailable",
         response.statusCode,
-        undefined,
         response.statusCode === 429 &&
           Number.isFinite(seconds) &&
           seconds > 0 &&
           seconds <= 300
           ? Math.ceil(seconds * 1000)
-          : undefined
+          : undefined,
+        "remote"
       );
     }
     return response.json<T>();
@@ -95,18 +94,6 @@ class RequestBoundMemoryApiClient extends MemoryApiClient {
 
   teamContexts(signal?: AbortSignal): Promise<unknown> {
     return this.request("GET", "/v1/team-context", undefined, { signal });
-  }
-
-  teamAnswer(
-    input: Record<string, unknown>,
-    signal?: AbortSignal
-  ): Promise<Record<string, unknown>> {
-    return this.request(
-      "POST",
-      "/v1/memory/answer",
-      searchMemorySchema.parse({ ...input, retrieval_scope: "personal" }),
-      { signal }
-    );
   }
 }
 
@@ -150,6 +137,10 @@ export const registerRemoteMcpRoutes = (
         principal: { userId: principal.userId, tokenId: principal.grantId },
         runtimeClient: new RemoteBackendRuntimeClient({
           client,
+          supportedTaskScopes: {
+            personal: true,
+            ...(teamAllowed ? { team: { backendId: remoteBackendId } } : {})
+          },
           ...(teamAllowed
             ? {
                 discoverWorkspaces: async (
@@ -183,17 +174,6 @@ export const registerRemoteMcpRoutes = (
                     })),
                     unavailable_backends: []
                   };
-                },
-                teamEvidence: async (
-                  input: Record<string, unknown>,
-                  signal?: AbortSignal
-                ) => {
-                  if (
-                    input.team_backend_id &&
-                    input.team_backend_id !== remoteBackendId
-                  )
-                    throw new Error("Requested Team backend is not available");
-                  return client.teamAnswer(input, signal);
                 }
               }
             : {})

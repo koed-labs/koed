@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
 import {
   CODEX_DELIVERY_NONCE,
-  CodexDetachedMemoryIneligible,
   CodexMemoryDelivery,
   CodexMemoryReceiptStore,
   canonicalCodexMemoryInput
@@ -225,24 +224,8 @@ export const createKoedMcpServer = async (
     ? new CodexMemoryDelivery(
         receiptStore,
         {
-          start: async (input, caller, key, signal) => {
-            try {
-              return await runtimeClient.startMemoryAnswerTask(
-                input,
-                caller,
-                key,
-                signal
-              );
-            } catch (error) {
-              if (
-                error instanceof LocalAiRuntimeError &&
-                error.statusCode === 409 &&
-                error.code === "memory_answer_team_ineligible"
-              )
-                throw new CodexDetachedMemoryIneligible();
-              throw error;
-            }
-          },
+          start: (input, caller, key, signal) =>
+            runtimeClient.startMemoryAnswerTask(input, caller, key, signal),
           get: (id, signal) => runtimeClient.getMemoryAnswerTask(id, signal),
           cancel: (id, signal) =>
             runtimeClient.cancelMemoryAnswerTask(id, signal)
@@ -351,12 +334,6 @@ export const createKoedMcpServer = async (
               // A successful tool call can still return while capability refresh
               // waits for the Local AI Runtime to finish starting.
             }
-          }
-          if (
-            toolName === "memory_answer" &&
-            response.synthesis === "ai_client"
-          ) {
-            return jsonResponse(response);
           }
           if (toolName === "memory_answer" && response.status !== "pending") {
             const answerInput = input as Record<string, unknown>;

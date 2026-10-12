@@ -82,7 +82,7 @@ describe.skipIf(!databaseUrl)(
       await pool.end();
       await admin.query(`drop schema if exists ${schema} cascade`);
       await admin.end();
-    });
+    }, 30_000);
 
     const post = async (path: string, data: Record<string, string>) =>
       fetch(`${base}${path}`, {

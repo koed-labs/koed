@@ -37,6 +37,15 @@ export const publicUser = (user: {
 });
 
 export interface AuthHelpers {
+  authenticateMemoryAnswerTask(
+    request: FastifyRequest,
+    mode: "read" | "execution",
+    requestedTeam?: boolean
+  ): Promise<{
+    user: { id: string };
+    allowTeam: boolean;
+    allowPersonal: boolean;
+  }>;
   hashSecret: HashSecret;
   resolveDelegatedPrincipal(
     request: FastifyRequest
@@ -407,7 +416,84 @@ export const createAuthHelpers = (
     return await authenticateSession(request);
   };
 
+  const authenticateMemoryAnswerTask = async (
+    request: FastifyRequest,
+    mode: "read" | "execution",
+    requestedTeam?: boolean
+  ) => {
+    // Native upstream task proxies may only narrow freshly verified authority.
+    const scope = request.headers["x-koed-memory-answer-task-scope"];
+    if (scope !== undefined && scope !== "personal" && scope !== "team")
+      throw Object.assign(new Error("Invalid Memory Answer task scope"), {
+        statusCode: 400
+      });
+    const restrict = (allowTeam: boolean, allowPersonal: boolean) => {
+      allowTeam = allowTeam && scope !== "personal";
+      allowPersonal = allowPersonal && scope !== "team";
+      if ((scope === "team" || requestedTeam === true) && !allowTeam)
+        throw Object.assign(
+          new Error("Team Memory Answer permission is required"),
+          {
+            statusCode: 403
+          }
+        );
+      if ((scope === "personal" || requestedTeam === false) && !allowPersonal)
+        throw Object.assign(
+          new Error("Personal Memory Answer permission is required"),
+          {
+            statusCode: 403
+          }
+        );
+      return { allowTeam, allowPersonal };
+    };
+    const device = readDeviceCredential(request);
+    if (device) {
+      const context = await authenticateDeviceCredential(request, {
+        fresh: true
+      });
+      const families = context.credential.operationFamilies;
+      const required = "memory_answer_execution";
+      if (!families.includes(required))
+        throw Object.assign(
+          new Error("Device credential is not allowed for Memory Answer tasks"),
+          { statusCode: 403 }
+        );
+      const allowTeam = families.includes("team_workspace_read");
+      const allowPersonal = families.includes("personal_memory_read");
+      if (requestedTeam && !allowTeam)
+        throw Object.assign(
+          new Error("Team Memory Answer permission is required"),
+          { statusCode: 403 }
+        );
+      if (requestedTeam === false && !allowPersonal)
+        throw Object.assign(
+          new Error("Personal Memory Answer permission is required"),
+          { statusCode: 403 }
+        );
+      return { user: context.user, ...restrict(allowTeam, allowPersonal) };
+    }
+    const principal = await resolveDelegatedPrincipal(request);
+    const user = await authenticateApiToken(request);
+    const allowTeam = Boolean(principal?.scopes.includes("koed:team:read"));
+    if (principal) {
+      const required =
+        mode === "execution" ? "koed:local-execution" : "koed:memory:read";
+      if (!principal.scopes.includes(required))
+        throw Object.assign(
+          new Error("Delegated Memory Answer scope is required"),
+          { statusCode: 403 }
+        );
+    }
+    if (requestedTeam && !allowTeam)
+      throw Object.assign(
+        new Error("Team Memory Answer permission is required"),
+        { statusCode: 403 }
+      );
+    return { user, ...restrict(allowTeam, true) };
+  };
+
   return {
+    authenticateMemoryAnswerTask,
     hashSecret,
     resolveDelegatedPrincipal,
     resolveApiTokenUser,

@@ -328,11 +328,7 @@ export function createPiMemoryDelivery(
   };
   const execute = async (id, input, signal, ctx) => {
     const invocation = `${ctx.sessionManager.getSessionId()}:${id}`;
-    if (
-      mode === "blocking" ||
-      input.team_workspace_id ||
-      !capabilities(pi, ctx)
-    )
+    if (mode === "blocking" || !capabilities(pi, ctx))
       return blockingResult(input, ctx, signal, invocation);
     if (
       !alive ||
@@ -385,13 +381,6 @@ export function createPiMemoryDelivery(
         invocation,
         signal
       );
-    } catch (error) {
-      if (
-        error?.statusCode === 409 &&
-        error?.code === "memory_answer_team_ineligible"
-      )
-        return blockingResult(input, ctx, signal, invocation);
-      throw error;
     } finally {
       accepting.delete(reservation);
     }

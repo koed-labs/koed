@@ -19,7 +19,6 @@ export class LocalAiRuntimeError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
-    readonly code?: "memory_answer_team_ineligible",
     readonly retryAfterMs?: number,
     readonly rateLimitSource?: RateLimitSource
   ) {
@@ -40,14 +39,6 @@ const responseJson = async (
       typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : `Koed local AI runtime request failed with HTTP ${response.status}`;
-    const code =
-      response.status === 409 &&
-      body &&
-      typeof body === "object" &&
-      "errorCode" in body &&
-      body.errorCode === "memory_answer_team_ineligible"
-        ? "memory_answer_team_ineligible"
-        : undefined;
     const retryAfterMs =
       response.status === 429 &&
       body &&
@@ -69,7 +60,6 @@ const responseJson = async (
     throw new LocalAiRuntimeError(
       message,
       response.status,
-      code,
       retryAfterMs,
       rateLimitSource
     );

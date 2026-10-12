@@ -72,7 +72,7 @@ const setup = (options: Partial<RemoteKoedMcpHandlerOptions> = {}) => {
 };
 
 describe("authenticated remote MCP transport", () => {
-  it("delivers Team evidence for invoking AI Client synthesis even in compact mode", async () => {
+  it("delivers a Team helper answer through the shared compact presentation", async () => {
     const executor = runtime();
     executor.capabilities.mockResolvedValue({
       protocolVersion: 1,
@@ -80,12 +80,12 @@ describe("authenticated remote MCP transport", () => {
       memoryAnswerTeamBackendAvailable: true,
       supportedTools: ["memory_answer"]
     });
-    const evidenceResponse = {
-      synthesis: "ai_client",
+    const answerResponse = {
+      markdown: "Team helper answer.",
       evidence: [{ text: "Shared fact" }],
       citations: [{ sourceId: "shared-source" }]
     };
-    executor.callTool.mockResolvedValue(evidenceResponse);
+    executor.callTool.mockResolvedValue(answerResponse);
     const { connect } = setup({
       authenticate: async () => ({
         principal: { userId: "user", tokenId: "token" },
@@ -102,8 +102,8 @@ describe("authenticated remote MCP transport", () => {
         team_backend_id: "team"
       }
     });
-    expect(response.structuredContent).toEqual(evidenceResponse);
-    expect(JSON.stringify(response.content)).toContain("Shared fact");
+    expect(response.structuredContent).toBeUndefined();
+    expect(JSON.stringify(response.content)).toContain("Team helper answer.");
   });
   it.each(["2026-07-28", "2025-11-25"] as const)(
     "shares gated discovery and tool behavior over %s HTTP",

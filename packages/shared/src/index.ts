@@ -1830,6 +1830,7 @@ export {
 } from "./source-content-policy.js";
 
 export {
+  MEMORY_ANSWER_TASK_CONTRACT_VERSION,
   acceptMemoryAnswerTaskSchema,
   claimedMemoryAnswerTaskSchema,
   claimMemoryAnswerTaskSchema,
@@ -1837,6 +1838,8 @@ export {
   failMemoryAnswerTaskSchema,
   heartbeatMemoryAnswerTaskSchema,
   memoryAnswerTaskClaimResponseSchema,
+  memoryAnswerTaskExecutionAuthoritySchema,
+  memoryAnswerTaskHeartbeatResponseSchema,
   memoryAnswerTaskIsTerminal,
   memoryAnswerTaskOrigins,
   memoryAnswerTaskParamsSchema,
@@ -1850,6 +1853,7 @@ export {
   type FailMemoryAnswerTaskInput,
   type HeartbeatMemoryAnswerTaskInput,
   type MemoryAnswerTask,
+  type MemoryAnswerTaskExecutionAuthority,
   type MemoryAnswerTaskOrigin,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";

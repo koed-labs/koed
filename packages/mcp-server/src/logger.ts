@@ -152,7 +152,6 @@ const allowedErrorNames = new Set([
   "EvalError",
   "LocalAiRuntimeError",
   "MemoryAnswerBlockingError",
-  "MemoryAnswerDetachedIneligibleError",
   "MemoryApiError",
   "PiManagedConversationProviderError",
   "RangeError",

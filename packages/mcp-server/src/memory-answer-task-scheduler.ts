@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import {
   memoryAnswerTaskIsTerminal,
+  memoryAnswerTaskExecutionAuthoritySchema,
+  type MemoryAnswerTaskExecutionAuthority,
   type ClaimedMemoryAnswerTask as SharedClaimedMemoryAnswerTask,
   type MemoryAnswerTask,
   type MemoryAnswerTaskStatus
@@ -8,10 +10,17 @@ import {
 import { z } from "zod";
 import { AnswerExecutionCapacity } from "./answer-admission.js";
 import type { MemoryApiClient } from "./index.js";
+import type { MemoryAnswerRetrievalClient } from "./answer-worker.js";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 
 export type MemoryAnswerTaskView = MemoryAnswerTask;
+export type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
+
+export interface MemoryAnswerTaskExecutionContext {
+  getExecutionAuthority(): MemoryAnswerTaskExecutionAuthority;
+  taskBackend?: MemoryAnswerRetrievalClient;
+}
 export type MemoryAnswerTaskApi = Pick<
   MemoryApiClient,
   | "acceptMemoryAnswerTask"
@@ -37,8 +46,12 @@ export interface MemoryAnswerTaskExecutor {
     caller: LocalRuntimeCallerContext,
     taskId: string,
     signal?: AbortSignal,
-    onProgress?: (status: string) => void
-  ): Promise<{ questionId: string; result: Record<string, unknown> }>;
+    onProgress?: (status: string) => void,
+    context?: MemoryAnswerTaskExecutionContext
+  ): Promise<{
+    finalQuestion: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>;
 }
 
 export interface MemoryAnswerTaskSchedulerOptions {
@@ -50,6 +63,10 @@ export interface MemoryAnswerTaskSchedulerOptions {
   reconcileMs?: number;
   noProgressTimeoutMs?: number;
   hardTimeoutMs?: number;
+  executionContextForTask?: (
+    task: SharedClaimedMemoryAnswerTask,
+    getExecutionAuthority: () => MemoryAnswerTaskExecutionAuthority
+  ) => MemoryAnswerTaskExecutionContext;
 }
 
 const TERMINAL = new Set<MemoryAnswerTaskStatus>([
@@ -143,12 +160,14 @@ export class MemoryAnswerTaskScheduler {
   private readonly cleanupTimer: NodeJS.Timeout;
   private draining = false;
   private closed = false;
+  private readonly executionContextForTask?: MemoryAnswerTaskSchedulerOptions["executionContextForTask"];
 
   constructor(
     private readonly apiClient: MemoryAnswerTaskApi,
     private readonly executor: MemoryAnswerTaskExecutor,
     options: MemoryAnswerTaskSchedulerOptions = {}
   ) {
+    this.executionContextForTask = options.executionContextForTask;
     this.executionCapacity =
       options.executionCapacity ??
       new AnswerExecutionCapacity(positive(options.maxActive, 2));
@@ -357,6 +376,10 @@ export class MemoryAnswerTaskScheduler {
     task: ClaimedMemoryAnswerTask,
     attempt: MemoryAnswerAttemptControl
   ): Promise<void> {
+    let authority = memoryAnswerTaskExecutionAuthoritySchema.parse(
+      task.executionAuthority ?? { scope: "personal" }
+    );
+    const getExecutionAuthority = () => authority;
     let heartbeatTimer: NodeJS.Timeout | undefined;
     let heartbeatInFlight: Promise<void> | null = null;
     let finishing = false;
@@ -379,14 +402,33 @@ export class MemoryAnswerTaskScheduler {
         return;
       }
       try {
-        const { task: current } =
-          await this.apiClient.heartbeatMemoryAnswerTask(task.id, {
+        const heartbeat = await this.apiClient.heartbeatMemoryAnswerTask(
+          task.id,
+          {
             lease_owner: task.leaseOwner,
             fence_generation: task.fenceGeneration,
             lease_ms: this.leaseMs,
             made_progress: attempt.consumeProgress(),
             status_message: attempt.statusMessage
-          });
+          }
+        );
+        const current = heartbeat.task;
+        if (heartbeat.executionAuthority) {
+          const renewed = memoryAnswerTaskExecutionAuthoritySchema.parse(
+            heartbeat.executionAuthority
+          );
+          if (
+            renewed.scope !== authority.scope ||
+            (renewed.scope === "team" &&
+              authority.scope === "team" &&
+              renewed.teamWorkspaceId !== authority.teamWorkspaceId)
+          ) {
+            throw new Error(
+              "Memory Answer task authority changed during execution"
+            );
+          }
+          authority = renewed;
+        }
         this.publish(current);
         if (current.status === "cancel_requested") {
           attempt.stop(
@@ -408,12 +450,17 @@ export class MemoryAnswerTaskScheduler {
     hardTimeout.unref?.();
 
     try {
+      const context = this.executionContextForTask?.(
+        task,
+        getExecutionAuthority
+      ) ?? { getExecutionAuthority };
       const completed = await this.executor.executeMemoryAnswerTask(
         task.request.input,
         task.request.caller,
         task.id,
         attempt.controller.signal,
-        (status) => attempt.progress(status)
+        (status) => attempt.progress(status),
+        context
       );
       finishing = true;
       if (heartbeatTimer) clearTimeout(heartbeatTimer);
@@ -426,7 +473,7 @@ export class MemoryAnswerTaskScheduler {
         {
           lease_owner: task.leaseOwner,
           fence_generation: task.fenceGeneration,
-          question_id: completed.questionId,
+          final_question: completed.finalQuestion,
           result: completed.result
         }
       );

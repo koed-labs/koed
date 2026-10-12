@@ -36,7 +36,14 @@ const fixture = () => {
   const client = {
     capabilities: vi.fn<RemoteMemoryApiClient["capabilities"]>(async () => ({
       capabilitySchemaVersion: 4,
-      capabilities: { "memory.curatedIntake": { availability: "available" } }
+      capabilities: {
+        "memory.curatedIntake": { availability: "available" },
+        "memory.answerTasks": {
+          availability: "available",
+          version: 2,
+          supportedScopes: ["personal", "team"]
+        }
+      }
     })),
     accessCheck: vi.fn<RemoteMemoryApiClient["accessCheck"]>(),
     search: vi.fn<RemoteMemoryApiClient["search"]>(async () => ({
@@ -209,16 +216,12 @@ describe("remote backend runtime client", () => {
     expect(client.cancelMemoryAnswerTask).not.toHaveBeenCalled();
   });
 
-  it("delivers Team evidence only through its injected authorized path", async () => {
+  it("accepts and observes Team tasks through the same helper-answer pipeline", async () => {
     const { client } = fixture();
-    const teamEvidence = vi.fn(async () => ({
-      evidence: [{ text: "Team fact" }],
-      citations: [{ sourceId: "shared-source" }]
-    }));
     const discoverWorkspaces = vi.fn(async () => ({ workspaces: [{ id }] }));
     const runtime = new RemoteBackendRuntimeClient({
       client,
-      teamEvidence,
+      supportedTaskScopes: { personal: true, team: { backendId: "team" } },
       discoverWorkspaces
     });
     const response = await runtime.callTool(
@@ -229,12 +232,20 @@ describe("remote backend runtime client", () => {
         team_workspace_id: id,
         team_backend_id: "team"
       },
-      { cwd: "/ignored" }
+      { cwd: "/ignored" },
+      undefined,
+      "call-one"
     );
-    expect(response.evidence).toEqual([{ text: "Team fact" }]);
-    expect(response.synthesis).toBe("ai_client");
-    expect(response.localMemoryWorker).toBeUndefined();
-    expect(client.acceptMemoryAnswerTask).not.toHaveBeenCalled();
+    expect(response).toEqual({ markdown: "Retained result." });
+    expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
+    expect(
+      client.acceptMemoryAnswerTask.mock.calls[0]![0].request.input
+    ).toEqual(
+      expect.objectContaining({
+        team_workspace_id: id,
+        search_domain: "global"
+      })
+    );
     expect((await runtime.capabilities()).supportedTools).toContain(
       "memory_workspaces"
     );
@@ -249,13 +260,18 @@ describe("remote backend runtime client", () => {
     );
     await expect(
       runtime.startMemoryAnswerTask(
-        { query: "fact", search_domain: "global", team_workspace_id: id },
+        {
+          query: "fact",
+          search_domain: "global",
+          team_workspace_id: id,
+          team_backend_id: "other"
+        },
         { cwd: "" }
       )
-    ).rejects.toThrow("Team recall requires");
+    ).rejects.toThrow("Requested Team backend is unavailable");
   });
 
-  it("fails closed for unavailable Team callbacks and capability-gated intake", async () => {
+  it("fails closed for unavailable Team task capabilities and capability-gated intake", async () => {
     const { client, runtime } = fixture();
     await expect(
       runtime.callTool(
@@ -263,7 +279,7 @@ describe("remote backend runtime client", () => {
         { query: "fact", search_domain: "global", team_workspace_id: id },
         { cwd: "" }
       )
-    ).rejects.toThrow("Team recall is unavailable");
+    ).rejects.toThrow("Team Memory Answer tasks are unavailable");
     client.capabilities.mockResolvedValue({
       capabilitySchemaVersion: 4,
       capabilities: {}
