@@ -12,6 +12,7 @@ import {
   resolveDeviceRequestHost
 } from "./personal-device-request.js";
 import { encryptPersonalDevicePairingMessage } from "./personal-device-request-crypto.js";
+import { WebSocketServer } from "ws";
 
 const addresses = Object.values(networkInterfaces())
   .flatMap((list) => list ?? [])
@@ -46,6 +47,96 @@ const setup = async (
   );
   return { home, paths, service, redeem, enrolled };
 };
+describe("Paseo relay device requests", () => {
+  it("uses encrypted relay exchange and still requires explicit acceptance", async () => {
+    const relay = new WebSocketServer({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/ws"
+    });
+    await new Promise<void>((resolve) => relay.once("listening", resolve));
+    const address = relay.address();
+    if (!address || typeof address === "string")
+      throw new Error("relay bind failed");
+    const relayUrl = `ws://localhost:${address.port}/ws`;
+    const peers = new Map<
+      string,
+      { server?: import("ws").WebSocket; client?: import("ws").WebSocket }
+    >();
+    relay.on("connection", (socket, request) => {
+      const url = new URL(request.url ?? "/", "http://relay.invalid");
+      const route = url.searchParams.get("serverId") ?? "";
+      const role = url.searchParams.get("role");
+      const pair = peers.get(route) ?? {};
+      if (role === "server") pair.server = socket;
+      else if (role === "client") {
+        pair.client?.close(1008, "Replaced by new connection");
+        pair.client = socket;
+      }
+      peers.set(route, pair);
+      socket.on("message", (frame) => {
+        const target = role === "server" ? pair.client : pair.server;
+        if (target?.readyState === 1) target.send(frame);
+      });
+      socket.on("close", () => {
+        if (pair[role === "server" ? "server" : "client"] === socket)
+          delete pair[role === "server" ? "server" : "client"];
+        if (!pair.server && !pair.client) peers.delete(route);
+      });
+    });
+
+    const home = mkdtempSync("/tmp/koed-relay-request-");
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    const redeem = vi.fn(async () => {});
+    const service = await startDeviceRequestService({
+      paths,
+      redeem,
+      enrolled: async () => false,
+      addresses: () => [],
+      relayUrl
+    });
+    cleanups.push(
+      () => new Promise<void>((resolve) => relay.close(() => resolve())),
+      () => rmSync(home, { recursive: true, force: true }),
+      () => service.close()
+    );
+    const request = await deviceRequestCommand(
+      paths,
+      "create",
+      "Headless Desktop"
+    );
+    expect(new URL(request.link!).hostname).toBe("localhost");
+    const parsed = parseDeviceRequestLink(request.link, relayUrl);
+    expect(parsed.mode).toBe("relay");
+    await expect(
+      exchangeDeviceRequest(request.link!, "inspect", undefined, relayUrl)
+    ).resolves.toMatchObject({ label: "Headless Desktop", state: "waiting" });
+    expect(redeem).not.toHaveBeenCalled();
+    await expect(
+      Promise.all([
+        exchangeDeviceRequest(request.link!, "inspect", undefined, relayUrl),
+        exchangeDeviceRequest(request.link!, "inspect", undefined, relayUrl)
+      ])
+    ).resolves.toEqual([
+      expect.objectContaining({ state: "waiting" }),
+      expect.objectContaining({ state: "waiting" })
+    ]);
+    await exchangeDeviceRequest(
+      request.link!,
+      "accept",
+      "opaque-invitation",
+      relayUrl
+    );
+    await vi.waitFor(() => expect(redeem).toHaveBeenCalledOnce());
+    await vi.waitFor(async () =>
+      expect(await deviceRequestCommand(paths, "status")).toMatchObject({
+        state: "connected"
+      })
+    );
+  });
+});
+
 describe("device request links", () => {
   it.each([
     "http://8.8.8.8:3310/device-request/",

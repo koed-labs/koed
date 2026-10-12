@@ -173,3 +173,10 @@ export {
   parseDeviceRequestLink
 } from "./personal-device-request.js";
 export type { DeviceRequestView } from "./personal-device-request.js";
+export { PERSONAL_DEVICE_PAIRING_PROTOCOL } from "./personal-device-pairing-client.js";
+export {
+  exchangeOverPaseoRelay,
+  normalizeDeviceRequestRelayUrl,
+  paseoRelayServerId,
+  runPaseoRelayServer
+} from "./personal-device-request-relay.js";

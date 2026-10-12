@@ -136,7 +136,7 @@ const completeSetupFixture = (): DesktopSetupSnapshot => ({
 });
 
 type ClientId = "codex" | "claude" | "pi";
-type ClientProfileState = "not_configured" | "healthy";
+type ClientProfileState = "not_configured" | "healthy" | "needs_attention";
 
 const statusWithClientProfiles = (
   profiles: Record<ClientId, ClientProfileState>
@@ -911,7 +911,195 @@ describe("SetupChecklist", () => {
     );
   });
 
-  it("shows unknown capability indicators and version without authentication before client setup", async () => {
+  it("asks before retargeting a configured Codex integration", async () => {
+    const current = statusWithClientProfiles({
+      codex: "needs_attention",
+      claude: "not_configured",
+      pi: "not_configured"
+    });
+    current.codex = {
+      ...component("needs_attention"),
+      configured: true,
+      details: { configuredKoedHome: "/Users/operator/.koed" }
+    };
+    current.aiClients!.codex!.profile = {
+      ...component("needs_attention"),
+      details: { configuredKoedHome: "/Users/operator/.koed" }
+    };
+    current.koedHome = "/Users/operator/.koed-pairing-test";
+    let updated = false;
+    const updatedStatus = () => {
+      if (!updated) return current;
+      const ready = statusWithClientProfiles({
+        codex: "healthy",
+        claude: "not_configured",
+        pi: "not_configured"
+      });
+      ready.codex = {
+        ...component("healthy"),
+        configured: true,
+        details: { configuredKoedHome: ready.koedHome }
+      };
+      return ready;
+    };
+    const invoke = vi.fn(
+      async (command: string, args?: Record<string, unknown>) => {
+        void args;
+        if (command === "status") return updatedStatus();
+        if (command === "repair_codex") {
+          updated = true;
+          return { ok: true };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      }
+    );
+    const onComplete = vi.fn();
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(
+        command: string,
+        args?: Record<string, unknown>
+      ): Promise<T> => (await invoke(command, args)) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    const statusStore = new DesktopStatusStore();
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={onComplete}
+          showTrustGuide={false}
+          statusStore={statusStore}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    expect(
+      statusStore.current().status?.aiClients?.codex?.profile.details
+    ).toEqual({
+      configuredKoedHome: "/Users/operator/.koed"
+    });
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    await act(async () =>
+      container.querySelector<HTMLInputElement>("input[type=checkbox]")!.click()
+    );
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Existing AI Client setup found");
+    expect(dialog?.textContent).toContain(
+      "Codex currently points to another Koed instance"
+    );
+    expect(
+      invoke.mock.calls.some(([command]) => command === "repair_codex")
+    ).toBe(false);
+    await act(async () =>
+      dialog!
+        .querySelector<HTMLInputElement>(
+          '.koed-existing-client-setups input[type="checkbox"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      [...dialog!.querySelectorAll("button")]
+        .find(
+          (button) => button.textContent === "Update selected integrations"
+        )!
+        .click()
+    );
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.some(([command]) => command === "repair_codex")
+      ).toBe(true)
+    );
+    expect(invoke).toHaveBeenCalledWith("repair_codex", {
+      operatorConsented: true
+    });
+  });
+
+  it("leaves an unrecognized Claude MCP entry untouched and skips it", async () => {
+    const status = statusWithClientProfiles({
+      codex: "not_configured",
+      claude: "needs_attention",
+      pi: "not_configured"
+    });
+    status.claudeCode = {
+      ...component("needs_attention"),
+      configured: false,
+      detected: true
+    };
+    status.aiClients!.claude!.profile = {
+      state: "needs_attention",
+      message:
+        "Claude Code has an unrelated user-scoped MCP server named koed.",
+      details: { mcpName: "koed" }
+    };
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "status") return status;
+      return { ok: true };
+    });
+    const onComplete = vi.fn();
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (await invoke(command)) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={onComplete}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLInputElement>("input[type=checkbox]")[1]!
+        .click()
+    );
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain(
+      "will not replace this configuration"
+    );
+    await act(async () =>
+      [...dialog!.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue without updating")!
+        .click()
+    );
+    expect(
+      invoke.mock.calls.some(([command]) => command === "setup_claude")
+    ).toBe(false);
+    expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it("shows static capability support before client setup", async () => {
     const status = statusWithClientProfiles({
       codex: "not_configured",
       claude: "not_configured",
@@ -969,14 +1157,9 @@ describe("SetupChecklist", () => {
     expect(
       codexCard.querySelectorAll(".koed-client-cap-dot.is-unknown")
     ).toHaveLength(3);
-    expect(codexCard.querySelector(".koed-client-meta")?.textContent).toBe(
-      "v1.0.0"
-    );
-    expect(container.textContent).not.toContain("Authenticated");
-    expect(container.textContent).not.toContain("Auth unknown");
     expect(
       container.querySelector('[aria-label="Capability status legend"]')
-    ).toBeTruthy();
+    ).not.toBeNull();
   });
 
   it("shows capability readiness after a client is configured", async () => {
@@ -1119,7 +1302,7 @@ describe("SetupChecklist", () => {
     expect(onComplete).toHaveBeenCalledOnce();
   });
 
-  it("labels successful setup Ready without requiring capability check refresh", async () => {
+  it("records setup as ready without requiring capability check refresh", async () => {
     let configured = false;
     const status = {
       ...statusFixture("healthy"),
@@ -1186,9 +1369,6 @@ describe("SetupChecklist", () => {
       "check_codex"
     );
     expect(container.textContent).toContain("Auto-capture");
-    expect(container.querySelector(".koed-client-pill")?.textContent).toBe(
-      "Ready"
-    );
   });
 
   it("keeps healthy client selection strict and records ready", async () => {
@@ -1246,84 +1426,6 @@ describe("SetupChecklist", () => {
 
     expect(invoke.mock.calls.map(([command]) => command)).toContain(
       "check_codex"
-    );
-  });
-
-  it("repairs Claude registration even when its MCP and hook profile is healthy", async () => {
-    const status = {
-      ...statusFixture("healthy"),
-      aiClients: {
-        claude: {
-          ...clientReadiness("claude", "healthy"),
-          capabilities: [
-            {
-              id: "local_synthesis" as const,
-              support: "supported" as const,
-              readiness: "not_ready" as const,
-              diagnostics: [
-                {
-                  code: "instance_not_registered",
-                  message: "Repair registration",
-                  severity: "warning" as const
-                }
-              ]
-            }
-          ]
-        }
-      }
-    };
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "status") return status;
-      if (command === "repair_claude") return { ok: true };
-      throw new Error(`Unexpected command: ${command}`);
-    });
-    window.koedDesktop = {
-      invoke: async <T = unknown,>(command: string): Promise<T> =>
-        (await invoke(command)) as T,
-      setup: {
-        inspect: async () => ({
-          ...setupFixture("complete"),
-          stages: setupFixture().stages.map((stage) => ({
-            ...stage,
-            state: "complete" as const
-          }))
-        }),
-        run: async () => setupFixture("complete"),
-        subscribe: () => () => undefined
-      }
-    };
-    const statusStore = new DesktopStatusStore();
-    await act(async () => {
-      root.render(
-        <SetupChecklist
-          onComplete={vi.fn()}
-          showTrustGuide={false}
-          statusStore={statusStore}
-        />
-      );
-    });
-    await act(async () => Promise.resolve());
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Continue")!
-        .click()
-    );
-    await act(async () =>
-      container
-        .querySelectorAll<HTMLInputElement>("input[type=checkbox]")[1]!
-        .click()
-    );
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Continue")!
-        .click()
-    );
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Claude Code: ready")
-    );
-
-    expect(invoke.mock.calls.map(([command]) => command)).toContain(
-      "repair_claude"
     );
   });
 

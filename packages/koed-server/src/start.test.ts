@@ -1158,6 +1158,7 @@ describe("start supervisor", () => {
         "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
         "KOED_EMBEDDING_ACCELERATION=metal",
         "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
+        "KOED_PDS_REQUEST_RELAY_URL=wss://relay.example/ws",
         ""
       ].join("\n")
     );
@@ -1173,6 +1174,7 @@ describe("start supervisor", () => {
           automaticPorts?: boolean;
         }
       | undefined;
+    let deviceRequestRelayUrl: string | undefined;
 
     await startKoedServer({
       signal: cleanShutdownSignal(),
@@ -1203,6 +1205,10 @@ describe("start supervisor", () => {
         spawned.push({ command, args, env: options?.env });
         return child(spawned.length);
       },
+      startDeviceRequestService: async ({ relayUrl }) => {
+        deviceRequestRelayUrl = relayUrl;
+        return { close: async () => undefined };
+      },
       collectStatus: async () => {
         runtime = JSON.parse(
           readFileSync(resolve(root, "run/koed-server.json"), "utf8")
@@ -1228,6 +1234,7 @@ describe("start supervisor", () => {
     expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe("29080");
     expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
     expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
+    expect(deviceRequestRelayUrl).toBe("wss://relay.example/ws");
     const provisionedTokenFile: unknown = JSON.parse(
       readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
     );

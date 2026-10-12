@@ -212,9 +212,10 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
     const group = await pool.query<{
       head_sequence: string;
       head_hash: string;
+      pending_epoch: string | null;
       canonical_statement: string;
     }>(
-      `select g.head_sequence,g.head_hash,s.canonical_statement from personal_device_groups g
+      `select g.head_sequence,g.head_hash,g.pending_epoch,s.canonical_statement from personal_device_groups g
        join personal_device_group_statements s on s.group_id=g.id and s.sequence=g.head_sequence
        where g.id=$1 and g.group_id=$2`,
       [input.groupDbId, input.groupId]
@@ -249,6 +250,7 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
         hash: group.rows[0]!.head_hash,
         statement: group.rows[0]!.canonical_statement
       },
+      dataPlaneReady: group.rows[0]!.pending_epoch === null,
       deletionFloors: floors,
       controls: visible.map((item) => ({
         sequence: item.sequence,

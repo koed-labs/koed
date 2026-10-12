@@ -1,8 +1,13 @@
 # Connect Personal devices
 
-Use a private LAN or Tailscale network. An internet-accessible pairing relay and
-restricted-network traversal are not included. The installation that created the
-Personal Device Group remains its Authority/Relay host and must be reachable.
+Use private LAN or Tailscale by default. For devices on separate networks,
+configure `KOED_PDS_REQUEST_RELAY_URL` on both installations with the same trusted
+Paseo Relay WebSocket endpoint, for example `wss://relay.example/ws`. Paseo
+carries narrow pairing and PDS application tunnels; it does not approve devices,
+replace PDS durable sync, or receive plaintext pairing invitations. The
+installation that created the Personal Device Group remains its Authority/Relay
+host and retains membership authority. Without Paseo, both installations need
+private-network reachability; no public pairing listener is provided.
 
 ## Joining through SSH
 
@@ -34,6 +39,11 @@ Never put that response in ordinary logs or share it beyond the existing device.
 
 ## Joining from Electron
 
+Authority-issued invitation QR codes and copy links use
+`koed://pair/redeem` deep links. The link wraps the private-network or
+configured-relay invitation URL; opening it on the joining computer routes it
+to installed Koed Desktop. The native client validates the underlying URL and
+performs pairing. This is OS app handoff, not a hosted Koed web client.
 On the new installation, open **Devices → Connect to an existing device** and
 copy the request link. Paste it into **Devices → Add device** on the existing
 Authority-hosting Electron installation. Review and accept it there. Both CLI and
@@ -54,11 +64,37 @@ Use the original Authority-hosting installation to approve a new request.
 
 ## Operation and failure behavior
 
-The joining supervisor creates a narrow private-interface HTTP listener using an
-available port. Its address and port are in the request link. The existing device
-must reach that endpoint; the joining device must also reach the existing private
-Authority/Relay endpoint for enrollment and subsequent synchronization. Reversing
-the link does not remove those network requirements.
+Without Paseo, the joining supervisor creates a narrow private-interface HTTP
+listener using an available port. Its address and port are in the request link;
+both installations must reach each other's private endpoints. With Paseo
+configured, pairing listeners bind loopback only and both installations make
+outbound WebSocket connections to the configured relay. Pairing-control and PDS
+traffic use distinct random relay capabilities, so competing processes cannot
+replace one another's route. Durable PDS synchronization still uses the existing
+Authority/Relay mailbox protocol through its authenticated application tunnel.
+The existing device must reach the joining request endpoint, and the joining
+device must reach the existing Authority/Relay endpoint for enrollment and
+subsequent synchronization. Reversing link direction does not remove these
+network requirements.
+
+During a membership epoch transition, an active device may use its prior-head
+certificate for certificate, lifecycle, and wake control only. Package
+publication and mailbox reconciliation pause until the Authority reports the
+data plane ready; the local worker retries lifecycle reconciliation rather than
+treating this expected transition window as a transport failure. A revocation
+epoch's recipient keys are issued only for devices still active after the
+revocation; revoked devices are excluded.
+
+Tunneled wake requests are bounded to five seconds because the Authority
+processes frames serially; cancelling a client connection does not cancel an
+already-forwarded long poll. Direct HTTP wake requests retain their longer wait.
+Local work cancels the client wake and rearms it after reconciliation completes. Forwarded HTTP 401 or 403 responses alone do not prove a device was
+revoked and must not delete its saved Relay route. Inbound Relay work queues are
+bounded by both request count and bytes, with cleanup for abandoned queued work.
+
+Epoch refresh retains previous membership certificates as historical signature
+proof for retained checkpoints. They do not grant current access or add devices
+to the active recipient set.
 
 Requests use a separate `koed/pds-device-request/v1` authenticated encrypted
 transport. The URL fragment carries a random 256-bit secret and is never included
@@ -72,7 +108,9 @@ acceptance is serialized and persisted before enrollment starts. Repeating the
 same acceptance can acknowledge a lost response; a different invitation cannot
 replace an accepted one. Request traffic is bounded by expiry, payload size,
 connection count, and exchange count. The public listener exposes no local API,
-credentials, operational controls, or Memory.
+credentials, operational controls, or Memory. Paseo is transport only; Authority
+continues to validate membership and approve enrollment, while PDS requests retain
+certificate, proof, expiry, and revocation checks.
 
 Pending links and accepted invitation state live in the application-managed
 encrypted store under `KOED_HOME/secrets` (encrypted at rest). Local CLI/Electron
@@ -101,8 +139,10 @@ checkpoint publication, successive turns in one received Session, verified origi
 badges, and semantic recall in both directions. It does not call the permanent
 close/publish endpoint. This is an ingestion-to-replication smoke; physical
 AI Client watcher validation remains a separate end-to-end check.
-Use `KOED_SMOKE_ASSET_HOME` for another prepared asset directory. Temporary homes
-are removed after the test unless `KOED_KEEP_SMOKE_HOME=1` is selected explicitly.
+Use `KOED_SMOKE_ASSET_HOME` for another prepared asset directory. Set
+`KOED_PDS_SMOKE_REVOKE_JOINING=1` to also revoke the joining test device at the
+end and assert the Authority reports it revoked. Temporary homes are removed
+after the test unless `KOED_KEEP_SMOKE_HOME=1` is selected explicitly.
 
 Local publication on joined installations uses the enrolled device's secure key
 context, not an Authority private key. Closing a session, retrying the local

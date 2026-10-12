@@ -34,6 +34,12 @@ describe("Koed app protocol", () => {
     });
   });
 
+  it("does not serve pairing deep links as app assets", () => {
+    expect(
+      resolveAppProtocolRequest("/dist", "koed://pair/redeem?url=secret")
+    ).toMatchObject({ kind: "not_found", status: 404 });
+  });
+
   it("blocks path traversal", () => {
     expect(
       resolveAppProtocolRequest("/dist", "koed://app/%2e%2e/secret")

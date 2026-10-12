@@ -438,6 +438,48 @@ const clientProfileIsConfigured = (
       ? status?.claudeCode?.configured === true
       : status?.pi?.configured === true;
 
+type ExistingClientSetup = {
+  id: OnboardingClientId;
+  label: string;
+  message: string;
+  canUpdate: boolean;
+};
+
+const existingClientSetup = (
+  id: OnboardingClientId,
+  status: KoedServerStatus | null
+): ExistingClientSetup | null => {
+  if (!status) return null;
+  const profile = status.aiClients?.[id]?.profile;
+  const details = profile?.details ?? {};
+  if (
+    id === "codex" &&
+    status.codex?.configured &&
+    typeof details.configuredKoedHome === "string" &&
+    details.configuredKoedHome !== status.koedHome
+  ) {
+    return {
+      id,
+      label: "Codex",
+      message: `Codex currently points to another Koed instance (${details.configuredKoedHome}).`,
+      canUpdate: true
+    };
+  }
+  if (
+    id === "claude" &&
+    profile?.message?.includes("unrelated user-scoped MCP server named")
+  ) {
+    return {
+      id,
+      label: "Claude Code",
+      message:
+        "Claude Code has a user-scoped MCP server named koed that Koed cannot verify as its own. It will be left untouched.",
+      canUpdate: false
+    };
+  }
+  return null;
+};
+
 const resultError = (value: unknown, fallback: string): string => {
   if (!value || typeof value !== "object") return fallback;
   const details = value as {
@@ -470,6 +512,10 @@ function AiClientSetup({
   const [results, setResults] = useState<
     Partial<Record<OnboardingClientId, AiClientSetupResult>>
   >({});
+  const [existingSetupDialogOpen, setExistingSetupDialogOpen] = useState(false);
+  const [updateExistingSetups, setUpdateExistingSetups] = useState<
+    Set<OnboardingClientId>
+  >(() => new Set());
   const resultSummaryRef = useRef<HTMLUListElement>(null);
   const confirming = useRef(false);
 
@@ -497,6 +543,38 @@ function AiClientSetup({
     }
   }, [activeClient, queue.length, results]);
 
+  const runSelection = useCallback(
+    (ids: OnboardingClientId[]) => {
+      const existing = ids.flatMap((id) => {
+        const setup = existingClientSetup(id, status);
+        return setup ? [setup] : [];
+      });
+      const next = ids.filter((id) => {
+        const setup = existing.find((candidate) => candidate.id === id);
+        return !setup || (setup.canUpdate && updateExistingSetups.has(id));
+      });
+      const skipped = ids.filter((id) => !next.includes(id));
+      if (skipped.length > 0) {
+        setSelected((current) => {
+          const remaining = new Set(current);
+          for (const id of skipped) remaining.delete(id);
+          return remaining;
+        });
+        setResults((current) => ({
+          ...current,
+          ...Object.fromEntries(skipped.map((id) => [id, { state: "skipped" }]))
+        }));
+      }
+      if (next.length === 0) {
+        finish();
+        return;
+      }
+      setQueue(next);
+      setActiveClient(next[0] ?? null);
+    },
+    [finish, status, updateExistingSetups]
+  );
+
   const begin = useCallback(() => {
     if (busyCommand || activeClient) return;
     const next = onboardingClients
@@ -506,9 +584,16 @@ function AiClientSetup({
       finish();
       return;
     }
-    setQueue(next);
-    setActiveClient(next[0] ?? null);
-  }, [activeClient, busyCommand, finish, selected]);
+    const hasExistingSetups = next.some((id) =>
+      existingClientSetup(id, status)
+    );
+    if (hasExistingSetups) {
+      setUpdateExistingSetups(new Set());
+      setExistingSetupDialogOpen(true);
+      return;
+    }
+    runSelection(next);
+  }, [activeClient, busyCommand, finish, runSelection, selected, status]);
 
   const completeCurrent = useCallback(
     (id: OnboardingClientId, result: AiClientSetupResult) => {
@@ -831,6 +916,74 @@ function AiClientSetup({
           )}
         </footer>
       </section>
+      <Dialog
+        onOpenChange={setExistingSetupDialogOpen}
+        open={existingSetupDialogOpen}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Existing AI Client setup found</DialogTitle>
+            <DialogDescription>
+              Some selected AI Clients already have Koed-related configuration.
+              Keep it unchanged, or explicitly choose which recognized Koed
+              integrations to update for this Koed instance.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="koed-existing-client-setups">
+            {onboardingClients.flatMap(({ id }) => {
+              if (!selected.has(id)) return [];
+              const existing = existingClientSetup(id, status);
+              if (!existing) return [];
+              return (
+                <section key={id}>
+                  <strong>{existing.label}</strong>
+                  <p>{existing.message}</p>
+                  {existing.canUpdate ? (
+                    <label>
+                      <input
+                        checked={updateExistingSetups.has(id)}
+                        onChange={() =>
+                          setUpdateExistingSetups((current) => {
+                            const next = new Set(current);
+                            if (next.has(id)) next.delete(id);
+                            else next.add(id);
+                            return next;
+                          })
+                        }
+                        type="checkbox"
+                      />
+                      Update this Koed integration to this instance
+                    </label>
+                  ) : (
+                    <p>
+                      Koed cannot verify ownership, so it will not replace this
+                      configuration. Deselect Claude Code to leave it untouched.
+                    </p>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => {
+                const ids = onboardingClients
+                  .map(({ id }) => id)
+                  .filter((id) => selected.has(id));
+                setExistingSetupDialogOpen(false);
+                runSelection(ids);
+              }}
+            >
+              {updateExistingSetups.size > 0
+                ? "Update selected integrations"
+                : "Continue without updating"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </main>
   );
 }

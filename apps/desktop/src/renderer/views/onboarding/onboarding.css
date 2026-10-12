@@ -225,6 +225,35 @@
   line-height: 1.5;
 }
 
+.koed-existing-client-setups {
+  display: grid;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.koed-existing-client-setups > section {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.koed-existing-client-setups p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.koed-existing-client-setups label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
 .koed-sr-only {
   position: absolute;
   inline-size: 1px;

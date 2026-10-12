@@ -68,6 +68,10 @@ describe("Devices modal", () => {
         }
       }
     });
+    Object.defineProperty(window, "confirm", {
+      configurable: true,
+      value: vi.fn()
+    });
   });
 
   afterEach(async () => {
@@ -127,6 +131,88 @@ describe("Devices modal", () => {
     expect(
       container.querySelector('input[aria-label="Device name"]')
     ).toBeNull();
+  });
+
+  it("lets the Authority remove another paired device", async () => {
+    let memberPresent = true;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "personal_sync_status") {
+        return {
+          ...status,
+          groups: [
+            {
+              ...status.groups[0],
+              members: [
+                status.groups[0]!.members[0]!,
+                ...(memberPresent
+                  ? [
+                      {
+                        device_id: "device-2",
+                        status: "active",
+                        label: "studio"
+                      }
+                    ]
+                  : [])
+              ]
+            }
+          ]
+        };
+      }
+      if (command === "personal_sync_revoke") {
+        memberPresent = false;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected command ${command}`);
+    });
+    const confirm = vi.mocked(window.confirm).mockReturnValue(true);
+
+    await act(async () => {
+      root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
+    });
+
+    await click(container.querySelector('button[aria-label="Remove studio"]'));
+
+    expect(confirm).toHaveBeenCalledWith(
+      "Remove studio from this Personal Device Group? It will stop syncing with these devices. Memory already stored on that device will remain there."
+    );
+    expect(invoke).toHaveBeenCalledWith("personal_sync_revoke", {
+      deviceId: "device-2",
+      groupId: "group-1"
+    });
+    expect(container.textContent).not.toContain("studio");
+  });
+
+  it("does not remove a device when the confirmation is dismissed", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "personal_sync_status") {
+        return {
+          ...status,
+          groups: [
+            {
+              ...status.groups[0],
+              members: [
+                ...status.groups[0]!.members,
+                { device_id: "device-2", status: "active", label: "studio" }
+              ]
+            }
+          ]
+        };
+      }
+      throw new Error(`Unexpected command ${command}`);
+    });
+    vi.mocked(window.confirm).mockReturnValue(false);
+
+    await act(async () => {
+      root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
+    });
+
+    await click(container.querySelector('button[aria-label="Remove studio"]'));
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      "personal_sync_revoke",
+      expect.anything()
+    );
+    expect(container.textContent).toContain("studio");
   });
 
   it("offers request-link review on the existing Electron device", async () => {

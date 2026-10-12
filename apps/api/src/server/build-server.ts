@@ -1752,6 +1752,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       request.log.warn(logBindings, "request failed");
     }
 
+    if (
+      errorCode === "pds_device_revoked" &&
+      requestPathname(request).startsWith("/v1/personal-device-sync/relay/")
+    ) {
+      reply.header("x-koed-pds-device-revocation", "confirmed");
+    }
     reply.status(statusCode).send({
       error: statusCode === 500 ? "Internal Server Error" : message,
       ...(errorCode ? { code: errorCode } : {})

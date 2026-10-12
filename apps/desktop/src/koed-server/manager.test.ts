@@ -1280,6 +1280,27 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("loads the PDS pairing relay from repo env unless explicitly overridden", () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "koed-desktop-relay-env-"));
+    writeFileSync(
+      resolve(repoRoot, ".env"),
+      "KOED_PDS_REQUEST_RELAY_URL=wss://relay.example.test/ws\n"
+    );
+
+    expect(createKoedEnvironment(repoRoot, {})).toMatchObject({
+      KOED_PDS_REQUEST_RELAY_URL: "wss://relay.example.test/ws"
+    });
+    expect(
+      createKoedEnvironment(repoRoot, {
+        KOED_PDS_REQUEST_RELAY_URL: "wss://explicit.example.test/ws"
+      })
+    ).toMatchObject({
+      KOED_PDS_REQUEST_RELAY_URL: "wss://explicit.example.test/ws"
+    });
+
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
   it("enables automatic local ports for source Desktop bundled-local runs", () => {
     expect(
       createKoedEnvironment("/repo", { KOED_DEPENDENCY_MODE: "bundled-local" })

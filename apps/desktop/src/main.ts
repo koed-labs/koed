@@ -109,18 +109,21 @@ const pairingLinkInbox = createPersonalDevicePairingInbox();
 const managedPreviewController = createManagedPreviewController();
 
 const acceptPairingDeepLink = (value: string): string | null => {
-  const pairingLink = pairingLinkFromDeepLink(value);
+  const pairingLink = pairingLinkFromDeepLink(
+    value,
+    koedEnvironment.KOED_PDS_REQUEST_RELAY_URL
+  );
   if (!pairingLink) return null;
   pairingLinkInbox.accept(pairingLink);
   return pairingLink;
 };
 
 if (process.defaultApp && process.argv[1]) {
-  app.setAsDefaultProtocolClient("koed-pair", process.execPath, [
+  app.setAsDefaultProtocolClient(KOED_APP_SCHEME, process.execPath, [
     resolve(process.argv[1])
   ]);
 } else {
-  app.setAsDefaultProtocolClient("koed-pair");
+  app.setAsDefaultProtocolClient(KOED_APP_SCHEME);
 }
 
 let ownsDesktopInstance = true;
@@ -132,7 +135,7 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
   } else {
     app.on("second-instance", (_event, argv) => {
       const deepLink = argv.find((argument) =>
-        argument.startsWith("koed-pair://")
+        argument.startsWith(`${KOED_APP_SCHEME}://`)
       );
       if (deepLink) void showPairingDeepLink(deepLink);
       else void showDesktopWindow();
@@ -494,7 +497,7 @@ const bootstrap = async () => {
 
 if (ownsDesktopInstance) {
   for (const argument of process.argv) {
-    if (argument.startsWith("koed-pair://")) {
+    if (argument.startsWith(`${KOED_APP_SCHEME}://`)) {
       acceptPairingDeepLink(argument);
       break;
     }
