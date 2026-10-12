@@ -19,7 +19,7 @@ export const internalWorkspacePackageNames = [
   "@koed/desktop",
   "@koed/embedding-service",
   "@koed/evals",
-  "@koed/koed-server",
+  "@koed-labs/server",
   "@koed/mcp-server",
   "@koed/memory-ui",
   "@koed/privacy-service",

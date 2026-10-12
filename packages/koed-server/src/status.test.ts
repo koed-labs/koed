@@ -1657,8 +1657,8 @@ describe("status state aggregation", () => {
 
   it.each([
     [200, "healthy", "Local API Token authenticated successfully."],
-    [401, "needs_attention", "Run koed-server setup core --json"],
-    [403, "needs_attention", "Run koed-server setup core --json"],
+    [401, "needs_attention", "Run koed setup core --json"],
+    [403, "needs_attention", "Run koed setup core --json"],
     [503, "needs_attention", "Check Koed API health and rerun diagnostics."]
   ])(
     "maps API Token HTTP %s to safe status action",

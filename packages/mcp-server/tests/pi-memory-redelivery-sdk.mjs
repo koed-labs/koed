@@ -162,7 +162,7 @@ const completeTask = (id) => {
   const task = tasks.get(id);
   task.status = "completed";
   task.version = 2;
-  task.result = { answer: `generated answer for ${id}` };
+  task.result = { markdown: `generated answer for ${id}` };
 };
 
 try {

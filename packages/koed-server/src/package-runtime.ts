@@ -488,8 +488,9 @@ export const validateServerPackageRoot = (
   const missing = [
     !existsSync(manifestPath) ? "koed-server-package-manifest.json" : null,
     !existsSync(resolve(resolvedRoot, "README.txt")) ? "README.txt" : null,
+    !existsSync(resolve(resolvedRoot, "bin", "koed")) &&
     !existsSync(resolve(resolvedRoot, "bin", "koed-server"))
-      ? "bin/koed-server"
+      ? "bin/koed"
       : null,
     !existsSync(resolve(runtimeRoot, "koed-server", "dist", "cli.js"))
       ? "koed-runtime/koed-server/dist/cli.js"
@@ -643,7 +644,7 @@ export const collectServerPackageStatus = (
     ...(state === "missing"
       ? {
           action:
-            "Run koed-server package install --source <artifact> --sha256 <sha256>."
+            "Run koed package install --source <artifact> --sha256 <sha256>."
         }
       : {}),
     ...(invalid.length > 0

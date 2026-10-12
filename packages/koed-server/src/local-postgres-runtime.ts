@@ -185,8 +185,8 @@ const missingRuntime = (
   action:
     runtime.artifactSource === "source-checkout" ||
     runtime.artifactSource === "explicit-override"
-      ? "Install bundled Postgres/pgvector resources with koed-server runtime install --provider homebrew --dependency-mode bundled-local --json on macOS, Linux, or WSL, or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides."
-      : "Inspect native runtime with koed-server runtime status --provider packaged --json, then install packaged assets with koed-server runtime install --provider packaged --dependency-mode bundled-local --json or Homebrew-backed assets with --provider homebrew on macOS, Linux, or WSL.",
+      ? "Install bundled Postgres/pgvector resources with koed runtime install --provider homebrew --dependency-mode bundled-local --json on macOS, Linux, or WSL, or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides."
+      : "Inspect native runtime with koed runtime status --provider packaged --json, then install packaged assets with koed runtime install --provider packaged --dependency-mode bundled-local --json or Homebrew-backed assets with --provider homebrew on macOS, Linux, or WSL.",
   details: { missing, artifactSource: runtime.artifactSource },
   paths: safeRuntimePaths(runtime)
 });
@@ -265,7 +265,7 @@ const validatePostgres17 = (
     state: "needs_attention",
     message: "Bundled-local native Postgres must be PostgreSQL 17 compatible.",
     action:
-      "Run koed-server runtime status --provider packaged --json or koed-server runtime install --provider homebrew --dependency-mode bundled-local --json with PostgreSQL 17 assets.",
+      "Run koed runtime status --provider packaged --json or koed runtime install --provider homebrew --dependency-mode bundled-local --json with PostgreSQL 17 assets.",
     details: {
       exitCode: version.status,
       output,
@@ -308,7 +308,7 @@ export const collectLocalPostgresRuntimeStatus = (
       state: "not_configured",
       message:
         "Bundled-local Postgres data directory has not been initialized.",
-      action: "Run koed-server start to initialize bundled-local Postgres.",
+      action: "Run koed start to initialize bundled-local Postgres.",
       paths: safeRuntimePaths(runtime)
     };
   }

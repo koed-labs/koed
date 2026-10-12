@@ -7,7 +7,7 @@ import {
   deviceRequestCommand,
   exchangeDeviceRequest,
   parseDeviceRequestLink
-} from "@koed/koed-server";
+} from "@koed-labs/server";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
@@ -63,7 +63,7 @@ import {
   resolveKoedServerPaths,
   runPersonalSyncCommand,
   writeKoedServerConfig
-} from "@koed/koed-server";
+} from "@koed-labs/server";
 import {
   existsSync as nodeExistsSync,
   mkdirSync,
@@ -1258,7 +1258,7 @@ const packageComponent = (
     return {
       state: "healthy",
       message:
-        "Using the bundled fallback koed-server runtime; a standalone package is optional for this Desktop build.",
+        "Using the bundled fallback koed runtime; a standalone package is optional for this Desktop build.",
       source: "bundled-fallback",
       details: { sourceKind: installPlan.sourceKind }
     };
@@ -1996,7 +1996,7 @@ export const createKoedServerManager = ({
       latest ?? {
         ok: false,
         state: "needs_attention",
-        error: "Timed out waiting for koed-server status."
+        error: "Timed out waiting for koed status."
       }
     );
   };

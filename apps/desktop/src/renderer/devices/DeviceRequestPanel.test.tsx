@@ -74,7 +74,7 @@ describe("device request UI", () => {
         />
       )
     );
-    expect(container.textContent).toContain("koed-server pair");
+    expect(container.textContent).toContain("koed pair");
     expect(invoke).not.toHaveBeenCalled();
     expect(
       (

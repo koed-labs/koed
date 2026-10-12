@@ -7,7 +7,7 @@ From the repo root:
 ```bash
 pnpm env:setup
 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
-pnpm --filter @koed/koed-server build
+pnpm --filter @koed-labs/server build
 KOED_DEPENDENCY_MODE=external node packages/koed-server/dist/cli.js start
 ```
 

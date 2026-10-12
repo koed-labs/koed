@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  renameSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
@@ -68,7 +69,7 @@ const createPackageRoot = () => {
     JSON.stringify({ version: "7", entries: [{ when: 20260708000000 }] })
   );
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
-  writeExecutable(resolve(root, "bin", "koed-server"));
+  writeExecutable(resolve(root, "bin", "koed"));
   writeFile(resolve(runtime, "koed-server", "dist", "cli.js"));
   return root;
 };
@@ -108,6 +109,14 @@ test("validates a standalone koed-server package root", () => {
     manifest.database.migrationSet.latestMigrationTimestamp,
     20260708000000
   );
+});
+
+test("validates a previously released archive with the legacy launcher", () => {
+  const root = createPackageRoot();
+  renameSync(resolve(root, "bin", "koed"), resolve(root, "bin", "koed-server"));
+  writeManifest(root);
+  const result = validatePackageRoot(root);
+  assert.equal(result.ok, true, result.errors.join("\n"));
 });
 
 test("builds provenance for package archive and manifest hashes", () => {

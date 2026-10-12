@@ -41,6 +41,110 @@ afterEach(() => {
     rmSync(d, { recursive: true, force: true });
 });
 describe("standalone Pi runtime port", () => {
+  it.each(["memory_workspaces", "memory_answer"])(
+    "checks runtime capabilities before forwarding %s Team routing",
+    async (name) => {
+      const h = home();
+      registration(h);
+      const input =
+        name === "memory_workspaces"
+          ? { team_backend_id: "test-backend" }
+          : {
+              query: "Team decision?",
+              team_workspace_id: "00000000-0000-4000-8000-000000000001",
+              team_backend_id: "test-backend"
+            };
+      const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
+        expect(init?.method).toBe(
+          url.pathname === "/v1/capabilities" ? "GET" : "POST"
+        );
+        return {
+          ok: true,
+          json: async () =>
+            url.pathname === "/v1/capabilities"
+              ? {
+                  supportedTools: ["memory_workspaces", "memory_answer"],
+                  memoryAnswerTeamBackendAvailable: true
+                }
+              : { workspaces: [], markdown: "Team result" }
+        };
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      await callLocalRuntimeTool({
+        koedHome: h,
+        name,
+        input,
+        context: { cwd: "/repo" },
+        invocationKey: "pi:team"
+      });
+      expect(fetchMock.mock.calls.map(([url]) => url.pathname)).toEqual([
+        "/v1/capabilities",
+        `/v1/tools/${name}`
+      ]);
+      const init = (
+        fetchMock.mock.calls[1] as unknown as [URL, RequestInit]
+      )[1];
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        input,
+        invocationKey: "pi:team",
+        caller: { clientInfo: { name: "pi" } }
+      });
+    }
+  );
+
+  it.each([
+    ["memory_workspaces", {}],
+    ["memory_workspaces", { supportedTools: ["memory_answer"] }],
+    ["memory_answer", { supportedTools: ["memory_answer"] }]
+  ])(
+    "rejects unsupported %s before dispatching Team input",
+    async (name, capabilities) => {
+      const h = home();
+      registration(h);
+      const fetchMock = vi.fn(async () => ({
+        ok: true,
+        json: async () => capabilities
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        callLocalRuntimeTool({
+          koedHome: h,
+          name: String(name),
+          input: { team_workspace_id: "workspace", team_backend_id: "backend" },
+          context: { cwd: "/repo" },
+          invocationKey: "pi:team"
+        })
+      ).rejects.toMatchObject({ code: "runtime_feature_unavailable" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("rechecks feature support when the runtime is replaced", async () => {
+    const h = home();
+    registration(h);
+    let supported = true;
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () =>
+        supported ? { supportedTools: ["memory_workspaces"] } : {}
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const call = () =>
+      callLocalRuntimeTool({
+        koedHome: h,
+        name: "memory_workspaces",
+        input: {},
+        context: { cwd: "/repo" },
+        invocationKey: "pi:discovery"
+      });
+    await call();
+    supported = false;
+    await expect(call()).rejects.toMatchObject({
+      code: "runtime_feature_unavailable"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     [429, 1000, 1000],
     [429, 300000, 300000],

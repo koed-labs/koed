@@ -88,7 +88,7 @@ const pi = {
 const create = () =>
   createPiMemoryDelivery(pi, {
     port,
-    blocking: async () => ({ answer: "blocking" }),
+    blocking: async () => ({ markdown: "blocking" }),
     pollMs: 25
   });
 try {
@@ -114,7 +114,7 @@ try {
   assert.equal(manager.getSessionId(), originalId);
   tasks.get("task-0").status = "completed";
   tasks.get("task-0").version = 2;
-  tasks.get("task-0").result = { answer: "generated result" };
+  tasks.get("task-0").result = { markdown: "generated result" };
   const resumed = create();
   resumed.start({ reason: "resume" }, ctx());
   await resumed.settle();
@@ -157,7 +157,7 @@ try {
   );
   tasks.get("task-1").status = "completed";
   tasks.get("task-1").version = 2;
-  tasks.get("task-1").result = { answer: "parent result" };
+  tasks.get("task-1").result = { markdown: "parent result" };
   const forked = create();
   forked.start({ reason: "startup" }, ctx());
   await forked.settle();
