@@ -6,6 +6,34 @@ the assigned AI Client to synthesize the answer, and saves the completed Memory
 Question. Presentation adapters observe that work and deliver it to the calling
 Conversation.
 
+## Per-call delivery selection
+
+The MCP and Pi `memory_answer` tools accept optional `delivery_mode` values `auto`,
+`blocking`, and `non_blocking`. Omitted and `auto` preserve the calling
+integration's configured default. `blocking` returns the ordinary completed
+tool result. `non_blocking` requests eligible deferred presentation and falls
+back to the ordinary result before accepting work when that route is unavailable.
+Neither mode changes execution capacity, priority, retrieval, or the assigned
+AI Client for Answer Synthesis.
+
+Choose based on the next planned action. Independent diagnostic reads can
+overlap recall even when the eventual fix depends on prior constraints. An
+immediate dependent decision, direct recall answer, or uncertain dependency
+should request blocking delivery. After a pending receipt, finish useful
+independent work and yield before the dependent action. Codex must reach its
+native Stop boundary; tools that sleep or manufacture work postpone that
+boundary. Do not poll, repeat recall in blocking mode, or claim the dependent
+task is complete. A missing or failed result leaves the prerequisite unresolved.
+
+Public adapter validation includes the delivery preference; the canonical
+execution request does not. The adapter strips it before forwarding either a
+blocking tool request or detached task acceptance, so older strict Local AI
+Runtime schemas retain their existing contract. Internal route diagnostics
+record normalized requested mode, effective route, and bounded fallback reason
+without memory content, credentials, or receipt nonces. Ordinary MCP delivery
+is recorded as `mcp_result`; this does not describe whether Claude's host
+backgrounds the call.
+
 ## Shared lifecycle
 
 `@koed/mcp-server/memory-answer-delivery` exports `MemoryAnswerDelivery` and its
@@ -28,7 +56,7 @@ delivery of the earlier result. Pi keeps its observer pending during throttling.
 
 Detached execution is available only for eligible Personal Memory requests.
 The runtime returns the stable `memory_answer_team_ineligible` code with HTTP
-409 before accepting an ineligible Team Memory request. Codex's automatic mode
+409 before accepting an ineligible Team Memory request. Codex's deferred route
 uses that code to select blocking recall with the original caller and input.
 Other conflicts or runtime failures do not trigger another recall.
 
@@ -115,7 +143,9 @@ A completion counts as delivered only when Pi saves it to the Conversation.
 Pi can drop a queued follow-up: Esc while the agent is busy, the dequeue
 action and `/tree` navigation clear the queue. Pi keeps a run going while its
 queue holds messages, so when the run settles the extension redelivers any
-completion that Pi did not save. Redelivery uses a fresh authorized task read
+completion that Pi did not save. A settle event that arrives while the
+observer is finishing enqueue is retained and handled when that observer
+finishes; recovery does not require a later agent turn. Redelivery uses a fresh authorized task read
 and appends the answer without starting a turn, so the agent does not restart
 after the User stops it; the model reads the answer on the next prompt. A late
 second copy of a saved completion is replaced by a short note. After three

@@ -49,6 +49,10 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
     "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
     "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
     "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
+    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
     "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
     "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
   ]) {

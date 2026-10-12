@@ -10,6 +10,7 @@ import {
   createRuntimeTaskPort
 } from "../runtime-client.mjs";
 import { createPiMemoryDelivery } from "../pi-memory-delivery.mjs";
+import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
@@ -57,6 +58,11 @@ export const callTool = async (name, input, ctx, signal, invocationKey) => {
 const answerParameters = Type.Object(
   {
     query: Type.String({ minLength: 1, maxLength: 32000 }),
+    delivery_mode: Type.Optional(
+      Type.Union(
+        MEMORY_ANSWER_DELIVERY_MODES.map((value) => Type.Literal(value))
+      )
+    ),
     retrieval_hints: Type.Optional(
       Type.Object(
         {
@@ -154,7 +160,18 @@ export default function koedExtension(pi) {
         ? "blocking"
         : "auto",
     blocking: (input, ctx, signal, invocation) =>
-      callTool("memory_answer", input, ctx, signal, invocation)
+      callTool("memory_answer", input, ctx, signal, invocation),
+    reportDelivery: (decision) => {
+      try {
+        // One bounded private routing diagnostic, never a receipt or result store.
+        writePrivate(
+          join(koedHome, "run", "pi-memory-answer-delivery.json"),
+          `${JSON.stringify({ observedAt: new Date().toISOString(), ...decision })}\n`
+        );
+      } catch {
+        // Diagnostic storage must not change acceptance or delivery behavior.
+      }
+    }
   });
   const register = (name, label, description, parameters) =>
     pi.registerTool({
@@ -187,6 +204,11 @@ export default function koedExtension(pi) {
               { cause: error }
             );
           }
+          if (name === "memory_answer")
+            throw new Error(
+              "Koed Memory Answer could not be completed. Acceptance may be uncertain; do not resubmit this request.",
+              { cause: error }
+            );
           throw new Error(
             "Koed unavailable; check the Local AI Runtime and retry",
             { cause: error }
@@ -197,7 +219,7 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Recall Koed memory evidence for answer synthesis. Personal recall in persistent Pi returns a receipt promptly and the result arrives automatically. Continue useful independent work; wait for the result before a memory-dependent decision. Do not poll for status. Other routes return the result directly. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
+    "Recall Koed memory evidence for answer synthesis. Select delivery_mode from the next planned action: blocking for direct recall answers, immediately dependent decisions or edits, or uncertain independence; non_blocking for useful independent diagnostics before a later dependent action. A fix that needs prior memory can still start with independent reads. Follow explicit User instructions to wait or continue independent work. Omitted and auto preserve configured calling-integration behavior; unsupported contexts and opt-outs remain authoritative. Eligible persistent Pi calls return a receipt promptly and the result arrives automatically. Finish independent work, then yield before a memory-dependent decision. Do not poll, use sleep tools or artificial work to keep the turn busy, repeat recall in blocking mode, invent prior constraints, or claim dependent work is complete. Apply the result before dependent work. Failed delivery or uncertain acceptance leaves the prerequisite unresolved; do not resubmit. Stop after successful not-found. Other routes return the result directly. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
     answerParameters
   );
   register(

@@ -2,6 +2,7 @@ import type {
   MemoryAnswerDeliveryTask,
   MemoryAnswerExecutionPort
 } from "./memory-answer-delivery.mjs";
+import type { MemoryAnswerDeliveryDecision } from "./memory-answer-delivery-policy.mjs";
 export declare const RECEIPT: string;
 export declare const DISPOSITION: string;
 export declare const COMPLETION: string;
@@ -66,6 +67,7 @@ export declare function createPiMemoryDelivery(
     mode?: string;
     pollMs?: number;
     retryMs?: number;
+    reportDelivery?(decision: MemoryAnswerDeliveryDecision): void;
   }
 ): {
   execute(

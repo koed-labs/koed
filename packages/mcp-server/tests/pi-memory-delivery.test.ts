@@ -100,13 +100,18 @@ function fixture(
     get: vi.fn(async (id: string) => tasks.get(id)!),
     cancel: vi.fn()
   };
-  const blocking = vi.fn(async () => ({ markdown: "blocking" }));
+  const blocking = vi.fn(async (...args: unknown[]) => {
+    void args;
+    return { markdown: "blocking" };
+  });
+  const reportDelivery = vi.fn();
   const delivery = createPiMemoryDelivery(options.incapable ? {} : pi, {
     port,
     blocking,
     mode: options.mode,
     pollMs: 25,
-    retryMs: 1
+    retryMs: 1,
+    reportDelivery
   });
   delivery.start({ reason: "startup" }, ctx);
   const complete = () => {
@@ -123,6 +128,7 @@ function fixture(
     tasks,
     port,
     blocking,
+    reportDelivery,
     delivery,
     complete,
     pi_: delivery_
@@ -132,6 +138,129 @@ function fixture(
 afterEach(() => vi.useRealTimers());
 
 describe("supported Pi Memory Answer delivery", () => {
+  it("blocks explicitly without disturbing an earlier deferred observer", async () => {
+    const f = fixture();
+    await f.delivery.execute(
+      "deferred",
+      { query: "first", delivery_mode: "non_blocking" },
+      undefined,
+      f.ctx
+    );
+    const result = await f.delivery.execute(
+      "blocking",
+      { query: "second", delivery_mode: "blocking" },
+      undefined,
+      f.ctx
+    );
+    expect(result.details.markdown).toBe("blocking");
+    expect(f.delivery.pending.size).toBe(1);
+    expect(f.entries.filter((e) => e.customType === RECEIPT)).toHaveLength(1);
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.port.start.mock.calls[0]![0]).toEqual({ query: "first" });
+    expect(f.port.start.mock.calls[0]![1]).not.toHaveProperty(
+      "clientInfo.deliveryOrigin.deliveryMode"
+    );
+    expect(f.blocking.mock.calls[0]![0]).toEqual({ query: "second" });
+    expect(f.reportDelivery).toHaveBeenLastCalledWith({
+      requestedMode: "blocking",
+      effectiveRoute: "pi_blocking",
+      fallbackReason: null
+    });
+    f.complete();
+    await f.delivery.settle();
+    expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(f.pi.sendMessage.mock.calls[0]![0].content).toContain("first");
+  });
+  it.each([undefined, "auto", "non_blocking"])(
+    "preserves eligible deferred selection and strips mode: %s",
+    async (deliveryMode) => {
+      const f = fixture();
+      const result = await f.delivery.execute(
+        "call",
+        {
+          query: "q",
+          ...(deliveryMode === undefined ? {} : { delivery_mode: deliveryMode })
+        },
+        undefined,
+        f.ctx
+      );
+      expect(result.details.accepted).toBe(true);
+      expect(f.port.start.mock.calls[0]![0]).toEqual({ query: "q" });
+      expect(f.reportDelivery).toHaveBeenCalledWith({
+        requestedMode: deliveryMode ?? "auto",
+        effectiveRoute: "pi_follow_up",
+        fallbackReason: null
+      });
+      f.complete();
+      await f.delivery.settle();
+    }
+  );
+  it.each([
+    { mode: "blocking", reason: "integration_disabled" },
+    { persistent: false, reason: "unsupported_context" },
+    { runMode: "print", reason: "unsupported_context" },
+    { runMode: "json", reason: "unsupported_context" },
+    { incapable: true, reason: "unsupported_context" }
+  ])(
+    "retains configured and context opt-outs for explicit non-blocking: %j",
+    async (options) => {
+      const f = fixture(options);
+      await f.delivery.execute(
+        "call",
+        { query: "PRIVATE_QUERY", delivery_mode: "non_blocking" },
+        undefined,
+        f.ctx
+      );
+      expect(f.port.start).not.toHaveBeenCalled();
+      expect(f.blocking.mock.calls[0]![0]).toEqual({ query: "PRIVATE_QUERY" });
+      expect(f.reportDelivery).toHaveBeenCalledWith({
+        requestedMode: "non_blocking",
+        effectiveRoute: "pi_blocking",
+        fallbackReason: options.reason
+      });
+      expect(JSON.stringify(f.reportDelivery.mock.calls)).not.toContain(
+        "PRIVATE_QUERY"
+      );
+    }
+  );
+  it.each(["invalid", null, 1])(
+    "rejects invalid mode before any execution: %s",
+    async (deliveryMode) => {
+      const f = fixture();
+      await expect(
+        f.delivery.execute(
+          "call",
+          { query: "q", delivery_mode: deliveryMode },
+          undefined,
+          f.ctx
+        )
+      ).rejects.toThrow("Invalid Memory Answer delivery mode");
+      expect(f.port.start).not.toHaveBeenCalled();
+      expect(f.blocking).not.toHaveBeenCalled();
+    }
+  );
+  it("rejects changing a recorded deferred invocation to blocking before execution", async () => {
+    const f = fixture();
+    await f.delivery.execute(
+      "call",
+      { query: "q", delivery_mode: "non_blocking" },
+      undefined,
+      f.ctx
+    );
+    await expect(
+      f.delivery.execute(
+        "call",
+        { query: "q", delivery_mode: "blocking" },
+        undefined,
+        f.ctx
+      )
+    ).rejects.toThrow("recorded delivery mode");
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.blocking).not.toHaveBeenCalled();
+    expect(f.delivery.pending.size).toBe(1);
+    f.complete();
+    await f.delivery.settle();
+  });
   it("keeps a throttled receipt pending and automatically delivers after the fresh read", async () => {
     vi.useFakeTimers();
     const f = fixture();
@@ -329,6 +458,24 @@ describe("supported Pi Memory Answer delivery", () => {
     f.delivery.agentSettled({}, f.ctx);
     await f.delivery.settle();
     expect(f.pi.sendMessage).toHaveBeenCalledTimes(2);
+  });
+  it("recovers quietly when the only settle event races observer completion", async () => {
+    const f = fixture();
+    await f.delivery.execute("call", { query: "q" }, undefined, f.ctx);
+    f.pi.sendMessage.mockImplementationOnce(() => {
+      // The queued message is dropped while the observer is still presenting.
+      f.delivery.agentSettled({}, f.ctx);
+    });
+    f.complete();
+    await f.delivery.settle();
+    await f.delivery.settle();
+    expect(f.pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(f.pi.sendMessage.mock.calls[1]![1]).toEqual({ triggerTurn: false });
+    expect(f.entries.filter((e) => e.type === "custom_message")).toHaveLength(
+      1
+    );
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.port.get.mock.calls.length).toBeGreaterThan(2);
   });
 
   it("does not redeliver a completion that Pi delivered", async () => {

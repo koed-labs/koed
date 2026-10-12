@@ -16,6 +16,43 @@ const mustCase = (id: string) => {
 };
 
 describe("tool-choice benchmark scoring", () => {
+  it.each([
+    ["delivery-independent-diagnostics", "non_blocking", "blocking"],
+    ["delivery-dependent-decision", "blocking", "non_blocking"],
+    ["delivery-direct-recall", "blocking", "auto"],
+    ["delivery-ambiguous-continuation", "blocking", "non_blocking"]
+  ])(
+    "scores next-action selection separately for %s",
+    (caseId, correctMode, incorrectMode) => {
+      const score = (mode: string) =>
+        scoreToolChoiceRun(mustCase(caseId), {
+          caseId,
+          runIndex: 0,
+          calls: [
+            {
+              toolName: "memory_answer",
+              arguments: {
+                query: "prior constraint",
+                search_domain: "project",
+                delivery_mode: mode
+              }
+            }
+          ],
+          finalResponse: "The retry budget is one attempt."
+        });
+      const correct = score(correctMode);
+      const incorrect = score(incorrectMode);
+      expect(
+        correct.details.find((d) => d.name === "delivery_mode")
+      ).toMatchObject({ score: 3, reason: "ideal" });
+      expect(
+        incorrect.details.find((d) => d.name === "delivery_mode")
+      ).toMatchObject({ score: 0, reason: "bad" });
+      expect(
+        incorrect.details.find((d) => d.name === "memory_call")
+      ).toMatchObject({ score: 3 });
+    }
+  );
   it("scores ideal memory call arguments", () => {
     const score = scoreToolChoiceRun(mustCase("project-prior-decision"), {
       caseId: "project-prior-decision",
@@ -207,7 +244,9 @@ describe("tool-choice benchmark scoring", () => {
 
 describe("tool-choice benchmark cases", () => {
   it("keeps cases reviewable and ready for five-run statistical sampling", () => {
-    expect(toolChoiceCases).toHaveLength(8);
+    expect(new Set(toolChoiceCases.map((item) => item.id)).size).toBe(
+      toolChoiceCases.length
+    );
     for (const benchmarkCase of toolChoiceCases) {
       expect(benchmarkCase.runs).toBe(5);
       expect(benchmarkCase.prompt).not.toMatch(/\bmemory tool\b/i);

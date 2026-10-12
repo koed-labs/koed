@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
 import {
+  resolveMemoryAnswerDelivery,
+  splitMemoryAnswerDeliveryInput,
+  type MemoryAnswerDeliveryDecision
+} from "../integrations/pi/memory-answer-delivery-policy.mjs";
+import {
   CODEX_DELIVERY_NONCE,
   CodexDetachedMemoryIneligible,
   CodexMemoryDelivery,
@@ -41,7 +46,7 @@ import type {
 } from "./local-runtime-protocol.js";
 import {
   memoryAccessCheckInputSchema,
-  memoryAnswerInputSchema,
+  memoryAnswerAdapterInputSchema,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -160,7 +165,7 @@ const toolTitle = (name: LocalRuntimeToolName): string => {
 const toolSchema = (name: LocalRuntimeToolName) => {
   switch (name) {
     case "memory_answer":
-      return memoryAnswerInputSchema;
+      return memoryAnswerAdapterInputSchema;
     case "memory_workspaces":
       return memoryWorkspacesInputSchema;
     case "memory_intake_propose":
@@ -199,8 +204,14 @@ export const createKoedMcpServer = async (
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
   const deferredEnabled = environment.KOED_CODEX_STOP_DELIVERY === "1";
-  // An unusable receipt store must not stop the MCP Server: recall falls back
-  // to blocking, and the tool schema still accepts (and strips) the nonce.
+  // Missing readiness can fall back before acceptance. A supplied nonce still
+  // requires validation; unavailable storage is never permission to ignore it.
+  const reportDelivery = (decision: MemoryAnswerDeliveryDecision): void => {
+    logger.info(
+      { memoryAnswerDelivery: decision },
+      "Memory Answer delivery route"
+    );
+  };
   let receiptStore: CodexMemoryReceiptStore | undefined;
   if (deferredEnabled) {
     try {
@@ -239,7 +250,8 @@ export const createKoedMcpServer = async (
             runtimeClient.cancelMemoryAnswerTask(id, signal)
         },
         undefined,
-        environment.KOED_CODEX_MEMORY_TOOL ?? "mcp__koed__memory_answer"
+        environment.KOED_CODEX_MEMORY_TOOL ?? "mcp__koed__memory_answer",
+        reportDelivery
       )
     : undefined;
   let runtimeCapabilities: RuntimeToolCapabilities;
@@ -278,7 +290,7 @@ export const createKoedMcpServer = async (
         title: toolTitle(toolName),
         description: toolDescription(toolName),
         inputSchema: (toolName === "memory_answer" && deferredEnabled
-          ? memoryAnswerInputSchema.safeExtend({
+          ? memoryAnswerAdapterInputSchema.safeExtend({
               [CODEX_DELIVERY_NONCE]: z
                 .string()
                 .regex(/^[a-f0-9]{64}$/)
@@ -317,6 +329,23 @@ export const createKoedMcpServer = async (
               caller,
               context.mcpReq.signal,
               context.mcpReq._meta
+            );
+          }
+          if (toolName === "memory_answer" && !deferred) {
+            const answerInput = input as Record<string, unknown>;
+            if (answerInput[CODEX_DELIVERY_NONCE] !== undefined)
+              throw new Error(
+                "Koed deferred Memory Answer receipt is unavailable or invalid"
+              );
+            reportDelivery(
+              resolveMemoryAnswerDelivery({
+                requestedMode:
+                  splitMemoryAnswerDeliveryInput(answerInput).requestedMode,
+                blockingRoute: "mcp_result",
+                unavailableReason: deferredEnabled
+                  ? "receipt_store_unavailable"
+                  : "integration_disabled"
+              })
             );
           }
           response ??= await runtimeClient.callTool(

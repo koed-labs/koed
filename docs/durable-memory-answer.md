@@ -86,6 +86,15 @@ Every route below uses the same durable task and the shared delivery lifecycle
 described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
 of them exposes native MCP Tasks or a status tool to the model.
 
+The public MCP request can select `delivery_mode=blocking` or
+`delivery_mode=non_blocking` per call. Omitted and `auto` retain configured
+defaults. This preference belongs to presentation and is removed before the
+canonical execution request reaches the Local AI Runtime. Blocking Personal
+recall retains its runtime observer and the same durable task path; it creates
+no deferred adapter receipt. Requested mode does not change execution priority,
+authority, synthesis assignment, or capacity. See
+[per-call delivery selection](async-memory-answer.md#per-call-delivery-selection).
+
 - **Codex:** recall is deferred by default, except on Windows. Setup installs
   native Codex hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
   Desktop app were each tested separately; see

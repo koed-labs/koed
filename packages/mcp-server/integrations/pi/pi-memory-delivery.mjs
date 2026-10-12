@@ -3,6 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { MemoryAnswerDelivery } from "./memory-answer-delivery.mjs";
 import { formatMemoryAnswerCompletion } from "./memory-answer-presentation.mjs";
+import {
+  MEMORY_ANSWER_DELIVERY_MODES,
+  normalizeMemoryAnswerDeliveryMode,
+  resolveMemoryAnswerDelivery,
+  splitMemoryAnswerDeliveryInput
+} from "./memory-answer-delivery-policy.mjs";
 
 export const RECEIPT = "koed-memory-answer-receipt-v1";
 export const DISPOSITION = "koed-memory-answer-disposition-v1";
@@ -47,12 +53,21 @@ const validReceipt = (value) =>
   value.query.length > 0 &&
   value.query.length <= 32000 &&
   hash(value.query) === value.queryHash &&
+  (value.deliveryMode === undefined ||
+    MEMORY_ANSWER_DELIVERY_MODES.includes(value.deliveryMode)) &&
   Number.isFinite(Date.parse(value.expiresAt));
 // Receipts are Pi presentation history only. The runtime remains the sole task
 // owner; stopping this observer never cancels accepted work.
 export function createPiMemoryDelivery(
   pi,
-  { port, blocking, mode = "auto", pollMs = 1000, retryMs = 1000 }
+  {
+    port,
+    blocking,
+    mode = "auto",
+    pollMs = 1000,
+    retryMs = 1000,
+    reportDelivery = () => {}
+  }
 ) {
   const boundary = new MemoryAnswerDelivery(port, { pollMs });
   const blockingResult = async (input, ctx, signal, invocation) => {
@@ -255,8 +270,14 @@ export function createPiMemoryDelivery(
         }
       }
     })().finally(() => {
-      if (pending.get(binding.taskId)?.controller === controller)
+      if (pending.get(binding.taskId)?.controller === controller) {
         pending.delete(binding.taskId);
+        const unconfirmed = awaiting.get(binding.taskId);
+        // A host can settle while this observer is returning from enqueue.
+        // There may be no later settle event after the User stops the agent.
+        if (unconfirmed?.settledContext)
+          agentSettled(undefined, unconfirmed.settledContext);
+      }
     });
     pending.set(binding.taskId, { binding, controller, watcher });
   };
@@ -318,36 +339,30 @@ export function createPiMemoryDelivery(
     if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) return;
     const sessionContext = ctx ?? context;
     for (const [taskId, item] of [...awaiting]) {
-      // A still-running observer keeps its entry for the next settle.
-      if (pending.has(taskId)) continue;
+      if (pending.has(taskId)) {
+        item.settledContext = sessionContext;
+        continue;
+      }
       awaiting.delete(taskId);
       if (item.ownEpoch !== epoch || delivered(sessionContext, taskId))
         continue;
       observe(item.binding, { redeliver: true });
     }
   };
-  const execute = async (id, input, signal, ctx) => {
+  const execute = async (id, adapterInput, signal, ctx) => {
+    const { requestedMode, executionInput: input } =
+      splitMemoryAnswerDeliveryInput(adapterInput);
     const invocation = `${ctx.sessionManager.getSessionId()}:${id}`;
-    if (
-      mode === "blocking" ||
-      input.team_workspace_id ||
-      !capabilities(pi, ctx)
-    )
-      return blockingResult(input, ctx, signal, invocation);
-    if (
-      !alive ||
-      context?.sessionManager.getSessionId() !==
-        ctx.sessionManager.getSessionId()
-    )
-      throw new Error("Koed Memory Answer Conversation is inactive");
-    const previous = ctx.sessionManager
-      .getBranch()
-      .find(
-        (entry) =>
-          entry.type === "custom" &&
-          entry.customType === RECEIPT &&
-          entry.data?.invocation === invocation
-      );
+    const previous = (
+      typeof ctx.sessionManager.getBranch === "function"
+        ? ctx.sessionManager.getBranch()
+        : []
+    ).find(
+      (entry) =>
+        entry.type === "custom" &&
+        entry.customType === RECEIPT &&
+        entry.data?.invocation === invocation
+    );
     if (
       previous &&
       (!validReceipt(previous.data) ||
@@ -357,8 +372,40 @@ export function createPiMemoryDelivery(
       throw new Error(
         "Koed Memory Answer invocation does not match its recorded query"
       );
-    if (pending.size + accepting.size >= 128)
+    if (
+      previous &&
+      normalizeMemoryAnswerDeliveryMode(previous.data.deliveryMode) !==
+        requestedMode
+    )
+      throw new Error(
+        "Koed Memory Answer invocation does not match its recorded delivery mode"
+      );
+    const unavailableReason =
+      mode === "blocking"
+        ? "integration_disabled"
+        : input.team_workspace_id
+          ? "team_ineligible"
+          : !capabilities(pi, ctx)
+            ? "unsupported_context"
+            : pending.size + accepting.size >= 128
+              ? "capacity_limit"
+              : undefined;
+    const decision = resolveMemoryAnswerDelivery({
+      requestedMode,
+      blockingRoute: "pi_blocking",
+      deferredRoute: "pi_follow_up",
+      unavailableReason
+    });
+    if (decision.effectiveRoute === "pi_blocking") {
+      reportDelivery(decision);
       return blockingResult(input, ctx, signal, invocation);
+    }
+    if (
+      !alive ||
+      context?.sessionManager.getSessionId() !==
+        ctx.sessionManager.getSessionId()
+    )
+      throw new Error("Koed Memory Answer Conversation is inactive");
     const reservation = {};
     accepting.add(reservation);
     const ownEpoch = epoch;
@@ -389,8 +436,17 @@ export function createPiMemoryDelivery(
       if (
         error?.statusCode === 409 &&
         error?.code === "memory_answer_team_ineligible"
-      )
+      ) {
+        reportDelivery(
+          resolveMemoryAnswerDelivery({
+            requestedMode,
+            blockingRoute: "pi_blocking",
+            deferredRoute: "pi_follow_up",
+            unavailableReason: "team_ineligible"
+          })
+        );
         return blockingResult(input, ctx, signal, invocation);
+      }
       throw error;
     } finally {
       accepting.delete(reservation);
@@ -401,6 +457,7 @@ export function createPiMemoryDelivery(
       schema: 1,
       ...origin,
       taskId: task.id,
+      deliveryMode: requestedMode,
       query: input.query,
       expiresAt: task.expiresAt
     };
@@ -419,7 +476,9 @@ export function createPiMemoryDelivery(
       (!validReceipt(existing.data) ||
         !matches(existing.data, ctx) ||
         existing.data.queryHash !== binding.queryHash ||
-        existing.data.invocation !== invocation)
+        existing.data.invocation !== invocation ||
+        normalizeMemoryAnswerDeliveryMode(existing.data.deliveryMode) !==
+          requestedMode)
     )
       throw new Error(
         "Koed Memory Answer receipt does not match this invocation"
@@ -427,12 +486,13 @@ export function createPiMemoryDelivery(
     const saved = existing?.data ?? binding;
     if (!existing) pi.appendEntry(RECEIPT, binding);
     if (!settled(ctx).has(task.id)) observe(saved);
+    reportDelivery(decision);
     return textResult({
       accepted: true,
       ...saved,
       status: task.status,
       notice:
-        "Koed will deliver the result automatically. Continue independent work; await the result before a memory-dependent decision. Do not poll for status."
+        "Koed will deliver the result automatically. Continue useful independent work, then yield before a memory-dependent decision. Do not poll, retry this request in blocking mode, invent recalled constraints, or claim the dependent task is complete."
     });
   };
   return {
