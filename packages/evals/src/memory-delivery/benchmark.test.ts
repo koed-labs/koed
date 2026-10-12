@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   scoreDeliveryRun,
   scoreAttributedDeliveryRun,
+  scoreClaudeDeliveryRun,
   type DeliveryEvent
 } from "./benchmark.mjs";
 
@@ -60,6 +61,64 @@ describe("native Memory Answer dependency evidence", () => {
         expectedSettings: expected,
         actualSettings: { alpha: expected.beta, beta: expected.alpha }
       }).checks.correctAttribution
+    ).toBe(false);
+  });
+  it("fails a concurrent run whose recalls never overlap", () => {
+    const expected = {
+      alpha: settings,
+      beta: { ...settings, retryDelayMs: 11729 }
+    };
+    const sequential = (target: string) => [
+      event("recall_requested", { target, mode: "non_blocking" }),
+      event("task_terminal", { target }),
+      event("completion", { target, outcome: "found" }),
+      event("dependent_action", { target })
+    ];
+    const result = scoreAttributedDeliveryRun({
+      scenario: "concurrent",
+      events: [
+        ...sequential("alpha"),
+        ...sequential("beta"),
+        event("final_response", { status: "fixed" })
+      ],
+      expectedSettings: expected,
+      actualSettings: expected
+    });
+    expect(result.checks.recallsOverlap).toBe(false);
+    expect(result.passed).toBe(false);
+  });
+  it("scores Claude host delivery with the shared dependency rules", () => {
+    const claude = (events: DeliveryEvent[]) =>
+      scoreClaudeDeliveryRun({
+        scenario: "background_enabled",
+        events,
+        expectedSettings: settings,
+        actualSettings: settings,
+        exitCode: 0,
+        executions: 1,
+        interrupted: false,
+        waiterDetached: false
+      });
+    const notified = [
+      event("recall_requested", { mode: "non_blocking" }),
+      event("host_background_receipt"),
+      event("diagnostic_read"),
+      event("completion", { outcome: "found" }),
+      event("host_notification"),
+      event("dependent_action"),
+      event("final_response", { status: "fixed" })
+    ];
+    expect(claude(notified).passed).toBe(true);
+    const early = notified.filter((e) => e.kind !== "dependent_action");
+    early.splice(2, 0, event("dependent_action"));
+    expect(claude(early).checks.noPrematureEdit).toBe(false);
+    expect(
+      claude([...notified, event("recall_requested", { mode: "blocking" })])
+        .checks.oneRecall
+    ).toBe(false);
+    expect(
+      claude(notified.filter((e) => e.kind !== "dependent_action")).checks
+        .noPrematureCompletionClaim
     ).toBe(false);
   });
   it("requires independent work, yielding, delivery and application of the constraint", () => {

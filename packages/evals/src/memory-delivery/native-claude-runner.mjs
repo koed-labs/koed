@@ -15,6 +15,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
+import {
+  claudeDeliveryScenarios,
+  scoreClaudeDeliveryRun
+} from "./benchmark.mjs";
 import { recordEvent } from "./fixture-data.mjs";
 
 const args = process.argv.slice(2);
@@ -23,17 +27,7 @@ const option = (name) => {
   return i < 0 ? undefined : args[i + 1];
 };
 const cases = option("--case")?.split(",") ?? ["background_enabled"];
-const supported = [
-  "background_enabled",
-  "background_disabled",
-  "blocking_background",
-  "fast",
-  "not_found",
-  "failed",
-  "interrupted",
-  "ambiguous"
-];
-if (cases.some((c) => !supported.includes(c)))
+if (cases.some((c) => !claudeDeliveryScenarios.includes(c)))
   throw new Error("Unknown Claude delivery case");
 const binary = option("--claude") ?? "claude";
 const version = spawnSync(binary, ["--version"], { encoding: "utf8" });
@@ -328,67 +322,16 @@ async function runCase(scenario) {
     const actualSettings = JSON.parse(
       readFileSync(join(workspace, "import-settings.json"), "utf8")
     );
-    const index = (kind) => events.findIndex((e) => e.kind === kind);
-    const shouldFix = !["failed", "not_found", "interrupted"].includes(
-      scenario
-    );
-    const checks = {
-      oneExecution: accepted === 1,
-      oneRecall:
-        events.filter((e) => e.kind === "recall_requested").length === 1,
-      correctMode:
-        events.find((e) => e.kind === "recall_requested")?.mode ===
-        (dependentFirst ? "blocking" : "non_blocking"),
-      noPrematureEdit: events
-        .filter((e) => e.kind === "dependent_action")
-        .every((e) =>
-          events
-            .slice(0, events.indexOf(e))
-            .some((c) => c.kind === "completion" && c.outcome === "found")
-        ),
-      expectedEdit:
-        events.filter((e) => e.kind === "dependent_action").length ===
-        (shouldFix ? 1 : 0),
-      correctSettings:
-        !shouldFix ||
-        (actualSettings.retryDelayMs === expectedSettings.retryDelayMs &&
-          actualSettings.cacheAuthorization === false),
-      hostEnded: scenario === "interrupted" ? interrupted : exitCode === 0
-    };
-    if (scenario !== "interrupted")
-      checks.observedFinalStatus = events.some(
-        (e) =>
-          e.kind === "final_response" &&
-          e.status === (shouldFix ? "fixed" : "blocked")
-      );
-    if (enabled && scenario !== "fast" && scenario !== "interrupted")
-      checks.nativeBackgroundNotification =
-        index("host_background_receipt") >= 0 &&
-        index("host_notification") > index("host_background_receipt");
-    if (!enabled)
-      checks.backgroundDisabled =
-        index("host_background_receipt") < 0 &&
-        index("diagnostic_read") > index("completion");
-    if (scenario === "background_enabled")
-      checks.independentWorkBeforeCompletion =
-        index("diagnostic_read") >= 0 &&
-        index("diagnostic_read") < index("completion");
-    if (dependentFirst)
-      checks.noUnneededDiagnostic = index("diagnostic_read") < 0;
-    checks.noPrematureCompletionClaim = events
-      .filter((e) => e.kind === "final_response" && e.status === "fixed")
-      .every((e) =>
-        events
-          .slice(0, events.indexOf(e))
-          .some((c) => c.kind === "dependent_action")
-      );
-    if (enabled && shouldFix && scenario !== "fast")
-      checks.notificationBeforeEdit =
-        index("host_notification") >= 0 &&
-        index("dependent_action") > index("host_notification");
-    if (scenario === "interrupted")
-      checks.waiterDetachesWithoutCancellation =
-        waiterDetached && index("task_terminal") > index("waiter_detached");
+    const { checks, passed } = scoreClaudeDeliveryRun({
+      scenario,
+      events,
+      expectedSettings,
+      actualSettings,
+      exitCode,
+      executions: accepted,
+      interrupted,
+      waiterDetached
+    });
     return {
       scenario,
       hostVersion: version.stdout.trim(),
@@ -406,7 +349,7 @@ async function runCase(scenario) {
       actualSettings,
       exitCode,
       checks,
-      passed: Object.values(checks).every(Boolean),
+      passed,
       nativeEventKinds: [...new Set(nativeEvents)],
       ...(exitCode !== 0 && scenario !== "interrupted"
         ? {
