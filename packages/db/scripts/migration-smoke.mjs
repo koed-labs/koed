@@ -70,9 +70,10 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0042_owner_scoped_projection_identity";
+const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
+const expectedLatestMigrationTag = "0044_memory_answer_team_authority";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 42;
+const expectedLatestMigrationIndex = 44;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -169,6 +170,8 @@ const assertAlphaMigrationContract = async () => {
     );
   }
   if (
+    journal.entries[42]?.tag !== "0042_owner_scoped_projection_identity" ||
+    journal.entries[43]?.tag !== expectedRemoteMcpOAuthTag ||
     journal.entries.at(-1)?.idx !== expectedLatestMigrationIndex ||
     journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
   ) {
@@ -710,6 +713,169 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
       `Migration ledger mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(result.rows)}`
     );
   }
+  if (expectedRecords.at(-1)?.tag === expectedLatestMigrationTag) {
+    await assertLatestSchema(pool);
+  }
+};
+
+const assertLatestSchema = async (pool) => {
+  const columnsByTable = {
+    remote_mcp_oauth_clients: [
+      ["id", "uuid", "NO"],
+      ["metadata", "jsonb", "NO"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    remote_mcp_oauth_grants: [
+      ["id", "uuid", "NO"],
+      ["user_id", "uuid", "NO"],
+      ["client_id", "uuid", "NO"],
+      ["resource", "text", "NO"],
+      ["scopes", "ARRAY", "NO"],
+      ["expires_at", "timestamp with time zone", "NO"],
+      ["revoked_at", "timestamp with time zone", "YES"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    remote_mcp_oauth_credentials: [
+      ["secret_hash", "text", "NO"],
+      ["grant_id", "uuid", "NO"],
+      ["kind", "text", "NO"],
+      ["data", "jsonb", "NO"],
+      ["expires_at", "timestamp with time zone", "NO"],
+      ["consumed_at", "timestamp with time zone", "YES"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    remote_mcp_oauth_requests: [
+      ["secret_hash", "text", "NO"],
+      ["client_id", "uuid", "NO"],
+      ["data", "jsonb", "NO"],
+      ["expires_at", "timestamp with time zone", "NO"],
+      ["consumed_at", "timestamp with time zone", "YES"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    memory_answer_tasks: [
+      ["team_workspace_id", "uuid", "YES"],
+      ["team_authorization", "jsonb", "YES"]
+    ],
+    memory_questions: [["team_authorization", "jsonb", "YES"]]
+  };
+  const expectedColumns = Object.entries(columnsByTable)
+    .flatMap(([table_name, columns]) =>
+      columns.map(([column_name, data_type, is_nullable]) => ({
+        table_name,
+        column_name,
+        data_type,
+        is_nullable
+      }))
+    )
+    .sort(
+      (a, b) =>
+        a.table_name.localeCompare(b.table_name) ||
+        a.column_name.localeCompare(b.column_name)
+    );
+  const columns = await pool.query(
+    `
+    select required.table_name, required.column_name, actual.data_type, actual.is_nullable
+    from jsonb_to_recordset($1::jsonb) as required(table_name text, column_name text)
+    left join information_schema.columns actual on actual.table_schema = 'public'
+      and actual.table_name = required.table_name and actual.column_name = required.column_name
+    order by required.table_name, required.column_name`,
+    [JSON.stringify(expectedColumns)]
+  );
+  if (!isDeepStrictEqual(columns.rows, expectedColumns)) {
+    throw new Error(
+      `Latest migration columns differ: ${JSON.stringify(columns.rows)}`
+    );
+  }
+  const expectedConstraints = [
+    ["remote_mcp_oauth_clients", "remote_mcp_oauth_clients_pkey", "p"],
+    ["remote_mcp_oauth_credentials", "remote_mcp_oauth_credentials_pkey", "p"],
+    ["remote_mcp_oauth_grants", "remote_mcp_oauth_grants_pkey", "p"],
+    ["remote_mcp_oauth_requests", "remote_mcp_oauth_requests_pkey", "p"],
+    [
+      "remote_mcp_oauth_credentials",
+      "remote_mcp_oauth_credentials_kind_check",
+      "c"
+    ],
+    ["memory_answer_tasks", "memory_answer_tasks_team_authority_check", "c"],
+    [
+      "remote_mcp_oauth_credentials",
+      "remote_mcp_oauth_credentials_grant_id_remote_mcp_oauth_grants_id_fk",
+      "f",
+      "remote_mcp_oauth_grants",
+      "c"
+    ],
+    [
+      "remote_mcp_oauth_grants",
+      "remote_mcp_oauth_grants_user_id_users_id_fk",
+      "f",
+      "users",
+      "c"
+    ],
+    [
+      "remote_mcp_oauth_grants",
+      "remote_mcp_oauth_grants_client_id_remote_mcp_oauth_clients_id_fk",
+      "f",
+      "remote_mcp_oauth_clients",
+      "c"
+    ],
+    [
+      "remote_mcp_oauth_requests",
+      "remote_mcp_oauth_requests_client_id_remote_mcp_oauth_clients_id_fk",
+      "f",
+      "remote_mcp_oauth_clients",
+      "c"
+    ],
+    [
+      "memory_answer_tasks",
+      "memory_answer_tasks_team_workspace_id_team_workspaces_id_fk",
+      "f",
+      "team_workspaces",
+      "a"
+    ]
+  ].map(([table, name, ...contract]) => [
+    table,
+    name.slice(0, 63),
+    ...contract
+  ]);
+  const constraints = await pool.query(
+    `
+    select relation.relname as table_name, constraint_row.conname, constraint_row.contype,
+      constraint_row.convalidated, referenced.relname as referenced_table, constraint_row.confdeltype
+    from pg_constraint constraint_row join pg_class relation on relation.oid = constraint_row.conrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    left join pg_class referenced on referenced.oid = constraint_row.confrelid
+    where namespace.nspname = 'public' and constraint_row.conname = any($1::text[])`,
+    [expectedConstraints.map(([, name]) => name)]
+  );
+  for (const [
+    table,
+    name,
+    type,
+    referencedTable,
+    deleteAction
+  ] of expectedConstraints) {
+    const row = constraints.rows.find(
+      (constraint) => constraint.conname === name
+    );
+    if (
+      !row ||
+      row.table_name !== table ||
+      row.contype !== type ||
+      !row.convalidated ||
+      (type === "f" &&
+        (row.referenced_table !== referencedTable ||
+          row.confdeltype !== deleteAction))
+    ) {
+      throw new Error(
+        `Latest migration constraint ${name} is missing or incorrect: ${JSON.stringify(row)}`
+      );
+    }
+  }
+  const indexes =
+    await pool.query(`select indexname from pg_indexes where schemaname = 'public'
+    and indexname in ('remote_mcp_oauth_credentials_grant_idx', 'remote_mcp_oauth_grants_user_idx')`);
+  if (indexes.rows.length !== 2)
+    throw new Error("Latest OAuth lookup indexes are missing");
 };
 
 const assertCurrentSchema = async (pool) => {
@@ -1421,6 +1587,127 @@ try {
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
       await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("remote-mcp-task-authority-upgrade", async () => {
+    const earlierFolder = await createMigrationSlice(journal, 42);
+    temporaryFolders.add(earlierFolder);
+    const target = await createDisposableDatabase(
+      "remote_mcp_authority_upgrade"
+    );
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: earlierFolder });
+      const owner = randomUUID();
+      const task = randomUUID();
+      const question = randomUUID();
+      await pool.query("insert into users (id,email) values ($1,$2)", [
+        owner,
+        `${owner}@example.test`
+      ]);
+      await pool.query(
+        `insert into memory_questions (id,owner_user_id,idempotency_key,search_domain,query,answer_markdown,status,answered_at)
+        values ($1,$2,$3,'global','retained question','retained answer','answered',now())`,
+        [question, owner, randomUUID()]
+      );
+      await pool.query(
+        `insert into memory_answer_tasks (id,owner_user_id,origin,invocation_key,request_snapshot,expires_at)
+        values ($1,$2,'mcp',$3,$4::jsonb,now()+interval '1 day')`,
+        [task, owner, randomUUID(), JSON.stringify({ contentEncrypted: true })]
+      );
+      const retainedRows = () =>
+        pool.query(
+          `select
+        (select to_jsonb(task_row)-'team_workspace_id'-'team_authorization' from memory_answer_tasks task_row where id=$1) as task,
+        (select to_jsonb(question_row)-'team_authorization' from memory_questions question_row where id=$2) as question`,
+          [task, question]
+        );
+      const before = await retainedRows();
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if (!isDeepStrictEqual((await retainedRows()).rows, before.rows)) {
+        throw new Error(
+          "OAuth/Team authority migrations changed retained Personal task or question data"
+        );
+      }
+      const authority = await pool.query(
+        `select task_row.team_workspace_id, task_row.team_authorization,
+        question_row.team_authorization as question_team_authorization from memory_answer_tasks task_row
+        cross join memory_questions question_row where task_row.id=$1 and question_row.id=$2`,
+        [task, question]
+      );
+      if (
+        !isDeepStrictEqual(authority.rows, [
+          {
+            team_workspace_id: null,
+            team_authorization: null,
+            question_team_authorization: null
+          }
+        ])
+      ) {
+        throw new Error(
+          "Migration granted Team authority to retained Personal rows"
+        );
+      }
+      await expectSqlState(
+        pool,
+        `update memory_answer_tasks set team_authorization='{}'::jsonb where id='${task}'`,
+        "23514",
+        "Task authority without Team Workspace"
+      );
+      await expectSqlState(
+        pool,
+        `update memory_answer_tasks set team_workspace_id='${randomUUID()}' where id='${task}'`,
+        "23514",
+        "Team Workspace without task authority"
+      );
+      const team = randomUUID();
+      const workspace = randomUUID();
+      await pool.query(
+        "insert into teams (id,name) values ($1,'Migration fixture Team')",
+        [team]
+      );
+      await pool.query(
+        "insert into team_workspaces (id,team_id,name) values ($1,$2,'Migration fixture Workspace')",
+        [workspace, team]
+      );
+      await pool.query(
+        `insert into memory_answer_tasks (id,owner_user_id,origin,request_snapshot,expires_at,team_workspace_id,team_authorization)
+        values ($1,$2,'mcp','{}'::jsonb,now()+interval '1 day',$3,'{"version":1}'::jsonb)`,
+        [randomUUID(), owner, workspace]
+      );
+      const client = randomUUID();
+      const grant = randomUUID();
+      await pool.query(
+        `insert into remote_mcp_oauth_clients (id,metadata) values ($1,'{}'::jsonb)`,
+        [client]
+      );
+      await pool.query(
+        `insert into remote_mcp_oauth_grants (id,user_id,client_id,resource,scopes,expires_at)
+        values ($1,$2,$3,'https://fixture.example/mcp',array['koed:memory:read'],now()+interval '1 day')`,
+        [grant, owner, client]
+      );
+      for (const kind of ["code", "access", "refresh"]) {
+        await pool.query(
+          `insert into remote_mcp_oauth_credentials (secret_hash,grant_id,kind,data,expires_at)
+          values ($1,$2,$3,'{}'::jsonb,now()+interval '1 day')`,
+          [`fixture-${kind}`, grant, kind]
+        );
+      }
+      await expectSqlState(
+        pool,
+        `insert into remote_mcp_oauth_credentials (secret_hash,grant_id,kind,data,expires_at)
+        values ('fixture-invalid-kind','${grant}','unsupported','{}'::jsonb,now()+interval '1 day')`,
+        "23514",
+        "Invalid OAuth credential kind"
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if (!isDeepStrictEqual((await retainedRows()).rows, before.rows)) {
+        throw new Error(
+          "Idempotent head migration rerun changed retained Personal rows"
+        );
+      }
     });
   });
 
