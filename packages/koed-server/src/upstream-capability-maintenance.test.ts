@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSecureUpstreamFetch } from "@koed/shared/secure-upstream-fetch";
 import { resolveKoedServerPaths } from "./paths.js";
 import { maintainUpstreamCapabilities } from "./upstream-capability-maintenance.js";
 import {
@@ -49,6 +50,33 @@ const add = (paths: ReturnType<typeof pathsForTest>, id = "team") => {
     profile: "private-vps"
   });
   updateUpstreamBackendRoutePolicy(paths, id, { teamWorkspaceRead: "enabled" });
+};
+
+const createDelayedDnsFetch = (fetcher: typeof fetch) => {
+  let startSlowLookup!: () => void;
+  let releaseSlowLookup!: () => void;
+  const slowLookupStarted = new Promise<void>((resolve) => {
+    startSlowLookup = resolve;
+  });
+  const pendingLookup = new Promise<{ address: string; family: 4 | 6 }[]>(
+    (resolve) => {
+      releaseSlowLookup = () =>
+        resolve([{ address: "203.0.114.8", family: 4 }]);
+    }
+  );
+  const secureFetch = createSecureUpstreamFetch({
+    dependencies: {
+      lookup: (hostname) => {
+        if (hostname === "a-slow.example.test") {
+          startSlowLookup();
+          return pendingLookup;
+        }
+        return Promise.resolve([{ address: "203.0.114.9", family: 4 }]);
+      },
+      fetch: fetcher
+    }
+  });
+  return { secureFetch, slowLookupStarted, releaseSlowLookup };
 };
 
 describe("Server-owned upstream capability maintenance", () => {
@@ -131,6 +159,63 @@ describe("Server-owned upstream capability maintenance", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
+  it("refreshes healthy upstreams after a timed-out DNS lookup", async () => {
+    const paths = pathsForTest();
+    add(paths, "a-slow");
+    add(paths, "b-healthy");
+    const timeoutController = new AbortController();
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementationOnce(() => timeoutController.signal);
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      init?.signal?.throwIfAborted();
+      return new Response(JSON.stringify(capabilities));
+    });
+    const { secureFetch, slowLookupStarted, releaseSlowLookup } =
+      createDelayedDnsFetch(fetcher);
+    let resolveHealthyRefresh!: () => void;
+    const healthyRefresh = new Promise<void>((resolve) => {
+      resolveHealthyRefresh = resolve;
+    });
+    const refresh = vi.fn<typeof refreshUpstreamBackendCapabilities>(
+      async (p, id, deps) => {
+        const result = await refreshUpstreamBackendCapabilities(p, id, {
+          ...deps,
+          fetch: secureFetch
+        });
+        if (id === "b-healthy" && result.ok) resolveHealthyRefresh();
+        return result;
+      }
+    );
+    const stop = maintainUpstreamCapabilities(paths, { refresh });
+    stops.push(stop);
+
+    try {
+      await slowLookupStarted;
+      timeoutController.abort(new DOMException("deadline", "TimeoutError"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(refresh.mock.calls.map(([, id]) => id)).toEqual([
+        "a-slow",
+        "b-healthy"
+      ]);
+      await healthyRefresh;
+      const backends = listUpstreamBackends(paths).backends ?? [];
+      expect(
+        backends.find((backend) => backend.id === "a-slow")?.capabilities.state
+      ).toBe("failed");
+      expect(
+        backends.find((backend) => backend.id === "b-healthy")?.capabilities
+          .state
+      ).toBe("validated");
+    } finally {
+      stop();
+      releaseSlowLookup();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await secureFetch.close();
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it("does not refresh revoked upstreams", async () => {
     vi.useFakeTimers();
     const paths = pathsForTest();
