@@ -91,6 +91,12 @@ Team support. Missing support fails explicitly rather than changing executors.
 Deploy the backend and local helper from compatible releases: version 2 task
 completion sends a prepared final question, not a previously persisted question
 ID. Older helpers cannot service this completion contract.
+
+Provider login is separate from the remote MCP grant. The selected AI Client
+must also have usable model credentials. A stored login can still have an
+expired or revoked refresh token. Pi native authentication failures report an
+actionable sign-in error without exposing the provider's raw error text; they
+do not silently switch models or move synthesis to the backend.
 Unattended access-token renewal never opens a browser. Expired or revoked
 grants require an explicit login rather than fallback to another credential
 or deployment.

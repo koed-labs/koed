@@ -235,8 +235,15 @@ const workerFailureDisplayMessage = (
   provider: string,
   workerErrorMessage: string,
   failureKind: MemoryAnswerFailureKind,
-  exhaustedBudgets: readonly string[]
+  exhaustedBudgets: readonly string[],
+  providerFailureCode?: string
 ): string => {
+  if (
+    provider === "pi" &&
+    providerFailureCode === "provider_authentication_failure"
+  ) {
+    return "Pi provider authentication failed. Sign in again to Pi for the selected provider.";
+  }
   const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
   // Exhausting retries after a malformed answer is a validation failure, not
   // evidence that retrieval ran out of resources. Preserve the actual cause.
@@ -2516,6 +2523,7 @@ const runCodexWithRetries = async (
     config.aiClientInstanceId
   );
   let lastErrorMessage: string | undefined;
+  let lastProviderFailureCode: string | undefined;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     if (attempt > 1 && !canStartAttempt()) {
       break;
@@ -2544,6 +2552,21 @@ const runCodexWithRetries = async (
       return { run, validated };
     } catch (error) {
       lastErrorMessage = errorMessage(error);
+      const providerFailure =
+        error && typeof error === "object"
+          ? (error as {
+              memoryAnswerTaskErrorCode?: unknown;
+              retryable?: unknown;
+            })
+          : {};
+      lastProviderFailureCode =
+        config.provider === "pi" &&
+        (providerFailure.memoryAnswerTaskErrorCode ===
+          "provider_authentication_failure" ||
+          providerFailure.memoryAnswerTaskErrorCode ===
+            "provider_execution_failure")
+          ? providerFailure.memoryAnswerTaskErrorCode
+          : undefined;
       if (run) {
         attempts.push({
           ...executionIdentity,
@@ -2595,15 +2618,23 @@ const runCodexWithRetries = async (
           processMetrics
         });
       }
+      if (lastProviderFailureCode && providerFailure.retryable === false) break;
       // Retry with a longer timeout, then let the caller preserve fallback evidence.
     }
   }
 
+  const workerName = config.provider === "pi" ? "Pi" : "Codex";
   const message = lastErrorMessage
-    ? `Codex memory answer failed after retry attempts: ${lastErrorMessage}`
-    : "Codex memory answer failed after retry attempts";
+    ? `${workerName} memory answer failed after retry attempts: ${lastErrorMessage}`
+    : `${workerName} memory answer failed after retry attempts`;
   throw Object.assign(new Error(message), {
-    appServerExecutions: attempts
+    appServerExecutions: attempts,
+    ...(lastProviderFailureCode
+      ? { memoryAnswerTaskErrorCode: lastProviderFailureCode }
+      : {}),
+    ...(lastProviderFailureCode === "provider_authentication_failure"
+      ? { retryable: false }
+      : {})
   });
 };
 
@@ -4339,6 +4370,16 @@ export const answerWithMemoryWorker = async (
     const failureState = failureStateFromError(error);
     const failurePromptTokens = promptTokensFromError(error) ?? promptTokens;
     const workerErrorMessage = errorMessage(error);
+    const providerCode =
+      error && typeof error === "object" && "memoryAnswerTaskErrorCode" in error
+        ? error.memoryAnswerTaskErrorCode
+        : undefined;
+    const providerFailureCode =
+      config.provider === "pi" &&
+      (providerCode === "provider_authentication_failure" ||
+        providerCode === "provider_execution_failure")
+        ? providerCode
+        : undefined;
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
     const retrievalIncomplete =
       (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
@@ -4351,7 +4392,8 @@ export const answerWithMemoryWorker = async (
       config.provider,
       workerErrorMessage,
       failureKind,
-      exhaustedBudgets
+      exhaustedBudgets,
+      providerFailureCode
     );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
       failureKind === "validation" || retrievalIncomplete
@@ -4461,7 +4503,7 @@ export const answerWithMemoryWorker = async (
           displayMessage,
           errorMessage: workerErrorMessage,
           usedFallback: true,
-          skippedReason: `${config.provider}_failed`
+          skippedReason: providerFailureCode ?? `${config.provider}_failed`
         }
       },
       responseDetail
