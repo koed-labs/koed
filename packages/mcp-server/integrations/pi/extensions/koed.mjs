@@ -86,11 +86,23 @@ const answerParameters = Type.Object(
     project_id: Type.Optional(Type.String()),
     session_id: Type.Optional(Type.String()),
     team_workspace_id: Type.Optional(Type.String()),
+    team_backend_id: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160 })
+    ),
     recent_days: Type.Optional(Type.Integer({ minimum: 1, maximum: 36500 })),
     source_after: Type.Optional(Type.String()),
     source_before: Type.Optional(Type.String()),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     include_evidence: Type.Optional(Type.Boolean())
+  },
+  { additionalProperties: false }
+);
+
+const workspaceParameters = Type.Object(
+  {
+    team_backend_id: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160 })
+    )
   },
   { additionalProperties: false }
 );
@@ -168,9 +180,16 @@ export default function koedExtension(pi) {
             content: [{ type: "text", text: JSON.stringify(result) }],
             details: result
           };
-        } catch {
+        } catch (error) {
+          if (error?.code === "runtime_feature_unavailable") {
+            throw new Error(
+              "The running Koed Local AI Runtime does not support this Team recall feature. Restart the runtime through koed-server or Koed Desktop and retry.",
+              { cause: error }
+            );
+          }
           throw new Error(
-            "Koed unavailable; check the Local AI Runtime and retry"
+            "Koed unavailable; check the Local AI Runtime and retry",
+            { cause: error }
           );
         }
       }
@@ -178,8 +197,14 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Recall Koed memory evidence for answer synthesis. Personal recall in persistent Pi returns a receipt promptly and the result arrives automatically. Continue useful independent work; wait for the result before a memory-dependent decision. Do not poll for status. Other routes return the result directly.",
+    "Recall Koed memory evidence for answer synthesis. Personal recall in persistent Pi returns a receipt promptly and the result arrives automatically. Continue useful independent work; wait for the result before a memory-dependent decision. Do not poll for status. Other routes return the result directly. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
     answerParameters
+  );
+  register(
+    "memory_workspaces",
+    "Discover Team Workspaces",
+    "Discover authorized Team Workspaces from existing Desktop or headless Koed enrollment. Select the relevant Workspace and pass its team_workspace_id and team_backend_id to memory_answer with search_domain=global to search all shared memory in that Workspace. Query multiple relevant Workspaces separately. Unavailable backends do not mean Team Memory is empty. Returns IDs and names, never credentials.",
+    workspaceParameters
   );
   register(
     "memory_intake_propose",

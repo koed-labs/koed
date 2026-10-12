@@ -98,9 +98,21 @@ execution ready without reinstalling the Koed profile.
 Extension exposes:
 
 - `memory_answer`
+- `memory_workspaces`
 - `memory_intake_propose`
 
 Tools call authenticated Local AI Runtime through local runtime registration. Pi configuration receives only `KOED_HOME`; it receives no Koed API Token, backend URL, or provider credential. Missing Koed runtime causes tool-local error and does not terminate Pi session.
+
+Personal Memory remains the default. For Team recall, call `memory_workspaces`
+using the existing enrollment, select the relevant authorized Workspace, and
+pass both `team_workspace_id` and `team_backend_id` to `memory_answer`. Use
+`search_domain=global` for all shared Memory in that Workspace; global without
+Team IDs searches Personal Memory. The Workspace open in Desktop does not
+select Pi recall scope. Query multiple relevant Workspaces separately, and treat
+unavailable backends as routing failures rather than empty Memory. Discovery and
+explicit backend selection check runtime capabilities on each call; an older
+runtime reports a restart instruction instead of accepting unsupported routing.
+Restart Pi after updating the installed Koed integration to load the new tool.
 
 Persistent Pi Conversations use deferred Personal Memory Answer delivery when
 Pi provides the required history and message APIs. The tool returns a receipt;

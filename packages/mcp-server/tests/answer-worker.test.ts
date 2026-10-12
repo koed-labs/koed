@@ -37,7 +37,10 @@ import {
   type StructuredMemoryAnswer
 } from "../src/answer-worker.js";
 import { memoryAnswerRetrievalHintsSchema } from "../src/memory-answer-request.js";
-import { toolAnswerResponse } from "../src/memory-question-answer-persistence.js";
+import {
+  toolAnswerResponse,
+  persistedAnswerResponse
+} from "../src/memory-question-answer-persistence.js";
 import { loadPrompt } from "../src/prompt-loader.js";
 
 afterEach(() => {
@@ -331,7 +334,10 @@ describe("memory answer worker", () => {
       aiClientInstanceId: "claude.work",
       executablePath: process.execPath
     };
-    const response = await answerWithMemoryWorker(payload, { config });
+    const response = await answerWithMemoryWorker(payload, {
+      config,
+      responseDetail: "internal"
+    });
 
     expect(response.localMemoryWorker).toMatchObject({
       provider: "claude",
@@ -369,6 +375,7 @@ describe("memory answer worker", () => {
       return stream;
     });
     const responsePromise = answerWithMemoryWorker(payload, {
+      responseDetail: "internal",
       client: {
         async search() {
           throw new Error("search must not run after cancellation");
@@ -425,6 +432,7 @@ describe("memory answer worker", () => {
     });
 
     const response = await answerWithMemoryWorker(payload, {
+      responseDetail: "internal",
       client: {
         async search() {
           throw new Error("search must not run after timeout");
@@ -561,6 +569,63 @@ describe("memory answer worker", () => {
       /SECRET INTERNAL QUERY|SECRET CALLER HINT|SECRET ERROR|SECRET WORKER ERROR/
     );
   });
+
+  it.each(["answer_only", "with_citations", "with_evidence"] as const)(
+    "keeps internal diagnostics out of %s while retaining them internally",
+    (responseDetail) => {
+      const internal = {
+        ...payload,
+        retrieval: {
+          evidenceCount: 1,
+          retrievalMode: "semantic_vector",
+          trace: { query: "PRIVATE RETRIEVAL TRACE" }
+        },
+        localMemoryWorker: {
+          provider: "codex",
+          promptVersion: MEMORY_ANSWER_PROMPT_VERSION,
+          jobId: "job-private",
+          model: "fixture-model",
+          usedFallback: true,
+          memoryStatus: "insufficient" as const,
+          displayMessage: "Some memory could not be verified.",
+          errorMessage: "PRIVATE WORKER ERROR",
+          searchCount: 4,
+          tokenUsage: { last: { totalTokens: 1234 } },
+          appServerThreadId: "PRIVATE THREAD",
+          appServerExecutions: [
+            { model: "fixture-model", threadId: "PRIVATE THREAD" }
+          ]
+        }
+      };
+      const publicResult = compactMemoryAnswerPayload(internal, responseDetail);
+
+      expect(publicResult.localMemoryWorker).toMatchObject({
+        usedFallback: true,
+        memoryStatus: "insufficient",
+        displayMessage: "Some memory could not be verified."
+      });
+      expect(publicResult.localMemoryWorker).not.toHaveProperty("tokenUsage");
+      expect(publicResult.localMemoryWorker).not.toHaveProperty("searchCount");
+      expect(publicResult.localMemoryWorker).not.toHaveProperty(
+        "appServerExecutions"
+      );
+      expect(publicResult.retrieval).toEqual({
+        evidenceCount: 1,
+        retrievalMode: "semantic_vector"
+      });
+      expect(publicResult).not.toHaveProperty("evidenceBundle");
+      expect(JSON.stringify(publicResult)).not.toContain("PRIVATE");
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").localMemoryWorker
+      ).toEqual(internal.localMemoryWorker);
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").evidenceBundle
+      ).toEqual(payload.evidenceBundle);
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").retrieval
+      ).toEqual(internal.retrieval);
+    }
+  );
 
   it("rejects contradictory worker status, relevance, and evidence invariants", () => {
     const found = answerObject("supported", "found");
@@ -1255,6 +1320,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "global",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
@@ -1745,6 +1811,72 @@ describe("memory answer worker", () => {
     }
   });
 
+  it.each(["internal", "with_evidence"] as const)(
+    "keeps malformed worker failure diagnostics consistent (%s)",
+    async (responseDetail) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What dinner did the Team share?",
+              evidence: [],
+              retrieval: { mode: "app_server_dynamic_tools" }
+            }
+          },
+          {
+            client: {
+              async search() {
+                return { hits: [], retrieval: { stages: [] } };
+              },
+              async expand() {
+                throw new Error("expand should not run");
+              }
+            },
+            responseDetail,
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false,
+                  answer: {
+                    ...answerObject("Partial evidence", "insufficient"),
+                    relevant_memory_found: true
+                  }
+                }),
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(true);
+        if (responseDetail === "internal") {
+          expect(response.localMemoryWorker.errorMessage).toContain(
+            "insufficient requires relevant_memory_found=false"
+          );
+        }
+        expect(response.markdown).toBe(
+          "The Codex worker returned an answer that Koed could not safely verify. Try again."
+        );
+        expect(response.structuredAnswer).toMatchObject({
+          memory_status: "insufficient",
+          answer_markdown: response.markdown,
+          relevance_explanation:
+            "The Memory Answer worker output did not satisfy the required answer format.",
+          missing: ["valid structured worker output"],
+          missing_evidence: []
+        });
+        expect(persistedAnswerResponse(response).structuredAnswer).toEqual(
+          response.structuredAnswer
+        );
+        expect(JSON.stringify(response.structuredAnswer)).not.toMatch(
+          /exhausted|failed retrieval stages|unexhausted/
+        );
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("rejects clean insufficient answers without selected partial evidence", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
@@ -2003,6 +2135,7 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
@@ -2075,6 +2208,7 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,

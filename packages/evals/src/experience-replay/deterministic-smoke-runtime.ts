@@ -94,7 +94,7 @@ const bridgeUrl = (request: HarborRunRequest): string | undefined => {
   return typeof servers?.koed?.url === "string" ? servers.koed.url : undefined;
 };
 
-const callSmokeMemoryAnswer = async (
+export const callSmokeMemoryAnswer = async (
   url: string,
   token: string,
   taskName: string
@@ -113,7 +113,12 @@ const callSmokeMemoryAnswer = async (
   try {
     const response = await client.callTool({
       name: "memory_answer",
-      arguments: { query: `smoke evidence for ${taskName}` }
+      // This check inspects evidence bodies to validate the recall boundary.
+      // Default recall supplies presentation text, not a structured envelope.
+      arguments: {
+        query: `smoke evidence for ${taskName}`,
+        response_detail: "with_evidence"
+      }
     });
     if (response.isError)
       throw new Error("Deterministic smoke Memory Answer failed");
