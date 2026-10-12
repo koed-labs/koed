@@ -1,4 +1,4 @@
-# ADR 0031: Realtime Transport Allocation And Negotiation
+# ADR 0053: Realtime Transport Allocation And Negotiation
 
 Status: Accepted.
 
@@ -8,7 +8,7 @@ Related decisions:
 - [0013 Team Collaboration Authority](./0013-team-collaboration-authority.md)
 - [0014 Hosted Personal Source Replication](./0014-hosted-personal-source-replication.md)
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
-- [0030 Shared Durable Realtime Client Runtime](./0030-shared-durable-realtime-client-runtime.md)
+- [0052 Shared Durable Realtime Client Runtime](./0052-shared-durable-realtime-client-runtime.md)
 
 ## Context
 

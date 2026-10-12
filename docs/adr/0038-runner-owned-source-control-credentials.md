@@ -7,7 +7,7 @@ Related decisions:
 
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0024 Tiered Desktop Action Approval](./0024-tiered-desktop-action-approval.md)
-- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 - [0035 File Access Uses Runner-Owned Rooted Capabilities](./0035-runner-owned-rooted-file-authority.md)
 - [0036 Terminals Are Runner-Owned Scoped Executions](./0036-runner-owned-scoped-terminal-authority.md)
 

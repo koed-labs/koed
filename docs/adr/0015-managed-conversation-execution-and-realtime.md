@@ -10,9 +10,9 @@ Related decisions:
 - [0008 Explorer-First Auth And Device Enrollment](./0008-explorer-first-auth-and-device-enrollment.md)
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](./0013-team-collaboration-authority.md)
 - [0014 Hosted Personal Replication Uses The Conversation Source Journal](./0014-hosted-personal-source-replication.md)
-- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
-- [0032 AI Client Instance, Capability, And Permission Contracts](./0032-ai-client-instance-capability-and-permission-contracts.md)
-- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
+- [0054 AI Client Instance, Capability, And Permission Contracts](./0054-ai-client-instance-capability-and-permission-contracts.md)
+- [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 - [0042 Conversation Source Presentation Is Independent From Memory Projection](./0042-conversation-source-presentation-policy.md)
 
 ## Context
@@ -306,7 +306,7 @@ does not silently execute them elsewhere.
 
 Koed currently delivers Conversation updates through a cursor-based SSE stream
 with an authenticated snapshot and explicit acknowledgement endpoint. Polling
-is not part of the normal UI path. ADR 0031 assigns the same durable semantics
+is not part of the normal UI path. ADR 0053 assigns the same durable semantics
 to the negotiated WebTransport, WebSocket, or SSE adapter; changing wire
 transport does not change Conversation authority.
 
@@ -436,7 +436,7 @@ uncertain execution owner fails visibly and closed. Koed never starts a fresh
 provider Conversation while presenting it as continuation of the old one.
 
 For Git Projects, each mutating prompt is additionally fenced by the local
-content-baseline contract in ADR 0033. Terminal checkpoint retry is a durable
+content-baseline contract in ADR 0055. Terminal checkpoint retry is a durable
 post-provider phase and never causes prompt replay. These local refs are not
 execution ownership, source replication, or handoff artifacts.
 

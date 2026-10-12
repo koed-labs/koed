@@ -531,7 +531,7 @@ durable, push-based updates without polling application data.
   validates and authorizes a backend before binding it to that runtime and
   remains the authority for credentials, durable cursor and acknowledgement
   semantics, schema validation, revocation, and resnapshot. See [ADR
-  0030](./adr/0030-shared-durable-realtime-client-runtime.md).
+  0030](./adr/0052-shared-durable-realtime-client-runtime.md).
 
 Realtime event families cover Team and Workspace lifecycle or access changes,
 thread creation and archive, Team Chat Message creation, current-User read

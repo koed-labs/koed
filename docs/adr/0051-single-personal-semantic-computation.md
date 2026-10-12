@@ -8,7 +8,7 @@ Related decisions:
 - [0014 Hosted Personal Replication Uses The Conversation Source Journal](./0014-hosted-personal-source-replication.md)
 - [0020 Portable Personal Derived Artifact Replication](./0020-portable-personal-derived-artifact-replication.md)
 - [0021 Portable Semantic Work Ownership](./0021-portable-semantic-work-ownership.md)
-- [0029 Selective PII Team Representations](./0029-selective-pii-team-representations.md)
+- [0049 Selective PII Team Representations](./0049-selective-pii-team-representations.md)
 
 ## Context
 

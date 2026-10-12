@@ -8,7 +8,7 @@ Related decisions:
 - [0004 Team Memory uses user-owned Share Grants and Workspaces](./0004-team-memory-workspaces.md)
 - [0009 Commercial SaaS encryption and key management](./0009-commercial-saas-encryption-key-management.md)
 - [0010 Managed SaaS queryable vectors](./0010-managed-saas-queryable-vectors.md)
-- [0029 Selective PII Team representations](./0029-selective-pii-team-representations.md)
+- [0049 Selective PII Team representations](./0049-selective-pii-team-representations.md)
 
 ## Context
 

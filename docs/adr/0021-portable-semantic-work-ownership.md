@@ -7,7 +7,7 @@ Related decisions:
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Exclusive Execution Handoff And Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
 - [0020 Portable Personal Derived Artifact Replication](./0020-portable-personal-derived-artifact-replication.md)
-- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
+- [0051 Personal Semantic Work Is Computed Once And Replicated](./0051-single-personal-semantic-computation.md)
 
 ## Context
 
