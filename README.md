@@ -1,46 +1,63 @@
-<p align="center">
+<div align="center">
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-logo-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-logo.svg">
   <img alt="Koed" src="docs/assets/koed-logo.svg" width="190" height="60">
 </picture>
-</p>
 
-## Make your AI remember the work
+### Solve it once. Remember it for good.
 
-Koed helps your AI coding tool remember useful context from previous work, so it
-can bring back project decisions, debugging history, and other details when you
-need them.
+Long-term memory for Codex, Claude Code, and Pi. Private, local, and yours.
+
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-24-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey)
+[![Supported AI Clients](https://img.shields.io/badge/AI%20Clients-Codex%20%7C%20Claude%20Code%20%7C%20Pi-6e40c9)](#connect-an-ai-client)
+
+[Features](#features) • [Quickstart](#quickstart) • [Connect an AI Client](#connect-an-ai-client) • [Documentation](#documentation)
+
+</div>
+
+Every new AI session starts from zero. You explain the project again, repeat
+your preferences again, and watch the agent try the fix that failed last week.
+
+Koed ends that. It captures your AI coding sessions in the background and gives
+your AI Client a memory it can search. The next session starts with the
+decisions, dead ends, and context from the last one.
+
+Your memory stays on your machine or on a server you run. Koed stores and
+searches it. Your AI Client writes the answers, so no extra LLM sits in the
+middle.
+
+## Features
+
+- **Zero-effort capture.** Koed records Codex, Claude Code, and Pi
+  conversations in the background. There is nothing to copy, paste, or tag.
+- **Recall with receipts.** The `memory_answer` MCP tool gives your AI Client
+  evidence with citations, so you can see where each answer came from.
+- **Local first.** Postgres, pgvector, and the models run natively under
+  `KOED_HOME`. No Docker and no cloud account.
+- **See everything Koed knows.** Koed Desktop lets you browse every Project,
+  session, and conversation in your memory.
+- **You decide what is remembered.** Capture Policies, Capture Pause, and a
+  local Privacy Filter model control what Koed keeps and what it masks.
+- **Grows with you.** Pair your other devices, and share memory with your team
+  through a Team Workspace.
 
 ## Quickstart
 
-> [!IMPORTANT]
-> Codex, Claude Code, and Pi are independently installed supported AI Client
-> integrations. Koed core setup does not require any AI Client. Koed does not
-> bundle AI Client runtimes or provider credentials; configure each client only
-> after core services are ready.
-
 ### Requirements
 
-- macOS, Linux, or WSL.
-- Node.js and pnpm.
-- Homebrew for the source-checkout bundled-local runtime install. Packaged
-  Desktop can use packaged native runtime assets; external dependency mode does
-  not require Homebrew.
-- No AI Client is required for core Koed readiness.
-- Optionally, install and authenticate Codex, Claude Code, or Pi before
-  explicitly configuring that client. Claude Code requires `2.1.227` or newer;
-  Pi requires `0.84.2` or newer. Claude synthesis reuses the local Claude Code
-  subscription through the pinned Agent SDK. Pi synthesis reuses Pi-managed
-  local authentication through isolated RPC.
+- macOS, Linux, or WSL
+- [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io)
+- [Homebrew](https://brew.sh), for the native runtime
 
-If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
-and checkout paths on Linux filesystem paths inside WSL; native Windows
-packaged app support is not shipped in this build.
+> [!NOTE]
+> On Windows, run Koed in WSL. Keep `KOED_HOME` and the checkout on the Linux
+> filesystem.
 
 ### Start Koed Desktop from source
-
-From a fresh clone, run:
 
 ```bash
 pnpm install
@@ -48,170 +65,79 @@ pnpm local:setup
 KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
 ```
 
-`pnpm local:setup` prepares `.env`, builds the workspace, links the Homebrew-backed bundled-local runtime, and installs the pinned embedding and Privacy Filter models.
+`pnpm local:setup` creates `.env`, builds the workspace, links the Homebrew
+runtime, and installs the models. Koed Desktop opens when setup is complete.
 
-Koed Desktop opens when core setup is complete. Mandatory setup does not
-configure or select an AI Client. Configure Codex, Claude Code, or Pi
-independently with their integration guides below.
-Packaged Desktop follows the same local-personal bundled-local flow, but it
-starts its managed `koed-server` from the app bundle, prefers packaged native
-runtime assets, and keeps `KOED_HOME` state outside the source checkout. See
-[Koed Desktop](apps/desktop/README.md) for packaged first-run,
-signing/notarization, and smoke details.
-
-If setup fails with a path like `/path/to`, unset any placeholder overrides
-from previous experiments before restarting Desktop:
+To stop Koed, run:
 
 ```bash
-unset KOED_HOME KOED_EMBEDDING_MODEL_PATH KOED_RERANKER_MODEL_PATH
+pnpm koed stop --json
 ```
 
-To stop Koed later:
+> [!TIP]
+> If setup fails with a path such as `/path/to`, clear old overrides and start
+> again:
+>
+> ```bash
+> unset KOED_HOME KOED_EMBEDDING_MODEL_PATH KOED_RERANKER_MODEL_PATH
+> ```
+
+<details>
+<summary>Set up without Desktop</summary>
+
+Run this command. It does not connect an AI Client.
 
 ```bash
-node packages/koed-server/dist/cli.js stop --json
+pnpm koed setup core --json
 ```
 
-Headless Operators can prepare client-neutral core state and create or reuse the
-Local AI Runtime credential with:
+For other ways to run Koed, see [Running Koed](docs/running-koed.md).
 
-```bash
-node packages/koed-server/dist/cli.js setup core --json
-```
+</details>
 
-`setup codex --json` remains an explicit Codex profile compatibility command; it
-never selects Codex merely because Codex is installed.
+## Connect an AI Client
 
-### Connect another Personal device
+Koed works without an AI Client. Install each client yourself.
 
-On a prepared joining machine, run `koed pair` (or `pnpm koed pair`
-from this built checkout). Paste its request link into **Devices → Add device**
-on your existing Koed Electron installation and confirm. Another Electron
-installation can generate its link with **Connect to an existing device**.
-[Pairing instructions](docs/device-pairing.md) cover LAN/Tailscale requirements,
-request status, and cancellation. Group setup requires no recovery-file download.
+After setup, Koed Desktop offers to connect your clients. Select one or more
+clients, or select **Set up later**. Desktop never selects a client for you.
 
-### Health and routing model
+You can also connect a client from the command line:
 
-Core health covers Koed services and remains healthy with zero configured AI
-Clients. Client installation, authentication, capture, capability snapshots,
-and synthesis readiness are separate per-client diagnostics; one broken client
-does not make core unhealthy. A stale or unavailable capability snapshot blocks
-only affected operations.
+| AI Client   | Minimum version | Setup                              | Guide                                                      |
+| ----------- | --------------- | ---------------------------------- | ---------------------------------------------------------- |
+| Codex       | Not listed      | `pnpm koed setup codex --json`     | [Codex integration](docs/codex-integration.md)             |
+| Claude Code | `2.1.227`       | Desktop → **Preferences → Agents** | [Claude Code integration](docs/claude-code-integration.md) |
+| Pi          | `0.84.2`        | `pnpm koed setup pi --json`        | [Pi integration](docs/pi-integration.md)                   |
 
-Memory Answer, LCM Summary, Session Title, and Curated Memory Review each have
-an independent provider, AI Client instance, model, and reasoning-effort
-assignment. Persisted assignments take precedence over environment defaults;
-environment and documented Codex defaults apply only when no assignment exists.
-An explicit unavailable assignment fails closed and never falls back to another
-client or provider.
+> [!IMPORTANT]
+> Each client works independently. If one client fails, the others continue to
+> work. Koed never uses one client in place of another. To choose the model for
+> each task, see [Local AI Runtime settings](docs/local-memory-agent-settings.md).
 
-Managed Conversations are separate from ordinary externally managed
-Conversations: Koed owns lifecycle and exact AI Client instance for Managed
-Conversations, while Codex, Claude Code, or Pi owns its ordinary Conversation
-and Koed captures its source through that client's watcher. Managed Conversation
-ownership does not select synthesis providers. See [Managed Conversation
-routing](docs/managed-conversation-ai-client-routing.md).
+To add another of your devices, run `pnpm koed pair` on that device. Then paste
+its link into **Devices → Add device** in Koed Desktop. For more, see
+[Device pairing](docs/device-pairing.md).
 
-## Advanced setup and configuration
+## Documentation
 
-The README keeps to one basic local path. For other options, see:
+| Topic      | Read                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Run        | [Running Koed](docs/running-koed.md) · [Configuration](docs/configuration.md) · [Server deployment boundary](docs/server-deployment-boundary.md)                                                                                      |
+| Desktop    | [Desktop UI](docs/desktop-ui.md) · [Packaged Desktop](apps/desktop/README.md) · [Managed Conversation routing](docs/managed-conversation-ai-client-routing.md)                                                                        |
+| Memory     | [Service sequence overview](docs/service-sequence-overview.md) · [Durable Memory Answer](docs/durable-memory-answer.md) · [Curated Memory](docs/curated-memory.md) · [Raw ingestion and Projection](docs/raw-ingestion-projection.md) |
+| Teams      | [Team collaboration](docs/team-collaboration.md) · [Shared memory owner workflow](docs/shared-memory-owner-workflow.md)                                                                                                               |
+| Operations | [Security](docs/security.md) · [Backup and restore](docs/backup-restore.md) · [Upgrades](docs/upgrades.md) · [Observability](docs/observability.md)                                                                                   |
+| Project    | [Glossary (`CONTEXT.md`)](CONTEXT.md) · [ADRs](docs/adr/) · [Release versioning](docs/release-versioning.md) · [Commercial feature boundary](docs/commercial-feature-boundary.md)                                                     |
 
-- [Running Koed](docs/running-koed.md) for external dependency mode, manual
-  server commands, alternate ports, smoke tests, packaged first-run notes, and
-  desktop development.
-- [Koed Desktop](docs/desktop-ui.md) for the Personal/Team information model,
-  collaboration workflows, recovery behavior, accessibility, and performance
-  boundaries.
-- [Configuration](docs/configuration.md) for environment variables, runtime
-  modes, model overrides, logging, and production settings.
-- [Codex integration](docs/codex-integration.md) for manual Codex setup and
-  recovery.
-- [Claude Code integration](docs/claude-code-integration.md) for capture, recall,
-  and local Claude synthesis setup.
-- [Pi integration](docs/pi-integration.md) for global package setup, persistent
-  session capture, Recall tools, and isolated local Pi RPC synthesis.
-- [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
-  recall behavior.
-- [Personal Device Sync controls](docs/running-koed.md#personal-sync-control-commands)
-  for opt-in future-Session replication, recovery-kit ceremony, and headless
-  Operator secret references.
-- [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
-  and [Upgrades](docs/upgrades.md) for operational guidance.
+## Security
 
-For local Desktop, private VPS, Team Self-Hosted, and cloud deployment
-language, use `koed-server` plus dependencies as the product boundary. API and
-Worker remain useful implementation names for code, logs, and troubleshooting.
-The retired Explorer is not a process or deployment dependency.
+The Operator (the person who runs Koed) controls the deployment. Clients use
+API Tokens, and Koed stores only token hashes. Keep Postgres and Redis on
+private networks. On a VPS or team server, turn on envelope encryption for
+Memory and evidence.
 
-## Security Notes
-
-Koed assumes the operator controls the deployment. The API supports bearer API
-tokens for AI-client integrations. Local operators create tokens with
-`pnpm api-token:create`, which uses trusted database access and stores only token
-hashes. Postgres and Redis should stay on private Docker/internal networks in
-production deployments. See [docs/security.md](docs/security.md).
-
-Local personal deployments may keep operational Memory rows in Postgres unless
-app-layer encryption is configured. Private VPS, Team Self-Hosted, and
-Koed-managed cloud deployments should configure envelope encryption for
-human-readable Memory and evidence payloads; queryable vectors still remain
-sensitive trusted-boundary data. Protect the database, volumes, backups, and
-administrator access with deployment-level controls.
-
-Report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md) for
-supported versions, the reporting channel, and guidance on not disclosing user
-Memory data publicly.
-
-## Operations
-
-Use normal Postgres backups and restore into the same Koed version before
-upgrading. The API runs database migrations during startup.
-
-Local Operators can also run the same Drizzle migration path manually with:
-
-```bash
-pnpm --filter @koed/db migrate:up
-```
-
-See [docs/backup-restore.md](docs/backup-restore.md),
-[docs/hosted-backups.md](docs/hosted-backups.md), and
-[docs/upgrades.md](docs/upgrades.md).
-
-## Releases
-
-Koed uses one product release version for the self-hosted distribution. Add a
-changeset for release-noteworthy changes:
-
-```bash
-pnpm changeset
-```
-
-See [docs/upgrades.md](docs/upgrades.md) for upgrade guidance.
-
-## License
-
-Koed is licensed under the Apache License 2.0 (`Apache-2.0`). See
-[LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and
-[docs/license.md](docs/license.md). Apache-2.0 is also offered for Koed's
-repository history; existing AGPL grants remain valid. See
-[Commercial Feature Boundary](docs/commercial-feature-boundary.md) for the
-public distribution, Team Self-Hosted, hosted-only services, and managed
-add-ons.
-
-## Learn More
-
-- [Running Koed](docs/running-koed.md)
-- [Koed Desktop](docs/desktop-ui.md)
-- [Configuration](docs/configuration.md)
-- [Server deployment boundary](docs/server-deployment-boundary.md)
-- [Hosted database roles](docs/hosted-database-roles.md)
-- [Security](docs/security.md)
-- [Backup and restore](docs/backup-restore.md)
-- [Hosted backups](docs/hosted-backups.md)
-- [Upgrades](docs/upgrades.md)
-- [CI and release validation](docs/ci-validation.md)
-- [Codex integration](docs/codex-integration.md)
-- [Curated Memory](docs/curated-memory.md)
-- [License](docs/license.md)
-- [Commercial feature boundary](docs/commercial-feature-boundary.md)
+> [!CAUTION]
+> Do not report vulnerabilities or share Memory data in public issues. Use the
+> private process in [SECURITY.md](SECURITY.md). To harden a deployment, see
+> [docs/security.md](docs/security.md).
