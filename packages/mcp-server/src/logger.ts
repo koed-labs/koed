@@ -197,6 +197,9 @@ const diagnosticError = (
       if (typeof field === "number" && Number.isFinite(field))
         result[key] = field;
     }
+    const rateLimitSource = ownValue(value, "rateLimitSource");
+    if (rateLimitSource === "local" || rateLimitSource === "remote")
+      result.rateLimitSource = rateLimitSource;
     const code = ownValue(value, "code");
     if (typeof code === "string" && allowedErrorCodes.has(code))
       result.code = code;

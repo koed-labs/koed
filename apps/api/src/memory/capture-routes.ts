@@ -27,6 +27,7 @@ export const registerCaptureRoutes = (
       scheduleMemoryEventProcessing
     },
     rateLimit: {
+      aiClientControl,
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
     }
@@ -34,7 +35,7 @@ export const registerCaptureRoutes = (
 
   app.get(
     "/v1/access/check",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);

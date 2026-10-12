@@ -158,6 +158,9 @@ enabled = true
 [mcp_servers.${mcpName}.tools.memory_answer]
 approval_mode = "approve"
 
+[mcp_servers.${mcpName}.tools.memory_workspaces]
+approval_mode = "approve"
+
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${JSON.stringify(koedHome)}
 ${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : `KOED_CODEX_STOP_DELIVERY = "0"\n`}

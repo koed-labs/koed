@@ -1,3 +1,5 @@
+import { MEMORY_ANSWER_RETRIEVAL_META } from "@koed/mcp-server";
+
 export interface BridgeCallTelemetry {
   mcpCalls: number;
   mcpFailures: number;
@@ -135,8 +137,15 @@ export class BridgeTelemetryCollector {
               ? result.content
               : [];
             const answers: unknown[] = [];
+            // Compact recall omits structuredContent; its retrieval summary
+            // stays in _meta, out of the model's context.
+            const retrievalMeta = record(result?._meta)?.[
+              MEMORY_ANSWER_RETRIEVAL_META
+            ];
             if (result?.structuredContent !== undefined)
               answers.push(result.structuredContent);
+            else if (retrievalMeta !== undefined)
+              answers.push({ retrieval: retrievalMeta });
             else {
               for (const item of content) {
                 const text = record(item)?.text;

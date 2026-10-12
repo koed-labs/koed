@@ -10,13 +10,18 @@ import {
   type LocalRuntimeCallerContext,
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
+import {
+  rateLimitSourceFrom,
+  type RateLimitSource
+} from "./rate-limit-metadata.js";
 
 export class LocalAiRuntimeError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
     readonly code?: "memory_answer_team_ineligible",
-    readonly retryAfterMs?: number
+    readonly retryAfterMs?: number,
+    readonly rateLimitSource?: RateLimitSource
   ) {
     super(message);
     this.name = "LocalAiRuntimeError";
@@ -54,7 +59,20 @@ const responseJson = async (
       body.retryAfterMs <= 300_000
         ? body.retryAfterMs
         : undefined;
-    throw new LocalAiRuntimeError(message, response.status, code, retryAfterMs);
+    const rateLimitSource =
+      response.status === 429 &&
+      body &&
+      typeof body === "object" &&
+      "rateLimitSource" in body
+        ? rateLimitSourceFrom(body.rateLimitSource)
+        : undefined;
+    throw new LocalAiRuntimeError(
+      message,
+      response.status,
+      code,
+      retryAfterMs,
+      rateLimitSource
+    );
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Koed local AI runtime returned an invalid response");

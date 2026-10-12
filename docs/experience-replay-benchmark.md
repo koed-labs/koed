@@ -530,6 +530,15 @@ visible.
 
 ## Deterministic Smoke
 
+The smoke check explicitly requests `response_detail: "with_evidence"` from
+Memory Answer so it can validate the recalled sources for each condition.
+Ordinary default recall returns readable completion text without structured
+evidence or diagnostics. Its retrieval summary travels in MCP result `_meta`
+(`koed/memory-answer-retrieval`), so bridge telemetry still records the
+evidence count that oracle repeated studies require for `answer_only` recall.
+Search, expansion and worker memory counts stay `null` for `answer_only`
+because the public worker status does not include them.
+
 After completing the common PostgreSQL setup above, create a disposable output
 directory and run the free orchestration check:
 

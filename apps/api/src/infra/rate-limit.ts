@@ -143,6 +143,7 @@ export const createRateLimitHandlers = (
         String(Math.ceil(bucket.resetAt / 1000))
       );
       if (bucket.count > policy.max) {
+        reply.header("x-koed-rate-limit-source", "local");
         reply.header(
           "retry-after",
           String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000)))

@@ -412,7 +412,8 @@ retrieval hints can seed exact checks, semantic reformulations, entities, and
 temporal intent. The Local AI Runtime treats them as untrusted suggestions and
 cannot use them to broaden authorization or the selected Search Domain.
 
-Koed's generated Codex configuration pre-approves `memory_answer`, so read-only
+Koed's generated Codex configuration pre-approves `memory_answer` and
+`memory_workspaces`, so read-only
 recall does not require a separate tool approval. This rule does not pre-approve
 Curated Memory intake or other write-capable tools. Their approval behavior
 follows the Conversation's selected permission mode.

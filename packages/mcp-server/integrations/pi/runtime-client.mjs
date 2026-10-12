@@ -145,8 +145,36 @@ export const callLocalRuntimeTool = async ({
   context,
   signal,
   invocationKey
-}) =>
-  request(
+}) => {
+  // The runtime may outlive a Pi extension upgrade. Never forward fields that
+  // an older runtime could silently discard, and recheck after runtime restarts.
+  if (
+    name === "memory_workspaces" ||
+    (name === "memory_answer" && input.team_backend_id !== undefined)
+  ) {
+    const capabilities = await request(
+      koedHome,
+      "/v1/capabilities",
+      "GET",
+      undefined,
+      signal,
+      true
+    );
+    if (
+      !Array.isArray(capabilities.supportedTools) ||
+      !capabilities.supportedTools.includes(name) ||
+      (name === "memory_answer" &&
+        capabilities.memoryAnswerTeamBackendAvailable !== true)
+    ) {
+      throw Object.assign(
+        new Error("Koed runtime Team recall feature unavailable"),
+        {
+          code: "runtime_feature_unavailable"
+        }
+      );
+    }
+  }
+  return request(
     koedHome,
     `/v1/tools/${encodeURIComponent(name)}`,
     "POST",
@@ -160,3 +188,4 @@ export const callLocalRuntimeTool = async ({
     },
     signal
   );
+};

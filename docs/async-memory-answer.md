@@ -171,6 +171,41 @@ creates a new invocation.
 
 ## Authorization and diagnostics
 
+`memory_answer` defaults to `response_detail=answer_only` and
+`include_evidence=false`, including for implementation and debugging questions.
+Blocking and deferred execution produce the same compact result: answer Markdown,
+public worker status, and an evidence-count/retrieval-mode summary. Worker token
+usage, execution records, raw errors, and retrieval traces remain in internal
+question history. `with_citations` adds source metadata; `with_evidence` or the
+legacy `include_evidence=true` adds selected evidence bodies and the structured
+answer. These detail levels are explicit caller choices. Team routing errors
+return a message and routing status without an Evidence Bundle.
+
+Codex Stop hooks, ordinary MCP results (including Claude Code's native background
+notifications), and Pi blocking and deferred completions use one shared text
+formatter. It delivers the answer Markdown, or the worker's readable fallback
+message when answer text is absent. The recalled-data warning and no-poll
+guidance occupy one line, followed by HTML-escaped text between data markers.
+Worker metadata and retrieval summaries are omitted from completion text.
+Default MCP recall also omits `structuredContent`, so the result envelope is not
+injected a second time; the retrieval summary is carried in MCP result `_meta`
+under `koed/memory-answer-retrieval`, which clients do not present to the model,
+so observers such as the Experience Replay bridge keep evidence counts.
+Explicit `with_citations`, `with_evidence` or `include_evidence=true` requests
+add their citations, source metadata, evidence bodies and structured answer as
+escaped JSON in a second `<koed-memory-answer-details>` data block. This holds
+for MCP text, Codex Stop-hook delivery and Pi blocking and deferred delivery, so
+every AI Client sees the details it asked for. MCP also keeps the requested
+result in `structuredContent`. Deferred completions rely on the task result,
+which the runtime already limits to the requested detail level. Pi deferred
+completions and failure messages name the task and the request query in model-
+visible text, because Pi keeps message details out of model context and several
+recalls can be pending at once. Internal diagnostics remain in question history.
+An answer without readable text produces a static unavailable message; an
+oversized answer or detail block is rejected without truncation. Failed or
+cancelled deferred tasks produce static messages without task errors or cached
+answers. Pending acknowledgements keep their receipt format for delivery routing.
+
 Task event streams resolve ownership before writing success headers. Scheduler
 notifications only wake an observer; each event and keepalive uses another
 authorized read. Expiry ends observation, resumed versions do not regress, and
@@ -184,6 +219,32 @@ unreachable, 429 when it is rate limited, and 502 otherwise, with separate text
 for a rejected API Token. A failed blocking recall reports static text for its
 recorded reason, such as a time limit or cancellation; the raw failure message
 is never returned.
+
+The local API keeps recall separate from background reads. `/v1/access/check`
+uses the AI Client control quota. Personal retrieval and local Team search,
+answer, and expansion use the recall quota. Capture Policy and import reads
+continue to use the general read quota. The server selects these quotas by
+route, so a request header cannot change them.
+
+The Local AI Runtime shares one API client across its background services.
+The client starts at most ten requests per second and sends one request at a
+time. After HTTP 429, it pauses the shared backlog for the `Retry-After`
+duration, capped at five minutes. It accepts seconds and HTTP dates. Without
+valid advice, it waits 60 seconds. The owning service retains failed work for
+retry. The client does not replay failed writes. Runtime shutdown cancels
+queued waits and active background requests. Interactive recall uses a
+separate client and does not wait for this backlog.
+
+For HTTP 429, the local Team proxy preserves `Retry-After` and labels the
+response source as `remote`. Local quota failures use `local`. The Local AI
+Runtime and MCP response retain `rateLimitSource` and bounded `retryAfterMs`
+alongside a static error message. Older APIs without the source header retain
+the generic error message. A full local answer queue keeps its separate
+queue-full message.
+
+These changes require an updated local API, Local AI Runtime, and MCP adapter.
+They work with the existing remote Team Backend and its standard retry
+headers. No remote update or database migration is required.
 
 MCP diagnostics omit raw exception messages, stacks, causes and payloads and
 bound retained metadata. They keep allowlisted error class names, numeric status
