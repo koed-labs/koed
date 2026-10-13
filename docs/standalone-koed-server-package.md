@@ -385,7 +385,7 @@ Signature/provenance rules:
 - Native runtime archives keep their own manifest/SHA-256 verification.
 
 Component bundle manifests use canonical JSON and an Ed25519 signature over
-`koed-component-manifest-v1\n` plus canonical UTF-8 manifest bytes. The signed
+`koed-component-manifest-sha256-v2\n` plus the raw 32-byte SHA-256 digest of canonical UTF-8 manifest bytes. The signed
 fields bind product/component identity, target, Node/Electron and Node ABI or
 N-API compatibility, optional Linux glibc minimum, required files, archive size
 and SHA-256, and every archived file hash. Archive verification streams gzip/tar

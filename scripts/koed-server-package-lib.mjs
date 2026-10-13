@@ -1,3 +1,4 @@
+import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import {
   existsSync,
@@ -256,12 +257,12 @@ export const signComponentManifest = ({ manifest, keyId, privateKey }) => {
   const manifestBytes = canonicalComponentManifestBytes(manifest);
   const signature = sign(
     null,
-    Buffer.concat([Buffer.from("koed-component-manifest-v1\n"), manifestBytes]),
+    componentManifestSigningBytes(manifestBytes),
     createPrivateKey(privateKey)
   ).toString("base64");
   return {
     manifestBytes,
-    signature: { schemaVersion: 1, keyId, algorithm: "ed25519", signature }
+    signature: { schemaVersion: 2, keyId, algorithm: "ed25519", signature }
   };
 };
 

@@ -116,14 +116,14 @@ const parseSignature = (value: unknown): ComponentSignature => {
   if (
     !isPlainRecord(value) ||
     !exactKeys(value, ["schemaVersion", "keyId", "algorithm", "signature"]) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     typeof value.keyId !== "string" ||
     typeof value.signature !== "string" ||
     value.algorithm !== "ed25519"
   )
     throw new Error("component signature JSON is invalid");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     keyId: value.keyId,
     algorithm: "ed25519",
     signature: value.signature

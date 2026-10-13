@@ -19,7 +19,13 @@ import type {
   RuntimeIdentity
 } from "./component-contract.js";
 
-const DOMAIN = Buffer.from("koed-component-manifest-v1\n");
+export const componentManifestSigningBytes = (
+  canonicalManifestBytes: Buffer
+): Buffer =>
+  Buffer.concat([
+    Buffer.from("koed-component-manifest-sha256-v2\n", "utf8"),
+    createHash("sha256").update(canonicalManifestBytes).digest()
+  ]);
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
@@ -475,7 +481,7 @@ async function verifyComponentSync(
     "signature"
   ]);
   if (
-    input.signature.schemaVersion !== 1 ||
+    input.signature.schemaVersion !== 2 ||
     input.signature.algorithm !== "ed25519"
   )
     throw new Error("unsupported component signature");
@@ -507,7 +513,7 @@ async function verifyComponentSync(
     signature.toString("base64") !== input.signature.signature ||
     !cryptoVerify(
       null,
-      Buffer.concat([DOMAIN, canonical]),
+      componentManifestSigningBytes(canonical),
       publicKey,
       signature
     )

@@ -25,3 +25,22 @@ The workflow signs each component manifest remotely, then verifies canonical man
 Recovery applies same checks to existing draft assets; it does not rewrite previously uploaded immutable signatures. Missing configuration, untrusted roots, unsigned/placeholder assets, registry mismatch, or signer errors leave release draft and fail workflow.
 
 Candidate publication uses `candidate-<version>` (for example, `candidate-0.9.0`), which npm accepts as a dist-tag. Canonical manifest bytes have no trailing newline and are identical to the installer signing domain. Promotion reads trust roots from the actual packed `package/dist/component-trust-roots.js`; adapter tests extract a real tarball and stream multi-megabyte assets.
+
+## Component signature format and Google Cloud KMS
+
+Detached component signatures use `schemaVersion: 2` and `algorithm: "ed25519"`.
+The signing message is the UTF-8 domain `koed-component-manifest-sha256-v2` followed
+by a newline, then the raw 32-byte SHA-256 digest of the canonical manifest bytes.
+The manifest remains schema version 1. Do not sign the digest's hex/base64 text,
+prehash this message again, or use Ed25519ph. This is ordinary Ed25519 over the
+explicit domain and digest. SHA-256 collision resistance is an additional assumption.
+
+The fixed-size message fits Google Cloud KMS's 64 KiB raw signing input limit;
+real component manifests exceed that limit. The unreleased full-manifest v1
+signature envelope is rejected. Rebuild and re-sign earlier test artifacts rather
+than relabeling their signatures. Legacy package provenance uses a separate format
+and is unchanged.
+
+The external signer must implement these exact bytes for both signing and verification.
+Google Cloud KMS uses `EC_SIGN_ED25519` with raw `data`, not a KMS `digest` field.
+A KMS key alone does not authorize production trust, npm publication or promotion.

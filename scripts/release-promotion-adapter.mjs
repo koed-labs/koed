@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -61,7 +62,7 @@ export const verifyReleaseSignatures = (artifacts, trustRoots) => {
         throw new Error(`Component manifest is not canonical: ${manifestPath}`);
       const rawKey = trustRoots.keys[signature.keyId];
       if (
-        signature.schemaVersion !== 1 ||
+        signature.schemaVersion !== 2 ||
         signature.algorithm !== "ed25519" ||
         typeof rawKey !== "string" ||
         typeof signature.signature !== "string"
@@ -76,10 +77,9 @@ export const verifyReleaseSignatures = (artifacts, trustRoots) => {
         bytes.toString("base64") === signature.signature &&
         verify(
           null,
-          Buffer.concat([
-            Buffer.from("koed-component-manifest-v1\n"),
+          componentManifestSigningBytes(
             Buffer.from(canonicalReleaseJson(manifest))
-          ]),
+          ),
           publicKey,
           bytes
         );

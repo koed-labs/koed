@@ -39,7 +39,7 @@ export interface ComponentManifest {
   files: readonly { path: string; sha256: string }[];
 }
 export interface ComponentSignature {
-  schemaVersion: 1;
+  schemaVersion: 2;
   keyId: string;
   algorithm: "ed25519";
   signature: string;

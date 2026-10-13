@@ -1,3 +1,4 @@
+import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify } from "node:crypto";
 import {
@@ -70,10 +71,9 @@ test("builds independently hashed, signed base/privacy archives and distribution
       assert.equal(
         verify(
           null,
-          Buffer.concat([
-            Buffer.from("koed-component-manifest-v1\n"),
+          componentManifestSigningBytes(
             canonicalComponentManifestBytes(componentManifest)
-          ]),
+          ),
           publicKey,
           Buffer.from(signature.signature, "base64")
         ),

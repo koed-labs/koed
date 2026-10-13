@@ -5,7 +5,10 @@ import { dirname, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import type { ComponentManifest } from "./component-contract.js";
 import type { ComponentVerificationInput } from "./component-verification.js";
-import { canonicalComponentManifestBytes } from "./component-verification.js";
+import {
+  componentManifestSigningBytes,
+  canonicalComponentManifestBytes
+} from "./component-verification.js";
 
 const hash = (value: Buffer | string) =>
   createHash("sha256").update(value).digest("hex");
@@ -125,12 +128,12 @@ function createSignedComponentFixture(
   const manifestBytes = canonicalComponentManifestBytes(manifest);
   const signature = sign(
     null,
-    Buffer.concat([Buffer.from("koed-component-manifest-v1\n"), manifestBytes]),
+    componentManifestSigningBytes(manifestBytes),
     pair.privateKey
   ).toString("base64");
   const input: ComponentVerificationInput = {
     manifestBytes,
-    signature: { schemaVersion: 1, keyId, algorithm: "ed25519", signature },
+    signature: { schemaVersion: 2, keyId, algorithm: "ed25519", signature },
     archivePath,
     expectedComponent: manifest.component,
     expectedVersion: manifest.productVersion,

@@ -7,11 +7,12 @@ import {
   truncateSync,
   unlinkSync
 } from "node:fs";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { signedComponentFixture } from "./component-test-fixtures.js";
 import {
+  componentManifestSigningBytes,
   verifyComponent,
   verifyExtractedComponent,
   verifyExtractedComponentWithTestSeams
@@ -47,6 +48,61 @@ describe("signed component verification", () => {
     await expect(
       verifyComponent({ ...sample.input, expectedComponent: "privacy" })
     ).rejects.toThrow("component mismatch");
+  });
+
+  it("uses a bounded domain-separated SHA-256 message matching release tooling", async () => {
+    const sample = await fixture();
+    const { componentManifestSigningBytes: releaseBytes } =
+      await import("../../../scripts/component-signature-format.mjs");
+    const large = Buffer.alloc(2 * 1024 * 1024, 97);
+    const bytes = componentManifestSigningBytes(large);
+    expect(bytes).toEqual(releaseBytes(large));
+    expect(bytes.subarray(0, -32).toString()).toBe(
+      "koed-component-manifest-sha256-v2\n"
+    );
+    expect(bytes.subarray(-32).toString("hex")).toBe(digest(large));
+    expect(bytes.length).toBeLessThan(100);
+    await expect(verifyComponent(sample.input)).resolves.toBeDefined();
+  });
+
+  it("rejects legacy envelopes and v1 or wrong-domain signatures relabeled as v2", async () => {
+    const sample = await fixture();
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        signature: { ...sample.input.signature, schemaVersion: 1 as never }
+      })
+    ).rejects.toThrow("unsupported component signature");
+    const keys = generateKeyPairSync("ed25519");
+    const keyId = "format-confusion-test";
+    const trustedKeys = new Map([
+      [keyId, keys.publicKey.export({ type: "spki", format: "pem" }).toString()]
+    ]);
+    for (const message of [
+      Buffer.concat([
+        Buffer.from("koed-component-manifest-v1\n"),
+        sample.input.manifestBytes
+      ]),
+      createHash("sha256").update(sample.input.manifestBytes).digest(),
+      Buffer.concat([
+        Buffer.from("other-signature-domain\n"),
+        createHash("sha256").update(sample.input.manifestBytes).digest()
+      ])
+    ]) {
+      const signature = sign(null, message, keys.privateKey).toString("base64");
+      await expect(
+        verifyComponent({
+          ...sample.input,
+          trustedKeys,
+          signature: {
+            schemaVersion: 2,
+            keyId,
+            algorithm: "ed25519",
+            signature
+          }
+        })
+      ).rejects.toThrow("manifest signature is invalid");
+    }
   });
 
   it("fails closed with empty production trust roots", async () => {

@@ -16,7 +16,9 @@ CommonJS loading support, the Privacy Service bootstrap and secret-provider CLI,
 and `dist/component-trust-roots.js` for promotion verification.
 
 Component manifests use canonical sorted-key JSON bytes without a trailing newline,
-matching both signing and installer verification. Archive members are relative to
+matching both signing and installer verification. Detached signature schema v2 signs
+the domain `koed-component-manifest-sha256-v2` plus a newline and the raw SHA-256
+digest of those bytes; the manifest schema stays at v1. Archive members are relative to
 the payload root, matching the signed inventory. The headless release builder runs
 under Node 24 and records its actual modules ABI. It does not declare Electron
 compatibility; that requires separate packaged validation.

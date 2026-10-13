@@ -58,7 +58,7 @@ export const buildComponentReleaseSet = ({
           privateKey: signing.privateKey
         }).signature
       : {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: "unsigned-placeholder",
           algorithm: "ed25519",
           keyId: null,

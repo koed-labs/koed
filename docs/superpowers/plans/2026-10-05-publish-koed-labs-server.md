@@ -106,7 +106,7 @@ export interface ComponentManifest {
   files: readonly { path: string; sha256: string }[];
 }
 export interface ComponentSignature {
-  schemaVersion: 1;
+  schemaVersion: 2;
   keyId: string;
   algorithm: "ed25519";
   signature: string;
@@ -354,7 +354,7 @@ Fixture creates temporary tiny tar archive/required files and ephemeral Ed25519 
   Add signed wrong version/target, unsupported Node/Electron/module ABI/N-API/libc, unknown key, noncanonical/duplicate metadata, unsigned placeholder, size/hash mismatch, traversal/absolute paths/hardlinks/escaping symlinks, duplicate tar entries, size limits, required-file corruption and unsupported targets. Verify rejection precedes activation.
 
 - [ ] Run `pnpm --filter @koed-labs/server exec vitest run src/component-verification.test.ts && node --test scripts/koed-server-package-lib.test.mjs`; record RED.
-- [ ] Implement schema validation and version/range checks without loosening syntax; reuse existing range dependency or add narrowly justified production dependency if none exists. Signature domain is `koed-component-manifest-v1\n` + canonical UTF-8 bytes. Unknown key or unsupported algorithm fails before extraction. Archive hash/length validated before extraction, safe paths during extraction, all manifest file hashes/required files after extraction. Validate actual runtime identity, not claimed environment values.
+- [ ] Implement schema validation and version/range checks without loosening syntax; reuse existing range dependency or add narrowly justified production dependency if none exists. Signature domain is `koed-component-manifest-sha256-v2\n` + raw SHA-256 digest of canonical UTF-8 bytes. Unknown key or unsupported algorithm fails before extraction. Archive hash/length validated before extraction, safe paths during extraction, all manifest file hashes/required files after extraction. Validate actual runtime identity, not claimed environment values.
 
   ```ts
   if (!input.trustedKeys.has(input.signature.keyId))

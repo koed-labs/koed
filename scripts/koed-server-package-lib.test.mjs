@@ -1,3 +1,4 @@
+import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import {
@@ -155,10 +156,7 @@ test("builds canonical signed component manifests with interoperable Ed25519 dom
   assert.equal(
     cryptoVerify(
       null,
-      Buffer.concat([
-        Buffer.from("koed-component-manifest-v1\n"),
-        signed.manifestBytes
-      ]),
+      componentManifestSigningBytes(signed.manifestBytes),
       pair.publicKey,
       Buffer.from(signed.signature.signature, "base64")
     ),

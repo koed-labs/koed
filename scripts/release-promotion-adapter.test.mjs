@@ -1,3 +1,4 @@
+import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
@@ -34,10 +35,9 @@ test("verifies canonical Ed25519 component signatures against explicit digest-pi
     };
     const signature = sign(
       null,
-      Buffer.concat([
-        Buffer.from("koed-component-manifest-v1\n"),
+      componentManifestSigningBytes(
         Buffer.from(canonicalReleaseJson(manifest))
-      ]),
+      ),
       keys.privateKey
     ).toString("base64");
     const files = {
@@ -47,7 +47,7 @@ test("verifies canonical Ed25519 component signatures against explicit digest-pi
     writeFileSync(files.manifest, canonicalReleaseJson(manifest));
     writeFileSync(
       files.signature,
-      `${JSON.stringify({ schemaVersion: 1, algorithm: "ed25519", keyId: "prod", signature })}\n`
+      `${JSON.stringify({ schemaVersion: 2, algorithm: "ed25519", keyId: "prod", signature })}\n`
     );
     const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
     const roots = { schemaVersion: 1, keys: { prod: publicKeyPem } };
@@ -74,6 +74,43 @@ test("verifies canonical Ed25519 component signatures against explicit digest-pi
           roots
         ),
       /target mismatch/
+    );
+    const artifacts = [
+      { ...files, component: "base", version: "1.0.0", target: "linux-x64" }
+    ];
+    writeFileSync(
+      files.signature,
+      JSON.stringify({
+        schemaVersion: 1,
+        algorithm: "ed25519",
+        keyId: "prod",
+        signature
+      })
+    );
+    assert.throws(
+      () => verifyReleaseSignatures(artifacts, roots),
+      /signature or trusted key is invalid/
+    );
+    const legacySignature = sign(
+      null,
+      Buffer.concat([
+        Buffer.from("koed-component-manifest-v1\n"),
+        Buffer.from(canonicalReleaseJson(manifest))
+      ]),
+      keys.privateKey
+    ).toString("base64");
+    writeFileSync(
+      files.signature,
+      JSON.stringify({
+        schemaVersion: 2,
+        algorithm: "ed25519",
+        keyId: "prod",
+        signature: legacySignature
+      })
+    );
+    assert.throws(
+      () => verifyReleaseSignatures(artifacts, roots),
+      /manifest signature is invalid/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -133,10 +170,9 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
       const signatureName = `${archiveName}.signature.json`;
       const signature = sign(
         null,
-        Buffer.concat([
-          Buffer.from("koed-component-manifest-v1\n"),
+        componentManifestSigningBytes(
           Buffer.from(canonicalReleaseJson(manifest))
-        ]),
+        ),
         keys.privateKey
       ).toString("base64");
       contents.set(manifestName, Buffer.from(canonicalReleaseJson(manifest)));
@@ -144,7 +180,7 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
         signatureName,
         Buffer.from(
           JSON.stringify({
-            schemaVersion: 1,
+            schemaVersion: 2,
             algorithm: "ed25519",
             keyId: "prod",
             signature

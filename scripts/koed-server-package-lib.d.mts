@@ -27,7 +27,7 @@ export function signComponentManifest(input: {
 }): {
   manifestBytes: Buffer;
   signature: {
-    schemaVersion: 1;
+    schemaVersion: 2;
     keyId: string;
     algorithm: "ed25519";
     signature: string;
