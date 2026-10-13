@@ -76,7 +76,10 @@ KMS key version:
 `projects/koed-release-signing-20261013/locations/europe-west2/keyRings/koed-release/cryptoKeys/component-signing/cryptoKeyVersions/1`.
 Runtime account: `koed-component-signer@koed-release-signing-20261013.iam.gserviceaccount.com`.
 
-Health and missing/invalid-token denial probes passed. Authorized GitHub workflow
-signing is not yet rehearsed. Production trust roots and GitHub release variables
+Health and missing/invalid-token denial probes passed. The authorized
+[GitHub signing rehearsal](https://github.com/koed-labs/koed/actions/runs/38480694817)
+passed for both oversized synthetic manifests, including archive verification,
+remote verification and tampering denial. Temporary branch authorization was
+removed afterward. Production trust roots and GitHub release variables
 are configured separately from this deployment. npm publication and promotion
 remain independent authorization gates.

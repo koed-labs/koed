@@ -72,7 +72,9 @@ acceptance remain open below.
 Follow-up to the public `@koed-labs/server` distribution. Merging that work
 publishes nothing; do not merge the "Version Koed" release PR until these are closed:
 
-- Complete the authorized GitHub signing rehearsal and full v2 lifecycle acceptance.
+- Complete full v2 build/sign/install/start/shutdown lifecycle acceptance.
+  The authorized GitHub signing-only rehearsal passed and its temporary branch
+  authorization was revoked.
   The approved KMS public root is embedded; Cloud Run signing and trust-root
   repository configuration are implemented independently from publication approval.
 - Confirm npm organization/package ownership and publication credentials.

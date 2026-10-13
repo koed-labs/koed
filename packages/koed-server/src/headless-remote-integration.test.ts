@@ -29,7 +29,7 @@ const fixture = () => {
   const koedHome = resolve(root, "koed");
   const codexHome = resolve(root, "codex");
   const runtimeRoot = resolve(root, "runtime");
-  const dist = resolve(runtimeRoot, "mcp-server/dist");
+  const dist = resolve(runtimeRoot, "packages/mcp-server/dist");
   mkdirSync(dist, { recursive: true });
   mkdirSync(resolve(dist, "prompts"));
   for (const file of [
@@ -42,7 +42,7 @@ const fixture = () => {
   }
   writeFileSync(
     resolve(dist, "prompts/codex-global-agent-guidance.md"),
-    "# Koed Memory\nConsult Koed for memory.\n"
+    "# Koed Memory\nConsult Koed with memory_answer.\n"
   );
   mkdirSync(codexHome);
   writeFileSync(
@@ -56,7 +56,7 @@ const fixture = () => {
   const environment = {
     KOED_HOME: koedHome,
     CODEX_HOME: codexHome,
-    KOED_JS_RUNTIME_ROOT: runtimeRoot,
+    KOED_REPO_ROOT: runtimeRoot,
     MEMORY_CODEX_APP_SERVER_BINARY: "/bin/sh",
     KOED_CODEX_STOP_DELIVERY: "0",
     MEMORY_API_TOKEN: "personal-secret-must-not-leak"
