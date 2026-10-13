@@ -4846,6 +4846,46 @@ export const createKoedServerManager = ({
         : statusCommandTimeoutMs
     );
   };
+  const requestDesktopStatusRpcWithStoppedAuthority = async (
+    action: "doctor" | "setup-core",
+    startup = false,
+    timeoutMs = action === "setup-core" ? 330_000 : 45_000
+  ): Promise<unknown> => {
+    if (desktopSupervisorProcess && desktopSupervisorNonce)
+      return requestDesktopStatusRpc(action, startup);
+    if (!createSupervisorInvocation)
+      return runJson(
+        action === "setup-core" ? ["setup", "core"] : ["doctor"],
+        timeoutMs
+      );
+
+    const session = await openStoppedPrivacySession();
+    try {
+      const current = await requestSupervisor(
+        session,
+        "status",
+        "status",
+        { startup: true },
+        statusCommandTimeoutMs
+      );
+      if (hasHealthyApi(current))
+        return {
+          ok: false,
+          state: "needs_attention",
+          error:
+            "A running Koed supervisor is not owned by this Desktop manager. Stop it before using this Desktop setup operation."
+        };
+      return await requestSupervisor(
+        session,
+        "status",
+        action,
+        { startup },
+        timeoutMs
+      );
+    } finally {
+      session.child.kill("SIGTERM");
+    }
+  };
   const openStoppedPrivacySession = async () => {
     if (!createSupervisorInvocation || !packagedResourcesPath)
       throw new Error(
@@ -5338,9 +5378,7 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          desktopSupervisorNonce
-            ? await requestDesktopStatusRpc("setup-core")
-            : await runJson(["setup", "core"], 330_000),
+          await requestDesktopStatusRpcWithStoppedAuthority("setup-core"),
           "Koed core setup failed."
         );
       }
@@ -5351,9 +5389,11 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          desktopSupervisorNonce
-            ? await requestDesktopStatusRpc("doctor")
-            : await runJson(["doctor"], 90_000),
+          await requestDesktopStatusRpcWithStoppedAuthority(
+            "doctor",
+            false,
+            90_000
+          ),
           "Setup verification failed."
         );
       }
@@ -5820,14 +5860,11 @@ export const createKoedServerManager = ({
       },
       status: statusWithEnrollmentReconciliation,
       doctor: () =>
-        desktopSupervisorNonce
-          ? requestDesktopStatusRpc("doctor")
-          : runJson(["doctor"], 45_000),
+        requestDesktopStatusRpcWithStoppedAuthority("doctor", false, 45_000),
       stop,
       setup_core: async () => {
-        const result = desktopSupervisorNonce
-          ? await requestDesktopStatusRpc("setup-core")
-          : await runJson(["setup", "core"], 330_000);
+        const result =
+          await requestDesktopStatusRpcWithStoppedAuthority("setup-core");
         if (!resultOk(result)) {
           throw new Error(resultMessage(result, "Koed core setup failed."));
         }

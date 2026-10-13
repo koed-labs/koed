@@ -99,10 +99,22 @@ status for API/Postgres+pgvector/Worker/embedding/native Privacy/Local AI/MCP, a
 stopped cleanly. This used a disposable test-only app copy and trust root, isolated
 synthetic `KOED_HOME`, and the read-only public Qwen3 model. The original packaged
 app and production roots remain unchanged; a test-signed installation is still
-rejected there. This Team run explicitly started the daemon after Privacy
-admission; it does not validate `setup_core` before a private supervisor exists.
-An attempted setup in that stopped state returned a standalone-owner mismatch,
-which remains an integration follow-up rather than a passing lifecycle claim.
+rejected there. That run explicitly started the daemon after Privacy admission.
+Desktop now dispatches stopped `setup_core` and doctor through private supervisor
+IPC after checking for a healthy unowned API; manager regressions cover the former
+standalone-owner mismatch and the unowned refusal. The compiled Desktop manager
+was also run under the packaged Electron binary's Node mode against the original
+test app resource path, with the signed Privacy generation and real private
+supervisor/nonce/capability checks. `setup_core` succeeded before daemon startup
+while an isolated fixture PostgreSQL was reachable; that fixture process was then
+stopped so the supervisor could start and own PostgreSQL normally. Team status
+reached healthy and shutdown succeeded. Evidence is saved at
+`/private/tmp/koed-electron-compat.QvsEvG/packaged-manager-setupcore-result.json`
+and `packaged-manager-setupcore.log`. This validates the packaged manager/private
+IPC integration, not full GUI launch: a separate copied-app attempt still aborted
+in macOS before smoke IPC bootstrap. Stopped management itself starts no services,
+and `setup_core` still requires reachable PostgreSQL while it provisions or
+revalidates the local API Token.
 
 Compatibility payload evidence: Base archive SHA-256
 `17bc2293a14088c4cd9cde5d6310616acbb8274469372b161ba4170c5ab94100`, manifest

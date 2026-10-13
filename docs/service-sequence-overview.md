@@ -1886,10 +1886,18 @@ Packaged Desktop can open a private stopped management child before core service
 are ready. The child authenticates the bundled Base payload using the same issued
 capability as runtime startup, reconciles the installation-owned bundle generation
 under the lifecycle lock, and serves status, signed Privacy installation/cancellation,
-activation and AI Client setup/repair over nonce-correlated IPC. It starts no services.
-This breaks the first-install cycle when Team startup requires Privacy. The parent
-closes the helper after the operation; disconnect, exit, send failure and deadline
-remove pending RPC listeners and fail the request.
+activation, core setup, doctor, and AI Client setup/repair over nonce-correlated IPC.
+Before core setup or doctor, it checks startup status and refuses to proceed when a
+healthy API belongs to a supervisor this Desktop manager does not own. The stopped
+management child starts no services. Core setup still requires reachable PostgreSQL
+while it provisions or revalidates the local API Token; it does not start the
+database. This breaks the first-install cycle when Team startup requires Privacy.
+The parent closes the helper after the operation; disconnect, exit, send failure
+and deadline remove pending RPC listeners and fail the request. A test-signed
+macOS arm64 packaged-manager integration ran this setup before daemon startup with
+an isolated fixture database, then started the normal supervisor, reached healthy
+Team readiness, and stopped cleanly. It used packaged Electron in Node mode and did
+not validate full GUI launch.
 
 Running installations stage Privacy without activation, then stop, activate and
 restart through the manager-owned lifecycle. If restart fails, the transaction restores

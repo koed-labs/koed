@@ -459,6 +459,238 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("runs core setup over private Desktop IPC while the owned generation is stopped", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          requests.push(message);
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result:
+                message.action === "status"
+                  ? { ok: true, api: { state: "stopped" } }
+                  : { ok: true, state: "complete" }
+            })
+          );
+        }
+      }
+    });
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(
+        null,
+        JSON.stringify({
+          ok: false,
+          error:
+            "Packaged runtime owner does not match this standalone control plane"
+        }),
+        ""
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile,
+      spawn: (() => child) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.setup_core()).resolves.toMatchObject({
+      ok: true,
+      state: "complete"
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({ action: "status", startup: true });
+    expect(requests[1]).toMatchObject({
+      action: "setup-core",
+      startup: false
+    });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("refuses stopped core setup when another supervisor owns the healthy API", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          requests.push(message);
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: { ok: true, api: { state: "healthy" } }
+            })
+          );
+        }
+      }
+    });
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(null, "{}", "")
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile,
+      spawn: (() => child) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.setup_core()).rejects.toThrow(
+      "A running Koed supervisor is not owned by this Desktop manager."
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ action: "status", startup: true });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("runs doctor over a private stopped-session RPC and closes it on RPC failure", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          requests.push(message);
+          queueMicrotask(() =>
+            child.emit(
+              "message",
+              message.action === "status"
+                ? {
+                    ...message,
+                    type: "koed.desktop.status.response",
+                    result: { ok: true, api: { state: "stopped" } }
+                  }
+                : {
+                    ...message,
+                    type: "koed.desktop.status.response",
+                    error: "Private doctor failed."
+                  }
+            )
+          );
+        }
+      }
+    });
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(null, "{}", "")
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile,
+      spawn: (() => child) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.doctor()).rejects.toThrow(
+      "Private doctor failed."
+    );
+    expect(requests.map((request) => request.action)).toEqual([
+      "status",
+      "doctor"
+    ]);
+    expect(execFile).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("fails closed when packaged private setup has no trusted resources path", async () => {
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(null, "{}", "")
+    );
+    const spawn = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile,
+      spawn: spawn as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.setup_core()).rejects.toThrow(
+      "Trusted Desktop supervisor is unavailable for asset management."
+    );
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("keeps the healthy unowned supervisor refusal after private status preflight", async () => {
     const child = Object.assign(new EventEmitter(), {
       killed: false,

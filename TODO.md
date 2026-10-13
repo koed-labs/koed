@@ -121,9 +121,13 @@ passes locally with test-only signing; fresh review and the remaining lifecycle
 acceptance are still required.
 
 - Completed local signed component admission, native-operation coverage, and packaged Team startup acceptance for Node 24.14.0 and the exact Electron 39.8.10 / embedded Node 22.22.1 macOS arm64 payload. Other Electron targets remain unvalidated.
-- Validate stopped packaged Team `setup_core` after Privacy activation: the current
-  smoke requires explicit daemon start first; the stopped setup attempt returned
-  a standalone-owner mismatch.
+- Passed packaged-manager Team `setup_core` after Privacy activation and before
+  daemon start using packaged Electron Node mode, a disposable test-signed app,
+  the real private supervisor, and an isolated fixture PostgreSQL. Team readiness
+  reached healthy and shutdown succeeded. Full GUI launch for this check remains
+  unverified after macOS aborted a separate disposable app launch before IPC.
+  Stopped management starts no services; `setup_core` requires reachable
+  PostgreSQL to provision or revalidate the local API Token.
 - Run packaged Team upgrade, relocation, rollback,
   uninstall and helper/fuse acceptance, plus Linux native validation.
 - Keep production signing/trust-root/npm/promotion gates closed until authorized rehearsal.
