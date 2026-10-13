@@ -9,6 +9,14 @@ route. See
 
 Follow-ups:
 
+- Validate default stdio negotiation and installation upgrades with modern MCP
+  on supported host releases. The conditional-delivery native fixtures require
+  explicit Codex 2026-07-28 selection and Claude v2/auto negotiation; their
+  successful delivery does not prove legacy-profile transport migration.
+- Repeat the conditional-delivery Claude matrix in the interactive TUI. The
+  2.1.267 native print matrix used an explicit noninteractive background opt-in;
+  normal setup does not enable that option.
+
 - Revalidate Codex cancellation after an upstream fix. A confirmed interruption
   can currently admit a late Stop hook prompt into the interrupted turn. Keep
   the ownership, authorization, expiry and duplicate safeguards.

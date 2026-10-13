@@ -7,6 +7,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
+import { MEMORY_ANSWER_DELIVERY_MODES } from "@koed/mcp-server/memory-answer-delivery-policy";
 
 const logPath = process.env.TOOL_CHOICE_LOG_PATH;
 const fakeMemoryAnswer = (() => {
@@ -45,6 +46,7 @@ const createServer = (): McpServer => {
       inputSchema: z
         .object({
           query: z.string().min(1),
+          delivery_mode: z.enum(MEMORY_ANSWER_DELIVERY_MODES).optional(),
           response_detail: z
             .enum(["answer_only", "with_citations", "with_evidence"])
             .default("answer_only"),
