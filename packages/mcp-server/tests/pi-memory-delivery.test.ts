@@ -880,6 +880,20 @@ describe("supported Pi Memory Answer delivery", () => {
     expect((mismatch as { code?: unknown }).code).toBeUndefined();
     f.delivery.detach();
   });
+  it("reports uncertain acceptance when the receipt cannot be recorded", async () => {
+    const f = fixture();
+    const cause = new Error("session write failed");
+    f.pi.appendEntry.mockImplementationOnce(() => {
+      throw cause;
+    });
+    await expect(
+      f.delivery.execute("call", { query: "q" }, undefined, f.ctx)
+    ).rejects.toMatchObject({ code: ACCEPTANCE_UNCERTAIN, cause });
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.blocking).not.toHaveBeenCalled();
+    expect(f.reportDelivery).not.toHaveBeenCalled();
+    f.delivery.detach();
+  });
   it("rejects an invocation reused with a different query before new acceptance", async () => {
     const f = fixture();
     await f.delivery.execute(

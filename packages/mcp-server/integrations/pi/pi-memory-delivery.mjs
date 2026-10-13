@@ -471,31 +471,42 @@ export function createPiMemoryDelivery(
       query: input.query,
       expiresAt: task.expiresAt
     };
-    // Pi persists this custom entry with its normal session history. Before the
-    // first assistant message Pi may buffer it in memory, as documented by Pi.
-    const existing = ctx.sessionManager
-      .getBranch()
-      .find(
-        (entry) =>
-          entry.type === "custom" &&
-          entry.customType === RECEIPT &&
-          entry.data?.taskId === task.id
-      );
-    if (
-      existing &&
-      (!validReceipt(existing.data) ||
-        !matches(existing.data, ctx) ||
-        existing.data.queryHash !== binding.queryHash ||
-        existing.data.invocation !== invocation ||
-        normalizeMemoryAnswerDeliveryMode(existing.data.deliveryMode) !==
-          requestedMode)
-    )
+    let saved;
+    try {
+      // Pi persists this custom entry with its normal session history. Before
+      // the first assistant message Pi may buffer it in memory, as documented.
+      const existing = ctx.sessionManager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "custom" &&
+            entry.customType === RECEIPT &&
+            entry.data?.taskId === task.id
+        );
+      if (
+        existing &&
+        (!validReceipt(existing.data) ||
+          !matches(existing.data, ctx) ||
+          existing.data.queryHash !== binding.queryHash ||
+          existing.data.invocation !== invocation ||
+          normalizeMemoryAnswerDeliveryMode(existing.data.deliveryMode) !==
+            requestedMode)
+      )
+        throw acceptanceUncertain(
+          "Koed Memory Answer receipt does not match this invocation"
+        );
+      saved = existing?.data ?? binding;
+      if (!existing) pi.appendEntry(RECEIPT, binding);
+      if (!settled(ctx).has(task.id)) observe(saved);
+    } catch (error) {
+      // The runtime already owns the accepted task, so a failure to record or
+      // observe it must not invite a resubmission that duplicates the work.
+      if (error?.code === ACCEPTANCE_UNCERTAIN) throw error;
       throw acceptanceUncertain(
-        "Koed Memory Answer receipt does not match this invocation"
+        "Koed Memory Answer receipt could not be recorded",
+        error
       );
-    const saved = existing?.data ?? binding;
-    if (!existing) pi.appendEntry(RECEIPT, binding);
-    if (!settled(ctx).has(task.id)) observe(saved);
+    }
     reportDelivery(decision);
     return textResult({
       accepted: true,
