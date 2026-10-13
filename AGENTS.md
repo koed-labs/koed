@@ -42,7 +42,6 @@ If you are making code changes, keep using the contributor guidance below.
 
 - Put implementation follow-ups in `TODO.md`, not `CONTEXT.md`.
 - `TODO.md` is the current implementation backlog from the domain discussion. Check it before starting cleanup work.
-- If `TODO.md` is present, check it before starting cleanup work.
 - Current API-token behavior is personal-memory only.
 - Server-side LLM synthesis is out of scope for this self-hosted build. Do not add or revive backend LLM calls for answer or LCM summary synthesis.
 
