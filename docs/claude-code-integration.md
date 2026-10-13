@@ -13,6 +13,20 @@ polling. Both AI Clients may connect to the same local Koed deployment, but
 neither installation is
 used as a fallback for the other.
 
+The MCP tool accepts the per-call `delivery_mode` preference. Omitted and
+`auto` retain the configured calling-integration behavior. All modes use the
+ordinary MCP result path in Claude Code; `non_blocking` cannot enable host
+backgrounding, and `blocking` cannot disable it. The adapter strips the argument
+before execution and records `mcp_result` as its internal route. This route
+does not assert foreground delivery when the host has backgrounding configured.
+
+Choose blocking when the next planned action needs prior memory. Independent
+diagnostics may overlap a backgrounded call, but the agent must receive and
+apply its result before a memory-dependent decision. If independent work ends,
+yield for the host's notification rather than inventing an answer, polling,
+repeating recall, or claiming dependent work is complete. Failed delivery or
+uncertain acceptance leaves the prerequisite unresolved without resubmission.
+
 Desktop-managed Conversations require explicit `claude` driver and instance
 selection. API accepts only an enabled instance with a fresh healthy,
 authenticated `managed_conversation_start` capability snapshot. Worker keeps
@@ -373,3 +387,13 @@ instance is absent from Koed's local registry. Backend instance records may
 remain after a local registry reset; status checks the local registration that
 capability discovery consumes. In that case, onboarding repairs the
 registration so capability discovery can publish a Local Synthesis snapshot.
+
+## Per-call validation evidence
+
+The conditional-delivery matrix passed on Claude Code 2.1.267 using native print
+execution with its explicit noninteractive background opt-in. Both enabled and
+disabled backgrounding, final statuses, dependency ordering, and waiter
+interruption were checked. This adds no interactive TUI or reopened-session
+guarantee. See
+[validated scope and known gaps](async-memory-answer.md#validated-scope-and-known-gaps)
+for prerequisites and limits.

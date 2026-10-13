@@ -1,8 +1,90 @@
 import type { ToolChoiceCase } from "./benchmark.js";
 
 const runs = 5;
+const importWorkspace = {
+  "import-settings.ts":
+    "export const importSettings = { retries: 0, cacheAuthorization: true };\n",
+  "failure.txt":
+    "Import timed out after a transient connection failure. Current retries: 0.\n"
+};
+const importDecision =
+  "We chose exactly one retry of the existing import call for timeout or temporary connection failures. Keep the existing importer and authentication checks. Never retry authorization failures and do not cache authorization decisions.";
 
 export const toolChoiceCases: ToolChoiceCase[] = [
+  {
+    id: "delivery-independent-diagnostics",
+    prompt:
+      "Fix the failed import according to our previous decision. Start by reading the failing test and collecting the current error output; these diagnostics are independent of the earlier decision. Check prior memory while you investigate, then use it before choosing the implementation.",
+    runs,
+    expected: {
+      shouldCallMemory: true,
+      maxMemoryCalls: 1,
+      deliveryMode: { ideal: ["non_blocking"] },
+      searchDomain: { ideal: ["project"] }
+    },
+    fakeMemoryAnswer: {
+      memoryStatus: "found",
+      markdown: importDecision
+    },
+    workspaceFiles: importWorkspace,
+    notes:
+      "The implementation task depends on memory, but its next planned action is an independent diagnostic read. This immediate-result fixture scores selection only."
+  },
+  {
+    id: "delivery-dependent-decision",
+    prompt:
+      "Fix the failed import according to our previous decision. The failing test and current error output have already been collected. The next step is to choose the implementation using that earlier decision. Check memory before choosing the fix.",
+    runs,
+    expected: {
+      shouldCallMemory: true,
+      maxMemoryCalls: 1,
+      deliveryMode: { ideal: ["blocking"] },
+      searchDomain: { ideal: ["project"] }
+    },
+    fakeMemoryAnswer: {
+      memoryStatus: "found",
+      markdown: importDecision
+    },
+    workspaceFiles: importWorkspace,
+    notes:
+      "Paired with independent diagnostics: the same fix request now has an immediately memory-dependent next action."
+  },
+  {
+    id: "delivery-direct-recall",
+    prompt:
+      "What implementation did we agree on for the import retry budget in this project?",
+    runs,
+    expected: {
+      shouldCallMemory: true,
+      maxMemoryCalls: 1,
+      deliveryMode: { ideal: ["blocking"] },
+      searchDomain: { ideal: ["project"] }
+    },
+    fakeMemoryAnswer: {
+      memoryStatus: "found",
+      markdown:
+        "We agreed on a single retry attempt without caching authorization decisions."
+    },
+    notes: "Memory supplies the answer; there is no independent next action."
+  },
+  {
+    id: "delivery-ambiguous-continuation",
+    prompt:
+      "Continue the implementation we agreed on earlier. I cannot remember where we stopped, and there is no current code context to identify the next step.",
+    runs,
+    expected: {
+      shouldCallMemory: true,
+      maxMemoryCalls: 1,
+      deliveryMode: { ideal: ["blocking"] }
+    },
+    fakeMemoryAnswer: {
+      memoryStatus: "found",
+      markdown:
+        "We stopped before choosing the retry implementation. Keep the retry budget at one attempt."
+    },
+    notes:
+      "The agent cannot establish an independent next action and should request blocking delivery."
+  },
   {
     id: "project-prior-decision",
     prompt:

@@ -1,17 +1,11 @@
 // Executable actual SDK lifecycle check. No model or normal Memory access.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, URL } from "node:url";
 import process from "node:process";
-import {
-  createPiMemoryDelivery,
-  RECEIPT,
-  DISPOSITION,
-  COMPLETION
-} from "../integrations/pi/pi-memory-delivery.mjs";
 const require = createRequire(import.meta.url);
 let modulePath = process.env.KOED_TEST_PI_SDK_MODULE;
 if (!modulePath) {
@@ -28,11 +22,20 @@ if (!existsSync(modulePath))
   );
 const { SessionManager } = await import(pathToFileURL(modulePath).href);
 const root = mkdtempSync(join(tmpdir(), "koed-pi-delivery-sdk-"));
+const installedPackage = join(root, "koed", "integrations", "pi");
+cpSync(new URL("../integrations/pi", import.meta.url), installedPackage, {
+  recursive: true
+});
+const { createPiMemoryDelivery, RECEIPT, DISPOSITION, COMPLETION } =
+  await import(
+    pathToFileURL(join(installedPackage, "pi-memory-delivery.mjs")).href
+  );
 const expiresAt = new Date(Date.now() + 60000).toISOString();
 const tasks = new Map();
 const port = {
   scope: join(root, "koed"),
   async start(_input, _caller, invocationKey) {
+    assert.equal(Object.hasOwn(_input, "delivery_mode"), false);
     const task = {
       id: `task-${tasks.size}`,
       invocationKey,
@@ -88,7 +91,10 @@ const pi = {
 const create = () =>
   createPiMemoryDelivery(pi, {
     port,
-    blocking: async () => ({ markdown: "blocking" }),
+    blocking: async (input) => {
+      assert.equal(Object.hasOwn(input, "delivery_mode"), false);
+      return { markdown: "blocking" };
+    },
     pollMs: 25
   });
 try {
@@ -99,11 +105,20 @@ try {
   first.start({ reason: "startup" }, ctx());
   await first.execute(
     "buffered",
-    { query: "generated first question" },
+    { query: "generated first question", delivery_mode: "non_blocking" },
     undefined,
     ctx()
   );
   assert.equal(existsSync(manager.getSessionFile()), false);
+  const blockingResult = await first.execute(
+    "blocking",
+    { query: "generated blocking question", delivery_mode: "blocking" },
+    undefined,
+    ctx()
+  );
+  assert.equal(blockingResult.details.markdown, "blocking");
+  assert.equal(tasks.size, 1);
+  assert.equal(first.pending.size, 1);
   manager.appendMessage(assistant);
   const originalFile = manager.getSessionFile(),
     originalId = manager.getSessionId();

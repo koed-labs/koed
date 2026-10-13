@@ -9,6 +9,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync
@@ -20,6 +21,12 @@ import {
   type MemoryAnswerExecutionPort
 } from "../integrations/pi/memory-answer-delivery.mjs";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
+import {
+  resolveMemoryAnswerDelivery,
+  splitMemoryAnswerDeliveryInput,
+  type MemoryAnswerDeliveryDecision,
+  type MemoryAnswerDeliveryFallbackReason
+} from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
 
@@ -58,16 +65,40 @@ const nonceValid = (value: unknown): value is string =>
 export const canonicalCodexMemoryInput = (
   input: Record<string, unknown>
 ): Record<string, unknown> => {
-  const clean = { ...input };
+  const { executionInput: clean } = splitMemoryAnswerDeliveryInput(input);
   delete clean[CODEX_DELIVERY_NONCE];
   return memoryAnswerInputSchema.parse(clean);
 };
 const inputHash = (input: Record<string, unknown>): string =>
   createHash("sha256")
-    .update(JSON.stringify(canonicalCodexMemoryInput(input)))
+    .update(
+      JSON.stringify({
+        input: canonicalCodexMemoryInput(input),
+        deliveryMode: splitMemoryAnswerDeliveryInput(input).requestedMode
+      })
+    )
     .digest("hex");
 const denied = (): Error =>
   new Error("Koed deferred Memory Answer receipt is unavailable or invalid");
+
+// Native hooks can keep a logical cwd while the MCP child reports its physical
+// directory (including macOS /var -> /private/var). Match the directory itself.
+const canonicalCwd = (cwd: string): string => {
+  const resolved = path.resolve(cwd);
+  try {
+    return realpathSync(resolved);
+  } catch (error) {
+    // Virtual caller contexts may name a not-yet-created Project. Retain their
+    // exact absolute identity, but never ignore an inaccessible existing path.
+    if (
+      ["ENOENT", "ENOTDIR"].includes(
+        (error as NodeJS.ErrnoException).code ?? ""
+      )
+    )
+      return resolved;
+    throw denied();
+  }
+};
 
 // Windows reports synthetic POSIX mode bits and has no O_NOFOLLOW, so the
 // owner-only mode checks apply on POSIX hosts only (as in the Pi runtime client).
@@ -205,8 +236,13 @@ export class CodexMemoryReceiptStore {
       !hook.tool_input
     )
       return {};
+    // Never rewrite a supplied nonce into a new readiness receipt. MCP must
+    // validate its existing identity even if the request now asks to block.
+    if (hook.tool_input[CODEX_DELIVERY_NONCE] !== undefined) return {};
+    const { requestedMode } = splitMemoryAnswerDeliveryInput(hook.tool_input);
     const input = canonicalCodexMemoryInput(hook.tool_input);
-    if (input.team_workspace_id !== undefined) return {};
+    if (requestedMode === "blocking" || input.team_workspace_id !== undefined)
+      return {};
     this.collectExpired();
     const turnLock = createHash("sha256")
       .update(JSON.stringify([hook.session_id, hook.turn_id]))
@@ -234,8 +270,8 @@ export class CodexMemoryReceiptStore {
           session: hook.session_id,
           turn: hook.turn_id!,
           call: hook.tool_use_id!,
-          cwd: path.resolve(hook.cwd),
-          inputHash: inputHash(input),
+          cwd: canonicalCwd(hook.cwd),
+          inputHash: inputHash(hook.tool_input!),
           expires: this.now() + 30_000,
           state: "ready"
         },
@@ -247,7 +283,13 @@ export class CodexMemoryReceiptStore {
           // Codex validates this together with updatedInput; normal MCP approval
           // still runs after the hook rewrite.
           permissionDecision: "allow",
-          updatedInput: { ...input, [CODEX_DELIVERY_NONCE]: nonce }
+          updatedInput: {
+            ...input,
+            ...(hook.tool_input!.delivery_mode !== undefined
+              ? { delivery_mode: requestedMode }
+              : {}),
+            [CODEX_DELIVERY_NONCE]: nonce
+          }
         }
       };
     });
@@ -266,7 +308,7 @@ export class CodexMemoryReceiptStore {
         value.state !== "ready" ||
         value.tool !== memoryTool ||
         value.expires <= this.now() ||
-        value.cwd !== path.resolve(caller.cwd) ||
+        value.cwd !== canonicalCwd(caller.cwd) ||
         value.inputHash !== inputHash(input)
       )
         throw denied();
@@ -322,7 +364,7 @@ export class CodexMemoryReceiptStore {
         value.session !== hook.session_id ||
         value.turn !== hook.turn_id ||
         value.call !== hook.tool_use_id ||
-        value.cwd !== path.resolve(hook.cwd) ||
+        value.cwd !== canonicalCwd(hook.cwd) ||
         value.inputHash !== inputHash(hook.tool_input!)
       )
         throw denied();
@@ -342,7 +384,7 @@ export class CodexMemoryReceiptStore {
       value.tool === memoryTool &&
       value.session === hook.session_id &&
       value.turn === hook.turn_id &&
-      value.cwd === path.resolve(hook.cwd);
+      value.cwd === canonicalCwd(hook.cwd);
     for (const name of readdirSync(this.directory)
       .filter((n) => /^[a-f0-9]{64}\.json$/.test(n))
       .slice(0, 256)) {
@@ -416,7 +458,10 @@ export class CodexMemoryDelivery {
       LocalRuntimeCallerContext
     >,
     maxObservationMs = 300_000,
-    private readonly memoryTool = "mcp__koed__memory_answer"
+    private readonly memoryTool = "mcp__koed__memory_answer",
+    private readonly reportDelivery: (
+      decision: MemoryAnswerDeliveryDecision
+    ) => void = () => {}
   ) {
     this.delivery = new MemoryAnswerDelivery(port, {
       maxObservationMs
@@ -428,13 +473,30 @@ export class CodexMemoryDelivery {
     signal?: AbortSignal,
     metadata?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
-    const nonce = input[CODEX_DELIVERY_NONCE];
-    if (nonce === undefined) return undefined;
-    if (!nonceValid(nonce)) throw denied();
+    const { requestedMode } = splitMemoryAnswerDeliveryInput(input);
     const clean = canonicalCodexMemoryInput(input);
+    const report = (unavailableReason?: MemoryAnswerDeliveryFallbackReason) =>
+      this.reportDelivery(
+        resolveMemoryAnswerDelivery({
+          requestedMode,
+          blockingRoute: "mcp_result",
+          deferredRoute: "codex_stop",
+          unavailableReason
+        })
+      );
+    const nonce = input[CODEX_DELIVERY_NONCE];
+    if (nonce === undefined) {
+      report(
+        clean.team_workspace_id !== undefined
+          ? "team_ineligible"
+          : "missing_receipt"
+      );
+      return undefined;
+    }
+    if (!nonceValid(nonce)) throw denied();
     const binding = this.store.consume(
       nonce,
-      clean,
+      input,
       caller,
       metadata,
       this.memoryTool
@@ -443,14 +505,15 @@ export class CodexMemoryDelivery {
       string,
       unknown
     >;
-    if (nativeTurn.thread_source !== "user") {
+    if (requestedMode === "blocking" || nativeTurn.thread_source !== "user") {
       this.store.retire({
         hook_event_name: "Interrupt",
         session_id: binding.session,
         turn_id: binding.turn,
         cwd: binding.cwd
       });
-      return undefined; // Unsupported native mode: no task has been accepted.
+      report("unsupported_context");
+      return undefined; // No task has been accepted.
     }
     let task: MemoryAnswerTask;
     try {
@@ -475,14 +538,16 @@ export class CodexMemoryDelivery {
         turn_id: binding.turn,
         cwd: binding.cwd
       });
+      report("team_ineligible");
       return undefined;
     }
     this.store.accepted(binding, task);
+    report();
     return {
       status: "pending",
       koedPendingMemoryAnswer: { version: 1, receiptId: nonce },
       message:
-        "Koed Memory Answer is accepted. Continue independent work. The native Stop hook will await completion outside the model loop; do not poll or retry this request."
+        "Koed Memory Answer is accepted. Continue useful independent work, then yield at the native Stop boundary before a memory-dependent decision. The Stop hook awaits completion outside the model loop. Do not poll, sleep to keep the turn busy, retry this request, or claim the dependent task is complete."
     };
   }
   async stop(

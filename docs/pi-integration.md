@@ -128,6 +128,28 @@ adds the answer to the Conversation without restarting the agent. See
 [asynchronous delivery](async-memory-answer.md) for shared execution
 ownership, recovery behavior and crash limits.
 
+`memory_answer` also accepts `delivery_mode` per call. Omitted and `auto`
+preserve the configured default. `blocking` returns the completed result without
+creating a deferred receipt. `non_blocking` uses the eligible follow-up route;
+configured blocking and unsupported contexts still fall back before acceptance.
+One blocking call does not disable observers for earlier deferred calls. The
+adapter strips the preference before calling the Local AI Runtime, so strict
+older runtime schemas receive only recall inputs.
+
+Choose the mode from the next planned action. Useful independent diagnostics
+may run while memory is pending, even when the later fix depends on memory.
+Yield when the next step needs the answer; do not poll, repeat the request in
+blocking mode, invent a remembered constraint, or claim the task is complete.
+Successful not-found and failed delivery are distinct: a failure leaves the
+dependent prerequisite unresolved. Existing quiet recovery after a User stop
+and bounded redelivery guarantees remain in effect.
+
+The most recent route decision is saved privately at
+`KOED_HOME/run/pi-memory-answer-delivery.json`. It records requested mode,
+effective route, fallback reason, and observation time without query, answer,
+credentials, or receipt identity. It is diagnostic state, not execution or
+recovery authority; an unavailable diagnostic destination does not stop recall.
+
 Deferred delivery can cross an in-progress `/tree` navigation. Pi checks for a
 running response only when navigation starts. It then waits for extension
 handlers and any branch summary before it changes the branch. A completion that
