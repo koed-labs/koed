@@ -96,6 +96,18 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("advertises recall as read-only so AI Clients can run independent tools concurrently", async () => {
+    const { client } = await connect();
+    const { tools } = await client.listTools();
+    expect(
+      tools.find((tool) => tool.name === "memory_answer")?.annotations
+    ).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(
+      tools.find((tool) => tool.name === "memory_intake_propose")?.annotations
+        ?.readOnlyHint
+    ).not.toBe(true);
+  });
+
   it("presents completed recall as readable text without diagnostics or structured duplicates", async () => {
     const { client } = await connect({
       callTool: async () => ({

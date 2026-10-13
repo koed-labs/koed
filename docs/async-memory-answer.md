@@ -56,6 +56,88 @@ reopened-session behavior, Windows Codex Stop delivery, or managed
 Conversations. Configured blocking defaults and opt-outs remain in effect where
 delivery is unproven. `TODO.md` tracks the follow-up validation.
 
+## Codex-owned background recall
+
+When Codex exposes native Code Mode (`functions.exec` and `functions.wait`), it
+can background the ordinary blocking `memory_answer` call itself. The Local AI
+Runtime still retrieves and synthesizes the Memory Answer. No second delivery
+pipeline, shared app-server connection or message board is required. Recall is
+advertised as read-only so Codex can execute independent tools concurrently.
+
+Configure the existing blocking route, rather than Stop-hook delivery:
+
+```bash
+pnpm --filter @koed/mcp-server build
+node scripts/configure-codex.mjs --blocking-recall
+codex --enable code_mode --enable code_mode_interrupt
+```
+
+The configuration command updates the Koed-owned configuration and memory
+guidance; it does not change the selected model or enable Code Mode globally.
+The CLI flags enable it for that launch. Start a new Conversation after
+configuration. The installed Codex distribution must include a working Code
+Mode host, and the selected model must expose this mode. Desktop availability
+must be checked separately; CLI success does not establish desktop support.
+
+Use an instruction such as:
+
+> Start a Koed Memory Answer with delivery_mode="blocking" in a native execution
+> cell. Keep its promise awaited
+> and print the compact result when it finishes. Yield while it runs and do
+> independent read-only investigation. Collect the cell with the native wait
+> tool before planning, editing or finishing work that depends on the recalled
+> information. Do not issue another memory request just to check progress.
+
+The model discovers the actual Koed tool name and arguments. Conceptually its
+execution cell uses:
+
+```javascript
+// @exec: {"yield_time_ms": 1000}
+const answer = await tools[discoveredMemoryToolName]({
+  ...memoryArguments,
+  delivery_mode: "blocking"
+});
+for (const item of answer.content) {
+  if (item.type === "text") text(item.text);
+}
+```
+
+`exec` yields a cell ID while the MCP call remains pending. The model may do
+independent work, then call `wait` on that cell to collect the result. The
+original compact MCP response, including its untrusted-evidence wrapper, is
+preserved. Print the text content, not the whole MCP envelope: private observer
+metadata in `_meta` is not part of the model-facing answer. Do not discard an
+unawaited promise: completing the execution module can cancel unfinished
+callbacks.
+
+Koed authorizes the answer before the ordinary MCP response returns. Once Codex
+has received that response, its execution cell can buffer it until collection.
+Later permission revocation cannot retract already disclosed text, and native
+`wait` is not a fresh Koed authorization request.
+
+Completion alone does not wake an idle model. A yielded cell may survive a
+normally completed turn, but its result must still be collected. With native
+Code Mode interruption enabled, interrupting the turn terminates its active
+cells; shutting down the session also closes them. This cancels presentation,
+not necessarily all durable runtime work. Existing MCP timeouts still apply.
+Never promise unsolicited delivery after the model has finished.
+
+If Code Mode is unavailable, the same configuration uses clean blocking MCP
+recall. Automatic Stop delivery remains available; product defaults have not
+changed. Here, `delivery_mode="blocking"` describes the MCP response contract,
+not whether Codex backgrounds that call. Do not select `non_blocking` inside
+the cell: that requests adapter-managed delivery instead of the final result.
+
+An isolated protocol smoke test is available without model credentials:
+
+```bash
+node scripts/codex-memory-delivery-smoke.mjs
+```
+
+It uses a synthetic Responses endpoint and MCP server with temporary profiles.
+It tests the installed native host, not real memory retrieval or actual-model
+adherence to the trial instruction.
+
 ## Shared lifecycle
 
 `@koed/mcp-server/memory-answer-delivery` exports `MemoryAnswerDelivery` and its

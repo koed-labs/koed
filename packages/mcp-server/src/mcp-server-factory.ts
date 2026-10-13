@@ -289,6 +289,9 @@ export const createKoedMcpServer = async (
       {
         title: toolTitle(toolName),
         description: toolDescription(toolName),
+        ...(toolName === "memory_answer"
+          ? { annotations: { readOnlyHint: true, destructiveHint: false } }
+          : {}),
         inputSchema: (toolName === "memory_answer" && deferredEnabled
           ? memoryAnswerAdapterInputSchema.safeExtend({
               [CODEX_DELIVERY_NONCE]: z
