@@ -96,7 +96,9 @@ function safeRelativePath(
   }
 }
 
-function validateManifest(value: unknown): asserts value is ComponentManifest {
+export function validateComponentManifest(
+  value: unknown
+): asserts value is ComponentManifest {
   assertRecord(value, "component manifest", [
     "schemaVersion",
     "productVersion",
@@ -502,7 +504,7 @@ async function verifyComponentSync(
   } catch {
     throw new Error("component manifest JSON is invalid");
   }
-  validateManifest(parsed);
+  validateComponentManifest(parsed);
   const manifest = parsed;
   const canonical = canonicalComponentManifestBytes(manifest);
   if (!canonical.equals(input.manifestBytes))
@@ -628,7 +630,7 @@ function verifyExtractedComponentSync(
   manifest: ComponentManifest,
   seams: ExtractedTreeTestSeams = {}
 ): void {
-  validateManifest(manifest);
+  validateComponentManifest(manifest);
   const canonicalRoot = resolve(root);
   const rootStat = lstatSync(canonicalRoot);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory())

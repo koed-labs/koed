@@ -44,3 +44,12 @@ and is unchanged.
 The external signer must implement these exact bytes for both signing and verification.
 Google Cloud KMS uses `EC_SIGN_ED25519` with raw `data`, not a KMS `digest` field.
 A KMS key alone does not authorize production trust, npm publication or promotion.
+
+## Hosted signing API
+
+`infra/component-signer` implements the GitHub OIDC contract on Cloud Run with
+Google Cloud KMS and the v2 component message. It uses an attached service identity
+rather than stored credentials. See its README for deployment and authorization
+rules. The configured GitHub repository and owner IDs are immutable identities;
+release and recovery workflows must run on `main`. Deployment and a successful
+health probe alone do not establish authorized end-to-end signing acceptance.
