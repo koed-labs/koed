@@ -1,5 +1,14 @@
 # Running Koed
 
+## Headless Remote Integration
+
+An AI Client can use an existing backend without Electron or local database,
+API, embedding, or privacy services. [Headless Remote MCP](headless-remote-mcp.md)
+covers the opt-in backend transport, OAuth consent, dedicated `KOED_HOME`, and
+`koed remote` commands. Keep its local background helper running for
+automatic capture, Personal Memory Answer tasks, and LCM Summaries. The remote
+backend retains its normal dependencies and never runs LLM synthesis.
+
 ## CLI help
 
 `koed --help`, command help, and Personal Sync recovery help load without
@@ -373,6 +382,14 @@ leave package-manager child processes listening on Koed ports.
 
 Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
+
+For native Team Memory Answer execution, add `--memory-answers` to enrollment
+start and approve the additional execution permission in the browser. The
+backend must advertise version 2 of `memory.answerTasks` with Team support.
+Existing read-only enrollment is not automatically upgraded: cancel a pending
+read-only request and start a new request with this flag. Execution routing is
+enabled only after credential activation succeeds; denial, expiry, cancellation,
+or disconnection leaves it disabled. This does not grant Personal Memory reads.
 
 ```bash
 SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"

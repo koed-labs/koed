@@ -43,8 +43,7 @@ function fixture(get: () => Promise<MemoryAnswerTask>, resume?: string) {
     })
   });
   const runtime = new MemoryAnswerTaskRuntime(
-    scheduler as unknown as MemoryAnswerTaskScheduler,
-    {}
+    scheduler as unknown as MemoryAnswerTaskScheduler
   );
   const open = () =>
     runtime.handleResourceRoute(
@@ -73,25 +72,18 @@ describe("canonical task acceptance", () => {
     limit: 10,
     include_evidence: false
   };
-  const admission = (allowed = true) => {
+  const admission = () => {
     const start = vi.fn<MemoryAnswerTaskScheduler["start"]>(async () =>
       task(1, { status: "accepted" })
     );
-    const eligible = vi.fn<
-      (
-        input: Record<string, unknown>,
-        caller: LocalRuntimeCallerContext
-      ) => boolean
-    >(() => allowed);
-    const runtime = new MemoryAnswerTaskRuntime(
-      { start } as unknown as MemoryAnswerTaskScheduler,
-      { durableMemoryAnswerEligible: eligible }
-    );
-    return { runtime, start, eligible };
+    const runtime = new MemoryAnswerTaskRuntime({
+      start
+    } as unknown as MemoryAnswerTaskScheduler);
+    return { runtime, start };
   };
 
   it.each(["pi", "claude"])(
-    "normalizes query-only input before eligibility and scheduler acceptance for %s",
+    "normalizes query-only input before scheduler acceptance for %s",
     async (clientName) => {
       const f = admission();
       const input = { query: "  prior decision  " };
@@ -107,14 +99,12 @@ describe("canonical task acceptance", () => {
         invocationKey: "original-invocation"
       });
       expect(accepted.status).toBe("accepted");
-      expect(f.eligible).toHaveBeenCalledExactlyOnceWith(canonical, caller);
       expect(f.start).toHaveBeenCalledExactlyOnceWith({
         origin: clientName === "pi" ? "pi_extension" : "mcp",
         invocationKey: "original-invocation",
         toolInput: canonical,
         caller
       });
-      expect(f.eligible.mock.calls[0]?.[1]).toBe(caller);
       expect(f.start.mock.calls[0]?.[0].caller).toBe(caller);
       expect(input).toEqual({ query: "  prior decision  " });
     }
@@ -127,6 +117,24 @@ describe("canonical task acceptance", () => {
     await f.runtime.start({ ...request, input: { query: "prior decision" } });
     await f.runtime.start({ ...request, input: { ...canonical } });
     expect(f.start.mock.calls[0]).toEqual(f.start.mock.calls[1]);
+  });
+
+  it("accepts Team recall through the same durable scheduler when execution is supported", async () => {
+    const f = admission();
+    const caller = { cwd: "/requesting/project" };
+    const input = {
+      query: "Team decision",
+      search_domain: "global",
+      team_workspace_id: id,
+      team_backend_id: "remote"
+    };
+    await f.runtime.start({ input, caller, invocationKey: "team-invocation" });
+    expect(f.start).toHaveBeenCalledExactlyOnceWith({
+      origin: "mcp",
+      invocationKey: "team-invocation",
+      toolInput: { ...canonical, ...input },
+      caller
+    });
   });
 
   it.each([
@@ -142,7 +150,7 @@ describe("canonical task acceptance", () => {
       source_after: "2026-01-01T00:00:00Z"
     }
   ])(
-    "rejects invalid input %j with a static 400 before eligibility or acceptance",
+    "rejects invalid input %j with a static 400 before acceptance",
     async (input) => {
       const f = admission();
       await expect(
@@ -151,7 +159,6 @@ describe("canonical task acceptance", () => {
         message: "Invalid Memory Answer task input",
         statusCode: 400
       });
-      expect(f.eligible).not.toHaveBeenCalled();
       expect(f.start).not.toHaveBeenCalled();
     }
   );
@@ -160,19 +167,21 @@ describe("canonical task acceptance", () => {
     { query: "prior decision" },
     { query: "prior decision", team_workspace_id: id }
   ])(
-    "preserves authoritative Team rejection after normalization for %j",
+    "preserves current backend authority rejection after normalization for %j",
     async (input) => {
-      const f = admission(false);
-      const caller = { cwd: "/owned/team-project" };
-      await expect(f.runtime.start({ input, caller })).rejects.toMatchObject({
-        statusCode: 409,
-        message: "Team Workspace Memory Answer does not support detached tasks"
-      });
-      expect(f.eligible).toHaveBeenCalledExactlyOnceWith(
-        { ...canonical, ...input },
-        caller
+      const f = admission();
+      const denied = Object.assign(
+        new Error("Memory Answer authority denied"),
+        { statusCode: 403 }
       );
-      expect(f.start).not.toHaveBeenCalled();
+      f.start.mockRejectedValueOnce(denied);
+      const caller = { cwd: "/owned/team-project" };
+      await expect(f.runtime.start({ input, caller })).rejects.toBe(denied);
+      expect(f.start).toHaveBeenCalledExactlyOnceWith({
+        origin: "mcp",
+        toolInput: { ...canonical, ...input },
+        caller
+      });
     }
   );
 });
@@ -307,8 +316,7 @@ describe("MemoryAnswerTaskRuntime blocking recall", () => {
       )
     };
     const runtime = new MemoryAnswerTaskRuntime(
-      scheduler as unknown as MemoryAnswerTaskScheduler,
-      {}
+      scheduler as unknown as MemoryAnswerTaskScheduler
     );
     const blocking = runtime.executeBlocking({
       input: { query: "What did we decide?" },

@@ -9,6 +9,7 @@ export type LocalEdgeUpstreamRoutePolicyKey =
   | "captureWrites"
   | "sync"
   | "managedExecution"
+  | "memoryAnswerExecution"
   | "admin";
 
 export interface LocalEdgeUpstreamBackend {

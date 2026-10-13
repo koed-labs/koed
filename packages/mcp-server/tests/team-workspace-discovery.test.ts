@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { storeLocalEdgeClientCredential } from "@koed/shared";
-import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
+import { MemoryApiError, MemoryApiClient } from "../src/index.js";
+import { createMemoryAnswerTaskCoordinator } from "../src/memory-answer-task-coordinator.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "../src/project-team-workspace-links.js";
@@ -22,7 +24,10 @@ const context = {
   teamWorkspaceName: "Development",
   access: "read"
 };
-function enrollment(ids = ["team-backend"]): NodeJS.ProcessEnv {
+function enrollment(
+  ids = ["team-backend"],
+  execution = false
+): NodeJS.ProcessEnv {
   const home = fs.mkdtempSync(
     path.join(os.tmpdir(), "koed-workspace-discovery-")
   );
@@ -36,7 +41,27 @@ function enrollment(ids = ["team-backend"]): NodeJS.ProcessEnv {
       backends: ids.map((id) => ({
         id,
         baseUrl: "https://team.example.test",
-        routePolicy: { teamWorkspaceRead: "enabled" }
+        routePolicy: {
+          teamWorkspaceRead: "enabled",
+          ...(execution ? { memoryAnswerExecution: "enabled" } : {})
+        },
+        ...(execution
+          ? {
+              capabilities: {
+                state: "validated",
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                payload: {
+                  capabilities: {
+                    "memory.answerTasks": {
+                      availability: "available",
+                      version: 2,
+                      supportedScopes: ["personal", "team"]
+                    }
+                  }
+                }
+              }
+            }
+          : {})
       }))
     })
   );
@@ -44,11 +69,15 @@ function enrollment(ids = ["team-backend"]): NodeJS.ProcessEnv {
     storeLocalEdgeClientCredential(home, {
       backendId,
       secret: "test-local-edge-secret",
-      operationFamilies: ["team_workspace_read"]
+      operationFamilies: [
+        "team_workspace_read",
+        ...(execution ? ["memory_answer_execution"] : [])
+      ]
     });
   return { KOED_HOME: home };
 }
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const home of homes.splice(0))
     fs.rmSync(home, { recursive: true, force: true });
 });
@@ -242,80 +271,100 @@ describe("authorized Team Workspace discovery", () => {
     expect(JSON.stringify(result)).not.toContain("upstream-secret");
   });
 
-  it("resolves explicit global Team recall without a Project link or backend env", async () => {
-    const env = enrollment();
-    const teamMemoryAnswer = vi.fn(async () => ({
-      authorizationBoundary: "frozen-boundary"
-    }));
-    const client = {
-      accessCheck: vi.fn(async () => ({})),
-      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
-      teamWorkspaceContexts: vi.fn(async () => ({ workspaces: [context] })),
-      teamMemoryAnswer
-    } as unknown as MemoryApiClient;
-    const executor = new MemoryToolExecutor(client, env, {
-      answerWithMemoryWorker: async (_payload, options) => {
-        expect(options?.teamWorkspaceId).toBe(workspaceId);
-        expect(options?.searchDomain).toBe("global");
-        throw new Error("authorized worker reached");
-      }
-    });
-    await expect(
-      executor.execute(
-        "memory_answer",
-        {
+  it.each([false, true])(
+    "accepts global Team recall through fresh discovery with explicit backend=%s",
+    async (explicitBackend) => {
+      const env = enrollment(["team-backend"], true);
+      if (explicitBackend) env.KOED_TEAM_UPSTREAM_BACKEND_ID = "other-backend";
+      const client = new MemoryApiClient({
+        apiUrl: "http://127.0.0.1:3001",
+        apiToken: "personal-token"
+      });
+      const teamWorkspaceContexts = vi
+        .spyOn(client, "teamWorkspaceContexts")
+        .mockResolvedValue({ workspaces: [context] });
+      const now = new Date().toISOString();
+      const task = {
+        id: randomUUID(),
+        teamWorkspaceId: workspaceId,
+        origin: "mcp",
+        invocationKey: null,
+        questionId: null,
+        status: "accepted",
+        statusMessage: null,
+        attemptCount: 0,
+        maxAttempts: 3,
+        fenceGeneration: 0,
+        cancelRequestedAt: null,
+        startedAt: null,
+        lastProgressAt: null,
+        completedAt: null,
+        failedAt: null,
+        cancelledAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        result: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: new Date(Date.now() + 86400000).toISOString()
+      };
+      const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response(JSON.stringify({ task })));
+      const coordinator = createMemoryAnswerTaskCoordinator(client, env);
+      expect(
+        await coordinator.acceptMemoryAnswerTask({
+          origin: "mcp",
+          max_queued: 16,
+          request: {
+            input: {
+              query: "Dinner?",
+              search_domain: "global",
+              team_workspace_id: workspaceId,
+              ...(explicitBackend ? { team_backend_id: "team-backend" } : {})
+            },
+            caller: { cwd: "/repo" }
+          }
+        })
+      ).toMatchObject({ task: { id: task.id, teamWorkspaceId: workspaceId } });
+      expect(teamWorkspaceContexts).toHaveBeenCalledWith(
+        "team-backend",
+        expect.stringContaining("Koed-Device koed_local_"),
+        undefined
+      );
+      const [url, options] = fetch.mock.calls[0]!;
+      expect(String(url)).toContain(
+        "/v1/local-edge/memory-answer-tasks/accept"
+      );
+      expect(new Headers(options?.headers).get("authorization")).toMatch(
+        /^Koed-Device koed_local_/
+      );
+      const payload = JSON.parse(String(options?.body)) as {
+        upstream_backend_id: string;
+        input: { request: { input: Record<string, unknown> } };
+      };
+      expect(payload).toMatchObject({
+        upstream_backend_id: "team-backend",
+        input: {
+          request: {
+            input: {
+              query: "Dinner?",
+              search_domain: "global",
+              team_workspace_id: workspaceId
+            }
+          }
+        }
+      });
+      expect(payload.input.request.input).toEqual(
+        memoryAnswerInputSchema.parse({
           query: "Dinner?",
           search_domain: "global",
           team_workspace_id: workspaceId
-        },
-        { cwd: "/repo" }
-      )
-    ).rejects.toThrow("authorized worker reached");
-    expect(teamMemoryAnswer).toHaveBeenCalledWith(
-      "team-backend",
-      expect.objectContaining({
-        team_workspace_id: workspaceId,
-        search_domain: "global"
-      }),
-      expect.stringContaining("Koed-Device koed_local_")
-    );
-  });
-
-  it("honors an explicit backend and never forwards backend routing input upstream", async () => {
-    const env = enrollment();
-    env.KOED_TEAM_UPSTREAM_BACKEND_ID = "other-backend";
-    const teamWorkspaceContexts = vi.fn();
-    const teamMemoryAnswer = vi.fn(async () => ({}));
-    const client = {
-      accessCheck: vi.fn(async () => ({})),
-      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
-      teamWorkspaceContexts,
-      teamMemoryAnswer
-    } as unknown as MemoryApiClient;
-    const executor = new MemoryToolExecutor(client, env, {
-      answerWithMemoryWorker: async () => {
-        throw new Error("worker reached");
-      }
-    });
-    await expect(
-      executor.execute(
-        "memory_answer",
-        {
-          query: "Dinner?",
-          search_domain: "global",
-          team_workspace_id: workspaceId,
-          team_backend_id: "team-backend"
-        },
-        { cwd: "/repo" }
-      )
-    ).rejects.toThrow("worker reached");
-    expect(teamWorkspaceContexts).not.toHaveBeenCalled();
-    expect(teamMemoryAnswer).toHaveBeenCalledWith(
-      "team-backend",
-      expect.not.objectContaining({ team_backend_id: "team-backend" }),
-      expect.any(String)
-    );
-  });
+        })
+      );
+    }
+  );
 
   it("keeps Personal Memory as the default and rejects backend-only selection", async () => {
     const env = enrollment();

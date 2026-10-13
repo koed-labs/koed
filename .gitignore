@@ -1,29 +1,34 @@
+# Dependencies
 node_modules/
 .pnpm-store/
+
+# Python (benchmarks and eval runners)
 .venv/
 __pycache__/
 *.py[cod]
 .mypy_cache/
 .ruff_cache/
+
+# Build output and caches
 dist/
-.DS_Store
-.playwright-cli/
-target/
-apps/desktop/src-tauri/gen/
-apps/desktop/src-tauri/resources/koed-node/
+*.tsbuildinfo
 coverage/
 .cache/native-runtime/
+
+# Local environment and secrets
 .env
 .env.*
 !.env.example
-.DS_Store
-*.tsbuildinfo
+scratch/
+
+# Eval and experience-replay output
 packages/evals/reports/*.json
 packages/evals/reports/experience-replay/
 .experience-replay/
 **/experience-replay-runs/
 **/frozen-trajectory*.json
 **/sanitization-manifest*.json
-apps/history-browser/*
-!apps/history-browser/Dockerfile
-!apps/history-browser/package.json
+
+# Tooling and OS files
+.playwright-cli/
+.DS_Store

@@ -15,6 +15,7 @@ import {
   createPersonalDeviceSyncRepository,
   createPrivacyClassificationRepository,
   createRealtimeTransportTicketRepository,
+  createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   runDbMigrations,
@@ -24,7 +25,8 @@ import {
   type MemorySourceRepository,
   type PrivacyClassificationRepository,
   type RealtimeTransportTicketRepository,
-  type RetentionLifecycleRepository
+  type RetentionLifecycleRepository,
+  type RemoteMcpOAuthStore
 } from "@koed/db";
 import {
   createAuthHelpers,
@@ -183,6 +185,10 @@ import {
   setRequestLogContext
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
+import { createRemoteMcpOAuthProvider } from "../auth/remote-mcp-oauth.js";
+import { registerRemoteMcpOAuthRoutes } from "../auth/remote-mcp-oauth-routes.js";
+import { registerRemoteMcpRoutes } from "./remote-mcp.js";
+import { supportsWorkos } from "./capabilities.js";
 import type { ApiRouteContext } from "./context.js";
 import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
 import {
@@ -197,6 +203,8 @@ export {
 };
 
 export interface BuildServerOptions {
+  /** Test/deployment injection; production uses the configured database. */
+  remoteMcpOAuthStore?: RemoteMcpOAuthStore;
   repository?: MemorySourceRepository;
   collaborationRepository?: CollaborationRepository &
     CollaborationRealtimeMaterializationRepository;
@@ -314,6 +322,22 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             env: config.nodeEnv
           },
           redact: [
+            "req.body.code",
+            "req.body.token",
+            "req.body.access_token",
+            "req.body.refresh_token",
+            "req.body.code_verifier",
+            "req.body.client_secret",
+            "req.body.csrfToken",
+            "request.body.code",
+            "request.body.token",
+            "request.body.access_token",
+            "request.body.refresh_token",
+            "request.body.code_verifier",
+            "request.body.client_secret",
+            "request.body.csrfToken",
+            "req.query.request",
+            "request.query.request",
             "req.headers.authorization",
             "req.headers.cookie",
             "res.headers.set-cookie",
@@ -355,6 +379,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   if (pool) {
     await runDbMigrations(pool);
   }
+  if (config.remoteMcp.enabled && !pool && !options.remoteMcpOAuthStore) {
+    throw new Error(
+      "Remote MCP requires a configured database-backed OAuth store"
+    );
+  }
+  const remoteMcpOAuth = config.remoteMcp.enabled
+    ? createRemoteMcpOAuthProvider({
+        store:
+          options.remoteMcpOAuthStore ?? createRemoteMcpOAuthRepository(pool!),
+        resourceUrl: new URL(config.remoteMcp.resourceUrl!)
+      })
+    : undefined;
   // Only configured secret references can enable PDS. No raw environment-key
   // fallback. Runs after the DB pool so a missing Authority key can be
   // checked against existing Personal Device Groups before minting a
@@ -754,6 +790,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const authHelpers = createAuthHelpers(requireRepository, {
     hashSecret,
     cookieSecure: config.cookieSecure,
+    resolveDelegatedPrincipal: remoteMcpOAuth?.resolvePrincipal,
     recordAuthContext: (request, authContext) =>
       setRequestLogContext(
         request,
@@ -768,6 +805,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       resolveAuthenticatedUserId: async (request) =>
         getRequestLogContext(request).actor?.user_id ??
         (await authHelpers.resolveApiTokenUser(request))?.id ??
+        (await authHelpers.resolveDelegatedPrincipal(request))?.userId ??
         (await authHelpers.resolveDeviceCredentialContext(request))?.user.id
     }
   );
@@ -1786,6 +1824,25 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   registerBrowserApprovalRoutes(app);
   registerAuthRoutes(app, routeContext);
+  if (remoteMcpOAuth) {
+    const resourceUrl = new URL(config.remoteMcp.resourceUrl!);
+    registerRemoteMcpOAuthRoutes(app, {
+      oauth: remoteMcpOAuth,
+      issuerUrl: new URL(resourceUrl.origin),
+      auth: authHelpers,
+      workosAvailable:
+        config.workos.authkitEnabled &&
+        supportsWorkos(config.deploymentProfile),
+      publicOrigin: resourceUrl.origin
+    });
+    registerRemoteMcpRoutes(app, {
+      resourceUrl,
+      auth: authHelpers,
+      allowedOrigins: [...config.corsOrigins, resourceUrl.origin],
+      teamCollaborationEnabled: config.teamCollaborationEnabled,
+      environment: process.env
+    });
+  }
   registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);

@@ -7,6 +7,11 @@ import type {
   UserSessionContext
 } from "@koed/db";
 import type { AuthLogKind } from "../server/logging.js";
+import {
+  remoteMcpAccessTokenPrefix,
+  type RemoteMcpDelegatedPrincipal
+} from "./remote-mcp-oauth.js";
+import { assertDelegatedRequestScope } from "./remote-mcp-scopes.js";
 
 export const sessionCookieName = "cm_session";
 export const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -32,7 +37,22 @@ export const publicUser = (user: {
 });
 
 export interface AuthHelpers {
+  authenticatedCredentialKind(
+    request: FastifyRequest
+  ): Exclude<AuthLogKind, "anonymous"> | undefined;
+  authenticateMemoryAnswerTask(
+    request: FastifyRequest,
+    mode: "read" | "execution",
+    requestedTeam?: boolean
+  ): Promise<{
+    user: { id: string };
+    allowTeam: boolean;
+    allowPersonal: boolean;
+  }>;
   hashSecret: HashSecret;
+  resolveDelegatedPrincipal(
+    request: FastifyRequest
+  ): Promise<RemoteMcpDelegatedPrincipal | null>;
   resolveApiTokenUser(request: FastifyRequest): Promise<{
     id: string;
     email: string;
@@ -100,6 +120,9 @@ export const createAuthHelpers = (
   options: {
     hashSecret: HashSecret;
     cookieSecure: boolean;
+    resolveDelegatedPrincipal?: (
+      token: string
+    ) => Promise<RemoteMcpDelegatedPrincipal>;
     recordAuthContext?: (
       request: FastifyRequest,
       context: {
@@ -110,6 +133,10 @@ export const createAuthHelpers = (
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const authenticatedKinds = new WeakMap<
+    FastifyRequest,
+    Exclude<AuthLogKind, "anonymous">
+  >();
   const apiTokenUsers = new WeakMap<
     FastifyRequest,
     Promise<{
@@ -143,6 +170,7 @@ export const createAuthHelpers = (
     kind: Exclude<AuthLogKind, "anonymous">,
     userId: string
   ): void => {
+    authenticatedKinds.set(request, kind);
     options.recordAuthContext?.(request, { kind, userId });
   };
   const setSessionCookie = (reply: FastifyReply, secret: string): void => {
@@ -153,6 +181,55 @@ export const createAuthHelpers = (
       path: "/",
       maxAge: Math.floor(sessionTtlMs / 1000)
     });
+  };
+
+  const resolveDelegatedPrincipal = async (
+    request: FastifyRequest
+  ): Promise<RemoteMcpDelegatedPrincipal | null> => {
+    const bearer = readAuthorizationCredential(request, "Bearer");
+    if (!bearer) return null;
+    if (!options.resolveDelegatedPrincipal) {
+      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+        throw Object.assign(new Error("Delegated access is unavailable"), {
+          statusCode: 401
+        });
+      }
+      return null;
+    }
+    try {
+      return await options.resolveDelegatedPrincipal(bearer);
+    } catch {
+      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+        throw Object.assign(new Error("Delegated access is unavailable"), {
+          statusCode: 401
+        });
+      }
+      return null;
+    }
+  };
+  const resolveDelegatedUser = async (
+    request: FastifyRequest,
+    requiredScope?: "koed:team:read"
+  ) => {
+    const principal = await resolveDelegatedPrincipal(request);
+    if (!principal) return null;
+    assertDelegatedRequestScope(principal, request);
+    if (requiredScope && !principal.scopes.includes(requiredScope)) {
+      throw Object.assign(
+        new Error("Delegated credential is not allowed for this operation"),
+        {
+          statusCode: 403
+        }
+      );
+    }
+    const user = await requireRepository().getUser(principal.userId);
+    if (!user) {
+      throw Object.assign(new Error("Delegated access is unavailable"), {
+        statusCode: 401
+      });
+    }
+    recordAuthContext(request, "oauth_delegated", user.id);
+    return user;
   };
 
   const resolveApiTokenUser = (request: FastifyRequest) => {
@@ -208,6 +285,9 @@ export const createAuthHelpers = (
       return apiTokenUser;
     }
 
+    const delegatedUser = await resolveDelegatedUser(request);
+    if (delegatedUser) return delegatedUser;
+
     const sessionSecret = request.cookies[sessionCookieName];
     if (sessionSecret) {
       const user = await repo.getSessionUser(hashSecret(sessionSecret));
@@ -261,6 +341,8 @@ export const createAuthHelpers = (
     }
     const user = await resolveApiTokenUser(request);
     if (!user) {
+      const delegatedUser = await resolveDelegatedUser(request);
+      if (delegatedUser) return delegatedUser;
       throw Object.assign(new Error("Invalid API token"), { statusCode: 401 });
     }
     recordAuthContext(request, "api_token", user.id);
@@ -312,6 +394,13 @@ export const createAuthHelpers = (
         ? authHeader.slice(0, separatorIndex).toLowerCase()
         : "";
     if (authScheme === "bearer") {
+      if (operationFamily === "team_workspace_read") {
+        const delegatedUser = await resolveDelegatedUser(
+          request,
+          "koed:team:read"
+        );
+        if (delegatedUser) return delegatedUser;
+      }
       throw Object.assign(
         new Error(
           options.apiTokenError ??
@@ -335,8 +424,87 @@ export const createAuthHelpers = (
     return await authenticateSession(request);
   };
 
+  const authenticateMemoryAnswerTask = async (
+    request: FastifyRequest,
+    mode: "read" | "execution",
+    requestedTeam?: boolean
+  ) => {
+    // Native upstream task proxies may only narrow freshly verified authority.
+    const scope = request.headers["x-koed-memory-answer-task-scope"];
+    if (scope !== undefined && scope !== "personal" && scope !== "team")
+      throw Object.assign(new Error("Invalid Memory Answer task scope"), {
+        statusCode: 400
+      });
+    const restrict = (allowTeam: boolean, allowPersonal: boolean) => {
+      allowTeam = allowTeam && scope !== "personal";
+      allowPersonal = allowPersonal && scope !== "team";
+      if ((scope === "team" || requestedTeam === true) && !allowTeam)
+        throw Object.assign(
+          new Error("Team Memory Answer permission is required"),
+          {
+            statusCode: 403
+          }
+        );
+      if ((scope === "personal" || requestedTeam === false) && !allowPersonal)
+        throw Object.assign(
+          new Error("Personal Memory Answer permission is required"),
+          {
+            statusCode: 403
+          }
+        );
+      return { allowTeam, allowPersonal };
+    };
+    const device = readDeviceCredential(request);
+    if (device) {
+      const context = await authenticateDeviceCredential(request, {
+        fresh: true
+      });
+      const families = context.credential.operationFamilies;
+      const required = "memory_answer_execution";
+      if (!families.includes(required))
+        throw Object.assign(
+          new Error("Device credential is not allowed for Memory Answer tasks"),
+          { statusCode: 403 }
+        );
+      const allowTeam = families.includes("team_workspace_read");
+      const allowPersonal = families.includes("personal_memory_read");
+      if (requestedTeam && !allowTeam)
+        throw Object.assign(
+          new Error("Team Memory Answer permission is required"),
+          { statusCode: 403 }
+        );
+      if (requestedTeam === false && !allowPersonal)
+        throw Object.assign(
+          new Error("Personal Memory Answer permission is required"),
+          { statusCode: 403 }
+        );
+      return { user: context.user, ...restrict(allowTeam, allowPersonal) };
+    }
+    const principal = await resolveDelegatedPrincipal(request);
+    const user = await authenticateApiToken(request);
+    const allowTeam = Boolean(principal?.scopes.includes("koed:team:read"));
+    if (principal) {
+      const required =
+        mode === "execution" ? "koed:local-execution" : "koed:memory:read";
+      if (!principal.scopes.includes(required))
+        throw Object.assign(
+          new Error("Delegated Memory Answer scope is required"),
+          { statusCode: 403 }
+        );
+    }
+    if (requestedTeam && !allowTeam)
+      throw Object.assign(
+        new Error("Team Memory Answer permission is required"),
+        { statusCode: 403 }
+      );
+    return { user, ...restrict(allowTeam, true) };
+  };
+
   return {
+    authenticatedCredentialKind: (request) => authenticatedKinds.get(request),
+    authenticateMemoryAnswerTask,
     hashSecret,
+    resolveDelegatedPrincipal,
     resolveApiTokenUser,
     resolveDeviceCredentialContext,
     setSessionCookie,

@@ -1,10 +1,11 @@
 # Durable Memory Answer Execution
 
-Personal `memory_answer` calls use one durable execution path. PostgreSQL
-stores acceptance, lease, cancellation, retry, result, and retention state in
-`memory_answer_tasks`. The `koed-server`-supervised Local AI Runtime is the only
-task consumer and the only component allowed to invoke an AI Client for Answer
-Synthesis. The MCP Server and the Pi extension own presentation only. Pi's
+Personal and Team `memory_answer` calls use one durable execution path.
+PostgreSQL stores acceptance, lease, cancellation, retry, result, and retention
+state in `memory_answer_tasks`. For a Team Workspace request, the authoritative
+Team backend holds that record. The `koed-server`-supervised Local AI Runtime
+is the only task consumer and the only component allowed to invoke an AI Client
+for Answer Synthesis. The MCP Server and the Pi extension own presentation only. Pi's
 session-history receipts and the Codex Stop adapter's one-use receipts hold
 delivery identity, never task results or a second execution queue.
 
@@ -12,9 +13,11 @@ delivery identity, never task results or a second execution queue.
 
 1. An adapter forwards one validated `memory_answer` call and, when available,
    its host invocation identity to the loopback Local AI Runtime.
-2. The runtime accepts an encrypted Personal task through the authenticated
-   API. Admission locks the owner, enforces the configured durable backlog
-   bound transactionally, and only then inserts the task. Repeating the same
+2. The runtime accepts an encrypted task through the authenticated API. For
+   Personal Memory, this is the API of the User's backend. For a Team
+   Workspace, this is the API of the authoritative Team backend. Admission
+   locks the owner, enforces the configured durable backlog bound
+   transactionally, and only then inserts the task. Repeating the same
    owner, origin, and invocation identity returns the existing task even when
    the queue is full.
 3. The runtime scheduler claims due work with a lease and generation fence.
@@ -52,8 +55,8 @@ logs contain identifiers, state, attempts, fences, and bounded error codes but
 never queries, answers, evidence, caller paths, or provider payloads.
 
 `KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS` is one shared execution limit across
-durable Personal tasks and blocking Team/Desktop work; those paths cannot each
-consume the full limit independently. `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`
+durable Personal tasks, durable Team tasks, and blocking Desktop work. These
+paths cannot each consume the full limit independently. `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`
 limits both the per-owner durable accepted backlog and the remaining bounded
 in-process blocking queue. Durable lifecycle calls use the AI Client control
 rate-limit policy rather than consuming the ordinary memory-write allowance.
@@ -86,6 +89,15 @@ Every route below uses the same durable task and the shared delivery lifecycle
 described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
 of them exposes native MCP Tasks or a status tool to the model.
 
+The public MCP request can select `delivery_mode=blocking` or
+`delivery_mode=non_blocking` per call. Omitted and `auto` retain configured
+defaults. This preference belongs to presentation and is removed before the
+canonical execution request reaches the Local AI Runtime. Blocking Personal
+recall retains its runtime observer and the same durable task path; it creates
+no deferred adapter receipt. Requested mode does not change execution priority,
+authority, synthesis assignment, or capacity. See
+[per-call delivery selection](async-memory-answer.md#per-call-delivery-selection).
+
 - **Codex:** recall is deferred by default, except on Windows. Setup installs
   native Codex hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
   Desktop app were each tested separately; see
@@ -108,8 +120,8 @@ of them exposes native MCP Tasks or a status tool to the model.
   receipt promptly. The extension observes the task and delivers the result as
   a follow-up message that starts a turn. Matching pending receipts recover
   when the same Conversation reopens. Ephemeral sessions, single-shot print
-  and JSON runs, Koed Desktop-managed Pi Conversations, Team Workspace calls,
-  clients without the required Pi APIs, and
+  and JSON runs, Koed Desktop-managed Pi Conversations, clients without the
+  required Pi APIs, and
   `KOED_PI_MEMORY_ANSWER_MODE=blocking` use blocking recall. A completion that
   arrives during `/tree` navigation can be saved on the destination branch; see
   [asynchronous Memory Answer delivery](async-memory-answer.md#recovery-and-limits).
@@ -122,17 +134,56 @@ continuation as `unsupported` for Claude Code and `requires_bridge` for Codex
 and Pi. They do not yet reflect the opt-in Claude route or the default
 deferred delivery for Codex and Pi.
 
-Team Workspace Memory Answer remains on its existing blocking authority path.
-It must not create a local Personal task; asynchronous Team execution requires
-the upstream authority to own acceptance and terminal history atomically.
+## Team Workspace Execution
+
+Team Workspace Memory Answer uses the same task repository, scheduler, local
+synthesis worker, and delivery lifecycle as Personal Memory. Blocking and
+deferred delivery change only how the adapter presents the result, not how the
+task runs. Koed never creates a local Personal task for Team work.
+
+An executor is the Local AI Runtime that runs synthesis for a task. A Team
+request runs only when all of these conditions are true:
+
+- The authoritative Team backend advertises version 2 of `memory.answerTasks`
+  with Team support.
+- The executor has Team execution authority.
+- The Team Workspace, from `team_workspace_id` or the Project link, appears in
+  authorized Workspace discovery for the selected backend.
+
+An enrolled executor gets Team execution authority from the `--memory-answers`
+enrollment permission and the Team read permission. For the enrollment steps,
+see [manual control-plane commands](running-koed.md#manual-control-plane-commands).
+A delegated executor needs the local-execution scope and the Team-read scope.
+Personal API Tokens stay Personal-only.
+
+If one of these conditions is false, the runtime rejects the request before
+acceptance. Koed does not use blocking recall, Personal Memory, or evidence in
+the main agent context instead. If the running Local AI Runtime does not support
+Team tasks, the MCP Server returns an instruction to restart the runtime.
+
+At acceptance, the Team backend freezes the authorized Share Grant boundary for
+the task. Before decryption, lease renewal, completion, and result delivery,
+the Team backend makes sure that the current User, membership, Workspace access,
+and original grants are valid. New grants cannot expand the access of an
+accepted task.
+
+An executor claims a task to run it. By default, a claim takes only Personal
+work. A Team claim needs an explicit scope selector. A Team-only executor cannot
+claim Personal work.
+
+The Team backend saves the final Memory Question in the same transaction as the
+final task state. As a result, an attempt with an old generation cannot leave a
+completed history record. For the decision, see the Personal and Team Execution
+amendment in [ADR 0043](adr/0043-durable-memory-answer-execution.md) and
+[ADR 0056](adr/0056-delegated-remote-mcp-and-headless-local-execution.md).
 
 ## Runtime Contract
 
 The owner-authenticated loopback runtime exposes start, get, cancel, and an SSE
 stream for one task. Start validates and applies the Memory Answer input schema
-before eligibility checks; Team Workspace requests receive HTTP 409 with
-`memory_answer_team_ineligible`. A stream resolves ownership and retention
-before sending success headers. It emits current state first, then monotonic
+before eligibility checks. If a Team Workspace request has no authorized Team
+task route, start rejects it before acceptance. A stream resolves ownership and
+retention before sending success headers. It emits current state first, then monotonic
 task versions and keepalive comments, and honors `Last-Event-ID`. Every event
 and keepalive is backed by a fresh authorized read; expiry or revoked access
 ends the stream. These endpoints are harness/runtime plumbing,

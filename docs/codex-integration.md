@@ -56,6 +56,29 @@ turn use blocking recall. A missing pre-call hook uses blocking recall; a consum
 or invalid receipt fails instead of starting another task. Unsupported native
 subagent calls also retain blocking recall.
 
+For an individual call, `delivery_mode=blocking` bypasses deferred preparation
+and returns the completed MCP result. It does not consume the turn's deferred
+allowance. `delivery_mode=non_blocking` uses the Stop route when eligible;
+omitted and `auto` retain the configured default. A disabled integration is
+never enabled by this argument. Choose from the next action: independent
+diagnostics can overlap recall, but a decision that needs prior memory must
+wait. When independent work ends, reach the Stop boundary rather than running
+sleep tools or claiming the dependent task is complete.
+
+The receipt fingerprint binds canonical recall inputs and requested delivery
+mode. Omitted and `auto` are equivalent for matching; altering the mode does
+not allow a supplied nonce to bypass validation through blocking fallback.
+An unusable receipt store permits blocking only for calls without supplied
+receipt metadata. Update the MCP adapter and native hooks together. Receipts
+prepared with the older fingerprint fail closed rather than launching a new
+recall; pending delivery across that update is not guaranteed.
+
+Directory matching resolves existing filesystem aliases before comparing the
+hook and MCP caller. A logical path and its physical directory, including
+macOS `/var` and `/private/var`, identify the same Project for receipt matching.
+A different physical directory remains ineligible; session, turn, call,
+requested mode, and input fingerprints must still match exactly.
+
 Receipt files contain task and origin identities, not recalled results. A crash
 can leave a locked receipt that cannot recover delivery. Expired unlocked state
 is collected, but locked state is retained and the store is bounded. To repair
@@ -167,6 +190,11 @@ pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
 ```
 
 ## MCP Server
+
+For a remote backend without Electron or local backend services, use
+[Headless Remote MCP](headless-remote-mcp.md). Remote OAuth access is opt-in,
+uses explicit User consent, and retains a local background helper for capture
+and Personal synthesis work. The setup below describes the local stdio path.
 
 The MCP Server is the supported recall path. It lets Codex ask Koed for cited
 memory evidence. It is a thin MCP `2026-07-28` stdio adapter; it does not own

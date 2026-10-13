@@ -4,6 +4,32 @@ Use `.env.example` as the canonical Koed environment example. It is the starting
 
 The README Quickstart covers the basic bundled-local setup and packaged Desktop first-run. This page is the advanced reference for environment variables, runtime modes, external dependency URLs, and production settings.
 
+For an AI Client connected to an existing backend without local backend
+dependencies, see [Headless Remote MCP](headless-remote-mcp.md). That opt-in path
+does not use the local dependency setup below.
+
+## Remote MCP
+
+- `KOED_REMOTE_MCP_ENABLED`: exact `true` or `false`, default `false`. Enables
+  `/mcp` and its OAuth discovery, registration, consent, authorization, token,
+  and revocation routes. Disabled deployments do not mount those routes.
+- `KOED_REMOTE_MCP_PUBLIC_URL`: required when enabled. Canonical absolute HTTPS
+  resource URL with path `/mcp`, without credentials, query, or fragment.
+  Outside production, HTTP is accepted only for literal `127.0.0.1` or `[::1]`,
+  not `localhost`. The backend needs its persistent database-backed OAuth
+  repository. Requests use the canonical Host; browser Origins are limited to
+  configured CORS origins and this resource origin.
+
+The headless User profile stores non-secret integration configuration in
+`KOED_HOME/config/headless-remote.json` and OAuth credentials in the protected
+`KOED_HOME/config/remote-mcp-credentials.json` file. `remote start` forces
+future-only capture and disables historical ingestion regardless of
+`MEMORY_HISTORICAL_IMPORT_ENABLED`. Do not enable the internal
+`KOED_HEADLESS_FUTURE_CAPTURE_ONLY` setting manually to convert an existing
+local profile; use the consent-aware remote commands and a dedicated home.
+
+## Local Environment Setup
+
 For any local deployment, start by running:
 
 ```bash
@@ -693,7 +719,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_MANAGED_CONVERSATION_READ_RATE_LIMIT_MAX`: read-oriented managed Conversation requests allowed per managed Conversation window. The default is 1000. This independent bucket prevents background capture and import traffic from blocking launch options or active Conversation reads.
 - `API_MANAGED_CONVERSATION_WRITE_RATE_LIMIT_MAX`: write-oriented managed Conversation requests allowed per managed Conversation window. The default is 300. This independent bucket prevents background capture and import traffic from blocking Conversation start or control commands.
 - `API_SOURCE_JOURNAL_RATE_LIMIT_WINDOW_MS`: window for authenticated local conversation-source journal transfer. This workload has an independent bucket so first-run source replication cannot consume interactive Memory read/write capacity. The default is 60 seconds.
-- `API_SOURCE_JOURNAL_RATE_LIMIT_MAX`: local conversation-source journal requests allowed per journal window. The default is 10,000; the journal routes remain API-token authenticated and unavailable outside developer and Local Personal deployment profiles.
+- `API_SOURCE_JOURNAL_RATE_LIMIT_MAX`: conversation-source journal requests allowed per journal window. The default is 10,000. Ordinary API Token access remains limited to developer and Local Personal deployment profiles. An explicitly enabled remote MCP deployment also admits the appropriate scoped OAuth grants; it does not broaden hosted API Token access. Store journal payloads on an Operator-controlled encrypted volume and protect backups. See [Headless Remote MCP](headless-remote-mcp.md).
 - `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_RATE_LIMIT_STORE`: `memory` by default for direct/local runs; set `redis`
   to share API rate-limit counters across API replicas. The server/private-VPS
@@ -1161,8 +1187,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_HARD_TIMEOUT_MS`: hard ceiling for one local Memory Answer
   execution regardless of progress (default `1800000`).
 - `KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS`: shared maximum number of active
-  Memory Answer executions across durable Personal and blocking Team/Desktop
-  work. Default `2`.
+  Memory Answer executions across durable Personal tasks, durable Team tasks,
+  and blocking Desktop work. Default `2`.
 - `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`: per-owner maximum accepted
   durable Personal backlog and maximum in-process blocking backlog. Default
   `16`. Idempotent retries return their existing durable task even at the

@@ -6,6 +6,56 @@ the assigned AI Client to synthesize the answer, and saves the completed Memory
 Question. Presentation adapters observe that work and deliver it to the calling
 Conversation.
 
+## Per-call delivery selection
+
+The MCP and Pi `memory_answer` tools accept optional `delivery_mode` values `auto`,
+`blocking`, and `non_blocking`. Omitted and `auto` preserve the calling
+integration's configured default. `blocking` returns the ordinary completed
+tool result. `non_blocking` requests eligible deferred presentation and falls
+back to the ordinary result before accepting work when that route is unavailable.
+Neither mode changes execution capacity, priority, retrieval, or the assigned
+AI Client for Answer Synthesis.
+
+Choose based on the next planned action. Independent diagnostic reads can
+overlap recall even when the eventual fix depends on prior constraints. An
+immediate dependent decision, direct recall answer, or uncertain dependency
+should request blocking delivery. After a pending receipt, finish useful
+independent work and yield before the dependent action. Codex must reach its
+native Stop boundary; tools that sleep or manufacture work postpone that
+boundary. Do not poll, repeat recall in blocking mode, or claim the dependent
+task is complete. A missing or failed result leaves the prerequisite unresolved.
+
+Public adapter validation includes the delivery preference; the canonical
+execution request does not. The adapter strips it before forwarding either a
+blocking tool request or detached task acceptance, so older strict Local AI
+Runtime schemas retain their existing contract. Internal route diagnostics
+record normalized requested mode, effective route, and bounded fallback reason
+without memory content, credentials, or receipt nonces. Ordinary MCP delivery
+is recorded as `mcp_result`; this does not describe whether Claude's host
+backgrounds the call.
+
+### Validated scope and known gaps
+
+Native host checks covered delayed, fast, not-found, failed, interrupted,
+explicit-blocking, and fallback cases for each AI Client below. The
+`eval:memory-delivery:codex`, `eval:memory-delivery:pi`, and
+`eval:memory-delivery:claude` scripts in `packages/evals` reproduce them against
+synthetic task responses.
+
+- **Codex**: Stop-hook delivery through the real MCP factory and hook entry
+  point. The fixture selects MCP protocol 2026-07-28 explicitly.
+- **Pi**: follow-up delivery through the real extension runner and persistent
+  Conversations, including mixed, concurrent, and redelivered recalls.
+- **Claude Code**: print-host execution with the noninteractive
+  `CLAUDE_AUTO_BACKGROUND_TASKS=1` opt-in, which normal Koed setup does not
+  enable.
+
+These checks do not establish default MCP protocol negotiation, legacy-profile
+transport migration, the interactive Claude TUI, Claude IDE, subagent, or
+reopened-session behavior, Windows Codex Stop delivery, or managed
+Conversations. Configured blocking defaults and opt-outs remain in effect where
+delivery is unproven. `TODO.md` tracks the follow-up validation.
+
 ## Shared lifecycle
 
 `@koed/mcp-server/memory-answer-delivery` exports `MemoryAnswerDelivery` and its
@@ -26,11 +76,14 @@ original observation deadline, task expiry, cancellation signal and destination
 checks still apply. Throttling during the final authorized read cannot authorize
 delivery of the earlier result. Pi keeps its observer pending during throttling.
 
-Detached execution is available only for eligible Personal Memory requests.
-The runtime returns the stable `memory_answer_team_ineligible` code with HTTP
-409 before accepting an ineligible Team Memory request. Codex's automatic mode
-uses that code to select blocking recall with the original caller and input.
-Other conflicts or runtime failures do not trigger another recall.
+Personal and Team Memory requests use the same durable task, so both are
+eligible for deferred delivery. A Team request needs an authorized Team task
+route. For the conditions, see
+[Team Workspace execution](durable-memory-answer.md#team-workspace-execution).
+If the Team task route is unavailable or not authorized, the request fails
+before acceptance. Koed does not use blocking recall or Personal Memory instead.
+After an acceptance failure, Codex and Pi do not start another recall, because
+the runtime can already own the task.
 
 The Codex Stop adapter checks receipt ownership before acquiring its lock, then
 checks ownership again under the lock before claiming the result. An unrelated
@@ -115,7 +168,9 @@ A completion counts as delivered only when Pi saves it to the Conversation.
 Pi can drop a queued follow-up: Esc while the agent is busy, the dequeue
 action and `/tree` navigation clear the queue. Pi keeps a run going while its
 queue holds messages, so when the run settles the extension redelivers any
-completion that Pi did not save. Redelivery uses a fresh authorized task read
+completion that Pi did not save. A settle event that arrives while the
+observer is finishing enqueue is retained and handled when that observer
+finishes; recovery does not require a later agent turn. Redelivery uses a fresh authorized task read
 and appends the answer without starting a turn, so the agent does not restart
 after the User stops it; the model reads the answer on the next prompt. A late
 second copy of a saved completion is replaced by a short note. After three
@@ -128,9 +183,10 @@ the protected Local AI Runtime registration; credentials and results are not
 cached for delivery.
 
 `KOED_PI_MEMORY_ANSWER_MODE=blocking` retains blocking recall. Ephemeral sessions,
-single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, clients
-without the required Pi APIs, and Team Workspace calls also use the blocking
-route. The runtime remains authoritative about task eligibility.
+single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, and
+clients without the required Pi APIs also use the blocking route. Team Workspace
+calls use the same follow-up route as Personal calls. The runtime remains
+authoritative about task eligibility.
 At most 128 pending receipts are observed by one adapter.
 
 ## Recovery and limits

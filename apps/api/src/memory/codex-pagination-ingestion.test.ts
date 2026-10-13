@@ -111,7 +111,9 @@ const fixtureMessages = (rows: FixtureRow[]) => {
 describe.skipIf(!databaseUrl)(
   "Codex capture through API, journal and PostgreSQL",
   () => {
-    const pool = createDbPool({ connectionString: databaseUrl });
+    const pool = createDbPool({
+      connectionString: databaseUrl ?? "postgresql://localhost/postgres"
+    });
     beforeAll(() => runDbMigrations(pool), 60_000);
     afterAll(() => pool.end());
 

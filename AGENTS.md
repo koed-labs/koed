@@ -38,11 +38,16 @@ If you are making code changes, keep using the contributor guidance below.
 - Update documentation in `/docs` whenever a change affects service ordering, service boundaries, ingestion, Projection, LCM summarisation, retrieval, embedding, storage, or AI-client integration flow.
 - If a change does not require documentation updates, say so explicitly in the final response or PR description.
 
+## Scratch Files
+
+- Put temporary, uncommitted files under `scratch/` at the repository root. This includes throwaway scripts, investigation notes, test output, and local fixtures.
+- `scratch/` is gitignored. Do not commit its contents, and do not reference scratch files from committed code or docs.
+- Do not leave temporary files elsewhere in the working tree.
+
 ## Planning And TODOs
 
 - Put implementation follow-ups in `TODO.md`, not `CONTEXT.md`.
 - `TODO.md` is the current implementation backlog from the domain discussion. Check it before starting cleanup work.
-- If `TODO.md` is present, check it before starting cleanup work.
 - Current API-token behavior is personal-memory only.
 - Server-side LLM synthesis is out of scope for this self-hosted build. Do not add or revive backend LLM calls for answer or LCM summary synthesis.
 

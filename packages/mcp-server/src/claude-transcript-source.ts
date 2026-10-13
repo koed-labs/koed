@@ -172,6 +172,7 @@ export const journalClaudeTranscript = async (input: {
   parentComponentId: string | null;
   artifact?: SourceArtifact | null;
   historicalFrontierOffset?: number;
+  futureCaptureOnly?: boolean;
   maxAppendBytes?: number;
 }): Promise<SourceArtifact> => {
   const file = await stat(input.transcriptPath);
@@ -222,8 +223,12 @@ export const journalClaudeTranscript = async (input: {
       }),
       artifactFormat: "claude_session_jsonl",
       artifactFormatVersion: 1,
-      journalStartOffset: 0,
-      journalStartLine: 0,
+      journalStartOffset: input.futureCaptureOnly
+        ? input.index.activationOffset
+        : 0,
+      journalStartLine: input.futureCaptureOnly
+        ? input.index.activationLine
+        : 0,
       liveStartOffset: input.index.activationOffset,
       liveStartLine: input.index.activationLine,
       currentSourceLength: file.size,
@@ -238,7 +243,17 @@ export const journalClaudeTranscript = async (input: {
           : `${input.signal.sourceSessionId}/${input.componentId}.jsonl`
     });
     artifact = artifactValue(response);
-  } else if (artifact.providerCursorOffset > artifact.journalStartOffset) {
+  }
+  if (
+    input.futureCaptureOnly &&
+    (artifact.providerCursorOffset < input.index.activationOffset ||
+      artifact.journalStartOffset < input.index.activationOffset ||
+      (artifact.liveStartOffset ?? artifact.journalStartOffset) <
+        input.index.activationOffset)
+  ) {
+    throw new Error("claude_source_precedes_capture_consent");
+  }
+  if (artifact.providerCursorOffset > artifact.journalStartOffset) {
     if (file.size < artifact.providerCursorOffset) {
       throw new Error("claude_transcript_truncated");
     }

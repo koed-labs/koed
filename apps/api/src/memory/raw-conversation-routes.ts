@@ -2,7 +2,7 @@ import { verifyManagedJournalTerminal } from "@koed/db";
 import { createFilesystemConversationSourceStorage } from "./conversation-source-storage.js";
 import {
   readConversationSourceSegmentBytes,
-  requireLocalJournalSurface
+  requireConversationSourceJournalSurface
 } from "./conversation-source-journal-routes.js";
 import type { KoedWorkClass } from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -216,7 +216,7 @@ export const registerRawConversationRoutes = (
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const input = releaseManagedJournalProjectionSchema.parse(request.body);
       const actor = { userId: user.id };
       const artifact = await repo.getConversationSourceArtifact(
@@ -242,9 +242,11 @@ export const registerRawConversationRoutes = (
           { statusCode: 404 }
         );
       }
-      const storage = createFilesystemConversationSourceStorage(
-        context.config.koedHome
-      );
+      const storage = ["developer", "local_personal"].includes(
+        context.config.deploymentProfile
+      )
+        ? createFilesystemConversationSourceStorage(context.config.koedHome)
+        : undefined;
       const chunks: Uint8Array[] = [];
       let offset = 0;
       let line = 0;

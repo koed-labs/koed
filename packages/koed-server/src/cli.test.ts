@@ -295,6 +295,26 @@ describe("koed-server detached supervisor", () => {
 });
 
 describe("JSON command output", () => {
+  it("dispatches remote commands through the existing remote integration client", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    let dispatched: string[] | undefined;
+    const args = ["remote", "check", "codex", "--json"];
+    expect(
+      await runKoedServerCli(args, {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        runRemoteMcp: (remoteArgs, streams) => {
+          dispatched = remoteArgs;
+          expect(streams.stderr).toBe(stderr.stream);
+          streams.stdout.write('{"ok":true}\n');
+          return Promise.resolve(0);
+        }
+      })
+    ).toBe(0);
+    expect(dispatched).toEqual(["check", "codex", "--json"]);
+    expect(stdout.text()).toBe('{"ok":true}\n');
+  });
   it("prints lightweight startup status without collecting full status", async () => {
     const stdout = writer();
     let fullStatusCollected = false;
@@ -948,6 +968,7 @@ describe("JSON command output", () => {
               personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
+              memoryAnswerExecution: "disabled",
               shareGrantManagement: "disabled",
               captureWrites: "disabled",
               sync: "disabled",
@@ -1011,6 +1032,7 @@ describe("JSON command output", () => {
                 personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "disabled",
+                memoryAnswerExecution: "disabled",
                 shareGrantManagement: "disabled",
                 captureWrites: "disabled",
                 sync: "disabled",
@@ -1066,6 +1088,7 @@ describe("JSON command output", () => {
               personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
+              memoryAnswerExecution: "disabled",
               shareGrantManagement: "disabled",
               captureWrites: "disabled",
               sync: "disabled",
@@ -1161,6 +1184,7 @@ describe("JSON command output", () => {
                 personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "enabled",
+                memoryAnswerExecution: "disabled",
                 shareGrantManagement: "enabled",
                 captureWrites: "disabled",
                 sync: "disabled",
@@ -1276,6 +1300,41 @@ describe("JSON command output", () => {
       }
     });
   });
+
+  it.each(["--memory-answers", "--enable-memory-answers"])(
+    "passes explicit Memory Answer enrollment intent through %s",
+    async (flag) => {
+      const stdout = writer();
+      let requested: boolean | undefined;
+      expect(
+        await runKoedServerCli(
+          [
+            "upstream",
+            "enroll",
+            "start",
+            "--id",
+            "team-vps",
+            "--source-owner-principal-id",
+            "11111111-1111-4111-8111-111111111111",
+            flag,
+            "--json"
+          ],
+          {
+            stdout: stdout.stream,
+            startUpstreamEnroll: (_paths, _id, options) => {
+              requested = options?.memoryAnswers;
+              return Promise.resolve({
+                ok: true,
+                state: "pending",
+                message: "Await explicit browser approval."
+              });
+            }
+          }
+        )
+      ).toBe(0);
+      expect(requested).toBe(true);
+    }
+  );
 
   it("prints upstream enroll status --json", async () => {
     const stdout = writer();

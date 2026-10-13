@@ -325,6 +325,101 @@ const resolveMemoryAnswerWorkerTestConfig = (
   });
 
 describe("memory answer worker", () => {
+  it.each([
+    [
+      "OAuth refresh failed (401): invalid_refresh_token",
+      "provider_authentication_failure",
+      1
+    ],
+    ["Connection error", "provider_execution_failure", 2]
+  ] as const)(
+    "preserves safe Pi provider diagnostics and retry policy (%s)",
+    async (nativeError, expectedCode, expectedAttempts) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-pi-worker-error-")
+      );
+      try {
+        const executable = path.join(directory, "pi");
+        const attemptsPath = path.join(directory, "attempts");
+        const koedHome = path.join(directory, "koed-home");
+        const bridgeDir = path.join(
+          koedHome,
+          "integrations",
+          "pi",
+          "extensions"
+        );
+        fs.mkdirSync(bridgeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(bridgeDir, "structured-result.mjs"),
+          "export default () => {};\n"
+        );
+        fs.writeFileSync(
+          executable,
+          `#!/usr/bin/env node
+const fs = require("node:fs");
+process.stdin.once("data", () => {
+  fs.appendFileSync(${JSON.stringify(attemptsPath)}, "attempt\\n");
+  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: ${JSON.stringify(`${nativeError}; synthetic-private-provider-secret`)} } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+  setInterval(() => {}, 1000);
+});
+`
+        );
+        fs.chmodSync(executable, 0o700);
+        const response = await answerWithMemoryWorker(
+          { evidenceBundle: { query: "Synthetic decision?", evidence: [] } },
+          {
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              PATH: process.env.PATH,
+              MEMORY_ANSWER_PROVIDER: "pi",
+              MEMORY_ANSWER_MODEL: "test/model",
+              KOED_PI_EXECUTABLE: executable,
+              MEMORY_ANSWER_MAX_ATTEMPTS: "2"
+            }),
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                return { sourceItems: [] };
+              }
+            },
+            searchDomain: "global",
+            retrievalScope: "personal",
+            responseDetail: "internal"
+          }
+        );
+        expect(response.localMemoryWorker).toMatchObject({
+          provider: "pi",
+          usedFallback: true,
+          skippedReason: expectedCode
+        });
+        expect(
+          fs.readFileSync(attemptsPath, "utf8").trim().split("\n")
+        ).toHaveLength(expectedAttempts);
+        const publicResponse = compactMemoryAnswerPayload(
+          response,
+          "answer_only"
+        );
+        expect(publicResponse.localMemoryWorker.skippedReason).toBe(
+          expectedCode
+        );
+        if (expectedCode === "provider_authentication_failure")
+          expect(publicResponse.localMemoryWorker.displayMessage).toContain(
+            "Sign in again to Pi"
+          );
+        expect(JSON.stringify(response)).not.toContain(
+          "synthetic-private-provider-secret"
+        );
+        expect(JSON.stringify(publicResponse)).not.toContain(
+          "synthetic-private-provider-secret"
+        );
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("reports the configured Claude instance and Agent SDK transport", async () => {
     const config = {
       ...resolveMemoryAnswerWorkerConfig({

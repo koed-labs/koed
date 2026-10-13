@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runKoedServerCli } from "./cli.js";
 
+const serviceLoads = vi.hoisted(() => vi.fn());
+
 vi.mock("./start.js", () => {
+  serviceLoads();
   throw new Error("service start module loaded by lightweight CLI path");
 });
 
@@ -19,6 +22,7 @@ const writer = () => {
 };
 
 describe("lightweight CLI dispatch", () => {
+  beforeEach(() => serviceLoads.mockClear());
   it("does not fetch artifacts from help or lightweight status commands", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
@@ -58,6 +62,7 @@ describe("lightweight CLI dispatch", () => {
       action: "components install --component base"
     });
     expect(stdout.text()).not.toContain("ERR_MODULE_NOT_FOUND");
+    expect(serviceLoads).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -67,5 +72,18 @@ describe("lightweight CLI dispatch", () => {
     const stdout = writer();
     await runKoedServerCli(args, { stdout: stdout.stream });
     expect(stdout.text()).not.toContain("service start module loaded");
+  });
+
+  it("prints remote authorization and helper commands without service startup", async () => {
+    const stdout = writer();
+    expect(
+      await runKoedServerCli(["remote", "--help"], { stdout: stdout.stream })
+    ).toBe(0);
+    expect(stdout.text()).toContain(
+      "remote login --backend HTTPS_URL --consent [--local-runtime]"
+    );
+    expect(stdout.text()).toContain("remote start");
+    expect(stdout.text()).toContain("remote logout --consent --json");
+    expect(serviceLoads).not.toHaveBeenCalled();
   });
 });

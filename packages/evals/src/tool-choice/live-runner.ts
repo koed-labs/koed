@@ -1,12 +1,5 @@
 import { spawn } from "node:child_process";
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,15 +32,13 @@ const runsOverride = optionValue("--runs")
 const model =
   optionValue("--model") ??
   process.env.MEMORY_TOOL_CHOICE_MODEL ??
-  "gpt-5.4-mini";
+  "gpt-6.1-sol";
 const codexBinary =
   optionValue("--codex") ??
   process.env.MEMORY_CODEX_APP_SERVER_BINARY ??
   "codex";
 const outputPath = optionValue("--out");
 const keepTemp = args.includes("--keep-temp");
-const sourceCodexHome =
-  process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const fakeMcpServerPath = path.join(currentDirectory, "fake-memory-mcp.js");
@@ -93,41 +84,30 @@ const runCommand = (
     });
   });
 
-const copyCodexAuth = async (targetHome: string): Promise<void> => {
-  for (const filename of ["auth.json", ".credentials.json"]) {
-    const source = path.join(sourceCodexHome, filename);
-    if (fs.existsSync(source)) {
-      await copyFile(source, path.join(targetHome, filename));
-    }
-  }
-};
-
-const writeConfig = async (
-  codexHome: string,
+const fixtureConfigArguments = (
   logPath: string,
   fakeMemoryAnswer: (typeof toolChoiceCases)[number]["fakeMemoryAnswer"]
-): Promise<void> => {
-  await writeFile(
-    path.join(codexHome, "config.toml"),
-    [
-      `model = ${JSON.stringify(model)}`,
-      `approval_policy = "never"`,
-      "",
-      "[mcp_servers.koed_tool_choice_eval]",
-      `command = "node"`,
-      `args = [${JSON.stringify(fakeMcpServerPath)}]`,
-      "enabled = true",
-      "required = true",
-      `default_tools_approval_mode = "approve"`,
-      "",
-      "[mcp_servers.koed_tool_choice_eval.env]",
-      `TOOL_CHOICE_LOG_PATH = ${JSON.stringify(logPath)}`,
-      `TOOL_CHOICE_FAKE_MEMORY_ANSWER = ${JSON.stringify(
-        JSON.stringify(fakeMemoryAnswer)
-      )}`
-    ].join("\n")
-  );
-};
+): string[] => [
+  // Isolate the fixture configuration while preserving normal credential custody.
+  // No home override or credential copy is needed on the supported host.
+  "--ignore-user-config",
+  "--enable",
+  "mcp_2026_07_28",
+  "-c",
+  'approval_policy="never"',
+  "-c",
+  'mcp_servers.koed_tool_choice_eval.command="node"',
+  "-c",
+  `mcp_servers.koed_tool_choice_eval.args=[${JSON.stringify(fakeMcpServerPath)}]`,
+  "-c",
+  "mcp_servers.koed_tool_choice_eval.enabled=true",
+  "-c",
+  "mcp_servers.koed_tool_choice_eval.required=true",
+  "-c",
+  'mcp_servers.koed_tool_choice_eval.default_tools_approval_mode="approve"',
+  "-c",
+  `mcp_servers.koed_tool_choice_eval.env={CODEX_MCP_PROTOCOL_VERSION="2026-07-28",TOOL_CHOICE_LOG_PATH=${JSON.stringify(logPath)},TOOL_CHOICE_FAKE_MEMORY_ANSWER=${JSON.stringify(JSON.stringify(fakeMemoryAnswer))}}`
+];
 
 const parseToolCalls = async (logPath: string): Promise<ToolChoiceCall[]> => {
   if (!fs.existsSync(logPath)) {
@@ -154,14 +134,17 @@ const runOne = async (
   runIndex: number
 ): Promise<ToolChoiceRunInput> => {
   const root = await mkdtemp(path.join(os.tmpdir(), "koed-tool-choice-"));
-  const codexHome = path.join(root, "codex-home");
   const workspace = path.join(root, "workspace");
   const logPath = path.join(root, "tool-calls.jsonl");
   const outputLastMessagePath = path.join(root, "last-message.txt");
-  await mkdir(codexHome, { recursive: true, mode: 0o700 });
   await mkdir(workspace, { recursive: true });
-  await copyCodexAuth(codexHome);
-  await writeConfig(codexHome, logPath, benchmarkCase.fakeMemoryAnswer);
+  for (const [filename, content] of Object.entries(
+    benchmarkCase.workspaceFiles ?? {}
+  )) {
+    if (path.basename(filename) !== filename)
+      throw new Error("Tool-choice fixture files must be workspace basenames");
+    await writeFile(path.join(workspace, filename), content);
+  }
 
   try {
     const prompt = benchmarkCase.prompt;
@@ -169,6 +152,7 @@ const runOne = async (
       codexBinary,
       [
         "exec",
+        ...fixtureConfigArguments(logPath, benchmarkCase.fakeMemoryAnswer),
         "--json",
         "--ephemeral",
         "--skip-git-repo-check",
@@ -184,15 +168,7 @@ const runOne = async (
       ],
       {
         cwd: workspace,
-        env: {
-          ...process.env,
-          HOME: root,
-          USERPROFILE: root,
-          XDG_CONFIG_HOME: path.join(root, "xdg-config"),
-          XDG_CACHE_HOME: path.join(root, "xdg-cache"),
-          XDG_DATA_HOME: path.join(root, "xdg-data"),
-          CODEX_HOME: codexHome
-        },
+        env: { ...process.env },
         timeoutMs: 180_000
       }
     );

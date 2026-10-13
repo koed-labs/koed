@@ -22,6 +22,38 @@ const PI_RPC_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const PI_RPC_DIAGNOSTIC_EVENT_BYTES = 256 * 1024;
 const PI_RPC_DIAGNOSTIC_EVENTS = 64;
 
+const piProviderFailure = (message: unknown): Error => {
+  const authenticationFailure =
+    typeof message === "string" &&
+    /invalid_refresh_token|invalid_api_key|authentication|unauthori[sz]ed|\b401\b|oauth.*(?:refresh|token)/i.test(
+      message
+    );
+  return Object.assign(
+    new Error(
+      authenticationFailure
+        ? "Pi provider authentication failed. Sign in again to Pi for the selected provider."
+        : "Pi provider request failed. Check the selected provider and model configuration."
+    ),
+    {
+      memoryAnswerTaskErrorCode: authenticationFailure
+        ? "provider_authentication_failure"
+        : "provider_execution_failure",
+      retryable: !authenticationFailure
+    }
+  );
+};
+
+const piDiagnosticMessage = (value: unknown): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const message = value as Record<string, unknown>;
+  return message.role === "assistant" && message.stopReason === "error"
+    ? {
+        ...message,
+        errorMessage: piProviderFailure(message.errorMessage).message
+      }
+    : value;
+};
+
 const numericVersion = (value: string): number[] | null => {
   const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:\D|$)/);
   return match ? match.slice(1).map(Number) : null;
@@ -545,6 +577,7 @@ export const runPiRpcTask = async (
   let settled = false;
   let finished = false;
   let resultValue: unknown;
+  let providerFailure: Error | undefined;
   let actualModel = config.model;
   const done = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -602,7 +635,25 @@ export const runPiRpcTask = async (
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
           config.onProgress?.("Pi provider activity");
-          events.push(event);
+          const message = event.message as Record<string, unknown> | undefined;
+          const retryDiagnostics: Record<string, string> = {};
+          if (
+            event.type === "auto_retry_start" ||
+            event.type === "auto_retry_end"
+          ) {
+            for (const key of ["errorMessage", "finalError", "error"]) {
+              if (key in event)
+                retryDiagnostics[key] = piProviderFailure(event[key]).message;
+            }
+          }
+          events.push({
+            ...event,
+            ...retryDiagnostics,
+            ...(message ? { message: piDiagnosticMessage(message) } : {}),
+            ...(Array.isArray(event.messages)
+              ? { messages: event.messages.map(piDiagnosticMessage) }
+              : {})
+          });
           eventSizes.push(record.length);
           eventBytes += record.length;
           while (
@@ -612,13 +663,17 @@ export const runPiRpcTask = async (
             events.shift();
             eventBytes -= eventSizes.shift() ?? 0;
           }
-          const message = event.message as Record<string, unknown> | undefined;
           if (
             message?.role === "assistant" &&
             typeof message.provider === "string" &&
             typeof message.model === "string"
           )
             actualModel = `${message.provider}/${message.model}`;
+          if (event.type === "message_end" && message?.role === "assistant")
+            providerFailure =
+              message.stopReason === "error"
+                ? piProviderFailure(message.errorMessage)
+                : undefined;
           if (
             event.type === "tool_execution_end" &&
             event.toolName === "koed_structured_result"
@@ -644,7 +699,10 @@ export const runPiRpcTask = async (
       if (!settled && code !== 0)
         finish(new Error(`Pi RPC exited with code ${code}: ${stderr.trim()}`));
       else if (resultValue === undefined)
-        finish(new Error("Pi RPC completed without structured result"));
+        finish(
+          providerFailure ??
+            new Error("Pi RPC completed without structured result")
+        );
       else finish();
     });
     child.stdin.write(

@@ -68,6 +68,7 @@ describe("Team collaboration feature switch", () => {
       "/v1/high-risk/action-grants",
       "/v1/local-edge/device-enrollments/challenges",
       "/v1/local-edge/team-memory/answer",
+      "/v1/local-edge/memory-answer-tasks/get",
       "/v1/retention/teams/sensitive-team-id/deletion-request",
       "/v1/shared-memory/pending-shares",
       "/v1/team-context",
@@ -336,6 +337,12 @@ describe("Team collaboration feature switch", () => {
     });
     expect(capabilities.auth.apiTokens).toBe("available");
     expect(capabilities.auth.deviceEnrollment).toBe("unavailable");
+    expect(capabilities.capabilities["memory.answerTasks"]).toMatchObject({
+      availability: "available",
+      version: 2,
+      supportedScopes: ["personal"],
+      requiresAuthentication: true
+    });
     expect(
       capabilities.capabilities["memory.collaboration"]?.endpoints
     ).toBeUndefined();
@@ -347,6 +354,21 @@ describe("Team collaboration feature switch", () => {
         "/v1/collaboration/personal/threads",
         "/v1/collaboration/realtime/snapshot"
       ])
+    });
+  });
+
+  it("advertises both durable answer scopes on an enabled Team backend", () => {
+    const capabilities = buildCapabilitiesResponse({
+      deploymentProfile: "team_self_hosted",
+      runtimeMode: "external",
+      dependencyMode: "external",
+      teamCollaborationEnabled: true
+    });
+    expect(capabilities.capabilities["memory.answerTasks"]).toMatchObject({
+      availability: "available",
+      version: 2,
+      supportedScopes: ["personal", "team"],
+      requiresAuthentication: true
     });
   });
 

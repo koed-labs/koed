@@ -9,6 +9,38 @@ const now = new Date("2026-09-10T12:00:00.000Z");
 const parseJson = (value: unknown): unknown =>
   JSON.parse(String(value)) as unknown;
 
+interface TaskFixtureRow {
+  id: string;
+  owner_user_id: string;
+  team_workspace_id: string | null;
+  team_authorization: Record<string, unknown> | null;
+  origin: string;
+  invocation_key: string | null;
+  request_snapshot: Record<string, unknown>;
+  result_snapshot: Record<string, unknown> | null;
+  question_id: string | null;
+  status: string;
+  status_message: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  available_at: Date;
+  lease_owner: string | null;
+  lease_until: Date | null;
+  fence_generation: number;
+  cancel_requested_at: Date | null;
+  cancelled_at: Date | null;
+  started_at: Date | null;
+  last_progress_at: Date | null;
+  completed_at: Date | null;
+  failed_at: Date | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  version: number;
+  expires_at: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
 const taskRow = (input: {
   id: string;
   ownerId: string;
@@ -16,9 +48,11 @@ const taskRow = (input: {
   invocationKey?: string | null;
   requestSnapshot?: Record<string, unknown>;
   status?: string;
-}) => ({
+}): TaskFixtureRow => ({
   id: input.id,
   owner_user_id: input.ownerId,
+  team_workspace_id: null,
+  team_authorization: null,
   origin: input.origin ?? "mcp",
   invocation_key: input.invocationKey ?? null,
   request_snapshot: input.requestSnapshot ?? {},
@@ -138,7 +172,114 @@ class AcceptPool {
   }
 }
 
+class OwnedTaskPool extends AcceptPool {
+  readonly statements: string[] = [];
+  constructor(readonly row: TaskFixtureRow) {
+    super();
+  }
+  override async query<T extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    values: unknown[] = []
+  ): Promise<pg.QueryResult<T>> {
+    const sql = text.replace(/\s+/g, " ").trim();
+    this.statements.push(sql);
+    if (
+      sql.startsWith("select") &&
+      sql.includes("from memory_answer_tasks") &&
+      sql.includes("where id = $2")
+    ) {
+      return { rows: [this.row], rowCount: 1 } as unknown as pg.QueryResult<T>;
+    }
+    return super.query<T>(text, values);
+  }
+}
+
 describe("Memory Answer task repository", () => {
+  it("keeps Team-only execution credentials out of Personal tasks", async () => {
+    const row = taskRow({ id: randomUUID(), ownerId });
+    const pool = new OwnedTaskPool(row);
+    const repository = createMemoryAnswerTaskRepository(
+      pool as unknown as pg.Pool
+    );
+    await expect(
+      repository.getMemoryAnswerTask(
+        { userId: ownerId, allowPersonal: false, allowTeam: true },
+        row.id
+      )
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(pool.statements.at(-1)).toBe("rollback");
+  });
+  it("requires trusted Team capability before reading owner-private Team payloads", async () => {
+    const row = {
+      ...taskRow({ id: randomUUID(), ownerId }),
+      team_workspace_id: randomUUID(),
+      team_authorization: { version: 1 },
+      result_snapshot: { contentEncrypted: true }
+    };
+    const pool = new OwnedTaskPool(row);
+    const repository = createMemoryAnswerTaskRepository(
+      pool as unknown as pg.Pool
+    );
+    await expect(
+      repository.getMemoryAnswerTask({ userId: ownerId }, row.id)
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(pool.statements.at(-1)).toBe("rollback");
+  });
+
+  it("rejects Team acceptance without trusted credential capability", async () => {
+    const pool = new AcceptPool();
+    const repository = createMemoryAnswerTaskRepository(
+      pool as unknown as pg.Pool,
+      {
+        envelopeEncryptionProvider:
+          createLocalTestKeyEnvelopeEncryptionProvider(
+            randomBytes(32).toString("base64url")
+          )
+      }
+    );
+    await expect(
+      repository.acceptMemoryAnswerTask(
+        { userId: ownerId },
+        {
+          origin: "mcp",
+          teamWorkspaceId: randomUUID(),
+          request: { input: { query: "question" } },
+          maxQueued: 16
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("ignores stale completion fences without writing final history", async () => {
+    const row = {
+      ...taskRow({ id: randomUUID(), ownerId, status: "running" }),
+      lease_owner: "live-worker",
+      fence_generation: 2
+    };
+    const pool = new OwnedTaskPool(row);
+    const repository = createMemoryAnswerTaskRepository(
+      pool as unknown as pg.Pool
+    );
+    expect(
+      await repository.completeMemoryAnswerTask(
+        { userId: ownerId },
+        {
+          taskId: row.id,
+          leaseOwner: "stale-worker",
+          fenceGeneration: 1,
+          finalQuestion: {
+            idempotencyKey: "final",
+            query: "question",
+            searchDomain: "global",
+            status: "answered",
+            answerMarkdown: "answer"
+          },
+          result: {}
+        }
+      )
+    ).toBeNull();
+    expect(pool.statements.at(-1)).toBe("rollback");
+  });
   it("accepts an idempotent owner task without storing request plaintext", async () => {
     const pool = new AcceptPool();
     const repository = createMemoryAnswerTaskRepository(

@@ -29,9 +29,11 @@ import {
   startLocalAiRuntime,
   type LocalAiRuntimeToolExecutor
 } from "../src/local-runtime-server.js";
-import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
+import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
+import { logger } from "../src/logger.js";
 const pairs: { client: Client; server: StdioServerHandle; home: string }[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const p of pairs.splice(0)) {
     await p.client.close();
     await p.server.close();
@@ -63,7 +65,8 @@ async function connect(
   const runtime = {
     capabilities: async () => ({
       protocolVersion: 1,
-      curatedMemoryIntakeAvailable: false
+      curatedMemoryIntakeAvailable: false,
+      memoryAnswerTeamBackendAvailable: true
     }),
     callTool,
     startMemoryAnswerTask: start
@@ -105,10 +108,13 @@ async function connect(
     },
     "mcp__koed__memory_answer"
   );
-  const input = (
-    prepared.hookSpecificOutput as { updatedInput: Record<string, unknown> }
-  ).updatedInput;
-  return { client, start, callTool, input };
+  const input =
+    (
+      prepared.hookSpecificOutput as
+        | { updatedInput: Record<string, unknown> }
+        | undefined
+    )?.updatedInput ?? toolInput;
+  return { client, start, callTool, input, store };
 }
 const metadata = {
   sessionId: "session-1",
@@ -117,6 +123,152 @@ const metadata = {
   "x-codex-turn-metadata": { turn_id: "turn-1", thread_source: "user" }
 };
 describe("maintained MCP dispatch deferred recall boundary", () => {
+  it.each([undefined, "auto", "non_blocking"])(
+    "uses eligible Stop delivery and strips presentation inputs: %s",
+    async (deliveryMode) => {
+      const f = await connect(true, undefined, {
+        query: "decision",
+        ...(deliveryMode === undefined ? {} : { delivery_mode: deliveryMode })
+      });
+      const result = await f.client.callTool({
+        name: "memory_answer",
+        arguments: f.input,
+        _meta: metadata
+      });
+      expect(result.structuredContent).toMatchObject({ status: "pending" });
+      expect(f.start).toHaveBeenCalledTimes(1);
+      expect(memoryAnswerInputSchema.parse(f.start.mock.calls[0]![0])).toEqual(
+        f.start.mock.calls[0]![0]
+      );
+      expect(f.start.mock.calls[0]![0]).not.toHaveProperty("delivery_mode");
+      expect(f.callTool).not.toHaveBeenCalled();
+    }
+  );
+  it("blocks explicitly without preparing a receipt or using the deferred turn allowance", async () => {
+    const report = vi.spyOn(logger, "info");
+    const f = await connect(true, undefined, {
+      query: "decision",
+      delivery_mode: "blocking"
+    });
+    expect(f.input).not.toHaveProperty(CODEX_DELIVERY_NONCE);
+    const result = await f.client.callTool({
+      name: "memory_answer",
+      arguments: f.input,
+      _meta: metadata
+    });
+    expect(result.isError).not.toBe(true);
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.callTool).toHaveBeenCalledTimes(1);
+    expect(f.callTool.mock.calls[0]![1]).toEqual(
+      canonicalCodexMemoryInput(f.input)
+    );
+    expect(report).toHaveBeenCalledWith(
+      {
+        memoryAnswerDelivery: {
+          requestedMode: "blocking",
+          effectiveRoute: "mcp_result",
+          fallbackReason: null
+        }
+      },
+      "Memory Answer delivery route"
+    );
+    const prepared = f.store.prepare(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "session-1",
+        turn_id: "turn-1",
+        tool_use_id: "call-2",
+        tool_name: "mcp__koed__memory_answer",
+        cwd: "/fixture",
+        tool_input: { query: "next decision", delivery_mode: "non_blocking" }
+      },
+      "mcp__koed__memory_answer"
+    );
+    const nextInput = (
+      prepared.hookSpecificOutput as { updatedInput: Record<string, unknown> }
+    ).updatedInput;
+    expect(nextInput[CODEX_DELIVERY_NONCE]).toBeDefined();
+    await f.client.callTool({
+      name: "memory_answer",
+      arguments: nextInput,
+      _meta: { ...metadata, callId: "call-2" }
+    });
+    expect(f.start).toHaveBeenCalledTimes(1);
+    expect(f.callTool).toHaveBeenCalledTimes(1);
+  });
+  it("rejects a changed mode before falling back to blocking", async () => {
+    const f = await connect(true, undefined, {
+      query: "decision",
+      delivery_mode: "non_blocking"
+    });
+    const result = await f.client.callTool({
+      name: "memory_answer",
+      arguments: { ...f.input, delivery_mode: "blocking" },
+      _meta: metadata
+    });
+    expect(result.isError).toBe(true);
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.callTool).not.toHaveBeenCalled();
+    await f.client.callTool({
+      name: "memory_answer",
+      arguments: f.input,
+      _meta: metadata
+    });
+    expect(f.start).toHaveBeenCalledTimes(1);
+  });
+  it("binds omitted and explicit auto equivalently", async () => {
+    const f = await connect();
+    const result = await f.client.callTool({
+      name: "memory_answer",
+      arguments: { ...f.input, delivery_mode: "auto" },
+      _meta: metadata
+    });
+    expect(result.structuredContent).toMatchObject({ status: "pending" });
+    expect(f.start).toHaveBeenCalledTimes(1);
+  });
+  it.each(["invalid", null, 1])(
+    "rejects an invalid mode without any execution: %s",
+    async (deliveryMode) => {
+      const f = await connect();
+      const result = await f.client.callTool({
+        name: "memory_answer",
+        arguments: { query: "decision", delivery_mode: deliveryMode },
+        _meta: metadata
+      });
+      expect(result.isError).toBe(true);
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.callTool).not.toHaveBeenCalled();
+    }
+  );
+  it.each(["auto", "blocking", "non_blocking"])(
+    "retains ordinary MCP delivery on disabled integrations: %s",
+    async (deliveryMode) => {
+      const report = vi.spyOn(logger, "info");
+      const f = await connect(false);
+      const result = await f.client.callTool({
+        name: "memory_answer",
+        arguments: { query: "PRIVATE_QUERY", delivery_mode: deliveryMode }
+      });
+      expect(result.isError).not.toBe(true);
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.callTool).toHaveBeenCalledTimes(1);
+      expect(
+        memoryAnswerInputSchema.parse(f.callTool.mock.calls[0]![1])
+      ).toEqual(f.callTool.mock.calls[0]![1]);
+      expect(report).toHaveBeenCalledWith(
+        {
+          memoryAnswerDelivery: {
+            requestedMode: deliveryMode,
+            effectiveRoute: "mcp_result",
+            fallbackReason:
+              deliveryMode === "blocking" ? null : "integration_disabled"
+          }
+        },
+        "Memory Answer delivery route"
+      );
+      expect(JSON.stringify(report.mock.calls)).not.toContain("PRIVATE_QUERY");
+    }
+  );
   it("admits only opt-in transport nonce and propagates native _meta to exact binding", async () => {
     const f = await connect();
     const result = await f.client.callTool({
@@ -178,13 +330,24 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
     pairs.push({ client, server, home });
     const result = await client.callTool({
       name: "memory_answer",
-      arguments: { query: "decision", [CODEX_DELIVERY_NONCE]: "a".repeat(64) },
+      arguments: { query: "decision", delivery_mode: "non_blocking" },
       _meta: metadata
     });
     expect(result.isError).not.toBe(true);
     expect(start).not.toHaveBeenCalled();
     expect(callTool).toHaveBeenCalledTimes(1);
     expect(callTool.mock.calls[0]![1]).not.toHaveProperty(CODEX_DELIVERY_NONCE);
+    const invalidReceipt = await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "decision",
+        delivery_mode: "blocking",
+        [CODEX_DELIVERY_NONCE]: "a".repeat(64)
+      },
+      _meta: metadata
+    });
+    expect(invalidReceipt.isError).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(1);
   });
   it("default schema never admits adapter nonce and preserves ordinary blocking", async () => {
     const f = await connect(false);
@@ -239,30 +402,30 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
       CODEX_DELIVERY_NONCE
     );
   });
-  it("authoritative Team-ineligible409 preserves blocking on same canonical caller/input", async () => {
-    const f = await connect();
-    f.start.mockRejectedValueOnce(
-      new LocalAiRuntimeError(
-        "Team Workspace Memory Answer does not support detached tasks",
-        409,
-        "memory_answer_team_ineligible"
-      )
-    );
-    await f.client.callTool({
+  it("accepts authorized Team recall through native durable delivery", async () => {
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const f = await connect(true, undefined, {
+      query: "decision",
+      search_domain: "global",
+      team_workspace_id: workspace,
+      team_backend_id: "remote"
+    });
+    const result = await f.client.callTool({
       name: "memory_answer",
       arguments: f.input,
       _meta: metadata
     });
     expect(f.start).toHaveBeenCalledTimes(1);
-    expect(f.callTool).toHaveBeenCalledTimes(1);
-    expect(f.callTool.mock.calls[0]![1]).toEqual(f.start.mock.calls[0]![0]);
+    expect(result.structuredContent).toMatchObject({ status: "pending" });
+    expect(f.start.mock.calls[0]?.[0]).toMatchObject({
+      team_workspace_id: workspace,
+      team_backend_id: "remote"
+    });
+    expect(f.callTool).not.toHaveBeenCalled();
   });
   it.each([
     new LocalAiRuntimeError("uncertain start", 409),
-    new LocalAiRuntimeError(
-      "Team Workspace Memory Answer does not support detached tasks",
-      409
-    ),
+    new LocalAiRuntimeError("Team Workspace access denied", 403),
     new Error("network start failure")
   ])(
     "uncertain start failure does not fall back or resubmit a consumed nonce: %s",
@@ -285,7 +448,7 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
   );
 
   it.each(["mapped-team", "untrusted-conflict"] as const)(
-    "uses authoritative HTTP classification only for preacceptance Team fallback: %s",
+    "preserves authoritative task admission and rejects unavailable routes: %s",
     async (mode) => {
       const home = mkdtempSync(path.join(os.tmpdir(), "koed-team-dispatch-"));
       const environment = {
@@ -313,17 +476,12 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
       const accept = vi.fn(async () => {
         throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE"), {
           status: 409,
-          code: "memory_answer_team_ineligible"
+          statusCode: 409
         });
       });
-      let eligible: ReturnType<
-        typeof vi.fn<MemoryToolExecutor["durableMemoryAnswerEligible"]>
-      >;
       const runtime = await startLocalAiRuntime({
         environment,
         serviceFactory: async ({ apiClient }) => {
-          const executor = new MemoryToolExecutor(apiClient, environment);
-          eligible = vi.fn(executor.durableMemoryAnswerEligible.bind(executor));
           apiClient.acceptMemoryAnswerTask = accept;
           apiClient.claimMemoryAnswerTask = vi.fn(async () => ({
             task: null,
@@ -338,8 +496,7 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
                 curatedMemoryIntakeAvailable: false
               }),
               execute,
-              executeMemoryAnswerTask,
-              durableMemoryAnswerEligible: eligible
+              executeMemoryAnswerTask
             },
             close: vi.fn(async () => undefined)
           };
@@ -361,21 +518,12 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
           _meta: metadata
         });
         expect(executeMemoryAnswerTask).not.toHaveBeenCalled();
+        expect(result.isError).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
         if (mode === "mapped-team") {
-          expect(result.isError).not.toBe(true);
           expect(accept).not.toHaveBeenCalled();
-          expect(execute).toHaveBeenCalledTimes(1);
-          const [tool, blockingInput, blockingCaller] = execute.mock.calls[0]!;
-          expect(tool).toBe("memory_answer");
-          expect(blockingInput).toEqual(canonicalCodexMemoryInput(input));
-          expect(blockingCaller).toEqual(eligible!.mock.calls[0]![1]);
-          expect(eligible!.mock.calls[0]![0]).toEqual(
-            canonicalCodexMemoryInput(input)
-          );
         } else {
-          expect(result.isError).toBe(true);
           expect(accept).toHaveBeenCalledTimes(1);
-          expect(execute).not.toHaveBeenCalled();
           expect(JSON.stringify(result)).not.toContain(
             "PRIVATE_PROVIDER_MESSAGE"
           );

@@ -3,7 +3,8 @@ import {
   conversationSourceArtifactLookupSchema,
   conversationSourceArtifactSchema,
   conversationSourceCursorSchema,
-  conversationSourceGenerationLookupSchema
+  conversationSourceGenerationLookupSchema,
+  conversationSourceSuccessorGenerationSchema
 } from "./conversation-source-journal-schemas.js";
 
 const artifact = {
@@ -29,6 +30,37 @@ const artifact = {
 } as const;
 
 describe("conversation source journal component schemas", () => {
+  it("accepts only a non-backfilled Pi Capture Pause resume frontier", () => {
+    const input = {
+      expectedParentClosureHash: "a".repeat(64),
+      sourceGenerationId: "11111111-1111-4111-8111-111111111111",
+      originKeyId: "22222222-2222-4222-8222-222222222222",
+      sourceRewrite: {
+        kind: "pi_capture_resume",
+        journalStartOffset: 200,
+        journalStartLine: 4,
+        liveStartOffset: 200,
+        liveStartLine: 4,
+        currentSourceLength: 300,
+        prefixDigest: "b".repeat(64)
+      }
+    };
+    expect(conversationSourceSuccessorGenerationSchema.parse(input)).toEqual(
+      input
+    );
+    for (const sourceRewrite of [
+      { ...input.sourceRewrite, journalStartOffset: 100 },
+      { ...input.sourceRewrite, journalStartLine: 3 },
+      { ...input.sourceRewrite, currentSourceLength: 199 },
+      { ...input.sourceRewrite, redactedSourceLabel: "rollout-test.jsonl" }
+    ])
+      expect(
+        conversationSourceSuccessorGenerationSchema.safeParse({
+          ...input,
+          sourceRewrite
+        }).success
+      ).toBe(false);
+  });
   it("accepts canonical paginated checkpoint initialization at its live boundary", () => {
     const checkpoint = {
       consumerKind: "canonical_live",

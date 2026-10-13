@@ -202,7 +202,7 @@ const updateRegistry = (
 
 const validateBackendCapabilities = async (
   paths: ReturnType<typeof tempPaths>,
-  options: { collaboration?: boolean } = {}
+  options: { collaboration?: boolean; memoryAnswers?: boolean } = {}
 ) => {
   await refreshUpstreamBackendCapabilities(paths, "team-vps", {
     now: () => new Date("2026-01-01T00:00:00.000Z"),
@@ -212,16 +212,26 @@ const validateBackendCapabilities = async (
         apiVersion: "v1",
         capabilitySchemaVersion: 9,
         deployment: { profile: "team_self_hosted" },
-        capabilities:
-          options.collaboration === false
+        capabilities: {
+          ...(options.collaboration === false
             ? {}
-            : { "memory.collaboration": { availability: "partial" } }
+            : { "memory.collaboration": { availability: "partial" } }),
+          ...(options.memoryAnswers
+            ? {
+                "memory.answerTasks": {
+                  availability: "available",
+                  version: 2,
+                  supportedScopes: ["personal", "team"]
+                }
+              }
+            : {})
+        }
       })
   });
 };
 
 const registerValidatedBackend = async (
-  options: { collaboration?: boolean } = {}
+  options: { collaboration?: boolean; memoryAnswers?: boolean } = {}
 ) => {
   const paths = tempPaths();
   registerUpstreamBackend(paths, {
@@ -250,6 +260,193 @@ afterEach(() => {
 });
 
 describe("upstream enrollment orchestration", () => {
+  it("keeps Team read enrollment read-only unless Memory Answers are explicitly requested", async () => {
+    const paths = await registerValidatedBackend({ memoryAnswers: true });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      sync: "enabled"
+    });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(started.ok, started.message).toBe(true);
+    expect(started.enrollment?.requestedOperationFamilies).toEqual([
+      "team_workspace_read",
+      "team_chat_read",
+      "team_chat_write",
+      "sync"
+    ]);
+    expect(started.backend?.routePolicy.memoryAnswerExecution).toBe("disabled");
+  });
+
+  it("stages explicit Memory Answer consent and enables execution only after upstream approval", async () => {
+    const paths = await registerValidatedBackend({ memoryAnswers: true });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      sync: "enabled",
+      managedExecution: "disabled"
+    });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      memoryAnswers: true,
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(started.ok, started.message).toBe(true);
+    expect(started.enrollment?.requestedOperationFamilies).toEqual([
+      "team_workspace_read",
+      "memory_answer_execution",
+      "team_chat_read",
+      "team_chat_write",
+      "sync"
+    ]);
+    expect(started.backend?.routePolicy.memoryAnswerExecution).toBe("disabled");
+    const approved = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(approved.ok, approved.message).toBe(true);
+    expect(approved.state).toBe("exchanged");
+    const registry = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
+    expect(registry.backends[0]?.routePolicy).toMatchObject({
+      teamWorkspaceRead: "enabled",
+      memoryAnswerExecution: "enabled",
+      sync: "enabled",
+      personalMemoryRead: "disabled",
+      managedExecution: "disabled"
+    });
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+        ?.operationFamilies
+    ).toContain("memory_answer_execution");
+  });
+
+  it.each(["denied", "expired"] as const)(
+    "does not enable Memory Answer execution when enrollment is %s",
+    async (state) => {
+      const paths = await registerValidatedBackend({ memoryAnswers: true });
+      updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+        teamWorkspaceRead: "enabled"
+      });
+      await startUpstreamEnrollment(paths, "team-vps", {
+        memoryAnswers: true,
+        now: () => new Date("2026-01-01T00:01:00Z"),
+        fetch: enrollmentFetch()
+      });
+      await getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:02:00Z"),
+        fetch: enrollmentFetch(state)
+      });
+      const registry = JSON.parse(
+        readFileSync(paths.upstreamBackendsPath, "utf8")
+      ) as UpstreamBackendRegistry;
+      expect(registry.backends[0]?.routePolicy.memoryAnswerExecution).toBe(
+        "disabled"
+      );
+    }
+  );
+
+  it("upgrades an existing read-only enrollment without enabling execution before approval", async () => {
+    const paths = await registerValidatedBackend({ memoryAnswers: true });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      sync: "enabled"
+    });
+    await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      randomId: () => "read-enrollment",
+      fetch: enrollmentFetch()
+    });
+    const original = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(original.state).toBe("exchanged");
+    const upgraded = await startUpstreamEnrollment(paths, "team-vps", {
+      memoryAnswers: true,
+      now: () => new Date("2026-01-01T00:03:00Z"),
+      randomId: () => "memory-answer-enrollment",
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(upgraded.ok, upgraded.message).toBe(true);
+    expect(upgraded.state).toBe("pending");
+    expect(upgraded.enrollment?.requestedOperationFamilies).toContain(
+      "memory_answer_execution"
+    );
+    expect(upgraded.backend?.routePolicy.memoryAnswerExecution).toBe(
+      "disabled"
+    );
+    const approved = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:04:00Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(approved.ok, approved.message).toBe(true);
+    expect(approved.backend?.routePolicy).toMatchObject({
+      memoryAnswerExecution: "enabled",
+      teamWorkspaceRead: "enabled",
+      sync: "enabled",
+      managedExecution: "disabled"
+    });
+  });
+
+  it("retains disabled Memory Answer execution when explicit enrollment is canceled", async () => {
+    const paths = await registerValidatedBackend({ memoryAnswers: true });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    await startUpstreamEnrollment(paths, "team-vps", {
+      memoryAnswers: true,
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      fetch: enrollmentFetch()
+    });
+    const canceled = await cancelUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(canceled.ok, canceled.message).toBe(true);
+    const registry = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
+    expect(registry.backends[0]?.routePolicy).toMatchObject({
+      memoryAnswerExecution: "disabled",
+      teamWorkspaceRead: "enabled"
+    });
+  });
+
+  it("requires compatible Team tasks and a fresh explicit enrollment instead of widening pending consent", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const fetch = vi.fn(enrollmentFetch());
+    const unsupported = await startUpstreamEnrollment(paths, "team-vps", {
+      memoryAnswers: true,
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      fetch
+    });
+    expect(unsupported.ok).toBe(false);
+    expect(unsupported.message).toContain("re-enroll with --memory-answers");
+    expect(fetch).not.toHaveBeenCalled();
+    await validateBackendCapabilities(paths, { memoryAnswers: true });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(started.ok).toBe(true);
+    const changed = await startUpstreamEnrollment(paths, "team-vps", {
+      memoryAnswers: true,
+      now: () => new Date("2026-01-01T00:02:00Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(changed.ok).toBe(false);
+    expect(changed.message).toContain("Cancel the existing enrollment");
+    expect(changed.enrollment?.requestedOperationFamilies).toEqual(
+      started.enrollment?.requestedOperationFamilies
+    );
+  });
+
   it("uses verified device instance ID for enrollment and gates unhealthy polling", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {

@@ -78,16 +78,18 @@ describe("MemoryToolExecutor", () => {
           include_evidence: includeEvidence
         });
         const caller = { cwd: "/work/requesting-project" };
+        const taskResult =
+          route === "task"
+            ? await executor.executeMemoryAnswerTask(
+                input,
+                caller,
+                "22222222-2222-4222-8222-222222222222"
+              )
+            : undefined;
         const result =
           route === "blocking"
             ? await executor.execute("memory_answer", input, caller)
-            : (
-                await executor.executeMemoryAnswerTask(
-                  input,
-                  caller,
-                  "22222222-2222-4222-8222-222222222222"
-                )
-              ).result;
+            : taskResult!.result;
         const withEvidence = detail === "with_evidence" || includeEvidence;
         expect(result.markdown).toBe("The answer");
         expect(result).not.toHaveProperty("evidenceBundle");
@@ -98,7 +100,11 @@ describe("MemoryToolExecutor", () => {
         expect(JSON.stringify(result)).not.toMatch(
           /INTERNAL|tokenUsage|appServerExecutions/
         );
-        expect(createFinalQuestion.mock.calls[0]![0]).toMatchObject({
+        expect(
+          route === "task"
+            ? taskResult!.finalQuestion
+            : createFinalQuestion.mock.calls[0]![0]
+        ).toMatchObject({
           evidence,
           citations,
           local_memory_worker: worker,
@@ -109,7 +115,7 @@ describe("MemoryToolExecutor", () => {
   );
 
   it.each([undefined, "unavailable-team-backend"])(
-    "omits Evidence Bundles when Team routing fails with backend %s",
+    "requires trusted task authority before direct Team retrieval with backend %s",
     async (backendId) => {
       const home = fs.mkdtempSync(
         path.join(os.tmpdir(), "koed-answer-detail-")
@@ -120,29 +126,22 @@ describe("MemoryToolExecutor", () => {
           listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
         } as unknown as MemoryApiClient;
         const executor = new MemoryToolExecutor(client, { KOED_HOME: home });
-        const result = await executor.execute(
-          "memory_answer",
-          {
-            query: "What did the Team decide?",
-            search_domain: "global",
-            team_workspace_id: "11111111-1111-4111-8111-111111111111",
-            team_backend_id: backendId
-          },
-          { cwd: "/work/requesting-project" }
-        );
-
-        expect(result.markdown).toMatch(
-          backendId
-            ? /no scoped local-edge client credential/
-            : /could not resolve/
-        );
-        expect(Object.keys(result).sort()).toEqual(["markdown", "retrieval"]);
-        expect(result.retrieval).toMatchObject({
-          evidenceCount: 0,
-          mode: backendId
-            ? "team_workspace_local_credential_unavailable"
-            : "team_workspace_upstream_backend_unavailable"
+        await expect(
+          executor.execute(
+            "memory_answer",
+            {
+              query: "What did the Team decide?",
+              search_domain: "global",
+              team_workspace_id: "11111111-1111-4111-8111-111111111111",
+              team_backend_id: backendId
+            },
+            { cwd: "/work/requesting-project" }
+          )
+        ).rejects.toMatchObject({
+          statusCode: 403,
+          memoryAnswerTaskErrorCode: "team_task_authority_required"
         });
+        expect(client.accessCheck).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
       }
@@ -177,47 +176,50 @@ describe("MemoryToolExecutor", () => {
     expect(JSON.stringify(context)).not.toContain("diagnostic-");
   });
 
-  it("records remote Team question identity as metadata without a local question foreign key", async () => {
+  it("records task worker usage while preparing the final question for its authoritative commit", async () => {
     const recordTokenUsage = vi.fn(async (input: Record<string, unknown>) => {
       void input;
       return {};
     });
     const executor = new MemoryToolExecutor(
-      { recordTokenUsage } as unknown as MemoryApiClient,
-      {}
-    );
-    const remoteQuestionId = "11111111-1111-4111-8111-111111111111";
-    const upstreamBackendId = "fixture-team-backend";
-    await (
-      executor as unknown as {
-        recordTokenUsage(
-          answer: unknown,
-          input: unknown,
-          projectId: string | undefined,
-          question: { id: string },
-          backendId: string
-        ): Promise<void>;
-      }
-    ).recordTokenUsage(
       {
-        localMemoryWorker: {
-          jobId: "fixture-answer-job",
-          model: "gpt-fixture",
-          usedFallback: false,
-          appServerExecutions: [
-            {
-              model: "gpt-fixture",
-              tokenUsage: {
-                last: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }
+        recordTokenUsage,
+        accessCheck: vi.fn(async () => ({})),
+        listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
+      } as unknown as MemoryApiClient,
+      {},
+      {
+        answerWithMemoryWorker: async () => ({
+          markdown: "answer",
+          retrieval: { evidenceCount: 1 },
+          localMemoryWorker: {
+            provider: "codex",
+            promptVersion: "fixture",
+            jobId: "fixture-answer-job",
+            model: "gpt-fixture",
+            usedFallback: false,
+            appServerExecutions: [
+              {
+                model: "gpt-fixture",
+                tokenUsage: {
+                  last: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }
+                }
               }
-            }
-          ]
-        }
-      },
-      { query: "What changed?", search_domain: "global" },
+            ]
+          }
+        })
+      }
+    );
+    const completed = await executor.executeMemoryAnswerTask(
+      memoryAnswerInputSchema.parse({
+        query: "What changed?",
+        search_domain: "global"
+      }),
+      { cwd: "/fixture" },
+      "task",
       undefined,
-      { id: remoteQuestionId },
-      upstreamBackendId
+      undefined,
+      { getExecutionAuthority: () => ({ scope: "personal" }) }
     );
 
     expect(recordTokenUsage).toHaveBeenCalledTimes(1);
@@ -225,8 +227,11 @@ describe("MemoryToolExecutor", () => {
     expect(recordedUsage.questionId).toBeUndefined();
     expect(recordedUsage.metadata).toMatchObject({
       questionId: undefined,
-      upstreamQuestionId: remoteQuestionId,
-      upstreamBackendId
+      answerJobId: "fixture-answer-job"
+    });
+    expect(completed.finalQuestion).toMatchObject({
+      answer_markdown: "answer",
+      local_memory_worker: { jobId: "fixture-answer-job" }
     });
   });
 
@@ -277,6 +282,44 @@ describe("MemoryToolExecutor", () => {
       projectId: "/work/requesting-project",
       responseDetail: "internal"
     });
+  });
+
+  it("keeps remote Project paths as metadata without choosing the local execution directory", async () => {
+    const client = {
+      accessCheck: vi.fn(async () => ({})),
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      listAiClientInstances: vi.fn(async () => ({
+        instances: [],
+        capabilitySnapshots: []
+      }))
+    } as unknown as MemoryApiClient;
+    let observed: { cwd?: string; projectId?: string } | undefined;
+    const executor = new MemoryToolExecutor(
+      client,
+      { KOED_HEADLESS_FUTURE_CAPTURE_ONLY: "1" },
+      {
+        answerWithMemoryWorker: async (_payload, options) => {
+          observed = {
+            cwd: options?.config?.cwd,
+            projectId: options?.projectId
+          };
+          throw new Error("worker boundary reached");
+        }
+      }
+    );
+    const project = "C:\\projects\\sample";
+    await expect(
+      executor.execute(
+        "memory_answer",
+        {
+          query: "What changed?",
+          search_domain: "project",
+          project_id: project
+        },
+        { cwd: project }
+      )
+    ).rejects.toThrow("worker boundary reached");
+    expect(observed).toEqual({ cwd: process.cwd(), projectId: project });
   });
 
   it("keeps origin out of untrusted tool input", async () => {
@@ -364,7 +407,7 @@ describe("MemoryToolExecutor", () => {
     );
   });
 
-  it("uses the persisted question result after an idempotent task retry", async () => {
+  it("prepares an idempotent final question and result for atomic task completion", async () => {
     const persistedWorker = {
       jobId: "first-attempt-job",
       model: "fixture-model",
@@ -422,9 +465,15 @@ describe("MemoryToolExecutor", () => {
     );
 
     expect(completed).toMatchObject({
-      questionId: "11111111-1111-4111-8111-111111111111",
-      result: { markdown: "Persisted first-attempt answer" }
+      finalQuestion: {
+        idempotency_key:
+          "memory-answer-task:22222222-2222-4222-8222-222222222222",
+        status: "answered",
+        answer_markdown: "Different retry answer"
+      },
+      result: { markdown: "Different retry answer" }
     });
+    expect(client.createFinalQuestion).not.toHaveBeenCalled();
   });
 
   it("terminally rejects a recovered task whose route is now Team-owned", async () => {
@@ -446,6 +495,131 @@ describe("MemoryToolExecutor", () => {
       )
     ).rejects.toMatchObject({
       memoryAnswerTaskErrorCode: "personal_route_changed",
+      retryable: false
+    });
+  });
+
+  it.each([false, true])(
+    "executes a trusted Team task through its authoritative backend (injected=%s)",
+    async (injected) => {
+      const workspace = "11111111-1111-4111-8111-111111111111";
+      let boundary = "signed-initial";
+      const search = vi.fn(async () => ({ items: [] }));
+      const expand = vi.fn(async () => ({ items: [] }));
+      const createFinalQuestion = vi.fn();
+      const client = {
+        accessCheck: vi.fn(async () => ({})),
+        listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+        recordTokenUsage: vi.fn(async () => ({})),
+        createFinalQuestion,
+        createFinalTeamQuestion: vi.fn(),
+        teamMemorySearch: vi.fn(),
+        teamMemoryAnswer: vi.fn(),
+        search,
+        expand
+      } as unknown as MemoryApiClient;
+      const answer = vi.fn<
+        NonNullable<MemoryToolExecutorServices["answerWithMemoryWorker"]>
+      >(async (payload, options) => {
+        expect(payload.authorizationBoundary).toBe("signed-initial");
+        expect(options?.config?.cwd).not.toBe("/untrusted/remote/path");
+        expect(options?.teamWorkspaceId).toBe(workspace);
+        await options!.client!.search({
+          query: "decision",
+          team_workspace_id: "forged-workspace",
+          authorization_boundary: "forged-token"
+        });
+        boundary = "signed-renewed";
+        await options!.client!.expand("node", {
+          teamWorkspaceId: "forged-workspace",
+          authorizationBoundary: "forged-token"
+        });
+        return {
+          markdown: "Authorized Team answer",
+          retrieval: { evidenceCount: 1 },
+          localMemoryWorker: {
+            provider: "codex",
+            promptVersion: "test",
+            jobId: "team-job",
+            model: "fixture",
+            usedFallback: false
+          }
+        };
+      });
+      const executor = new MemoryToolExecutor(
+        client,
+        {},
+        { answerWithMemoryWorker: answer }
+      );
+      const input = memoryAnswerInputSchema.parse({
+        query: "decision",
+        search_domain: "global",
+        team_workspace_id: workspace,
+        team_backend_id: "remote"
+      });
+      const completed = await executor.executeMemoryAnswerTask(
+        input,
+        { cwd: "/untrusted/remote/path" },
+        "22222222-2222-4222-8222-222222222222",
+        undefined,
+        undefined,
+        {
+          getExecutionAuthority: () => ({
+            scope: "team",
+            teamWorkspaceId: workspace,
+            authorizationBoundary: boundary
+          }),
+          ...(injected ? { taskBackend: { search, expand } } : {})
+        }
+      );
+      expect(search).toHaveBeenCalledWith({
+        query: "decision",
+        team_workspace_id: workspace,
+        authorization_boundary: "signed-initial"
+      });
+      expect(expand).toHaveBeenCalledWith("node", {
+        teamWorkspaceId: workspace,
+        authorizationBoundary: "signed-renewed"
+      });
+      expect(completed).toMatchObject({
+        finalQuestion: {
+          team_workspace_id: workspace,
+          retrieval_scope: "personal",
+          status: "answered",
+          answer_markdown: "Authorized Team answer"
+        },
+        result: { markdown: "Authorized Team answer" }
+      });
+      expect(createFinalQuestion).not.toHaveBeenCalled();
+      expect(client.createFinalTeamQuestion).not.toHaveBeenCalled();
+      expect(client.teamMemoryAnswer).not.toHaveBeenCalled();
+      expect(JSON.stringify(completed)).not.toContain("signed-");
+    }
+  );
+
+  it("rejects a Team request inconsistent with the trusted task Workspace", async () => {
+    const executor = new MemoryToolExecutor({} as MemoryApiClient, {});
+    await expect(
+      executor.executeMemoryAnswerTask(
+        memoryAnswerInputSchema.parse({
+          query: "decision",
+          search_domain: "global",
+          team_workspace_id: "11111111-1111-4111-8111-111111111111"
+        }),
+        { cwd: "/remote" },
+        "task",
+        undefined,
+        undefined,
+        {
+          getExecutionAuthority: () => ({
+            scope: "team",
+            teamWorkspaceId: "22222222-2222-4222-8222-222222222222",
+            authorizationBoundary: "signed"
+          })
+        }
+      )
+    ).rejects.toMatchObject({
+      memoryAnswerTaskErrorCode: "team_scope_changed",
       retryable: false
     });
   });

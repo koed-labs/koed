@@ -86,6 +86,7 @@ import {
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
+import { runRemoteMcpCommand } from "./remote-mcp-client.js";
 import type { KoedServerDoctorResult } from "./types.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
 import {
@@ -102,6 +103,7 @@ import {
 } from "./cli-help.js";
 
 export interface KoedServerCliDependencies {
+  runRemoteMcp?: typeof runRemoteMcpCommand;
   collectStatus?: typeof collectKoedServerStatus;
   collectStartupStatus?: typeof collectKoedServerStartupStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
@@ -409,6 +411,7 @@ export const runKoedServerCli = async (
     getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
     runPersonalSync = runPersonalSyncCommand,
+    runRemoteMcp = runRemoteMcpCommand,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -434,6 +437,10 @@ export const runKoedServerCli = async (
           : usageText
       );
       return 0;
+    }
+
+    if (command === "remote") {
+      return runRemoteMcp(args.slice(1), { stdout, stderr });
     }
 
     if (command === "secret-provider") {
@@ -1132,6 +1139,9 @@ export const runKoedServerCli = async (
       const result =
         enrollCommand === "start"
           ? await startUpstreamEnroll(paths, id, {
+              memoryAnswers:
+                args.includes("--memory-answers") ||
+                args.includes("--enable-memory-answers"),
               sourceOwnerPrincipalId: requireFlagValue(
                 args,
                 "--source-owner-principal-id"

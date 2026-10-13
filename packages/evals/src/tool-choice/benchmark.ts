@@ -1,5 +1,6 @@
 export type SearchDomain = "global" | "project" | "session";
 export type ResponseDetail = "answer_only" | "with_citations" | "with_evidence";
+export type DeliveryMode = "auto" | "blocking" | "non_blocking";
 
 export interface ToolChoiceCall {
   toolName: string;
@@ -33,12 +34,14 @@ export interface ToolChoiceCase {
     responseDetail?: ArgumentExpectation<ResponseDetail>;
     includeEvidence?: ArgumentExpectation<boolean>;
     limit?: ArgumentExpectation<number>;
+    deliveryMode?: ArgumentExpectation<DeliveryMode>;
   };
   fakeMemoryAnswer: {
     memoryStatus: "found" | "not_found";
     markdown: string;
   };
   notes?: string;
+  workspaceFiles?: Record<string, string>;
 }
 
 export interface ScoreDetail {
@@ -205,6 +208,16 @@ export const scoreToolChoiceRun = (
         "limit",
         argumentValue(firstCall, "limit"),
         benchmarkCase.expected.limit
+      )
+    );
+  }
+  if (benchmarkCase.expected.deliveryMode) {
+    const requestedMode = argumentValue(firstCall, "delivery_mode");
+    details.push(
+      scoreArgument(
+        "delivery_mode",
+        requestedMode === undefined ? "auto" : requestedMode,
+        benchmarkCase.expected.deliveryMode
       )
     );
   }

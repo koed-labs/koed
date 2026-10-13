@@ -94,6 +94,7 @@ export const processClaudeTranscriptSignal = async (
       componentId: component.componentId,
       componentRole: component.role,
       parentComponentId: component.parentComponentId,
+      futureCaptureOnly: env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1",
       artifact: artifactsByComponent.get(component.componentId) ?? null
     });
     if (!artifact.sessionId) {

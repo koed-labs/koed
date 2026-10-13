@@ -8,13 +8,6 @@ import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
 import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
 
-export interface MemoryAnswerTaskRuntimeExecutor {
-  durableMemoryAnswerEligible?(
-    input: Record<string, unknown>,
-    caller: LocalRuntimeCallerContext
-  ): boolean;
-}
-
 export interface MemoryAnswerTaskStartRequest {
   input: Record<string, unknown>;
   caller: LocalRuntimeCallerContext;
@@ -26,16 +19,6 @@ type JsonWriter = (
   statusCode: number,
   body: Record<string, unknown>
 ) => void;
-
-export class MemoryAnswerDetachedIneligibleError extends Error {
-  readonly statusCode = 409;
-  readonly code = "memory_answer_team_ineligible";
-
-  constructor() {
-    super("Team Workspace Memory Answer does not support detached tasks");
-    this.name = "MemoryAnswerDetachedIneligibleError";
-  }
-}
 
 /** A blocking recall failure whose message is static and safe to return. */
 export class MemoryAnswerBlockingError extends Error {
@@ -70,17 +53,7 @@ const blockingFailureMessages = new Map<string, string>([
 ]);
 
 export class MemoryAnswerTaskRuntime {
-  constructor(
-    private readonly scheduler: MemoryAnswerTaskScheduler,
-    private readonly executor: MemoryAnswerTaskRuntimeExecutor
-  ) {}
-
-  eligible(request: MemoryAnswerTaskStartRequest): boolean {
-    return (
-      !this.executor.durableMemoryAnswerEligible ||
-      this.executor.durableMemoryAnswerEligible(request.input, request.caller)
-    );
-  }
+  constructor(private readonly scheduler: MemoryAnswerTaskScheduler) {}
 
   async start(
     request: MemoryAnswerTaskStartRequest
@@ -92,9 +65,6 @@ export class MemoryAnswerTaskRuntime {
       });
     }
     const normalized = { ...request, input: parsed.data };
-    if (!this.eligible(normalized)) {
-      throw new MemoryAnswerDetachedIneligibleError();
-    }
     return await this.scheduler.start({
       origin: request.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",
       invocationKey: request.invocationKey,

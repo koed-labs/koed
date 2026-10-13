@@ -186,7 +186,6 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         throw new LocalAiRuntimeError(
           "Remote Team Backend request limit reached. Retry later.",
           429,
-          undefined,
           7000,
           "remote"
         );
