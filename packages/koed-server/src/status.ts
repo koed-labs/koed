@@ -1,3 +1,4 @@
+import type { KoedAppRuntime } from "./app-runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -109,6 +110,7 @@ const resolveEffectiveWorkQueueBackend = (
 };
 
 export interface KoedServerStatusDependencies {
+  appRuntime?: KoedAppRuntime | null;
   desktopRuntimeCapability?: DesktopRuntimeCapability | null;
   fetch?: typeof fetch;
   spawnSync?: SpawnSyncLike;
@@ -122,6 +124,7 @@ export interface KoedServerStatusDependencies {
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
+  appRuntime: null,
   desktopRuntimeCapability: null,
   fetch: globalThis.fetch.bind(globalThis),
   spawnSync: nodeSpawnSync as SpawnSyncLike,
@@ -134,12 +137,19 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   now: () => new Date()
 });
 
+// The lifetime is exactly one collection. Rejected selections are shared too;
+// a later poll creates a fresh scope and revalidates the disk.
+const runtimeSelections = new WeakMap<
+  object,
+  { promise?: Promise<KoedAppRuntime> }
+>();
 const withDefaults = (
   dependencies: KoedServerStatusDependencies = {}
-): Required<KoedServerStatusDependencies> => ({
-  ...defaultDependencies(),
-  ...dependencies
-});
+): Required<KoedServerStatusDependencies> => {
+  const deps = { ...defaultDependencies(), ...dependencies };
+  runtimeSelections.set(deps, {});
+  return deps;
+};
 
 export const needsAttention = (
   message: string,
@@ -389,27 +399,70 @@ export const inspectPi = (
   };
 };
 
-const resolveStatusIntegrationRuntime = async (
+const resolveStatusIntegrationRuntime = (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
-  exists: (path: string) => boolean,
-  capability?: DesktopRuntimeCapability | null
-) =>
-  resolveKoedAppRuntimeExecution() === "packaged"
-    ? resolveVerifiedPackagedRuntime(
-        paths,
-        environment,
-        {
-          components: ["base"],
-          processes: ["local-ai-runtime"],
-          queue: "bullmq",
-          native: [],
-          models: []
-        },
-        exists,
-        capability ?? undefined
-      )
-    : resolveKoedAppRuntime(paths, environment, exists);
+  deps: Pick<Required<KoedServerStatusDependencies>, "existsSync"> &
+    Pick<
+      KoedServerStatusDependencies,
+      "appRuntime" | "desktopRuntimeCapability"
+    >
+): Promise<KoedAppRuntime> => {
+  const scope = runtimeSelections.get(deps);
+  const select = () =>
+    deps.appRuntime
+      ? Promise.resolve(deps.appRuntime)
+      : resolveKoedAppRuntimeExecution() === "packaged"
+        ? resolveVerifiedPackagedRuntime(
+            paths,
+            environment,
+            {
+              components: ["base"],
+              processes: ["local-ai-runtime"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            deps.existsSync,
+            deps.desktopRuntimeCapability ?? undefined
+          )
+        : Promise.resolve(
+            resolveKoedAppRuntime(paths, environment, deps.existsSync)
+          );
+  if (!scope) return select();
+  return (scope.promise ??= select());
+};
+
+const inspectSelectedPrivacy = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>,
+  fetcher: typeof fetch,
+  startup: boolean
+): Promise<KoedServerComponentStatus> => {
+  try {
+    const appRuntime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps
+    );
+    return await (
+      startup
+        ? collectLocalPrivacyRuntimeHealthStatus
+        : collectLocalPrivacyRuntimeStatus
+    )(paths, environment, {
+      appRuntime,
+      existsSync: deps.existsSync,
+      fetch: fetcher
+    });
+  } catch (error) {
+    return notConfigured(
+      "No compatible authenticated Privacy runtime is available.",
+      "Install and activate a compatible signed Privacy generation.",
+      { selectionError: error instanceof Error ? error.message : String(error) }
+    );
+  }
+};
 
 const authenticatedRuntimeUnavailable = () => ({
   ...notConfigured(
@@ -443,12 +496,7 @@ export const inspectClaudeCode = async (
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   let runtime;
   try {
-    runtime = await resolveStatusIntegrationRuntime(
-      paths,
-      environment,
-      deps.existsSync,
-      deps.desktopRuntimeCapability
-    );
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
   } catch {
     return {
       ...authenticatedRuntimeUnavailable(),
@@ -1036,9 +1084,9 @@ const tomlSection = (content: string, sectionName: string): string => {
 };
 
 type CodexStatusDependencies = Required<
-  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability">
+  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">
 > &
-  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability">;
+  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">;
 
 const inspectCodexInstallation = (
   environment: NodeJS.ProcessEnv,
@@ -1123,12 +1171,7 @@ export const inspectCodex = async (
   const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");
   let runtime;
   try {
-    runtime = await resolveStatusIntegrationRuntime(
-      paths,
-      environment,
-      deps.existsSync,
-      deps.desktopRuntimeCapability
-    );
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
   } catch {
     return authenticatedRuntimeUnavailable();
   }
@@ -1354,12 +1397,7 @@ const inspectCaptureHook = async (
   const content = String(deps.readFileSync(codexConfigPath, "utf8"));
   let runtime;
   try {
-    runtime = await resolveStatusIntegrationRuntime(
-      paths,
-      environment,
-      deps.existsSync,
-      deps.desktopRuntimeCapability
-    );
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
   } catch {
     return authenticatedRuntimeUnavailable();
   }
@@ -1405,22 +1443,11 @@ const inspectMcp = async (
 ) => {
   let appRuntime;
   try {
-    appRuntime =
-      resolveKoedAppRuntimeExecution() === "packaged"
-        ? await resolveVerifiedPackagedRuntime(
-            paths,
-            environment,
-            {
-              components: ["base"],
-              processes: ["local-ai-runtime"],
-              queue: "bullmq",
-              native: [],
-              models: []
-            },
-            deps.existsSync,
-            deps.desktopRuntimeCapability ?? undefined
-          )
-        : resolveKoedAppRuntime(paths, environment, deps.existsSync);
+    appRuntime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps
+    );
   } catch (error) {
     return notConfigured(
       "No compatible authenticated Koed app-runtime generation is available.",
@@ -2720,13 +2747,12 @@ export const collectKoedServerStartupStatus = async (
       )
     : useBundledLocalDependencies
       ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
-        (await collectLocalPrivacyRuntimeHealthStatus(
+        (await inspectSelectedPrivacy(
           paths,
           serviceEnvironment,
-          {
-            existsSync: deps.existsSync,
-            fetch: fetcher
-          }
+          deps,
+          fetcher,
+          true
         )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
@@ -2988,10 +3014,13 @@ export const collectKoedServerStatus = async (
       )
     : useBundledLocalDependencies
       ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
-        (await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
-          existsSync: deps.existsSync,
-          fetch: fetcher
-        })))
+        (await inspectSelectedPrivacy(
+          paths,
+          serviceEnvironment,
+          deps,
+          fetcher,
+          false
+        )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(

@@ -125,6 +125,39 @@ afterEach(() => {
 });
 
 describe("generation lifecycle", () => {
+  it("replaces an owned base-only Desktop generation after an app bundle upgrade", async () => {
+    const paths = pathsForTest();
+    const resourcesPath = resolve(paths.koedHome, "resources");
+    const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+    mkdirSync(runtimeRoot, { recursive: true });
+    const writeBundle = (version: string) =>
+      writeFileSync(
+        resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          component: "base",
+          productVersion: version,
+          target: { platform: "linux", architecture: "x64" },
+          files: []
+        })
+      );
+    writeBundle("0.8.1");
+    const before = await pinDesktopBundleGenerationForStart(
+      paths,
+      verifyDesktopRuntimeBundle(resourcesPath)
+    );
+    const oldId = before.generation.id;
+    await before.release();
+    writeBundle("0.9.0");
+    const after = await pinDesktopBundleGenerationForStart(
+      paths,
+      verifyDesktopRuntimeBundle(resourcesPath)
+    );
+    expect(after.generation.productVersion).toBe("0.9.0");
+    expect(after.generation.id).not.toBe(oldId);
+    await after.release();
+  });
+
   it("keeps active signed privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();
     const productVersion = "0.8.1";

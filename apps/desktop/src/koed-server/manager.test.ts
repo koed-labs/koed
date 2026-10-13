@@ -89,6 +89,112 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("installs first Privacy assets with stopped private authority before Team services can start", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const children: Array<{ kill: ReturnType<typeof vi.fn> }> = [];
+    function makeChild() {
+      const child = Object.assign(new EventEmitter(), {
+        connected: true,
+        killed: false,
+        pid: 12345,
+        kill: vi.fn(() => true),
+        send(message: Record<string, unknown>) {
+          requests.push(message);
+          queueMicrotask(() =>
+            child.emit(
+              "message",
+              message.type === "koed.desktop.supervisor.init"
+                ? {
+                    type: "koed.desktop.supervisor.ready",
+                    nonce: message.nonce,
+                    childPid: child.pid,
+                    bundleDigest: "a".repeat(64),
+                    mode: message.mode
+                  }
+                : {
+                    ...message,
+                    type: String(message.type).replace(".request", ".response"),
+                    result:
+                      message.type === "koed.desktop.status.request"
+                        ? { ok: true }
+                        : message.action === "status"
+                          ? {
+                              required: ["base", "privacy"],
+                              components: { privacy: "missing" },
+                              trustedSignerConfigured: true,
+                              activeGeneration: null
+                            }
+                          : { state: "active", generationId: "b".repeat(64) }
+                  }
+            )
+          );
+        }
+      });
+      children.push(child);
+      return child;
+    }
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(null, "{}", "")
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      productVersion: "0.8.1",
+      existsSync: () => true,
+      execFile,
+      spawn: makeChild as never,
+      openExternal: async () => undefined
+    });
+    await expect(manager.privacyInstall.getStatus()).resolves.toMatchObject({
+      available: true,
+      state: "not_installed"
+    });
+    await expect(
+      manager.privacyInstall.installPrivacy({
+        consent: true,
+        onProgress: vi.fn()
+      })
+    ).resolves.toMatchObject({ state: "ready" });
+    expect(
+      requests
+        .filter((r) => r.type === "koed.desktop.supervisor.init")
+        .every((r) => r.mode === "privacy-management")
+    ).toBe(true);
+    expect(requests.some((r) => r.action === "install")).toBe(true);
+    expect(execFile).not.toHaveBeenCalled();
+    await manager.handlers.setup_pi();
+    await manager.handlers.repair_claude();
+    expect(
+      requests.some(
+        (r) =>
+          r.type === "koed.desktop.status.request" && r.action === "setup-pi"
+      )
+    ).toBe(true);
+    expect(
+      requests.some(
+        (r) =>
+          r.type === "koed.desktop.status.request" &&
+          r.action === "repair-claude"
+      )
+    ).toBe(true);
+    expect(
+      execFile.mock.calls.some((call) =>
+        ["setup", "repair"].includes(String(call[1]?.[0]))
+      )
+    ).toBe(false);
+    expect(children.every((child) => child.kill.mock.calls.length === 1)).toBe(
+      true
+    );
+  });
+
   it("routes privacy status/install through nonce-correlated child RPC with exact release source", async () => {
     const requests: Record<string, unknown>[] = [];
     let statusCount = 0;
@@ -107,7 +213,8 @@ describe("Koed server desktop manager", () => {
               type: "koed.desktop.supervisor.ready",
               nonce: message.nonce,
               childPid: child.pid,
-              bundleDigest: "a".repeat(64)
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
             })
           );
         } else if (message.type === "koed.desktop.privacy.request") {
@@ -247,7 +354,7 @@ describe("Koed server desktop manager", () => {
     const inFlightStatus = manager.privacyInstall.getStatus();
     child.emit("exit", 1, null);
     await expect(inFlightStatus).rejects.toThrow(
-      "Privacy Filter operation interrupted because Koed supervisor exited."
+      "Private Desktop supervisor disconnected during request."
     );
     await expect(manager.privacyInstall.getStatus()).resolves.toMatchObject({
       available: false,
@@ -269,7 +376,8 @@ describe("Koed server desktop manager", () => {
               type: "koed.desktop.supervisor.ready",
               nonce: message.nonce,
               childPid: child.pid,
-              bundleDigest: "a".repeat(64)
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
             })
           );
         } else if (message.type === "koed.desktop.status.request") {

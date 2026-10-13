@@ -1,11 +1,10 @@
+import { pinDesktopBundleGenerationForStart } from "./generation-lifecycle.js";
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
 import { startKoedServer } from "./start.js";
 import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
 import {
   createDesktopPrivacyRpcHandler,
-  createDesktopComponentManagerBridge,
-  validateDesktopBundle
+  createDesktopComponentManagerBridge
 } from "./desktop-component-manager.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -16,7 +15,7 @@ interface InitMessage {
   nonce: string;
   managerPid: number;
   resourcesPath: string;
-  mode?: "runtime" | "privacy-activation";
+  mode?: "runtime" | "privacy-activation" | "privacy-management";
 }
 
 const isInitMessage = (value: unknown): value is InitMessage => {
@@ -27,7 +26,8 @@ const isInitMessage = (value: unknown): value is InitMessage => {
     item.type === "koed.desktop.supervisor.init" &&
     (item.mode === undefined ||
       item.mode === "runtime" ||
-      item.mode === "privacy-activation") &&
+      item.mode === "privacy-activation" ||
+      item.mode === "privacy-management") &&
     typeof item.nonce === "string" &&
     /^[a-f0-9]{64}$/.test(item.nonce) &&
     Number.isSafeInteger(item.managerPid) &&
@@ -98,22 +98,21 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   const capability = verifyDesktopRuntimeBundle(handshake.resourcesPath);
   if (typeof process.send !== "function")
     throw new Error("Desktop supervisor IPC channel is unavailable");
-  const runtimeRoot = resolve(capability.resourcesPath, "koed-runtime");
-  const componentCapability = validateDesktopBundle(
-    runtimeRoot,
-    resolve(runtimeRoot, "desktop-bundle-manifest.json"),
-    capability.target,
-    capability.productVersion
-  );
   const supervisorEnvironment = createDesktopSupervisorEnvironment(process.env);
   const privacyManager = createDesktopComponentManagerBridge({
-    capability: componentCapability,
+    capability,
     paths: resolveKoedServerPaths(supervisorEnvironment),
     environment: supervisorEnvironment,
     runtime: discoverActualRuntimeIdentity(),
-    isRunning: handshake.mode !== "privacy-activation",
+    isRunning: handshake.mode === undefined || handshake.mode === "runtime",
     target: capability.target,
     controlPlaneVersion: capability.productVersion
+  });
+  const handleStatusRpc = createDesktopStatusRpcHandler({
+    nonce: handshake.nonce,
+    capability,
+    environment: createDesktopSupervisorEnvironment(process.env),
+    send: sendDesktopSupervisorStatus
   });
   const handlePrivacyRpc = createDesktopPrivacyRpcHandler({
     manager: privacyManager,
@@ -123,13 +122,26 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
         if (handshake.mode === "privacy-activation") process.disconnect?.();
       })
   });
-  if (handshake.mode === "privacy-activation") {
+  if (
+    handshake.mode === "privacy-activation" ||
+    handshake.mode === "privacy-management"
+  ) {
+    if (handshake.mode === "privacy-management") {
+      const pin = await pinDesktopBundleGenerationForStart(
+        resolveKoedServerPaths(supervisorEnvironment),
+        capability
+      );
+      await pin.release();
+    }
     process.on("message", (message: unknown) => {
+      if (handshake.mode === "privacy-management" && handleStatusRpc(message))
+        return;
       if (
-        !message ||
-        typeof message !== "object" ||
-        Array.isArray(message) ||
-        (message as Record<string, unknown>).action !== "activate"
+        handshake.mode === "privacy-activation" &&
+        (!message ||
+          typeof message !== "object" ||
+          Array.isArray(message) ||
+          (message as Record<string, unknown>).action !== "activate")
       ) {
         process.send?.(
           {
@@ -145,7 +157,7 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
         process.send?.(
           {
             type: "koed.desktop.privacy.response",
-            requestId: (message as Record<string, unknown>).requestId,
+            requestId: (message as Record<string, unknown> | null)?.requestId,
             error: "Desktop privacy IPC request is invalid"
           },
           () => process.disconnect?.()
@@ -158,16 +170,10 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
       nonce: handshake.nonce,
       childPid: process.pid,
       bundleDigest: capability.bundleDigest,
-      mode: "privacy-activation"
+      mode: handshake.mode
     });
     return;
   }
-  const handleStatusRpc = createDesktopStatusRpcHandler({
-    nonce: handshake.nonce,
-    capability,
-    environment: createDesktopSupervisorEnvironment(process.env),
-    send: sendDesktopSupervisorStatus
-  });
   process.on("message", (message: unknown) => {
     if (handleStatusRpc(message) || handlePrivacyRpc(message)) return;
     if (

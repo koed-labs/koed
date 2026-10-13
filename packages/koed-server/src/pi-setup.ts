@@ -1,3 +1,4 @@
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -372,7 +373,8 @@ export const removePi = (
 
 export const setupPi = async (
   environment: NodeJS.ProcessEnv = process.env,
-  spawnSync: typeof nodeSpawnSync = nodeSpawnSync
+  spawnSync: typeof nodeSpawnSync = nodeSpawnSync,
+  options: { desktopRuntimeCapability?: DesktopRuntimeCapability } = {}
 ): Promise<KoedServerSetupPiResult> => {
   const paths = resolveKoedServerPaths(environment);
   try {
@@ -393,13 +395,19 @@ export const setupPi = async (
   }
   const runtime =
     resolveKoedAppRuntimeExecution() === "packaged"
-      ? await resolveVerifiedPackagedRuntime(paths, environment, {
-          components: ["base"],
-          processes: ["local-ai-runtime"],
-          queue: "bullmq",
-          native: [],
-          models: []
-        })
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          environment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          undefined,
+          options.desktopRuntimeCapability
+        )
       : resolveKoedAppRuntime(paths, environment);
   const sourceCandidates =
     runtime.kind === "source"

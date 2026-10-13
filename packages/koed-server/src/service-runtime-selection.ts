@@ -12,6 +12,7 @@ import {
   pinDesktopBundleGenerationForStart,
   pinGenerationForStart,
   readCurrentGenerationForOwner,
+  readCurrentDesktopGeneration,
   readDesktopBundleGeneration
 } from "./generation-lifecycle.js";
 import {
@@ -40,9 +41,22 @@ export async function resolveVerifiedPackagedRuntime(
 ): Promise<KoedAppRuntime> {
   let generation;
   try {
-    generation = capability
-      ? await readDesktopBundleGeneration(paths, capability)
-      : await readCurrentGenerationForOwner(paths, runtimeOwner(paths));
+    if (capability) {
+      try {
+        generation = await readCurrentDesktopGeneration(paths, capability);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "no active runtime generation"
+        )
+          throw error;
+        generation = await readDesktopBundleGeneration(paths, capability);
+      }
+    } else
+      generation = await readCurrentGenerationForOwner(
+        paths,
+        runtimeOwner(paths)
+      );
   } catch (error) {
     if (error instanceof Error && error.message === "runtime owner mismatch") {
       throw new Error(

@@ -1,8 +1,18 @@
 # Public server distribution: branch status
 
-PR #404 remains a draft while its extracted slices and remaining distribution/Desktop work are reviewed. It is **not release-ready**. Merging publishes nothing: production install and release promotion fail closed until the external gates below are closed in a follow-up.
+PR #404 remains a draft while its remaining distribution/Desktop work is reviewed. Extracts #408/#409 and the artifact-policy follow-up #414 have merged into main. It is **not release-ready**. Merging publishes nothing: production install and release promotion fail closed until the external gates below are closed in a follow-up.
 
-**Do not merge the "Version Koed" release PR until the external gates are closed.** Merging it runs `release.yml` without pending changesets: it creates a draft GitHub release, and the asset jobs fail at the external-signer step because the signer and trust-root repository variables are unset. npm promotion (`release-desktop-assets.yml`, `workflow_dispatch` only) additionally requires `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
+**Do not merge the "Version Koed" release PR until the external gates are closed.** Merging it runs `release.yml` without pending changesets: it creates a draft GitHub release, and the asset jobs fail at the external-signer step because the signer and trust-root repository variables are unset. The main-triggered `release.yml` and manually dispatched `release-desktop-assets.yml` promotion paths both require `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
+
+## 13 October functional and maintainability repairs
+
+- Private stopped management supports first Privacy status/install/cancel and AI Client setup before Team service readiness. A signed first-install regression verifies actual store staging and activation with Team enabled and no running services.
+- Bundle replacement reads the previous installation-owned journal without trying to execute it through the new bundle capability; foreign ownership still fails closed. Privacy bound to an older bundle is not silently reused.
+- Startup supplies its pinned runtime to readiness, and each status collection reuses one authenticated selection for Privacy and integrations. Subsequent polls revalidate; failed selection remains actionable.
+- Claude Code/Pi setup and repair receive the same private capability as Codex, including stopped management. Standalone ownership rules are unchanged.
+- One issued bundle capability replaces the duplicate verifier. Supervisor handshake/RPC and the Privacy activation/rollback transaction are independent modules. Assembly exception matching, closure prerequisites and inventory metadata reside in one policy module.
+
+Local regression evidence: 817 Server tests, 907 Desktop tests, three Desktop artifact-policy tests; component assembly's 39 cases pass. This establishes the repaired code paths, not positive packaged Electron/Team or production release acceptance. Exact-head CI and compiled IPC evidence are recorded in the PR description when complete. Remaining acceptance is compatible Electron declarations, packaged positive Team startup/upgrade/rollback/relocation/uninstall/helper checks, Linux validation and authorized signer/registry rehearsal.
 
 ## Implemented
 
@@ -29,9 +39,9 @@ Items 3 and 4 remain unverified (relocation, failure-injection rollback, uninsta
 - Validate Linux/native artifacts and packaged Electron runtime/helper/fuse behavior on supported targets.
 - No publication, signing-service authorization or credential changes were performed locally.
 
-## Verification
+## Historical implementation verification
 
-Final local checks used Node 24.13.1:
+Initial local checks used Node 24.13.1:
 
 - Server: 55 test files, 747 tests passed; typecheck and build passed.
 - Desktop: 86 test files, 803 tests passed; typecheck and build passed. Existing large-chunk warning remains.

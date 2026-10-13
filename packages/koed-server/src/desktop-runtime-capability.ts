@@ -107,6 +107,9 @@ export function verifyDesktopRuntimeBundle(
     const rel = relative(runtimeRoot, absolute);
     if (
       !path ||
+      !/^[a-f0-9]{64}$/.test(entry.sha256 as string) ||
+      path.split("/").some((part) => !part || part === "." || part === "..") ||
+      path.startsWith("privacy-service/") ||
       isAbsolute(path) ||
       rel === ".." ||
       rel.startsWith(`..${sep}`) ||

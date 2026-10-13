@@ -107,3 +107,17 @@ publishes nothing; do not merge the "Version Koed" release PR until these are cl
 - Validate built, signed, installed, and started headless components end to end before enabling npm publication and release promotion.
 - Deliver Desktop on-demand Privacy only after install, upgrade, startup, integration setup, and rollback validation; preserve existing bundled Privacy until then.
 - Deliver opt-in Desktop Install CLI separately, with relocation, removal, and Electron helper validation.
+
+## Distribution integration follow-up at PR #404
+
+Implemented with regression coverage: stopped first Privacy asset installation,
+owned Desktop bundle upgrade admission, selected-runtime Privacy readiness and
+private Claude Code/Pi setup/repair. Bundle verification, supervisor RPC and Privacy
+transactions, status runtime selection and assembly exception policy now have shared
+implementation seams. Fresh review and packaged positive Team acceptance remain
+required; do not infer them from unit tests or Personal smoke.
+
+- Finish compatible Electron component declarations and validate signed admission.
+- Run positive packaged Team installation/startup, upgrade, relocation, rollback,
+  uninstall and helper/fuse acceptance, plus Linux native validation.
+- Keep production signing/trust-root/npm/promotion gates closed until authorized rehearsal.

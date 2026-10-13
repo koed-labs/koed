@@ -1,3 +1,4 @@
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptionsWithStringEncoding,
@@ -453,18 +454,27 @@ export const removeClaude = (
 export const setupClaude = async (
   environment: NodeJS.ProcessEnv = process.env,
   spawnSync: SpawnSyncLike = nodeSpawnSync,
-  options: { backgroundRecall?: boolean } = {}
+  options: {
+    backgroundRecall?: boolean;
+    desktopRuntimeCapability?: DesktopRuntimeCapability;
+  } = {}
 ): Promise<KoedServerSetupClaudeResult> => {
   const paths = resolveKoedServerPaths(environment);
   const runtime =
     resolveKoedAppRuntimeExecution() === "packaged"
-      ? await resolveVerifiedPackagedRuntime(paths, environment, {
-          components: ["base"],
-          processes: ["local-ai-runtime"],
-          queue: "bullmq",
-          native: [],
-          models: []
-        })
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          environment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          undefined,
+          options.desktopRuntimeCapability
+        )
       : resolveKoedAppRuntime(paths, environment);
   let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);

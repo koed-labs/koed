@@ -223,3 +223,13 @@ packaging, signing, runtime distribution, or packaged smoke support.
   for isolated validation, but installation and shell PATH editing remain
   unavailable until packaged Electron helper/fuse compatibility and mutation
   safety are validated on supported target.
+
+### Privacy asset management before startup
+
+The private stopped management child supports Privacy status and first installation
+before Team services are ready. It verifies the Base bundle and signed Privacy assets;
+it never grants authority through renderer arguments or environment flags. Running
+installations stage assets, stop services, activate, and restart with rollback on failure.
+Claude Code/Pi setup and repair also use private IPC, including while services are stopped.
+Production trust roots, compatible Electron artifacts and positive packaged Team validation
+remain release/acceptance gates; this flow does not enable publication.

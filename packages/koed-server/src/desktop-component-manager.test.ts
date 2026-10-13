@@ -17,6 +17,7 @@ import {
   validateDesktopBundle
 } from "./desktop-component-manager.js";
 import {
+  validateDesktopRuntimeCapability,
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
 } from "./desktop-runtime-capability.js";
@@ -58,9 +59,11 @@ describe("Desktop bundled component capability", () => {
       { platform: "macos", architecture: "arm64" },
       "0.8.1"
     );
-    expect(validated.root).toBe(root);
-    expect(validated.digest).toMatch(/^[a-f0-9]{64}$/);
-    expect(typeof validated.capability).toBe("symbol");
+    expect(resolve(validated.resourcesPath, "koed-runtime")).toBe(
+      realpathSync.native(root)
+    );
+    expect(validated.bundleDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(validateDesktopRuntimeCapability(validated)).toBe(true);
     expect(Object.isFrozen(validated)).toBe(true);
     expect(Object.isFrozen(validated.manifest)).toBe(true);
     expect(Object.isFrozen(validated.manifest.files)).toBe(true);
@@ -292,7 +295,7 @@ describe("Desktop bundled component capability", () => {
         { platform: "macos", architecture: "arm64" },
         "0.8.1"
       )
-    ).toThrow("Desktop bundle file digest mismatch: api/index.js");
+    ).toThrow("Desktop runtime bundle file digest mismatch");
     writeFileSync(resolve(root, "api/index.js"), "verified bundle");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
       files: Array<{ path: string; kind: string; sha256: string }>;
@@ -310,6 +313,6 @@ describe("Desktop bundled component capability", () => {
         { platform: "macos", architecture: "arm64" },
         "0.8.1"
       )
-    ).toThrow("Desktop bundle manifest file entry is invalid");
+    ).toThrow("Desktop runtime bundle manifest path is invalid");
   });
 });

@@ -1,3 +1,5 @@
+import { setupClaude } from "./claude-setup.js";
+import { setupPi } from "./pi-setup.js";
 import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   collectKoedServerDoctor,
@@ -22,7 +24,13 @@ export const createDesktopStatusRpcHandler = (options: {
     doctor: () => collectKoedServerDoctor(options.environment, dependencies),
     "setup-core": () => setupCore(setupOptions),
     "setup-codex": () => setupCodex(setupOptions),
-    "repair-codex": () => repairCodexIntegration(setupOptions)
+    "repair-codex": () => repairCodexIntegration(setupOptions),
+    "setup-claude": () =>
+      setupClaude(options.environment, undefined, dependencies),
+    "repair-claude": () =>
+      setupClaude(options.environment, undefined, dependencies),
+    "setup-pi": () => setupPi(options.environment, undefined, dependencies),
+    "repair-pi": () => setupPi(options.environment, undefined, dependencies)
   };
   return (message) => {
     if (!message || typeof message !== "object" || Array.isArray(message))

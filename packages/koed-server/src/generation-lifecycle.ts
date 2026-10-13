@@ -473,9 +473,50 @@ export async function pinDesktopBundleGenerationForStart(
       assertNoActivePin(paths, true);
       const bundled = await readDesktopBundleGeneration(paths, capability);
       const activeId = readCurrentId(paths);
-      const active = activeId
-        ? await readDesktopGenerationForCapability(paths, activeId, capability)
-        : null;
+      let active: VerifiedGeneration | null = null;
+      if (activeId) {
+        const priorBundlePath = desktopBundleRecordPath(paths, activeId);
+        const priorPrivacyPath = resolve(
+          paths.generationsDir,
+          activeId,
+          "generation.json"
+        );
+        const journalPath = existsSync(priorBundlePath)
+          ? priorBundlePath
+          : priorPrivacyPath;
+        const prior: unknown =
+          activeId !== bundled.id && existsSync(journalPath)
+            ? JSON.parse(readRegularFile(journalPath))
+            : null;
+        if (
+          isRecord(prior) &&
+          (prior.kind === "desktop-bundle" ||
+            prior.kind === "desktop-bundle-with-privacy") &&
+          prior.bundleDigest !== capability.bundleDigest
+        ) {
+          // An older verified bundle is only an ownership journal here. Never execute it
+          // through the new capability or require a signed-store record for it.
+          const previous = prior;
+          if (
+            !isRecord(previous) ||
+            previous.schemaVersion !== 1 ||
+            (previous.kind !== "desktop-bundle" &&
+              previous.kind !== "desktop-bundle-with-privacy") ||
+            previous.id !== activeId ||
+            previous.resourcesPath !== capability.resourcesPath ||
+            !isRecord(previous.owner) ||
+            previous.owner.kind !== requester.kind ||
+            previous.owner.installationId !== requester.installationId
+          )
+            throw new Error("runtime owner mismatch");
+        } else {
+          active = await readDesktopGenerationForCapability(
+            paths,
+            activeId,
+            capability
+          );
+        }
+      }
       if (active) assertOwner(active, requester);
       persistDesktopBundleRecord(paths, bundled, capability);
       const generation =

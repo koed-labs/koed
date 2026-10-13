@@ -1445,7 +1445,8 @@ export const startKoedServer = async ({
         environment: refreshedEnv,
         timeoutMs,
         pollIntervalMs,
-        collectStatus,
+        collectStatus: (env) =>
+          collectStatus(env, { desktopRuntimeCapability, appRuntime }),
         isReady: (candidate) =>
           candidate.api.state === "healthy" &&
           candidate.database.state === "healthy"
@@ -1611,7 +1612,8 @@ export const startKoedServer = async ({
         environment: refreshedEnv,
         timeoutMs,
         pollIntervalMs,
-        collectStatus
+        collectStatus: (env) =>
+          collectStatus(env, { desktopRuntimeCapability, appRuntime })
       });
       if (!status.ok) {
         throw new Error(
