@@ -30,8 +30,6 @@ import {
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
 
-export class CodexDetachedMemoryIneligible extends Error {}
-
 export const CODEX_DELIVERY_NONCE = "_koed_delivery_nonce";
 export interface CodexHookInput {
   hook_event_name: string;
@@ -241,8 +239,7 @@ export class CodexMemoryReceiptStore {
     if (hook.tool_input[CODEX_DELIVERY_NONCE] !== undefined) return {};
     const { requestedMode } = splitMemoryAnswerDeliveryInput(hook.tool_input);
     const input = canonicalCodexMemoryInput(hook.tool_input);
-    if (requestedMode === "blocking" || input.team_workspace_id !== undefined)
-      return {};
+    if (requestedMode === "blocking") return {};
     this.collectExpired();
     const turnLock = createHash("sha256")
       .update(JSON.stringify([hook.session_id, hook.turn_id]))
@@ -486,11 +483,7 @@ export class CodexMemoryDelivery {
       );
     const nonce = input[CODEX_DELIVERY_NONCE];
     if (nonce === undefined) {
-      report(
-        clean.team_workspace_id !== undefined
-          ? "team_ineligible"
-          : "missing_receipt"
-      );
+      report("missing_receipt");
       return undefined;
     }
     if (!nonceValid(nonce)) throw denied();
@@ -525,21 +518,10 @@ export class CodexMemoryDelivery {
           .digest("hex")}`,
         signal
       );
-    } catch (error) {
-      if (!(error instanceof CodexDetachedMemoryIneligible))
-        // eslint-disable-next-line preserve-caught-error -- The task-port error may contain private provider payloads; expose only a static delivery failure.
-        throw new Error(
-          "Koed Memory Answer task acceptance could not be confirmed. Do not resubmit this request."
-        );
-      // The maintained runtime rejects detached Team work before scheduler.start.
-      this.store.retire({
-        hook_event_name: "Interrupt",
-        session_id: binding.session,
-        turn_id: binding.turn,
-        cwd: binding.cwd
-      });
-      report("team_ineligible");
-      return undefined;
+    } catch {
+      throw new Error(
+        "Koed Memory Answer task acceptance could not be confirmed. Do not resubmit this request."
+      );
     }
     this.store.accepted(binding, task);
     report();

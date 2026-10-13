@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { MemoryQuestionActorContext } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   desktopAskCompleteSchema,
@@ -27,6 +28,27 @@ export const registerQuestionRoutes = (
       memoryWrite: memoryWriteRateLimit
     }
   } = context;
+
+  const historyActor = async (
+    request: FastifyRequest,
+    userId: string
+  ): Promise<MemoryQuestionActorContext> => {
+    if (context.config.teamCollaborationEnabled === false)
+      return { userId, allowTeam: false };
+    const kind = context.auth.authenticatedCredentialKind(request);
+    if (kind === "oauth_delegated") {
+      const principal = await context.auth.resolveDelegatedPrincipal(request);
+      return {
+        userId,
+        allowTeam:
+          principal?.userId === userId &&
+          principal.scopes.includes("koed:team:read")
+      };
+    }
+    // Only a successfully authenticated session permits browser Team history.
+    // Repository checks still decide whether each retained answer is readable.
+    return { userId, allowTeam: kind === "session" };
+  };
 
   const decodeAskCursor = (value: string | undefined) => {
     if (!value) return undefined;
@@ -161,7 +183,7 @@ export const registerQuestionRoutes = (
       const user = await authenticate(request);
       const query = memoryQuestionsQuerySchema.parse(request.query);
       const questions = await repo.listMemoryQuestions(
-        { userId: user.id },
+        await historyActor(request, user.id),
         {
           query: query.query,
           searchDomain: query.search_domain,
@@ -250,7 +272,7 @@ export const registerQuestionRoutes = (
       const user = await authenticate(request);
       const params = memoryQuestionParamsSchema.parse(request.params);
       const question = await repo.getMemoryQuestion(
-        { userId: user.id },
+        await historyActor(request, user.id),
         params.questionId
       );
       return question

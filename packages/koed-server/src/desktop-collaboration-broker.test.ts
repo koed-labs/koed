@@ -1433,6 +1433,7 @@ describe("desktop collaboration broker", () => {
       personalMemoryRead: "disabled",
       personalCollaboration: "enabled",
       teamWorkspaceRead: "enabled",
+      memoryAnswerExecution: "disabled",
       shareGrantManagement: "enabled",
       captureWrites: "disabled",
       sync: "enabled",

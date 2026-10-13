@@ -76,11 +76,14 @@ original observation deadline, task expiry, cancellation signal and destination
 checks still apply. Throttling during the final authorized read cannot authorize
 delivery of the earlier result. Pi keeps its observer pending during throttling.
 
-Detached execution is available only for eligible Personal Memory requests.
-The runtime returns the stable `memory_answer_team_ineligible` code with HTTP
-409 before accepting an ineligible Team Memory request. Codex's deferred route
-uses that code to select blocking recall with the original caller and input.
-Other conflicts or runtime failures do not trigger another recall.
+Personal and Team Memory requests use the same durable task, so both are
+eligible for deferred delivery. A Team request needs an authorized Team task
+route. For the conditions, see
+[Team Workspace execution](durable-memory-answer.md#team-workspace-execution).
+If the Team task route is unavailable or not authorized, the request fails
+before acceptance. Koed does not use blocking recall or Personal Memory instead.
+After an acceptance failure, Codex and Pi do not start another recall, because
+the runtime can already own the task.
 
 The Codex Stop adapter checks receipt ownership before acquiring its lock, then
 checks ownership again under the lock before claiming the result. An unrelated
@@ -180,9 +183,10 @@ the protected Local AI Runtime registration; credentials and results are not
 cached for delivery.
 
 `KOED_PI_MEMORY_ANSWER_MODE=blocking` retains blocking recall. Ephemeral sessions,
-single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, clients
-without the required Pi APIs, and Team Workspace calls also use the blocking
-route. The runtime remains authoritative about task eligibility.
+single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, and
+clients without the required Pi APIs also use the blocking route. Team Workspace
+calls use the same follow-up route as Personal calls. The runtime remains
+authoritative about task eligibility.
 At most 128 pending receipts are observed by one adapter.
 
 ## Recovery and limits

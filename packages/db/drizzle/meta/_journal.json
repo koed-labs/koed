@@ -302,6 +302,20 @@
       "when": 1791363455185,
       "tag": "0042_owner_scoped_projection_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791799987601,
+      "tag": "0043_remote_mcp_oauth",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791804787069,
+      "tag": "0044_memory_answer_team_authority",
+      "breakpoints": true
     }
   ]
 }

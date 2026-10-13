@@ -191,6 +191,11 @@ pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
 
 ## MCP Server
 
+For a remote backend without Electron or local backend services, use
+[Headless Remote MCP](headless-remote-mcp.md). Remote OAuth access is opt-in,
+uses explicit User consent, and retains a local background helper for capture
+and Personal synthesis work. The setup below describes the local stdio path.
+
 The MCP Server is the supported recall path. It lets Codex ask Koed for cited
 memory evidence. It is a thin MCP `2026-07-28` stdio adapter; it does not own
 capture or persistent local services.

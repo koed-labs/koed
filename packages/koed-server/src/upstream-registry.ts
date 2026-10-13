@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
-import { assertSecureHttpTransport } from "@koed/shared";
+import {
+  assertSecureHttpTransport,
+  isTeamMemoryAnswerTaskCapability
+} from "@koed/shared";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
 } from "@koed/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
 import { upstreamDisconnectCleanupPending } from "./upstream-disconnect-cleanup.js";
+
+export { isTeamMemoryAnswerTaskCapability };
 
 export type UpstreamDeploymentProfile =
   | "developer"
@@ -34,6 +39,7 @@ export interface UpstreamRoutePolicy {
   personalMemoryRead: "disabled" | "enabled";
   personalCollaboration: "disabled" | "enabled";
   teamWorkspaceRead: "disabled" | "enabled";
+  memoryAnswerExecution: "disabled" | "enabled";
   shareGrantManagement: "disabled" | "enabled";
   captureWrites: "disabled" | "enabled";
   sync: "disabled" | "enabled";
@@ -105,6 +111,8 @@ export interface UpstreamRegistryResult {
 export type UpstreamRoutePolicyUpdate = Partial<UpstreamRoutePolicy>;
 
 interface CapabilityDescriptor {
+  version?: unknown;
+  supportedScopes?: unknown;
   availability?: unknown;
   description?: unknown;
   endpoints?: unknown;
@@ -150,6 +158,7 @@ const defaultRoutePolicy = (): UpstreamRoutePolicy => ({
   personalMemoryRead: "disabled",
   personalCollaboration: "disabled",
   teamWorkspaceRead: "disabled",
+  memoryAnswerExecution: "disabled",
   shareGrantManagement: "disabled",
   captureWrites: "disabled",
   sync: "disabled",
@@ -477,6 +486,27 @@ export const upstreamBackendAdvertisesCapability = (
   const availability =
     backend?.capabilities.payload?.capabilities?.[capability]?.availability;
   return availability === "available" || availability === "partial";
+};
+
+export const upstreamBackendSupportsTeamMemoryAnswerTasks = (
+  paths: KoedServerPaths,
+  backendId: string,
+  deps: UpstreamRegistryDeps = {}
+): boolean => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const backend = readRegistry(paths, resolvedDeps).backends.find(
+    (candidate) => candidate.id === backendId
+  );
+  return (
+    backend?.capabilities.state === "validated" &&
+    Boolean(
+      backend.capabilities.expiresAt &&
+      Date.parse(backend.capabilities.expiresAt) > resolvedDeps.now().getTime()
+    ) &&
+    isTeamMemoryAnswerTaskCapability(
+      backend.capabilities.payload?.capabilities?.["memory.answerTasks"]
+    )
+  );
 };
 
 export const registerUpstreamBackend = (

@@ -275,7 +275,6 @@ describe("Local AI Runtime", () => {
           return {
             executor: {
               ...defaultExecutor(),
-              durableMemoryAnswerEligible: () => true,
               executeMemoryAnswerTask: vi.fn()
             },
             close: vi.fn(async () => undefined)

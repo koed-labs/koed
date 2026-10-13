@@ -87,6 +87,46 @@ describeDb("durable Memory Answer task repository", () => {
     expect(JSON.stringify(stored.rows[0])).not.toContain(secret);
   });
 
+  it("restricts claims to credential capabilities and the requested scope", async () => {
+    const { actor } = await createActor("scope-selector");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request: { input: { query: "personal question" } }
+    });
+    expect(
+      await tasks.claimMemoryAnswerTask(
+        { ...actor, allowPersonal: false, allowTeam: true },
+        {
+          leaseOwner: `team-only-${randomUUID()}`,
+          leaseMs: 60_000,
+          allowTeam: true
+        }
+      )
+    ).toMatchObject({ task: null, reconciled: [] });
+    expect(
+      await tasks.claimMemoryAnswerTask(
+        { ...actor, allowTeam: true },
+        {
+          leaseOwner: `team-filter-${randomUUID()}`,
+          leaseMs: 60_000,
+          allowTeam: true,
+          scopeFilter: "team"
+        }
+      )
+    ).toMatchObject({ task: null, reconciled: [] });
+    expect(
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: `personal-${randomUUID()}`,
+        leaseMs: 60_000,
+        scopeFilter: "personal"
+      })
+    ).toMatchObject({ task: { id: accepted.id } });
+  });
+
   it("reclaims expired leases, fences stale owners, and resolves cancellation races", async () => {
     const { actor } = await createActor("lease-owner");
     const tasks = createMemoryAnswerTaskRepository(pool, {
@@ -129,7 +169,13 @@ describeDb("durable Memory Answer task repository", () => {
         taskId: accepted.id,
         leaseOwner: second.task!.leaseOwner,
         fenceGeneration: second.task!.fenceGeneration,
-        questionId: randomUUID(),
+        finalQuestion: {
+          idempotencyKey: randomUUID(),
+          query: "lease test",
+          searchDomain: "global",
+          status: "answered",
+          answerMarkdown: "late result"
+        },
         result: { markdown: "late result" }
       })
     ).toBeNull();
@@ -146,16 +192,9 @@ describeDb("durable Memory Answer task repository", () => {
   });
 
   it("encrypts terminal result and error payloads", async () => {
-    const { actor, repository } = await createActor("terminal-owner");
+    const { actor } = await createActor("terminal-owner");
     const tasks = createMemoryAnswerTaskRepository(pool, {
       envelopeEncryptionProvider: encryptionProvider
-    });
-    const question = await repository.createFinalMemoryQuestion(actor, {
-      idempotencyKey: `question-${randomUUID()}`,
-      query: "fixture question",
-      searchDomain: "global",
-      status: "answered",
-      answerMarkdown: "fixture answer"
     });
     const resultSecret = `result-${randomUUID()}`;
     const completedTask = await tasks.acceptMemoryAnswerTask(actor, {
@@ -172,8 +211,14 @@ describeDb("durable Memory Answer task repository", () => {
       taskId: completedTask.id,
       leaseOwner: completedClaim.task!.leaseOwner,
       fenceGeneration: completedClaim.task!.fenceGeneration,
-      questionId: question.id,
-      result: { markdown: resultSecret }
+      finalQuestion: {
+        idempotencyKey: randomUUID(),
+        query: "result",
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: resultSecret
+      },
+      result: { markdown: resultSecret, question_id: randomUUID() }
     });
 
     const errorSecret = `error-${randomUUID()}`;
@@ -212,12 +257,130 @@ describeDb("durable Memory Answer task repository", () => {
       status: "completed",
       result: { markdown: resultSecret }
     });
+    const completed = await tasks.getMemoryAnswerTask(actor, completedTask.id);
+    expect(completed?.result?.question_id).toBe(completed?.questionId);
+    const history = await pool.query<{ count: string }>(
+      `select count(*)::text as count from memory_questions where owner_user_id = $1 and id = $2`,
+      [actor.userId, completed?.questionId]
+    );
+    expect(history.rows[0]?.count).toBe("1");
     expect(await tasks.getMemoryAnswerTask(actor, failedTask.id)).toMatchObject(
       {
         status: "failed",
         lastErrorMessage: errorSecret
       }
     );
+  });
+
+  it("rolls back final history when terminal task persistence fails", async () => {
+    const { actor } = await createActor("atomic-completion");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request: { input: { query: "atomic question" } }
+    });
+    const claim = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: `worker-${randomUUID()}`,
+      leaseMs: 60_000
+    });
+    await pool.query(
+      `alter table memory_answer_tasks add constraint fixture_reject_completed check (status <> 'completed')`
+    );
+    try {
+      await expect(
+        tasks.completeMemoryAnswerTask(actor, {
+          taskId: accepted.id,
+          leaseOwner: claim.task!.leaseOwner,
+          fenceGeneration: claim.task!.fenceGeneration,
+          finalQuestion: {
+            idempotencyKey: randomUUID(),
+            query: "atomic question",
+            searchDomain: "global",
+            status: "answered",
+            answerMarkdown: "atomic answer"
+          },
+          result: { markdown: "atomic answer" }
+        })
+      ).rejects.toThrow();
+      const state = await pool.query<{
+        status: string;
+        question_id: string | null;
+      }>(`select status, question_id from memory_answer_tasks where id = $1`, [
+        accepted.id
+      ]);
+      expect(state.rows[0]).toMatchObject({
+        status: "running",
+        question_id: null
+      });
+      const history = await pool.query<{ count: string }>(
+        `select count(*)::text as count from memory_questions where owner_user_id = $1`,
+        [actor.userId]
+      );
+      expect(history.rows[0]?.count).toBe("0");
+    } finally {
+      await pool.query(
+        `alter table memory_answer_tasks drop constraint fixture_reject_completed`
+      );
+    }
+  });
+
+  it("rolls back final history if the lease expires during final persistence", async () => {
+    const { actor } = await createActor("slow-completion");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request: { input: { query: "slow question" } }
+    });
+    const claim = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: `worker-${randomUUID()}`,
+      leaseMs: 60_000
+    });
+    await pool.query(
+      `create function fixture_delay_final_question() returns trigger language plpgsql as $$ begin perform pg_sleep(0.2); return new; end $$`
+    );
+    await pool.query(
+      `create trigger fixture_delay_final_question before insert on memory_questions for each row execute function fixture_delay_final_question()`
+    );
+    try {
+      await pool.query(
+        `update memory_answer_tasks set lease_until = clock_timestamp() + interval '100 milliseconds' where id = $1`,
+        [accepted.id]
+      );
+      expect(
+        await tasks.completeMemoryAnswerTask(actor, {
+          taskId: accepted.id,
+          leaseOwner: claim.task!.leaseOwner,
+          fenceGeneration: claim.task!.fenceGeneration,
+          finalQuestion: {
+            idempotencyKey: randomUUID(),
+            query: "slow question",
+            searchDomain: "global",
+            status: "answered",
+            answerMarkdown: "answer"
+          },
+          result: { markdown: "answer" }
+        })
+      ).toBeNull();
+      const history = await pool.query<{ count: string }>(
+        `select count(*)::text as count from memory_questions where owner_user_id = $1`,
+        [actor.userId]
+      );
+      expect(history.rows[0]?.count).toBe("0");
+      expect(await tasks.getMemoryAnswerTask(actor, accepted.id)).toMatchObject(
+        { status: "running", questionId: null }
+      );
+    } finally {
+      await pool.query(
+        `drop trigger fixture_delay_final_question on memory_questions`
+      );
+      await pool.query(`drop function fixture_delay_final_question()`);
+    }
   });
 
   it("enforces the durable backlog bound without rejecting an idempotent retry", async () => {
@@ -322,5 +485,252 @@ describeDb("durable Memory Answer task repository", () => {
         }
       ]
     });
+  });
+
+  it("bounds expired-lease reconciliation and recovers the remaining queue on later claims", async () => {
+    const { actor } = await createActor("bounded-reconciliation");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    for (let i = 0; i < 17; i += 1) {
+      await tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        maxQueued: 32,
+        maxAttempts: 1,
+        request: { input: { query: `expired ${i}` } }
+      });
+    }
+    await pool.query(
+      "update memory_answer_tasks set status = 'running', attempt_count = 1, lease_owner = 'expired', lease_until = now() - interval '1 second' where owner_user_id = $1",
+      [actor.userId]
+    );
+    const first = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: "cleanup",
+      leaseMs: 60_000
+    });
+    expect(first.task).toBeNull();
+    expect(first.reconciled).toHaveLength(16);
+    expect(
+      first.reconciled.every(
+        (task) =>
+          task.status === "failed" &&
+          task.lastErrorCode === "attempts_exhausted"
+      )
+    ).toBe(true);
+    const second = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: "cleanup",
+      leaseMs: 60_000
+    });
+    expect(second.task).toBeNull();
+    expect(second.reconciled).toHaveLength(1);
+    expect(
+      new Set(
+        [...first.reconciled, ...second.reconciled].map((task) => task.id)
+      ).size
+    ).toBe(17);
+  });
+
+  it("leaves future work and live leases unlocked while competing workers claim ready tasks", async () => {
+    const { actor } = await createActor("concurrent-claims");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = [];
+    for (let i = 0; i < 4; i += 1) {
+      accepted.push(
+        await tasks.acceptMemoryAnswerTask(actor, {
+          origin: "mcp",
+          maxQueued: 16,
+          request: { input: { query: `question ${i}` } }
+        })
+      );
+    }
+    await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: "live",
+      leaseMs: 60_000
+    });
+    await pool.query(
+      "update memory_answer_tasks set available_at = now() + interval '1 hour' where id = $1",
+      [accepted[1]!.id]
+    );
+    let resume!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const blockedTasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: {
+        mode: encryptionProvider.mode,
+        keyId: encryptionProvider.keyId,
+        keyVersion: encryptionProvider.keyVersion,
+        encrypt: (input) => encryptionProvider.encrypt(input),
+        decrypt: async (envelope) => {
+          started();
+          await resumed;
+          return encryptionProvider.decrypt(envelope);
+        }
+      }
+    });
+    const first = blockedTasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: "paused",
+      leaseMs: 60_000
+    });
+    await paused;
+    const competing = await pool.connect();
+    let second: ReturnType<typeof tasks.claimMemoryAnswerTask> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await competing.query("begin");
+      await competing.query("set local lock_timeout = '200ms'");
+      for (const task of accepted.slice(0, 2)) {
+        await competing.query(
+          "select id from memory_answer_tasks where id = $1 for update",
+          [task.id]
+        );
+      }
+      await competing.query("commit");
+      second = tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "competing",
+        leaseMs: 60_000
+      });
+      expect(
+        await Promise.race([
+          second,
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("competing claim blocked")),
+              1_000
+            );
+          })
+        ])
+      ).toMatchObject({ task: { id: accepted[3]!.id } });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      resume();
+      await first;
+      await second;
+      await competing.query("rollback");
+      competing.release();
+    }
+    expect((await first).task?.id).toBe(accepted[2]!.id);
+  });
+
+  it("retires revoked Team tasks and permits owner cancellation without decrypting protected payloads", async () => {
+    const { actor } = await createActor("revoked-team");
+    const team = await pool.query<{ id: string }>(
+      "insert into teams(name,entitlement_status) values('Task Team','active') returning id"
+    );
+    const teamId = team.rows[0]!.id;
+    const workspace = await pool.query<{ id: string }>(
+      "insert into team_workspaces(team_id,name) values($1,'Task Workspace') returning id",
+      [teamId]
+    );
+    const teamWorkspaceId = workspace.rows[0]!.id;
+    await pool.query(
+      "insert into team_memberships(team_id,user_id,role,status,accepted_at) values($1,$2,'owner','enabled',now())",
+      [teamId, actor.userId]
+    );
+    await pool.query(
+      "insert into team_workspace_access_grants(team_workspace_id,team_id,user_id,access,granted_by_user_id) values($1,$2,$3,'write',$3)",
+      [teamWorkspaceId, teamId, actor.userId]
+    );
+    const teamActor = { ...actor, allowTeam: true };
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accept = () =>
+      tasks.acceptMemoryAnswerTask(teamActor, {
+        origin: "mcp",
+        teamWorkspaceId,
+        maxQueued: 2,
+        request: {
+          input: {
+            query: "protected question",
+            team_workspace_id: teamWorkspaceId
+          }
+        }
+      });
+    const first = await accept();
+    const second = await accept();
+    const running = await tasks.claimMemoryAnswerTask(teamActor, {
+      leaseOwner: "revoked-worker",
+      leaseMs: 60_000,
+      allowTeam: true,
+      scopeFilter: "team"
+    });
+    expect(running.task?.id).toBe(first.id);
+    await pool.query(
+      "update team_memberships set status='disabled',disabled_at=now(),version=version+1 where user_id=$1",
+      [actor.userId]
+    );
+    await pool.query(
+      `update memory_answer_tasks
+          set last_error_message = '[koed encrypted memory answer task]',
+              status_message = 'protected progress', invocation_key = 'protected invocation'
+        where id = $1`,
+      [first.id]
+    );
+    const noDecrypt = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: {
+        mode: encryptionProvider.mode,
+        keyId: encryptionProvider.keyId,
+        keyVersion: encryptionProvider.keyVersion,
+        encrypt: (input) => encryptionProvider.encrypt(input),
+        decrypt: () => {
+          throw new Error("protected data must not be decrypted");
+        }
+      }
+    });
+    await expect(
+      noDecrypt.cancelMemoryAnswerTask(actor, first.id)
+    ).rejects.toMatchObject({ statusCode: 403 });
+    await expect(
+      noDecrypt.getMemoryAnswerTask(teamActor, first.id)
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(
+      await noDecrypt.cancelMemoryAnswerTask(teamActor, first.id)
+    ).toMatchObject({
+      status: "cancelled",
+      result: null,
+      lastErrorMessage: null,
+      invocationKey: null,
+      statusMessage: null,
+      fenceGeneration: running.task!.fenceGeneration + 1
+    });
+    expect(
+      await noDecrypt.claimMemoryAnswerTask(teamActor, {
+        leaseOwner: "cleanup",
+        leaseMs: 60_000,
+        allowTeam: true,
+        scopeFilter: "team"
+      })
+    ).toMatchObject({
+      task: null,
+      reconciled: [
+        {
+          id: second.id,
+          status: "failed",
+          lastErrorCode: "team_authority_revoked",
+          result: null
+        }
+      ]
+    });
+    const recovered = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 1,
+      request: { input: { query: "new personal work" } }
+    });
+    expect(recovered.status).toBe("accepted");
+    await expect(
+      noDecrypt.heartbeatMemoryAnswerTask(teamActor, {
+        taskId: first.id,
+        leaseOwner: running.task!.leaseOwner,
+        fenceGeneration: running.task!.fenceGeneration,
+        leaseMs: 60_000
+      })
+    ).rejects.toMatchObject({ statusCode: 403 });
   });
 });

@@ -11,6 +11,7 @@
     { "path": "../../packages/core" },
     { "path": "../../packages/db" },
     { "path": "../../packages/shared" },
+    { "path": "../../packages/mcp-server" },
     { "path": "../worker" }
   ],
   "include": ["src/**/*.ts"],

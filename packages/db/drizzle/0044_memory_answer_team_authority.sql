@@ -1,0 +1,5 @@
+ALTER TABLE "memory_answer_tasks" ADD COLUMN "team_workspace_id" uuid;--> statement-breakpoint
+ALTER TABLE "memory_answer_tasks" ADD COLUMN "team_authorization" jsonb;--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD COLUMN "team_authorization" jsonb;--> statement-breakpoint
+ALTER TABLE "memory_answer_tasks" ADD CONSTRAINT "memory_answer_tasks_team_workspace_id_team_workspaces_id_fk" FOREIGN KEY ("team_workspace_id") REFERENCES "public"."team_workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "memory_answer_tasks" ADD CONSTRAINT "memory_answer_tasks_team_authority_check" CHECK (("memory_answer_tasks"."team_workspace_id" is null and "memory_answer_tasks"."team_authorization" is null) or ("memory_answer_tasks"."team_workspace_id" is not null and "memory_answer_tasks"."team_authorization" is not null));

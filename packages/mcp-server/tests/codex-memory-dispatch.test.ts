@@ -29,7 +29,6 @@ import {
   startLocalAiRuntime,
   type LocalAiRuntimeToolExecutor
 } from "../src/local-runtime-server.js";
-import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
 import { logger } from "../src/logger.js";
 const pairs: { client: Client; server: StdioServerHandle; home: string }[] = [];
@@ -66,7 +65,8 @@ async function connect(
   const runtime = {
     capabilities: async () => ({
       protocolVersion: 1,
-      curatedMemoryIntakeAvailable: false
+      curatedMemoryIntakeAvailable: false,
+      memoryAnswerTeamBackendAvailable: true
     }),
     callTool,
     startMemoryAnswerTask: start
@@ -402,30 +402,30 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
       CODEX_DELIVERY_NONCE
     );
   });
-  it("authoritative Team-ineligible409 preserves blocking on same canonical caller/input", async () => {
-    const f = await connect();
-    f.start.mockRejectedValueOnce(
-      new LocalAiRuntimeError(
-        "Team Workspace Memory Answer does not support detached tasks",
-        409,
-        "memory_answer_team_ineligible"
-      )
-    );
-    await f.client.callTool({
+  it("accepts authorized Team recall through native durable delivery", async () => {
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const f = await connect(true, undefined, {
+      query: "decision",
+      search_domain: "global",
+      team_workspace_id: workspace,
+      team_backend_id: "remote"
+    });
+    const result = await f.client.callTool({
       name: "memory_answer",
       arguments: f.input,
       _meta: metadata
     });
     expect(f.start).toHaveBeenCalledTimes(1);
-    expect(f.callTool).toHaveBeenCalledTimes(1);
-    expect(f.callTool.mock.calls[0]![1]).toEqual(f.start.mock.calls[0]![0]);
+    expect(result.structuredContent).toMatchObject({ status: "pending" });
+    expect(f.start.mock.calls[0]?.[0]).toMatchObject({
+      team_workspace_id: workspace,
+      team_backend_id: "remote"
+    });
+    expect(f.callTool).not.toHaveBeenCalled();
   });
   it.each([
     new LocalAiRuntimeError("uncertain start", 409),
-    new LocalAiRuntimeError(
-      "Team Workspace Memory Answer does not support detached tasks",
-      409
-    ),
+    new LocalAiRuntimeError("Team Workspace access denied", 403),
     new Error("network start failure")
   ])(
     "uncertain start failure does not fall back or resubmit a consumed nonce: %s",
@@ -448,7 +448,7 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
   );
 
   it.each(["mapped-team", "untrusted-conflict"] as const)(
-    "uses authoritative HTTP classification only for preacceptance Team fallback: %s",
+    "preserves authoritative task admission and rejects unavailable routes: %s",
     async (mode) => {
       const home = mkdtempSync(path.join(os.tmpdir(), "koed-team-dispatch-"));
       const environment = {
@@ -476,17 +476,12 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
       const accept = vi.fn(async () => {
         throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE"), {
           status: 409,
-          code: "memory_answer_team_ineligible"
+          statusCode: 409
         });
       });
-      let eligible: ReturnType<
-        typeof vi.fn<MemoryToolExecutor["durableMemoryAnswerEligible"]>
-      >;
       const runtime = await startLocalAiRuntime({
         environment,
         serviceFactory: async ({ apiClient }) => {
-          const executor = new MemoryToolExecutor(apiClient, environment);
-          eligible = vi.fn(executor.durableMemoryAnswerEligible.bind(executor));
           apiClient.acceptMemoryAnswerTask = accept;
           apiClient.claimMemoryAnswerTask = vi.fn(async () => ({
             task: null,
@@ -501,8 +496,7 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
                 curatedMemoryIntakeAvailable: false
               }),
               execute,
-              executeMemoryAnswerTask,
-              durableMemoryAnswerEligible: eligible
+              executeMemoryAnswerTask
             },
             close: vi.fn(async () => undefined)
           };
@@ -524,21 +518,12 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
           _meta: metadata
         });
         expect(executeMemoryAnswerTask).not.toHaveBeenCalled();
+        expect(result.isError).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
         if (mode === "mapped-team") {
-          expect(result.isError).not.toBe(true);
           expect(accept).not.toHaveBeenCalled();
-          expect(execute).toHaveBeenCalledTimes(1);
-          const [tool, blockingInput, blockingCaller] = execute.mock.calls[0]!;
-          expect(tool).toBe("memory_answer");
-          expect(blockingInput).toEqual(canonicalCodexMemoryInput(input));
-          expect(blockingCaller).toEqual(eligible!.mock.calls[0]![1]);
-          expect(eligible!.mock.calls[0]![0]).toEqual(
-            canonicalCodexMemoryInput(input)
-          );
         } else {
-          expect(result.isError).toBe(true);
           expect(accept).toHaveBeenCalledTimes(1);
-          expect(execute).not.toHaveBeenCalled();
           expect(JSON.stringify(result)).not.toContain(
             "PRIVATE_PROVIDER_MESSAGE"
           );

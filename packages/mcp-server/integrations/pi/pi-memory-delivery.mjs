@@ -390,13 +390,11 @@ export function createPiMemoryDelivery(
     const unavailableReason =
       mode === "blocking"
         ? "integration_disabled"
-        : input.team_workspace_id
-          ? "team_ineligible"
-          : !capabilities(pi, ctx)
-            ? "unsupported_context"
-            : pending.size + accepting.size >= 128
-              ? "capacity_limit"
-              : undefined;
+        : !capabilities(pi, ctx)
+          ? "unsupported_context"
+          : pending.size + accepting.size >= 128
+            ? "capacity_limit"
+            : undefined;
     const decision = resolveMemoryAnswerDelivery({
       requestedMode,
       blockingRoute: "pi_blocking",
@@ -440,20 +438,6 @@ export function createPiMemoryDelivery(
         signal
       );
     } catch (error) {
-      if (
-        error?.statusCode === 409 &&
-        error?.code === "memory_answer_team_ineligible"
-      ) {
-        reportDelivery(
-          resolveMemoryAnswerDelivery({
-            requestedMode,
-            blockingRoute: "pi_blocking",
-            deferredRoute: "pi_follow_up",
-            unavailableReason: "team_ineligible"
-          })
-        );
-        return blockingResult(input, ctx, signal, invocation);
-      }
       throw acceptanceUncertain(
         "Koed Memory Answer acceptance is uncertain",
         error

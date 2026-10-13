@@ -7,7 +7,6 @@ import {
 } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import {
   CODEX_DELIVERY_NONCE,
-  CodexDetachedMemoryIneligible,
   CodexMemoryDelivery,
   CodexMemoryReceiptStore,
   canonicalCodexMemoryInput
@@ -94,7 +93,7 @@ const supportsRuntimeTool = (
     : name !== "memory_workspaces";
 
 const backendToolCapabilities = async (
-  runtimeClient: LocalAiRuntimeClient
+  runtimeClient: KoedMcpRuntimeClient
 ): Promise<RuntimeToolCapabilities> =>
   runtimeClient.capabilities().then((capabilities) => ({
     supportedTools: capabilities.supportedTools,
@@ -179,8 +178,17 @@ const toolSchema = (name: LocalRuntimeToolName) => {
   }
 };
 
+export type KoedMcpRuntimeClient = Pick<
+  LocalAiRuntimeClient,
+  | "capabilities"
+  | "callTool"
+  | "startMemoryAnswerTask"
+  | "getMemoryAnswerTask"
+  | "cancelMemoryAnswerTask"
+>;
+
 export interface CreateKoedMcpServerOptions {
-  runtimeClient?: LocalAiRuntimeClient;
+  runtimeClient?: KoedMcpRuntimeClient;
   environment?: NodeJS.ProcessEnv;
   callerContextResolver?: McpCallerContextResolver;
 }
@@ -227,24 +235,8 @@ export const createKoedMcpServer = async (
     ? new CodexMemoryDelivery(
         receiptStore,
         {
-          start: async (input, caller, key, signal) => {
-            try {
-              return await runtimeClient.startMemoryAnswerTask(
-                input,
-                caller,
-                key,
-                signal
-              );
-            } catch (error) {
-              if (
-                error instanceof LocalAiRuntimeError &&
-                error.statusCode === 409 &&
-                error.code === "memory_answer_team_ineligible"
-              )
-                throw new CodexDetachedMemoryIneligible();
-              throw error;
-            }
-          },
+          start: (input, caller, key, signal) =>
+            runtimeClient.startMemoryAnswerTask(input, caller, key, signal),
           get: (id, signal) => runtimeClient.getMemoryAnswerTask(id, signal),
           cancel: (id, signal) =>
             runtimeClient.cancelMemoryAnswerTask(id, signal)
@@ -274,7 +266,10 @@ export const createKoedMcpServer = async (
     },
     {
       instructions: memoryServerInstructions,
-      supportedProtocolVersions: [KOED_MCP_PROTOCOL_VERSION],
+      supportedProtocolVersions:
+        _requestContext.era === "legacy" && _requestContext.requestInfo
+          ? [KOED_MCP_PROTOCOL_VERSION, "2025-11-25"]
+          : [KOED_MCP_PROTOCOL_VERSION],
       cacheHints: {
         "server/discover": { ttlMs: 30_000, cacheScope: "private" },
         "tools/list": { ttlMs: 30_000, cacheScope: "private" }

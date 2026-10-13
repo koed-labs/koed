@@ -8,6 +8,7 @@ export const apiServiceName = "koed-api";
 export type AuthLogKind =
   | "anonymous"
   | "api_token"
+  | "oauth_delegated"
   | "session"
   | "device_credential";
 

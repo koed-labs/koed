@@ -79,6 +79,7 @@ import {
 
 import {
   resolveMonotonicPrivacyPolicySet,
+  privacyContentPolicySubjectLockKey,
   type PrivacyContentPolicyRecord
 } from "./privacy-classification-repository.js";
 import {
@@ -1662,7 +1663,7 @@ const ENCRYPTED_CONVERSATION_ITEM_TEXT = "[koed encrypted conversation item]";
 const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
 const SHARED_MEMORY_CLASSIFIER_VERSION = 1;
 
-type SqlClient = pg.Pool | pg.PoolClient;
+type SqlClient = Pick<pg.PoolClient, "query">;
 type Row = Record<string, unknown>;
 
 interface LogicalMemorySourceIdentity {
@@ -3899,6 +3900,584 @@ const aadMatches = (
     ([key, value]) => actual[key] === String(value)
   ) && Object.keys(actual).length === Object.keys(expected).length;
 
+const mapPrivacyPolicy = (row: Row): PrivacyContentPolicyRecord => ({
+  id: stringValue(row.id),
+  policyId: stringValue(row.policy_id),
+  version: numberValue(row.version),
+  scope: stringValue(row.scope) as PrivacyContentPolicyRecord["scope"],
+  deploymentIdentityId: stringValue(row.deployment_identity_id),
+  sourceOwnerUserId: nullableStringValue(row.source_owner_user_id),
+  teamId: nullableStringValue(row.team_id),
+  teamWorkspaceId: nullableStringValue(row.team_workspace_id),
+  labels: row.labels as PrivacyContentPolicyRecord["labels"],
+  replacementContractVersion: stringValue(row.replacement_contract_version),
+  policyHash: stringValue(row.policy_hash),
+  status: stringValue(row.status) as PrivacyContentPolicyRecord["status"],
+  effectiveAt: iso(row.effective_at),
+  createdAt: iso(row.created_at),
+  supersededAt: nullableIso(row.superseded_at),
+  revokedAt: nullableIso(row.revoked_at),
+  revocationReasonCode: nullableStringValue(row.revocation_reason_code)
+});
+
+const resolveCurrentPrivacyPolicy = async (
+  client: SqlClient,
+  input: {
+    ownerUserId: string;
+    teamId: string;
+    teamWorkspaceId: string;
+    lockRows?: boolean;
+  }
+) => {
+  if (input.lockRows) {
+    const deployments = await client.query<Row>(
+      "select id from deployment_identities where locality='local' and disabled_at is null order by id for share"
+    );
+    const keys = deployments.rows
+      .flatMap((row) => {
+        const deploymentIdentityId = stringValue(row.id);
+        return [
+          privacyContentPolicySubjectLockKey("deployment", {
+            deploymentIdentityId
+          }),
+          privacyContentPolicySubjectLockKey("source_owner", {
+            deploymentIdentityId,
+            sourceOwnerUserId: input.ownerUserId
+          }),
+          privacyContentPolicySubjectLockKey("team", {
+            deploymentIdentityId,
+            teamId: input.teamId
+          }),
+          privacyContentPolicySubjectLockKey("workspace", {
+            deploymentIdentityId,
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId
+          })
+        ];
+      })
+      .sort();
+    // Shared subject locks also protect scopes with no policy row yet.
+    for (const key of keys) {
+      await client.query(
+        "select pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+        [key]
+      );
+    }
+  }
+  const result = await client.query<Row>(
+    `select policy.*
+       from privacy_content_policies policy
+       join deployment_identities deployment
+         on deployment.id=policy.deployment_identity_id
+        and deployment.locality='local'
+        and deployment.disabled_at is null
+      where policy.status='active'
+        and policy.effective_at<=now()
+        and (
+          (policy.scope='deployment'
+            and policy.source_owner_user_id is null
+            and policy.team_id is null
+            and policy.team_workspace_id is null)
+          or (policy.scope='source_owner'
+            and policy.source_owner_user_id=$1
+            and policy.team_id is null
+            and policy.team_workspace_id is null)
+          or (policy.scope='team'
+            and policy.source_owner_user_id is null
+            and policy.team_id=$2
+            and policy.team_workspace_id is null)
+          or (policy.scope='workspace'
+            and policy.source_owner_user_id is null
+            and policy.team_id=$2
+            and policy.team_workspace_id=$3)
+        )
+      order by policy.version desc
+      ${input.lockRows ? "for share of policy,deployment" : ""}`,
+    [input.ownerUserId, input.teamId, input.teamWorkspaceId]
+  );
+  const policies = result.rows.map(mapPrivacyPolicy);
+  if (!policies.some((policy) => policy.scope === "deployment")) {
+    throw new SharedMemoryConflictError(
+      "Active deployment privacy policy is required"
+    );
+  }
+  if (
+    new Set(policies.map((policy) => policy.scope)).size !== policies.length
+  ) {
+    throw new SharedMemoryConflictError(
+      "Privacy policy scope resolution is ambiguous"
+    );
+  }
+  try {
+    return resolveMonotonicPrivacyPolicySet(policies);
+  } catch {
+    throw new SharedMemoryConflictError(
+      "Effective privacy policy binding is invalid"
+    );
+  }
+};
+
+const loadActivePrivacyClassifier = async (
+  client: SqlClient,
+  lockRows = false
+): Promise<{ id: string; version: number; classifierHash: string }> => {
+  const result = await client.query<Row>(
+    `select id,version,classifier_hash
+       from privacy_classifier_generations
+      where status='active' and revoked_at is null
+      limit 2 ${lockRows ? "for share" : ""}`
+  );
+  if (result.rows.length !== 1) {
+    throw new SharedMemoryConflictError(
+      "Exactly one active privacy classifier generation is required"
+    );
+  }
+  const row = result.rows[0]!;
+  return {
+    id: stringValue(row.id),
+    version: numberValue(row.version),
+    classifierHash: stringValue(row.classifier_hash)
+  };
+};
+
+export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
+  client: SqlClient,
+  actor: ActorContext,
+  input: {
+    teamWorkspaceId: string;
+    maximumGrantCount: number;
+    lockRows?: boolean;
+    onlyGrantIds?: string[];
+  }
+): Promise<SharedMemorySemanticAuthorizationBoundary> => {
+  assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
+  if (
+    !Number.isInteger(input.maximumGrantCount) ||
+    input.maximumGrantCount < 1 ||
+    input.maximumGrantCount > 1024
+  ) {
+    throw new RangeError("maximumGrantCount must be between 1 and 1024");
+  }
+  const frozen = await client.query<Row>(
+    `select t.id as team_id,t.version as team_version,
+          tw.version as workspace_version,tm.version as membership_version,
+          wa.version as workspace_access_version,u.xmin::text as user_row_version,
+          coalesce((
+            select array_agg(g.id order by g.id)
+              from (
+                select distinct grant_row.id
+                  from team_memory_share_grant_records grant_row
+                  join team_memory_representation_records r
+                    on r.share_grant_id=grant_row.id
+                   and r.consent_id=grant_row.consent_id
+                   and r.state in ('available','stale') and r.invalidated_at is null
+                   and (r.curated_expires_at is null or r.curated_expires_at>now())
+                  join source_owner_representation_consent_records c
+                    on c.id=grant_row.consent_id and c.state='active'
+                   and c.revoked_at is null
+                   and (c.expires_at is null or c.expires_at>now())
+                  join source_owner_representation_policies op
+                    on op.policy_id=grant_row.source_owner_policy_id
+                   and op.version=grant_row.source_owner_policy_version
+                   and op.superseded_at is null
+                  join team_representation_policies tp
+                    on tp.policy_id=grant_row.team_policy_id
+                   and tp.version=grant_row.team_policy_version
+                   and tp.team_id=grant_row.team_id and tp.superseded_at is null
+                  join workspace_representation_policies wp
+                    on wp.policy_id=grant_row.workspace_policy_id
+                   and wp.version=grant_row.workspace_policy_version
+                   and wp.team_id=grant_row.team_id
+                   and wp.team_workspace_id=grant_row.team_workspace_id
+                   and wp.superseded_at is null
+                  left join memory_replicas mr on mr.id=grant_row.remote_replica_id
+                   and mr.lifecycle='active' and mr.replica_role='target'
+                   and mr.encryption_scope='owner_private_replica'
+                   and mr.disabled_at is null
+                  left join cross_identity_sync_relationships sr
+                    on sr.local_replica_id=mr.id
+                   and sr.logical_memory_id=grant_row.logical_memory_id
+                   and sr.side='target' and sr.revoked_at is null
+                   and sr.state in ('processing','partially_available','ready','stale')
+                  join shared_source_preview_records sp
+                    on sp.id=r.source_preview_id and sp.invalidated_at is null
+                  join shared_source_artifact_records sa
+                    on sa.id=r.source_artifact_id and sa.invalidated_at is null
+                 where grant_row.team_workspace_id=tw.id
+                   and ($4::uuid[] is null or grant_row.id=any($4::uuid[]))
+                         and grant_row.lifecycle='active' and grant_row.revoked_at is null
+                   and (
+                     (grant_row.source_kind='captured_session' and mr.id is not null and sr.id is not null)
+                     or (grant_row.source_kind='personal_note' and grant_row.remote_replica_id is null)
+                   )
+                   and ${cumulativeRepresentationAuthorizationSql("r.representation", { grant: "grant_row" })}
+                 order by grant_row.id
+                 limit $3
+              ) g
+          ),array[]::uuid[]) as share_grant_ids
+     from team_workspaces tw
+     join teams t on t.id=tw.team_id and t.lifecycle='active'
+       and t.entitlement_status in ('active','grace')
+     join users u on u.id=$1 and u.disabled_at is null and u.deleted_at is null
+     join team_memberships tm on tm.team_id=t.id and tm.user_id=u.id
+       and tm.status='enabled' and tm.disabled_at is null
+     join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
+       and wa.team_id=t.id and wa.user_id=u.id and wa.disabled_at is null
+       and wa.access in ('read','write')
+    where tw.id=$2 and tw.lifecycle='active' and tw.archived_at is null
+    limit 1 ${input.lockRows ? "for share of t,tw,tm,wa,u" : ""}`,
+    [
+      actor.userId,
+      input.teamWorkspaceId,
+      input.maximumGrantCount + 1,
+      input.onlyGrantIds ?? null
+    ]
+  );
+  const row = frozen.rows[0];
+  if (!row) throw new SharedMemoryAuthorizationError();
+  const shareGrantIds = Array.isArray(row.share_grant_ids)
+    ? row.share_grant_ids.map(stringValue)
+    : [];
+  if (shareGrantIds.length > input.maximumGrantCount) {
+    throw new SharedMemoryAuthorizationError(
+      "Shared Memory authorization boundary exceeds the bounded run capacity"
+    );
+  }
+  return {
+    teamId: stringValue(row.team_id),
+    teamVersion: numberValue(row.team_version),
+    teamWorkspaceId: input.teamWorkspaceId,
+    workspaceVersion: numberValue(row.workspace_version),
+    membershipVersion: numberValue(row.membership_version),
+    workspaceAccessVersion: numberValue(row.workspace_access_version),
+    userRowVersion: stringValue(row.user_row_version),
+    shareGrantIds
+  };
+};
+
+export interface SharedMemoryAuthorityReadContext {
+  sourceGrantLocks: Set<string>;
+  privacyPolicies: Map<
+    string,
+    Awaited<ReturnType<typeof resolveCurrentPrivacyPolicy>>
+  >;
+  classifier?: Awaited<ReturnType<typeof loadActivePrivacyClassifier>>;
+}
+
+// One context belongs to one authority check in one still-open transaction.
+export const createSharedMemoryAuthorityReadContext =
+  (): SharedMemoryAuthorityReadContext => ({
+    sourceGrantLocks: new Set(),
+    privacyPolicies: new Map()
+  });
+
+export const readSharedMemoryGrantAuthorityWithClient = async (
+  client: SqlClient,
+  actor: ActorContext,
+  input: { shareGrantId: string; representation?: SharedMemoryRepresentation },
+  lockRows = false,
+  readContext?: SharedMemoryAuthorityReadContext
+): Promise<{
+  row: Row;
+  grant: ReturnType<typeof mapGrant>;
+  representation: ReturnType<typeof mapRepresentation>;
+  teamSourceBinding: ReturnType<
+    typeof sharedMemorySanitizedSemanticSourceBinding
+  >;
+} | null> => {
+  const lockedContext = lockRows ? readContext : undefined;
+  if (lockRows && !lockedContext?.sourceGrantLocks.has(input.shareGrantId)) {
+    // Lock source dependencies before evaluating the shared authorization query.
+    await client.query(
+      `select g.id from team_memory_share_grant_records g
+         join memory_replicas mr on mr.id=g.remote_replica_id
+         join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
+        where g.id=$1 for share of g,mr,sr`,
+      [input.shareGrantId]
+    );
+    lockedContext?.sourceGrantLocks.add(input.shareGrantId);
+  }
+  const result = await client.query(
+    `select g.*,
+        r.id as representation_row_id,r.consent_id as representation_consent_id,
+        r.source_preview_id,r.source_artifact_id,
+        r.sanitized_source_preview_id,
+        r.privacy_classifier_generation_id,
+        r.privacy_classifier_hash,r.effective_privacy_policy_hash,
+        r.source_manifest_hash,r.sanitized_content_hash,
+        r.representation,r.source_revision as representation_source_revision,
+        r.source_revision_hash,r.provenance_hash,
+        r.source_owner_policy_id as representation_owner_policy_id,
+        r.source_owner_policy_version as representation_owner_policy_version,
+        r.team_policy_id as representation_team_policy_id,
+        r.team_policy_version as representation_team_policy_version,
+        r.workspace_policy_id as representation_workspace_policy_id,
+        r.workspace_policy_version as representation_workspace_policy_version,
+        r.fidelity_policy_revision as fidelity_policy_revision_row,
+        r.content_policy_version as representation_content_policy_version,
+        r.classifier_version as representation_classifier_version,
+        r.record_version,r.state as representation_state,r.chunk_count,
+        r.created_at as representation_created_at,r.updated_at as representation_updated_at,
+        r.available_at,r.stale_at,r.invalidated_at,r.invalidation_reason_code,
+        semantic.expected_manifest_hash,
+        semantic.expected_chunk_count,
+        semantic.result_manifest_hash,
+        semantic.source_item_identity_hash,
+        semantic.source_item_count,
+        semantic.payload_binding_hash as semantic_payload_binding_hash,
+        privacy_classifier.version as privacy_classifier_version,
+        c.source_revision as consent_source_revision,
+        c.source_hash as consent_source_hash,
+        c.fidelity_policy_hash as consent_fidelity_policy_hash,
+        c.content_policy_hash as consent_content_policy_hash,
+        c.classifier_hash as consent_classifier_hash,
+        c.source_content_hash as consent_source_content_hash,
+        sp.preview_hash as representation_preview_hash,
+        sp.source_artifact_id as preview_source_artifact_id,
+        sp.source_hash as preview_source_hash,
+        sp.representation as preview_representation,
+        sa.artifact_hash as representation_artifact_hash,
+        sa.manifest_hash as representation_manifest_hash,
+        sa.representation_policy_hash as representation_fidelity_policy_hash,
+        mr.id as authority_replica_id,sr.id as authority_sync_id,
+        mr.freshness_status as replica_freshness_status,
+        sr.state as sync_relationship_state,
+        sr.target_processing_cursor,
+        c.mode as consent_mode
+   from team_memory_share_grant_records g
+   join teams t on t.id=g.team_id and t.lifecycle='active' and t.entitlement_status in ('active','grace')
+   join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$2
+     and tm.status='enabled' and tm.disabled_at is null
+   join users u on u.id=tm.user_id and u.disabled_at is null and u.deleted_at is null
+   join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
+     and tw.lifecycle='active' and tw.archived_at is null
+   join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
+     and wa.team_id=g.team_id and wa.user_id=$2 and wa.disabled_at is null
+     and wa.access in ('read','write')
+   join source_owner_representation_consent_records c on c.id=g.consent_id
+     and c.state in ('active','paused') and c.revoked_at is null
+     and (c.expires_at is null or c.expires_at>now())
+   join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
+     and op.version=g.source_owner_policy_version and op.superseded_at is null
+   join team_representation_policies tp on tp.policy_id=g.team_policy_id
+     and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+   join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
+     and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
+     and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+   left join memory_replicas mr on mr.id=g.remote_replica_id and mr.replica_role='target'
+     and mr.encryption_scope='owner_private_replica' and mr.lifecycle='active' and mr.disabled_at is null
+   left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
+     and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
+     and sr.state <> 'purge_pending'
+   join lateral (
+     select r0.* from team_memory_representation_records r0
+      where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
+        and r0.representation=coalesce(
+          $3::shared_memory_representation,
+          g.activation_representation
+        )
+        and r0.state in ('available','stale')
+        and r0.invalidated_at is null
+        and (r0.curated_expires_at is null or r0.curated_expires_at>now())
+        and r0.source_owner_policy_id=g.source_owner_policy_id
+        and r0.source_owner_policy_version=g.source_owner_policy_version
+        and r0.team_policy_id=g.team_policy_id
+        and r0.team_policy_version=g.team_policy_version
+        and r0.workspace_policy_id=g.workspace_policy_id
+        and r0.workspace_policy_version=g.workspace_policy_version
+        and r0.fidelity_policy_revision=g.fidelity_policy_revision
+        and r0.content_policy_version=g.content_policy_version
+        and r0.classifier_version=g.classifier_version
+      order by r0.source_revision desc,r0.available_at desc limit 1
+                ${lockRows ? "for share of r0" : ""}
+   ) r on true
+   join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+   join shared_source_artifact_records sa on sa.id=r.source_artifact_id
+     and sa.invalidated_at is null
+   join shared_source_semantic_previews semantic
+     on semantic.id=r.sanitized_source_preview_id
+    and semantic.source_preview_id=r.source_preview_id
+    and semantic.source_artifact_id=r.source_artifact_id
+    and semantic.source_preview_revision=sp.preview_revision
+    and semantic.source_preview_hash=sp.preview_hash
+    and semantic.source_artifact_hash=sa.artifact_hash
+    and semantic.source_hash=sp.source_hash
+    and semantic.logical_memory_id=r.logical_memory_id
+    and semantic.owner_user_id=g.owner_user_id
+    and semantic.owner_principal_id=g.owner_principal_id
+    and semantic.team_id=r.team_id
+    and semantic.team_workspace_id=r.team_workspace_id
+    and semantic.representation=r.representation
+    and semantic.source_revision=r.source_revision
+    and semantic.classifier_generation_id=r.privacy_classifier_generation_id
+    and semantic.classifier_hash=r.privacy_classifier_hash
+    and semantic.effective_privacy_policy_hash=r.effective_privacy_policy_hash
+    and semantic.source_manifest_hash=r.source_manifest_hash
+    and semantic.sanitized_content_hash=r.sanitized_content_hash
+    and semantic.status='ready' and semantic.invalidated_at is null
+   join privacy_classifier_generations privacy_classifier
+     on privacy_classifier.id=r.privacy_classifier_generation_id
+    and privacy_classifier.classifier_hash=r.privacy_classifier_hash
+    and privacy_classifier.status='active'
+    and privacy_classifier.revoked_at is null
+  where g.id=$1 and g.lifecycle='active' and g.revoked_at is null
+    and (
+      (g.source_kind='captured_session' and mr.id is not null and sr.id is not null)
+      or (g.source_kind='personal_note' and g.remote_replica_id is null)
+    )
+    and ${cumulativeRepresentationAuthorizationSql("r.representation")}
+  limit 1 ${lockRows ? "for share of g,t,tm,u,tw,wa,c,op,tp,wp,sp,sa,semantic,privacy_classifier" : ""}`,
+    [input.shareGrantId, actor.userId, input.representation]
+  );
+  const row = result.rows[0] as Row | undefined;
+  if (!row) return null;
+
+  const grant = mapGrant(row);
+  const representationRow: Row = {
+    id: row.representation_row_id,
+    source_revision_id: row.source_revision_id,
+    share_grant_id: row.id,
+    consent_id: row.representation_consent_id,
+    source_preview_id: row.source_preview_id,
+    source_artifact_id: row.source_artifact_id,
+    sanitized_source_preview_id: row.sanitized_source_preview_id,
+    privacy_classifier_generation_id: row.privacy_classifier_generation_id,
+    privacy_classifier_hash: row.privacy_classifier_hash,
+    effective_privacy_policy_hash: row.effective_privacy_policy_hash,
+    source_manifest_hash: row.source_manifest_hash,
+    sanitized_content_hash: row.sanitized_content_hash,
+    team_id: row.team_id,
+    team_workspace_id: row.team_workspace_id,
+    logical_memory_id: row.logical_memory_id,
+    source_kind: row.source_kind,
+    session_id: row.session_id,
+    source_session_id: row.source_session_id,
+    source_note_id: row.source_note_id,
+    source_memory_event_id: row.source_memory_event_id,
+    representation: row.representation,
+    source_revision: row.representation_source_revision,
+    source_revision_hash: row.source_revision_hash,
+    provenance_hash: row.provenance_hash,
+    source_owner_policy_id: row.representation_owner_policy_id,
+    source_owner_policy_version: row.representation_owner_policy_version,
+    team_policy_id: row.representation_team_policy_id,
+    team_policy_version: row.representation_team_policy_version,
+    workspace_policy_id: row.representation_workspace_policy_id,
+    workspace_policy_version: row.representation_workspace_policy_version,
+    fidelity_policy_revision: row.fidelity_policy_revision_row,
+    content_policy_version: row.representation_content_policy_version,
+    classifier_version: row.representation_classifier_version,
+    record_version: row.record_version,
+    state: row.representation_state,
+    chunk_count: row.chunk_count,
+    created_at: row.representation_created_at,
+    updated_at: row.representation_updated_at,
+    available_at: row.available_at,
+    stale_at: row.stale_at,
+    invalidated_at: row.invalidated_at,
+    invalidation_reason_code: row.invalidation_reason_code
+  };
+  const representation = mapRepresentation(representationRow);
+  const activePrivacyClassifier =
+    lockedContext?.classifier ??
+    (await loadActivePrivacyClassifier(client, lockRows));
+  if (lockedContext) lockedContext.classifier = activePrivacyClassifier;
+  const privacyScope = JSON.stringify([
+    grant.ownerUserId,
+    grant.teamId,
+    grant.teamWorkspaceId
+  ]);
+  const effectivePrivacyPolicy =
+    lockedContext?.privacyPolicies.get(privacyScope) ??
+    (await resolveCurrentPrivacyPolicy(client, {
+      ownerUserId: grant.ownerUserId!,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.teamWorkspaceId,
+      lockRows
+    }));
+  lockedContext?.privacyPolicies.set(privacyScope, effectivePrivacyPolicy);
+  const expectedSourceRevisionHash =
+    sharedMemorySanitizedSemanticSourceRevisionHash({
+      sourcePreviewId: representation.sourcePreviewId,
+      sourcePreviewHash: stringValue(row.representation_preview_hash),
+      sourceArtifactId: representation.sourceArtifactId,
+      sourceArtifactHash: stringValue(row.representation_artifact_hash),
+      sourceManifestHash: representation.sourceManifestHash,
+      sourceRevision: representation.sourceRevision,
+      representation: representation.representation,
+      sanitizedSourcePreviewId: representation.sanitizedSourcePreviewId,
+      sanitizedContentHash: representation.sanitizedContentHash,
+      sourceItemIdentityHash: stringValue(row.source_item_identity_hash),
+      sourceItemCount: numberValue(row.source_item_count),
+      privacyClassifierGenerationId:
+        representation.privacyClassifierGenerationId,
+      privacyClassifierHash: representation.privacyClassifierHash,
+      effectivePrivacyPolicyHash: representation.effectivePrivacyPolicyHash
+    });
+  const teamSourceBinding = sharedMemorySanitizedSemanticSourceBinding({
+    sourceRevision: representation.sourceRevision,
+    sourceRevisionHash: expectedSourceRevisionHash,
+    fidelityPolicyRevision: representation.fidelityPolicyRevision,
+    fidelityPolicyHash: stringValue(row.representation_fidelity_policy_hash),
+    contentPolicyVersion: representation.contentPolicyVersion,
+    effectivePrivacyPolicyHash: representation.effectivePrivacyPolicyHash,
+    privacyClassifierVersion: numberValue(row.privacy_classifier_version),
+    privacyClassifierHash: representation.privacyClassifierHash
+  });
+  const expectedProvenanceHash = sharedMemorySanitizedSemanticProvenanceHash({
+    shareGrantId: grant.id,
+    consentId: grant.consentId,
+    logicalMemoryId: grant.logicalMemoryId,
+    representation: representation.representation,
+    binding: teamSourceBinding,
+    sourcePreviewId: representation.sourcePreviewId,
+    sourcePreviewHash: stringValue(row.representation_preview_hash),
+    sourceArtifactId: representation.sourceArtifactId,
+    sourceArtifactHash: stringValue(row.representation_artifact_hash),
+    sourceManifestHash: representation.sourceManifestHash,
+    sanitizedSourcePreviewId: representation.sanitizedSourcePreviewId,
+    expectedManifestHash: stringValue(row.expected_manifest_hash),
+    expectedChunkCount: numberValue(row.expected_chunk_count),
+    resultManifestHash: stringValue(row.result_manifest_hash),
+    sourceItemIdentityHash: stringValue(row.source_item_identity_hash),
+    sourceItemCount: numberValue(row.source_item_count),
+    semanticPayloadBindingHash: stringValue(row.semantic_payload_binding_hash),
+    privacyClassifierGenerationId: representation.privacyClassifierGenerationId,
+    privacyClassifierHash: representation.privacyClassifierHash,
+    effectivePrivacyPolicyHash: representation.effectivePrivacyPolicyHash,
+    sanitizedContentHash: representation.sanitizedContentHash,
+    sourceOwnerPolicyId: grant.sourceOwnerPolicyId,
+    sourceOwnerPolicyVersion: grant.sourceOwnerPolicyVersion,
+    teamPolicyId: grant.teamPolicyId,
+    teamPolicyVersion: grant.teamPolicyVersion,
+    workspacePolicyId: grant.workspacePolicyId,
+    workspacePolicyVersion: grant.workspacePolicyVersion
+  });
+  if (
+    stringValue(row.preview_source_artifact_id) !==
+      representation.sourceArtifactId ||
+    stringValue(row.preview_source_hash).length !== 64 ||
+    stringValue(row.preview_representation) !== representation.representation ||
+    stringValue(row.representation_preview_hash).length !== 64 ||
+    stringValue(row.representation_artifact_hash).length !== 64 ||
+    stringValue(row.representation_manifest_hash) !==
+      representation.sourceManifestHash ||
+    representation.sourceRevisionHash !== expectedSourceRevisionHash ||
+    representation.provenanceHash !== expectedProvenanceHash ||
+    representation.privacyClassifierGenerationId !==
+      activePrivacyClassifier.id ||
+    representation.privacyClassifierHash !==
+      activePrivacyClassifier.classifierHash ||
+    representation.effectivePrivacyPolicyHash !==
+      effectivePrivacyPolicy.effectivePolicyHash
+  ) {
+    throw new SharedMemoryConflictError(
+      "Team representation source preview binding mismatch"
+    );
+  }
+  return { row, grant, representation, teamSourceBinding };
+};
+
 export const createSharedMemoryRepository = (
   pool: pg.Pool,
   options: {
@@ -3958,110 +4537,6 @@ export const createSharedMemoryRepository = (
 
   const nullableNumber = (value: unknown): number | null =>
     value === null || value === undefined ? null : Number(value);
-
-  const mapPrivacyPolicy = (row: Row): PrivacyContentPolicyRecord => ({
-    id: stringValue(row.id),
-    policyId: stringValue(row.policy_id),
-    version: numberValue(row.version),
-    scope: stringValue(row.scope) as PrivacyContentPolicyRecord["scope"],
-    deploymentIdentityId: stringValue(row.deployment_identity_id),
-    sourceOwnerUserId: nullableString(row.source_owner_user_id),
-    teamId: nullableString(row.team_id),
-    teamWorkspaceId: nullableString(row.team_workspace_id),
-    labels: row.labels as PrivacyContentPolicyRecord["labels"],
-    replacementContractVersion: stringValue(row.replacement_contract_version),
-    policyHash: stringValue(row.policy_hash),
-    status: stringValue(row.status) as PrivacyContentPolicyRecord["status"],
-    effectiveAt: iso(row.effective_at),
-    createdAt: iso(row.created_at),
-    supersededAt: nullableIso(row.superseded_at),
-    revokedAt: nullableIso(row.revoked_at),
-    revocationReasonCode: nullableString(row.revocation_reason_code)
-  });
-
-  const resolveCurrentPrivacyPolicy = async (
-    client: SqlClient,
-    input: {
-      ownerUserId: string;
-      teamId: string;
-      teamWorkspaceId: string;
-      lockRows?: boolean;
-    }
-  ) => {
-    const result = await client.query<Row>(
-      `select policy.*
-         from privacy_content_policies policy
-         join deployment_identities deployment
-           on deployment.id=policy.deployment_identity_id
-          and deployment.locality='local'
-          and deployment.disabled_at is null
-        where policy.status='active'
-          and policy.effective_at<=now()
-          and (
-            (policy.scope='deployment'
-              and policy.source_owner_user_id is null
-              and policy.team_id is null
-              and policy.team_workspace_id is null)
-            or (policy.scope='source_owner'
-              and policy.source_owner_user_id=$1
-              and policy.team_id is null
-              and policy.team_workspace_id is null)
-            or (policy.scope='team'
-              and policy.source_owner_user_id is null
-              and policy.team_id=$2
-              and policy.team_workspace_id is null)
-            or (policy.scope='workspace'
-              and policy.source_owner_user_id is null
-              and policy.team_id=$2
-              and policy.team_workspace_id=$3)
-          )
-        order by policy.version desc
-        ${input.lockRows ? "for share of policy,deployment" : ""}`,
-      [input.ownerUserId, input.teamId, input.teamWorkspaceId]
-    );
-    const policies = result.rows.map(mapPrivacyPolicy);
-    if (!policies.some((policy) => policy.scope === "deployment")) {
-      throw new SharedMemoryConflictError(
-        "Active deployment privacy policy is required"
-      );
-    }
-    if (
-      new Set(policies.map((policy) => policy.scope)).size !== policies.length
-    ) {
-      throw new SharedMemoryConflictError(
-        "Privacy policy scope resolution is ambiguous"
-      );
-    }
-    try {
-      return resolveMonotonicPrivacyPolicySet(policies);
-    } catch {
-      throw new SharedMemoryConflictError(
-        "Effective privacy policy binding is invalid"
-      );
-    }
-  };
-
-  const loadActivePrivacyClassifier = async (
-    client: SqlClient
-  ): Promise<{ id: string; version: number; classifierHash: string }> => {
-    const result = await client.query<Row>(
-      `select id,version,classifier_hash
-         from privacy_classifier_generations
-        where status='active' and revoked_at is null
-        limit 2`
-    );
-    if (result.rows.length !== 1) {
-      throw new SharedMemoryConflictError(
-        "Exactly one active privacy classifier generation is required"
-      );
-    }
-    const row = result.rows[0]!;
-    return {
-      id: stringValue(row.id),
-      version: numberValue(row.version),
-      classifierHash: stringValue(row.classifier_hash)
-    };
-  };
 
   const assertLifecycleCode = (value: string, field: string): void => {
     if (!SAFE_LIFECYCLE_CODE_PATTERN.test(value)) {
@@ -17536,105 +18011,12 @@ export const createSharedMemoryRepository = (
     },
 
     async freezeSharedMemorySemanticRecallBoundary(actor, input) {
-      assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
-      if (
-        !Number.isInteger(input.maximumGrantCount) ||
-        input.maximumGrantCount < 1 ||
-        input.maximumGrantCount > 1024
-      ) {
-        throw new RangeError("maximumGrantCount must be between 1 and 1024");
-      }
-      const frozen = await pool.query<Row>(
-        `select t.id as team_id,t.version as team_version,
-                tw.version as workspace_version,tm.version as membership_version,
-                wa.version as workspace_access_version,u.xmin::text as user_row_version,
-                coalesce((
-                  select array_agg(g.id order by g.id)
-                    from (
-                      select distinct grant_row.id
-                        from team_memory_share_grant_records grant_row
-                        join team_memory_representation_records r
-                          on r.share_grant_id=grant_row.id
-                         and r.consent_id=grant_row.consent_id
-                         and r.state in ('available','stale') and r.invalidated_at is null
-                         and (r.curated_expires_at is null or r.curated_expires_at>now())
-                        join source_owner_representation_consent_records c
-                          on c.id=grant_row.consent_id and c.state='active'
-                         and c.revoked_at is null
-                         and (c.expires_at is null or c.expires_at>now())
-                        join source_owner_representation_policies op
-                          on op.policy_id=grant_row.source_owner_policy_id
-                         and op.version=grant_row.source_owner_policy_version
-                         and op.superseded_at is null
-                        join team_representation_policies tp
-                          on tp.policy_id=grant_row.team_policy_id
-                         and tp.version=grant_row.team_policy_version
-                         and tp.team_id=grant_row.team_id and tp.superseded_at is null
-                        join workspace_representation_policies wp
-                          on wp.policy_id=grant_row.workspace_policy_id
-                         and wp.version=grant_row.workspace_policy_version
-                         and wp.team_id=grant_row.team_id
-                         and wp.team_workspace_id=grant_row.team_workspace_id
-                         and wp.superseded_at is null
-                        left join memory_replicas mr on mr.id=grant_row.remote_replica_id
-                         and mr.lifecycle='active' and mr.replica_role='target'
-                         and mr.encryption_scope='owner_private_replica'
-                         and mr.disabled_at is null
-                        left join cross_identity_sync_relationships sr
-                          on sr.local_replica_id=mr.id
-                         and sr.logical_memory_id=grant_row.logical_memory_id
-                         and sr.side='target' and sr.revoked_at is null
-                         and sr.state in ('processing','partially_available','ready','stale')
-                        join shared_source_preview_records sp
-                          on sp.id=r.source_preview_id and sp.invalidated_at is null
-                        join shared_source_artifact_records sa
-                          on sa.id=r.source_artifact_id and sa.invalidated_at is null
-                       where grant_row.team_workspace_id=tw.id
-                         and grant_row.lifecycle='active' and grant_row.revoked_at is null
-                         and (
-                           (grant_row.source_kind='captured_session' and mr.id is not null and sr.id is not null)
-                           or (grant_row.source_kind='personal_note' and grant_row.remote_replica_id is null)
-                         )
-                         and ${cumulativeRepresentationAuthorizationSql("r.representation", { grant: "grant_row" })}
-                       order by grant_row.id
-                       limit $3
-                    ) g
-                ),array[]::uuid[]) as share_grant_ids
-           from team_workspaces tw
-           join teams t on t.id=tw.team_id and t.lifecycle='active'
-             and t.entitlement_status in ('active','grace')
-           join users u on u.id=$1 and u.disabled_at is null and u.deleted_at is null
-           join team_memberships tm on tm.team_id=t.id and tm.user_id=u.id
-             and tm.status='enabled' and tm.disabled_at is null
-           join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
-             and wa.team_id=t.id and wa.user_id=u.id and wa.disabled_at is null
-             and wa.access in ('read','write')
-          where tw.id=$2 and tw.lifecycle='active' and tw.archived_at is null
-          limit 1`,
-        [actor.userId, input.teamWorkspaceId, input.maximumGrantCount + 1]
+      return freezeSharedMemorySemanticRecallBoundaryWithClient(
+        pool,
+        actor,
+        input
       );
-      const row = frozen.rows[0];
-      if (!row) throw new SharedMemoryAuthorizationError();
-      const shareGrantIds = Array.isArray(row.share_grant_ids)
-        ? row.share_grant_ids.map(stringValue)
-        : [];
-      if (shareGrantIds.length > input.maximumGrantCount) {
-        throw new SharedMemoryAuthorizationError(
-          "Shared Memory authorization boundary exceeds the bounded run capacity"
-        );
-      }
-      return {
-        teamId: stringValue(row.team_id),
-        teamVersion: numberValue(row.team_version),
-        teamWorkspaceId: input.teamWorkspaceId,
-        workspaceVersion: numberValue(row.workspace_version),
-        membershipVersion: numberValue(row.membership_version),
-        workspaceAccessVersion: numberValue(row.workspace_access_version),
-        userRowVersion: stringValue(row.user_row_version),
-        shareGrantIds
-      };
     },
-
     async scanAuthorizedSharedMemorySemanticItems(actor, input) {
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       if (input.queryVector.length !== input.dimensions) {
@@ -18240,284 +18622,13 @@ export const createSharedMemoryRepository = (
         await client.query(
           "set transaction isolation level repeatable read read only"
         );
-        const result = await client.query(
-          `select g.*,
-                r.id as representation_row_id,r.consent_id as representation_consent_id,
-                r.source_preview_id,r.source_artifact_id,
-                r.sanitized_source_preview_id,
-                r.privacy_classifier_generation_id,
-                r.privacy_classifier_hash,r.effective_privacy_policy_hash,
-                r.source_manifest_hash,r.sanitized_content_hash,
-                r.representation,r.source_revision as representation_source_revision,
-                r.source_revision_hash,r.provenance_hash,
-                r.source_owner_policy_id as representation_owner_policy_id,
-                r.source_owner_policy_version as representation_owner_policy_version,
-                r.team_policy_id as representation_team_policy_id,
-                r.team_policy_version as representation_team_policy_version,
-                r.workspace_policy_id as representation_workspace_policy_id,
-                r.workspace_policy_version as representation_workspace_policy_version,
-                r.fidelity_policy_revision as fidelity_policy_revision_row,
-                r.content_policy_version as representation_content_policy_version,
-                r.classifier_version as representation_classifier_version,
-                r.record_version,r.state as representation_state,r.chunk_count,
-                r.created_at as representation_created_at,r.updated_at as representation_updated_at,
-                r.available_at,r.stale_at,r.invalidated_at,r.invalidation_reason_code,
-                semantic.expected_manifest_hash,
-                semantic.expected_chunk_count,
-                semantic.result_manifest_hash,
-                semantic.source_item_identity_hash,
-                semantic.source_item_count,
-                semantic.payload_binding_hash as semantic_payload_binding_hash,
-                privacy_classifier.version as privacy_classifier_version,
-                c.source_revision as consent_source_revision,
-                c.source_hash as consent_source_hash,
-                c.fidelity_policy_hash as consent_fidelity_policy_hash,
-                c.content_policy_hash as consent_content_policy_hash,
-                c.classifier_hash as consent_classifier_hash,
-                c.source_content_hash as consent_source_content_hash,
-                sp.preview_hash as representation_preview_hash,
-                sp.source_artifact_id as preview_source_artifact_id,
-                sp.source_hash as preview_source_hash,
-                sp.representation as preview_representation,
-                sa.artifact_hash as representation_artifact_hash,
-                sa.manifest_hash as representation_manifest_hash,
-                sa.representation_policy_hash as representation_fidelity_policy_hash,
-                mr.freshness_status as replica_freshness_status,
-                sr.state as sync_relationship_state,
-                sr.target_processing_cursor,
-                c.mode as consent_mode
-           from team_memory_share_grant_records g
-           join teams t on t.id=g.team_id and t.lifecycle='active' and t.entitlement_status in ('active','grace')
-           join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$2
-             and tm.status='enabled' and tm.disabled_at is null
-           join users u on u.id=tm.user_id and u.disabled_at is null and u.deleted_at is null
-           join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
-             and tw.lifecycle='active' and tw.archived_at is null
-           join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
-             and wa.team_id=g.team_id and wa.user_id=$2 and wa.disabled_at is null
-             and wa.access in ('read','write')
-           join source_owner_representation_consent_records c on c.id=g.consent_id
-             and c.state in ('active','paused') and c.revoked_at is null
-             and (c.expires_at is null or c.expires_at>now())
-           join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
-           join team_representation_policies tp on tp.policy_id=g.team_policy_id
-             and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
-           join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
-             and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
-           left join memory_replicas mr on mr.id=g.remote_replica_id and mr.replica_role='target'
-             and mr.encryption_scope='owner_private_replica' and mr.lifecycle='active' and mr.disabled_at is null
-           left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
-             and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.state <> 'purge_pending'
-           join lateral (
-             select r0.* from team_memory_representation_records r0
-              where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
-                and r0.representation=coalesce(
-                  $3::shared_memory_representation,
-                  g.activation_representation
-                )
-                and r0.state in ('available','stale')
-                and r0.invalidated_at is null
-                and (r0.curated_expires_at is null or r0.curated_expires_at>now())
-                and r0.source_owner_policy_id=g.source_owner_policy_id
-                and r0.source_owner_policy_version=g.source_owner_policy_version
-                and r0.team_policy_id=g.team_policy_id
-                and r0.team_policy_version=g.team_policy_version
-                and r0.workspace_policy_id=g.workspace_policy_id
-                and r0.workspace_policy_version=g.workspace_policy_version
-                and r0.fidelity_policy_revision=g.fidelity_policy_revision
-                and r0.content_policy_version=g.content_policy_version
-                and r0.classifier_version=g.classifier_version
-              order by r0.source_revision desc,r0.available_at desc limit 1
-           ) r on true
-           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifact_records sa on sa.id=r.source_artifact_id
-             and sa.invalidated_at is null
-           join shared_source_semantic_previews semantic
-             on semantic.id=r.sanitized_source_preview_id
-            and semantic.source_preview_id=r.source_preview_id
-            and semantic.source_artifact_id=r.source_artifact_id
-            and semantic.source_preview_revision=sp.preview_revision
-            and semantic.source_preview_hash=sp.preview_hash
-            and semantic.source_artifact_hash=sa.artifact_hash
-            and semantic.source_hash=sp.source_hash
-            and semantic.logical_memory_id=r.logical_memory_id
-            and semantic.owner_user_id=g.owner_user_id
-            and semantic.owner_principal_id=g.owner_principal_id
-            and semantic.team_id=r.team_id
-            and semantic.team_workspace_id=r.team_workspace_id
-            and semantic.representation=r.representation
-            and semantic.source_revision=r.source_revision
-            and semantic.classifier_generation_id=r.privacy_classifier_generation_id
-            and semantic.classifier_hash=r.privacy_classifier_hash
-            and semantic.effective_privacy_policy_hash=r.effective_privacy_policy_hash
-            and semantic.source_manifest_hash=r.source_manifest_hash
-            and semantic.sanitized_content_hash=r.sanitized_content_hash
-            and semantic.status='ready' and semantic.invalidated_at is null
-           join privacy_classifier_generations privacy_classifier
-             on privacy_classifier.id=r.privacy_classifier_generation_id
-            and privacy_classifier.classifier_hash=r.privacy_classifier_hash
-            and privacy_classifier.status='active'
-            and privacy_classifier.revoked_at is null
-          where g.id=$1 and g.lifecycle='active' and g.revoked_at is null
-            and (
-              (g.source_kind='captured_session' and mr.id is not null and sr.id is not null)
-              or (g.source_kind='personal_note' and g.remote_replica_id is null)
-            )
-            and ${cumulativeRepresentationAuthorizationSql("r.representation")}
-          limit 1`,
-          [input.shareGrantId, actor.userId, input.representation]
-        );
-        const row = result.rows[0] as Row | undefined;
-        if (!row) return null;
-
-        const grant = mapGrant(row);
-        const representationRow: Row = {
-          id: row.representation_row_id,
-          source_revision_id: row.source_revision_id,
-          share_grant_id: row.id,
-          consent_id: row.representation_consent_id,
-          source_preview_id: row.source_preview_id,
-          source_artifact_id: row.source_artifact_id,
-          sanitized_source_preview_id: row.sanitized_source_preview_id,
-          privacy_classifier_generation_id:
-            row.privacy_classifier_generation_id,
-          privacy_classifier_hash: row.privacy_classifier_hash,
-          effective_privacy_policy_hash: row.effective_privacy_policy_hash,
-          source_manifest_hash: row.source_manifest_hash,
-          sanitized_content_hash: row.sanitized_content_hash,
-          team_id: row.team_id,
-          team_workspace_id: row.team_workspace_id,
-          logical_memory_id: row.logical_memory_id,
-          source_kind: row.source_kind,
-          session_id: row.session_id,
-          source_session_id: row.source_session_id,
-          source_note_id: row.source_note_id,
-          source_memory_event_id: row.source_memory_event_id,
-          representation: row.representation,
-          source_revision: row.representation_source_revision,
-          source_revision_hash: row.source_revision_hash,
-          provenance_hash: row.provenance_hash,
-          source_owner_policy_id: row.representation_owner_policy_id,
-          source_owner_policy_version: row.representation_owner_policy_version,
-          team_policy_id: row.representation_team_policy_id,
-          team_policy_version: row.representation_team_policy_version,
-          workspace_policy_id: row.representation_workspace_policy_id,
-          workspace_policy_version: row.representation_workspace_policy_version,
-          fidelity_policy_revision: row.fidelity_policy_revision_row,
-          content_policy_version: row.representation_content_policy_version,
-          classifier_version: row.representation_classifier_version,
-          record_version: row.record_version,
-          state: row.representation_state,
-          chunk_count: row.chunk_count,
-          created_at: row.representation_created_at,
-          updated_at: row.representation_updated_at,
-          available_at: row.available_at,
-          stale_at: row.stale_at,
-          invalidated_at: row.invalidated_at,
-          invalidation_reason_code: row.invalidation_reason_code
-        };
-        const representation = mapRepresentation(representationRow);
-        const activePrivacyClassifier =
-          await loadActivePrivacyClassifier(client);
-        const effectivePrivacyPolicy = await resolveCurrentPrivacyPolicy(
+        const authorized = await readSharedMemoryGrantAuthorityWithClient(
           client,
-          {
-            ownerUserId: grant.ownerUserId!,
-            teamId: grant.teamId,
-            teamWorkspaceId: grant.teamWorkspaceId
-          }
+          actor,
+          input
         );
-        const expectedSourceRevisionHash =
-          sharedMemorySanitizedSemanticSourceRevisionHash({
-            sourcePreviewId: representation.sourcePreviewId,
-            sourcePreviewHash: stringValue(row.representation_preview_hash),
-            sourceArtifactId: representation.sourceArtifactId,
-            sourceArtifactHash: stringValue(row.representation_artifact_hash),
-            sourceManifestHash: representation.sourceManifestHash,
-            sourceRevision: representation.sourceRevision,
-            representation: representation.representation,
-            sanitizedSourcePreviewId: representation.sanitizedSourcePreviewId,
-            sanitizedContentHash: representation.sanitizedContentHash,
-            sourceItemIdentityHash: stringValue(row.source_item_identity_hash),
-            sourceItemCount: numberValue(row.source_item_count),
-            privacyClassifierGenerationId:
-              representation.privacyClassifierGenerationId,
-            privacyClassifierHash: representation.privacyClassifierHash,
-            effectivePrivacyPolicyHash:
-              representation.effectivePrivacyPolicyHash
-          });
-        const teamSourceBinding = sharedMemorySanitizedSemanticSourceBinding({
-          sourceRevision: representation.sourceRevision,
-          sourceRevisionHash: expectedSourceRevisionHash,
-          fidelityPolicyRevision: representation.fidelityPolicyRevision,
-          fidelityPolicyHash: stringValue(
-            row.representation_fidelity_policy_hash
-          ),
-          contentPolicyVersion: representation.contentPolicyVersion,
-          effectivePrivacyPolicyHash: representation.effectivePrivacyPolicyHash,
-          privacyClassifierVersion: numberValue(row.privacy_classifier_version),
-          privacyClassifierHash: representation.privacyClassifierHash
-        });
-        const expectedProvenanceHash =
-          sharedMemorySanitizedSemanticProvenanceHash({
-            shareGrantId: grant.id,
-            consentId: grant.consentId,
-            logicalMemoryId: grant.logicalMemoryId,
-            representation: representation.representation,
-            binding: teamSourceBinding,
-            sourcePreviewId: representation.sourcePreviewId,
-            sourcePreviewHash: stringValue(row.representation_preview_hash),
-            sourceArtifactId: representation.sourceArtifactId,
-            sourceArtifactHash: stringValue(row.representation_artifact_hash),
-            sourceManifestHash: representation.sourceManifestHash,
-            sanitizedSourcePreviewId: representation.sanitizedSourcePreviewId,
-            expectedManifestHash: stringValue(row.expected_manifest_hash),
-            expectedChunkCount: numberValue(row.expected_chunk_count),
-            resultManifestHash: stringValue(row.result_manifest_hash),
-            sourceItemIdentityHash: stringValue(row.source_item_identity_hash),
-            sourceItemCount: numberValue(row.source_item_count),
-            semanticPayloadBindingHash: stringValue(
-              row.semantic_payload_binding_hash
-            ),
-            privacyClassifierGenerationId:
-              representation.privacyClassifierGenerationId,
-            privacyClassifierHash: representation.privacyClassifierHash,
-            effectivePrivacyPolicyHash:
-              representation.effectivePrivacyPolicyHash,
-            sanitizedContentHash: representation.sanitizedContentHash,
-            sourceOwnerPolicyId: grant.sourceOwnerPolicyId,
-            sourceOwnerPolicyVersion: grant.sourceOwnerPolicyVersion,
-            teamPolicyId: grant.teamPolicyId,
-            teamPolicyVersion: grant.teamPolicyVersion,
-            workspacePolicyId: grant.workspacePolicyId,
-            workspacePolicyVersion: grant.workspacePolicyVersion
-          });
-        if (
-          stringValue(row.preview_source_artifact_id) !==
-            representation.sourceArtifactId ||
-          stringValue(row.preview_source_hash).length !== 64 ||
-          stringValue(row.preview_representation) !==
-            representation.representation ||
-          stringValue(row.representation_preview_hash).length !== 64 ||
-          stringValue(row.representation_artifact_hash).length !== 64 ||
-          stringValue(row.representation_manifest_hash) !==
-            representation.sourceManifestHash ||
-          representation.sourceRevisionHash !== expectedSourceRevisionHash ||
-          representation.provenanceHash !== expectedProvenanceHash ||
-          representation.privacyClassifierGenerationId !==
-            activePrivacyClassifier.id ||
-          representation.privacyClassifierHash !==
-            activePrivacyClassifier.classifierHash ||
-          representation.effectivePrivacyPolicyHash !==
-            effectivePrivacyPolicy.effectivePolicyHash
-        ) {
-          throw new SharedMemoryConflictError(
-            "Team representation source preview binding mismatch"
-          );
-        }
+        if (!authorized) return null;
+        const { row, grant, representation, teamSourceBinding } = authorized;
         const chunksResult = await client.query(
           `select id,chunk_index,aad from team_memory_representation_chunks
           where representation_id=$1 and share_grant_id=$2 and team_id=$3

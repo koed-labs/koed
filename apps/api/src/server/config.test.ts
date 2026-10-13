@@ -2,6 +2,59 @@ import { describe, expect, it } from "vitest";
 import { resolveApiServerConfig } from "./config.js";
 
 describe("resolveApiServerConfig", () => {
+  it("requires explicit remote MCP opt-in and a canonical secure public resource", () => {
+    expect(resolveApiServerConfig({}).remoteMcp.enabled).toBe(false);
+    expect(() =>
+      resolveApiServerConfig({ KOED_REMOTE_MCP_ENABLED: "1" })
+    ).toThrow("exactly");
+    expect(() =>
+      resolveApiServerConfig({ KOED_REMOTE_MCP_ENABLED: "true" })
+    ).toThrow("PUBLIC_URL is required");
+    expect(
+      resolveApiServerConfig({
+        KOED_REMOTE_MCP_ENABLED: "true",
+        KOED_REMOTE_MCP_PUBLIC_URL: "https://memory.example/mcp"
+      }).remoteMcp
+    ).toEqual({ enabled: true, resourceUrl: "https://memory.example/mcp" });
+  });
+
+  it.each([
+    "http://memory.example/mcp",
+    "http://localhost:3300/mcp",
+    "https://memory.example/",
+    "https://memory.example/mcp/",
+    "https://user:secret@memory.example/mcp",
+    "https://memory.example/mcp?token=secret",
+    "https://memory.example/mcp#fragment"
+  ])("rejects unsafe remote MCP resource %s", (resourceUrl) => {
+    expect(() =>
+      resolveApiServerConfig({
+        KOED_REMOTE_MCP_ENABLED: "true",
+        KOED_REMOTE_MCP_PUBLIC_URL: resourceUrl
+      })
+    ).toThrow("canonical HTTPS /mcp");
+  });
+
+  it("permits literal loopback HTTP only outside production", () => {
+    for (const resourceUrl of [
+      "http://127.0.0.1:3300/mcp",
+      "http://[::1]:3300/mcp"
+    ]) {
+      expect(
+        resolveApiServerConfig({
+          KOED_REMOTE_MCP_ENABLED: "true",
+          KOED_REMOTE_MCP_PUBLIC_URL: resourceUrl
+        }).remoteMcp.resourceUrl
+      ).toBe(resourceUrl);
+      expect(() =>
+        resolveApiServerConfig({
+          NODE_ENV: "production",
+          KOED_REMOTE_MCP_ENABLED: "true",
+          KOED_REMOTE_MCP_PUBLIC_URL: resourceUrl
+        })
+      ).toThrow("canonical HTTPS /mcp");
+    }
+  });
   it("resolves development defaults", () => {
     const config = resolveApiServerConfig({});
 

@@ -114,13 +114,14 @@ explicit backend selection check runtime capabilities on each call; an older
 runtime reports a restart instruction instead of accepting unsupported routing.
 Restart Pi after updating the installed Koed integration to load the new tool.
 
-Persistent Pi Conversations use deferred Personal Memory Answer delivery when
+Persistent Pi Conversations use deferred Memory Answer delivery when
 Pi provides the required history and message APIs. The tool returns a receipt;
 the extension polls outside the model loop and automatically delivers completion
 into the original Conversation. `KOED_PI_MEMORY_ANSWER_MODE=blocking` selects
-blocking recall. Ephemeral sessions and Team Workspace calls retain blocking
-recall. Single-shot print and JSON runs (`pi -p`, `pi --mode json`) also block,
-because Pi exits after the prompted turn. An SDK host that does not bind an
+blocking recall. Team Workspace calls use the same deferred delivery as
+Personal calls. Ephemeral sessions retain blocking recall. Single-shot print
+and JSON runs (`pi -p`, `pi --mode json`) also block, because Pi exits after
+the prompted turn. An SDK host that does not bind an
 extension mode reports print mode and blocks too. Koed Desktop-managed Pi
 Conversations block, because Koed presents only the turn it prompted. If you
 press Esc while the agent is busy, Pi drops the queued completion; Koed then

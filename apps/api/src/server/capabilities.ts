@@ -96,6 +96,8 @@ export interface CapabilityDescriptor {
   description: string;
   endpoints?: string[];
   requiresAuthentication?: boolean;
+  version?: number;
+  supportedScopes?: Array<"personal" | "team">;
 }
 
 export interface CapabilitiesResponse {
@@ -349,7 +351,7 @@ const descriptor = (
   description: string,
   options: Pick<
     CapabilityDescriptor,
-    "endpoints" | "requiresAuthentication"
+    "endpoints" | "requiresAuthentication" | "version" | "supportedScopes"
   > = {}
 ): CapabilityDescriptor => ({
   availability,
@@ -440,6 +442,19 @@ const buildCapabilities = (input: {
   "memory.mcpRecall": descriptor(
     "available",
     "Personal Memory recall through memory_answer."
+  ),
+  "memory.answerTasks": descriptor(
+    "available",
+    "Durable Memory Answer execution by an authorized Local AI Runtime.",
+    {
+      version: 2,
+      supportedScopes:
+        input.memory.teamWorkspaces !== "unavailable"
+          ? ["personal", "team"]
+          : ["personal"],
+      requiresAuthentication: true,
+      endpoints: ["/v1/memory/answer-tasks"]
+    }
   ),
   "memory.curatedIntake": descriptor(
     "available",

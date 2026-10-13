@@ -15,7 +15,10 @@ import {
 import type { RecipientPublicKeyMaterial } from "./envelope-encryption.js";
 
 export interface ConversationSourceRewriteFrontier {
-  kind: "codex_legacy_to_paginated" | "codex_paginated_continuation";
+  kind:
+    | "codex_legacy_to_paginated"
+    | "codex_paginated_continuation"
+    | "pi_capture_resume";
   journalStartOffset: number;
   journalStartLine: number;
   liveStartOffset: number;

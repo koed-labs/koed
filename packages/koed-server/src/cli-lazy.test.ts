@@ -51,6 +51,19 @@ describe("lazy CLI help", () => {
     );
   });
 
+  it("prints remote authorization and helper commands without service startup", async () => {
+    const stdout = writer();
+    expect(
+      await runKoedServerCli(["remote", "--help"], { stdout: stdout.stream })
+    ).toBe(0);
+    expect(stdout.text()).toContain(
+      "remote login --backend HTTPS_URL --consent [--local-runtime]"
+    );
+    expect(stdout.text()).toContain("remote start");
+    expect(stdout.text()).toContain("remote logout --consent --json");
+    expect(serviceLoads).not.toHaveBeenCalled();
+  });
+
   it("loads the existing implementation for commands", async () => {
     expect(serviceLoads).not.toHaveBeenCalled();
     await expect(runKoedServerCli(["start"])).rejects.toThrow();

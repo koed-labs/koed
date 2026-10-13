@@ -232,7 +232,7 @@ describe("standalone Pi runtime port", () => {
       fetch.mock.calls.every(([, options]) => options.redirect === "error")
     ).toBe(true);
   });
-  it("preserves authoritative 409 for blocking fallback without provider-text disclosure", async () => {
+  it("returns authority rejection status without provider-text disclosure", async () => {
     const h = home();
     registration(h);
     vi.stubGlobal(
@@ -253,7 +253,7 @@ describe("standalone Pi runtime port", () => {
             status: 409,
             json: async () => ({
               error: "private provider payload",
-              errorCode: "memory_answer_team_ineligible"
+              errorCode: "private provider classification"
             })
           };
         }
@@ -263,16 +263,15 @@ describe("standalone Pi runtime port", () => {
       createRuntimeTaskPort(h).start({}, {}, "call")
     ).rejects.toMatchObject({
       statusCode: 409,
-      code: "memory_answer_team_ineligible",
       message: "Koed Local AI Runtime returned HTTP 409"
     });
   });
   it.each([
     [409, undefined],
     [409, "private arbitrary code"],
-    [503, "memory_answer_team_ineligible"]
+    [503, "private arbitrary code"]
   ])(
-    "does not classify unrelated HTTP %s errors (%s)",
+    "returns static HTTP %s errors without provider disclosure (%s)",
     async (status, errorCode) => {
       const h = home();
       registration(h);
@@ -291,7 +290,7 @@ describe("standalone Pi runtime port", () => {
         statusCode: status,
         message: `Koed Local AI Runtime returned HTTP ${status}`
       });
-      expect(error).not.toHaveProperty("code");
+      expect(String(error)).not.toContain("private provider payload");
     }
   );
   it("keeps the existing intake tool route and Pi caller", async () => {
