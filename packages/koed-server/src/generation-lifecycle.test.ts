@@ -158,6 +158,46 @@ describe("generation lifecycle", () => {
     await after.release();
   });
 
+  it("rejects a foreign bundle ownership journal during an application upgrade", async () => {
+    const paths = pathsForTest();
+    const resources = resolve(paths.koedHome, "resources"),
+      root = resolve(resources, "koed-runtime");
+    mkdirSync(root, { recursive: true });
+    const manifestPath = resolve(root, "desktop-bundle-manifest.json");
+    const manifest = {
+      schemaVersion: 1,
+      component: "base",
+      productVersion: "0.8.1",
+      target: { platform: "linux", architecture: "x64" },
+      files: []
+    };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const pin = await pinDesktopBundleGenerationForStart(
+      paths,
+      verifyDesktopRuntimeBundle(resources)
+    );
+    const id = pin.generation.id;
+    await pin.release();
+    const journalPath = resolve(
+      paths.generationsDir,
+      id,
+      "desktop-bundle.json"
+    );
+    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    journal.owner.installationId = "foreign-installation";
+    writeFileSync(journalPath, JSON.stringify(journal));
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...manifest, productVersion: "0.9.0" })
+    );
+    await expect(
+      pinDesktopBundleGenerationForStart(
+        paths,
+        verifyDesktopRuntimeBundle(resources)
+      )
+    ).rejects.toThrow("owner mismatch");
+  });
+
   it("keeps active signed privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();
     const productVersion = "0.8.1";
@@ -216,6 +256,24 @@ describe("generation lifecycle", () => {
     const pin = await pinDesktopBundleGenerationForStart(paths, capability);
     expect(pin.generation.id).toBe(generation.id);
     await pin.release();
+    writeFileSync(
+      resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        productVersion: "0.9.0",
+        component: "base",
+        target,
+        files: []
+      })
+    );
+    const upgraded = await pinDesktopBundleGenerationForStart(
+      paths,
+      verifyDesktopRuntimeBundle(resourcesPath)
+    );
+    expect(upgraded.generation.productVersion).toBe("0.9.0");
+    expect(upgraded.generation.privacy).toBeUndefined();
+    expect(upgraded.generation.owner).toEqual(desktopOwner);
+    await upgraded.release();
   });
 
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
