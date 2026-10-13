@@ -1,4 +1,4 @@
-# ADR 0030: Managed Codex Global Memory Guidance
+# ADR 0050: Managed Codex Global Memory Guidance
 
 ## Status
 

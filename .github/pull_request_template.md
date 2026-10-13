@@ -1,6 +1,11 @@
-## Summary
+## TL;DR
 
-<!-- What changed, and what problem does it solve? -->
+<!-- What will a user notice? Start with New:, Fixed:, Changed:, or No user-facing change:
+     e.g. "Fixed: Logins no longer take several seconds", not "Fixed: Backend login processing". -->
+
+## Changes
+
+<!-- For reviewers: what changed in the code, and why? -->
 
 ## Related Issues
 

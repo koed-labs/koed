@@ -6,7 +6,7 @@ Related decisions:
 
 - [0013 Team Collaboration Authority](./0013-team-collaboration-authority.md)
 - [0018 Personal Collaboration Sync And Cross-Platform Secret Providers](./0018-personal-collaboration-and-cross-platform-secret-providers.md)
-- [0029 Selective PII Team Representations](./0029-selective-pii-team-representations.md)
+- [0049 Selective PII Team Representations](./0049-selective-pii-team-representations.md)
 - [0033 Generic Logical Memory Source Revisions](./0033-generic-logical-memory-source-revisions.md)
 
 ## Context

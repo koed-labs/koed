@@ -226,6 +226,43 @@ export const registeredPrivateNetworkPolicy =
       );
     });
 
+const lookupWithAbortSignal = (
+  lookup: (hostname: string) => Promise<ResolvedAddress[]>,
+  hostname: string,
+  signal: AbortSignal | null | undefined
+): Promise<ResolvedAddress[]> => {
+  if (!signal) return lookup(hostname);
+  signal.throwIfAborted();
+  return new Promise((resolve, rejectPromise) => {
+    const rejectReason = (reason: unknown) => {
+      // Preserve AbortSignal and DNS lookup rejection reasons verbatim.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      rejectPromise(reason);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      rejectReason(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      void lookup(hostname).then(
+        (addresses) => {
+          cleanup();
+          resolve(addresses);
+        },
+        (error: unknown) => {
+          cleanup();
+          rejectReason(error);
+        }
+      );
+    } catch (error) {
+      cleanup();
+      rejectReason(error);
+    }
+  });
+};
+
 export const createSecureUpstreamFetch = (
   options: SecureUpstreamFetchOptions = {}
 ): SecureUpstreamFetch => {
@@ -253,7 +290,15 @@ export const createSecureUpstreamFetch = (
     if (url.protocol === "http:" && !exactLoopbackHostname(url.hostname)) {
       throw new Error("Upstream request must use HTTPS outside loopback");
     }
-    const addresses = await lookup(url.hostname.replace(/^\[|\]$/g, ""));
+    const signal =
+      init.signal === undefined && input instanceof Request
+        ? input.signal
+        : init.signal;
+    const addresses = await lookupWithAbortSignal(
+      lookup,
+      url.hostname.replace(/^\[|\]$/g, ""),
+      signal
+    );
     const selected = assertAllowedAddresses(
       url,
       addresses,

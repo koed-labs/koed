@@ -8,8 +8,8 @@ Related decisions:
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Exclusive Execution Handoff And Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
 - [0024 Tiered Desktop Action Approval](./0024-tiered-desktop-action-approval.md)
-- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
-- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
+- [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 - [0035 Runner-Owned Rooted File Authority](./0035-runner-owned-rooted-file-authority.md)
 
 ## Context
@@ -158,7 +158,7 @@ from lease expiry alone.
 
 ### Interactive Transport
 
-Terminal bytes use the interactive traffic class from ADR 0031. The preferred
+Terminal bytes use the interactive traffic class from ADR 0053. The preferred
 path is a dedicated reliable WebTransport stream within the admitted backend
 session. WebSocket uses the same typed framing and flow-control contract as a
 compatibility adapter. Finite create, list, stop, and recovery operations use

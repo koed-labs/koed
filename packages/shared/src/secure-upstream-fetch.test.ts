@@ -53,6 +53,60 @@ describe("secure upstream fetch", () => {
     await secureFetch.close();
   });
 
+  it("aborts DNS lookup when a Request signal is aborted", async () => {
+    const controller = new AbortController();
+    let startLookup!: () => void;
+    let releaseLookup!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      startLookup = resolve;
+    });
+    const pendingLookup = new Promise<{ address: string; family: 4 | 6 }[]>(
+      (resolve) => {
+        releaseLookup = () => resolve([{ address: "203.0.114.8", family: 4 }]);
+      }
+    );
+    const createDispatcher = vi.fn(createTestDispatcher);
+    const request = vi.fn<typeof fetch>(async (input, init) => {
+      (
+        init?.signal ?? (input instanceof Request ? input.signal : undefined)
+      )?.throwIfAborted();
+      return new Response("ok");
+    });
+    const secureFetch = createSecureUpstreamFetch({
+      dependencies: {
+        lookup: () => {
+          startLookup();
+          return pendingLookup;
+        },
+        createDispatcher,
+        fetch: request
+      }
+    });
+    const requestResult = secureFetch(
+      new Request("https://team.example.test", { signal: controller.signal })
+    ).then(
+      () => "resolved" as const,
+      () => "rejected" as const
+    );
+
+    try {
+      await lookupStarted;
+      controller.abort(new DOMException("request aborted", "AbortError"));
+      const outcome = await Promise.race([
+        requestResult,
+        new Promise<"pending">((resolve) =>
+          setImmediate(() => resolve("pending"))
+        )
+      ]);
+      expect(outcome).toBe("rejected");
+      expect(createDispatcher).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      releaseLookup();
+      await secureFetch.close();
+    }
+  });
+
   it("rejects metadata, disguised loopback, mixed-class DNS, and private DNS by default", async () => {
     const run = (addresses: { address: string; family: 4 | 6 }[]) =>
       createSecureUpstreamFetch({
