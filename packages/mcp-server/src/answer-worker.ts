@@ -4414,7 +4414,11 @@ export const answerWithMemoryWorker = async (
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
     const limiting = limitingBudgets(exhaustedBudgets);
     const retrievalIncomplete =
-      (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
+      (failureState ? retrievalErrors(failureState).length : 0) > 0 ||
+      limiting.length > 0;
+    // The worker used every attempt after complete retrieval, so the answer is
+    // still incomplete even though no retrieval stage failed.
+    const workerAttemptsExhausted = exhaustedBudgets.includes("attempts");
     const failureKind = classifyMemoryAnswerFailure(
       workerErrorMessage,
       retrievalIncomplete,
@@ -4428,7 +4432,9 @@ export const answerWithMemoryWorker = async (
       providerFailureCode
     );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
-      failureKind === "validation" || retrievalIncomplete
+      failureKind === "validation" ||
+      retrievalIncomplete ||
+      workerAttemptsExhausted
         ? {
             schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
             memory_status: "insufficient",
@@ -4439,17 +4445,21 @@ export const answerWithMemoryWorker = async (
                 ? "The Memory Answer worker output did not satisfy the required answer format."
                 : limiting.length > 0
                   ? `Memory Answer exhausted bounded resources (${limiting.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
-                  : "One or more bounded retrieval operations failed before the available memory could be judged completely.",
+                  : retrievalIncomplete
+                    ? "One or more bounded retrieval operations failed before the available memory could be judged completely."
+                    : "The Memory Answer worker used every allowed attempt without producing an answer Koed could verify.",
             evidence: [],
             missing: [
               failureKind === "validation"
                 ? "valid structured worker output"
                 : limiting.length > 0
                   ? `unexhausted ${limiting.slice(0, 8).join(", ")} budget`
-                  : "complete memory retrieval"
+                  : retrievalIncomplete
+                    ? "complete memory retrieval"
+                    : "verified worker answer"
             ],
             missing_evidence:
-              failureKind === "validation"
+              failureKind === "validation" || !retrievalIncomplete
                 ? []
                 : ["relevant evidence from the failed retrieval stages"]
           }

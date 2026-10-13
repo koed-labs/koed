@@ -2561,6 +2561,72 @@ process.stdin.once("data", () => {
     }
   });
 
+  it("reports a worker failure, not a retrieval failure, when retrieval completed", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        useTools: false
+      });
+      const client: MemoryAnswerRetrievalClient = {
+        async search() {
+          return { retrieval: { stages: [] } };
+        },
+        async expand() {
+          throw new Error("expand should not run without candidates");
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          markdown: "",
+          evidenceBundle: {
+            query: "Are we running koed on docker?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          })
+        }
+      );
+
+      expect(response.localMemoryWorker.usedFallback).toBe(true);
+      expect(response.localMemoryWorker.errorMessage).toContain(
+        "without resolvable supporting evidence"
+      );
+      expect(response.markdown).toBe(
+        "The Codex worker could not verify its answer against enough supporting Personal Memory evidence."
+      );
+      expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
+      expect(response.structuredAnswer).toMatchObject({
+        memory_status: "insufficient",
+        relevant_memory_found: false,
+        relevance_explanation:
+          "The Memory Answer worker used every allowed attempt without producing an answer Koed could verify.",
+        evidence: [],
+        missing: ["verified worker answer"],
+        missing_evidence: []
+      });
+      expect(response.evidenceBundle?.retrieval).toMatchObject({
+        trace: {
+          orderedErrors: [],
+          budgets: { exhausted: ["attempts"] }
+        }
+      });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("bounds retrieval hints at the request schema", () => {
     expect(
       memoryAnswerRetrievalHintsSchema.safeParse({
