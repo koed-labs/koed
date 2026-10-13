@@ -1,17 +1,27 @@
+# Version control
+.git
+
+# Dependencies
 node_modules
 **/node_modules
 **/.venv
+
+# Build output and caches
 dist
 **/dist
-**/target
-apps/desktop/src-tauri/resources/koed-node
+*.tsbuildinfo
+**/*.tsbuildinfo
+coverage
+
+# Desktop packaging output
 apps/desktop/.koed-runtime
 apps/desktop/release
-coverage
-.git
-.playwright-cli
+
+# Local environment and secrets
 .env
 .env.*
 !.env.example
-*.tsbuildinfo
-**/*.tsbuildinfo
+scratch
+
+# Tooling
+.playwright-cli
