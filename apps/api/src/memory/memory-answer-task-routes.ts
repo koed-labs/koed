@@ -55,7 +55,8 @@ export const registerMemoryAnswerTaskRoutes = (
     allowPersonal: boolean;
   }): TaskActor => ({
     userId: auth.user.id,
-    allowTeam: auth.allowTeam,
+    allowTeam:
+      context.config.teamCollaborationEnabled !== false && auth.allowTeam,
     allowPersonal: auth.allowPersonal
   });
 

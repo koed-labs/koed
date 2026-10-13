@@ -58,7 +58,14 @@ const credentialSchema = z
     issuerUrl: z.string(),
     userId: z.string().min(1).max(256),
     clientId: z.string().min(1).max(2048),
-    tokens: tokenSchema.optional()
+    tokens: tokenSchema.optional(),
+    pendingRevocation: z
+      .object({
+        token: tokenSchema.shape.accessToken,
+        tokenTypeHint: z.enum(["refresh_token", "access_token"])
+      })
+      .strict()
+      .optional()
   })
   .strict()
   .superRefine((record, context) => {
@@ -78,7 +85,11 @@ const credentialSchema = z
     }
   });
 
-export type RemoteMcpCredential = z.infer<typeof credentialSchema>;
+type StoredRemoteMcpCredential = z.infer<typeof credentialSchema>;
+export type RemoteMcpCredential = Omit<
+  StoredRemoteMcpCredential,
+  "pendingRevocation"
+>;
 export type RemoteMcpTokens = z.infer<typeof tokenSchema>;
 
 export const remoteMcpCredentialPath = (
@@ -113,9 +124,9 @@ const assertCustody = (environment: NodeJS.ProcessEnv): void => {
   assertSafe(remoteMcpCredentialPath(environment), true);
 };
 
-export const readRemoteMcpCredential = (
+const readStoredRemoteMcpCredential = (
   environment: NodeJS.ProcessEnv = process.env
-): RemoteMcpCredential | null => {
+): StoredRemoteMcpCredential | null => {
   assertCustody(environment);
   const path = remoteMcpCredentialPath(environment);
   if (!existsSync(path)) return null;
@@ -127,6 +138,20 @@ export const readRemoteMcpCredential = (
     );
   }
 };
+
+export const readRemoteMcpCredential = (
+  environment: NodeJS.ProcessEnv = process.env
+): RemoteMcpCredential | null => {
+  const stored = readStoredRemoteMcpCredential(environment);
+  if (!stored) return null;
+  const { pendingRevocation, ...credential } = stored;
+  return pendingRevocation ? { ...credential, tokens: undefined } : credential;
+};
+
+export const readRemoteMcpPendingRevocation = (
+  environment: NodeJS.ProcessEnv
+): StoredRemoteMcpCredential["pendingRevocation"] =>
+  readStoredRemoteMcpCredential(environment)?.pendingRevocation;
 
 export const assertCleanRemoteMcpEnrollment = (
   environment: NodeJS.ProcessEnv
@@ -150,7 +175,7 @@ export const assertCleanRemoteMcpEnrollment = (
 
 export const writeRemoteMcpCredential = (
   environment: NodeJS.ProcessEnv,
-  credential: RemoteMcpCredential
+  credential: StoredRemoteMcpCredential
 ): void => {
   const parsed = credentialSchema.parse(credential);
   assertCustody(environment);

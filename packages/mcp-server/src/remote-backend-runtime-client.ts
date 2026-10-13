@@ -1,6 +1,6 @@
 import path from "node:path";
 import {
-  MEMORY_ANSWER_TASK_CONTRACT_VERSION,
+  isTeamMemoryAnswerTaskCapability,
   type MemoryAnswerTask
 } from "@koed/shared";
 import { MemoryAnswerDelivery } from "../integrations/pi/memory-answer-delivery.mjs";
@@ -135,15 +135,9 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
       typeof payload.capabilitySchemaVersion === "number" &&
       payload.capabilitySchemaVersion >= 4 &&
       capabilities?.["memory.curatedIntake"]?.availability === "available";
-    const tasks = capabilities?.["memory.answerTasks"] as
-      | { availability?: unknown; version?: unknown; supportedScopes?: unknown }
-      | undefined;
     const teamTasksAvailable =
       Boolean(this.options.supportedTaskScopes?.team) &&
-      tasks?.availability === "available" &&
-      tasks.version === MEMORY_ANSWER_TASK_CONTRACT_VERSION &&
-      Array.isArray(tasks.supportedScopes) &&
-      tasks.supportedScopes.includes("team");
+      isTeamMemoryAnswerTaskCapability(capabilities?.["memory.answerTasks"]);
     return {
       protocolVersion: 1,
       curatedMemoryIntakeAvailable,

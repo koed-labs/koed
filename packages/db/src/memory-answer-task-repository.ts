@@ -360,13 +360,44 @@ export const createMemoryAnswerTaskRepository = (
     return result.rows[0] ?? null;
   };
 
+  // Revocation permits queue maintenance, never access to the protected payload.
+  const retireDeniedTask = async (
+    client: pg.PoolClient,
+    row: TaskRow,
+    cancelled = false
+  ): Promise<MemoryAnswerTaskRecord> => {
+    const result = await client.query<TaskRow>(
+      `update memory_answer_tasks
+          set status = $2, lease_owner = null, lease_until = null,
+              fence_generation = fence_generation + 1,
+              failed_at = case when $2 = 'failed' then now() else failed_at end,
+              cancel_requested_at = case when $2 = 'cancelled' then coalesce(cancel_requested_at, now()) else cancel_requested_at end,
+              cancelled_at = case when $2 = 'cancelled' then now() else cancelled_at end,
+              status_message = null, last_error_code = 'team_authority_revoked',
+              last_error_message = null, updated_at = now(), version = version + 1
+        where id = $1 and status in ('accepted', 'running', 'cancel_requested')
+        returning ${TASK_COLUMNS}`,
+      [row.id, cancelled ? "cancelled" : "failed"]
+    );
+    return mapTask({
+      ...(result.rows[0] ?? row),
+      invocation_key: null,
+      question_id: null,
+      status_message: null,
+      result_snapshot: null,
+      last_error_code: "team_authority_revoked",
+      last_error_message: null
+    });
+  };
+
   const withOwnedTask = async (
     actor: MemoryAnswerTaskActor,
     taskId: string,
     operation: (
       client: pg.PoolClient,
       row: TaskRow
-    ) => Promise<MemoryAnswerTaskRecord | null>
+    ) => Promise<MemoryAnswerTaskRecord | null>,
+    cancelDeniedTeam = false
   ): Promise<MemoryAnswerTaskRecord | null> => {
     const client = await pool.connect();
     try {
@@ -374,8 +405,19 @@ export const createMemoryAnswerTaskRepository = (
       const row = await selectOwned(client, actor, taskId);
       let result: MemoryAnswerTaskRecord | null = null;
       if (row) {
-        await assertAuthority(client, actor, row);
-        result = await operation(client, row);
+        try {
+          await assertAuthority(client, actor, row);
+        } catch (error) {
+          if (
+            !cancelDeniedTeam ||
+            !actor.allowTeam ||
+            !row.team_workspace_id ||
+            !(error instanceof MemoryAnswerTeamAuthorityError)
+          )
+            throw error;
+          result = await retireDeniedTask(client, row, true);
+        }
+        if (!result) result = await operation(client, row);
       }
       await client.query("commit");
       return result;
@@ -517,66 +559,68 @@ export const createMemoryAnswerTaskRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        const eligible = await client.query<TaskRow>(
-          `select ${TASK_COLUMNS} from memory_answer_tasks
+        const reconciled: MemoryAnswerTaskRecord[] = [];
+        let row: TaskRow | undefined;
+        // Bound both row locks and expensive Team grant checks per claim call.
+        for (let checked = 0; checked < 16; checked += 1) {
+          const eligible = await client.query<TaskRow>(
+            `select ${TASK_COLUMNS} from memory_answer_tasks
             where owner_user_id = $1 and visibility = 'personal'
               and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
               and ($4::text is null or ($4 = 'personal' and team_workspace_id is null) or ($4 = 'team' and team_workspace_id is not null))
-              and status in ('accepted', 'running', 'cancel_requested')
-            order by available_at, created_at, id for update skip locked`,
-          [
-            actor.userId,
-            input.allowTeam === true && actor.allowTeam === true,
-            actor.allowPersonal !== false,
-            input.scopeFilter ?? "personal"
-          ]
-        );
-        const authorizedIds: string[] = [];
-        for (const candidate of eligible.rows) {
+              and ((status = 'accepted' and available_at <= now())
+                or (status = 'cancel_requested' and lease_until < now())
+                or (status = 'running' and lease_until < now()
+                    and (available_at <= now() or attempt_count >= max_attempts)))
+            order by available_at, created_at, id limit 1 for update skip locked`,
+            [
+              actor.userId,
+              input.allowTeam === true && actor.allowTeam === true,
+              actor.allowPersonal !== false,
+              input.scopeFilter ?? "personal"
+            ]
+          );
+          const candidate = eligible.rows[0];
+          if (!candidate) break;
           try {
             await assertAuthority(client, actor, candidate);
-            authorizedIds.push(candidate.id);
           } catch (error) {
-            // Revoked Team tasks remain inaccessible without blocking Personal work.
             if (!(error instanceof MemoryAnswerTeamAuthorityError)) throw error;
+            reconciled.push(await retireDeniedTask(client, candidate));
+            continue;
           }
-        }
-        const cancelled = await client.query<TaskRow>(
-          `update memory_answer_tasks
+          if (candidate.status === "cancel_requested") {
+            const cancelled = await client.query<TaskRow>(
+              `update memory_answer_tasks
               set status = 'cancelled', lease_owner = null, lease_until = null,
                   cancelled_at = now(), updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
-              and id = any($2::uuid[])
+              and id = $2
               and status = 'cancel_requested' and lease_until < now()
            returning ${TASK_COLUMNS}`,
-          [actor.userId, authorizedIds]
-        );
-        const exhausted = await client.query<TaskRow>(
-          `update memory_answer_tasks
+              [actor.userId, candidate.id]
+            );
+            reconciled.push(...cancelled.rows.map((item) => mapTask(item)));
+            continue;
+          }
+          if (candidate.attempt_count >= candidate.max_attempts) {
+            const exhausted = await client.query<TaskRow>(
+              `update memory_answer_tasks
               set status = 'failed', lease_owner = null, lease_until = null,
                   failed_at = now(), last_error_code = 'attempts_exhausted',
                   last_error_message = null, updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
-              and id = any($2::uuid[])
-              and status = 'running' and lease_until < now()
+              and id = $2
+              and (status = 'accepted' or (status = 'running' and lease_until < now()))
               and attempt_count >= max_attempts
            returning ${TASK_COLUMNS}`,
-          [actor.userId, authorizedIds]
-        );
-        const result = await client.query<TaskRow>(
-          `with candidate as (
-             select id as candidate_id
-               from memory_answer_tasks
-              where owner_user_id = $1 and visibility = 'personal'
-                and id = any($4::uuid[])
-                and available_at <= now()
-                and attempt_count < max_attempts
-                and (status = 'accepted' or (status = 'running' and lease_until < now()))
-              order by available_at, created_at, id
-              for update skip locked
-              limit 1
-           )
-           update memory_answer_tasks task
+              [actor.userId, candidate.id]
+            );
+            reconciled.push(...exhausted.rows.map((item) => mapTask(item)));
+            continue;
+          }
+          const result = await client.query<TaskRow>(
+            `update memory_answer_tasks task
               set status = 'running', lease_owner = $2,
                   lease_until = clock_timestamp() + ($3::text::interval),
                   fence_generation = fence_generation + 1,
@@ -584,17 +628,18 @@ export const createMemoryAnswerTaskRepository = (
                   started_at = coalesce(started_at, now()),
                   last_progress_at = now(), status_message = 'running',
                   updated_at = now(), version = version + 1
-             from candidate
-            where task.id = candidate.candidate_id
+            where task.id = $4 and owner_user_id = $1 and visibility = 'personal'
            returning ${TASK_COLUMNS}`,
-          [
-            actor.userId,
-            input.leaseOwner,
-            `${leaseMs} milliseconds`,
-            authorizedIds
-          ]
-        );
-        const row = result.rows[0];
+            [
+              actor.userId,
+              input.leaseOwner,
+              `${leaseMs} milliseconds`,
+              candidate.id
+            ]
+          );
+          row = result.rows[0];
+          break;
+        }
         let task: ClaimedMemoryAnswerTask | null = null;
         if (row) {
           await assertAuthority(client, actor, row);
@@ -624,9 +669,7 @@ export const createMemoryAnswerTaskRepository = (
           ...(row?.team_authorization
             ? { teamAuthority: row.team_authorization }
             : {}),
-          reconciled: [...cancelled.rows, ...exhausted.rows].map((item) =>
-            mapTask(item)
-          )
+          reconciled
         };
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
@@ -666,9 +709,12 @@ export const createMemoryAnswerTaskRepository = (
     },
 
     async cancelMemoryAnswerTask(actor, taskId) {
-      return withOwnedTask(actor, taskId, async (client, existing) => {
-        const result = await client.query<TaskRow>(
-          `update memory_answer_tasks
+      return withOwnedTask(
+        actor,
+        taskId,
+        async (client, existing) => {
+          const result = await client.query<TaskRow>(
+            `update memory_answer_tasks
             set status = case when status = 'accepted' then 'cancelled' else 'cancel_requested' end,
                 cancel_requested_at = coalesce(cancel_requested_at, now()),
                 cancelled_at = case when status = 'accepted' then now() else cancelled_at end,
@@ -677,10 +723,12 @@ export const createMemoryAnswerTaskRepository = (
           where owner_user_id = $1 and id = $2 and visibility = 'personal'
             and status in ('accepted', 'running')
          returning ${TASK_COLUMNS}`,
-          [actor.userId, taskId]
-        );
-        return hydrateTask(client, actor, result.rows[0] ?? existing);
-      });
+            [actor.userId, taskId]
+          );
+          return hydrateTask(client, actor, result.rows[0] ?? existing);
+        },
+        true
+      );
     },
 
     async completeMemoryAnswerTask(actor, input) {

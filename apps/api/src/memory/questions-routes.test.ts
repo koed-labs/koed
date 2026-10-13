@@ -19,7 +19,8 @@ afterEach(async () => {
 
 const fixture = async (
   credential: "token" | "oauth" | "browser",
-  scopes: string[] = []
+  scopes: string[] = [],
+  teamCollaborationEnabled = true
 ) => {
   const user = {
     id: randomUUID(),
@@ -90,6 +91,7 @@ const fixture = async (
   registerQuestionRoutes(app, {
     requireRepository: () => repository,
     auth,
+    config: { teamCollaborationEnabled },
     rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} }
   } as unknown as ApiRouteContext);
   const headers =
@@ -131,6 +133,53 @@ const expectProtectedAbsent = (body: string) => {
 };
 
 describe("Memory Question history credential boundaries", () => {
+  it.each(["Basic unrelated", "Bearer stale-personal-token"])(
+    "uses a successful browser session despite an unrelated %s header",
+    async (authorization) => {
+      const test = await fixture("browser");
+      const headers = { ...test.headers, authorization };
+      const listed = await test.app.inject({
+        method: "GET",
+        url: "/v1/memory/questions",
+        headers
+      });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json().questions).toContainEqual(test.protectedTeam);
+      const detail = await test.app.inject({
+        method: "GET",
+        url: `/v1/memory/questions/${test.protectedTeam.id}`,
+        headers
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json().question).toEqual(test.protectedTeam);
+    }
+  );
+
+  it.each(["oauth", "browser"] as const)(
+    "does not expand protected Team history for %s when Team collaboration is disabled",
+    async (credential) => {
+      const test = await fixture(
+        credential,
+        ["koed:memory:read", "koed:team:read"],
+        false
+      );
+      const listed = await test.app.inject({
+        method: "GET",
+        url: "/v1/memory/questions",
+        headers: test.headers
+      });
+      expect(listed.statusCode).toBe(200);
+      expectProtectedAbsent(listed.body);
+      const detail = await test.app.inject({
+        method: "GET",
+        url: `/v1/memory/questions/${test.protectedTeam.id}`,
+        headers: test.headers
+      });
+      expect(detail.statusCode).toBe(403);
+      expectProtectedAbsent(detail.body);
+      expect(test.expandTeam).not.toHaveBeenCalled();
+    }
+  );
   it("keeps Personal API Tokens on Personal and legacy history despite query-supplied Team permission", async () => {
     const test = await fixture("token");
     const listed = await test.app.inject({

@@ -33,8 +33,10 @@ export const registerQuestionRoutes = (
     request: FastifyRequest,
     userId: string
   ): Promise<MemoryQuestionActorContext> => {
-    const authorization = request.headers.authorization?.trim();
-    if (authorization) {
+    if (context.config.teamCollaborationEnabled === false)
+      return { userId, allowTeam: false };
+    const kind = context.auth.authenticatedCredentialKind(request);
+    if (kind === "oauth_delegated") {
       const principal = await context.auth.resolveDelegatedPrincipal(request);
       return {
         userId,
@@ -43,9 +45,9 @@ export const registerQuestionRoutes = (
           principal.scopes.includes("koed:team:read")
       };
     }
-    // The caller has already authenticated the browser session. Repository
-    // checks still decide whether each retained Team answer is readable.
-    return { userId, allowTeam: true };
+    // Only a successfully authenticated session permits browser Team history.
+    // Repository checks still decide whether each retained answer is readable.
+    return { userId, allowTeam: kind === "session" };
   };
 
   const decodeAskCursor = (value: string | undefined) => {

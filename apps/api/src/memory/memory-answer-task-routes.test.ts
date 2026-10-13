@@ -3,6 +3,7 @@ import type { MemorySourceRepository } from "@koed/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers } from "../auth/index.js";
 import type { ApiRouteContext } from "../server/context.js";
+import { registerTeamCollaborationFeatureGate } from "../server/team-collaboration-feature.js";
 import { registerMemoryAnswerTaskRoutes } from "./memory-answer-task-routes.js";
 import { verifyMemoryAnswerAuthorizationBoundary } from "./memory-answer-authorization-boundary.js";
 
@@ -27,9 +28,17 @@ afterEach(async () => {
 
 const fixture = ({
   scopes = ["koed:memory:read", "koed:local-execution", "koed:team:read"],
-  families = ["memory_answer_execution", "team_workspace_read"]
-}: { scopes?: string[]; families?: string[] } = {}) => {
+  families = ["memory_answer_execution", "team_workspace_read"],
+  teamCollaborationEnabled = true
+}: {
+  scopes?: string[];
+  families?: string[];
+  teamCollaborationEnabled?: boolean;
+} = {}) => {
   const app = Fastify();
+  registerTeamCollaborationFeatureGate(app, {
+    enabled: teamCollaborationEnabled
+  });
   apps.push(app);
   const task = { id: taskId, teamWorkspaceId: workspaceId, status: "running" };
   const repo = {
@@ -94,7 +103,10 @@ const fixture = ({
   registerMemoryAnswerTaskRoutes(app, {
     requireRepository: () => repo,
     auth,
-    config: { apiTokenPepper: "test-boundary-secret" },
+    config: {
+      apiTokenPepper: "test-boundary-secret",
+      teamCollaborationEnabled
+    },
     rateLimit: {
       aiClientControl: async () => {},
       memoryRead: async () => {},
@@ -122,6 +134,120 @@ describe("Memory Answer task serving authority", () => {
       },
       caller: { cwd: "" }
     }
+  });
+
+  it("disables Team task admission, claims, completion selectors and scoped reads before repository access", async () => {
+    const f = fixture({ teamCollaborationEnabled: false });
+    const admission = await f.request("/v1/memory/answer-tasks", accept());
+    const claim = await f.request("/v1/memory/answer-tasks/claim", {
+      lease_owner: "worker-lease-identifier",
+      scope_filter: "team"
+    });
+    const completion = await f.request(
+      `/v1/memory/answer-tasks/${taskId}/complete`,
+      { final_question: { team_workspace_id: workspaceId } }
+    );
+    const read = await f.app.inject({
+      method: "GET",
+      url: `/v1/memory/answer-tasks/${taskId}`,
+      headers: {
+        authorization: "Bearer delegated",
+        "x-koed-memory-answer-task-scope": "team"
+      }
+    });
+    for (const response of [admission, claim, completion, read]) {
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toBe("");
+    }
+    expect(f.repo.acceptMemoryAnswerTask).not.toHaveBeenCalled();
+    expect(f.repo.claimMemoryAnswerTask).not.toHaveBeenCalled();
+    expect(f.repo.completeMemoryAnswerTask).not.toHaveBeenCalled();
+    expect(f.repo.getMemoryAnswerTask).not.toHaveBeenCalled();
+  });
+
+  it("narrows all stored-ID task operations to Personal authority while Team collaboration is disabled", async () => {
+    const f = fixture({ teamCollaborationEnabled: false });
+    f.repo.getMemoryAnswerTask.mockResolvedValueOnce(null as never);
+    f.repo.heartbeatMemoryAnswerTask.mockResolvedValueOnce(null as never);
+    f.repo.cancelMemoryAnswerTask.mockResolvedValueOnce(null as never);
+    f.repo.completeMemoryAnswerTask.mockResolvedValueOnce(null as never);
+    f.repo.failMemoryAnswerTask.mockResolvedValueOnce(null as never);
+    const read = await f.request(
+      `/v1/memory/answer-tasks/${taskId}`,
+      undefined,
+      "Bearer delegated",
+      "GET"
+    );
+    expect(read.statusCode).toBe(404);
+    for (const operation of ["heartbeat", "cancel", "complete", "fail"]) {
+      const response = await f.request(
+        `/v1/memory/answer-tasks/${taskId}/${operation}`,
+        operation === "cancel"
+          ? {}
+          : {
+              lease_owner: "worker-lease-identifier",
+              fence_generation: 1,
+              ...(operation === "heartbeat" ? { lease_ms: 30000 } : {}),
+              ...(operation === "fail"
+                ? {
+                    error_code: "worker_failure",
+                    error_message: "Worker failed",
+                    retry: false
+                  }
+                : {}),
+              ...(operation === "complete"
+                ? {
+                    final_question: {
+                      idempotency_key: "task-final-personal",
+                      status: "answered",
+                      query: "fact",
+                      origin: "mcp_memory_answer",
+                      search_domain: "global",
+                      retrieval_scope: "personal",
+                      answer_markdown: "Personal answer"
+                    },
+                    result: { markdown: "Personal answer" }
+                  }
+                : {})
+            }
+      );
+      expect([404, 409], response.body).toContain(response.statusCode);
+    }
+    for (const method of [
+      f.repo.getMemoryAnswerTask,
+      f.repo.heartbeatMemoryAnswerTask,
+      f.repo.cancelMemoryAnswerTask,
+      f.repo.completeMemoryAnswerTask,
+      f.repo.failMemoryAnswerTask
+    ]) {
+      expect(method).toHaveBeenCalledWith(
+        { userId, allowTeam: false, allowPersonal: true },
+        expect.anything()
+      );
+    }
+    expect(f.repo.getMemoryAnswerTaskTeamAuthority).not.toHaveBeenCalled();
+    const claimed = await f.request("/v1/memory/answer-tasks/claim", {
+      lease_owner: "worker-lease-identifier",
+      lease_ms: 30000
+    });
+    expect(claimed.statusCode).toBe(200);
+    expect(f.repo.claimMemoryAnswerTask).toHaveBeenCalledWith(
+      { userId, allowTeam: false, allowPersonal: true },
+      expect.objectContaining({ allowTeam: false, scopeFilter: "personal" })
+    );
+    const expired = await f.app.inject({
+      method: "DELETE",
+      url: "/v1/memory/answer-tasks/expired",
+      headers: { authorization: "Bearer delegated" }
+    });
+    expect(expired.statusCode).toBe(200);
+    expect(f.repo.deleteExpiredMemoryAnswerTasks).toHaveBeenCalledWith({
+      userId,
+      allowTeam: false,
+      allowPersonal: true
+    });
+    const personal = await f.request("/v1/memory/answer-tasks", accept(false));
+    expect(personal.statusCode).toBe(200);
   });
 
   it("derives Team selection from validated tool input and rejects Personal credentials", async () => {

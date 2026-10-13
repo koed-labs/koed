@@ -37,6 +37,9 @@ export const publicUser = (user: {
 });
 
 export interface AuthHelpers {
+  authenticatedCredentialKind(
+    request: FastifyRequest
+  ): Exclude<AuthLogKind, "anonymous"> | undefined;
   authenticateMemoryAnswerTask(
     request: FastifyRequest,
     mode: "read" | "execution",
@@ -130,6 +133,10 @@ export const createAuthHelpers = (
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const authenticatedKinds = new WeakMap<
+    FastifyRequest,
+    Exclude<AuthLogKind, "anonymous">
+  >();
   const apiTokenUsers = new WeakMap<
     FastifyRequest,
     Promise<{
@@ -163,6 +170,7 @@ export const createAuthHelpers = (
     kind: Exclude<AuthLogKind, "anonymous">,
     userId: string
   ): void => {
+    authenticatedKinds.set(request, kind);
     options.recordAuthContext?.(request, { kind, userId });
   };
   const setSessionCookie = (reply: FastifyReply, secret: string): void => {
@@ -493,6 +501,7 @@ export const createAuthHelpers = (
   };
 
   return {
+    authenticatedCredentialKind: (request) => authenticatedKinds.get(request),
     authenticateMemoryAnswerTask,
     hashSecret,
     resolveDelegatedPrincipal,

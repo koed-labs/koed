@@ -26,6 +26,7 @@ export interface RemoteMcpOAuthCredential {
 }
 
 export interface RemoteMcpOAuthStore {
+  pruneExpired(now: Date, batchSize?: number): Promise<void>;
   getClient(id: string): Promise<Record<string, unknown> | undefined>;
   registerClient(id: string, metadata: Record<string, unknown>): Promise<void>;
   createRequest(
@@ -128,6 +129,41 @@ export const createRemoteMcpOAuthRepository = (
     );
   };
   return {
+    async pruneExpired(now, batchSize = 500) {
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 500)
+        throw new RangeError(
+          "OAuth cleanup batch size must be between 1 and 500"
+        );
+      await transaction(async (client) => {
+        await client.query("set local statement_timeout = '5s'");
+        await client.query("set local lock_timeout = '1s'");
+        await client.query(
+          `delete from remote_mcp_oauth_requests where secret_hash in (select secret_hash from remote_mcp_oauth_requests where expires_at <= $1 or consumed_at is not null limit $2 for update skip locked)`,
+          [now, batchSize]
+        );
+        // Consumed refresh credentials remain replay sentinels for a live grant,
+        // even after their own expiry. Inactive families are drained in batches.
+        await client.query(
+          `delete from remote_mcp_oauth_credentials where secret_hash in (select c.secret_hash from remote_mcp_oauth_credentials c join remote_mcp_oauth_grants g on g.id = c.grant_id where g.expires_at <= $1 or g.revoked_at is not null or (c.kind <> 'refresh' and (c.expires_at <= $1 or c.consumed_at is not null)) limit $2 for update of c skip locked)`,
+          [now, batchSize]
+        );
+        await client.query(
+          `delete from remote_mcp_oauth_grants where id in (select g.id from remote_mcp_oauth_grants g where (g.expires_at <= $1 or g.revoked_at is not null) and not exists (select 1 from remote_mcp_oauth_credentials c where c.grant_id = g.id) limit $2 for update skip locked)`,
+          [now, batchSize]
+        );
+        const unused = await client.query<{ id: string }>(
+          `select c.id from remote_mcp_oauth_clients c where c.created_at <= $1 and not exists (select 1 from remote_mcp_oauth_requests r where r.client_id = c.id) and not exists (select 1 from remote_mcp_oauth_grants g where g.client_id = c.id) limit $2 for update of c skip locked`,
+          [new Date(now.getTime() - 30 * 24 * 60 * 60_000), batchSize]
+        );
+        // Recheck after the client locks: concurrent FK inserts may have
+        // committed while cleanup was acquiring them.
+        if (unused.rows.length)
+          await client.query(
+            `delete from remote_mcp_oauth_clients c where c.id = any($1::uuid[]) and not exists (select 1 from remote_mcp_oauth_requests r where r.client_id = c.id) and not exists (select 1 from remote_mcp_oauth_grants g where g.client_id = c.id)`,
+            [unused.rows.map((row) => row.id)]
+          );
+      });
+    },
     async getClient(id) {
       const result = await pool.query<{ metadata: Record<string, unknown> }>(
         `select metadata from remote_mcp_oauth_clients where id = $1`,

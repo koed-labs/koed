@@ -98,6 +98,7 @@ describe.skipIf(!databaseUrl)(
       registerMemoryAnswerTaskRoutes(app, {
         requireRepository: () => repository,
         auth,
+        config: { teamCollaborationEnabled: false },
         rateLimit: {
           memoryRead: async () => {},
           memoryWrite: async () => {},

@@ -2,6 +2,25 @@ import { z } from "zod";
 
 export const MEMORY_ANSWER_TASK_CONTRACT_VERSION = 2;
 
+export interface TeamMemoryAnswerTaskCapability {
+  availability: "available";
+  version: typeof MEMORY_ANSWER_TASK_CONTRACT_VERSION;
+  supportedScopes: unknown[];
+}
+
+export const isTeamMemoryAnswerTaskCapability = (
+  value: unknown
+): value is TeamMemoryAnswerTaskCapability => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const descriptor = value as Partial<TeamMemoryAnswerTaskCapability>;
+  return (
+    descriptor.availability === "available" &&
+    descriptor.version === MEMORY_ANSWER_TASK_CONTRACT_VERSION &&
+    Array.isArray(descriptor.supportedScopes) &&
+    descriptor.supportedScopes.includes("team")
+  );
+};
+
 export const memoryAnswerTaskOrigins = ["mcp", "pi_extension"] as const;
 export const memoryAnswerTaskStatuses = [
   "accepted",

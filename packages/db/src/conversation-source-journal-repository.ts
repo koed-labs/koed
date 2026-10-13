@@ -1520,13 +1520,15 @@ export const createConversationSourceJournalRepository = (
       };
       if (input.sourceRewrite) {
         const rewrite = input.sourceRewrite;
+        const captureResume = rewrite.kind === "pi_capture_resume";
         if (
-          parent.source_kind !== "codex" ||
+          parent.source_kind !== (captureResume ? "pi" : "codex") ||
           parent.source_component_role !== "primary" ||
           parent.replica_role !== "origin_local" ||
           ![
             "codex_legacy_to_paginated",
-            "codex_paginated_continuation"
+            "codex_paginated_continuation",
+            "pi_capture_resume"
           ].includes(rewrite.kind) ||
           (rewrite.kind === "codex_paginated_continuation" &&
             (parent.source_adapter_version !== "codex-transcript-v2" ||
@@ -1536,10 +1538,18 @@ export const createConversationSourceJournalRepository = (
               ))) ||
           !Number.isSafeInteger(rewrite.journalStartOffset) ||
           rewrite.journalStartOffset < 0 ||
-          rewrite.journalStartOffset >= rewrite.liveStartOffset ||
+          (captureResume
+            ? rewrite.journalStartOffset !== rewrite.liveStartOffset ||
+              rewrite.journalStartOffset <=
+                Number(parent.provider_cursor_offset) ||
+              rewrite.redactedSourceLabel !== undefined
+            : rewrite.journalStartOffset >= rewrite.liveStartOffset) ||
           !Number.isSafeInteger(rewrite.journalStartLine) ||
           rewrite.journalStartLine < 0 ||
-          rewrite.journalStartLine >= rewrite.liveStartLine ||
+          (captureResume
+            ? rewrite.journalStartLine !== rewrite.liveStartLine ||
+              rewrite.journalStartLine <= parent.provider_cursor_line
+            : rewrite.journalStartLine >= rewrite.liveStartLine) ||
           !Number.isSafeInteger(rewrite.liveStartOffset) ||
           rewrite.liveStartOffset <= 0 ||
           !Number.isSafeInteger(rewrite.liveStartLine) ||
@@ -1565,8 +1575,9 @@ export const createConversationSourceJournalRepository = (
           [parent.id]
         );
         if (
+          !captureResume &&
           Number(cursor.rows[0]?.source_offset) !==
-          Number(parent.provider_cursor_offset)
+            Number(parent.provider_cursor_offset)
         )
           throw statusError(
             "Conversation source canonical capture is incomplete",
@@ -1637,9 +1648,11 @@ export const createConversationSourceJournalRepository = (
           sourceFingerprint: parent.source_fingerprint,
           artifactFormat: parent.artifact_format,
           artifactFormatVersion: parent.artifact_format_version,
-          sourceAdapterVersion: input.sourceRewrite
-            ? "codex-transcript-v2"
-            : parent.source_adapter_version,
+          sourceAdapterVersion:
+            input.sourceRewrite &&
+            input.sourceRewrite.kind !== "pi_capture_resume"
+              ? "codex-transcript-v2"
+              : parent.source_adapter_version,
           journalStartOffset:
             input.sourceRewrite?.journalStartOffset ??
             Number(parent.provider_cursor_offset),

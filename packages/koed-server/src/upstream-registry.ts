@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
-import { assertSecureHttpTransport } from "@koed/shared";
+import {
+  assertSecureHttpTransport,
+  isTeamMemoryAnswerTaskCapability
+} from "@koed/shared";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
 } from "@koed/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
 import { upstreamDisconnectCleanupPending } from "./upstream-disconnect-cleanup.js";
+
+export { isTeamMemoryAnswerTaskCapability };
 
 export type UpstreamDeploymentProfile =
   | "developer"
@@ -481,17 +486,6 @@ export const upstreamBackendAdvertisesCapability = (
   const availability =
     backend?.capabilities.payload?.capabilities?.[capability]?.availability;
   return availability === "available" || availability === "partial";
-};
-
-export const isTeamMemoryAnswerTaskCapability = (value: unknown): boolean => {
-  if (!value || typeof value !== "object") return false;
-  const descriptor = value as CapabilityDescriptor;
-  return (
-    descriptor.availability === "available" &&
-    descriptor.version === 2 &&
-    Array.isArray(descriptor.supportedScopes) &&
-    descriptor.supportedScopes.includes("team")
-  );
 };
 
 export const upstreamBackendSupportsTeamMemoryAnswerTasks = (

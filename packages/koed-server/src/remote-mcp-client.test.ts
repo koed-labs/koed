@@ -342,6 +342,46 @@ describe("remote MCP OAuth client", () => {
     ).toBeUndefined();
   });
 
+  it("retains failed revocation for retry without permitting runtime use or a replacement login", async () => {
+    const context = fixture();
+    await loginRemoteMcp({ ...context, backendUrl: backend, consent: true });
+    const tokens = readRemoteMcpCredential(context.environment)!.tokens!;
+    let attempts = 0;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      if (new URL(String(input)).pathname !== "/revoke")
+        return context.fetch(input, init);
+      attempts++;
+      expect(
+        readRemoteMcpCredential(context.environment)?.tokens
+      ).toBeUndefined();
+      expect(new URLSearchParams(String(init?.body)).get("token")).toBe(
+        tokens.refreshToken
+      );
+      if (attempts === 1) throw new Error("offline");
+      return new Response(null, { status: attempts === 2 ? 503 : 200 });
+    };
+    expect(await logoutRemoteMcp({ ...context, fetch, consent: true })).toEqual(
+      { ok: true, remoteRevoked: false }
+    );
+    await expect(remoteMcpAuthorization(context)).rejects.toThrow(
+      "unavailable"
+    );
+    await expect(
+      loginRemoteMcp({ ...context, backendUrl: backend, consent: true })
+    ).rejects.toThrow("revocation is pending");
+    expect(await logoutRemoteMcp({ ...context, fetch, consent: true })).toEqual(
+      { ok: true, remoteRevoked: false }
+    );
+    expect(await logoutRemoteMcp({ ...context, fetch, consent: true })).toEqual(
+      { ok: true, remoteRevoked: true }
+    );
+    expect(
+      readFileSync(remoteMcpCredentialPath(context.environment), "utf8")
+    ).not.toContain(tokens.refreshToken);
+    await loginRemoteMcp({ ...context, backendUrl: backend, consent: true });
+    expect(readRemoteMcpCredential(context.environment)?.tokens).toBeDefined();
+  });
+
   it("keeps CLI setup and remove side-effect free without explicit consent", async () => {
     const context = fixture();
     const stdout = { write: vi.fn() };

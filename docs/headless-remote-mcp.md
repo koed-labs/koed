@@ -59,6 +59,17 @@ Scopes do not create Team Membership, Workspace Access, Share Grants, or
 administrative authority. Every operation revalidates current backend access;
 MCP caller metadata and local project paths do not confer authority.
 
+The pinned OAuth SDK limits public client registration to 20 requests per hour
+and authorization requests to 100 per 15 minutes, per socket-peer IP. Forwarded
+headers do not override that identity. Behind a proxy, these limits may be shared
+by all clients of that proxy; retain appropriate public-edge abuse protection.
+The backend prunes expired OAuth state at startup and every five minutes, with
+at most 500 deletions per table per pass and no overlapping cleanup runs.
+Unreferenced client registrations older than 30 days are removed; such clients
+must register again. Consumed refresh credentials remain while their grant is
+active, preserving replay detection. SDK rate-limit counters are process-local,
+so deployments with multiple API instances also need shared edge protection.
+
 ## User Setup
 
 Use a clean, dedicated `KOED_HOME` for remote integration. Do not point initial
@@ -116,7 +127,13 @@ koed remote logout --consent
 
 Removing a harness removes its Koed-owned integration. Logging out removes
 remote authorization; neither operation deletes retained backend Memory.
-Logout clears local tokens but retains the non-secret backend and User binding.
+Logout immediately disables local token use. If the backend cannot confirm
+revocation, the protected credential file retains only the token and hint
+needed to retry `koed remote logout --consent`; that material is unavailable to
+the running helper. Login is blocked until pending revocation succeeds. A
+`remoteRevoked: false` result is not confirmation that the backend grant ended.
+Successful logout clears that retry material, retaining the non-secret backend
+and User binding.
 Use a new dedicated profile when changing either identity or backend.
 
 ## Capture Consent
@@ -128,12 +145,21 @@ Previously existing transcript bodies are not automatically uploaded just
 because a Conversation resumes. The existing Capture Policy and Capture Pause
 checks remain in effect, and capture creates Personal Memory only.
 
+For Pi future-only capture, the consent frontier stays immutable and a separate
+persisted cursor marks activity excluded by Capture Pause. Resuming closes the
+previous source generation and creates a linked successor beginning after the
+excluded interval. Paused bytes are not uploaded, and already retained source
+bytes are not rewritten. Restarting uses the same frontiers and generation chain.
+
 Retain the dedicated profile when resuming the same backend and User. Backend
 or User changes cannot reuse its credentials or capture state silently. A
 remote source cursor that predates the consent frontier fails closed rather
 than uploading the old backlog or inventing source IDs, offsets, or generations.
 Review that condition before continuing capture. Historical import requires
 separate explicit consent and is not provided by these remote setup commands.
+Profiles created by an earlier prototype that advanced their consent baseline
+during a pause still fail closed if that baseline conflicts with retained source.
+The helper does not silently lower consent or infer permission to upload a backlog.
 
 ## Runtime Boundary
 
@@ -151,6 +177,12 @@ require the `memory_answer_execution` family, granted through explicit
 `--memory-answers` enrollment consent; read-only enrollment is not silently
 upgraded. OAuth helpers require the local-execution and Team-read scopes.
 
+`KOED_TEAM_COLLABORATION_ENABLED=false` also denies Team task admission,
+claims, stored-ID operations, local-edge forwarding and task-bound history.
+Credential scopes cannot override the deployment switch. Browser history uses
+the credential that actually authenticated the request; an unrelated header
+does not turn a valid browser session into an API Token.
+
 Native local-edge task forwarding is Team-only and requires both local execution
 and Team-read authority. It narrows the stored upstream credential before the
 backend reads protected task data, even when that credential has additional
@@ -166,6 +198,14 @@ Memory Question persistence and the fenced task completion commit atomically.
 Permission loss denies delivery of completed task-bound history as well as
 pending work. Older Team history without task authority retains its existing
 access policy; this change does not rewrite those historical rows.
+
+Claims lock only eligible tasks, skip locked rows, and reconcile at most 16
+candidates per call. Invalid Team authority permits a redacted terminal queue
+transition, not protected payload access, so revoked tasks do not permanently
+consume capacity. Owners with Team execution authority can also cancel their
+denied tasks without reading their contents. History hydration overlaps at most
+eight independent row operations while preserving list order and filtering
+only authorization-denied rows; other failures still propagate.
 
 The frozen Team boundary is bounded to 128 grants. Oversized boundaries fail
 explicitly rather than silently dropping evidence. Validation reuses the

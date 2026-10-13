@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import {
+  isTeamMemoryAnswerTaskCapability,
   readLocalEdgeClientCredentialAuthorization,
   readLocalEdgeUpstreamRegistry,
   type ClaimedMemoryAnswerTask,
@@ -330,15 +331,7 @@ export const supportsTeamMemoryAnswerTasks = (
   const capabilities = payload.capabilities as
     | Record<string, unknown>
     | undefined;
-  const capability = capabilities?.["memory.answerTasks"] as
-    | { availability?: unknown; version?: unknown; supportedScopes?: unknown }
-    | undefined;
-  return (
-    capability?.availability === "available" &&
-    capability.version === 2 &&
-    Array.isArray(capability.supportedScopes) &&
-    capability.supportedScopes.includes("team")
-  );
+  return isTeamMemoryAnswerTaskCapability(capabilities?.["memory.answerTasks"]);
 };
 
 export const createMemoryAnswerTaskCoordinator = (

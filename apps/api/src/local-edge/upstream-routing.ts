@@ -1,8 +1,8 @@
 import type { DeviceCredentialRecord } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
-  MEMORY_ANSWER_TASK_CONTRACT_VERSION,
   assertSecureHttpTransport,
+  isTeamMemoryAnswerTaskCapability,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
   upstreamBackendById,
@@ -248,17 +248,11 @@ export const resolveLocalEdgeRouteDecision = (input: {
 
   const credentials = credentialState(input);
   if (input.operationFamily === "memory_answer_execution") {
-    const tasks = upstreamBackend.capabilities?.payload?.capabilities?.[
-      "memory.answerTasks"
-    ] as
-      | { availability?: unknown; version?: unknown; supportedScopes?: unknown }
-      | undefined;
-    if (
-      tasks?.availability !== "available" ||
-      tasks.version !== MEMORY_ANSWER_TASK_CONTRACT_VERSION ||
-      !Array.isArray(tasks.supportedScopes) ||
-      !tasks.supportedScopes.includes("team")
-    ) {
+    const tasks =
+      upstreamBackend.capabilities?.payload?.capabilities?.[
+        "memory.answerTasks"
+      ];
+    if (!isTeamMemoryAnswerTaskCapability(tasks)) {
       return decision({
         action: "deny_fail_closed",
         operationFamily: input.operationFamily,

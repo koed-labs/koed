@@ -1,4 +1,4 @@
-# ADR 0046: Delegated Remote MCP And Headless Local Execution
+# ADR 0056: Delegated Remote MCP And Headless Local Execution
 
 ## Status
 

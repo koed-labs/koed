@@ -970,7 +970,10 @@ export const registerConversationSourceJournalRoutes = (
       }
       if (input.sourceRewrite) {
         if (
-          parent.sourceKind !== "codex" ||
+          parent.sourceKind !==
+            (input.sourceRewrite.kind === "pi_capture_resume"
+              ? "pi"
+              : "codex") ||
           input.sourceGenerationId !==
             conversationSourceRewriteGenerationId(
               parent.sourceGenerationId,

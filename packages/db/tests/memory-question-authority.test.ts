@@ -146,6 +146,81 @@ describe("Memory Question frozen Team authority", () => {
     expect(mocks.decrypt).not.toHaveBeenCalled();
   });
 
+  it("overlaps Personal and Team hydration while preserving history order", async () => {
+    const rows = [row("team", authority), row("personal"), row("legacy")];
+    const { repository } = setup(rows);
+    const releases = new Map<string, () => void>();
+    let started!: () => void;
+    const allStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    mocks.decrypt.mockImplementation(
+      async (_client, _actor, _provider, reference: { sourceId: string }) => {
+        await new Promise<void>((resolve) => {
+          releases.set(reference.sourceId, resolve);
+          if (releases.size === rows.length) started();
+        });
+        return { plaintext: reference.sourceId };
+      }
+    );
+    const listing = repository.listMemoryQuestions(
+      { userId: "owner", allowTeam: true },
+      { limit: rows.length }
+    );
+    await allStarted;
+    releases.get("legacy")!();
+    releases.get("personal")!();
+    releases.get("team")!();
+    expect((await listing).map((question) => question.id)).toEqual([
+      "team",
+      "personal",
+      "legacy"
+    ]);
+  });
+
+  it("bounds active history hydrations on large pages", async () => {
+    const rows = Array.from({ length: 25 }, (_, index) =>
+      row(`question-${index}`, index % 2 ? authority : null)
+    );
+    const { repository } = setup(rows);
+    let active = 0;
+    let peak = 0;
+    mocks.decrypt.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active--;
+      return { plaintext: "history" };
+    });
+    const listed = await repository.listMemoryQuestions(
+      { userId: "owner", allowTeam: true },
+      { limit: rows.length }
+    );
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(active).toBe(0);
+    expect(listed.map((question) => question.id)).toEqual(
+      rows.map((question) => question.id)
+    );
+  });
+
+  it("propagates decryption failures after settling concurrent hydration", async () => {
+    const { repository } = setup([row("broken"), row("valid", authority)]);
+    let validFinished = false;
+    mocks.decrypt.mockImplementation(
+      async (_client, _actor, _provider, reference: { sourceId: string }) => {
+        if (reference.sourceId === "broken") throw new Error("payload corrupt");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        validFinished = true;
+        return { plaintext: "history" };
+      }
+    );
+    await expect(
+      repository.listMemoryQuestions({ userId: "owner", allowTeam: true })
+    ).rejects.toThrow("payload corrupt");
+    expect(validFinished).toBe(true);
+  });
+
   it("writes final questions through the caller transaction and returns their identity", async () => {
     const { repository, client } = setup([]);
     client.query.mockResolvedValueOnce({ rows: [row("final")] });

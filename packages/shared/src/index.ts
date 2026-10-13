@@ -1837,6 +1837,7 @@ export {
   completeMemoryAnswerTaskSchema,
   failMemoryAnswerTaskSchema,
   heartbeatMemoryAnswerTaskSchema,
+  isTeamMemoryAnswerTaskCapability,
   memoryAnswerTaskClaimResponseSchema,
   memoryAnswerTaskExecutionAuthoritySchema,
   memoryAnswerTaskHeartbeatResponseSchema,
@@ -1855,5 +1856,6 @@ export {
   type MemoryAnswerTask,
   type MemoryAnswerTaskExecutionAuthority,
   type MemoryAnswerTaskOrigin,
+  type TeamMemoryAnswerTaskCapability,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";

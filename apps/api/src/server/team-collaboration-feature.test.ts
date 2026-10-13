@@ -68,6 +68,7 @@ describe("Team collaboration feature switch", () => {
       "/v1/high-risk/action-grants",
       "/v1/local-edge/device-enrollments/challenges",
       "/v1/local-edge/team-memory/answer",
+      "/v1/local-edge/memory-answer-tasks/get",
       "/v1/retention/teams/sensitive-team-id/deletion-request",
       "/v1/shared-memory/pending-shares",
       "/v1/team-context",

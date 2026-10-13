@@ -474,17 +474,27 @@ export const createMemoryQuestionRepository = (
     actor: MemoryQuestionActorContext,
     rows: T[]
   ): Promise<T[]> => {
-    const hydrated: T[] = [];
-    for (const row of rows) {
-      try {
-        hydrated.push(await hydrateQuestionRow(actor, row));
-      } catch (error) {
-        if (!(error instanceof SharedMemoryAuthorizationError)) {
-          throw error;
+    const hydrated = new Array<T | undefined>(rows.length);
+    let nextIndex = 0;
+    // Bound concurrent transactions/decryption without serializing the history page.
+    const workers = await Promise.allSettled(
+      Array.from({ length: Math.min(8, rows.length) }, async () => {
+        while (nextIndex < rows.length) {
+          const index = nextIndex++;
+          try {
+            hydrated[index] = await hydrateQuestionRow(actor, rows[index]!);
+          } catch (error) {
+            if (!(error instanceof SharedMemoryAuthorizationError)) {
+              throw error;
+            }
+          }
         }
-      }
+      })
+    );
+    for (const worker of workers) {
+      if (worker.status === "rejected") throw worker.reason;
     }
-    return hydrated;
+    return hydrated.filter((row): row is T => row !== undefined);
   };
 
   const repository: MemoryQuestionRepository = {

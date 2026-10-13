@@ -7,7 +7,7 @@ import {
   createRemoteMcpOAuthRepository,
   type MemorySourceRepository
 } from "@koed/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers, createHashSecret } from "./session.js";
 import { createRemoteMcpOAuthProvider } from "./remote-mcp-oauth.js";
 import { registerRemoteMcpOAuthRoutes } from "./remote-mcp-oauth-routes.js";
@@ -103,6 +103,7 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
       })
     });
     expect(registered.status).toBe(201);
+    expect(registered.headers.get("ratelimit-limit")).toBe("20");
     clientId = ((await registered.json()) as { client_id: string }).client_id;
   });
   afterAll(async () => {
@@ -127,10 +128,46 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
       redirect: "manual"
     });
     expect(response.status).toBe(302);
+    expect(response.headers.get("ratelimit-limit")).toBe("100");
     return new URL(response.headers.get("location")!).searchParams.get(
       "request"
     )!;
   };
+  it("runs bounded cleanup without overlap and stops its timer on close", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let finish!: () => void;
+    const active = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const prune = vi
+      .spyOn(oauth, "pruneExpired")
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(active)
+      .mockResolvedValue(undefined);
+    const lifecycle = Fastify();
+    try {
+      registerRemoteMcpOAuthRoutes(lifecycle, {
+        oauth,
+        issuerUrl: issuer,
+        auth,
+        workosAvailable: false,
+        publicOrigin: origin
+      });
+      await lifecycle.ready();
+      expect(prune).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(prune).toHaveBeenCalledTimes(2);
+      finish();
+      await lifecycle.close();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally {
+      finish();
+      await lifecycle.close();
+      prune.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   const consent = async (requestSecret: string) => {
     const response = await fetch(
       `${base}/auth/mcp/authorize?request=${requestSecret}`,

@@ -282,14 +282,18 @@ describeDb("journal-backed historical import repository", () => {
     await pool?.end();
   });
 
-  it.each([0, 64])(
+  it.each([0, 64, 256])(
     "creates a rewrite generation at admitted byte $0 without replacing its signed predecessor or Captured Session",
     async (journalStartOffset) => {
+      const captureResume = journalStartOffset === 256;
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `rewrite-${randomUUID()}@example.com`
       });
-      const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+      const fixture = await createJournalFixture(repo, {
+        ownerId: owner.id,
+        aiClient: captureResume ? "pi" : "codex"
+      });
       const actor = { userId: owner.id };
       await repo.advanceConversationSourceConsumerCursor(actor, {
         artifactId: fixture.artifactId,
@@ -331,9 +335,11 @@ describeDb("journal-backed historical import repository", () => {
       ).artifact;
       const keys = generateConversationSourceReplicationOriginKeyPair();
       const sourceRewrite = {
-        kind: "codex_legacy_to_paginated" as const,
+        kind: captureResume
+          ? ("pi_capture_resume" as const)
+          : ("codex_legacy_to_paginated" as const),
         journalStartOffset,
-        journalStartLine: journalStartOffset ? 1 : 0,
+        journalStartLine: captureResume ? 5 : journalStartOffset ? 1 : 0,
         liveStartOffset: 256,
         liveStartLine: 5,
         prefixDigest: digest("verified rewritten prefix"),
@@ -361,7 +367,9 @@ describeDb("journal-backed historical import repository", () => {
       expect(child).toMatchObject({
         sessionId: parent.sessionId,
         logicalSourceId: parent.logicalSourceId,
-        sourceAdapterVersion: "codex-transcript-v2",
+        sourceAdapterVersion: captureResume
+          ? "pi-session-v1"
+          : "codex-transcript-v2",
         journalStartOffset,
         providerCursorOffset: journalStartOffset,
         liveStartOffset: 256,
@@ -380,7 +388,7 @@ describeDb("journal-backed historical import repository", () => {
       expect(
         (
           await repo.getConversationSourceArtifactByProviderIdentity(actor, {
-            sourceKind: "codex",
+            sourceKind: captureResume ? "pi" : "codex",
             externalSessionId: parent.externalSessionId
           })
         )?.id
@@ -398,11 +406,44 @@ describeDb("journal-backed historical import repository", () => {
       await expect(
         repo.createConversationSourceSuccessorGeneration(actor, {
           ...input,
-          sourceRewrite: { ...sourceRewrite, liveStartOffset: 255 }
+          sourceRewrite: captureResume
+            ? {
+                ...sourceRewrite,
+                journalStartOffset: 257,
+                liveStartOffset: 257,
+                currentSourceLength: 257
+              }
+            : { ...sourceRewrite, liveStartOffset: 255 }
         })
       ).rejects.toMatchObject({
         code: "conversation_source_successor_conflict"
       });
+      await expect(
+        repo.createConversationSourceSuccessorGeneration(
+          { userId: randomUUID() },
+          input
+        )
+      ).rejects.toMatchObject({ statusCode: 409 });
+      if (captureResume) {
+        for (const rewrite of [
+          {
+            ...sourceRewrite,
+            journalStartOffset: fixture.frontier,
+            liveStartOffset: fixture.frontier
+          },
+          { ...sourceRewrite, journalStartLine: 2, liveStartLine: 2 },
+          { ...sourceRewrite, journalStartOffset: 255 },
+          { ...sourceRewrite, journalStartLine: 4 }
+        ])
+          await expect(
+            repo.createConversationSourceSuccessorGeneration(actor, {
+              ...input,
+              sourceRewrite: rewrite
+            })
+          ).rejects.toMatchObject({
+            code: "conversation_source_rewrite_invalid"
+          });
+      }
     }
   );
 

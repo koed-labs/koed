@@ -194,7 +194,8 @@ export const conversationSourceSuccessorGenerationSchema = z
       .object({
         kind: z.enum([
           "codex_legacy_to_paginated",
-          "codex_paginated_continuation"
+          "codex_paginated_continuation",
+          "pi_capture_resume"
         ]),
         journalStartOffset: boundedOffset,
         journalStartLine: z.number().int().nonnegative().max(2_000_000_000),
@@ -220,8 +221,12 @@ export const conversationSourceSuccessorGenerationSchema = z
       .strict()
       .refine(
         (value) =>
-          value.journalStartOffset < value.liveStartOffset &&
-          value.journalStartLine < value.liveStartLine &&
+          (value.kind === "pi_capture_resume"
+            ? value.journalStartOffset === value.liveStartOffset &&
+              value.journalStartLine === value.liveStartLine &&
+              value.redactedSourceLabel === undefined
+            : value.journalStartOffset < value.liveStartOffset &&
+              value.journalStartLine < value.liveStartLine) &&
           value.liveStartOffset <= value.currentSourceLength &&
           (value.kind !== "codex_paginated_continuation" ||
             value.redactedSourceLabel !== undefined)

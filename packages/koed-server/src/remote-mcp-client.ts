@@ -16,6 +16,7 @@ import {
   hasRemoteMcpTeamRuntimeScopes,
   normalizeRemoteMcpBackend,
   readRemoteMcpCredential,
+  readRemoteMcpPendingRevocation,
   remoteMcpCredentialPath,
   withRemoteMcpCredentialLock,
   writeRemoteMcpCredential,
@@ -203,6 +204,10 @@ export const loginRemoteMcp = async (
   assertCleanRemoteMcpEnrollment(environment);
   return withRemoteMcpCredentialLock(environment, async () => {
     const previous = readRemoteMcpCredential(environment);
+    if (readRemoteMcpPendingRevocation(environment))
+      throw new Error(
+        "Remote revocation is pending; retry logout before login."
+      );
     if (previous && previous.backendUrl !== backendUrl)
       throw new Error("Use a new dedicated KOED_HOME for another backend.");
     const scope = [
@@ -482,15 +487,29 @@ export const logoutRemoteMcp = async (
   return withRemoteMcpCredentialLock(environment, async () => {
     const record = readRemoteMcpCredential(environment);
     if (!record) return { ok: true, remoteRevoked: true };
-    let remoteRevoked = !record.tokens;
-    if (record.tokens) {
+    const pendingRevocation =
+      readRemoteMcpPendingRevocation(environment) ??
+      (record.tokens
+        ? {
+            token: record.tokens.refreshToken ?? record.tokens.accessToken,
+            tokenTypeHint: record.tokens.refreshToken
+              ? ("refresh_token" as const)
+              : ("access_token" as const)
+          }
+        : undefined);
+    // Disable local use before attempting the remote request, retaining only retry material.
+    writeRemoteMcpCredential(environment, {
+      ...record,
+      tokens: undefined,
+      pendingRevocation
+    });
+    let remoteRevoked = !pendingRevocation;
+    if (pendingRevocation) {
       try {
         const body = new URLSearchParams({
           client_id: record.clientId,
-          token: record.tokens.refreshToken ?? record.tokens.accessToken,
-          token_type_hint: record.tokens.refreshToken
-            ? "refresh_token"
-            : "access_token"
+          token: pendingRevocation.token,
+          token_type_hint: pendingRevocation.tokenTypeHint
         });
         const response = await pinnedFetch(record.backendUrl, options)(
           `${record.backendUrl}/revoke`,
@@ -502,10 +521,11 @@ export const logoutRemoteMcp = async (
         );
         remoteRevoked = response.ok;
       } catch {
-        /* Local logout still clears tokens when the backend is unavailable. */
+        /* Revocation-only custody remains available for an explicit logout retry. */
       }
     }
-    writeRemoteMcpCredential(environment, { ...record, tokens: undefined });
+    if (remoteRevoked)
+      writeRemoteMcpCredential(environment, { ...record, tokens: undefined });
     return { ok: true, remoteRevoked };
   });
 };

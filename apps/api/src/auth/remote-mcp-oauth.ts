@@ -273,6 +273,7 @@ export const createRemoteMcpOAuthProvider = (options: {
     provider,
     verifier,
     resolvePrincipal,
+    pruneExpired: () => store.pruneExpired(now()),
     async getAuthorizationRequest(requestSecret: string) {
       const pending = await store.getRequest(digest(requestSecret), now());
       if (!pending || pending.request.resource !== resource) return null;

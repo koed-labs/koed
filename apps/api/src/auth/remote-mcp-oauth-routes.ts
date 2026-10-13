@@ -65,6 +65,27 @@ export const registerRemoteMcpOAuthRoutes = (
     throw new Error("OAuth public origin must match its issuer");
   const sdkApp = express();
   sdkApp.disable("x-powered-by");
+  let cleanupTimer: ReturnType<typeof setInterval> | undefined;
+  let cleanup: Promise<void> | undefined;
+  const pruneExpired = () => {
+    if (!cleanup)
+      cleanup = options.oauth
+        .pruneExpired()
+        .catch(() => app.log.error("Remote MCP OAuth cleanup failed"))
+        .finally(() => {
+          cleanup = undefined;
+        });
+    return cleanup;
+  };
+  app.addHook("onReady", async () => {
+    await pruneExpired();
+    cleanupTimer = setInterval(() => void pruneExpired(), 5 * 60_000);
+    cleanupTimer.unref();
+  });
+  app.addHook("onClose", async () => {
+    clearInterval(cleanupTimer);
+    await cleanup;
+  });
   sdkApp.use(
     "/.well-known/oauth-authorization-server",
     (_request, response, next) => {
