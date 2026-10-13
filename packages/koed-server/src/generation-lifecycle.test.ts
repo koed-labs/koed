@@ -183,7 +183,9 @@ describe("generation lifecycle", () => {
       id,
       "desktop-bundle.json"
     );
-    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+      owner: { installationId: string };
+    };
     journal.owner.installationId = "foreign-installation";
     writeFileSync(journalPath, JSON.stringify(journal));
     writeFileSync(
