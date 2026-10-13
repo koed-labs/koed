@@ -227,9 +227,21 @@ const classifyMemoryAnswerFailure = (
     )
   )
     return "validation";
-  if (exhaustedBudgets.length > 0) return "resource_limit";
+  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   return retrievalIncomplete ? "retrieval" : "worker";
 };
+
+// Every failed run eventually uses up its retry attempts, so "attempts" alone
+// says nothing about why the answer failed. Report the underlying cause.
+const limitingBudgets = (exhaustedBudgets: readonly string[]): string[] =>
+  exhaustedBudgets.filter((kind) => kind !== "attempts");
+
+const MEMORY_REVIEW_BUDGETS = new Set([
+  "candidates",
+  "evidence_items",
+  "evidence_tokens",
+  "prompt_tokens"
+]);
 
 const workerFailureDisplayMessage = (
   provider: string,
@@ -253,8 +265,12 @@ const workerFailureDisplayMessage = (
   if (exhaustedBudgets.includes("wall_time")) {
     return `${worker} did not finish the Personal Memory search in time. Try again.`;
   }
-  if (exhaustedBudgets.length > 0) {
-    return `${worker} reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question.`;
+  const limiting = limitingBudgets(exhaustedBudgets);
+  if (limiting.some((kind) => MEMORY_REVIEW_BUDGETS.has(kind))) {
+    return `${worker} found more possibly relevant memory than it could review in one answer. Try a narrower question.`;
+  }
+  if (limiting.length > 0) {
+    return `${worker} reached its search limit before it could verify an answer. Try a narrower question.`;
   }
   if (failureKind === "retrieval") {
     return `${worker} could not complete the Personal Memory search needed to answer reliably. Try again.`;
@@ -724,6 +740,13 @@ const markBudgetExhausted = (
     ledger.budgetExhaustions.push(kind);
   }
 };
+
+const SEARCH_BUDGET_EXHAUSTED_MESSAGE = "Search budget exhausted.";
+
+// A refused follow-up search is a budget signal, not a failed retrieval: every
+// search the worker was allowed to run completed.
+const retrievalErrors = (state: MemoryAnswerToolState): string[] =>
+  state.errors.filter((error) => error !== SEARCH_BUDGET_EXHAUSTED_MESSAGE);
 
 const markBudgetExhaustionFromError = (
   ledger: MemoryAnswerBudgetLedger,
@@ -2051,7 +2074,7 @@ const createMemoryAnswerDynamicToolHandler = (
         });
       }
       if (state.ledger.searchAttempts >= options.config.maxSearches) {
-        const message = "Search budget exhausted.";
+        const message = SEARCH_BUDGET_EXHAUSTED_MESSAGE;
         markBudgetExhausted(state.ledger, "searches");
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
@@ -2151,7 +2174,7 @@ const createMemoryAnswerDynamicToolHandler = (
         });
       }
       if (state.ledger.searchAttempts >= options.config.maxSearches) {
-        const message = "Search budget exhausted.";
+        const message = SEARCH_BUDGET_EXHAUSTED_MESSAGE;
         markBudgetExhausted(state.ledger, "searches");
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
@@ -4008,9 +4031,17 @@ const runDynamicToolMemoryAnswer = async (
       ) &&
       (state.evidence.length === 0 ||
         structuredAnswer.memory_status === "not_found");
+    // Running out of follow-up searches after every allowed search completed
+    // still supports not_found. Refused expansions do not: the worker found a
+    // candidate it could not open.
+    const notFoundAfterSearchBudget =
+      structuredAnswer.memory_status === "not_found" &&
+      state.ledger.budgetExhaustions.every((kind) => kind === "searches") &&
+      retrievalErrors(state).length === 0;
     if (
       (operationalBudgetExhausted || admissionPreventedReliableAnswer) &&
-      structuredAnswer.memory_status !== "insufficient"
+      structuredAnswer.memory_status !== "insufficient" &&
+      !notFoundAfterSearchBudget
     ) {
       throw new Error(
         `Memory answer budget exhausted: ${state.ledger.budgetExhaustions.join(", ")}`
@@ -4048,7 +4079,7 @@ const runDynamicToolMemoryAnswer = async (
     }
     if (
       structuredAnswer.memory_status === "not_found" &&
-      state.errors.length > 0
+      retrievalErrors(state).length > 0
     ) {
       throw new Error(
         "Memory answer worker returned not_found after retrieval failures; use insufficient when retrieval was incomplete"
@@ -4381,8 +4412,13 @@ export const answerWithMemoryWorker = async (
         ? providerCode
         : undefined;
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
+    const limiting = limitingBudgets(exhaustedBudgets);
     const retrievalIncomplete =
-      (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
+      (failureState ? retrievalErrors(failureState).length : 0) > 0 ||
+      limiting.length > 0;
+    // The worker used every attempt after complete retrieval, so the answer is
+    // still incomplete even though no retrieval stage failed.
+    const workerAttemptsExhausted = exhaustedBudgets.includes("attempts");
     const failureKind = classifyMemoryAnswerFailure(
       workerErrorMessage,
       retrievalIncomplete,
@@ -4396,7 +4432,9 @@ export const answerWithMemoryWorker = async (
       providerFailureCode
     );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
-      failureKind === "validation" || retrievalIncomplete
+      failureKind === "validation" ||
+      retrievalIncomplete ||
+      workerAttemptsExhausted
         ? {
             schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
             memory_status: "insufficient",
@@ -4405,19 +4443,23 @@ export const answerWithMemoryWorker = async (
             relevance_explanation:
               failureKind === "validation"
                 ? "The Memory Answer worker output did not satisfy the required answer format."
-                : exhaustedBudgets.length > 0
-                  ? `Memory Answer exhausted bounded resources (${exhaustedBudgets.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
-                  : "One or more bounded retrieval operations failed before the available memory could be judged completely.",
+                : limiting.length > 0
+                  ? `Memory Answer exhausted bounded resources (${limiting.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
+                  : retrievalIncomplete
+                    ? "One or more bounded retrieval operations failed before the available memory could be judged completely."
+                    : "The Memory Answer worker used every allowed attempt without producing an answer Koed could verify.",
             evidence: [],
             missing: [
               failureKind === "validation"
                 ? "valid structured worker output"
-                : exhaustedBudgets.length > 0
-                  ? `unexhausted ${exhaustedBudgets.slice(0, 8).join(", ")} budget`
-                  : "complete memory retrieval"
+                : limiting.length > 0
+                  ? `unexhausted ${limiting.slice(0, 8).join(", ")} budget`
+                  : retrievalIncomplete
+                    ? "complete memory retrieval"
+                    : "verified worker answer"
             ],
             missing_evidence:
-              failureKind === "validation"
+              failureKind === "validation" || !retrievalIncomplete
                 ? []
                 : ["relevant evidence from the failed retrieval stages"]
           }
