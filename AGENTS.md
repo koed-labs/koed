@@ -38,6 +38,12 @@ If you are making code changes, keep using the contributor guidance below.
 - Update documentation in `/docs` whenever a change affects service ordering, service boundaries, ingestion, Projection, LCM summarisation, retrieval, embedding, storage, or AI-client integration flow.
 - If a change does not require documentation updates, say so explicitly in the final response or PR description.
 
+## Scratch Files
+
+- Put temporary, uncommitted files under `scratch/` at the repository root. This includes throwaway scripts, investigation notes, test output, and local fixtures.
+- `scratch/` is gitignored. Do not commit its contents, and do not reference scratch files from committed code or docs.
+- Do not leave temporary files elsewhere in the working tree.
+
 ## Planning And TODOs
 
 - Put implementation follow-ups in `TODO.md`, not `CONTEXT.md`.

@@ -18,7 +18,8 @@ export default tseslint.config(
       "apps/desktop/.koed-runtime/**",
       "**/coverage/**",
       "**/target/**",
-      "node_modules/**"
+      "node_modules/**",
+      "scratch/**"
     ]
   },
   {

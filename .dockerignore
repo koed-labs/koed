@@ -21,6 +21,7 @@ apps/desktop/release
 .env
 .env.*
 !.env.example
+scratch
 
 # Tooling
 .playwright-cli
