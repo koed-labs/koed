@@ -151,8 +151,11 @@ export const runReleasePromotion = async (args, adapters = {}) => {
   const {
     run = command,
     fetchRegistry = registryVersion,
-    fetchImpl = fetch
+    fetchImpl = fetch,
+    signerToken
   } = adapters;
+  if (typeof signerToken !== "string" || !signerToken)
+    throw new Error("GitHub signer authorization is required");
   const rootsBytes = readFileSync(resolve(args.trustRoots));
   const rootsDigest = createHash("sha256").update(rootsBytes).digest("hex");
   if (
@@ -243,7 +246,10 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         `${args.signerUrl.replace(/\/$/, "")}/v1/verify`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${signerToken}`
+          },
           body: JSON.stringify({
             keyId: args.signerKeyId,
             manifest,
@@ -417,7 +423,21 @@ const main = async () => {
   ])
     if (!args[field])
       throw new Error(`Missing required promotion option: ${field}`);
-  const result = await runReleasePromotion(args);
+  const requestUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+  requestUrl.searchParams.set("audience", "koed-component-signer");
+  const tokenResponse = await fetch(requestUrl, {
+    headers: {
+      authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`
+    }
+  });
+  if (!tokenResponse.ok)
+    throw new Error(
+      `GitHub OIDC token request failed: HTTP ${tokenResponse.status}.`
+    );
+  const { value: signerToken } = await tokenResponse.json();
+  if (typeof signerToken !== "string" || !signerToken)
+    throw new Error("Missing GitHub signing token");
+  const result = await runReleasePromotion(args, { signerToken });
   console.log(
     args.json
       ? JSON.stringify(result)

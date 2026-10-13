@@ -72,9 +72,9 @@ acceptance remain open below.
 Follow-up to the public `@koed-labs/server` distribution. Merging that work
 publishes nothing; do not merge the "Version Koed" release PR until these are closed:
 
-- Install production component trust roots into control-plane builds; configure an
-  authorized signer and set `KOED_COMPONENT_SIGNER_URL`, `KOED_COMPONENT_SIGNER_KEY_ID`
-  and the trust-root repository variables.
+- Complete the authorized GitHub signing rehearsal and full v2 lifecycle acceptance.
+  The approved KMS public root is embedded; Cloud Run signing and trust-root
+  repository configuration are implemented independently from publication approval.
 - Confirm npm organization/package ownership and publication credentials.
 - Validate Linux/native artifacts and packaged Electron runtime/helper/fuse behavior
   on supported targets (Linux x64 CI jobs are currently skipped).

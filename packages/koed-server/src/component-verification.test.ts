@@ -107,11 +107,13 @@ describe("signed component verification", () => {
 
   it("fails closed with empty production trust roots", async () => {
     const sample = await fixture();
-    expect(productionComponentTrustRoots.size).toBe(0);
+    expect(productionComponentTrustRoots.has("koed-components-2026-01")).toBe(
+      true
+    );
     await expect(
       verifyComponent({
         ...sample.input,
-        trustedKeys: productionComponentTrustRoots
+        trustedKeys: new Map()
       })
     ).rejects.toThrow("untrusted component signing key");
   });

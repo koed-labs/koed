@@ -19,13 +19,21 @@ export const authorizeClaims = (claims, config) => {
       "workflow_dispatch"
     ]
   ]);
-  if (
-    claims.repository_id !== config.repositoryId ||
-    claims.repository_owner_id !== config.ownerId ||
-    claims.repository !== "koed-labs/koed" ||
-    claims.ref !== "refs/heads/main" ||
-    workflows.get(claims.workflow_ref) !== claims.event_name
-  )
+  const identityMatches =
+    claims.repository_id === config.repositoryId &&
+    claims.repository_owner_id === config.ownerId &&
+    claims.repository === "koed-labs/koed";
+  const releaseMatches =
+    claims.ref === "refs/heads/main" &&
+    workflows.get(claims.workflow_ref) === claims.event_name;
+  const rehearsalMatches =
+    Boolean(config.rehearsalSha) &&
+    claims.sha === config.rehearsalSha &&
+    claims.ref === "refs/heads/codex/headless-distribution-fixes" &&
+    claims.workflow_ref ===
+      "koed-labs/koed/.github/workflows/ci.yml@refs/heads/codex/headless-distribution-fixes" &&
+    claims.event_name === "workflow_dispatch";
+  if (!identityMatches || (!releaseMatches && !rehearsalMatches))
     throw new Error("Workflow is not authorized");
 };
 export const authenticate = async (authorization, config, keys = jwks) => {

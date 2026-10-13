@@ -243,6 +243,7 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
             return execFileSync(name, args, { encoding: "utf8", ...options });
           return "";
         },
+        signerToken: "fixture-oidc-token",
         fetchRegistry: async (_name, requestedVersion) =>
           requestedVersion === "latest"
             ? { name: "@koed-labs/server", version: "0.9.0" }
@@ -251,10 +252,13 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
                 version,
                 dist: { integrity: packageIntegrity }
               },
-        fetchImpl: async () => ({
-          ok: true,
-          json: async () => ({ verified: true })
-        })
+        fetchImpl: async (_url, options) => {
+          assert.equal(
+            options.headers.authorization,
+            "Bearer fixture-oidc-token"
+          );
+          return { ok: true, json: async () => ({ verified: true }) };
+        }
       }
     );
     assert.equal(result.ok, true);

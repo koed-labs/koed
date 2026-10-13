@@ -9,12 +9,14 @@ import {
 } from "./service.mjs";
 
 const config = {
+  rehearsalSha: process.env.KOED_SIGNER_REHEARSAL_SHA,
   keyId: process.env.KOED_SIGNER_KEY_ID,
   keyVersion: process.env.KOED_SIGNER_KMS_KEY_VERSION,
   repositoryId: process.env.KOED_SIGNER_REPOSITORY_ID,
   ownerId: process.env.KOED_SIGNER_OWNER_ID
 };
 if (
+  (config.rehearsalSha && !/^[a-f0-9]{40}$/.test(config.rehearsalSha)) ||
   !config.keyId ||
   !/^[A-Za-z0-9_-]{1,64}$/.test(config.keyId) ||
   !/^projects\/[a-z0-9-]+\/locations\/europe-west2\/keyRings\/[^/]+\/cryptoKeys\/[^/]+\/cryptoKeyVersions\/\d+$/.test(

@@ -14,7 +14,9 @@ GitHub JWTs must use issuer `https://token.actions.githubusercontent.com`, audie
 `koed-component-signer`, RS256, valid expiry/not-before and an issue age below ten
 minutes. Cloud Run permits HTTP invocation; application authorization protects
 both signing and verification. Forks, PR events, other workflows and other refs
-are denied. Requests are bounded to 8 MiB and 30 seconds. Audit output contains
+are denied. A temporary `KOED_SIGNER_REHEARSAL_SHA` pin additionally permits only
+the CI workflow on `codex/headless-distribution-fixes`, with an exact matching
+commit and `workflow_dispatch`. Remove the pin after signing-only acceptance. Requests are bounded to 8 MiB and 30 seconds. Audit output contains
 workflow/run identity and manifest digest, never JWTs or credentials.
 
 `POST /v1/sign` accepts `{keyId, manifest}` and returns `{signature}`.
@@ -76,4 +78,5 @@ Runtime account: `koed-component-signer@koed-release-signing-20261013.iam.gservi
 
 Health and missing/invalid-token denial probes passed. Authorized GitHub workflow
 signing is not yet rehearsed. Production trust roots and GitHub release variables
-are not configured by this deployment.
+are configured separately from this deployment. npm publication and promotion
+remain independent authorization gates.

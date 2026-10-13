@@ -14,7 +14,7 @@ Configure these values before expecting release promotion to pass:
 - `KOED_NPM_PUBLICATION_AUTHORIZED=true`: confirms npm trusted publishing is configured for this workflow.
 - `KOED_RELEASE_PROMOTION_APPROVED=true`: explicit independent release approval.
 
-Public signing keys must equal keys compiled into the control-plane package. Both signing and promotion compare public-key maps and their digest with the built package. Current source `packages/koed-server/src/component-trust-roots.ts` has an empty production map, so promotion correctly remains blocked until production trust-key installation is completed separately and built package digest is configured. Do not install production keys as part of a release.
+Public signing keys must equal keys compiled into the control-plane package. Both signing and promotion compare public-key maps and their digest with the built package. The approved Google Cloud KMS public key `koed-components-2026-01` is embedded in `packages/koed-server/src/component-trust-roots.ts`. Build/package roots must match the configured key map and digests. Trust-key changes are reviewed source changes, not keys installed dynamically during a release.
 
 The signing endpoint accepts GitHub Actions OIDC bearer tokens for audience `koed-component-signer`. `/v1/sign` receives `{keyId, manifest}` and returns `{signature:{schemaVersion:1,keyId,algorithm:"ed25519",signature}}`; `/v1/verify` receives `{keyId,manifest,signature}` and returns `{verified:true}` only for a valid signature. No private signing credentials are stored or used locally.
 
@@ -53,3 +53,11 @@ rather than stored credentials. See its README for deployment and authorization
 rules. The configured GitHub repository and owner IDs are immutable identities;
 release and recovery workflows must run on `main`. Deployment and a successful
 health probe alone do not establish authorized end-to-end signing acceptance.
+
+A signing-only rehearsal can be dispatched through CI. Outside `main`, its
+Cloud Run authorization must be temporarily pinned with `KOED_SIGNER_REHEARSAL_SHA`
+to the exact reviewed commit on `codex/headless-distribution-fixes`. Only that
+CI workflow, ref, commit and `workflow_dispatch` event are accepted. Remove the
+pin after the rehearsal. It signs synthetic oversized manifests, verifies their
+archives and checks tampering; it performs no npm/GitHub release promotion and
+does not establish native Linux or full service lifecycle acceptance.

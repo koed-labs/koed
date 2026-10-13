@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   createDesktopComponentManagerBridge,
@@ -228,6 +228,11 @@ describe("Desktop bundled component capability", () => {
   });
 
   it("fails closed with actionable error when production signer trust is empty", async () => {
+    const { productionComponentTrustRoots } =
+      await import("./component-trust-roots.js");
+    const trustSize = vi
+      .spyOn(productionComponentTrustRoots, "size", "get")
+      .mockReturnValue(0);
     const { root, manifestPath } = fixture();
     const capability = validateDesktopBundle(
       root,
@@ -261,6 +266,7 @@ describe("Desktop bundled component capability", () => {
     ).rejects.toThrow(
       "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
     );
+    trustSize.mockRestore();
   });
 
   it("rejects caller-forged bundled runtime capabilities", () => {

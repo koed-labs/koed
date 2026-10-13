@@ -183,3 +183,30 @@ test("KMS uses raw data and rejects incorrect response integrity or key version"
       );
   }
 });
+
+test("rehearsal requires explicit pin plus exact repository, workflow, ref and event", () => {
+  const pin = "a".repeat(40);
+  const rehearsal = {
+    ...claims,
+    sha: pin,
+    ref: "refs/heads/codex/headless-distribution-fixes",
+    workflow_ref:
+      "koed-labs/koed/.github/workflows/ci.yml@refs/heads/codex/headless-distribution-fixes",
+    event_name: "workflow_dispatch"
+  };
+  authorizeClaims(rehearsal, { ...config, rehearsalSha: pin });
+  assert.throws(() => authorizeClaims(rehearsal, config));
+  for (const change of [
+    { sha: "b".repeat(40) },
+    { repository_id: "1" },
+    { workflow_ref: claims.workflow_ref },
+    { event_name: "pull_request" },
+    { ref: "refs/heads/other" }
+  ])
+    assert.throws(() =>
+      authorizeClaims(
+        { ...rehearsal, ...change },
+        { ...config, rehearsalSha: pin }
+      )
+    );
+});
