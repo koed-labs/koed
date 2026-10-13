@@ -1,4 +1,4 @@
-# ADR 0025: Team Conversation Source Access
+# ADR 0047: Team Conversation Source Access
 
 - Status: Accepted
 - Date: 2026-08-10

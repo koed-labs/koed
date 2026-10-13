@@ -9,7 +9,7 @@ Related decisions:
 - [0009 Commercial SaaS Encryption And Key Management](./0009-commercial-saas-encryption-key-management.md)
 - [0012 Symmetric Replicated Personal Memory Across Devices](./0012-symmetric-replicated-personal-memory.md)
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](./0013-team-collaboration-authority.md)
-- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
+- [0051 Personal Semantic Work Is Computed Once And Replicated](./0051-single-personal-semantic-computation.md)
 
 ## Context
 
@@ -282,7 +282,7 @@ After complete encrypted bytes are durable, the target:
 
 Remote object bytes never bypass canonical ingestion. Projected rows and local
 indexes remain deployment-local. Accepted embeddings and LCM nodes are
-portable semantic artifacts governed by ADR 0030 rather than source
+portable semantic artifacts governed by ADR 0051 rather than source
 replication primitives.
 
 Publication records retain the source generation and signed chain head from

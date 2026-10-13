@@ -8,8 +8,8 @@ Related decisions:
 - [0014 Hosted Personal Replication Uses The Conversation Source Journal](./0014-hosted-personal-source-replication.md)
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0024 Tiered Desktop Action Approval](./0024-tiered-desktop-action-approval.md)
-- [0025 Team Conversation Source Access](./0025-team-conversation-source-access.md)
-- [0030 Shared Durable Realtime Client Runtime](./0030-shared-durable-realtime-client-runtime.md)
+- [0047 Team Conversation Source Access](./0047-team-conversation-source-access.md)
+- [0052 Shared Durable Realtime Client Runtime](./0052-shared-durable-realtime-client-runtime.md)
 
 ## Context
 

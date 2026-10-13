@@ -246,7 +246,7 @@ commit the transfer position and old-owner tombstone. Otherwise the receiving
 device creates an explicit fork. Direct reachability does not weaken the
 one-writer rule.
 
-Local execution checkpoint refs from ADR 0033 are not transferred during
+Local execution checkpoint refs from ADR 0055 are not transferred during
 handoff or fork. Portability uses the sealed Conversation source and the
 verified Development Workspace Snapshot. The target runner creates its own
 local checkpoint namespace after materialization.

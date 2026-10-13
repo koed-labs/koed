@@ -6,8 +6,8 @@
 Related decisions:
 
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
-- [0030 Shared Durable Realtime Client Runtime](./0030-shared-durable-realtime-client-runtime.md)
-- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0052 Shared Durable Realtime Client Runtime](./0052-shared-durable-realtime-client-runtime.md)
+- [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 
 ## Context
 

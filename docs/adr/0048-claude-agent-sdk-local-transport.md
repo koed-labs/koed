@@ -1,4 +1,4 @@
-# ADR 0028: Use the pinned Claude Agent SDK with local Claude Code
+# ADR 0048: Use the pinned Claude Agent SDK with local Claude Code
 
 ## Status
 
