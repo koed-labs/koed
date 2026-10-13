@@ -2384,7 +2384,10 @@ process.stdin.once("data", () => {
       expect(response.localMemoryWorker.usedFallback).toBe(true);
       expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
       expect(response.localMemoryWorker.errorMessage).toContain(
-        "Memory answer budget exhausted: searches"
+        "not_found after scan candidates without inspecting evidence"
+      );
+      expect(response.markdown).toBe(
+        "The Codex worker reached its search limit before it could verify an answer. Try a narrower question."
       );
       const exhausted = (
         response.evidenceBundle?.retrieval as {
@@ -2395,6 +2398,64 @@ process.stdin.once("data", () => {
       expect(exhausted).toContain("attempts");
       expect(searches).toHaveLength(1);
       expect(searches[0]?.retrieval_stage).toBe("score_scan");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps not_found when only the search budget ran out after complete retrieval", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        mode: "scanLoop"
+      });
+      const searches: Record<string, unknown>[] = [];
+      const client: MemoryAnswerRetrievalClient = {
+        async search(input) {
+          searches.push(input);
+          return { retrieval: { stages: [] } };
+        },
+        async expand() {
+          throw new Error("expand should not run without candidates");
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          markdown: "",
+          evidenceBundle: {
+            query: "What retry backoff did we choose for the sync worker?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          responseDetail: "internal",
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "1"
+          })
+        }
+      );
+
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.localMemoryWorker.memoryStatus).toBe("not_found");
+      expect(response.markdown).toBe(
+        "No matching relevant memory evidence was found."
+      );
+      const exhausted = (
+        response.evidenceBundle?.retrieval as {
+          trace?: { budgets?: { exhausted?: unknown[] } };
+        }
+      ).trace?.budgets?.exhausted;
+      expect(exhausted).toEqual(["searches"]);
+      expect(searches).toHaveLength(1);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -2449,7 +2510,7 @@ process.stdin.once("data", () => {
         "without resolvable supporting evidence"
       );
       expect(response.markdown).toBe(
-        "The Codex worker reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question."
+        "The Codex worker could not complete the Personal Memory search needed to answer reliably. Try again."
       );
       expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
       expect(response.structuredAnswer).toMatchObject({
