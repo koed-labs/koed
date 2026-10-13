@@ -66,9 +66,10 @@ restarts and waits for readiness. Failed or cancelled staging leaves the
 current generation pointer unchanged. Activation/restart failures attempt to
 restore the previously active generation and restart it. Production signing
 and trust-root prerequisites below remain unchanged; test fixture keys are not
-production trust material. Until approved production trust roots are shipped,
-Desktop status reports that signer prerequisite with update guidance and
-installation fails closed.
+production trust material. Builds without approved production trust roots
+report that signer prerequisite with update guidance and fail installation closed.
+The approved KMS public root is embedded in this branch's control-plane source;
+Desktop bundles receive it when rebuilt.
 
 ## Required production infrastructure
 
@@ -84,13 +85,14 @@ configured. CI requires all of these repository variables before promotion:
   package write permission and OIDC; no long-lived npm token is used.
 - `KOED_RELEASE_PROMOTION_APPROVED=true`: separate explicit release approval.
 
-The release workflow has signing and npm promotion adapters, but approved
-production trust roots and authorized infrastructure remain unconfigured. Setting placeholder variables is
-not sufficient to establish trust or authorize a real release. Do not configure
-these variables until signer verification, npm OIDC publishing, and production
-trust-root validation have been reviewed and connected. Until then, CI can
-assemble unsigned candidate assets but must leave GitHub releases as drafts and
-must not publish npm packages or stable tags.
+The approved KMS root, hosted signing service and signer/trust-root repository
+variables are configured. An authorized signing-only GitHub rehearsal passed
+signature, archive and tampering verification; temporary branch signing access
+was removed afterward. npm publication authorization and release promotion
+approval remain explicitly false. Complete full v2 lifecycle acceptance and
+review npm trusted publishing before enabling them. Without those authorizations,
+release workflows must leave GitHub releases as drafts and must not publish npm
+packages or stable tags.
 
 ## Immutable candidate and retry protocol
 

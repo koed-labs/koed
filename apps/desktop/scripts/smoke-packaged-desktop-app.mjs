@@ -569,8 +569,12 @@ export const assertFailClosedPrivacy = (payload) => {
   if (
     payload?.available !== false ||
     payload?.state !== "unavailable" ||
-    !/Production Privacy Filter signer trust is not configured/.test(
-      payload.message ?? ""
+    !(
+      /Production Privacy Filter signer trust is not configured/.test(
+        payload.message ?? ""
+      ) ||
+      payload.message ===
+        "Privacy Filter is not required by current runtime configuration."
     )
   ) {
     throw new Error(
@@ -1191,7 +1195,8 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
     return {
       startRejected: true,
       privacyHealthy: false,
-      positiveProvisioning: "blocked: production trust roots empty"
+      positiveProvisioning:
+        "not exercised: signed Privacy install requires separate acceptance"
     };
   } finally {
     try {

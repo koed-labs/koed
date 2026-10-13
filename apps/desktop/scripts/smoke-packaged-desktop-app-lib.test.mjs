@@ -39,13 +39,21 @@ test("smoke home canonicalizes temporary paths before authenticated lifecycle se
   }
 });
 
-test("Base privacy rejects enabled assets or missing trust-root denial", () => {
+test("Base privacy remains disabled with configured roots or absent signer trust", () => {
   assert.doesNotThrow(() =>
     assertFailClosedPrivacy({
       available: false,
       state: "unavailable",
       message:
         "Production Privacy Filter signer trust is not configured in this Desktop release."
+    })
+  );
+  assert.doesNotThrow(() =>
+    assertFailClosedPrivacy({
+      available: false,
+      state: "unavailable",
+      message:
+        "Privacy Filter is not required by current runtime configuration."
     })
   );
   assert.throws(
