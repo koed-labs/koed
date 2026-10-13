@@ -78,6 +78,39 @@ instead. Full-smoke evidence: `/tmp/pr404-status-smoke-final.log` (exit 0);
 masked-assets evidence: `/tmp/pr404-status-masked-final.log` (exit 0). No commit,
 push, signing authorization, or trust-root changes were performed.
 
+The component release builder declares Node `>=24 <25` with the build runtime’s
+measured modules ABI (tested with Node `24.14.0`, ABI 137, N-API 10) and
+the exact measured Desktop runtime, Electron `39.8.10` with embedded Node
+`22.22.1` (ABI 140, N-API 10), for macOS arm64 only. It confirms the installed
+Electron package matches `pnpm-lock.yaml` and measures the bundled runtime with
+`ELECTRON_RUN_AS_NODE=1`; other targets remain Node-only until their Electron
+payloads pass the same checks. One test-signed Base+Privacy payload passed addon
+operations under both runtimes: argon2 hash/verify, Sharp PNG encode/decode,
+ONNX Runtime native load and real pinned Privacy model inference, msgpackr-extract
+pack/unpack, and node-pty terminal IO/exit. The acceptance runner reports
+payload and manifest digests and runtime identities. The full Node 24 signed
+Team install/start/doctor/stop smoke passed with isolated PostgreSQL, llama.cpp,
+test keys, and synthetic state. Packaged app Personal lifecycle also passed; renderer fault/CDP injection was
+explicitly skipped with `--skip-renderer-faults` because the local display did not
+expose its target. That renderer check remains unverified.
+The copied Electron app then installed and activated the test-signed Privacy
+archive through private IPC, started the Desktop supervisor, reached healthy Team
+status for API/Postgres+pgvector/Worker/embedding/native Privacy/Local AI/MCP, and
+stopped cleanly. This used a disposable test-only app copy and trust root, isolated
+synthetic `KOED_HOME`, and the read-only public Qwen3 model. The original packaged
+app and production roots remain unchanged; a test-signed installation is still
+rejected there. This Team run explicitly started the daemon after Privacy
+admission; it does not validate `setup_core` before a private supervisor exists.
+An attempted setup in that stopped state returned a standalone-owner mismatch,
+which remains an integration follow-up rather than a passing lifecycle claim.
+
+Compatibility payload evidence: Base archive SHA-256
+`17bc2293a14088c4cd9cde5d6310616acbb8274469372b161ba4170c5ab94100`, manifest
+SHA-256 `3395f35a35e18d6878b019f5c99c18bbe4ff5ae399743f47c170aa0ce3e9ea90`;
+Privacy archive SHA-256
+`0ff16254af7cdf7c1e2c18662e7d38780a90eb15eef8755c83674114a2c4afd2`, manifest
+SHA-256 `eeb639227bb412105c62279e0be5d1b49b29b1b9ef8d10f7077531ba639939c8`.
+
 Validation limitations: root `pnpm test` reached database integration tests but
 failed with `Missing required environment variable: DATABASE_URL`. Root
 `pnpm fmt:prettier:check` also sees pre-existing unformatted local

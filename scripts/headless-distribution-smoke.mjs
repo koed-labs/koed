@@ -5,7 +5,9 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
+  chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +17,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import {
+  PINNED_PRIVACY_MODEL_FILES,
+  PINNED_PRIVACY_MODEL_ID,
+  PINNED_PRIVACY_MODEL_REVISION
+} from "../packages/shared/dist/index.js";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const flags = new Map();
@@ -22,12 +29,20 @@ const supportedFlags = new Set([
   "--postgres-bin-dir",
   "--llama-server-bin",
   "--embedding-model",
+  "--privacy-transformers-cache",
   "--out-dir"
 ]);
-for (let i = 2; i < process.argv.length; i += 2) {
+const switches = new Set(["--team"]);
+for (let i = 2; i < process.argv.length; ) {
+  if (switches.has(process.argv[i])) {
+    flags.set(process.argv[i], "true");
+    i += 1;
+    continue;
+  }
   if (!supportedFlags.has(process.argv[i]) || !process.argv[i + 1])
     throw new Error(`Unknown or incomplete option: ${process.argv[i]}`);
   flags.set(process.argv[i], process.argv[i + 1]);
+  i += 2;
 }
 for (const flag of [
   "--postgres-bin-dir",
@@ -44,6 +59,15 @@ if (flags.has("--out-dir") && existsSync(scratch))
   throw new Error("Smoke output directory must not already exist.");
 mkdirSync(scratch, { recursive: true });
 scratch = realpathSync(scratch);
+if (
+  flags.has("--team") &&
+  (!flags.has("--privacy-transformers-cache") ||
+    !existsSync(resolve(flags.get("--privacy-transformers-cache"))))
+) {
+  throw new Error(
+    "Team smoke requires --privacy-transformers-cache with the pinned model files."
+  );
+}
 const run = (name, args, options = {}) => {
   const result = spawnSync(name, args, {
     cwd: repoRoot,
@@ -144,20 +168,47 @@ run(
 );
 const executable = resolve(prefix, "bin/koed");
 const home = resolve(scratch, "koed-home");
+if (flags.has("--team")) {
+  const modelSource = resolve(flags.get("--privacy-transformers-cache"));
+  cpSync(modelSource, resolve(home, "models/privacy/transformers-cache"), {
+    recursive: true
+  });
+  for (const file of PINNED_PRIVACY_MODEL_FILES) {
+    const blob = resolve(home, "models/privacy/blobs/sha256", file.sha256);
+    mkdirSync(dirname(blob), { recursive: true });
+    linkSync(
+      resolve(
+        home,
+        "models/privacy/transformers-cache",
+        PINNED_PRIVACY_MODEL_ID,
+        PINNED_PRIVACY_MODEL_REVISION,
+        file.path
+      ),
+      blob
+    );
+  }
+}
 const env = {
   PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
   HOME: resolve(scratch, "user-home"),
+  CODEX_HOME: resolve(scratch, "codex-home"),
+  CLAUDE_CONFIG_DIR: resolve(scratch, "claude-home"),
+  PI_CODEROOT: resolve(scratch, "pi-home"),
+  PI_CONFIG_DIR: resolve(scratch, "pi-config"),
   TMPDIR: tmpdir(),
   XDG_STATE_HOME: resolve(scratch, "user-state"),
   KOED_HOME: home,
   KOED_RUNTIME_MODE: "local-personal",
   KOED_DEPENDENCY_MODE: "bundled-local",
-  KOED_TEAM_COLLABORATION_ENABLED: "false",
+  KOED_TEAM_COLLABORATION_ENABLED: flags.has("--team") ? "true" : "false",
   KOED_AUTO_PORTS: "1",
   KOED_POSTGRES_BIN_DIR: resolve(flags.get("--postgres-bin-dir")),
   KOED_EMBEDDING_LLAMA_SERVER_BIN: resolve(flags.get("--llama-server-bin")),
   KOED_EMBEDDING_MODEL_PATH: resolve(flags.get("--embedding-model")),
   KOED_EMBEDDING_ACCELERATION: "cpu",
+  MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+  MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
+  MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
   npm_config_offline: "true",
   npm_config_registry: "http://127.0.0.1:1"
 };
@@ -244,6 +295,11 @@ const installed = JSON.parse(
 );
 assert.equal(installed.components.base, "active");
 assert.equal(installed.components.privacy, "active");
+// Some bootstrap commands create KOED_HOME before the supervisor's first-boot
+// initializer can apply its private directory mode. The host-bound identity
+// verifier correctly rejects a world-readable home, so normalize only this
+// disposable test home before starting services.
+chmodSync(home, 0o700);
 let healthy = false;
 try {
   const started = JSON.parse(koed(["start", "--daemon", "--json"]));
@@ -262,6 +318,17 @@ try {
         healthy = true;
         break;
       }
+    }
+    const supervisorLog = resolve(home, "logs/supervisor.log");
+    if (
+      existsSync(supervisorLog) &&
+      readFileSync(supervisorLog, "utf8").includes(
+        '"milestone":"startup_failed"'
+      )
+    ) {
+      throw new Error(
+        `Runtime startup failed; inspect ${supervisorLog}\n${readFileSync(supervisorLog, "utf8").slice(-8_000)}`
+      );
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 2000));
   }
@@ -299,8 +366,8 @@ try {
   );
   const result = {
     ok: true,
-    scope:
-      "headless Node 24 / Base and Privacy installation / Personal startup",
+    scope: `Node 24 / Base and Privacy installation / ${flags.has("--team") ? "Team" : "Personal"} startup`,
+    runtime: process.execPath,
     testKeyId: keyId,
     productionPublicationEnabled: false,
     scratch,

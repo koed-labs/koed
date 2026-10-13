@@ -12,7 +12,7 @@ import {
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   createOwnedDiagnosticsDir,
   readDiagnosticWindow,
@@ -40,6 +40,7 @@ const parseArgs = (argv) => {
     build: false,
     missingAssets: false,
     maskNativeAssets: false,
+    skipRendererFaults: false,
     embeddingModelSource: undefined,
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
@@ -63,6 +64,10 @@ const parseArgs = (argv) => {
     }
     if (value === "--mask-native-assets") {
       options.maskNativeAssets = true;
+      continue;
+    }
+    if (value === "--skip-renderer-faults") {
+      options.skipRendererFaults = true;
       continue;
     }
     if (value === "--embedding-model-source") {
@@ -127,6 +132,7 @@ Options:
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
+  --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
   --embedding-model-source  Pre-seed the pinned embedding model from this file
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
@@ -295,7 +301,16 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
     KOED_HOME: koedHome,
+    HOME: resolve(koedHome, "test-home"),
+    KOED_DEVICE_PROOF_DIR: resolve(
+      koedHome,
+      "..",
+      `.${basename(koedHome)}-device-proof`
+    ),
     CODEX_HOME: resolve(koedHome, "codex"),
+    CLAUDE_CONFIG_DIR: resolve(koedHome, "claude"),
+    PI_CODEROOT: resolve(koedHome, "pi"),
+    PI_CONFIG_DIR: resolve(koedHome, "pi-config"),
     CODEX_CONFIG_PATH: resolve(koedHome, "codex", "config.toml"),
     MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
     KOED_PACKAGED_DESKTOP: "1",
@@ -306,6 +321,9 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     KOED_DEPENDENCY_MODE: "bundled-local",
     KOED_TEAM_COLLABORATION_ENABLED: "false",
     WORK_QUEUE_BACKEND: "local",
+    MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+    MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
+    MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
     ...extraEnv
   };
   delete env.KOED_REPO_ROOT;
@@ -1255,18 +1273,17 @@ const run = async () => {
       "collaboration broker",
       async () => smokePackagedCollaborationBroker(layout, koedHome)
     );
-    const rendererFaults = await measurePhase(
-      timings,
-      "renderer fault checks",
-      async () =>
-        smokePackagedRendererFaults({
-          executable: layout.executable,
-          env: createSmokeEnv(layout, koedHome, {
-            ELECTRON_RUN_AS_NODE: undefined
-          }),
-          koedHome
-        })
-    );
+    const rendererFaults = options.skipRendererFaults
+      ? { skipped: true, reason: "explicit local acceptance option" }
+      : await measurePhase(timings, "renderer fault checks", async () =>
+          smokePackagedRendererFaults({
+            executable: layout.executable,
+            env: createSmokeEnv(layout, koedHome, {
+              ELECTRON_RUN_AS_NODE: undefined
+            }),
+            koedHome
+          })
+        );
     desktop = launchPackagedDesktop({
       executable: layout.executable,
       env: createSmokeEnv(layout, koedHome),

@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { stageRuntimeComponents } from "./component-assembly.mjs";
 import { buildComponentReleaseSet } from "./component-release-lib.mjs";
+import { parse } from "yaml";
+import {
+  assertElectronVersionMatchesLock,
+  componentRuntimeDeclarations
+} from "./koed-component-runtime-policy.mjs";
 import { platformKey, readPackageVersion } from "./koed-server-package-lib.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
@@ -36,6 +42,57 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   if (Number(process.versions.node.split(".")[0]) !== 24)
     throw new Error("Component releases must be built with Node.js 24.");
+  let electronIdentity;
+  if (
+    options.platform === "macos" &&
+    options.architecture === "arm64" &&
+    process.platform === "darwin" &&
+    process.arch === "arm64"
+  ) {
+    const lock = parse(
+      readFileSync(resolve(repoRoot, "pnpm-lock.yaml"), "utf8")
+    );
+    const installedElectron = JSON.parse(
+      readFileSync(
+        resolve(repoRoot, "apps/desktop/node_modules/electron/package.json"),
+        "utf8"
+      )
+    );
+    assertElectronVersionMatchesLock({
+      lockVersion:
+        lock.importers?.["apps/desktop"]?.devDependencies?.electron?.version,
+      installedVersion: installedElectron.version
+    });
+    const electronPath = resolve(
+      repoRoot,
+      "apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+    );
+    const measured = spawnSync(
+      electronPath,
+      [
+        "-p",
+        "JSON.stringify({electron:process.versions.electron,node:process.versions.node,modules:process.versions.modules,napi:process.versions.napi,platform:process.platform,arch:process.arch})"
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+      }
+    );
+    if (measured.error) throw measured.error;
+    if (measured.status !== 0)
+      throw new Error(
+        `Unable to measure the installed Electron runtime: ${measured.stderr}`
+      );
+    const identity = JSON.parse(measured.stdout.trim());
+    if (identity.platform !== "darwin" || identity.arch !== "arm64")
+      throw new Error("Installed Electron does not match macOS arm64 target.");
+    electronIdentity = {
+      version: identity.electron,
+      nodeVersion: identity.node,
+      modulesAbi: identity.modules,
+      napiVersion: Number(identity.napi)
+    };
+  }
   const componentsRoot = resolve(options.outDir, "components");
   const staged = await stageRuntimeComponents({
     repoRoot,
@@ -57,14 +114,10 @@ const main = async () => {
     outDir: options.outDir,
     version: options.version,
     target: { platform: options.platform, architecture: options.architecture },
-    runtimes: [
-      {
-        kind: "node",
-        runtimeRange: ">=24 <25",
-        nodeRange: ">=24 <25",
-        modulesAbi: process.versions.modules
-      }
-    ],
+    runtimes: componentRuntimeDeclarations({
+      nodeModulesAbi: process.versions.modules,
+      electronIdentity
+    }),
     requiredFiles: {
       base: staged.baseRequired,
       privacy: staged.privacyRequired

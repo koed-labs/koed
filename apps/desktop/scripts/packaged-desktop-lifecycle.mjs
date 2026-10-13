@@ -13,7 +13,11 @@ export const launchPackagedDesktop = ({
   delete childEnv.ELECTRON_RUN_AS_NODE;
   const child = spawn(
     executable,
-    ["--koed-private-smoke", `--user-data-dir=${koedHome}/desktop-user-data`],
+    [
+      "--use-mock-keychain",
+      "--koed-private-smoke",
+      `--user-data-dir=${koedHome}/desktop-user-data`
+    ],
     {
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe", "ipc"],

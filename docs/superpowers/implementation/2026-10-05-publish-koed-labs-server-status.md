@@ -12,7 +12,26 @@ PR #404 remains a draft while its remaining distribution/Desktop work is reviewe
 - Claude Code/Pi setup and repair receive the same private capability as Codex, including stopped management. Standalone ownership rules are unchanged.
 - One issued bundle capability replaces the duplicate verifier. Supervisor handshake/RPC and the Privacy activation/rollback transaction are independent modules. Assembly exception matching, closure prerequisites and inventory metadata reside in one policy module.
 
-Local regression evidence: 817 Server tests, 907 Desktop tests, three Desktop artifact-policy tests; component assembly's 39 cases pass. This establishes the repaired code paths, not positive packaged Electron/Team or production release acceptance. Exact-head CI and compiled IPC evidence are recorded in the PR description when complete. Remaining acceptance is compatible Electron declarations, packaged positive Team startup/upgrade/rollback/relocation/uninstall/helper checks, Linux validation and authorized signer/registry rehearsal.
+Local regression evidence: 817 Server tests, 907 Desktop tests, three Desktop artifact-policy tests; component assembly's 39 cases pass. Subsequent local acceptance confirms the exact Electron 39.8.10 / embedded Node 22.22.1 macOS arm64 payload alongside Node 24.14.0, including signed component admission and native addon operations; the matrix and payload digests are in `docs/ci-validation.md`. Packaged Personal lifecycle and positive Team Privacy install/activation, healthy readiness, and shutdown passed through the private Desktop supervisor in an isolated app copy. Upgrade/rollback/relocation/uninstall/helper checks, other Electron targets, Linux validation and authorized signer/registry rehearsal remain open.
+
+## 13 October Electron compatibility and Desktop acceptance
+
+The release builder emits a narrowly scoped Electron declaration only when
+the installed Electron package matches the lockfile and its measured runtime
+matches Electron 39.8.10, Node 22.22.1, ABI 140, and N-API 10 on macOS arm64.
+Node `>=24 <25` remains the headless declaration (tested on 24.14.0); other platforms stay
+Node-only until their own Electron payload passes this matrix. A single signed
+Base+Privacy payload passed native-addon probes and the pinned synthetic Privacy
+inference under both runtimes. The full signed Node Team lifecycle passed in an
+isolated synthetic home. The packaged Desktop app passed Personal lifecycle and
+the temporary test-only root admitted staged Privacy assets in a copied app and
+recorded a Desktop-owned generation. During its restart, Desktop had queried
+status using the public CLI, which correctly rejects Desktop-owned generations.
+That preflight now uses a nonce-bound, stopped private status session and retains
+the refusal for a healthy supervisor not owned by the current Desktop manager.
+Desktop tests and typechecking pass; the rebuilt copied app then installed and
+activated Privacy, started through the private runner, reached healthy Team
+status, and shut down cleanly. Production roots remain empty.
 
 ## Implemented
 
@@ -26,7 +45,7 @@ Local regression evidence: 817 Server tests, 907 Desktop tests, three Desktop ar
 ## Implementation status and remaining verification
 
 1. Desktop bundled Base now has capability-gated private generation admission and supervisor startup authority. Bundle records survive restart; private status and stopped activation use reverified records. Public unsigned generation reads remain rejected. Fresh-home/restart tests and full native packaged Personal/Base lifecycle smoke pass, including core/Codex setup, doctor, reconnect, and owned-supervisor stop/restart.
-2. Desktop Preferences now calls manager-owned `privacyInstall` over nonce- and request-ID-correlated private supervisor RPC. Status/install/cancel/progress, exact-version canonical online assets, signed offline triplet selection, stopped activation, restart, and rollback attempt are wired and covered by deterministic manager/IPC/UI tests. Production install remains fail-closed and unavailable because shipped production component trust roots are empty; packaged Personal/Base smoke and Team startup denial pass, but positive signed Team installation/end-to-end activation acceptance is not claimed.
+2. Desktop Preferences now calls manager-owned `privacyInstall` over nonce- and request-ID-correlated private supervisor RPC. Status/install/cancel/progress, exact-version canonical online assets, signed offline triplet selection, stopped activation, restart, and rollback attempt are wired and covered by deterministic manager/IPC/UI tests. Production install remains fail-closed and unavailable because shipped production component trust roots are empty; packaged Personal/Base smoke and Team startup denial pass. Positive test-signed Team installation, activation, readiness and shutdown also pass locally in an isolated macOS arm64 app copy; production-signed acceptance remains gated.
 3. Private supervisor authority and bundled-generation pinning are implemented in source. Packaged Personal/Base lifecycle now passes on local macOS arm64. Relocation, failure-injection rollback and terminal-helper validation still need integration-level/platform verification; do not bypass authority with environment variables, CLI owner flags, unsigned public manifests or weakened standalone ownership checks.
 4. Relocation, uninstall and terminal-helper validation still need implementation-level integration and platform verification; Personal/Base lifecycle is locally verified.
 

@@ -12,6 +12,7 @@ const commands = new Set([
   "setup_codex",
   "doctor",
   "privacy_status",
+  "privacy_install",
   "quit"
 ]);
 type HarnessInput = {

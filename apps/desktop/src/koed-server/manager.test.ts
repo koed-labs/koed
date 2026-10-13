@@ -263,6 +263,14 @@ describe("Koed server desktop manager", () => {
                 });
             }
           });
+        } else if (message.type === "koed.desktop.status.request") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: { ok: true, state: "stopped" }
+            })
+          );
         }
       }
     });
@@ -430,13 +438,15 @@ describe("Koed server desktop manager", () => {
       stdio: ["ignore", "ignore", "pipe", "ipc"]
     });
     await manager.handlers.status();
-    expect(statusRequests).toHaveLength(1);
-    expect(statusRequests[0]).toMatchObject({ startup: false });
+    expect(statusRequests).toHaveLength(2);
+    expect(statusRequests[0]).toMatchObject({ startup: true });
+    expect(statusRequests[1]).toMatchObject({ startup: false });
     await manager.handlers.setup_core();
     await manager.handlers.setup_codex();
     await manager.handlers.repair_codex();
     await manager.handlers.doctor();
     expect(statusRequests.map((request) => request.action)).toEqual([
+      "status",
       "status",
       "setup-core",
       "setup-codex",
@@ -447,6 +457,64 @@ describe("Koed server desktop manager", () => {
       ok: true,
       state: "stopped"
     });
+  });
+
+  it("keeps the healthy unowned supervisor refusal after private status preflight", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: healthyLocalServiceStatus()
+            })
+          );
+        }
+      }
+    });
+    const execFile = vi.fn((_command, _args, _options, callback) =>
+      callback(null, "{}", "")
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile,
+      spawn: (() => child) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      error:
+        "A running Koed supervisor is not owned by this Desktop manager. Stop it before starting Desktop."
+    });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
   it("submits Personal Ask through the fixed local runtime operation", async () => {

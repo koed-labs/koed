@@ -4913,7 +4913,23 @@ export const createKoedServerManager = ({
   };
 
   const requestDaemonStart = async () => {
-    const current = await runDesktopStatus(true);
+    const current =
+      createSupervisorInvocation && !desktopSupervisorProcess
+        ? await (async () => {
+            const session = await openStoppedPrivacySession();
+            try {
+              return await requestSupervisor(
+                session,
+                "status",
+                "status",
+                { startup: true },
+                statusCommandTimeoutMs
+              );
+            } finally {
+              session.child.kill("SIGTERM");
+            }
+          })()
+        : await runDesktopStatus(true);
     if (hasHealthyApi(current)) {
       if (createSupervisorInvocation && !desktopSupervisorProcess) {
         return {

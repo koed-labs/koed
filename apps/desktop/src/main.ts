@@ -612,6 +612,31 @@ const bootstrap = async () => {
         invoke: async (command) => {
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();
+          if (command === "privacy_install") {
+            const archivePath = process.env.KOED_PRIVATE_SMOKE_PRIVACY_ARCHIVE;
+            const manifestPath =
+              process.env.KOED_PRIVATE_SMOKE_PRIVACY_MANIFEST;
+            const signaturePath =
+              process.env.KOED_PRIVATE_SMOKE_PRIVACY_SIGNATURE;
+            if (!archivePath || !manifestPath || !signaturePath) {
+              throw new Error(
+                "Private smoke Privacy installation requires an offline archive, manifest and signature."
+              );
+            }
+            const offlineSource = {
+              archivePath,
+              manifestPath,
+              signaturePath
+            };
+            if (!server.privacyInstall) {
+              throw new Error("Desktop Privacy installation is unavailable.");
+            }
+            return server.privacyInstall.installPrivacy({
+              consent: true,
+              offlineSource,
+              onProgress: () => undefined
+            });
+          }
           if (command === "quit") return server.stop();
           return server.handlers[command as DesktopCommandName]();
         },

@@ -83,8 +83,10 @@ installation-local nickname; device icons no longer guess hardware by row order.
 ## Public Koed Server release gates
 
 Headless macOS arm64 / Node 24 signed Base and Privacy installation plus Personal
-startup/readiness/shutdown is locally verified with test-only keys. Linux, Desktop
-and production signing/publication acceptance remain open below.
+and Team startup/readiness/shutdown is locally verified with test-only keys.
+Packaged Electron macOS arm64 Team activation/readiness/shutdown also passes.
+Linux, the broader Desktop lifecycle matrix, and production signing/publication
+acceptance remain open below.
 
 Follow-up to the public `@koed-labs/server` distribution. Merging that work
 publishes nothing; do not merge the "Version Koed" release PR until these are closed:
@@ -114,10 +116,14 @@ Implemented with regression coverage: stopped first Privacy asset installation,
 owned Desktop bundle upgrade admission, selected-runtime Privacy readiness and
 private Claude Code/Pi setup/repair. Bundle verification, supervisor RPC and Privacy
 transactions, status runtime selection and assembly exception policy now have shared
-implementation seams. Fresh review and packaged positive Team acceptance remain
-required; do not infer them from unit tests or Personal smoke.
+implementation seams. Packaged positive Team activation/readiness/shutdown now
+passes locally with test-only signing; fresh review and the remaining lifecycle
+acceptance are still required.
 
-- Finish compatible Electron component declarations and validate signed admission.
-- Run positive packaged Team installation/startup, upgrade, relocation, rollback,
+- Completed local signed component admission, native-operation coverage, and packaged Team startup acceptance for Node 24.14.0 and the exact Electron 39.8.10 / embedded Node 22.22.1 macOS arm64 payload. Other Electron targets remain unvalidated.
+- Validate stopped packaged Team `setup_core` after Privacy activation: the current
+  smoke requires explicit daemon start first; the stopped setup attempt returned
+  a standalone-owner mismatch.
+- Run packaged Team upgrade, relocation, rollback,
   uninstall and helper/fuse acceptance, plus Linux native validation.
 - Keep production signing/trust-root/npm/promotion gates closed until authorized rehearsal.
