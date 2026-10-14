@@ -1,3 +1,4 @@
+import type { RepositoryAssignment } from "@koed/shared";
 import type {
   LcmSourceItem,
   MemoryActor,
@@ -1298,6 +1299,7 @@ export interface PersonalProjectReference {
 }
 
 export interface CapturedSessionRecord {
+  repositoryAssignment?: RepositoryAssignment;
   id: string;
   logicalSessionId: string;
   ownerUserId: string | null;

@@ -1,7 +1,16 @@
 import { basename } from "node:path";
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
-import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  type RepositoryIdentity,
+  crossIdentitySyncDeterministicUuid
+} from "@koed/shared";
+import {
+  mapRepositoryAssignment,
+  recordRepositoryObservation,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
 import type {
   ActorContext,
   CaptureMethod,
@@ -35,6 +44,7 @@ export interface CapturedSessionRepository {
       importObservedAt?: string;
       metadata?: Record<string, unknown>;
       detectedProjects?: PersonalProjectReference[];
+      repositoryIdentity?: RepositoryIdentity;
     }
   ): Promise<CapturedSessionRecord>;
   getCapturedSession(
@@ -105,7 +115,8 @@ export interface CapturedSessionSummaryRecord {
     | "revoked";
 }
 
-type CapturedSessionRow = {
+type CapturedSessionRow = RepositoryAssignmentRow & {
+  capture_inserted?: boolean;
   id: string;
   logical_session_id: string;
   owner_user_id: string | null;
@@ -372,6 +383,7 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
     importObservedAt: row.import_observed_at?.toISOString() ?? null,
     metadata: row.metadata ?? {},
     capturedProjectProvenance: row.captured_project_provenance ?? {},
+    repositoryAssignment: mapRepositoryAssignment(row),
     automaticProject,
     projectOverride,
     project: projectOverride ?? automaticProject,
@@ -502,7 +514,8 @@ const capturedSessionColumns = `
   automatic_project_id, automatic_project_name, automatic_project_path,
   automatic_project_detected_at,
   project_override_id, project_override_name, project_override_path,
-  project_override_at, created_at
+  project_override_at, created_at, repository_assignment_state, repository_assignment_version,
+  repository_automatic_identity, repository_override_identity
 `;
 
 export const createCapturedSessionRepository = (
@@ -522,6 +535,15 @@ export const createCapturedSessionRepository = (
           [`captured-session:${actor.userId}:${input.externalSessionId}`]
         );
       }
+      if (input.logicalSessionId) {
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`captured-session-logical:${actor.userId}:${input.logicalSessionId}`]
+        );
+      }
+      const repositoryIdentity = input.repositoryIdentity
+        ? repositoryIdentitySchema.parse(input.repositoryIdentity)
+        : undefined;
       const metadata = { ...(input.metadata ?? {}) };
       const forkedFromExternalThreadId =
         input.forkedFromExternalThreadId ??
@@ -663,6 +685,12 @@ export const createCapturedSessionRepository = (
               { statusCode: 409 }
             );
           }
+          await recordRepositoryObservation(
+            client,
+            convergedRow,
+            repositoryIdentity,
+            input.cwd
+          );
           await ensureCapturedSessionLogicalMemory(
             client,
             actor.userId,
@@ -706,7 +734,7 @@ export const createCapturedSessionRepository = (
           source_fingerprint,
           captured_project,
           import_observed_at,
-          logical_session_id
+          logical_session_id, repository_assignment_state, repository_automatic_identity
         )
         values (
           $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9,
@@ -727,7 +755,7 @@ export const createCapturedSessionRepository = (
           $15, $16, $17, $18, $19,
           $20, $21, $22, $23,
           case when $21::text is null then null else now() end,
-          $24, $25, $26, coalesce($29::uuid, gen_random_uuid())
+          $24, $25, $26, coalesce($29::uuid, gen_random_uuid()), 'recorded', $31::jsonb
         )
         on conflict (owner_user_id, visibility, idempotency_key)
         where idempotency_key is not null
@@ -801,7 +829,7 @@ export const createCapturedSessionRepository = (
             or sessions.forked_from_external_thread_id is null
             or sessions.forked_from_external_thread_id = $13
           )
-        returning ${capturedSessionColumns}
+        returning ${capturedSessionColumns}, (xmax = 0) as capture_inserted
       `,
         [
           actor.userId,
@@ -856,7 +884,8 @@ export const createCapturedSessionRepository = (
           detectedProjectInputProvided,
           explicitProjectIdentityProvided,
           input.logicalSessionId ?? null,
-          input.externalThreadId ?? null
+          input.externalThreadId ?? null,
+          repositoryIdentity ?? null
         ]
       );
 
@@ -878,6 +907,12 @@ export const createCapturedSessionRepository = (
           { statusCode: 409, code: "captured_session_thread_conflict" }
         );
       }
+      await recordRepositoryObservation(
+        client,
+        row,
+        repositoryIdentity,
+        input.cwd
+      );
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
         await client.query("commit");

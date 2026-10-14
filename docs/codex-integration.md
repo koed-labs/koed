@@ -387,3 +387,20 @@ through the provider selected for each flow. If that local service is
 delayed or fails, Koed still returns pending placeholders as degraded evidence
 and reports the backlog through diagnostics instead of marking the backend
 unhealthy.
+
+## Repository assignment inspection
+
+On the Project integration branch, new live Codex capture records the selected
+repository identity from the transcript's actual cwd. A subdirectory resolves
+to its Git root; another worktree retains its own checkout provenance while
+matching the same selected anchor. Inspect the local selection in Desktop's
+Project **Repository anchor** panel or with `project discover`.
+
+Owner `GET /v1/sessions/:sessionId` responses expose `repositoryAssignment`.
+The original cwd, root, checkout/device provenance, and automatic assignment
+remain inspectable. Continued capture records observations without replacing
+assignments. Existing unresolved Conversations stay unresolved through later
+turns and re-ingestion. Changing an anchor alone does not move recorded memory.
+The Supported Capture Hook still only signals the Transcript Watcher.
+See [recorded assignments](raw-ingestion-projection.md#recorded-repository-assignments)
+for persistence and the prepared release cutover.

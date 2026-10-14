@@ -328,14 +328,10 @@ export const registerConversationSourceJournalRoutes = (
             sourceComponentId: input.sourceComponentId
           }
         );
-      const existingSession =
-        hosted && existing
-          ? await repo.getCapturedSession(
-              { userId: user.id },
-              existing.sessionId
-            )
-          : null;
-      if (hosted && existing && !existingSession) {
+      const existingSession = existing
+        ? await repo.getCapturedSession({ userId: user.id }, existing.sessionId)
+        : null;
+      if (existing && !existingSession) {
         throw Object.assign(new Error("Captured Session is unavailable"), {
           statusCode: 404
         });
@@ -355,15 +351,6 @@ export const registerConversationSourceJournalRoutes = (
               threadId: input.externalSessionId
             }
       );
-      if (existing) {
-        return {
-          session: await repo.getCapturedSession(
-            { userId: user.id },
-            existing.sessionId
-          ),
-          artifact: existing
-        };
-      }
       const policy =
         hostedPolicy ??
         (await context.capture.resolveCapturePolicyForRequest(
@@ -380,6 +367,18 @@ export const registerConversationSourceJournalRoutes = (
           new Error("Capture Policy blocks conversation source journaling"),
           { statusCode: 409 }
         );
+      }
+      if (existing) {
+        const session = await repo.createCapturedSession(
+          { userId: user.id },
+          input.sourceSession
+        );
+        if (session.id !== existing.sessionId)
+          throw Object.assign(
+            new Error("Conversation source Session identity changed"),
+            { statusCode: 409 }
+          );
+        return { session, artifact: existing };
       }
       const artifactIdPrefix = createHash("sha256")
         .update(

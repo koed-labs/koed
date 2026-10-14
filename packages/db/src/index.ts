@@ -453,3 +453,8 @@ export {
   verifyManagedJournalTerminal,
   type VerifiedManagedJournalTerminal
 } from "./managed-journal-terminal.js";
+
+export {
+  updateSessionRepositoryOverride,
+  markPreCutoverRepositoryAssignmentsUnresolved
+} from "./repository-assignment.js";

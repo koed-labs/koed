@@ -1,3 +1,8 @@
+import {
+  discoverProjectMetadata,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
+import { execFileSync } from "node:child_process";
 import fs, {
   appendFileSync,
   mkdirSync,
@@ -1041,19 +1046,12 @@ describe("Codex Transcript Watcher source journal", () => {
     const transcript = transcriptPath(root);
     writeFileSync(transcript, line(sessionRecord("catalogued", projectRoot)));
     const koedHome = path.join(root, "koed");
-    mkdirSync(path.join(koedHome, "config"), { recursive: true });
-    writeFileSync(
-      path.join(koedHome, "config", "projects.json"),
-      JSON.stringify({
-        projects: [
-          {
-            localProjectId: "lp_0123456789abcdef0123456789abcdef",
-            displayName: "Catalogued Project",
-            path: { cwd: projectRoot, projectRoot }
-          }
-        ]
-      })
-    );
+    const discovered = (
+      await discoverProjectMetadata(
+        resolveKoedServerPaths({ KOED_HOME: koedHome }),
+        { cwd: projectRoot }
+      )
+    ).project!;
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(client, watcherConfig(root));
 
@@ -1063,19 +1061,103 @@ describe("Codex Transcript Watcher source journal", () => {
 
     expect(client.sourceSessions.at(-1)).toMatchObject({
       cwd: projectRoot,
+      repositoryIdentity: {
+        kind: "non_git_project",
+        checkoutId: discovered.repository!.checkoutId
+      },
       metadata: {
-        localProjectId: "lp_0123456789abcdef0123456789abcdef",
-        projectName: "Catalogued Project",
+        localProjectId: discovered.localProjectId,
+        projectName: discovered.displayName,
         projectPath: projectRoot
       },
       detectedProjects: [
         {
-          id: "lp_0123456789abcdef0123456789abcdef",
-          name: "Catalogued Project",
+          id: discovered.localProjectId,
+          name: discovered.displayName,
           path: projectRoot
         }
       ]
     });
+  });
+
+  it("resolves Codex capture from a subdirectory and worktree with the same selected anchor", async () => {
+    const root = temporaryDirectory();
+    const repo = path.join(root, "repository");
+    mkdirSync(repo);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "--initial-branch=main");
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture"
+    );
+    git(
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/example/recall-fixture.git"
+    );
+    const subdirectory = path.join(repo, "packages", "example");
+    mkdirSync(subdirectory, { recursive: true });
+    const worktree = path.join(root, "worktree");
+    git("worktree", "add", "-b", "preview", worktree);
+    const config = watcherConfig(root);
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, config);
+    for (const [sessionId, cwd] of [
+      ["repo-main", subdirectory],
+      ["repo-worktree", worktree]
+    ]) {
+      const transcript = transcriptPath(root, `rollout-${sessionId}.jsonl`);
+      writeFileSync(transcript, line(sessionRecord(sessionId!, cwd)));
+      await watcher.scanNow();
+      appendFileSync(
+        transcript,
+        line(userRecord("Use the distinctive cobalt release protocol."))
+      );
+      await watcher.scanNow();
+    }
+    const registrations = client.sourceSessions.filter((entry) =>
+      ["repo-main", "repo-worktree"].includes(String(entry.externalSessionId))
+    );
+    const first = registrations.find(
+      (entry) => entry.externalSessionId === "repo-main"
+    )!;
+    const second = registrations.find(
+      (entry) => entry.externalSessionId === "repo-worktree"
+    )!;
+    expect(first).toMatchObject({
+      cwd: subdirectory,
+      repositoryIdentity: {
+        kind: "portable_repository",
+        root: fs.realpathSync(repo),
+        branch: "main"
+      }
+    });
+    expect(second).toMatchObject({
+      cwd: worktree,
+      repositoryIdentity: {
+        kind: "portable_repository",
+        root: fs.realpathSync(worktree),
+        branch: "preview"
+      }
+    });
+    const firstIdentity = first.repositoryIdentity as {
+      key: string;
+      checkoutId: string;
+    };
+    const secondIdentity = second.repositoryIdentity as {
+      key: string;
+      checkoutId: string;
+    };
+    expect(firstIdentity.key).toBe(secondIdentity.key);
+    expect(firstIdentity.checkoutId).not.toBe(secondIdentity.checkoutId);
   });
 
   it("stores normalized lineage for native Codex guardian sessions", async () => {

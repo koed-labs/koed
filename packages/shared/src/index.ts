@@ -1819,3 +1819,9 @@ export type {
   RepositoryIdentity,
   AssociatedRepositorySelection
 } from "./repository-identity.js";
+
+export {
+  repositoryAssignmentSchema,
+  effectiveRepositoryIdentity
+} from "./repository-assignment.js";
+export type { RepositoryAssignment } from "./repository-assignment.js";

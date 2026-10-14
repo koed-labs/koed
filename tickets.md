@@ -89,7 +89,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 03. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 08. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -124,7 +124,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 - [x] Cover real fixture repositories, worktrees, repeated discovery, and failed Git execution with focused tests.
 - [x] Update architecture documentation for the shared discovery boundary. This behavior-preserving refactor can merge independently.
 
-**Validation:** Shared probe and metadata suites: 10 tests passed. Server typecheck, targeted ESLint, and formatting passed. The wider CLI suite has an unrelated doctor-output failure (50/51 pass); it does not exercise the extracted Git boundary.
+**Validation:** Shared probe and metadata suites: 10 tests passed. Server typecheck, targeted ESLint, and formatting passed. The initial sandboxed wider suite hit socket/process restrictions; the subsequent Server suite with those permissions passed all 712 tests across 51 files.
 
 ## 02: Select and inspect one repository anchor
 
@@ -150,15 +150,17 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 02: Select and inspect one repository anchor.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Carry identity from the Codex Transcript Watcher and Supported Capture Hook through capture to owner session inspection.
-- [ ] Persist automatic and override identities, assignment versions, originating checkout/device provenance, and separate branch observations. Retain the original cwd and resolved Git root.
-- [ ] Use one effective assignment rule: a User override wins, otherwise the recorded automatic assignment applies. Resetting an override restores that recorded state.
-- [ ] Prepare and exercise the cutover transition that marks every existing logical session unresolved until explicitly reassigned. Activate it only in ticket 16.
-- [ ] Both capture upsert paths preserve assigned and historical-unresolved states during duplicate, delayed, conflicting, and continued capture.
-- [ ] Record conflicting observations for later review instead of unioning identities or silently replacing assignments. Re-ingestion must not create a new lineage to evade the unresolved state.
-- [ ] Demonstrate new capture and a continued pre-cutover Conversation through owner inspection. Add focused persistence and integration tests, indexes, and capture documentation.
+- [x] Carry identity from the Codex Transcript Watcher and Supported Capture Hook through capture to owner session inspection.
+- [x] Persist automatic and override identities, assignment versions, originating checkout/device provenance, and separate branch observations. Retain the original cwd and resolved Git root.
+- [x] Use one effective assignment rule: a User override wins, otherwise the recorded automatic assignment applies. Resetting an override restores that recorded state.
+- [x] Prepare and exercise the cutover transition that marks every existing logical session unresolved until explicitly reassigned. Activate it only in ticket 16.
+- [x] Both capture upsert paths preserve assigned and historical-unresolved states during duplicate, delayed, conflicting, and continued capture.
+- [x] Record conflicting observations for later review instead of unioning identities or silently replacing assignments. Re-ingestion must not create a new lineage to evade the unresolved state.
+- [x] Demonstrate new capture and a continued pre-cutover Conversation through owner inspection. Add focused persistence and integration tests, indexes, and capture documentation.
+
+**Validation:** Codex watcher and Supported Capture Hook: 67 tests passed. Real PostgreSQL assignment, existing capture/Project, and API artifact replay: 10 tests passed (sequential files, isolated UTF-8 database). API/contract suites: 145 passed, 2 skipped. DB/API/MCP typechecks, focused lint, and Drizzle migration consistency passed. The cutover was exercised inside a rollback and is not invoked automatically.
 
 ## 04: Capture Claude Code sessions with the same assignment rules
 

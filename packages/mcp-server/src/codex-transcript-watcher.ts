@@ -1,3 +1,7 @@
+import {
+  discoverProjectMetadata,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -38,6 +42,7 @@ import {
   readCodexTranscriptTurnBoundary,
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
+import type { ProjectMetadataV1 } from "@koed/shared";
 import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
@@ -1286,12 +1291,24 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           !this.config.futureCaptureOnly &&
           !existingArtifact &&
           historicalSelection?.frontierOffset === liveStartOffset;
+        const liveProject =
+          sourceProjectPath && !historicalJournal
+            ? ((
+                await discoverProjectMetadata(
+                  resolveKoedServerPaths({
+                    ...process.env,
+                    KOED_HOME: this.config.koedHome
+                  }),
+                  { cwd: sourceProjectPath }
+                )
+              ).project ?? null)
+            : sourceProject;
         const result = await ingestCodexTranscriptJournal({
           client: this.client,
           sourceSession: this.sourceSessionRegistration(
             identity,
             sourceProjectPath,
-            sourceProject
+            liveProject
           ),
           sourceSessionId: identity.sessionId,
           transcriptPath: readablePath,
@@ -1441,13 +1458,21 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private sourceSessionRegistration(
     identity: { sessionId: string; context: TranscriptContext },
     sourceProjectPath: string | undefined,
-    sourceProject: ReturnType<typeof readProjectMetadataForRoot> | null
+    sourceProject:
+      | (Pick<
+          ProjectMetadataV1,
+          "localProjectId" | "displayName" | "repository"
+        > & { path: { cwd: string; projectRoot: string | null } })
+      | null
   ) {
     return {
       externalSessionId: identity.sessionId,
       sourceRuntime: "codex-cli" as const,
       captureMethod: "api" as const,
       cwd: sourceProjectPath,
+      ...(sourceProject?.repository
+        ? { repositoryIdentity: sourceProject.repository }
+        : {}),
       idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
       metadata: {
         ...identity.context.transcriptMetadata,

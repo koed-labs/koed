@@ -25,7 +25,8 @@ import type {
   CollaborationApprovalReview,
   EncryptedPayloadEnvelope,
   ManagedConversationTargetReadinessEvidence,
-  PrivacyLabelPolicy
+  PrivacyLabelPolicy,
+  RepositoryIdentity
 } from "@koed/shared";
 
 const id = () =>
@@ -946,6 +947,18 @@ export const sessions = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    repositoryAssignmentState: text("repository_assignment_state")
+      .notNull()
+      .default("historical_unresolved"),
+    repositoryAssignmentVersion: integer("repository_assignment_version")
+      .notNull()
+      .default(1),
+    repositoryAutomaticIdentity: jsonb(
+      "repository_automatic_identity"
+    ).$type<RepositoryIdentity>(),
+    repositoryOverrideIdentity: jsonb(
+      "repository_override_identity"
+    ).$type<RepositoryIdentity>(),
     automaticProjectId: text("automatic_project_id"),
     automaticProjectName: text("automatic_project_name"),
     automaticProjectPath: text("automatic_project_path"),
@@ -1029,6 +1042,14 @@ export const sessions = pgTable(
       "sessions_project_override_shape_check",
       sql`(${table.projectOverrideId} is null and ${table.projectOverrideName} is null and ${table.projectOverridePath} is null and ${table.projectOverrideAt} is null and ${table.projectOverrideByUserId} is null)
         or (${table.projectOverrideId} is not null and ${table.projectOverrideName} is not null and ${table.projectOverrideAt} is not null and ${table.projectOverrideByUserId} is not null)`
+    ),
+    check(
+      "sessions_repository_assignment_shape_check",
+      sql`${table.repositoryAssignmentState} in ('recorded', 'historical_unresolved') and ${table.repositoryAssignmentVersion} > 0 and (${table.repositoryAssignmentState} <> 'historical_unresolved' or ${table.repositoryAutomaticIdentity} is null)`
+    ),
+    index("sessions_owner_repository_identity_idx").on(
+      table.ownerUserId,
+      sql`(coalesce(${table.repositoryOverrideIdentity}, ${table.repositoryAutomaticIdentity}) ->> 'key')`
     ),
     index("sessions_owner_effective_project_idx").on(
       table.ownerUserId,
@@ -14014,6 +14035,35 @@ export const remoteMcpOAuthCredentials = pgTable(
     check(
       "remote_mcp_oauth_credentials_kind_check",
       sql`${table.kind} in ('code', 'access', 'refresh')`
+    )
+  ]
+);
+
+export const sessionRepositoryObservations = pgTable(
+  "session_repository_observations",
+  {
+    id: id(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    observationHash: text("observation_hash").notNull(),
+    identity: jsonb("identity").$type<RepositoryIdentity>().notNull(),
+    capturedCwd: text("captured_cwd"),
+    isConflict: boolean("is_conflict").notNull(),
+    assignmentVersion: integer("assignment_version").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("session_repository_observations_dedupe_idx").on(
+      table.sessionId,
+      table.observationHash
+    ),
+    index("session_repository_observations_owner_idx").on(
+      table.ownerUserId,
+      table.sessionId
     )
   ]
 );

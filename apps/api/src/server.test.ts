@@ -86,6 +86,8 @@ import {
 import type { BuildServerOptions } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
 
+let isolatedDefaultKoedHome: string | undefined;
+
 const testProtocolDeploymentId = "00000000-0000-4000-8000-000000000001";
 
 const buildServer = (options: BuildServerOptions = {}) =>
@@ -128,6 +130,9 @@ const codexCanonicalConversationItemKeyForTest = (input: {
     .digest("hex")}`;
 
 afterEach(() => {
+  if (isolatedDefaultKoedHome)
+    rmSync(isolatedDefaultKoedHome, { recursive: true, force: true });
+  isolatedDefaultKoedHome = undefined;
   for (const name of [
     "KOED_ALLOW_PUBLIC_REGISTRATION",
     "KOED_TEAM_COLLABORATION_ENABLED",
@@ -203,6 +208,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  isolatedDefaultKoedHome = mkdtempSync(
+    resolve(tmpdir(), "koed-api-test-profile-")
+  );
+  process.env.KOED_HOME = isolatedDefaultKoedHome;
   process.env.KOED_TEAM_COLLABORATION_ENABLED = "true";
 });
 

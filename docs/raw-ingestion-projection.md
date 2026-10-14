@@ -672,3 +672,44 @@ For a truly fresh hook replay, also remove the local hook optimization cache:
 ```bash
 rm -f ~/.koed/capture-state.json
 ```
+
+## Recorded repository assignments
+
+On the Project integration branch, a new Codex Captured Session stores one
+`repositoryAssignment`. The API session inspection response includes the
+recorded automatic identity, optional User override, effective identity, state,
+and assignment version. The effective identity is the override when present;
+otherwise it is the recorded automatic identity. An unresolved override still
+suppresses a portable automatic identity. Reset restores the recorded state.
+
+The Codex Transcript Watcher resolves the transcript's cwd through the shared
+local Project discovery boundary before live registration. The Supported
+Capture Hook remains a content-free watcher signal. It does not maintain its
+own device salt, Git policy, or assignment state. Registration retains original
+cwd and resolved Git root, originating checkout/device provenance, and a branch
+observation separate from the matching identity.
+
+Capture stores the automatic identity only on creation. External-session
+convergence and idempotency-key replay preserve the automatic identity, override,
+and assignment version. Existing native/logical session provenance is consulted
+even for a newly ingested row after invalidation. Changing capture keys cannot
+assign a historical Conversation from today's checkout. Explicit logical-session
+registrations use the same transaction locking boundary as native convergence.
+
+Later observations are deduplicated in `session_repository_observations`, bound
+to the owner and Session. Identity disagreements become capture conflicts;
+branch observations do not replace the recorded assignment. Existing source
+artifact registration also records observations after ownership and Capture
+Policy checks. No capture path unions identities or silently resolves history.
+
+Migration 0045 adds persistence and indexes without assigning old sessions from
+paths or remotes. Their assignment state is `historical_unresolved`. The explicit
+cutover function is prepared for ticket 16; no startup, migration, or capture
+path invokes it. Tests exercise it in a rolled-back release transaction.
+Historical candidate previews retain their recorded display metadata and do
+not discover an automatic assignment from current filesystem contents.
+
+Owner session inspection is available through `GET /v1/sessions/:sessionId`.
+Another User cannot inspect the assignment or update its override. Repository
+metadata grants no Workspace access and changes no existing Team snapshot.
+See [ADR 0057](adr/0057-selected-repository-identity.md) for identity selection.
