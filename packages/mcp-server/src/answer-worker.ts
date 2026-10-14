@@ -1590,6 +1590,22 @@ const observedReferenceLineage = (
   };
 };
 
+const appendCitations = (
+  existing: unknown[],
+  incoming: unknown[]
+): unknown[] => {
+  const seen = new Set(existing.map(sourceKey));
+  const merged = [...existing];
+  for (const item of incoming) {
+    const key = sourceKey(item);
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  return merged;
+};
+
 const appendEvidence = (
   existing: unknown[],
   incoming: unknown[]
@@ -1770,14 +1786,30 @@ export const evidenceSelectedByAnswer = (
           )
         ? [evidence[selection.evidence_index!]]
         : [];
-    if (matches.length !== 1) {
+    // Exact duplicates are one source; differing visibility stays ambiguous.
+    const distinct = [
+      ...new Map(
+        matches.map((candidate) => [
+          `${sourceKey(candidate)}|${stringField(recordFromUnknown(candidate), ["visibility"]) ?? ""}`,
+          candidate
+        ])
+      ).values()
+    ];
+    if (distinct.length !== 1) {
       throw new Error(
         "Memory answer worker returned without resolvable supporting evidence for a selection"
       );
     }
-    return matches;
+    return distinct;
   });
-  return appendEvidence([], resolved);
+  // Observed references only serve resolution; keep them out of the bundle.
+  return appendEvidence([], resolved).map((item) =>
+    Object.fromEntries(
+      Object.entries(recordFromUnknown(item)).filter(
+        ([key]) => key !== "observedReferences"
+      )
+    )
+  );
 };
 
 const retrievalsHaveAvailableCandidates = (retrievals: unknown[]): boolean =>
@@ -2261,7 +2293,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(hits)
         );
@@ -2369,7 +2401,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(expandedEvidence)
         );
@@ -3715,7 +3747,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   });
   return {
     evidence,
-    citations: appendEvidence([], citationsFromHits(evidence)),
+    citations: appendCitations([], citationsFromHits(evidence)),
     retrievals: [
       ...scans.flatMap((scan) =>
         scan.retrieval ? [sanitizeRetrievalDiagnostic(scan.retrieval)] : []
@@ -3855,7 +3887,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
-    citations: appendEvidence(
+    citations: appendCitations(
       citationsFromPayload(payload),
       firstPass.citations
     ),
@@ -4078,17 +4110,23 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned without using Koed RAG tools"
       );
     }
-    const curatedEvidence = evidenceSelectedByAnswer(
+    const selectedEvidence = evidenceSelectedByAnswer(
       state.evidence,
       structuredAnswer
-    ).slice(
-      0,
-      Math.min(
-        state.limit,
-        options.config.maxCandidates,
-        options.config.maxEvidenceItems
-      )
     );
+    const selectedEvidenceLimit = Math.min(
+      state.limit,
+      options.config.maxCandidates,
+      options.config.maxEvidenceItems
+    );
+    // Dropping selected support would leave a found answer only partly grounded.
+    if (selectedEvidence.length > selectedEvidenceLimit) {
+      markBudgetExhausted(state.ledger, "evidence_items");
+      if (structuredAnswer.memory_status !== "insufficient") {
+        throw new Error("Memory answer budget exhausted: evidence_items");
+      }
+    }
+    const curatedEvidence = selectedEvidence.slice(0, selectedEvidenceLimit);
     if (
       structuredAnswer.memory_status === "insufficient" &&
       curatedEvidence.length === 0 &&

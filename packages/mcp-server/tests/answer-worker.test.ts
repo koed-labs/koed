@@ -1401,6 +1401,37 @@ process.stdin.once("data", () => {
           budgets: { consumed: { expansions: 1 } }
         }
       });
+      expect(response.evidence?.[0]).not.toHaveProperty("observedReferences");
+      expect(response.citations?.[1]).not.toHaveProperty("observedReferences");
+
+      const capped = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What enables the deployment sentinel?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          limit: 1,
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            MEMORY_ANSWER_MAX_EXPANSIONS: "1"
+          })
+        }
+      );
+      expect(capped.localMemoryWorker.memoryStatus).toBe("insufficient");
+      expect(capped.localMemoryWorker.errorMessage).toContain(
+        "Memory answer budget exhausted: evidence_items"
+      );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -3001,6 +3032,18 @@ process.stdin.once("data", () => {
         } as StructuredMemoryAnswer)
       ).toThrow("without resolvable supporting evidence");
     }
+    expect(
+      evidenceSelectedByAnswer([searched, { ...searched }], {
+        ...answerObject("child"),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: "child",
+            source_chunk_index: 7
+          }
+        ]
+      } as StructuredMemoryAnswer)
+    ).toEqual([searched]);
     expect(() =>
       evidenceSelectedByAnswer(
         [searched, { ...searched, visibility: "team" }],
