@@ -1,8 +1,7 @@
 import {
   resolveApiDataEncryptionKeyFromEnv,
   resolveKoedQueueBackend,
-  type KoedQueueBackend,
-  resolveRerankerKeyFromEnv
+  type KoedQueueBackend
 } from "@koed/shared";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -40,6 +39,7 @@ export interface ApiServerConfig {
   publicRegistrationEnabled: boolean;
   teamCollaborationEnabled: boolean;
   developerTeamBackendEnabled: boolean;
+  remoteMcp: { enabled: boolean; resourceUrl?: string };
   corsOrigins: Set<string>;
   rateLimit: {
     store: string;
@@ -77,7 +77,7 @@ export interface ApiServerConfig {
   };
   crossIdentitySyncStaleAfterSeconds: number;
   embeddingModel?: string;
-  rerankerKey?: string;
+
   workos: {
     authkitEnabled: boolean;
     apiBaseUrl: string;
@@ -221,6 +221,45 @@ export const resolveApiServerConfig = (
     "GRAPH_UPDATE_DEBOUNCE_MS",
     1_000
   );
+  const remoteMcpEnabled = explicitBooleanEnv(
+    environment,
+    "KOED_REMOTE_MCP_ENABLED"
+  );
+  const remoteMcpPublicUrl = optionalEnv(
+    environment.KOED_REMOTE_MCP_PUBLIC_URL
+  );
+  let remoteMcpResourceUrl: string | undefined;
+  if (remoteMcpEnabled) {
+    if (!remoteMcpPublicUrl)
+      throw new Error(
+        "KOED_REMOTE_MCP_PUBLIC_URL is required when remote MCP is enabled"
+      );
+    let url: URL;
+    try {
+      url = new URL(remoteMcpPublicUrl);
+    } catch {
+      throw new Error(
+        "KOED_REMOTE_MCP_PUBLIC_URL must be a canonical HTTPS /mcp URL"
+      );
+    }
+    const developmentLoopback =
+      nodeEnv !== "production" &&
+      url.protocol === "http:" &&
+      ["127.0.0.1", "[::1]"].includes(url.hostname);
+    if (
+      (url.protocol !== "https:" && !developmentLoopback) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== "/mcp"
+    ) {
+      throw new Error(
+        "KOED_REMOTE_MCP_PUBLIC_URL must be a canonical HTTPS /mcp URL without credentials, query, or fragment; literal loopback HTTP is allowed only in development"
+      );
+    }
+    remoteMcpResourceUrl = url.href;
+  }
 
   return {
     nodeEnv,
@@ -265,6 +304,7 @@ export const resolveApiServerConfig = (
       environment,
       "KOED_DEVELOPER_TEAM_BACKEND_ENABLED"
     ),
+    remoteMcp: { enabled: remoteMcpEnabled, resourceUrl: remoteMcpResourceUrl },
     corsOrigins: resolveCorsOrigins(environment, nodeEnv, browserPublicUrl),
     rateLimit: {
       store: optionalEnv(environment.RATE_LIMIT_STORE) ?? "memory",
@@ -452,7 +492,7 @@ export const resolveApiServerConfig = (
       86_400
     ),
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
-    rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment)),
+
     workos: {
       authkitEnabled: environment.WORKOS_AUTHKIT_ENABLED === "true",
       apiBaseUrl:

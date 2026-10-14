@@ -50,8 +50,15 @@ Commands:
   pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
   personal-sync status --json             Print redacted Personal Sync status
   personal-sync --help   Show Personal Sync usage and advanced recovery help
+  remote login --backend HTTPS_URL --consent [--local-runtime] [--team-read] --json
+                         Authorize remote recall; --local-runtime also authorizes capture and local execution
+  remote setup <client> --consent --json Configure future capture against the authorized remote backend
+  remote check <client> --json Check remote authentication and one AI Client integration
+  remote start           Run the shared Local AI Runtime in the foreground without local backend services
+  remote remove <client> --consent --json Remove only the selected remote AI Client integration
+  remote logout --consent --json Revoke remote authorization and clear local tokens
   setup core --json      Prepare Koed core services and local credential
-  setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration (deferred recall by default; blocking on Windows)
+  setup codex [--deferred-recall | --blocking-recall] --json     Configure Codex integration (legacy recall flags accepted; delivery selected per tool call)
     --without-memory-guidance  Do not install the recommended global guidance
     --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration
@@ -76,6 +83,7 @@ Commands:
   upstream activate --json Select the registered upstream used for remote work
   upstream remove --json Remove an upstream backend
   upstream enroll start --json Start enrollment with --source-owner-principal-id
+    --memory-answers | --enable-memory-answers  Request Memory Answer execution through explicit browser approval
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state

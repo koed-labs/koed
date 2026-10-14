@@ -1,5 +1,14 @@
 # Running Koed
 
+## Headless Remote Integration
+
+An AI Client can use an existing backend without Electron or local database,
+API, embedding, or privacy services. [Headless Remote MCP](headless-remote-mcp.md)
+covers the opt-in backend transport, OAuth consent, dedicated `KOED_HOME`, and
+`koed remote` commands. Keep its local background helper running for
+automatic capture, Personal Memory Answer tasks, and LCM Summaries. The remote
+backend retains its normal dependencies and never runs LLM synthesis.
+
 ## CLI help
 
 `koed --help`, command help, and Personal Sync recovery help load without
@@ -163,6 +172,17 @@ Privacy Filter health requests have a five-second deadline. Startup polling
 does not request accelerator diagnostics, so those diagnostics cannot delay
 the next readiness check.
 
+Privacy Filter model installation retries interrupted network transfers and
+transient HTTP 408/429/5xx responses up to three attempts per file. Partial files
+are removed on failure; only complete files with the pinned SHA-256 and size
+are published. Checksum mismatches and permanent HTTP errors fail closed rather
+than being retried as successful downloads.
+
+Privacy Filter startup emits `privacy.startup` stage timings for CPU model load,
+CPU parity validation, provider selection and HTTP listening. These logs contain
+no classified text or credentials. A timeout still fails readiness; use the last
+completed stage to distinguish slow loading from an unavailable service.
+
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
 running service health response and does not read the model again. A later
@@ -202,6 +222,14 @@ leave package-manager child processes listening on Koed ports.
 
 Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
+
+For native Team Memory Answer execution, add `--memory-answers` to enrollment
+start and approve the additional execution permission in the browser. The
+backend must advertise version 2 of `memory.answerTasks` with Team support.
+Existing read-only enrollment is not automatically upgraded: cancel a pending
+read-only request and start a new request with this flag. Execution routing is
+enabled only after credential activation succeeds; denial, expiry, cancellation,
+or disconnection leaves it disabled. This does not grant Personal Memory reads.
 
 ```bash
 SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
@@ -864,7 +892,7 @@ and Recall remain device-local.
 - `state/` for content-free Transcript Watcher activation state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
-- `models/` for embedding and reranker model files
+- `models/` for embedding model files
 - `cache/` for installer metadata and downloaded artifact cache
 - `runtime/` for bundled or packaged native runtime binaries
 
@@ -995,7 +1023,7 @@ pnpm models:install:embedding
 pnpm models:install:privacy
 ```
 
-Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
+Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact.
 
 ### WSL development
 
@@ -1049,8 +1077,8 @@ start Metal must fail rather than silently use CPU.
 Koed Desktop exposes a Hardware acceleration toggle in General preferences.
 The preference is stored in `KOED_HOME/config/server.json`; changing it restarts
 the local Koed services. An explicit Operator environment policy remains
-authoritative and makes the toggle read-only. Accelerated embedding and
-reranker models unload after five idle minutes by default and reload on the
+authoritative and makes the toggle read-only. Accelerated embedding
+models unload after five idle minutes by default and reload on the
 next request. Set the corresponding idle-unload value to `0` only when keeping
 the model resident is an intentional resource decision.
 

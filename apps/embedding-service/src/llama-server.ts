@@ -25,18 +25,13 @@ export interface TokenPiece {
   text: string;
 }
 
-export interface LlamaRerankResult {
-  scores: number[];
-  measuredTokens: number | null;
-}
-
 export interface LlamaServerOptions {
-  name: "embedding" | "reranker";
+  name: "embedding";
   modelPath: string;
   port: number;
-  pooling: "last" | "rank";
+  pooling: "last";
   embedding: boolean;
-  reranking: boolean;
+
   nCtx: number;
   nThreads: number;
   nBatch: number;
@@ -143,9 +138,6 @@ export const llamaServerArgs = (
   if (options.embedding) {
     args.push("--embedding");
   }
-  if (options.reranking) {
-    args.push("--reranking");
-  }
   return args;
 };
 
@@ -162,63 +154,6 @@ export const tokenPieceText = (piece: unknown): string => {
   return String(piece);
 };
 
-export const extractRerankScores = (
-  response: Record<string, unknown>,
-  documentCount: number
-): number[] => {
-  if (
-    Array.isArray(response.scores) &&
-    response.scores.length === documentCount
-  ) {
-    return response.scores.map(Number);
-  }
-
-  const ranked = Array.isArray(response.results)
-    ? response.results
-    : Array.isArray(response.data)
-      ? response.data
-      : null;
-  if (!ranked) {
-    throw new LlamaServerError("llama-server returned invalid rerank payload");
-  }
-
-  const scoresByIndex = new Map<number, number>();
-  ranked.forEach((item, fallbackIndex) => {
-    if (typeof item !== "object" || item === null) {
-      return;
-    }
-    const record = item as Record<string, unknown>;
-    const index =
-      typeof record.index === "number" && Number.isInteger(record.index)
-        ? record.index
-        : fallbackIndex;
-    const score =
-      typeof record.relevance_score === "number"
-        ? record.relevance_score
-        : typeof record.score === "number"
-          ? record.score
-          : null;
-    if (score !== null) {
-      scoresByIndex.set(index, score);
-    }
-  });
-
-  if (scoresByIndex.size !== documentCount) {
-    throw new LlamaServerError(
-      "llama-server returned incomplete rerank scores"
-    );
-  }
-  return Array.from({ length: documentCount }, (_, index) => {
-    const score = scoresByIndex.get(index);
-    if (score === undefined) {
-      throw new LlamaServerError(
-        "llama-server returned incomplete rerank scores"
-      );
-    }
-    return score;
-  });
-};
-
 export class LlamaServerClient {
   readonly baseUrl: string;
   readonly logPath: string;
@@ -229,10 +164,7 @@ export class LlamaServerClient {
   constructor(
     private readonly config: Pick<
       EmbeddingServiceEnv,
-      | "llamaServerBinary"
-      | "llamaServerStartupTimeoutSeconds"
-      | "modelName"
-      | "rerankerKey"
+      "llamaServerBinary" | "llamaServerStartupTimeoutSeconds" | "modelName"
     >,
     private readonly logger: EmbeddingLogger,
     private readonly options: LlamaServerOptions,
@@ -334,7 +266,7 @@ export class LlamaServerClient {
         port: this.options.port,
         pooling: this.options.pooling,
         embedding: this.options.embedding,
-        reranking: this.options.reranking,
+
         n_ctx: this.options.nCtx,
         n_batch: this.options.nBatch,
         n_ubatch: this.options.nUbatch,
@@ -523,35 +455,6 @@ export class LlamaServerClient {
       vectors: normalizeVectors(extractEmbeddingVectors(response)),
       measuredTokens:
         typeof usage?.prompt_tokens === "number"
-          ? Math.trunc(usage.prompt_tokens)
-          : null
-    };
-  }
-
-  async rerank(query: string, documents: string[]): Promise<LlamaRerankResult> {
-    const response = await this.post(
-      "/v1/rerank",
-      {
-        model:
-          this.options.name === "reranker"
-            ? (this.config.rerankerKey ?? "reranker")
-            : this.config.modelName,
-        query,
-        documents,
-        top_n: documents.length
-      },
-      600000
-    );
-    const usage =
-      typeof response.usage === "object" && response.usage !== null
-        ? (response.usage as Record<string, unknown>)
-        : null;
-    return {
-      scores: extractRerankScores(response, documents.length),
-      measuredTokens:
-        typeof usage?.prompt_tokens === "number" &&
-        Number.isFinite(usage.prompt_tokens) &&
-        usage.prompt_tokens >= 0
           ? Math.trunc(usage.prompt_tokens)
           : null
     };

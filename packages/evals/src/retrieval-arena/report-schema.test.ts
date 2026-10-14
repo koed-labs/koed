@@ -39,7 +39,7 @@ describe("Retrieval Arena report schema", () => {
         retrievalAndSynthesis: "local_no_cost",
         reader: "not_applicable",
         judge: "not_applicable",
-        reranker: "not_applicable",
+
         total: "local_no_cost"
       }
     });

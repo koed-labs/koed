@@ -194,27 +194,6 @@ describe("resolveWorkerEnv", () => {
     ).toThrow("Unsupported embedding model key");
   });
 
-  it("rejects unsupported reranker model keys", () => {
-    expect(() =>
-      resolveWorkerEnv({
-        RERANKER_KEY: "unsupported"
-      })
-    ).toThrow("Unsupported reranker model key");
-  });
-
-  it("validates the documented root reranker key alias", () => {
-    expect(() =>
-      resolveWorkerEnv({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
-      })
-    ).not.toThrow();
-    expect(() =>
-      resolveWorkerEnv({
-        EMBEDDING_RERANKER_KEY: "unsupported"
-      })
-    ).toThrow("Unsupported reranker model key");
-  });
-
   it("accepts local queue backend override", () => {
     expect(
       resolveWorkerEnv({

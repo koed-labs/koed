@@ -1038,7 +1038,6 @@ describe("start supervisor", () => {
         "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong",
         "WORK_QUEUE_BACKEND=bullmq",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=18080",
-        "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=19080",
         ""
       ].join("\n")
     );
@@ -1064,8 +1063,7 @@ describe("start supervisor", () => {
         KOED_TEAM_COLLABORATION_ENABLED: "true",
         MEMORY_API_TOKEN: "test-runtime-token",
         POSTGRES_HOST_PORT: "25432",
-        EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081",
-        EMBEDDING_LLAMA_RERANKER_SERVER_PORT: "19081"
+        EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1111,7 +1109,7 @@ describe("start supervisor", () => {
     expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
     expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("18081");
-    expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe("19081");
+
     expect(spawned[0]?.env?.MODEL_PATH).toBe(
       resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
     );
@@ -1155,7 +1153,6 @@ describe("start supervisor", () => {
         "POSTGRES_HOST_PORT=25432",
         "EMBEDDING_SERVICE_HOST_PORT=23800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
-        "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
         "KOED_EMBEDDING_ACCELERATION=metal",
         "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
         ""
@@ -1225,7 +1222,7 @@ describe("start supervisor", () => {
     );
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("23800");
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
-    expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe("29080");
+
     expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
     expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
     const provisionedTokenFile: unknown = JSON.parse(
@@ -1254,8 +1251,7 @@ describe("start supervisor", () => {
       api: "23300",
       postgres: "25432",
       embedding: "23800",
-      llamaEmbedding: "28080",
-      llamaReranker: "29080"
+      llamaEmbedding: "28080"
     });
     expect(typeof localPorts.privacy).toBe("string");
   });
@@ -1332,15 +1328,12 @@ describe("start supervisor", () => {
     expect(spawned).toEqual([]);
   });
 
-  it("allows bundled-local models split across directories for native runtime", async () => {
+  it("uses the configured bundled-local embedding model directory", async () => {
     const root = tempDir();
     createNativeResources(root);
     const embeddingDir = resolve(root, "embedding");
-    const rerankerDir = resolve(root, "reranker");
     mkdirSync(embeddingDir);
-    mkdirSync(rerankerDir);
     writeFileSync(resolve(embeddingDir, "embedding.gguf"), "model");
-    writeFileSync(resolve(rerankerDir, "reranker.gguf"), "model");
     const commands: Array<{
       command: string;
       args: string[];
@@ -1354,8 +1347,7 @@ describe("start supervisor", () => {
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "bundled-local",
         MEMORY_API_TOKEN: "test-runtime-token",
-        KOED_EMBEDDING_MODEL_PATH: resolve(embeddingDir, "embedding.gguf"),
-        KOED_RERANKER_MODEL_PATH: resolve(rerankerDir, "reranker.gguf")
+        KOED_EMBEDDING_MODEL_PATH: resolve(embeddingDir, "embedding.gguf")
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1382,9 +1374,6 @@ describe("start supervisor", () => {
     )?.env;
     expect(checkEnv?.EMBEDDING_MODEL_PATH).toBe(
       resolve(embeddingDir, "embedding.gguf")
-    );
-    expect(checkEnv?.EMBEDDING_RERANKER_MODEL_PATH).toBe(
-      resolve(rerankerDir, "reranker.gguf")
     );
   });
 
@@ -1538,19 +1527,16 @@ describe("start supervisor", () => {
       postgres: string;
       embedding: string;
       llamaEmbedding: string;
-      llamaReranker: string;
     };
     expect(ports.api).not.toBe("43300");
     expect(Number(ports.postgres)).toBeGreaterThanOrEqual(45432);
     expect(Number(ports.embedding)).toBeGreaterThanOrEqual(43800);
     expect(ports.llamaEmbedding).not.toBe("18080");
-    expect(Number(ports.llamaReranker)).toBeGreaterThanOrEqual(19080);
+
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe(
       ports.llamaEmbedding
     );
-    expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe(
-      ports.llamaReranker
-    );
+
     expect(spawned.at(-1)?.env?.API_PORT).toBe(ports.api);
     expect(spawned.at(-1)?.env?.EMBEDDING_SERVICE_URL).toBe(
       `http://127.0.0.1:${ports.embedding}`
@@ -1586,7 +1572,6 @@ describe("start supervisor", () => {
         "POSTGRES_HOST_PORT=15432",
         "EMBEDDING_SERVICE_HOST_PORT=3800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
-        "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
         ""
       ].join("\n")
     );
@@ -1630,13 +1615,12 @@ describe("start supervisor", () => {
       postgres: string;
       embedding: string;
       llamaEmbedding: string;
-      llamaReranker: string;
     };
     expect(ports.api).not.toBe("3300");
     expect(ports.postgres).not.toBe("15432");
     expect(ports.embedding).not.toBe("3800");
     expect(ports.llamaEmbedding).not.toBe("28080");
-    expect(ports.llamaReranker).not.toBe("29080");
+
     expect(spawned.at(-1)?.env?.API_PORT).toBe(ports.api);
   });
 

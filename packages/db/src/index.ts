@@ -1,4 +1,11 @@
 export { createAuditRepository } from "./audit-repository.js";
+export { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
+export type {
+  RemoteMcpOAuthStore,
+  RemoteMcpOAuthRequest,
+  RemoteMcpOAuthGrant,
+  RemoteMcpOAuthCredential
+} from "./remote-mcp-oauth-repository.js";
 export {
   correctApprovalActivity,
   inventoryApprovalActivity,
@@ -239,11 +246,16 @@ export {
   type RealtimeTransportTicketAuthKind,
   type RealtimeTransportTicketRepository
 } from "./realtime-transport-ticket-repository.js";
-export { createMemoryQuestionRepository } from "./memory-question-repository.js";
+export {
+  createMemoryQuestionRepository,
+  type CreateFinalMemoryQuestionInput,
+  type MemoryQuestionActorContext
+} from "./memory-question-repository.js";
 export {
   createMemoryAnswerTaskRepository,
   type ClaimedMemoryAnswerTask,
   type MemoryAnswerTaskOrigin,
+  type MemoryAnswerTaskActor,
   type MemoryAnswerTaskRecord,
   type MemoryAnswerTaskRepository,
   type MemoryAnswerTaskStatus
@@ -309,10 +321,7 @@ export {
   type EmbeddingTelemetrySourceClass,
   type EmbeddingTelemetryWindow
 } from "./embedding-capacity-repository.js";
-export {
-  createMemorySourceRepository,
-  localRerankingEnabled
-} from "./repository.js";
+export { createMemorySourceRepository } from "./repository.js";
 export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,
@@ -438,6 +447,7 @@ export { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
 export * from "./types.js";
+export * from "./memory-answer-team-authority.js";
 
 export {
   verifyManagedJournalTerminal,

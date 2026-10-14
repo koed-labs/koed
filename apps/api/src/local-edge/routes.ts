@@ -1,5 +1,8 @@
 import type { DeviceCredentialRecord } from "@koed/db";
-import { verifyLocalEdgeClientCredentialAuthorization } from "@koed/shared";
+import {
+  fetchBoundedJsonObject,
+  verifyLocalEdgeClientCredentialAuthorization
+} from "@koed/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { enforceCollaborationAdmission } from "../collaboration/admission.js";
@@ -18,6 +21,7 @@ import {
   localEdgeTeamMemoryQuestionSchema,
   localEdgeTeamMemorySearchSchema,
   localEdgeUpstreamOperationSchema,
+  localEdgeMemoryAnswerTaskSchemas,
   listDeviceCredentialsQuerySchema,
   publicDeviceEnrollmentChallengeSchema,
   redeemDeviceEnrollmentChallengeSchema,
@@ -284,12 +288,183 @@ export const registerLocalEdgeRoutes = (
       upstreamBackendsPath,
       remoteOperationsAllowed,
       fetch: upstreamFetch,
-      resolveUpstreamAuthorization
+      resolveUpstreamAuthorization,
+      resolveUpstreamEnrollmentBinding
     }
   } = context;
 
   const upstreamRegistry = () =>
     readLocalEdgeUpstreamRegistry(upstreamBackendsPath);
+
+  for (const operation of [
+    "accept",
+    "get",
+    "cancel",
+    "claim",
+    "heartbeat",
+    "complete",
+    "fail",
+    "expired"
+  ] as const) {
+    app.post(
+      `/v1/local-edge/memory-answer-tasks/${operation}`,
+      { preHandler: memoryWriteRateLimit },
+      async (request, reply) => {
+        assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
+        const input = localEdgeMemoryAnswerTaskSchemas[operation].parse(
+          request.body
+        );
+        const credential = verifyLocalEdgeClientCredentialAuthorization(
+          context.config.koedHome,
+          request.headers.authorization,
+          {
+            backendId: input.upstream_backend_id,
+            operationFamily: "memory_answer_execution"
+          }
+        );
+        if (
+          !credential ||
+          !credential.operationFamilies.includes("team_workspace_read")
+        )
+          throw Object.assign(
+            new Error(
+              "Scoped Team Memory Answer execution credential required"
+            ),
+            { statusCode: 401 }
+          );
+        if (operation === "accept") {
+          const accepted = localEdgeMemoryAnswerTaskSchemas.accept.parse(
+            request.body
+          );
+          const toolInput = accepted.input.request.input;
+          const workspace =
+            toolInput &&
+            typeof toolInput === "object" &&
+            !Array.isArray(toolInput)
+              ? (toolInput as Record<string, unknown>).team_workspace_id
+              : undefined;
+          if (typeof workspace !== "string" || !workspace.trim())
+            throw Object.assign(
+              new Error("Explicit Team Workspace is required"),
+              { statusCode: 403 }
+            );
+        }
+        if (
+          operation === "claim" &&
+          localEdgeMemoryAnswerTaskSchemas.claim.parse(request.body).input
+            .scope_filter !== "team"
+        )
+          throw Object.assign(
+            new Error("Native task claims must select Team Memory"),
+            { statusCode: 403 }
+          );
+        if (operation === "complete") {
+          const completed = localEdgeMemoryAnswerTaskSchemas.complete.parse(
+            request.body
+          );
+          if (
+            typeof completed.input.final_question.team_workspace_id !==
+              "string" ||
+            !completed.input.final_question.team_workspace_id.trim()
+          )
+            throw Object.assign(
+              new Error("Explicit Team Workspace is required"),
+              { statusCode: 403 }
+            );
+        }
+        const backend = upstreamBackendById(
+          upstreamRegistry(),
+          input.upstream_backend_id
+        );
+        const binding = resolveUpstreamEnrollmentBinding(
+          input.upstream_backend_id
+        );
+        if (
+          !binding ||
+          binding.backendId !== input.upstream_backend_id ||
+          !binding.principalUserId
+        )
+          throw Object.assign(
+            new Error(
+              "Active User enrollment is required for Memory Answer tasks"
+            ),
+            { statusCode: 403 }
+          );
+        const authorization = backend
+          ? resolveUpstreamAuthorization(backend)
+          : null;
+        assertLiveProxyDecision(
+          resolveLocalEdgeRouteDecision({
+            operationFamily: "memory_answer_execution",
+            requestedMode: "live_upstream_proxy",
+            upstreamBackend: backend,
+            upstreamBackendId: input.upstream_backend_id,
+            deviceCredential: {
+              upstreamBackendId: credential.backendId,
+              operationFamilies: credential.operationFamilies
+            },
+            upstreamCredentialAvailable: Boolean(authorization),
+            identityRemoteOperationsAllowed: remoteOperationsAllowed()
+          })
+        );
+        if (!backend || !authorization)
+          throw Object.assign(
+            new Error("Enrolled Memory Answer backend is unavailable"),
+            { statusCode: 424 }
+          );
+        const id =
+          "task_id" in input && typeof input.task_id === "string"
+            ? input.task_id
+            : undefined;
+        const method =
+          operation === "get"
+            ? "GET"
+            : operation === "expired"
+              ? "DELETE"
+              : "POST";
+        const path =
+          operation === "accept"
+            ? "/v1/memory/answer-tasks"
+            : operation === "claim" || operation === "expired"
+              ? `/v1/memory/answer-tasks/${operation}`
+              : `/v1/memory/answer-tasks/${encodeURIComponent(id!)}` +
+                (operation === "get" ? "" : `/${operation}`);
+        assertUpstreamOperationPathAllowed(
+          "memory_answer_execution",
+          method,
+          path
+        );
+        const { response, payload } = await fetchBoundedJsonObject(
+          upstreamFetch,
+          safeUpstreamProxyUrl(backend, path),
+          {
+            method,
+            redirect: "error",
+            headers: {
+              authorization,
+              accept: "application/json",
+              // Narrow the upstream actor before repository payload decryption.
+              "x-koed-memory-answer-task-scope": "team",
+              ...(method === "POST"
+                ? { "content-type": "application/json" }
+                : {})
+            },
+            ...(method === "POST"
+              ? { body: JSON.stringify("input" in input ? input.input : {}) }
+              : {})
+          },
+          { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024, readErrorBody: true }
+        );
+        reply.header("x-koed-upstream-backend-id", backend.id);
+        if (response.status === 429) {
+          reply.header("x-koed-rate-limit-source", "remote");
+          const retryAfter = response.headers.get("retry-after");
+          if (retryAfter) reply.header("retry-after", retryAfter);
+        }
+        return reply.code(response.status).send(payload);
+      }
+    );
+  }
 
   const authorizeLocalTeamMemoryRequest = (request: FastifyRequest) => {
     assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
@@ -914,6 +1089,13 @@ export const registerLocalEdgeRoutes = (
       assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();
       const input = localEdgeUpstreamOperationSchema.parse(request.body);
+      if (input.operation_family === "memory_answer_execution")
+        throw Object.assign(
+          new Error("Use the scoped Memory Answer task routes"),
+          {
+            statusCode: 403
+          }
+        );
       const authHeader = request.headers.authorization?.trim() ?? "";
       const authScheme = authHeader.split(/\s+/, 1)[0]?.toLowerCase();
       let authContext:

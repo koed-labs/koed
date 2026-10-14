@@ -7,6 +7,8 @@ import {
 import {
   MemoryAnswerTaskScheduler,
   type MemoryAnswerTaskApi,
+  type MemoryAnswerTaskExecutor,
+  type MemoryAnswerTaskExecutionContext,
   type MemoryAnswerTaskView
 } from "../src/memory-answer-task-scheduler.js";
 
@@ -57,6 +59,140 @@ const taskApi = (
 });
 
 describe("MemoryAnswerTaskScheduler", () => {
+  it.each([false, true, "workspace"] as const)(
+    "refreshes Team execution tokens without changing authority (changed=%s)",
+    async (changed) => {
+      const workspace = randomUUID();
+      const accepted = view({ teamWorkspaceId: workspace });
+      const running = {
+        ...accepted,
+        status: "running" as const,
+        attemptCount: 1,
+        fenceGeneration: 1,
+        version: 2,
+        leaseOwner: "runtime-lease",
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        request: {
+          input: { query: "decision", team_workspace_id: workspace },
+          caller: { cwd: "/remote" }
+        },
+        executionAuthority: {
+          scope: "team" as const,
+          teamWorkspaceId: workspace,
+          authorizationBoundary: "initial-private-token"
+        }
+      };
+      const completed = view({
+        ...accepted,
+        status: "completed",
+        result: { markdown: "answer" }
+      });
+      let claimAvailable = true;
+      const api = taskApi(accepted, {
+        claimMemoryAnswerTask: vi.fn(async () => {
+          if (!claimAvailable) return { task: null, reconciled: [] };
+          claimAvailable = false;
+          return { task: running, reconciled: [] };
+        }),
+        heartbeatMemoryAnswerTask: vi.fn(async () => ({
+          task: running,
+          executionAuthority:
+            changed === "workspace"
+              ? {
+                  scope: "team" as const,
+                  teamWorkspaceId: randomUUID(),
+                  authorizationBoundary: "changed-workspace-token"
+                }
+              : changed
+                ? { scope: "personal" as const }
+                : {
+                    scope: "team" as const,
+                    teamWorkspaceId: workspace,
+                    authorizationBoundary: "renewed-private-token"
+                  }
+        })),
+        completeMemoryAnswerTask: vi.fn(async () => ({ task: completed })),
+        failMemoryAnswerTask: vi.fn()
+      });
+      let captured: MemoryAnswerTaskExecutionContext | undefined;
+      let initialAuthority: unknown;
+      let finish: (() => void) | undefined;
+      const execute = vi.fn<
+        MemoryAnswerTaskExecutor["executeMemoryAnswerTask"]
+      >(async (_input, _caller, _id, signal, _progress, context) => {
+        captured = context;
+        initialAuthority = context?.getExecutionAuthority();
+        await new Promise<void>((resolve, reject) => {
+          finish = resolve;
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true
+          });
+        });
+        return {
+          finalQuestion: {
+            query: "decision",
+            team_workspace_id: workspace,
+            status: "answered"
+          },
+          result: { markdown: "answer" }
+        };
+      });
+      const taskBackend = {
+        search: vi.fn(async () => ({})),
+        expand: vi.fn(async () => ({}))
+      };
+      const scheduler = new MemoryAnswerTaskScheduler(
+        api,
+        { executeMemoryAnswerTask: execute },
+        {
+          heartbeatMs: 10,
+          leaseMs: 100,
+          reconcileMs: 1000,
+          executionContextForTask: (claim, getExecutionAuthority) => {
+            expect(claim.id).toBe(running.id);
+            return { getExecutionAuthority, taskBackend };
+          }
+        }
+      );
+      try {
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+        expect(captured?.taskBackend).toBe(taskBackend);
+        expect(initialAuthority).toMatchObject({
+          scope: "team",
+          authorizationBoundary: "initial-private-token"
+        });
+        await vi.waitFor(() =>
+          expect(api.heartbeatMemoryAnswerTask).toHaveBeenCalled()
+        );
+        if (changed) {
+          await vi.waitFor(() => expect(scheduler.diagnostics.active).toBe(0));
+          expect(api.completeMemoryAnswerTask).not.toHaveBeenCalled();
+          expect(api.failMemoryAnswerTask).not.toHaveBeenCalled();
+        } else {
+          expect(captured?.getExecutionAuthority()).toEqual({
+            scope: "team",
+            teamWorkspaceId: workspace,
+            authorizationBoundary: "renewed-private-token"
+          });
+          finish?.();
+          await vi.waitFor(() =>
+            expect(api.completeMemoryAnswerTask).toHaveBeenCalledWith(
+              accepted.id,
+              expect.objectContaining({
+                final_question: {
+                  query: "decision",
+                  team_workspace_id: workspace,
+                  status: "answered"
+                }
+              })
+            )
+          );
+        }
+      } finally {
+        await scheduler.close();
+      }
+    }
+  );
   it("runs accepted work once and pushes its fenced terminal result", async () => {
     const accepted = view();
     const running = {
@@ -96,7 +232,11 @@ describe("MemoryAnswerTaskScheduler", () => {
       cancelMemoryAnswerTask: vi.fn()
     });
     const execute = vi.fn(async () => ({
-      questionId: completed.questionId!,
+      finalQuestion: {
+        query: "decision",
+        status: "answered",
+        answer_markdown: "answer"
+      },
       result: completed.result!
     }));
     const scheduler = new MemoryAnswerTaskScheduler(api, {
@@ -123,7 +263,11 @@ describe("MemoryAnswerTaskScheduler", () => {
       expect(api.completeMemoryAnswerTask).toHaveBeenCalledWith(task.id, {
         lease_owner: running.leaseOwner,
         fence_generation: 1,
-        question_id: completed.questionId,
+        final_question: {
+          query: "decision",
+          status: "answered",
+          answer_markdown: "answer"
+        },
         result: completed.result
       });
       expect(api.failMemoryAnswerTask).not.toHaveBeenCalled();
@@ -381,7 +525,11 @@ describe("MemoryAnswerTaskScheduler", () => {
           await new Promise((resolve) => setTimeout(resolve, 80));
           clearInterval(progress);
           return {
-            questionId: completed.questionId!,
+            finalQuestion: {
+              query: "decision",
+              status: "answered",
+              answer_markdown: "answer"
+            },
             result: completed.result!
           };
         }
@@ -446,7 +594,11 @@ describe("MemoryAnswerTaskScheduler", () => {
     const blocking = new BlockingAnswerAdmission(capacity, 1);
     const releaseBlocking = await blocking.acquire();
     const execute = vi.fn(async () => ({
-      questionId: randomUUID(),
+      finalQuestion: {
+        query: "decision",
+        status: "answered",
+        answer_markdown: "answer"
+      },
       result: { markdown: "answer" }
     }));
     const scheduler = new MemoryAnswerTaskScheduler(

@@ -38,6 +38,7 @@ import {
   getActiveUpstreamBackend,
   setActiveUpstreamBackend,
   upstreamBackendAdvertisesCapability,
+  upstreamBackendSupportsTeamMemoryAnswerTasks,
   updateUpstreamBackendCredential,
   updateUpstreamBackendRoutePolicy,
   type UpstreamBackendSummary,
@@ -128,6 +129,7 @@ export interface UpstreamEnrollmentDeps {
   randomBytes?: typeof randomBytes;
   beforeEnrollmentEffect?: (boundary: string) => void;
   sourceOwnerPrincipalId?: string;
+  memoryAnswers?: boolean;
 }
 
 const depsWithDefaults = (
@@ -142,7 +144,8 @@ const depsWithDefaults = (
   randomId: deps.randomId ?? randomUUID,
   randomBytes: deps.randomBytes ?? randomBytes,
   beforeEnrollmentEffect: deps.beforeEnrollmentEffect ?? (() => undefined),
-  sourceOwnerPrincipalId: deps.sourceOwnerPrincipalId ?? ""
+  sourceOwnerPrincipalId: deps.sourceOwnerPrincipalId ?? "",
+  memoryAnswers: deps.memoryAnswers ?? false
 });
 
 const defaultStore = (now: string): UpstreamEnrollmentStore => ({
@@ -497,6 +500,7 @@ const routePolicyOperationFamilies = (
         ] as Array<[keyof UpstreamRoutePolicy, string]>)
       : []),
     ["teamWorkspaceRead", "team_workspace_read"],
+    ["memoryAnswerExecution", "memory_answer_execution"],
     ...(options.collaboration
       ? ([
           ["teamWorkspaceRead", "team_chat_read"],
@@ -518,8 +522,15 @@ const routePolicyOperationFamilies = (
 
 const browserEnrollmentOperationFamilies = (
   routePolicy: UpstreamRoutePolicy,
-  options: { collaboration: boolean }
-): string[] => routePolicyOperationFamilies(routePolicy, options);
+  options: { collaboration: boolean; memoryAnswers?: boolean }
+): string[] =>
+  routePolicyOperationFamilies(
+    {
+      ...routePolicy,
+      ...(options.memoryAnswers ? { memoryAnswerExecution: "enabled" } : {})
+    },
+    options
+  );
 
 const localClientOperationFamiliesFor = (operationFamilies: string[]) =>
   operationFamilies.filter(
@@ -527,6 +538,7 @@ const localClientOperationFamiliesFor = (operationFamilies: string[]) =>
       family === "personal_collaboration_read" ||
       family === "personal_collaboration_write" ||
       family === "team_workspace_read" ||
+      family === "memory_answer_execution" ||
       family === "team_chat_read" ||
       family === "team_chat_write" ||
       family === "share_grant_management" ||
@@ -1073,6 +1085,34 @@ const startUpstreamEnrollmentWithFetch = async (
       message: `Upstream backend ${backendId} capabilities are not validated. Run koed upstream refresh --id ${backendId} --json.`
     };
   }
+  if (
+    resolvedDeps.memoryAnswers ||
+    backend.routePolicy.memoryAnswerExecution === "enabled"
+  ) {
+    if (backend.routePolicy.teamWorkspaceRead !== "enabled") {
+      return {
+        ok: false,
+        state: "failed",
+        backend,
+        message:
+          "Memory Answer enrollment requires explicit Team Workspace read routing first."
+      };
+    }
+    if (
+      !upstreamBackendSupportsTeamMemoryAnswerTasks(
+        paths,
+        backendId,
+        resolvedDeps
+      )
+    ) {
+      return {
+        ok: false,
+        state: "failed",
+        backend,
+        message: `The backend must advertise memory.answerTasks version 2 with Team support. Upgrade it, run koed upstream refresh --id ${backendId} --json, then re-enroll with --memory-answers. Team read alone does not authorize execution.`
+      };
+    }
+  }
   const configuredOperationFamilies = routePolicyOperationFamilies(
     backend.routePolicy
   );
@@ -1088,7 +1128,7 @@ const startUpstreamEnrollmentWithFetch = async (
   );
   const operationFamilies = browserEnrollmentOperationFamilies(
     backend.routePolicy,
-    { collaboration }
+    { collaboration, memoryAnswers: resolvedDeps.memoryAnswers }
   );
   if (configuredOperationFamilies.length === 0) {
     return {
@@ -1134,6 +1174,18 @@ const startUpstreamEnrollmentWithFetch = async (
         JSON.stringify(current.enrollment?.requestedOperationFamilies ?? []) ===
           JSON.stringify(operationFamilies))
     ) {
+      if (
+        resolvedDeps.memoryAnswers &&
+        !current.enrollment?.requestedOperationFamilies.includes(
+          "memory_answer_execution"
+        )
+      ) {
+        return {
+          ...current,
+          ok: false,
+          message: `Cancel the existing enrollment, then run koed upstream enroll start --id ${backendId} --memory-answers to request Memory Answer execution explicitly.`
+        };
+      }
       return current;
     }
     store = readStore(paths, resolvedDeps);
@@ -1190,7 +1242,8 @@ const startUpstreamEnrollmentWithFetch = async (
     );
     const currentOperationFamilies = currentBackend
       ? browserEnrollmentOperationFamilies(currentBackend.routePolicy, {
-          collaboration: currentCollaboration
+          collaboration: currentCollaboration,
+          memoryAnswers: resolvedDeps.memoryAnswers
         })
       : [];
     if (
@@ -1915,6 +1968,27 @@ const getUpstreamEnrollmentStatusWithFetch = async (
               }
             );
             if (
+              current.requestedOperationFamilies.includes(
+                "memory_answer_execution"
+              )
+            ) {
+              resolvedDeps.beforeEnrollmentEffect(
+                "commit_memory_answer_route_policy"
+              );
+              updateUpstreamBackendRoutePolicy(
+                paths,
+                backendId,
+                { memoryAnswerExecution: "enabled" },
+                {
+                  existsSync: resolvedDeps.existsSync,
+                  readFileSync: resolvedDeps.readFileSync,
+                  writeFileSync: resolvedDeps.writeFileSync,
+                  renameSync: resolvedDeps.renameSync,
+                  now: resolvedDeps.now
+                }
+              );
+            }
+            if (
               currentReplacement &&
               currentReplacement.predecessorCredentialReference !==
                 current.credentialReference
@@ -2360,6 +2434,7 @@ export const invalidateUpstreamEnrollmentReferences = async (
           personalMemoryRead: "disabled",
           personalCollaboration: "disabled",
           teamWorkspaceRead: "disabled",
+          memoryAnswerExecution: "disabled",
           shareGrantManagement: "disabled",
           captureWrites: "disabled",
           sync: "disabled",
@@ -2476,6 +2551,7 @@ const disconnectUpstreamBackendEnrollmentWithFetch = async (
         personalMemoryRead: "disabled",
         personalCollaboration: "disabled",
         teamWorkspaceRead: "disabled",
+        memoryAnswerExecution: "disabled",
         shareGrantManagement: "disabled",
         captureWrites: "disabled",
         sync: "disabled",

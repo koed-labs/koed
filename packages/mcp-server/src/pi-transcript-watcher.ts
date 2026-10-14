@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { conversationSourceRewriteGenerationId } from "@koed/shared";
 import fs, { type FSWatcher } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
@@ -29,6 +30,7 @@ interface PiWatcherState {
   version: 1;
   activatedAt: string;
   baselines: Record<string, number>;
+  excludedThrough?: Record<string, number>;
 }
 export interface PiTranscriptWatcherHandle {
   scanNow(): Promise<void>;
@@ -43,6 +45,8 @@ type Artifact = {
   liveStartOffset: number;
   liveStartLine: number;
   sourceFingerprint?: string;
+  sourceGenerationId?: string;
+  closureHash?: string;
 };
 type Segment = {
   id: string;
@@ -334,11 +338,17 @@ export const processPiTranscriptSignal = async (
     state.baselines[target] ??
     (file.birthtimeMs < Date.parse(state.activatedAt) ? boundary : 0);
   state.baselines[target] = baseline;
+  const excludedThrough = (state.excludedThrough ??= {});
   if (!artifact && boundary === baseline) return;
   if (!(await policyAllowsCapture(client, signal))) {
-    state.baselines[target] = boundary;
+    excludedThrough[target] = boundary;
     return;
   }
+  const captureBaseline = Math.max(
+    baseline,
+    excludedThrough[target] ?? baseline
+  );
+  if (boundary < captureBaseline) throw new Error("pi_session_truncated");
   if (!artifact)
     artifact = artifactFrom(
       await client.ensureConversationSourceArtifact({
@@ -368,19 +378,30 @@ export const processPiTranscriptSignal = async (
         }),
         artifactFormat: "pi_session_jsonl",
         artifactFormatVersion: 1,
-        journalStartOffset: 0,
-        journalStartLine: 0,
-        liveStartOffset: baseline,
-        liveStartLine: await countTranscriptLines(target, baseline),
+        journalStartOffset:
+          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? captureBaseline : 0,
+        journalStartLine:
+          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
+            ? await countTranscriptLines(target, captureBaseline)
+            : 0,
+        liveStartOffset: captureBaseline,
+        liveStartLine: await countTranscriptLines(target, captureBaseline),
         currentSourceLength: file.size,
         sourceCreatedAt: file.birthtime.toISOString(),
         sourceModifiedAt: file.mtime.toISOString(),
         redactedSourceLabel: `${identity.id}.jsonl`
       })
     );
+  if (
+    env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" &&
+    (artifact.providerCursorOffset < baseline ||
+      artifact.journalStartOffset < baseline ||
+      artifact.liveStartOffset < baseline)
+  )
+    throw new Error("pi_source_precedes_capture_consent");
   if (file.size < artifact.providerCursorOffset)
     throw new Error("pi_session_truncated");
-  if (artifact.providerCursorOffset > 0) {
+  if (artifact.providerCursorOffset > artifact.journalStartOffset) {
     const page = await client.listConversationSourceSegments(artifact.id, {
       afterOffset: artifact.providerCursorOffset - 1,
       limit: 1
@@ -400,9 +421,57 @@ export const processPiTranscriptSignal = async (
     )
       throw new Error("pi_session_covered_prefix_mutation");
   }
+  if (
+    env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" &&
+    captureBaseline > artifact.providerCursorOffset
+  ) {
+    if (!artifact.sourceGenerationId)
+      throw new Error("pi_source_generation_missing");
+    const finalized = artifact.closureHash
+      ? artifact
+      : artifactFrom(
+          await client.finalizeConversationSourceArtifact(artifact.id, {
+            expectedProviderOffset: artifact.providerCursorOffset,
+            expectedProviderLine: artifact.providerCursorLine
+          })
+        );
+    if (!finalized.closureHash) throw new Error("pi_source_closure_missing");
+    const captureBaselineLine = await countTranscriptLines(
+      target,
+      captureBaseline
+    );
+    const prefixDigest = hash({
+      kind: "pi_capture_resume",
+      offset: captureBaseline,
+      line: captureBaselineLine
+    });
+    const sourceGenerationId = conversationSourceRewriteGenerationId(
+      artifact.sourceGenerationId,
+      prefixDigest
+    );
+    artifact = artifactFrom(
+      await client.createConversationSourceSuccessorGeneration(artifact.id, {
+        expectedParentClosureHash: finalized.closureHash,
+        sourceGenerationId,
+        originKeyId: conversationSourceRewriteGenerationId(
+          sourceGenerationId,
+          prefixDigest
+        ),
+        sourceRewrite: {
+          kind: "pi_capture_resume",
+          journalStartOffset: captureBaseline,
+          journalStartLine: captureBaselineLine,
+          liveStartOffset: captureBaseline,
+          liveStartLine: captureBaselineLine,
+          prefixDigest,
+          currentSourceLength: file.size
+        }
+      })
+    );
+  }
   while (artifact.providerCursorOffset < boundary) {
     if (!(await policyAllowsCapture(client, signal))) {
-      state.baselines[target] = boundary;
+      excludedThrough[target] = boundary;
       return;
     }
     const end = Math.min(
@@ -452,13 +521,10 @@ export const processPiTranscriptSignal = async (
   }
   if (cursorOffset >= boundary) return;
   if (!(await policyAllowsCapture(client, signal))) {
-    state.baselines[target] = boundary;
+    excludedThrough[target] = boundary;
     return;
   }
-  const captureStart = Math.max(
-    cursorOffset,
-    state.baselines[target] ?? cursorOffset
-  );
+  const captureStart = Math.max(cursorOffset, captureBaseline);
   const captureStartLine =
     captureStart === cursorOffset
       ? cursorLine

@@ -2,6 +2,7 @@ import type { DeviceCredentialRecord } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   assertSecureHttpTransport,
+  isTeamMemoryAnswerTaskCapability,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
   upstreamBackendById,
@@ -30,6 +31,7 @@ export type LocalEdgeOperationFamily =
   | "capture_writes"
   | "sync"
   | "managed_execution"
+  | "memory_answer_execution"
   | "managed_file_read"
   | "managed_terminal"
   | "admin";
@@ -79,6 +81,7 @@ const operationRoutePolicyKey: Record<
   capture_writes: "captureWrites",
   sync: "sync",
   managed_execution: "managedExecution",
+  memory_answer_execution: "memoryAnswerExecution",
   managed_file_read: "managedExecution",
   managed_terminal: "managedExecution",
   admin: "admin"
@@ -96,6 +99,7 @@ const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   capture_writes: "queued_sync_handoff",
   sync: "queued_sync_handoff",
   managed_execution: "live_upstream_proxy",
+  memory_answer_execution: "live_upstream_proxy",
   managed_file_read: "live_upstream_proxy",
   managed_terminal: "live_upstream_proxy",
   admin: "live_upstream_proxy"
@@ -243,6 +247,25 @@ export const resolveLocalEdgeRouteDecision = (input: {
   }
 
   const credentials = credentialState(input);
+  if (input.operationFamily === "memory_answer_execution") {
+    const tasks =
+      upstreamBackend.capabilities?.payload?.capabilities?.[
+        "memory.answerTasks"
+      ];
+    if (!isTeamMemoryAnswerTaskCapability(tasks)) {
+      return decision({
+        action: "deny_fail_closed",
+        operationFamily: input.operationFamily,
+        upstreamBackendId,
+        reason: "memory_answer_task_contract_unavailable",
+        routePolicy,
+        capabilityState: capabilities,
+        credentialState: credentials,
+        relayCredentialState: relayCredentialState(input, mode),
+        retryAfterCapabilityRefresh: true
+      });
+    }
+  }
   if (credentials !== "configured") {
     return decision({
       action: "deny_fail_closed",
@@ -331,6 +354,22 @@ export const assertUpstreamOperationPathAllowed = (
       { statusCode: 400 }
     );
   };
+  if (operationFamily === "memory_answer_execution") {
+    if (
+      !parsed.search &&
+      ((method === "POST" &&
+        (pathname === "/v1/memory/answer-tasks" ||
+          pathname === "/v1/memory/answer-tasks/claim" ||
+          /^\/v1\/memory\/answer-tasks\/[0-9a-f-]{36}\/(heartbeat|cancel|complete|fail)$/i.test(
+            pathname
+          ))) ||
+        (method === "GET" &&
+          /^\/v1\/memory\/answer-tasks\/[0-9a-f-]{36}$/i.test(pathname)) ||
+        (method === "DELETE" && pathname === "/v1/memory/answer-tasks/expired"))
+    )
+      return;
+    deny();
+  }
 
   if (operationFamily === "personal_memory_read") {
     if (method !== "GET" && method !== "POST") {

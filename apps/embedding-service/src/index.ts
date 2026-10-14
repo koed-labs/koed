@@ -20,7 +20,6 @@ let shutdownPromise: Promise<void> | null = null;
 const start = async (): Promise<void> => {
   await verifyEmbeddingModelArtifact(config);
   await runtime.loadEmbeddingModel();
-  await runtime.loadRerankerModel();
 
   const service = createEmbeddingService(config, runtime, logger);
   const server = createNodeHttpServer(service);

@@ -114,6 +114,37 @@ never delivers a result without a fresh authorized task read. Native MCP Tasks
 remain deferred until a maintained TypeScript SDK runtime and host support
 exist. See [asynchronous Memory Answer delivery](../async-memory-answer.md).
 
+## Personal And Team Execution Amendment
+
+Date: 2026-10-12
+
+The earlier Personal-only restriction is superseded only where the authoritative
+Team backend supports version 2 of the durable task contract. Personal and Team
+use one task repository, scheduler, local synthesis worker, and delivery lifecycle.
+No Team evidence/main-agent fallback or separate blocking executor is introduced.
+Blocking and deferred delivery remain presentation choices.
+
+Team acceptance freezes the existing authorized Share Grant boundary. Current
+User, membership, Workspace access, and the original grants and representations
+are revalidated under transaction locks before protected decryption, execution
+authority renewal, completion, and result delivery. New grants cannot expand an
+accepted task. Heartbeats renew the same boundary. Signed retrieval authority is
+server-produced and never trusted from task request metadata.
+
+Claim requests default to Personal only. Team claims require an explicit scope
+selector and trusted credential permission. Native enrolled executors require
+explicit `memory_answer_execution` consent and Team read permission; delegated
+executors require local-execution and Team-read scopes. Personal API Tokens
+remain Personal-only. A Team-only executor cannot claim Personal work.
+
+The worker prepares a final Memory Question without persisting it separately.
+The authoritative backend validates that final record and atomically persists it
+with the current fenced task transition. This supersedes the separate-write
+recovery sequence described above for the version-2 contract. Stale attempts
+cannot leave a completed history record behind. Team task-bound history checks
+the frozen authority before decrypting query, answer, or evidence. Legacy history
+without task authority keeps its existing access policy.
+
 ## Consequences
 
 - A model invokes `memory_answer` once and never polls a Koed status tool.

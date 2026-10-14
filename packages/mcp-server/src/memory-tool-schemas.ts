@@ -1,6 +1,7 @@
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import { z } from "zod";
 import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
+import { MEMORY_ANSWER_DELIVERY_MODES } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 
 export const searchDomainSchema = z.enum(["global", "project", "session"]);
 export const memoryAnswerResponseDetailSchema = z.enum([
@@ -61,6 +62,17 @@ export const memoryAnswerInputSchema = z
       input.search_domain !== "session" || input.session_id !== undefined,
     "session_id is required for session search"
   );
+
+// The runtime and durable worker retain the strict execution schema above.
+export const memoryAnswerAdapterInputSchema =
+  memoryAnswerInputSchema.safeExtend({
+    delivery_mode: z
+      .enum(MEMORY_ANSWER_DELIVERY_MODES)
+      .optional()
+      .describe(
+        "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
+      )
+  });
 
 export const memoryIntakeProposeInputSchema = z
   .object({

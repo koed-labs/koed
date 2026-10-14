@@ -424,6 +424,131 @@ process.stdin.once("data", async () => {
     ).rejects.toThrow("strict-LF");
   });
 
+  it.each([
+    [
+      "OAuth refresh failed (401): invalid_refresh_token",
+      "provider_authentication_failure",
+      "Pi provider authentication failed"
+    ],
+    [
+      "Provider could not run the selected model",
+      "provider_execution_failure",
+      "Pi provider request failed"
+    ]
+  ] as const)(
+    "classifies native provider failure safely (%s)",
+    async (nativeMessage, code, safeMessage) => {
+      const root = mkdtempSync(join(tmpdir(), "koed-pi-provider-failure-"));
+      const executable = join(root, "pi");
+      const bridge = join(
+        root,
+        "integrations",
+        "pi",
+        "extensions",
+        "structured-result.mjs"
+      );
+      mkdirSync(join(root, "integrations", "pi", "extensions"), {
+        recursive: true
+      });
+      writeFileSync(bridge, "export default () => {};\n");
+      writeFileSync(
+        executable,
+        `#!/usr/bin/env node
+process.stdin.once("data", () => {
+  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: ${JSON.stringify(`${nativeMessage}; synthetic-secret-private-content`)} } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+  setInterval(() => {}, 1000);
+});
+`
+      );
+      chmodSync(executable, 0o700);
+      const error = await runPiRpcTask(
+        "synthetic question",
+        {
+          provider: "pi",
+          model: "test/model",
+          reasoningEffort: "off",
+          cwd: root,
+          env: { KOED_HOME: root, PATH: process.env.PATH },
+          executablePath: executable,
+          clientName: "test",
+          systemPrompt: "test",
+          outputSchema: { type: "object" }
+        },
+        5000
+      ).then(
+        () => null,
+        (failure: unknown) => failure
+      );
+      expect(error).toMatchObject({
+        memoryAnswerTaskErrorCode: code,
+        retryable: code !== "provider_authentication_failure"
+      });
+      expect(String(error)).toContain(safeMessage);
+      expect(String(error)).not.toContain("synthetic-secret-private-content");
+      expect(JSON.stringify(error)).not.toContain(
+        "synthetic-secret-private-content"
+      );
+    }
+  );
+
+  it("accepts structured completion after native provider retry recovery with safe diagnostics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-provider-recovery-"));
+    const executable = join(root, "pi");
+    const bridgeDir = join(root, "integrations", "pi", "extensions");
+    mkdirSync(bridgeDir, { recursive: true });
+    writeFileSync(
+      join(bridgeDir, "structured-result.mjs"),
+      "export default () => {};\n"
+    );
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+process.stdin.once("data", () => {
+  const failure = { role: "assistant", stopReason: "error", errorMessage: "Connection error; synthetic-secret-private-content" };
+  const events = [
+    { type: "message_end", message: failure },
+    { type: "agent_end", messages: [failure], willRetry: true },
+    { type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: failure.errorMessage },
+    { type: "auto_retry_end", success: true, attempt: 1, finalError: failure.errorMessage, error: failure.errorMessage },
+    { type: "tool_execution_end", toolName: "synthetic_tool", result: { details: { errorMessage: "synthetic-tool-payload-preserved" } } },
+    { type: "message_end", message: { role: "assistant", stopReason: "toolUse" } },
+    { type: "tool_execution_end", toolName: "koed_structured_result", result: { details: { value: { ok: true } } } },
+    { type: "agent_settled" }
+  ];
+  for (const event of events) process.stdout.write(JSON.stringify(event) + "\\n");
+  setInterval(() => {}, 1000);
+});
+`
+    );
+    chmodSync(executable, 0o700);
+    const result = await runPiRpcTask(
+      "synthetic question",
+      {
+        provider: "pi",
+        model: "test/model",
+        reasoningEffort: "off",
+        cwd: root,
+        env: { KOED_HOME: root, PATH: process.env.PATH },
+        executablePath: executable,
+        clientName: "test",
+        systemPrompt: "test",
+        outputSchema: { type: "object" }
+      },
+      5000
+    );
+    expect(JSON.parse(result.text)).toEqual({ ok: true });
+    expect(JSON.stringify(result.providerEvents)).toContain(
+      "Pi provider request failed"
+    );
+    expect(JSON.stringify(result.providerEvents)).not.toContain(
+      "synthetic-secret-private-content"
+    );
+    expect(JSON.stringify(result.providerEvents)).toContain(
+      "synthetic-tool-payload-preserved"
+    );
+  });
+
   it("terminates RPC workers that exceed the aggregate output bound", async () => {
     const root = mkdtempSync(join(tmpdir(), "koed-pi-output-bound-"));
     const executable = join(root, "pi");

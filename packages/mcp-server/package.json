@@ -33,9 +33,21 @@
       "types": "./integrations/pi/memory-answer-delivery.d.mts",
       "import": "./integrations/pi/memory-answer-delivery.mjs"
     },
+    "./memory-answer-delivery-policy": {
+      "types": "./integrations/pi/memory-answer-delivery-policy.d.mts",
+      "import": "./integrations/pi/memory-answer-delivery-policy.mjs"
+    },
     "./codex-memory-delivery": {
       "types": "./dist/codex-memory-delivery.d.ts",
       "import": "./dist/codex-memory-delivery.js"
+    },
+    "./mcp-server-factory": {
+      "types": "./dist/mcp-server-factory.d.ts",
+      "import": "./dist/mcp-server-factory.js"
+    },
+    "./codex-memory-hook": {
+      "types": "./dist/codex-memory-hook.d.ts",
+      "import": "./dist/codex-memory-hook.js"
     },
     "./managed-conversation-command-types": {
       "types": "./dist/managed-conversation-command-types.d.ts",

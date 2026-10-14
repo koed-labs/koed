@@ -131,8 +131,8 @@ _Avoid_: Agent tool, backend LLM worker, manual summarization
 **Local AI Runtime**:
 The `koed-server`-supervised local process that runs persistent AI-client work,
 including Memory Answer workers, LCM Summary work, Curated Memory review, and
-transcript watching. It is shared by short-lived MCP adapters for one
-`KOED_HOME`.
+transcript watching. It may work against a local or remote backend and is shared
+by AI-client integrations for one local profile.
 _Avoid_: MCP Server, backend LLM service, browser bridge
 
 **Local Operator Scripts**:
@@ -147,8 +147,15 @@ Token and from the upstream device credential used against the Team Backend.
 _Avoid_: API Token, upstream credential, browser session
 
 **MCP Server**:
-The local integration process that exposes Koed memory tools to an AI client.
+The integration surface that exposes Koed memory tools to an AI Client through
+a local adapter or an authorized remote connection.
 _Avoid_: AI client, backend, capture hook
+
+**Remote MCP Grant**:
+A User-approved, resource-bound, revocable delegation for an AI Client to use
+specified Koed memory operations. It does not itself create Team Membership,
+Workspace Access, or Share Grants.
+_Avoid_: API Token, browser session, Team membership, Operator credential
 
 **Memory**:
 Durable knowledge captured from AI-client activity and later retrieved as evidence.
@@ -341,7 +348,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   without deleting retained **Memory**
 - A **Workspace Archive** hides a **Workspace** from normal active flows without
   deleting retained **Team-shared Memory**
-- In the current build, one local **API Token** is held by the **Local AI Runtime**; it is not written into **MCP Server** or **Capture Hook** configuration
+- A local **API Token** or **Remote MCP Grant** authorizes the **Local AI Runtime** to work against its configured backend without conferring **Team Membership** or **Workspace Access**
+- A **Remote MCP Grant** may delegate Team recall only within the owning **User's** current **Team Membership**, **Workspace Access**, and active **Share Grants**
 - A **Project** may provide local context for zero or more **Conversations**
 - An **AI Client** produces one or more **Conversations**
 - A **Supported AI Client Integration** requires one **Transcript Watcher** for automatic capture correctness

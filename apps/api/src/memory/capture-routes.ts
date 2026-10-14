@@ -20,7 +20,7 @@ export const registerCaptureRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticate, authenticateApiToken },
+    auth: { authenticate, authenticateApiToken, resolveDelegatedPrincipal },
     capture: {
       rejectUnsupportedCapturePolicy,
       resolveCapturePolicyForRequest,
@@ -39,12 +39,15 @@ export const registerCaptureRoutes = (
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
+      const delegated = await resolveDelegatedPrincipal(request);
 
       return {
         ok: true,
-        auth: "bearer_api_token",
+        auth: delegated ? "oauth_delegated" : "bearer_api_token",
         user: publicUser(user),
-        canWritePersonal: true,
+        canWritePersonal: delegated
+          ? delegated.scopes.includes("koed:capture")
+          : true,
         providerConfigSupported: false,
         embeddingRetrieval: await repo.getLocalEmbeddingStatus()
       };

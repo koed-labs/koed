@@ -18,17 +18,6 @@ export interface EmbedResponse {
   chunks: EmbeddedChunk[];
 }
 
-export interface RerankResponse {
-  model: string;
-  artifact: string;
-  artifactRevision: string;
-  artifactHash: string;
-  latencyMs: number;
-  inputTokens: number | null;
-  costUsd: 0;
-  scores: number[];
-}
-
 export const validateTextLimits = (
   config: Pick<
     EmbeddingServiceEnv,
@@ -101,44 +90,4 @@ export const validateEmbedRequest = (
   });
   validateTextLimits(config, texts, "texts");
   return { texts };
-};
-
-export const validateRerankRequest = (
-  config: Pick<
-    EmbeddingServiceEnv,
-    "rerankerBatchLimit" | "embeddingMaxTextChars" | "embeddingMaxRequestChars"
-  >,
-  payload: unknown
-): { query: string; documents: string[] } => {
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    Array.isArray(payload)
-  ) {
-    throw new HttpError(422, "request body must be a JSON object");
-  }
-  const record = payload as Record<string, unknown>;
-  if (typeof record.query !== "string") {
-    throw new HttpError(422, "query must be a string");
-  }
-  if (!record.query.trim()) {
-    throw new HttpError(422, "query must not be empty");
-  }
-  validateTextLimits(config, [record.query], "query");
-
-  const documents = stringArrayField(record, "documents");
-  if (documents.length > config.rerankerBatchLimit) {
-    throw new HttpError(
-      422,
-      `too many documents; maximum batch size is ${config.rerankerBatchLimit}`
-    );
-  }
-  documents.forEach((document, index) => {
-    if (!document || !document.trim()) {
-      throw new HttpError(422, `documents[${index}] must not be empty`);
-    }
-  });
-  validateTextLimits(config, documents, "documents");
-  validateTextLimits(config, [record.query, ...documents], "request");
-  return { query: record.query, documents };
 };

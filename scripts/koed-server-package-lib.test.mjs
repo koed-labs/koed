@@ -102,8 +102,7 @@ test("validates a standalone koed-server package root", () => {
   assert.equal(manifest.id, "koed-server");
   assert.equal(manifest.koedRuntime.path, "koed-runtime");
   assert.deepEqual(manifest.models, {
-    embedding: "qwen3-0.6b",
-    reranker: "qwen3-reranker-0.6b"
+    embedding: "qwen3-0.6b"
   });
   assert.equal(
     manifest.database.migrationSet.latestMigrationTimestamp,

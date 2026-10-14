@@ -10,6 +10,7 @@
 
 Long-term memory for Codex, Claude Code, and Pi. Private, local, and yours.
 
+[![Latest release](https://img.shields.io/github/v/release/koed-labs/koed)](https://github.com/koed-labs/koed/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-24-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey)

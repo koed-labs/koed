@@ -7,9 +7,7 @@ import {
   requireEnv,
   resolveTeamCollaborationEnabled,
   resolveKoedQueueBackend,
-  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig,
   validateEnvelopeEncryptionProviderEnvironment,
   type KoedQueueBackend
 } from "@koed/shared";
@@ -184,7 +182,7 @@ export const resolveWorkerEnv = (
   const embeddingModel = resolveSupportedEmbeddingModelConfig(
     environment.EMBEDDING_MODEL
   );
-  resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
+
   if (nodeEnv === "production") {
     requireEnv(
       [

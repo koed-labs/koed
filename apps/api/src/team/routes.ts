@@ -196,10 +196,14 @@ export const registerTeamRoutes = (
   };
 
   const authenticateTeamRead = async (request: FastifyRequest) => {
-    rejectApiToken(request);
+    if (/^Bearer(?:\s|$)/i.test(request.headers.authorization?.trim() ?? "")) {
+      const delegated = await context.auth.resolveDelegatedPrincipal?.(request);
+      if (!delegated) rejectApiToken(request);
+    }
     return authenticateSessionOrDeviceCredential(
       request,
-      "team_workspace_read"
+      "team_workspace_read",
+      { apiTokenError: "Personal API Tokens cannot access Team operations" }
     );
   };
 

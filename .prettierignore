@@ -1,21 +1,30 @@
+# Dependencies
 node_modules
+.pnpm-store
+.venv
+
+# Build output and caches
 dist
+coverage
+.turbo
 apps/desktop/dist-electron
 apps/desktop/dist-types
 apps/desktop/release
 apps/desktop/.koed-runtime
+
+# Downloaded models and vendored code
 models
 vendor
-coverage
-target
 
-.venv
-.turbo
-.pnpm-store
-
+# Local environment and secrets
 .env
 .env.*
 
+# pnpm lockfile and workspace config
 pnpm-*
+
+# Benchmark output
 benchmarks/**/artifacts/
+
+# Prompt files keep their authored formatting
 prompts/**/*.md

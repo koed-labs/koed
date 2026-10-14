@@ -13,12 +13,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { buildSync } from "esbuild";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
 import {
   CODEX_DELIVERY_NONCE,
-  CodexDetachedMemoryIneligible,
   CodexMemoryDelivery,
   CodexMemoryReceiptStore,
   canonicalCodexMemoryInput,
@@ -109,6 +109,72 @@ function fixture(now?: () => number, waitMs = 50) {
   return { home, store, port, delivery, prepare, accept };
 }
 describe("Codex protected native-call delivery", () => {
+  it("matches a logical cwd alias to the same physical directory without accepting a foreign cwd", async () => {
+    const f = fixture();
+    const directory = path.join(f.home, "project"),
+      alias = path.join(f.home, "project-alias"),
+      foreign = path.join(f.home, "foreign");
+    mkdirSync(directory);
+    mkdirSync(foreign);
+    symlinkSync(directory, alias, "dir");
+    const origin = hook({ cwd: alias });
+    const input = f.prepare(origin);
+    await expect(
+      f.delivery.accept(input, { cwd: foreign }, undefined, meta(origin))
+    ).rejects.toThrow("unavailable or invalid");
+    expect(f.port.start).not.toHaveBeenCalled();
+    const response = await f.delivery.accept(
+      input,
+      { cwd: directory },
+      undefined,
+      meta(origin)
+    );
+    f.store.bind(
+      { ...origin, tool_input: input, tool_response: response },
+      tool
+    );
+    expect(
+      (await f.delivery.stop({ ...origin, cwd: directory })).reason
+    ).toContain("authorized decision");
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+  });
+  it("does not prepare a blocking call or replace supplied receipt metadata", () => {
+    const f = fixture();
+    expect(
+      f.store.prepare(
+        hook({ tool_input: { query: "decision", delivery_mode: "blocking" } }),
+        tool
+      )
+    ).toEqual({});
+    expect(readdirSync(f.store.directory)).toEqual([]);
+    const input = f.prepare();
+    expect(
+      f.store.prepare(hook({ tool_use_id: "call-2", tool_input: input }), tool)
+    ).toEqual({});
+    expect(
+      readdirSync(f.store.directory).filter((n) => n.endsWith(".json"))
+    ).toHaveLength(1);
+  });
+  it("rejects older receipt fingerprints without starting a replacement recall", async () => {
+    const f = fixture();
+    const input = f.prepare();
+    const filename = path.join(
+      f.store.directory,
+      `${input[CODEX_DELIVERY_NONCE]}.json`
+    );
+    const binding = JSON.parse(readFileSync(filename, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    binding.inputHash = createHash("sha256")
+      .update(JSON.stringify(canonicalCodexMemoryInput(input)))
+      .digest("hex");
+    writeFileSync(filename, JSON.stringify(binding), { mode: 0o600 });
+    await expect(
+      f.delivery.accept(input, caller, undefined, meta())
+    ).rejects.toThrow("unavailable or invalid");
+    expect(f.port.start).not.toHaveBeenCalled();
+  });
   it("emits the native-validated PreToolUse rewrite through the actual hook CLI", () => {
     const f = fixture();
     const entry = path.join(f.home, "codex-memory-hook.mjs");
@@ -386,23 +452,24 @@ describe("Codex protected native-call delivery", () => {
       "stale"
     );
   });
-  it("explicit Team scope keeps blocking; only authoritative pre-acceptance ineligibility permits fallback", async () => {
+  it("accepts explicit Team recall into the same deferred receipt lifecycle", async () => {
     const f = fixture();
-    expect(
-      f.prepare(
-        hook({
-          tool_input: {
-            query: "prior decision",
-            team_workspace_id: "11111111-1111-4111-8111-111111111111"
-          }
-        })
-      )[CODEX_DELIVERY_NONCE]
-    ).toBeUndefined();
-    const input = f.prepare();
-    f.port.start.mockRejectedValueOnce(new CodexDetachedMemoryIneligible());
-    expect(
-      await f.delivery.accept(input, caller, undefined, meta())
-    ).toBeUndefined();
+    const { response: receipt } = await f.accept(
+      hook({
+        tool_input: {
+          query: "prior decision",
+          team_workspace_id: "11111111-1111-4111-8111-111111111111"
+        }
+      })
+    );
+    expect(receipt).toMatchObject({ status: "pending" });
+    expect(f.port.start).toHaveBeenCalledOnce();
+    expect(f.port.start.mock.calls[0]?.[0]).toMatchObject({
+      team_workspace_id: "11111111-1111-4111-8111-111111111111"
+    });
+    expect((await f.delivery.stop(hook())).reason).toContain(
+      "authorized decision"
+    );
   });
   it("uncertain start failure consumes the nonce and cannot resubmit", async () => {
     const f = fixture();

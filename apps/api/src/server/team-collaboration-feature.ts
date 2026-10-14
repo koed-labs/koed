@@ -28,6 +28,7 @@ const disabledPathPrefixes = [
   "/v1/local-edge/device-enrollments",
   "/v1/local-edge/device-credentials",
   "/v1/local-edge/team-memory",
+  "/v1/local-edge/memory-answer-tasks",
   "/v1/local-edge/collaboration/realtime/backends",
   "/v1/retention",
   "/v1/shared-memory",
@@ -64,10 +65,17 @@ const isTeamCollaborationPath = (request: FastifyRequest): boolean => {
 
 const isTeamScopedMemoryRequest = (request: FastifyRequest): boolean => {
   const pathname = requestPathname(request);
+  const body = request.body as Record<string, unknown> | undefined;
+  const taskRequest = body?.request as Record<string, unknown> | undefined;
   return (
     pathname.startsWith("/v1/memory/") &&
     (containsTeamWorkspaceSelector(request.query) ||
-      containsTeamWorkspaceSelector(request.body))
+      containsTeamWorkspaceSelector(request.body) ||
+      (hasPathPrefix(pathname, "/v1/memory/answer-tasks") &&
+        (containsTeamWorkspaceSelector(taskRequest?.input) ||
+          containsTeamWorkspaceSelector(body?.final_question) ||
+          body?.scope_filter === "team" ||
+          request.headers["x-koed-memory-answer-task-scope"] === "team")))
   );
 };
 

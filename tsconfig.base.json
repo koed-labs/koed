@@ -20,6 +20,9 @@
       "@koed/db": ["packages/db/src/index.ts"],
       "@koed-labs/server": ["packages/koed-server/src/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@koed/mcp-server/mcp-server-factory": [
+        "packages/mcp-server/src/mcp-server-factory.ts"
+      ],
       "@koed/mcp-server/codex-transcript-parser": [
         "packages/mcp-server/src/codex-transcript-parser.ts"
       ],

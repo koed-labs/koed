@@ -7,11 +7,34 @@ MCP Server, and optional local Synthesis through Claude Code.
 
 Koed does not require Codex for the Claude integration. Codex and Claude Code
 use the same [durable Personal Memory Answer path](durable-memory-answer.md).
-Claude's Agent SDK still requires the matching tool result before model
-continuation, so the host waits while durable work continues without model
-polling. Both AI Clients may connect to the same local Koed deployment, but
-neither installation is
-used as a fallback for the other.
+Both AI Clients may connect to the same local Koed deployment, but neither
+installation is used as a fallback for the other.
+
+The MCP tools expose explicit task collection. Omitted, `auto`, and `blocking`
+`delivery_mode` values return the completed Memory Answer through the ordinary
+MCP result path. Explicit `non_blocking` returns a pending task receipt promptly.
+Continue independent work, then call `memory_answer_result` with the receipt's
+`task_id` when the next action needs recalled memory. Collection checks promptly
+by default; set `wait=true` to await the same task until it settles, subject to
+existing expiry, cancellation and harness timeouts. There is no separate
+30-second collection cap. A timeout detaches observation, not durable work;
+retain the task ID rather than resubmitting recall. Pending is not an answer.
+Cancel unnecessary work with `memory_answer_cancel({task_id})`.
+
+Claude Code's optional native backgrounding of ordinary MCP calls is independent
+of this explicit non-blocking contract. A blocking Koed request still returns
+its completed result through that host-managed path; Koed's per-call mode does
+not enable or disable Claude's native backgrounding. Explicit non-blocking
+requests need result collection and do not depend on a Stop hook or automatic
+follow-up message. See [asynchronous Memory Answers](async-memory-answer.md)
+for the shared execution and collection contract.
+
+Choose blocking when the next planned action needs prior memory. Independent
+diagnostics may overlap a pending task, but the agent must collect and apply
+its result before a memory-dependent decision. Do not repeat the submission,
+use a tight polling loop, invent an answer, or claim dependent work is complete
+before collection. Failed execution or uncertain acceptance leaves that
+prerequisite unresolved.
 
 Desktop-managed Conversations require explicit `claude` driver and instance
 selection. API accepts only an enabled instance with a fresh healthy,
@@ -373,3 +396,12 @@ instance is absent from Koed's local registry. Backend instance records may
 remain after a local registry reset; status checks the local registration that
 capability discovery consumes. In that case, onboarding repairs the
 registration so capability discovery can publish a Local Synthesis snapshot.
+
+## Per-call validation evidence
+
+The conditional-delivery matrix passed on Claude Code 2.1.267 using native print
+execution with its explicit noninteractive background opt-in. Both enabled and
+disabled backgrounding, final statuses, dependency ordering, and waiter
+interruption were checked. This adds no interactive TUI or reopened-session
+guarantee. See [validation](async-memory-answer.md#validation) for what the
+protocol tests and evaluation suite establish.

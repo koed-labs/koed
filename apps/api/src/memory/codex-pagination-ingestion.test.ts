@@ -111,7 +111,9 @@ const fixtureMessages = (rows: FixtureRow[]) => {
 describe.skipIf(!databaseUrl)(
   "Codex capture through API, journal and PostgreSQL",
   () => {
-    const pool = createDbPool({ connectionString: databaseUrl });
+    const pool = createDbPool({
+      connectionString: databaseUrl ?? "postgresql://localhost/postgres"
+    });
     beforeAll(() => runDbMigrations(pool), 60_000);
     afterAll(() => pool.end());
 
@@ -129,7 +131,7 @@ describe.skipIf(!databaseUrl)(
         vi.stubEnv("API_TOKEN_PEPPER", "synthetic-pagination-test-pepper");
         vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.fixture");
         vi.stubEnv("EMBEDDING_MODEL", "qwen3-0.6b");
-        vi.stubEnv("RERANKER_KEY", "");
+
         const provider = encrypted
           ? createLocalTestKeyEnvelopeEncryptionProvider(
               Buffer.alloc(32, 27).toString("base64")

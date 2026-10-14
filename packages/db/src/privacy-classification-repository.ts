@@ -545,6 +545,16 @@ const policySubject = (
   return [owner, team, workspace];
 };
 
+export const privacyContentPolicySubjectLockKey = (
+  scope: PrivacyContentPolicyScope,
+  subject: PrivacyContentPolicySubject
+): string =>
+  canonicalJson([
+    subject.deploymentIdentityId,
+    scope,
+    ...policySubject(scope, subject)
+  ]);
+
 const selectClassificationResult = `
   select
     r.id, r.owner_user_id, r.classifier_generation_id, r.classifier_hash,
@@ -1143,15 +1153,7 @@ export const createPrivacyClassificationRepository = (
       return withTransaction(async (client) => {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-          [
-            canonicalJson([
-              input.subject.deploymentIdentityId,
-              input.scope,
-              sourceOwnerUserId,
-              teamId,
-              teamWorkspaceId
-            ])
-          ]
+          [privacyContentPolicySubjectLockKey(input.scope, input.subject)]
         );
         const priorResult = await client.query<Row>(
           `

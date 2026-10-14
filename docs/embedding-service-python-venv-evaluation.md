@@ -1,5 +1,7 @@
 # Embedding Service Python venv evaluation
 
+> Supersession (14 October 2026): This is a historical evaluation. The dedicated reranker has since been removed, so the Embedding Service no longer serves `/rerank`, loads a reranker model, or reads reranker settings. References to reranking below describe the service as it was evaluated.
+
 ## Decision
 
 Recommendation: **remove Python before signing/notarization**.

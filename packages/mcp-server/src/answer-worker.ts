@@ -221,23 +221,41 @@ const classifyMemoryAnswerFailure = (
   retrievalIncomplete: boolean,
   exhaustedBudgets: readonly string[]
 ): MemoryAnswerFailureKind => {
+  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   if (
-    /structured answer validation failed/i.test(workerErrorMessage) ||
     /"code"\s*:\s*"(?:custom|invalid_[a-z_]+|too_small|too_big)"/.test(
       workerErrorMessage
     )
   )
     return "validation";
-  if (exhaustedBudgets.length > 0) return "resource_limit";
   return retrievalIncomplete ? "retrieval" : "worker";
 };
+
+// Every failed run eventually uses up its retry attempts, so "attempts" alone
+// says nothing about why the answer failed. Report the underlying cause.
+const limitingBudgets = (exhaustedBudgets: readonly string[]): string[] =>
+  exhaustedBudgets.filter((kind) => kind !== "attempts");
+
+const MEMORY_REVIEW_BUDGETS = new Set([
+  "candidates",
+  "evidence_items",
+  "evidence_tokens",
+  "prompt_tokens"
+]);
 
 const workerFailureDisplayMessage = (
   provider: string,
   workerErrorMessage: string,
   failureKind: MemoryAnswerFailureKind,
-  exhaustedBudgets: readonly string[]
+  exhaustedBudgets: readonly string[],
+  providerFailureCode?: string
 ): string => {
+  if (
+    provider === "pi" &&
+    providerFailureCode === "provider_authentication_failure"
+  ) {
+    return "Pi provider authentication failed. Sign in again to Pi for the selected provider.";
+  }
   const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
   // Exhausting retries after a malformed answer is a validation failure, not
   // evidence that retrieval ran out of resources. Preserve the actual cause.
@@ -247,8 +265,12 @@ const workerFailureDisplayMessage = (
   if (exhaustedBudgets.includes("wall_time")) {
     return `${worker} did not finish the Personal Memory search in time. Try again.`;
   }
-  if (exhaustedBudgets.length > 0) {
-    return `${worker} reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question.`;
+  const limiting = limitingBudgets(exhaustedBudgets);
+  if (limiting.some((kind) => MEMORY_REVIEW_BUDGETS.has(kind))) {
+    return `${worker} found more possibly relevant memory than it could review in one answer. Try a narrower question.`;
+  }
+  if (limiting.length > 0) {
+    return `${worker} reached its search limit before it could verify an answer. Try a narrower question.`;
   }
   if (failureKind === "retrieval") {
     return `${worker} could not complete the Personal Memory search needed to answer reliably. Try again.`;
@@ -718,6 +740,13 @@ const markBudgetExhausted = (
     ledger.budgetExhaustions.push(kind);
   }
 };
+
+const SEARCH_BUDGET_EXHAUSTED_MESSAGE = "Search budget exhausted.";
+
+// A refused follow-up search is a budget signal, not a failed retrieval: every
+// search the worker was allowed to run completed.
+const retrievalErrors = (state: MemoryAnswerToolState): string[] =>
+  state.errors.filter((error) => error !== SEARCH_BUDGET_EXHAUSTED_MESSAGE);
 
 const markBudgetExhaustionFromError = (
   ledger: MemoryAnswerBudgetLedger,
@@ -1369,6 +1398,7 @@ export const mergeMemoryAnswerCandidateLists = (
       ledger.set(key, {
         ...(current ?? {}),
         ...normalized,
+        ...observedReferenceLineage(current, normalized),
         retrievalContributions: contributions,
         fusedScore: contributions.reduce<number>((sum, entry) => {
           const rank = recordFromUnknown(entry).rank;
@@ -1474,6 +1504,27 @@ const evidenceMatchesSelection = (
   return true;
 };
 
+const evidenceMatchesObservedSelection = (
+  candidate: unknown,
+  selection: unknown
+): boolean => {
+  if (evidenceMatchesSelection(candidate, selection)) return true;
+  const record = recordFromUnknown(candidate);
+  const references = Array.isArray(record.observedReferences)
+    ? (record.observedReferences as unknown[])
+    : [];
+  // A reference cannot broaden the visibility of the admitted candidate.
+  const visibility = stringField(recordFromUnknown(selection), ["visibility"]);
+  if (visibility && visibility !== stringField(record, ["visibility"]))
+    return false;
+  return references.some(
+    (reference) =>
+      sourceKey(reference) === sourceKey(candidate) &&
+      recordFromUnknown(reference).visibility === record.visibility &&
+      evidenceMatchesSelection(reference, selection)
+  );
+};
+
 export const resolveMemoryAnswerSearchDomain = (
   requested: "global" | "project" | "session" | undefined,
   args: Record<string, unknown>,
@@ -1518,7 +1569,51 @@ export const resolveMemoryAnswerSearchDomain = (
   return { searchDomain: "global" };
 };
 
-const appendEvidence = (
+// Aliases come only from admitted candidates with the same canonical source.
+// Preserve complete references rather than combining fields from different observations.
+const observedReferenceLineage = (
+  existing: unknown,
+  incoming: unknown
+): Record<string, unknown> => {
+  if (
+    !existing ||
+    existing === incoming ||
+    sourceKey(existing) !== sourceKey(incoming)
+  )
+    return {};
+  const references = [existing, incoming].flatMap((item) => {
+    const record = recordFromUnknown(item);
+    return [
+      ...(Array.isArray(record.observedReferences)
+        ? (record.observedReferences as unknown[])
+        : []),
+      {
+        nodeId: record.nodeId,
+        sourceType: record.sourceType,
+        sourceId: record.sourceId,
+        sourceChunkIndex: record.sourceChunkIndex,
+        visibility: record.visibility
+      }
+    ];
+  });
+  return {
+    observedReferences: [
+      ...new Map(references.map((ref) => [JSON.stringify(ref), ref])).values()
+    ],
+    parentNodeIds: [
+      ...new Set(
+        [existing, incoming].flatMap((item) => {
+          const record = recordFromUnknown(item);
+          return Array.isArray(record.parentNodeIds)
+            ? (record.parentNodeIds as unknown[])
+            : [];
+        })
+      )
+    ]
+  };
+};
+
+const appendCitations = (
   existing: unknown[],
   incoming: unknown[]
 ): unknown[] => {
@@ -1529,6 +1624,28 @@ const appendEvidence = (
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(item);
+    }
+  }
+  return merged;
+};
+
+const appendEvidence = (
+  existing: unknown[],
+  incoming: unknown[]
+): unknown[] => {
+  const seen = new Map(existing.map((item, index) => [sourceKey(item), index]));
+  const merged = [...existing];
+  for (const item of incoming) {
+    const key = sourceKey(item);
+    if (!seen.has(key)) {
+      seen.set(key, merged.length);
+      merged.push(item);
+    } else {
+      const index = seen.get(key)!;
+      merged[index] = {
+        ...recordFromUnknown(merged[index]),
+        ...observedReferenceLineage(merged[index], item)
+      };
     }
   }
   return merged;
@@ -1682,43 +1799,40 @@ export const evidenceSelectedByAnswer = (
     // A complete source identity remains authoritative as that list grows.
     const matches = hasSourceIdentity
       ? evidence.filter((candidate) =>
-          evidenceMatchesSelection(candidate, selection)
+          evidenceMatchesObservedSelection(candidate, selection)
         )
       : Number.isInteger(selection.evidence_index) &&
           selection.evidence_index! >= 0 &&
-          evidenceMatchesSelection(
+          evidenceMatchesObservedSelection(
             evidence[selection.evidence_index!],
             selection
           )
         ? [evidence[selection.evidence_index!]]
         : [];
-    if (matches.length === 0) {
+    // Exact duplicates are one source; differing visibility stays ambiguous.
+    const distinct = [
+      ...new Map(
+        matches.map((candidate) => [
+          `${sourceKey(candidate)}|${stringField(recordFromUnknown(candidate), ["visibility"]) ?? ""}`,
+          candidate
+        ])
+      ).values()
+    ];
+    if (distinct.length !== 1) {
       throw new Error(
         "Memory answer worker returned without resolvable supporting evidence for a selection"
       );
     }
-    return matches;
+    return distinct;
   });
-  const selected = appendEvidence([], resolved);
-  const expandedParentIds = new Set(
-    selected
-      .map((item) =>
-        stringField(recordFromUnknown(item), [
-          "expandedFromNodeId",
-          "expanded_from_node_id"
-        ])
+  // Observed references only serve resolution; keep them out of the bundle.
+  return appendEvidence([], resolved).map((item) =>
+    Object.fromEntries(
+      Object.entries(recordFromUnknown(item)).filter(
+        ([key]) => key !== "observedReferences"
       )
-      .filter((value): value is string => Boolean(value))
+    )
   );
-  return selected.filter((item) => {
-    const record = recordFromUnknown(item);
-    const nodeId = stringField(record, ["nodeId", "node_id"]);
-    return !(
-      nodeId &&
-      expandedParentIds.has(nodeId) &&
-      !stringField(record, ["expandedFromNodeId", "expanded_from_node_id"])
-    );
-  });
 };
 
 const retrievalsHaveAvailableCandidates = (retrievals: unknown[]): boolean =>
@@ -2045,7 +2159,7 @@ const createMemoryAnswerDynamicToolHandler = (
         });
       }
       if (state.ledger.searchAttempts >= options.config.maxSearches) {
-        const message = "Search budget exhausted.";
+        const message = SEARCH_BUDGET_EXHAUSTED_MESSAGE;
         markBudgetExhausted(state.ledger, "searches");
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
@@ -2145,7 +2259,7 @@ const createMemoryAnswerDynamicToolHandler = (
         });
       }
       if (state.ledger.searchAttempts >= options.config.maxSearches) {
-        const message = "Search budget exhausted.";
+        const message = SEARCH_BUDGET_EXHAUSTED_MESSAGE;
         markBudgetExhausted(state.ledger, "searches");
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
@@ -2202,7 +2316,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(hits)
         );
@@ -2310,7 +2424,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(expandedEvidence)
         );
@@ -2520,6 +2634,7 @@ const runCodexWithRetries = async (
     config.aiClientInstanceId
   );
   let lastErrorMessage: string | undefined;
+  let lastProviderFailureCode: string | undefined;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     if (attempt > 1 && !canStartAttempt()) {
       break;
@@ -2548,6 +2663,21 @@ const runCodexWithRetries = async (
       return { run, validated };
     } catch (error) {
       lastErrorMessage = errorMessage(error);
+      const providerFailure =
+        error && typeof error === "object"
+          ? (error as {
+              memoryAnswerTaskErrorCode?: unknown;
+              retryable?: unknown;
+            })
+          : {};
+      lastProviderFailureCode =
+        config.provider === "pi" &&
+        (providerFailure.memoryAnswerTaskErrorCode ===
+          "provider_authentication_failure" ||
+          providerFailure.memoryAnswerTaskErrorCode ===
+            "provider_execution_failure")
+          ? providerFailure.memoryAnswerTaskErrorCode
+          : undefined;
       if (run) {
         attempts.push({
           ...executionIdentity,
@@ -2599,15 +2729,23 @@ const runCodexWithRetries = async (
           processMetrics
         });
       }
+      if (lastProviderFailureCode && providerFailure.retryable === false) break;
       // Retry with a longer timeout, then let the caller preserve fallback evidence.
     }
   }
 
+  const workerName = config.provider === "pi" ? "Pi" : "Codex";
   const message = lastErrorMessage
-    ? `Codex memory answer failed after retry attempts: ${lastErrorMessage}`
-    : "Codex memory answer failed after retry attempts";
+    ? `${workerName} memory answer failed after retry attempts: ${lastErrorMessage}`
+    : `${workerName} memory answer failed after retry attempts`;
   throw Object.assign(new Error(message), {
-    appServerExecutions: attempts
+    appServerExecutions: attempts,
+    ...(lastProviderFailureCode
+      ? { memoryAnswerTaskErrorCode: lastProviderFailureCode }
+      : {}),
+    ...(lastProviderFailureCode === "provider_authentication_failure"
+      ? { retryable: false }
+      : {})
   });
 };
 
@@ -3635,7 +3773,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   });
   return {
     evidence,
-    citations: appendEvidence([], citationsFromHits(evidence)),
+    citations: appendCitations([], citationsFromHits(evidence)),
     retrievals: [
       ...scans.flatMap((scan) =>
         scan.retrieval ? [sanitizeRetrievalDiagnostic(scan.retrieval)] : []
@@ -3775,7 +3913,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
-    citations: appendEvidence(
+    citations: appendCitations(
       citationsFromPayload(payload),
       firstPass.citations
     ),
@@ -4010,9 +4148,17 @@ const runDynamicToolMemoryAnswer = async (
       ) &&
       (state.evidence.length === 0 ||
         structuredAnswer.memory_status === "not_found");
+    // Running out of follow-up searches after every allowed search completed
+    // still supports not_found. Refused expansions do not: the worker found a
+    // candidate it could not open.
+    const notFoundAfterSearchBudget =
+      structuredAnswer.memory_status === "not_found" &&
+      state.ledger.budgetExhaustions.every((kind) => kind === "searches") &&
+      retrievalErrors(state).length === 0;
     if (
       (operationalBudgetExhausted || admissionPreventedReliableAnswer) &&
-      structuredAnswer.memory_status !== "insufficient"
+      structuredAnswer.memory_status !== "insufficient" &&
+      !notFoundAfterSearchBudget
     ) {
       throw new Error(
         `Memory answer budget exhausted: ${state.ledger.budgetExhaustions.join(", ")}`
@@ -4027,17 +4173,23 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned without using Koed RAG tools"
       );
     }
-    const curatedEvidence = evidenceSelectedByAnswer(
+    const selectedEvidence = evidenceSelectedByAnswer(
       state.evidence,
       structuredAnswer
-    ).slice(
-      0,
-      Math.min(
-        state.limit,
-        options.config.maxCandidates,
-        options.config.maxEvidenceItems
-      )
     );
+    const selectedEvidenceLimit = Math.min(
+      state.limit,
+      options.config.maxCandidates,
+      options.config.maxEvidenceItems
+    );
+    // Dropping selected support would leave a found answer only partly grounded.
+    if (selectedEvidence.length > selectedEvidenceLimit) {
+      markBudgetExhausted(state.ledger, "evidence_items");
+      if (structuredAnswer.memory_status !== "insufficient") {
+        throw new Error("Memory answer budget exhausted: evidence_items");
+      }
+    }
+    const curatedEvidence = selectedEvidence.slice(0, selectedEvidenceLimit);
     if (
       structuredAnswer.memory_status === "insufficient" &&
       structuredAnswer.missing.length === 0 &&
@@ -4047,7 +4199,7 @@ const runDynamicToolMemoryAnswer = async (
     }
     if (
       structuredAnswer.memory_status === "not_found" &&
-      state.errors.length > 0
+      retrievalErrors(state).length > 0
     ) {
       throw new Error(
         "Memory answer worker returned not_found after retrieval failures; use insufficient when retrieval was incomplete"
@@ -4380,9 +4532,24 @@ export const answerWithMemoryWorker = async (
     const failureState = failureStateFromError(error);
     const failurePromptTokens = promptTokensFromError(error) ?? promptTokens;
     const workerErrorMessage = errorMessage(error);
+    const providerCode =
+      error && typeof error === "object" && "memoryAnswerTaskErrorCode" in error
+        ? error.memoryAnswerTaskErrorCode
+        : undefined;
+    const providerFailureCode =
+      config.provider === "pi" &&
+      (providerCode === "provider_authentication_failure" ||
+        providerCode === "provider_execution_failure")
+        ? providerCode
+        : undefined;
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
+    const limiting = limitingBudgets(exhaustedBudgets);
     const retrievalIncomplete =
-      (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
+      (failureState ? retrievalErrors(failureState).length : 0) > 0 ||
+      limiting.length > 0;
+    // The worker used every attempt after complete retrieval, so the answer is
+    // still incomplete even though no retrieval stage failed.
+    const workerAttemptsExhausted = exhaustedBudgets.includes("attempts");
     const failureKind = classifyMemoryAnswerFailure(
       workerErrorMessage,
       retrievalIncomplete,
@@ -4392,10 +4559,13 @@ export const answerWithMemoryWorker = async (
       config.provider,
       workerErrorMessage,
       failureKind,
-      exhaustedBudgets
+      exhaustedBudgets,
+      providerFailureCode
     );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
-      failureKind === "validation" || retrievalIncomplete
+      failureKind === "validation" ||
+      retrievalIncomplete ||
+      workerAttemptsExhausted
         ? {
             schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
             memory_status: "insufficient",
@@ -4404,19 +4574,23 @@ export const answerWithMemoryWorker = async (
             relevance_explanation:
               failureKind === "validation"
                 ? "The Memory Answer worker output did not satisfy the required answer format."
-                : exhaustedBudgets.length > 0
-                  ? `Memory Answer exhausted bounded resources (${exhaustedBudgets.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
-                  : "One or more bounded retrieval operations failed before the available memory could be judged completely.",
+                : limiting.length > 0
+                  ? `Memory Answer exhausted bounded resources (${limiting.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
+                  : retrievalIncomplete
+                    ? "One or more bounded retrieval operations failed before the available memory could be judged completely."
+                    : "The Memory Answer worker used every allowed attempt without producing an answer Koed could verify.",
             evidence: [],
             missing: [
               failureKind === "validation"
                 ? "valid structured worker output"
-                : exhaustedBudgets.length > 0
-                  ? `unexhausted ${exhaustedBudgets.slice(0, 8).join(", ")} budget`
-                  : "complete memory retrieval"
+                : limiting.length > 0
+                  ? `unexhausted ${limiting.slice(0, 8).join(", ")} budget`
+                  : retrievalIncomplete
+                    ? "complete memory retrieval"
+                    : "verified worker answer"
             ],
             missing_evidence:
-              failureKind === "validation"
+              failureKind === "validation" || !retrievalIncomplete
                 ? []
                 : ["relevant evidence from the failed retrieval stages"]
           }
@@ -4502,7 +4676,7 @@ export const answerWithMemoryWorker = async (
           displayMessage,
           errorMessage: workerErrorMessage,
           usedFallback: true,
-          skippedReason: `${config.provider}_failed`
+          skippedReason: providerFailureCode ?? `${config.provider}_failed`
         }
       },
       responseDetail

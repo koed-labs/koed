@@ -213,7 +213,7 @@ contract.
 
 ### Model artifacts
 
-Embedding and reranker model artifacts stay separate and install under:
+Embedding model artifacts stay separate and install under:
 
 ```text
 KOED_HOME/models
@@ -307,8 +307,7 @@ Each standalone package should include a manifest:
     "requires": ["postgresql@17", "pgvector", "llama-server"]
   },
   "models": {
-    "embedding": "qwen3-0.6b",
-    "reranker": "qwen3-reranker-0.6b"
+    "embedding": "qwen3-0.6b"
   },
   "provenance": {
     "sourceRepository": "owner/repo",

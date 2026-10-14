@@ -79,6 +79,7 @@ import {
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
+import { runRemoteMcpCommand } from "./remote-mcp-client.js";
 import type { KoedServerDoctorResult } from "./types.js";
 
 import {
@@ -89,6 +90,7 @@ import {
 import { startKoedServerDaemon } from "./daemon-start.js";
 
 export interface KoedServerCliDependencies {
+  runRemoteMcp?: typeof runRemoteMcpCommand;
   collectStatus?: typeof collectKoedServerStatus;
   collectStartupStatus?: typeof collectKoedServerStartupStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
@@ -394,6 +396,7 @@ export const runKoedServerCli = async (
     getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
     runPersonalSync = runPersonalSyncCommand,
+    runRemoteMcp = runRemoteMcpCommand,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -419,6 +422,10 @@ export const runKoedServerCli = async (
           : usageText
       );
       return 0;
+    }
+
+    if (command === "remote") {
+      return runRemoteMcp(args.slice(1), { stdout, stderr });
     }
 
     if (command === "secret-provider") {
@@ -621,6 +628,11 @@ export const runKoedServerCli = async (
         throw new Error(
           "Use only one of --deferred-recall or --blocking-recall."
         );
+      if (deferredRecall || blockingRecall) {
+        stderr.write(
+          "Legacy recall flags are deprecated; select delivery_mode on memory_answer instead.\n"
+        );
+      }
       const result = await setup({
         environment: {
           ...process.env,
@@ -765,12 +777,8 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "status") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
+      if (modelKind !== "embedding" && modelKind !== "privacy") {
+        throw new Error("--kind must be embedding or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(
@@ -789,12 +797,8 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "install") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
+      if (modelKind !== "embedding" && modelKind !== "privacy") {
+        throw new Error("--kind must be embedding or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(
@@ -999,6 +1003,9 @@ export const runKoedServerCli = async (
       const result =
         enrollCommand === "start"
           ? await startUpstreamEnroll(paths, id, {
+              memoryAnswers:
+                args.includes("--memory-answers") ||
+                args.includes("--enable-memory-answers"),
               sourceOwnerPrincipalId: requireFlagValue(
                 args,
                 "--source-owner-principal-id"
