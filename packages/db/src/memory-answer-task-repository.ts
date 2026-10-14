@@ -1,3 +1,4 @@
+import { repositoryRecallContextSchema, repositoryScopeId } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type pg from "pg";
@@ -442,6 +443,16 @@ export const createMemoryAnswerTaskRepository = (
         typeof requestInput === "object" &&
         !Array.isArray(requestInput)
       ) {
+        const snapshot = requestInput as Record<string, unknown>;
+        if (!input.teamWorkspaceId && snapshot.search_domain === "project") {
+          const context = repositoryRecallContextSchema.parse(
+            snapshot.repository_context
+          );
+          if (snapshot.project_id !== repositoryScopeId(context))
+            throw new Error(
+              "Project task target must match its pinned repository context"
+            );
+        }
         const requestedWorkspace = (requestInput as Record<string, unknown>)
           .team_workspace_id;
         if ((requestedWorkspace ?? null) !== (input.teamWorkspaceId ?? null)) {
@@ -796,6 +807,15 @@ export const createMemoryAnswerTaskRepository = (
         }
         let expectedProject = snapshot.project_id;
         if (
+          !current.team_workspace_id &&
+          snapshot.search_domain === "project"
+        ) {
+          expectedProject = repositoryScopeId(
+            repositoryRecallContextSchema.parse(snapshot.repository_context)
+          );
+        }
+        if (
+          current.team_workspace_id &&
           snapshot.search_domain === "project" &&
           (typeof expectedProject !== "string" ||
             (!path.isAbsolute(expectedProject) &&

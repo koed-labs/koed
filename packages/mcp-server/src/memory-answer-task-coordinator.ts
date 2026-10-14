@@ -1,3 +1,7 @@
+import {
+  pinRepositoryRecallContext,
+  resolveRequestedProjectRoot
+} from "./repository-recall-context.js";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -426,11 +430,11 @@ export const createMemoryAnswerTaskCoordinator = (
       const caller = request.request.caller as { cwd?: string } | undefined;
       const projectRoot =
         input.search_domain === "project"
-          ? input.project_id &&
-            (path.isAbsolute(input.project_id) ||
-              path.win32.isAbsolute(input.project_id))
-            ? input.project_id
-            : path.resolve(caller?.cwd ?? "")
+          ? resolveRequestedProjectRoot(
+              input,
+              { cwd: caller?.cwd ?? "" },
+              environment
+            )
           : undefined;
       const route = resolveProjectTeamWorkspaceRoute({
         projectRoot,
@@ -443,7 +447,15 @@ export const createMemoryAnswerTaskCoordinator = (
             "A Team Workspace is required for Team recall",
             400
           );
-        return { backendId: "personal", input: request };
+        const pinned = await pinRepositoryRecallContext(
+          input,
+          { cwd: caller?.cwd ?? "" },
+          environment
+        );
+        return {
+          backendId: "personal",
+          input: { ...request, request: { ...request.request, input: pinned } }
+        };
       }
       let backendId = "remote-team";
       if (!allowTeamRuntime) {

@@ -20,6 +20,11 @@ export const curatedMemoryActiveEvidenceRowsSql = (
   select
     coalesce(${prefix}_ci.session_id, ${prefix}_me.session_id, ${prefix}_node_me.session_id) as source_session_id,
     coalesce(
+      ${prefix}_ci_session.repository_override_identity, ${prefix}_ci_session.repository_automatic_identity,
+      ${prefix}_me_session.repository_override_identity, ${prefix}_me_session.repository_automatic_identity,
+      ${prefix}_node_session.repository_override_identity, ${prefix}_node_session.repository_automatic_identity
+    ) as source_repository_identity,
+    coalesce(
       ${prefix}_ci.event_time,
       ${prefix}_ci.observed_at,
       ${prefix}_ci.created_at,

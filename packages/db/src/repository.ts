@@ -6742,13 +6742,7 @@ export const createMemorySourceRepository = (
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and (
             $4::text is null
-            or coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then ev.payload ->> 'projectId' end,
-              'unassigned'
-            ) = $4
-            or coalesce(s.project_override_path, s.automatic_project_path) = $4
+            or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
           )
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
@@ -7069,13 +7063,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'projectId' end,
-                'unassigned'
-              ) = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and ($6::uuid is null or me.id = $6)
@@ -7209,8 +7197,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or msg.id = $6)
@@ -7350,8 +7337,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or te.id = $6)
@@ -7499,8 +7485,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid = $6)
@@ -7781,13 +7766,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'projectId' end,
-                'unassigned'
-              ) = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and (
@@ -7850,8 +7829,7 @@ export const createMemorySourceRepository = (
             and s.metadata ->> 'threadName' <> s.id::text
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and (
@@ -11370,13 +11348,7 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                coalesce(
-                                  boundary_session.project_override_id,
-                                  boundary_session.automatic_project_id,
-                                  case when boundary_session.id is null then boundary_ev.payload ->> 'projectId' end,
-                                  'unassigned'
-                                ) = $10
-                                or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(boundary_session.repository_override_identity, boundary_session.repository_automatic_identity), $10)
                               )
                             )
                           )
@@ -11430,13 +11402,7 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                coalesce(
-                                  time_session.project_override_id,
-                                  time_session.automatic_project_id,
-                                  case when time_session.id is null then time_ev.payload ->> 'projectId' end,
-                                  'unassigned'
-                                ) = $10
-                                or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(time_session.repository_override_identity, time_session.repository_automatic_identity), $10)
                               )
                             )
                           )
@@ -11616,20 +11582,13 @@ export const createMemorySourceRepository = (
                         (
                           ev.id is not null
                           and (
-                            coalesce(
-                              ev_session.project_override_id,
-                              ev_session.automatic_project_id,
-                              case when ev_session.id is null then ev.payload ->> 'projectId' end,
-                              'unassigned'
-                            ) = $10
-                            or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
+                            repository_scope_matches(coalesce(ev_session.repository_override_identity, ev_session.repository_automatic_identity), $10)
                           )
                         )
                         or (
                           msg.id is not null
                           and (
-                            coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
-                            or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
+                            repository_scope_matches(coalesce(msg_session.repository_override_identity, msg_session.repository_automatic_identity), $10)
                           )
                         )
                         or exists (
@@ -11640,13 +11599,7 @@ export const createMemorySourceRepository = (
                           left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (
-                              coalesce(
-                                filter_session.project_override_id,
-                                filter_session.automatic_project_id,
-                                case when filter_session.id is null then filter_ev.payload ->> 'projectId' end,
-                                'unassigned'
-                              ) = $10
-                              or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
+                              repository_scope_matches(coalesce(filter_session.repository_override_identity, filter_session.repository_automatic_identity), $10)
                             )
                         )
                         or (
@@ -11660,8 +11613,7 @@ export const createMemorySourceRepository = (
                             left join sessions project_cs on project_cs.id = coalesce(project_cme.session_id, project_cmn.session_id, project_cci.session_id)
                             where project_cms.assertion_id = cma.id
                               and (
-                                coalesce(project_cs.project_override_id, project_cs.automatic_project_id, 'unassigned') = $10
-                                or coalesce(project_cs.project_override_path, project_cs.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(project_cs.repository_override_identity, project_cs.repository_automatic_identity), $10)
                               )
                           )
                         )
@@ -11716,13 +11668,7 @@ export const createMemorySourceRepository = (
                           or (
                             $8::text = 'project'
                             and (
-                              coalesce(
-                                source_session.project_override_id,
-                                source_session.automatic_project_id,
-                                case when source_session.id is null then source_ev.payload ->> 'projectId' end,
-                                'unassigned'
-                              ) = $10
-                              or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
+                              repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $10)
                             )
                           )
                         )
@@ -12887,7 +12833,14 @@ export const createMemorySourceRepository = (
         const curated =
           await curatedMemoryRepository.expandCuratedMemoryRetrieval(
             actor,
-            nodeId
+            nodeId,
+            {
+              searchDomain,
+              projectId: input.projectId,
+              sessionId: input.sessionId,
+              sourceAfter: sourceAfter?.toISOString(),
+              sourceBefore: sourceBefore?.toISOString()
+            }
           );
         if (curated) {
           return curated;
@@ -12934,13 +12887,7 @@ export const createMemorySourceRepository = (
             or (
               $5::text = 'project'
               and (
-                coalesce(
-                  source_session.project_override_id,
-                  source_session.automatic_project_id,
-                  case when source_session.id is null then me.payload ->> 'projectId' end,
-                  'unassigned'
-                ) = $7
-                or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
+                repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $7)
               )
             )
           )
@@ -13149,10 +13096,8 @@ export const createMemorySourceRepository = (
             payload.sessionId === input.sessionId
           );
         }
-        return (
-          typeof input.projectId === "string" &&
-          payload.projectId === input.projectId
-        );
+        // Capture-time JSON cannot authorize current Project expansion.
+        return false;
       };
       const filteredNodeSourceItems = nodeSourceItems.filter(
         (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)

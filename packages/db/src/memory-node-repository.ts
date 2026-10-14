@@ -343,13 +343,7 @@ export const createMemoryNodeRepository = (
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
           and (
             $3::text is null
-            or coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then ev.payload ->> 'projectId' end,
-              'unassigned'
-            ) = $3
-            or coalesce(s.project_override_path, s.automatic_project_path) = $3
+            or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $3)
           )
           and ($4::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $4)
           and ($5::boolean is null or (($5::boolean = true and mn.pinned_at is not null) or ($5::boolean = false and mn.pinned_at is null)))

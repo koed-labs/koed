@@ -1,4 +1,7 @@
-import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import {
+  repositoryRecallContextSchema,
+  CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+} from "@koed/shared";
 import { z } from "zod";
 import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../integrations/pi/memory-answer-delivery-policy.mjs";
@@ -28,6 +31,7 @@ export const memoryAnswerInputSchema = z
     response_detail: memoryAnswerResponseDetailSchema.default("answer_only"),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryRecallContextSchema.optional(),
     session_id: uuidSchema.optional(),
     team_workspace_id: uuidSchema.optional(),
     team_backend_id: z
@@ -114,6 +118,7 @@ export const memorySearchInputSchema = z
     query: z.string().trim().min(1).max(32_000),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryRecallContextSchema.optional(),
     session_id: uuidSchema.optional(),
     recent_days: z.number().int().positive().max(36500).optional(),
     source_after: z.string().datetime().optional(),
@@ -123,7 +128,16 @@ export const memorySearchInputSchema = z
   .strict();
 
 export const memoryExpandInputSchema = z
-  .object({ nodeId: uuidSchema })
+  .object({
+    nodeId: uuidSchema,
+    search_domain: searchDomainSchema.default("project"),
+    project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryRecallContextSchema.optional(),
+    session_id: uuidSchema.optional(),
+    recent_days: z.number().int().positive().max(36500).optional(),
+    source_after: z.string().datetime().optional(),
+    source_before: z.string().datetime().optional()
+  })
   .strict();
 
 export type MemoryAnswerToolInput = z.infer<typeof memoryAnswerInputSchema>;

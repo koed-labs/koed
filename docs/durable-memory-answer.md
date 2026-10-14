@@ -9,6 +9,12 @@ for Answer Synthesis. The MCP Server and the Pi extension own presentation only.
 session-history receipts and the Codex Stop adapter's one-use receipts hold
 delivery identity, never task results or a second execution queue.
 
+Project-scoped Personal tasks resolve and pin repository context before acceptance.
+The encrypted request retains the target root, selected identity, branch, and
+resolution/provenance fields. Workers use that stored context across retries;
+collection remains User-owned. Current assignment and source-access checks still
+apply during recall. See [Personal repository recall](repository-recall.md).
+
 ## Request Flow
 
 1. An adapter forwards one validated `memory_answer` call and, when available,

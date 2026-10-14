@@ -89,15 +89,7 @@ export const createCuratedMemoryRecallMethods = ({
                 and exists (
                   select 1
                   from (${scopedEvidenceSql}) scoped_source
-                  where $5 in (
-                    scoped_source.ci_project_id,
-                    scoped_source.ci_stable_project_id,
-                    scoped_source.ci_project_path,
-                    scoped_source.me_project_id,
-                    scoped_source.me_project_path,
-                    scoped_source.node_project_id,
-                    scoped_source.node_project_path
-                  )
+                  where repository_scope_matches(scoped_source.source_repository_identity, $5)
                 )
               )
             )
@@ -189,15 +181,7 @@ export const createCuratedMemoryRecallMethods = ({
               and exists (
                 select 1
                 from (${scopedEvidenceSql}) scoped_source
-                where $6 in (
-                  scoped_source.ci_project_id,
-                  scoped_source.ci_stable_project_id,
-                  scoped_source.ci_project_path,
-                  scoped_source.me_project_id,
-                  scoped_source.me_project_path,
-                  scoped_source.node_project_id,
-                  scoped_source.node_project_path
-                )
+                where repository_scope_matches(scoped_source.source_repository_identity, $6)
               )
             )
           )
@@ -227,7 +211,7 @@ export const createCuratedMemoryRecallMethods = ({
     return result.rows.map((row) => mapAssertion(row, sourceMap.get(row.id)));
   },
 
-  async expandCuratedMemoryRetrieval(actor, assertionId) {
+  async expandCuratedMemoryRetrieval(actor, assertionId, input = {}) {
     type EvidenceRow = {
       assertion_id: string;
       visibility: Visibility;
@@ -317,6 +301,14 @@ export const createCuratedMemoryRecallMethods = ({
           and mn.visibility = 'personal'
           and mn.invalidated_at is null
           and mn.personal_deleted_at is null
+        left join lateral (
+          select ev.session_id from memory_node_sources src
+          join memory_events ev on ev.id = src.memory_event_id
+          where src.memory_node_id = mn.id and ev.owner_user_id = $2
+            and ev.invalidated_at is null and ev.personal_deleted_at is null
+          order by src.source_order asc limit 1
+        ) node_source on true
+        left join sessions source_session on source_session.id = coalesce(ci.session_id, me.session_id, mn.session_id, node_source.session_id)
         where cma.id = $1
           and cma.owner_user_id = $2
           and cma.visibility = 'personal'
@@ -324,9 +316,29 @@ export const createCuratedMemoryRecallMethods = ({
           and cma.suppressed_at is null
           and (cma.expires_at is null or cma.expires_at > now())
           and ${activeCuratedMemoryEvidencePredicate("cma")}
+          and ($3::text = 'global' or ($3::text = 'session' and source_session.id = $4::uuid)
+            or ($3::text = 'project' and repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $5)))
+          and ($3::text = 'global' or mn.id is null or not exists (
+            select 1 from memory_node_sources boundary_src
+            join memory_events boundary_ev on boundary_ev.id = boundary_src.memory_event_id
+            left join sessions boundary_session on boundary_session.id = boundary_ev.session_id
+            where boundary_src.memory_node_id = mn.id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
+              and not (($3::text = 'session' and boundary_ev.session_id = $4::uuid)
+                or ($3::text = 'project' and repository_scope_matches(coalesce(boundary_session.repository_override_identity, boundary_session.repository_automatic_identity), $5)))
+          ))
+          and ($6::timestamptz is null or coalesce(ci.event_time, ci.observed_at, me.captured_at, mn.created_at) >= $6)
+          and ($7::timestamptz is null or coalesce(ci.event_time, ci.observed_at, me.captured_at, mn.created_at) < $7)
         order by cms.created_at asc, cms.id asc
       `,
-      [assertionId, actor.userId]
+      [
+        assertionId,
+        actor.userId,
+        input.searchDomain ?? "global",
+        input.sessionId ?? null,
+        input.projectId ?? null,
+        input.sourceAfter ?? null,
+        input.sourceBefore ?? null
+      ]
     );
     if (result.rows.length === 0) {
       return null;

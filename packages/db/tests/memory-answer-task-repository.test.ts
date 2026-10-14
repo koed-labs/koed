@@ -1,5 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  repositoryScopeId,
+  type RepositoryIdentity,
+  createLocalTestKeyEnvelopeEncryptionProvider
+} from "@koed/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { createDbPool } from "../src/connection.js";
@@ -732,5 +736,95 @@ describeDb("durable Memory Answer task repository", () => {
         leaseMs: 60_000
       })
     ).rejects.toMatchObject({ statusCode: 403 });
+  });
+  it("retains encrypted Project context across worker replacement and repeated owner collection", async () => {
+    const { actor } = await createActor("pinned-project");
+    const options = { envelopeEncryptionProvider: encryptionProvider };
+    const tasks = createMemoryAnswerTaskRepository(pool, options);
+    const context: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_pinned_fixture",
+      root: "/original-checkout",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_fixture",
+      originatingDeviceId: "fixture_device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/fixture"
+    };
+    const projectId = repositoryScopeId(context);
+    const request = {
+      input: {
+        query: "pinned repository decision",
+        search_domain: "project",
+        project_id: projectId,
+        repository_context: context
+      },
+      caller: { cwd: "/original-checkout/subdirectory" }
+    };
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request
+    });
+    const first = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: "first-worker",
+      leaseMs: 1000
+    });
+    expect(first.task?.request).toEqual(request);
+    await pool.query(
+      "update memory_answer_tasks set lease_until=now()-interval '1 second' where id=$1",
+      [accepted.id]
+    );
+    const restarted = createMemoryAnswerTaskRepository(pool, options);
+    const second = await restarted.claimMemoryAnswerTask(actor, {
+      leaseOwner: "restarted-worker",
+      leaseMs: 60000
+    });
+    expect(second.task?.request).toEqual(request);
+    const result = {
+      markdown: "The pinned repository uses the cobalt checklist."
+    };
+    await restarted.completeMemoryAnswerTask(actor, {
+      taskId: accepted.id,
+      leaseOwner: second.task!.leaseOwner,
+      fenceGeneration: second.task!.fenceGeneration,
+      finalQuestion: {
+        idempotencyKey: randomUUID(),
+        query: request.input.query,
+        searchDomain: "project",
+        projectId,
+        status: "answered",
+        answerMarkdown: result.markdown
+      },
+      result
+    });
+    const collected = (await restarted.getMemoryAnswerTask(actor, accepted.id))
+      ?.result;
+    expect(collected).toMatchObject(result);
+    expect(
+      (await tasks.getMemoryAnswerTask(actor, accepted.id))?.result
+    ).toEqual(collected);
+    expect(
+      (
+        await restarted.claimMemoryAnswerTask(actor, {
+          leaseOwner: "another-worker",
+          leaseMs: 60000
+        })
+      ).task
+    ).toBeNull();
+    await expect(
+      tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        maxQueued: 16,
+        request: {
+          input: {
+            query: "unresolved",
+            search_domain: "project",
+            project_id: "/old-path"
+          }
+        }
+      })
+    ).rejects.toThrow();
   });
 });

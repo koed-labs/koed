@@ -88,7 +88,14 @@ export interface CuratedMemoryRepository {
   ): Promise<CuratedMemoryAssertionRecord[]>;
   expandCuratedMemoryRetrieval(
     actor: ActorContext,
-    assertionId: string
+    assertionId: string,
+    input?: {
+      searchDomain?: "global" | "project" | "session";
+      projectId?: string;
+      sessionId?: string;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    }
   ): Promise<ExpandedMemoryNode | null>;
   suppressCuratedMemoryAssertion(
     actor: ActorContext,

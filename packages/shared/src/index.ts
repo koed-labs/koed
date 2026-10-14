@@ -1825,3 +1825,9 @@ export {
   effectiveRepositoryIdentity
 } from "./repository-assignment.js";
 export type { RepositoryAssignment } from "./repository-assignment.js";
+
+export {
+  repositoryRecallContextSchema,
+  repositoryScopeId,
+  repositoryIdentityMatches
+} from "./repository-recall.js";

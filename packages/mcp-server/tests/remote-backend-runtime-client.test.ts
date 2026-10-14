@@ -1,3 +1,4 @@
+import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
 import {
@@ -75,11 +76,27 @@ const fixture = () => {
   };
 };
 
+const repositoryContext = (root: string): RepositoryIdentity => ({
+  kind: "portable_repository",
+  key: "gr_fixture",
+  root,
+  branch: "main",
+  reason: "origin",
+  checkoutId: "checkout_fixture",
+  originatingDeviceId: "fixture_device",
+  selectedRemote: "origin",
+  anchorDisplay: "example.test/team/fixture"
+});
+
 describe("remote backend runtime client", () => {
   it("preserves Windows source Project IDs and rejects relative paths", async () => {
     const { client, runtime } = fixture();
     await runtime.startMemoryAnswerTask(
-      { query: "fact", project_id: "C:\\source\\project" },
+      {
+        query: "fact",
+        project_id: "C:\\source\\project",
+        repository_context: repositoryContext("C:\\source\\project")
+      },
       { cwd: "/ignored" }
     );
     expect(
@@ -97,7 +114,11 @@ describe("remote backend runtime client", () => {
     const { client, runtime } = fixture();
     const result = await runtime.callTool(
       "memory_answer",
-      { query: "fact", project_id: "/provided/project" },
+      {
+        query: "fact",
+        project_id: "/provided/project",
+        repository_context: repositoryContext("/provided/project")
+      },
       {
         cwd: "/server/not-the-client-project",
         protocolVersion: "2026-07-28",
@@ -115,6 +136,12 @@ describe("remote backend runtime client", () => {
     expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
     const accepted = client.acceptMemoryAnswerTask.mock.calls[0]![0];
     expect(accepted.origin).toBe("mcp");
+    expect(accepted.request.input.project_id).toBe(
+      repositoryScopeId(repositoryContext("/provided/project"))
+    );
+    expect(accepted.request.input.repository_context).toEqual(
+      repositoryContext("/provided/project")
+    );
     expect(accepted.invocation_key).toBe("call-one");
     expect(accepted.request.caller).toEqual({
       cwd: "/provided/project",

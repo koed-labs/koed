@@ -1207,13 +1207,7 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
-          and (
-            cwd = $2
-            or metadata ->> 'projectId' = $2
-            or metadata ->> 'projectPath' = $2
-            or automatic_project_id = $2
-            or project_override_id = $2
-          )
+          and repository_scope_matches(coalesce(repository_override_identity, repository_automatic_identity), $2)
         order by created_at desc, id desc
         limit 1
       `,

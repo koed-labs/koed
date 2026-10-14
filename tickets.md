@@ -89,7 +89,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 08. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 09. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -228,17 +228,19 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Resolve and persist the target root, identity, branch observation, and resolution status before durable task acceptance. Carry that context through workers, API schemas, remote clients, search, source expansion, and graph browsing; retries reuse it.
-- [ ] Apply the same effective-assignment filter to raw evidence, Memory Nodes, Curated Memory, and replicated artifact retrieval.
-- [ ] Default Project scope resolves the caller's root. An explicit Project Y requested from repository X resolves Y only; unresolved targets report a resolution error without substituting X or Global scope.
-- [ ] Match selected identities by equality. Device-local and non-Git identities remain bound to their originating device.
-- [ ] Exclude unresolved sessions and honor overrides. Preserve Session scope, ownership, source eligibility, and all time bounds.
-- [ ] Use the same scope rules for blocking and non-blocking recall. Extend existing task tests to show that cwd, anchor, or branch changes and worker restart cannot retarget a pending task, and repeated authorized collection returns its stored result without another recall. Keep collection User-owned rather than cwd-bound.
-- [ ] Preserve complete observed source references, chunk identities, visibility, lineage, and evidence budgets when adding repository metadata. Keep current assignment and access checks; pinning request context does not snapshot Personal Memory.
-- [ ] Demonstrate repo X roots, worktrees, clones, and forks with a shared anchor matching while repo Y stays excluded, including search followed by expansion.
-- [ ] Audit every project predicate and document the retrieval surface and persisted task context. Reuse shared API/database fixtures to cover each distinct filter boundary without repeating the full scenario matrix.
+- [x] Resolve and persist the target root, identity, branch observation, and resolution status before durable task acceptance. Carry that context through workers, API schemas, remote clients, search, source expansion, and graph browsing; retries reuse it.
+- [x] Apply the same effective-assignment filter to raw evidence, Memory Nodes, Curated Memory, and replicated artifact retrieval.
+- [x] Default Project scope resolves the caller's root. An explicit Project Y requested from repository X resolves Y only; unresolved targets report a resolution error without substituting X or Global scope.
+- [x] Match selected identities by equality. Device-local and non-Git identities remain bound to their originating device.
+- [x] Exclude unresolved sessions and honor overrides. Preserve Session scope, ownership, source eligibility, and all time bounds.
+- [x] Use the same scope rules for blocking and non-blocking recall. Extend existing task tests to show that cwd, anchor, or branch changes and worker restart cannot retarget a pending task, and repeated authorized collection returns its stored result without another recall. Keep collection User-owned rather than cwd-bound.
+- [x] Preserve complete observed source references, chunk identities, visibility, lineage, and evidence budgets when adding repository metadata. Keep current assignment and access checks; pinning request context does not snapshot Personal Memory.
+- [x] Demonstrate repo X roots, worktrees, clones, and forks with a shared anchor matching while repo Y stays excluded, including search followed by expansion.
+- [x] Audit every project predicate and document the retrieval surface and persisted task context. Reuse shared API/database fixtures to cover each distinct filter boundary without repeating the full scenario matrix.
+
+**Validation:** Semantic/graph/Curated Memory and durable task PostgreSQL checks: 15 tests passed on the isolated UTF-8 database. Worker, adapter, context, coordinator, and delivery suites: 138 tests passed with native process access. DB/MCP/API and test typechecks, migration consistency, and full formatting passed. Focused lint passed; the final full lint found one unused test import, corrected by asserting the stored remote context. The surface audit is in `docs/repository-recall.md`.
 
 ## 09: Group Desktop Projects and reassign individual sessions
 
