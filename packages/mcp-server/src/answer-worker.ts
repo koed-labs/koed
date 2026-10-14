@@ -2137,7 +2137,7 @@ const globalSearchContext = (
   context: RepositoryIdentity | null | undefined,
   remaining: number
 ): Record<string, unknown> =>
-  searchDomain === "global" && scope === "personal"
+  searchDomain === "global" && (scope === "personal" || scope === "team")
     ? {
         repository_context: context ?? null,
         max_search_passes: remaining > 1 ? 2 : 1
@@ -2205,7 +2205,6 @@ const createMemoryAnswerDynamicToolHandler = (
       }
       if (
         options.searchDomain === "global" &&
-        options.retrievalScope === "personal" &&
         options.repositoryContext &&
         options.repositoryContext.kind !== "unresolved" &&
         options.config.maxSearches - state.ledger.searchAttempts <= 2
@@ -3481,8 +3480,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     reason: "search_budget";
   }>;
 }> => {
-  const contextualGlobal =
-    options.retrievalScope === "personal" && options.searchDomain === "global";
+  const contextualGlobal = options.searchDomain === "global";
   const passCost =
     contextualGlobal &&
     options.repositoryContext &&
@@ -3533,7 +3531,6 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   const queries = firstPassQueries(options.query, options.retrievalHints);
   if (
     options.searchDomain === "global" &&
-    options.retrievalScope === "personal" &&
     queries.length === 1 &&
     options.maxSearches > 1
   ) {

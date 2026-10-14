@@ -1,6 +1,7 @@
 import {
   repositoryIdentitySchema,
   repositoryIdentityMatches,
+  type TeamRepositorySnapshot,
   type RepositoryIdentity
 } from "@koed/shared";
 
@@ -103,3 +104,41 @@ export const canonicalGlobalCandidateKey = (row: {
     row.source_chunk_count ?? 1,
     row.source_generation ?? null
   ]);
+
+// Team provenance comes exclusively from the authorized, frozen Share Grant.
+// A branch is comparable only when the disclosed representation agrees with it.
+export const classifyTeamRepositoryEvidence = (
+  snapshot: TeamRepositorySnapshot,
+  disclosed: TeamRepositorySnapshot | undefined,
+  caller: RepositoryIdentity | null
+): ClassifiedRepositoryEvidence => {
+  const identity: RepositoryIdentity | null =
+    snapshot.classification === "portable_repository"
+      ? {
+          kind: "portable_repository",
+          key: snapshot.fingerprint,
+          root: null,
+          branch: null,
+          reason: "origin",
+          checkoutId: null,
+          originatingDeviceId: "team_snapshot",
+          selectedRemote: null,
+          anchorDisplay: snapshot.label
+        }
+      : null;
+  return classifyRepositoryEvidence(
+    [
+      {
+        identity,
+        label: snapshot.label,
+        branch:
+          disclosed?.classification === "portable_repository" &&
+          disclosed.fingerprint === snapshot.fingerprint &&
+          disclosed.branchObservation === snapshot.branchObservation
+            ? snapshot.branchObservation
+            : null
+      }
+    ],
+    caller?.kind === "portable_repository" ? caller : null
+  );
+};

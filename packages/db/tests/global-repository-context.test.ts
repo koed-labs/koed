@@ -3,6 +3,7 @@ import type { RepositoryIdentity } from "@koed/shared";
 import {
   canonicalGlobalCandidateKey,
   classifyRepositoryEvidence,
+  classifyTeamRepositoryEvidence,
   globalRepositoryPoolLimits
 } from "../src/global-repository-context.js";
 const current: RepositoryIdentity = {
@@ -116,4 +117,74 @@ it("bounds both pools by the existing cap and retains full canonical namespaces"
     { source_type: "memory_event" }
   ])
     expect(canonicalGlobalCandidateKey({ ...row, ...change })).not.toBe(key);
+});
+
+it("classifies Team snapshots and requires authorized comparable branch disclosure", () => {
+  const snapshot = {
+    version: 1 as const,
+    classification: "portable_repository" as const,
+    fingerprint: current.key,
+    label: "Team Project",
+    branchObservation: "main"
+  };
+  expect(
+    classifyTeamRepositoryEvidence(snapshot, snapshot, current)
+  ).toMatchObject({
+    classification: "current",
+    label: "Team Project",
+    repositoryBonus: 0.04,
+    branchBonus: 0.01
+  });
+  for (const disclosed of [
+    undefined,
+    { ...snapshot, fingerprint: "gr_other" },
+    { ...snapshot, branchObservation: null }
+  ]) {
+    expect(
+      classifyTeamRepositoryEvidence(snapshot, disclosed, current)
+    ).toMatchObject({
+      classification: "current",
+      repositoryBonus: 0.04,
+      branchBonus: 0,
+      branch: null
+    });
+  }
+  expect(
+    classifyTeamRepositoryEvidence(
+      { ...snapshot, fingerprint: "gr_other" },
+      snapshot,
+      current
+    )
+  ).toMatchObject({
+    classification: "other",
+    repositoryBonus: 0,
+    branchBonus: 0
+  });
+  expect(
+    classifyTeamRepositoryEvidence(snapshot, snapshot, {
+      ...current,
+      kind: "device_local_repository"
+    })
+  ).toMatchObject({
+    classification: "unknown",
+    repositoryBonus: 0,
+    branchBonus: 0
+  });
+  expect(
+    classifyTeamRepositoryEvidence(
+      {
+        version: 1,
+        classification: "unresolved",
+        fingerprint: null,
+        label: null,
+        branchObservation: null
+      },
+      snapshot,
+      current
+    )
+  ).toMatchObject({
+    classification: "unknown",
+    repositoryBonus: 0,
+    branchBonus: 0
+  });
 });

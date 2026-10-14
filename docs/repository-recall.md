@@ -20,9 +20,24 @@ repository name and compute its normalized fingerprint. This accepted exposure
 does not bypass Share Grant or Workspace authorization. Personal Device Sync
 continues to use its separate encrypted, group-keyed boundary.
 
-The full Team milestone still requires the explicit snapshot update action in
-ticket 15 and the Team Global preview in ticket 18. Release remains gated by
-the complete Project cutover in ticket 16.
+Team Global recall allocates one quarter of the existing candidate budget to a
+current-repository pool when a portable request context and two search passes
+are available. Both pools use the same query embedding, Workspace, authorization,
+time bounds, and source rules. They merge grant-scoped canonical sources before
+decrypting content, ranking, and truncating the result. Pool overlap contributes
+one candidate and one preference.
+
+The authorized Share Grant snapshot classifies evidence as current, other, or
+unknown. A later Personal move does not change this classification. The existing
+semantic and exact-anchor score receives the same bounded preference as Personal
+Global recall: 0.04 for a matching portable repository, plus 0.01 only when the
+sanitized representation and snapshot agree on a known matching branch. Missing
+or incomparable branch metadata receives no branch preference. Device-local and
+unresolved caller contexts receive no Team repository preference. Authorized
+labels identify other Projects; the AI Client preserves unknown provenance and
+shared lineage. No additional embedding model or reranker is used.
+
+Release remains gated by the complete Project cutover in ticket 16.
 
 Directed Captured Session Sync transfers an owner-authenticated selected-repository
 snapshot into the owner-private replica. It carries no checkout path, device-local

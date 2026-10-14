@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 and M3 are complete and assessed. Continue M4 with tickets 14–15 on the Project integration branch, then preview 18 on the dependent Global branch; its release remains after ticket 16. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2, M3, and M4 are complete and assessed. Continue 04–07 and 16 on the Project integration branch; the previewed Global work remains on its dependent branch and releases after ticket 16. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -472,12 +472,14 @@ source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 **Blocked by:** 14: Share and recall Team Memory by Project snapshot; 17: Prefer relevant current-repository evidence in Personal Global recall.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Retrieve bounded Team Global and current-repository candidates from the selected Workspace and authorized Share Grants using the same time and source rules.
-- [ ] Classify evidence from the Team snapshot rather than the owner's current personal assignment.
-- [ ] Reuse the persisted request context, result classifications, prompt behavior, candidate limits, budgets, evidence-merge rules, and semantic ranking contract established for Personal Global recall.
-- [ ] Apply a branch preference only when a matching branch observation is known and authorized. Missing or incomparable metadata gives no preference.
-- [ ] Use the Team fixture to prove private and revoked sources remain absent from both pools and all expansions.
-- [ ] Run the shared ranking cases against Team fixtures for equal relevance, candidate recovery, clearly better other-repository evidence, pool overlap, and unknown snapshots. Add only Team-specific snapshot and authorization assertions.
-- [ ] Update Team retrieval and integration documentation. Release only after the Project cutover in ticket 16.
+- [x] Retrieve bounded Team Global and current-repository candidates from the selected Workspace and authorized Share Grants using the same time and source rules.
+- [x] Classify evidence from the Team snapshot rather than the owner's current personal assignment.
+- [x] Reuse the persisted request context, result classifications, prompt behavior, candidate limits, budgets, evidence-merge rules, and semantic ranking contract established for Personal Global recall.
+- [x] Apply a branch preference only when a matching branch observation is known and authorized. Missing or incomparable metadata gives no preference.
+- [x] Use the Team fixture to prove private and revoked sources remain absent from both pools and all expansions.
+- [x] Run the shared ranking cases against Team fixtures for equal relevance, candidate recovery, clearly better other-repository evidence, pool overlap, and unknown snapshots. Add only Team-specific snapshot and authorization assertions.
+- [x] Update Team retrieval and integration documentation. Release only after the Project cutover in ticket 16.
+
+**Validation:** The existing native Shared Memory repository suite passes all 87 cases, including Team Global equal relevance, candidate recovery beyond the baseline limit, stronger other-repository evidence, pool overlap without duplicate preference, unknown snapshots, and unchanged time filters. The worker and repository classifier suites pass 81 cases, including Personal/Team pass accounting and authorized comparable branch requirements. A disposable copy of the maintained Team fixture uses its normally generated embeddings to verify equal results across clone paths, private and revoked source exclusion, authorized expansion, and immediate search/expansion denial after revocation. Production builds, full test typechecking, targeted lint and formatting, and eight API schema tests pass. M4 is assessed; the Global preview remains on the dependent branch until ticket 16.
