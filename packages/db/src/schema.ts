@@ -16426,7 +16426,7 @@ export const homeReminderStates = pgTable(
     primaryKey({ columns: [table.ownerUserId, table.sourceEventId] }),
     check(
       "home_reminder_source_kind_check",
-      sql`${table.sourceKind} in ('managed_runtime_item', 'managed_execution', 'personal_agent_job', 'pull_request_review')`
+      sql`${table.sourceKind} in ('managed_runtime_item', 'managed_execution', 'personal_agent_job', 'native_agent_activity', 'pull_request_review')`
     ),
     check(
       "home_reminder_source_event_id_check",

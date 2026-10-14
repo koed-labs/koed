@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { registerHomeRoutes } from "./routes.js";
+import type { HomeItem, HomeSource } from "@koed/shared/home";
 
 const ownerId = "11111111-1111-4111-8111-111111111111";
 const item = {
@@ -69,7 +70,7 @@ const writeHomeUpstreamRegistry = () => {
 
 const buildApp = (
   input: {
-    current?: typeof item;
+    current?: HomeItem;
     authenticated?: boolean;
     profile?: string;
     upstreamBackendsPath?: string;
@@ -82,7 +83,7 @@ const buildApp = (
     {
       ownerUserId: string;
       sourceEventId: string;
-      source: typeof item.source;
+      source: HomeSource;
       sourceId: string;
       sourceRevision: string;
       cleared: boolean;
@@ -91,14 +92,7 @@ const buildApp = (
   >();
   const home = {
     listSourcePage: vi.fn(
-      async (request: {
-        ownerUserId: string;
-        source:
-          | typeof item.source
-          | "managed_execution"
-          | "personal_agent_job"
-          | "pull_request_review";
-      }) => ({
+      async (request: { ownerUserId: string; source: HomeSource }) => ({
         items:
           request.ownerUserId === ownerId &&
           input.current?.source === request.source
@@ -123,7 +117,7 @@ const buildApp = (
       async (state: {
         ownerUserId: string;
         sourceEventId: string;
-        source: typeof item.source;
+        source: HomeSource;
         sourceId: string;
         sourceRevision: string;
         cleared: boolean;
@@ -305,6 +299,64 @@ describe("Home routes", () => {
     expect(home.listSourcePage).not.toHaveBeenCalled();
     expect(home.countNeedsYou).not.toHaveBeenCalled();
   });
+
+  it.each(["delivery", "team-request", "command"])(
+    "pages and clears owned native %s reminders without changing their source",
+    async (prefix) => {
+      const native: HomeItem = {
+        ...item,
+        source: "native_agent_activity",
+        sourceEventId: `${prefix}:${item.sourceId}`,
+        sourceRevision: `n${"a".repeat(64)}`,
+        kind: "intervention"
+      };
+      const { app, home } = buildApp({ current: native, authenticated: true });
+      const snapshot = await app.inject({
+        method: "GET",
+        url: "/v1/home?source=native_agent_activity&limit=5"
+      });
+      expect(snapshot.statusCode, snapshot.body).toBe(200);
+      expect(snapshot.json()).toMatchObject({
+        needsYou: [native],
+        badgeCount: 1,
+        coverage: [
+          { source: "native_agent_activity", complete: true, nextCursor: null }
+        ]
+      });
+      const clear = await app.inject({
+        method: "POST",
+        url: `/v1/home/reminders/${native.sourceEventId}/clear`,
+        payload: { sourceRevision: native.sourceRevision }
+      });
+      expect(clear.statusCode, clear.body).toBe(200);
+      expect(home.setReminderState).toHaveBeenCalledWith({
+        ownerUserId: ownerId,
+        sourceEventId: native.sourceEventId,
+        sourceId: native.sourceId,
+        source: "native_agent_activity",
+        sourceRevision: native.sourceRevision,
+        cleared: true
+      });
+      const stale = await app.inject({
+        method: "POST",
+        url: `/v1/home/reminders/${native.sourceEventId}/restore`,
+        payload: { sourceRevision: `n${"b".repeat(64)}` }
+      });
+      expect(stale.statusCode).toBe(409);
+      const invalid = await app.inject({
+        method: "POST",
+        url: `/v1/home/reminders/unknown:${native.sourceId}/clear`,
+        payload: { sourceRevision: native.sourceRevision }
+      });
+      expect(invalid.statusCode).toBe(409);
+      const restored = await app.inject({
+        method: "POST",
+        url: `/v1/home/reminders/${native.sourceEventId}/restore`,
+        payload: { sourceRevision: native.sourceRevision }
+      });
+      expect(restored.statusCode).toBe(200);
+    }
+  );
 
   it("clears and restores only the exact current revision across requests", async () => {
     const { app, home } = buildApp({ current: item, authenticated: true });

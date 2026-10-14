@@ -43,12 +43,7 @@ const querySchema = z
         message: "A source is required with a cursor"
       });
   });
-const homeSources = [
-  "managed_runtime_item",
-  "managed_execution",
-  "personal_agent_job",
-  "pull_request_review"
-] as const;
+const homeSources = homeSourceSchema.options;
 
 const localExecutionProfiles = new Set(["developer", "local_personal"]);
 
@@ -277,7 +272,7 @@ export const registerHomeRoutes = (
     if (proxied) return homeReminderMutationResultSchema.parse(proxied);
     const [prefix, sourceId] = params.sourceEventId.split(":", 2);
     const canonicalEventId =
-      /^(?:runtime|execution|job|pr|pr-op):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      /^(?:runtime|execution|job|pr|pr-op|delivery|team-request|command):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
         params.sourceEventId
       );
     const sourceByPrefix = {
@@ -285,7 +280,10 @@ export const registerHomeRoutes = (
       execution: "managed_execution",
       job: "personal_agent_job",
       pr: "pull_request_review",
-      "pr-op": "pull_request_review"
+      "pr-op": "pull_request_review",
+      delivery: "native_agent_activity",
+      command: "native_agent_activity",
+      "team-request": "native_agent_activity"
     } as const;
     const source = sourceByPrefix[prefix as keyof typeof sourceByPrefix];
     if (
@@ -305,7 +303,8 @@ export const registerHomeRoutes = (
       managed_runtime_item: "r",
       managed_execution: "v",
       personal_agent_job: "v",
-      pull_request_review: "v"
+      pull_request_review: "v",
+      native_agent_activity: "n"
     };
     if (!input.sourceRevision.startsWith(expectedPrefix[source]!))
       throw Object.assign(

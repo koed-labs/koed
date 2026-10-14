@@ -30,7 +30,7 @@ Shared tickets also appear in the shared table. Count each ticket ID once.
 | Recall and feedback, 06 and Personal portion of 15 | Recall evidence and Personal feedback were implemented. Agent chats now use the common memory_answer path.                                                                      | No separate Personal feedback rewrite identified. Collaboration portion of 15 remains open.                                                                                            | Real recall, source access loss, feedback persistence and current native execution under 30.                                                         | Personal implemented; testing open.                                |
 | Agent identity and native work, 10–11 and 24–26    | Name, optional free-text title, Pixelkin, native history and execution, common Memory. Sequential same/cross-provider conversations with bounded context pass automated checks. | No additional Personal Job engine. Historical soul/template requirements are superseded.                                                                                               | Live Codex and Claude, unavailable devices, offline/restart and existing history under 30.                                                           | Personal implementation complete; live acceptance open.            |
 | Pull Requests, unified 16 including former 17–18   | GitHub connection, browsing, isolated review execution, retained review data and publication controls were implemented.                                                         | Native command completion and bounded discovery replace the retired Job dependency. Preserve exact revision, account, checkout and publication authority.                              | Real review/fix paths, recovery, exact-content publication and access/revision changes. External writes retain their existing approval requirements. | Native implementation complete; live acceptance open.              |
-| Home, 19                                           | Refresh, sections, chips, draft handoff and native execution reads are implemented.                                                                                             | Agent labels, Job outcomes and seen/revision logic still read legacy Jobs. Add coverage for new native Agent work without losing legacy history or duplicating child executions.       | Needs you, Ongoing work and Cleared with new Agent deliveries, failures, stale data and bounded refresh.                                             | Reopen 19 for rewiring.                                            |
+| Home, 19                                           | Refresh, sections, chips, draft handoff, native delivery/command activity and owned Team work are implemented.                                                                  | Native work uses existing commands, deliveries and Team request authority. Legacy Jobs remain readable; exact command bindings prevent duplicate failure reminders.                    | Needs you, Ongoing work and Cleared with new Agent deliveries, failures, stale data and bounded refresh.                                             | Native implementation complete; live acceptance open.              |
 | Simple/Advanced progress, 21 and 28                | Native Personal command activity, public summaries, retained details and diffs are implemented.                                                                                 | Collaboration progress belongs to 12–13 and 27. Do not treat Personal progress as proof of Team wiring.                                                                                | Compact/expanded views, history, diffs, restart and active recipient changes under 30.                                                               | Personal implemented; 21 superseded by 28 and acceptance under 30. |
 
 ## Collaboration status
@@ -76,7 +76,7 @@ See the [Orys study and backend source map](studio-orys-implementation-study.md)
 
 ## Remaining ticket count
 
-There are 12 distinct open tickets: six require feature work or rewiring, one needs a scope assessment, and five cover testing/release acceptance.
+There are 12 distinct open tickets: five require feature work or rewiring, one needs a scope assessment, and six cover testing/release acceptance.
 The number counts tickets, not estimated effort. A ticket with both code and tests counts once.
 A surface can remain untested without creating another implementation ticket.
 
@@ -87,9 +87,9 @@ A surface can remain untested without creating another implementation ticket.
 | Shared            | 03, 22, 29, 30                                 | 4     |
 | Total, unique IDs | 03, 04, 12, 13, 15, 16, 19, 20, 22, 27, 29, 30 | 12    |
 
-The seven feature/rewiring/assessment tickets are 04, 15, 19, 20, 22, 27 and 29.
+The six feature/rewiring/assessment tickets are 04, 15, 20, 22, 27 and 29.
 Ticket 04 needs an assessment before claiming a new implementation gap. Tickets 15, 22, 27 and 29 retain unresolved scope details.
-The five testing/release tickets are 03, 12, 13, 16 and 30. Acceptance can reveal further implementation defects.
+The six testing/release tickets are 03, 12, 13, 16, 19 and 30. Acceptance can reveal further implementation defects.
 
 Tickets 17–18 are consolidated into 16, 21 into 28, and 23 into 30. Subtasks 14a–14c remain within 14.
 Historical local Codex acceptance and explicit deferrals in 04–05 remain recorded. Reopening 04 for assessment does not revoke those accepted results.
@@ -109,7 +109,7 @@ This scope remains under Ticket 16. No additional execution lifecycle is introdu
 
 ## Recommended sequence
 
-Next implementation: Ticket 19, Home activity from native Agent commands and deliveries. Tickets 12, 13 and 16 remain open for live acceptance. Their native replacements are implemented. Retain the scope assessments and destination decisions below before extending those surfaces.
+Next implementation: Ticket 20, For you activity from native Agent work. Tickets 12, 13, 16 and 19 remain open for live acceptance. Their native replacements are implemented. Retain the scope assessments and destination decisions below before extending those surfaces.
 
 1. Assess 04 and settle the destination-specific scope in 27 and 15.
 2. Restore channel Agent execution under 13 and complete other supported destinations under 27.
@@ -130,7 +130,7 @@ Source dependencies that justify reopening tickets include:
 | 12     | public-square-repository.ts joins personal_agent_team_job_publications, personal_agent_execution_jobs and personal_agent_execution_attempts.                                                                                                                                                        |
 | 13     | At reconciliation, createManagedConversationAcceptedAgentAssignmentWithClient returned 410 after the Job protocol retirement. The Ticket 13 checkpoint below replaces this path with native execution.                                                                                              |
 | 16     | At reconciliation, pull-request-repository.ts required a succeeded personal_agent_execution_jobs row for retained review output. The Ticket 16 checkpoint replaces that dependency with native command provenance.                                                                                  |
-| 19     | home-repository.ts still obtains Agent labels, outcomes and seen revisions from personal_agent_execution_jobs, alongside existing native execution reads.                                                                                                                                           |
+| 19     | At reconciliation, home-repository.ts obtained Agent labels, outcomes and reminder revisions from personal_agent_execution_jobs. The Ticket 19 checkpoint replaces new-work dependencies with native commands/deliveries while retaining legacy history.                                            |
 | 20     | team-overview-sources.ts joins Job publications and Jobs for Agent blockers/outcomes and producer revisions. Human-message sources are separate.                                                                                                                                                    |
 | 27     | The historical chat-surface matrix distinguishes Personal execution from Collaboration audience/identity/Memory authorization. Current shared presentation alone does not prove those adapters.                                                                                                     |
 
@@ -225,3 +225,17 @@ The configured Personal database was not migrated. PostgreSQL validation used di
 
 Scoped lint still reports existing errors in managed-conversation-service.ts, pull-request-repository.ts and github-delegated.ts.
 The same rules fail on the branch HEAD versions. These are outside the new behavior and do not establish that repository-wide CI passes.
+
+Ticket 16 publication: commit `9f04f8128a0440455d806fdb2373fd1c942a7b81` is pushed to `epic/ui-revamp`. [Studio UI regression 38633997597](https://github.com/koed-labs/koed/actions/runs/38633997597) passed.
+
+## Ticket 19 implementation checkpoint, 2026-10-14
+
+Native Home activity now reads owner-scoped conversation deliveries, current failed commands and accepted native Team work through the existing Home feed. Legacy Jobs remain readable. Successful ordinary chat replies appear in Ongoing work rather than creating a review requirement. Team publication decisions remain explicit, with private execution navigation reserved for the owner.
+
+Clear and Restore retain the existing account-owned reminder table. Semantic revisions ignore refresh timestamps, command claims, display names and unrelated private follow-ups. Exact command/generation/failure checks prevent duplicate failure reminders and prevent an explicitly skipped delivery from reappearing as a generic execution failure. Existing valid failure dismissals remain respected when native delivery attribution is introduced. No Job lifecycle, execution system or Memory path was added.
+
+The User approved inclusion in the existing minor changeset. Migration 0082 widens the existing reminder source check; it was tested only in disposable databases. The configured Personal database was not migrated. Ticket 19 changes remain local, following the separately published Ticket 16 checkpoint above.
+
+Validation: disposable PostgreSQL Home authority acceptance passed, along with all 15 migration scenarios through 0082. API Home/upstream tests (53), desktop proxy tests (eight), Studio Home/client/routing/refresh tests (26) and six Home browser scenarios passed. Existing Agent/Team/responsive browser cases (19) and PR browser cases (three) also passed. Shared/DB builds, API typecheck and full build, Studio production build, migration metadata and release consistency checks passed. Browser cases use synthetic APIs; these counts are focused evidence, not a whole-repository test total. [Home review guidance](studio-home-review.md) records behavior and deployment requirements.
+
+Ticket 19 remains open for live native/hosted account synchronization, provider and deployment acceptance. Changed-file lint and formatting pass. A broader shared-package run reported four custody-test failures outside the changed Home files; a clean-revision baseline was not established. Existing broader lint/test limitations remain recorded above. The open count remains 12: five feature/rewiring tickets, one scope assessment and six testing/release tickets. Ticket 20, Team → For you native activity, is next.

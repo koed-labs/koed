@@ -6,6 +6,7 @@ export const homeSourceSchema = z.enum([
   "managed_runtime_item",
   "managed_execution",
   "personal_agent_job",
+  "native_agent_activity",
   "pull_request_review"
 ]);
 export type HomeSource = z.infer<typeof homeSourceSchema>;
@@ -27,6 +28,7 @@ export const homeItemKindSchema = z.enum([
   "question",
   "approval",
   "intervention",
+  "agent_work",
   "job_review",
   "pull_request_review",
   "publication"

@@ -820,6 +820,30 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("admits native Home source paging and fixed reminder actions", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/home?source=native_agent_activity&limit=5&cursor=ZXZlbnQ"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/home/reminders/delivery%3A11111111-1111-4111-8111-111111111111/clear"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/home/reminders/team-request%3A11111111-1111-4111-8111-111111111111/execute"
+      )
+    ).toThrow();
+  });
+
   it("allows Home source paging and encoded event reminder mutations only", () => {
     const eventId = "job:11111111-1111-4111-8111-111111111111";
     const path = `/v1/home/reminders/${encodeURIComponent(eventId)}/clear`;

@@ -168,3 +168,23 @@ test("Home source paging forwards only bounded cursor queries", async () => {
     400
   );
 });
+
+test("native Home activity keeps typed paging and encoded reminder transport", async () => {
+  const path = "/studio-api/home-feed?source=native_agent_activity&limit=5";
+  assert.equal((await invoke(path)).response.status, 200);
+  for (const prefix of ["delivery", "team-request"]) {
+    const event = `${prefix}:11111111-1111-4111-8111-111111111111`;
+    const result = await invoke(
+      `/studio-api/home-feed/reminders/${encodeURIComponent(event)}/clear`,
+      {
+        method: "POST",
+        body: JSON.stringify({ sourceRevision: `n${"a".repeat(64)}` })
+      }
+    );
+    assert.equal(result.response.status, 200);
+    assert.equal(
+      result.forwarded.url,
+      `http://127.0.0.1:43300/v1/home/reminders/${encodeURIComponent(event)}/clear`
+    );
+  }
+});

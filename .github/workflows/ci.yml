@@ -182,6 +182,11 @@ jobs:
           PULL_REQUEST_AUTHORITY_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm --filter @koed/db exec vitest run src/pull-request-repository.integration.test.ts
 
+      - name: Validate native Home activity and shared reminder authority
+        env:
+          HOME_AUTHORITY_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+        run: pnpm --filter @koed/db exec vitest run src/home-repository.integration.test.ts
+
       - name: Test
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed

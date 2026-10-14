@@ -18,12 +18,30 @@ const item = {
   }
 } as const;
 
+const nativeAgentItem = {
+  sourceEventId: "delivery:123e4567-e89b-42d3-a456-426614174333",
+  source: "native_agent_activity",
+  sourceId: "123e4567-e89b-42d3-a456-426614174333",
+  sourceRevision: "n0123456789abcdef",
+  kind: "agent_work",
+  state: "blocked",
+  title: "Ada · Reconcile the failed delivery",
+  summary: "Failed on Codex",
+  updatedAt: "2026-10-02T12:00:00.000Z",
+  destination: {
+    kind: "execution",
+    executionId: "123e4567-e89b-42d3-a456-426614174444"
+  }
+} as const;
+
 const snapshot: HomeSnapshot = {
   schemaVersion: "koed.home-feed/v1",
   accountScope: "owner-one",
   generatedAt: "2026-10-02T12:00:00.000Z",
   coverage: [
     { source: "managed_runtime_item", complete: true, nextCursor: null },
+    { source: "managed_execution", complete: true, nextCursor: null },
+    { source: "native_agent_activity", complete: true, nextCursor: null },
     { source: "personal_agent_job", complete: true, nextCursor: null },
     { source: "pull_request_review", complete: true, nextCursor: null }
   ],
@@ -117,12 +135,12 @@ describe("HomeFeedClient", () => {
     });
 
     await client.get({
-      source: "managed_execution",
+      source: "native_agent_activity",
       cursor: "cursor one",
       limit: 100
     });
     expect(calls[0]).toBe(
-      "/v1/home?source=managed_execution&cursor=cursor+one&limit=100"
+      "/v1/home?source=native_agent_activity&cursor=cursor+one&limit=100"
     );
   });
 
@@ -134,22 +152,22 @@ describe("HomeFeedClient", () => {
       if (url === "/studio-api/github/session")
         return Response.json({ csrfToken: "csrf-one" });
       return Response.json({
-        sourceEventId: item.sourceEventId,
-        sourceRevision: item.sourceRevision,
+        sourceEventId: nativeAgentItem.sourceEventId,
+        sourceRevision: nativeAgentItem.sourceRevision,
         cleared: true
       });
     });
 
-    await client.setCleared(item, true);
+    await client.setCleared(nativeAgentItem, true);
     expect(calls.map((call) => call.url)).toEqual([
       "/studio-api/github/session",
-      "/studio-api/home-feed/reminders/job%3Aone/clear"
+      "/studio-api/home-feed/reminders/delivery%3A123e4567-e89b-42d3-a456-426614174333/clear"
     ]);
     expect(new Headers(calls[1]?.init?.headers).get("x-studio-csrf")).toBe(
       "csrf-one"
     );
     expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
-      sourceRevision: "2"
+      sourceRevision: "n0123456789abcdef"
     });
   });
 

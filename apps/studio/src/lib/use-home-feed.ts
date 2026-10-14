@@ -13,6 +13,7 @@ export type HomeFeedState = "loading" | "ready" | "offline" | "unauthorized";
 const HOME_SOURCES: HomeSource[] = [
   "managed_runtime_item",
   "managed_execution",
+  "native_agent_activity",
   "personal_agent_job",
   "pull_request_review"
 ];
@@ -48,6 +49,7 @@ export function useHomeFeed({
   const pageDepth = useRef<Record<HomeSource, number>>({
     managed_runtime_item: 1,
     managed_execution: 1,
+    native_agent_activity: 1,
     personal_agent_job: 1,
     pull_request_review: 1
   });
@@ -348,6 +350,7 @@ function initialPageDepth(): Record<HomeSource, number> {
   return {
     managed_runtime_item: 1,
     managed_execution: 1,
+    native_agent_activity: 1,
     personal_agent_job: 1,
     pull_request_review: 1
   };

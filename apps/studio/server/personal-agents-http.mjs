@@ -598,6 +598,7 @@ function validHomeFeedQuery(params) {
       "managed_runtime_item",
       "managed_execution",
       "personal_agent_job",
+      "native_agent_activity",
       "pull_request_review"
     ].includes(source)
   )

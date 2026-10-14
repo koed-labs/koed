@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { HomeItem, HomeSnapshot } from "@koed/shared/home";
+import type { PersonalAgentChatConversationSummary } from "@koed/shared";
 import { installSyntheticApi } from "./fixtures/synthetic-studio-api";
 
 const executionItem: HomeItem = {
@@ -52,6 +53,44 @@ const olderJobItem: HomeItem = {
   }
 };
 
+const nativeConversationId = "123e4567-e89b-42d3-a456-426614174555";
+const nativeDeliveryId = "123e4567-e89b-42d3-a456-426614174666";
+const nativeChildExecutionId = "123e4567-e89b-42d3-a456-426614174777";
+const nativeAgentId = "123e4567-e89b-42d3-a456-426614174888";
+const nativeAgentActivityItem: HomeItem = {
+  sourceEventId: `delivery:${nativeDeliveryId}`,
+  source: "native_agent_activity",
+  sourceId: nativeDeliveryId,
+  sourceRevision: "n0123456789abcdef",
+  kind: "agent_work",
+  state: "blocked",
+  title: "Ada · Reconcile the failed delivery",
+  summary: "Failed on Codex",
+  updatedAt: "2026-10-02T12:02:00.000Z",
+  destination: {
+    kind: "execution",
+    executionId: nativeConversationId
+  }
+};
+
+const nativeConversation: PersonalAgentChatConversationSummary = {
+  conversationId: nativeConversationId,
+  title: "Release planning",
+  projectId: null,
+  contextKind: "independent",
+  activeAgentId: nativeAgentId,
+  activeExecutionId: nativeChildExecutionId,
+  activeProvider: "codex",
+  status: "failed",
+  participantCount: 1,
+  latestAgentId: nativeAgentId,
+  latestAgentName: "Ada",
+  updatedAt: "2026-10-02T12:02:00.000Z",
+  sourceExecutionIds: [],
+  childExecutionIds: [nativeChildExecutionId],
+  capturedSessionIds: []
+};
+
 class HomeFixture {
   needsYou: HomeItem[] = [executionItem, prItem, olderJobItem];
   ongoing: HomeItem[] = [];
@@ -62,9 +101,11 @@ class HomeFixture {
   accessUnavailable = false;
   signedOut = false;
   hideFirstPageNeedsYou = false;
+  personalConversations: PersonalAgentChatConversationSummary[] = [];
 
   async route(route: Route) {
     const request = route.request();
+    const path = new URL(request.url()).pathname;
     if (new URL(request.url()).pathname === "/v1/home/access") {
       if (this.accessUnavailable) {
         await route.fulfill({ status: 503, json: { error: "unavailable" } });
@@ -76,6 +117,31 @@ class HomeFixture {
           backendId: "synthetic-backend"
         }
       });
+      return;
+    }
+    if (
+      (path === "/v1/personal-conversations" ||
+        path === "/studio-api/personal-conversations") &&
+      request.method() === "GET"
+    ) {
+      const { personalAgentChatConversationPageSchema } =
+        await import("@koed/shared");
+      const response = personalAgentChatConversationPageSchema.parse({
+        conversations: this.personalConversations,
+        hasMore: false,
+        nextCursor: null
+      });
+      await route.fulfill({
+        json: response
+      });
+      return;
+    }
+    if (
+      (path === "/v1/managed-conversations" ||
+        path === "/studio-api/managed-conversations") &&
+      request.method() === "GET"
+    ) {
+      await route.fulfill({ json: { executions: [] } });
       return;
     }
     if (request.method() === "GET") {
@@ -99,6 +165,7 @@ class HomeFixture {
         generatedAt: new Date().toISOString(),
         coverage: [
           { source: "managed_runtime_item", complete: true, nextCursor: null },
+          { source: "native_agent_activity", complete: true, nextCursor: null },
           ...(source
             ? [
                 {
@@ -126,7 +193,6 @@ class HomeFixture {
       await route.fulfill({ json: snapshot });
       return;
     }
-    const path = new URL(request.url()).pathname;
     const sourceEventId = decodeURIComponent(path.split("/").at(-2) ?? "");
     const body = request.postDataJSON() as { sourceRevision?: unknown };
     const item = [...this.needsYou, ...this.cleared].find(
@@ -160,6 +226,18 @@ const installHomeFixture = async (page: Page, home: HomeFixture) => {
     }
     await route.fulfill({ status: 401, json: { error: "signed_out" } });
   });
+  await page.route("**/v1/personal-conversations**", (route) =>
+    home.route(route)
+  );
+  await page.route("**/studio-api/personal-conversations**", (route) =>
+    home.route(route)
+  );
+  await page.route("**/v1/managed-conversations**", (route) =>
+    home.route(route)
+  );
+  await page.route("**/studio-api/managed-conversations**", (route) =>
+    home.route(route)
+  );
   await page.route("**/v1/home**", (route) => home.route(route));
 };
 
@@ -374,4 +452,56 @@ test("an exact global badge can exceed the currently loaded actionable rows", as
   ).toBeVisible();
   await homeRegion.getByRole("button", { name: "Load more chats" }).click();
   await expect(homeRegion.getByText("Older Agent job review")).toBeVisible();
+});
+
+test("native Agent activity opens the saved conversation root and clear only changes its reminder", async ({
+  page
+}) => {
+  const home = new HomeFixture();
+  home.needsYou = [nativeAgentActivityItem];
+  home.personalConversations = [nativeConversation];
+  await installHomeFixture(page, home);
+  const conversationsResponse = page.waitForResponse((response) => {
+    const path = new URL(response.url()).pathname;
+    return (
+      (path === "/v1/personal-conversations" ||
+        path === "/studio-api/personal-conversations") &&
+      response.request().method() === "GET"
+    );
+  });
+  await page.goto("/studio", { waitUntil: "domcontentloaded" });
+  const response = await conversationsResponse;
+  expect(response.ok()).toBe(true);
+  const { personalAgentChatConversationPageSchema } =
+    await import("@koed/shared");
+  expect(
+    personalAgentChatConversationPageSchema.parse(await response.json())
+      .conversations
+  ).toEqual([nativeConversation]);
+  const homeRegion = page.getByRole("region", { name: "Home activity" });
+  const row = homeRegion.getByRole("button", {
+    name: /Ada · Reconcile the failed delivery Agent work Blocked/
+  });
+  await expect(row).toBeVisible();
+  await expect(homeRegion.getByText("Failed on Codex")).toBeVisible();
+  await row.click();
+  await expect(page).toHaveURL(
+    new RegExp(`/studio/?\\?chat=1&conversation=${nativeConversationId}`)
+  );
+  expect(home.needsYou).toContainEqual(nativeAgentActivityItem);
+
+  await page.goBack();
+  const clear = homeRegion.getByRole("button", {
+    name: "Clear Ada · Reconcile the failed delivery"
+  });
+  await expect(clear).toBeVisible();
+  await clear.click();
+  await homeRegion.getByRole("button", { name: /^Cleared/ }).click();
+  await expect(
+    homeRegion.getByRole("button", {
+      name: "Restore Ada · Reconcile the failed delivery"
+    })
+  ).toBeVisible();
+  expect(home.needsYou).not.toContainEqual(nativeAgentActivityItem);
+  expect(home.cleared).toContainEqual(nativeAgentActivityItem);
 });

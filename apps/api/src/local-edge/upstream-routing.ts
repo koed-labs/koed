@@ -747,6 +747,7 @@ export const assertUpstreamOperationPathAllowed = (
               "managed_runtime_item",
               "managed_execution",
               "personal_agent_job",
+              "native_agent_activity",
               "pull_request_review"
             ].includes(parsed.searchParams.get("source") ?? "")) ||
           (parsed.searchParams.has("cursor") &&

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { HomeItem, HomeSource } from "@koed/shared/home";
 import type { HomeFeedState } from "@/lib/use-home-feed";
+import { nativeRecentActivityInOngoing } from "@/lib/personal-conversation-routing";
 
 export function HomeAttentionView({
   state,
@@ -54,6 +55,9 @@ export function HomeAttentionView({
   const [ongoingOpen, setOngoingOpen] = useState(true);
   const [clearedOpen, setClearedOpen] = useState(false);
   const offline = state === "offline";
+  const ongoingItems = snapshot
+    ? nativeRecentActivityInOngoing(snapshot.ongoing, snapshot.recent)
+    : [];
   return (
     <section
       className="space-y-5 border-t border-border pt-5"
@@ -157,14 +161,14 @@ export function HomeAttentionView({
           </FeedSection>
           <FeedSection
             title="Ongoing work"
-            count={snapshot.ongoing.length}
+            count={ongoingItems.length}
             open={ongoingOpen}
             onToggle={() => setOngoingOpen((value) => !value)}
           >
-            {snapshot.ongoing.length ? (
+            {ongoingItems.length ? (
               <FeedList
                 label="Ongoing work"
-                items={snapshot.ongoing}
+                items={ongoingItems}
                 offline={offline}
                 pendingItemIds={pendingItemIds}
                 canMutate={canMutate}
@@ -223,11 +227,18 @@ export function HomeAttentionView({
   );
 }
 
-function sourceLabel(source: string) {
-  if (source === "managed_runtime_item" || source === "managed_execution")
-    return "chats";
-  if (source === "personal_agent_job") return "Agent jobs";
-  return "pull requests";
+function sourceLabel(source: HomeSource) {
+  switch (source) {
+    case "managed_runtime_item":
+    case "managed_execution":
+      return "chats";
+    case "native_agent_activity":
+      return "Agent activity";
+    case "personal_agent_job":
+      return "Agent jobs";
+    case "pull_request_review":
+      return "pull requests";
+  }
 }
 
 function FeedSection({
@@ -312,7 +323,13 @@ function FeedList({
                 </span>
                 <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted">
                   <span className="shrink-0 text-subtle">
-                    {item.kind.replaceAll("_", " ")}
+                    {homeItemKindLabel(item.kind)}
+                  </span>
+                  <span aria-hidden="true" className="text-faint">
+                    ·
+                  </span>
+                  <span className="shrink-0 text-subtle">
+                    {homeItemStateLabel(item.state)}
                   </span>
                   {item.summary && (
                     <>
@@ -400,6 +417,24 @@ function FeedList({
       )}
     </div>
   );
+}
+
+function homeItemKindLabel(kind: HomeItem["kind"]) {
+  if (kind === "agent_work") return "Agent work";
+  return kind.replaceAll("_", " ");
+}
+
+function homeItemStateLabel(state: HomeItem["state"]) {
+  switch (state) {
+    case "blocked":
+      return "Blocked";
+    case "review":
+      return "Review";
+    case "ongoing":
+      return "Ongoing";
+    case "recent":
+      return "Recent";
+  }
 }
 
 function formatTime(value: string) {
