@@ -2479,7 +2479,8 @@ const buildDynamicMemoryAnswerPrompt = (
   state: MemoryAnswerToolState,
   config: MemoryAnswerWorkerConfig,
   promptTemplate: LoadedPrompt,
-  promptTokenLimit: number
+  promptTokenLimit: number,
+  promptSuffix: string
 ): {
   prompt: string;
   promptTokens: ReturnType<typeof countTokensForModel>;
@@ -2574,21 +2575,23 @@ const buildDynamicMemoryAnswerPrompt = (
           : "No scripted first pass ran. Start without scripted evidence and use only the enabled worker retrieval tools within the shared budget.",
       JSON.stringify(firstPassContext, null, 2)
     ].join("\n");
-    return renderLoadedPrompt(promptTemplate, {
-      search_domain: state.searchDomain,
-      first_pass_guidance: state.evaluation.scriptedFirstPass
-        ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
-        : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
-      required_json_schema: requiredJsonSchema,
-      question: state.query,
-      retrieval_scope: state.retrievalScope,
-      default_search_domain: state.searchDomain,
-      optional_defaults: optionalDefaults,
-      limit: state.limit,
-      max_searches: config.maxSearches,
-      max_expansions: config.maxExpansions,
-      initial_evidence_section: initialEvidenceSection
-    }).text;
+    return (
+      renderLoadedPrompt(promptTemplate, {
+        search_domain: state.searchDomain,
+        first_pass_guidance: state.evaluation.scriptedFirstPass
+          ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
+          : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
+        required_json_schema: requiredJsonSchema,
+        question: state.query,
+        retrieval_scope: state.retrievalScope,
+        default_search_domain: state.searchDomain,
+        optional_defaults: optionalDefaults,
+        limit: state.limit,
+        max_searches: config.maxSearches,
+        max_expansions: config.maxExpansions,
+        initial_evidence_section: initialEvidenceSection
+      }).text + promptSuffix
+    );
   };
 
   let prompt = render();
@@ -2609,7 +2612,9 @@ const buildDynamicMemoryAnswerPrompt = (
   }
   if (promptTokenEstimate.tokens > promptTokenLimit) {
     throw new Error(
-      `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
+      promptSuffix
+        ? "Memory answer validation feedback exceeds prompt-token budget"
+        : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
     );
   }
   return { prompt, promptTokens: promptTokenEstimate };
@@ -3963,6 +3968,9 @@ const runDynamicToolMemoryAnswer = async (
       0,
       options.config.maxPromptTokens - state.ledger.promptTokenEstimateConsumed
     );
+    const validationFeedbackPrompt = validationFeedback
+      ? `\nThe previous answer failed validation. Correct this before finishing:\n${validationFeedback.slice(0, 2000)}`
+      : "";
     if (remainingPromptTokens <= 0) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
       throw new Error("Memory answer prompt-token budget exhausted");
@@ -3974,26 +3982,14 @@ const runDynamicToolMemoryAnswer = async (
         state,
         options.config,
         options.promptTemplate,
-        remainingPromptTokens
+        remainingPromptTokens,
+        validationFeedbackPrompt
       );
       prompt = built.prompt;
       promptTokens = built.promptTokens;
     } catch (error) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
       throw error;
-    }
-    if (validationFeedback) {
-      const feedback = `\nThe previous answer failed validation. Correct this before finishing:\n${validationFeedback.slice(0, 2000)}`;
-      prompt += feedback;
-      promptTokens = countTokensForModel(prompt, {
-        model: options.config.model
-      });
-      if (promptTokens.tokens > remainingPromptTokens) {
-        markBudgetExhausted(state.ledger, "prompt_tokens");
-        throw new Error(
-          "Memory answer validation feedback exceeds prompt-token budget"
-        );
-      }
     }
     state.ledger.workerAttempts += 1;
     state.ledger.promptTokenEstimateConsumed += promptTokens.tokens;
