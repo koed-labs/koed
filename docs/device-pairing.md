@@ -1,5 +1,11 @@
 # Connect Personal devices
 
+To share anchor preferences after pairing, use a Project's **Repository anchor** →
+**Shared Project selection** controls. Each checkout must explicitly accept the
+association. Ordinary clone recall can match equal repository anchors without
+sharing configuration. See [Project association and selection records](personal-project-selection.md)
+for updates, deletions, and concurrent-edit resolution.
+
 Use a private LAN or Tailscale network. An internet-accessible pairing relay and
 restricted-network traversal are not included. The installation that created the
 Personal Device Group remains its Authority/Relay host and must be reachable.
@@ -184,7 +190,8 @@ available for owner inspection separately from the effective assignment.
 
 Pairing does not associate Project configuration. Independently equal selected
 anchors can match for recall without sharing anchor-selection settings. Explicit
-Project association and selection controls are covered by tickets 12 and 13.
+Use Desktop's **Shared Project selection** controls to accept an association,
+publish a shared choice or deletion, and resolve concurrent edits.
 The new source profiles require the coordinated ticket 16 cutover on every paired
 device. Prior signed packages remain unchanged; there is no legacy source reader
 or automatic historical backfill.

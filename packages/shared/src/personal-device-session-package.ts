@@ -323,6 +323,8 @@ export interface CreatePdsSessionCheckpointPackageInput extends Omit<
 }
 
 export interface CreatePdsEncryptedPayloadPackageInput {
+  /** Optional preallocated random ID for transport-bound auxiliary package identities. */
+  transportId?: string;
   runtime: PdsSessionPackageRuntimeContext;
   expiresAt: string;
   servingSigningPrivateKey: KeyObject;
@@ -2324,6 +2326,7 @@ const packageRecipients = (
 
 const unsignedTransportHeader = (
   input: {
+    transportId?: string;
     groupId: string;
     authorityHead: string;
     currentEpoch: string;
@@ -2342,7 +2345,7 @@ const unsignedTransportHeader = (
   return headerUnsigned({
     protocol: PDS_PROTOCOL,
     version: PDS_SESSION_PACKAGE_VERSION,
-    transportId: randomBytes(32).toString("base64url"),
+    transportId: input.transportId ?? randomBytes(32).toString("base64url"),
     groupId: input.groupId,
     packageId: input.packageId,
     sourceManifestHash: input.manifestHash,
@@ -2447,6 +2450,8 @@ export const createPdsEncryptedPayloadPackage = (
   input: CreatePdsEncryptedPayloadPackageInput
 ): PdsSessionPackage => {
   const runtime = assertRuntimeContext(input.runtime);
+  if (input.transportId !== undefined)
+    requireHash(input.transportId, "transport ID");
   requireIso(input.expiresAt, "transport expiry");
   requireHash(input.packageId, "transport package ID");
   requireHash(input.manifestHash, "transport manifest hash");

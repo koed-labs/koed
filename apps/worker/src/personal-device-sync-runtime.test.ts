@@ -7,6 +7,10 @@ import type { MemorySourceRepository } from "@koed/db";
 import type { PdsSessionManifest, PdsSessionPackage } from "@koed/shared";
 import {
   canonicalizePdsJson,
+  PDS_PROJECT_SELECTION_PROTOCOL,
+  pdsProjectSelectionPackageId,
+  signPdsProjectSelection,
+  createPdsEncryptedPayloadPackage,
   createPdsSessionCheckpointManifest,
   createPdsSessionCheckpointPackage,
   createPdsSessionPackageRuntimeContext,
@@ -96,6 +100,176 @@ const testMembershipCertificate = (input: {
     }
   });
 };
+
+it("imports authenticated encrypted Project configuration without a Session and retries storage failures", async () => {
+  const authority = testKeyPair("ed25519");
+  const groupId = testRelayId("selection_group");
+  const authorityKeyId = testRelayId("selection_authority");
+  const head = Buffer.alloc(32, 9).toString("base64url");
+  const devices = ["source", "receiver"].map((name) => {
+    const signing = testKeyPair("ed25519");
+    const kem = testKeyPair("x25519");
+    const deviceId = testRelayId(name);
+    const signingKeyId = testRelayId(`${name}_signing`);
+    const kemKeyId = testRelayId(`${name}_kem`);
+    const certificate = testMembershipCertificate({
+      authorityPrivateKey: authority.privateKey,
+      authorityKeyId,
+      groupId,
+      authorityHead: head,
+      deviceId,
+      signingKeyId,
+      signingPublicKey: signing.publicKey,
+      kemKeyId,
+      kemPublicKey: kem.publicKey,
+      epoch: "1",
+      statementSequence: "1",
+      issuedAt: new Date(Date.now() - 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString()
+    });
+    return { deviceId, signingKeyId, signing, kemKeyId, kem, certificate };
+  });
+  const [source, receiver] = devices as [
+    (typeof devices)[number],
+    (typeof devices)[number]
+  ];
+  const certificates = devices.map((device) => device.certificate);
+  const authorRuntime = createPdsSessionPackageRuntimeContext({
+    authorityPublicKey: authority.publicKey,
+    authorityKeyId,
+    groupId,
+    authorityHead: head,
+    currentEpoch: "1",
+    servingCertificate: source.certificate,
+    recipientCertificate: source.certificate,
+    recipientCertificates: certificates
+  });
+  const selection = signPdsProjectSelection(
+    {
+      protocol: PDS_PROJECT_SELECTION_PROTOCOL,
+      groupId,
+      associationId: "association",
+      selectionId: "selection",
+      revisionId: "revision",
+      authorDeviceId: source.deviceId,
+      authorSigningKeyId: source.signingKeyId,
+      replaces: [],
+      operation: { kind: "set", anchorFingerprint: "gr_private_repository" }
+    },
+    source.signing.privateKey
+  );
+  const plaintext = canonicalizePdsJson(selection);
+  const hash = createHash("sha256").update(plaintext).digest("base64url");
+  const transportId = Buffer.alloc(32, 6).toString("base64url");
+  const packageId = pdsProjectSelectionPackageId(hash, transportId);
+  const pkg = createPdsEncryptedPayloadPackage({
+    runtime: authorRuntime,
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    servingSigningPrivateKey: source.signing.privateKey,
+    transportId,
+    packageId,
+    manifestHash: hash,
+    originDeviceId: source.deviceId,
+    contentEpoch: "1",
+    plaintext
+  });
+  expect(canonicalizePdsJson(pkg)).not.toContain("gr_private_repository");
+  const appendVerified = vi.fn().mockResolvedValue({ inserted: true });
+  const repository = {
+    applyPdsDeletionFloors: vi.fn().mockResolvedValue(undefined),
+    getPdsInboundTransport: vi.fn().mockResolvedValue(pkg.header.transportId),
+    personalProjectSelections: { appendVerified },
+    createCapturedSession: vi.fn()
+  } as unknown as MemorySourceRepository;
+  const secret = {
+    version: 1 as const,
+    userId: "owner",
+    relayUrl: "https://relay.example",
+    groupId,
+    device: {
+      id: receiver.deviceId,
+      originDeploymentId: "receiver_deployment",
+      signingKeyId: receiver.signingKeyId,
+      signingPrivateSeed: receiver.signing.privateSeed,
+      kemKeyId: receiver.kemKeyId,
+      kemPrivateSeed: receiver.kem.privateSeed
+    },
+    authority: { keyId: authorityKeyId, publicKey: authority.publicKey, head },
+    recovery: {
+      signingKeyId: testRelayId("recovery"),
+      signingPublicKey: authority.publicKey
+    },
+    certificate: receiver.certificate,
+    recipientCertificates: certificates,
+    groupSecrets: {
+      currentEpoch: "1",
+      contentKey: Buffer.alloc(32, 1).toString("base64url"),
+      sourceFingerprintKey: Buffer.alloc(32, 2).toString("base64url"),
+      tombstoneFloorKey: Buffer.alloc(32, 3).toString("base64url"),
+      projectAliasKey: Buffer.alloc(32, 4).toString("base64url")
+    }
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      const body = path.endsWith("/lifecycle")
+        ? { deletion_floors: [] }
+        : path.includes("/chunks/")
+          ? { chunk: pkg.chunks[Number(path.split("/").at(-1))]! }
+          : {
+              header: pkg.header,
+              envelopes: pkg.envelopes,
+              transport: { relayAcceptedAt: new Date().toISOString() }
+            };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    })
+  );
+  try {
+    const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+      repository,
+      environment: { PDS_SECRET_PROVIDER: "headless" },
+      resolveSecret: () => secret,
+      envelopeEncryptionProvider: {} as never
+    })!;
+    expect(await runtime.heartbeatGroups?.()).toEqual([groupId]);
+    const work = {
+      workerId: "worker",
+      inboxId: "inbox",
+      groupId,
+      packageId,
+      sourceManifestHash: hash
+    };
+    expect(await runtime.materialize(work)).toMatchObject({
+      kind: "project_selection",
+      userId: "owner",
+      originDeviceId: source.deviceId
+    });
+    expect(appendVerified).toHaveBeenCalledWith({
+      userId: "owner",
+      record: selection
+    });
+    expect(repository.createCapturedSession).not.toHaveBeenCalled();
+    appendVerified.mockRejectedValueOnce(new Error("storage_unavailable"));
+    await expect(runtime.materialize(work)).rejects.toThrow(
+      "storage_unavailable"
+    );
+    await expect(
+      runtime.materialize({ ...work, groupId: testRelayId("other_group") })
+    ).rejects.toThrow("PdsCryptoProjectSelectionError");
+    await expect(
+      runtime.materialize({
+        ...work,
+        packageId: Buffer.alloc(32, 8).toString("base64url")
+      })
+    ).rejects.toThrow("PdsCryptoProjectSelectionError");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 describe("PDS direct package delivery", () => {
   const pkg = {

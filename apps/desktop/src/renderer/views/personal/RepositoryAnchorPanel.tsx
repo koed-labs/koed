@@ -1,4 +1,5 @@
 import { RepositoryReviewPanel } from "./RepositoryReviewPanel.js";
+import { ProjectAssociationPanel } from "./ProjectAssociationPanel.js";
 import { useEffect, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { RendererPlatform } from "../../services/platform.js";
@@ -7,11 +8,13 @@ export function RepositoryAnchorPanel({
   project,
   onSetAnchor,
   onReview,
+  onAssociation,
   onChanged
 }: {
   project: DesktopProject;
   onSetAnchor?: RendererPlatform["setRepositoryAnchor"];
   onReview?: RendererPlatform["reviewRepository"];
+  onAssociation?: RendererPlatform["projectAssociation"];
   onChanged?: () => Promise<void>;
 }) {
   const [selectedCheckoutId, setSelectedCheckoutId] = useState(
@@ -142,6 +145,14 @@ export function RepositoryAnchorPanel({
           key={localProjectId}
           localProjectId={localProjectId}
           onReview={onReview}
+          onChanged={onChanged}
+        />
+      ) : null}
+      {onAssociation && localProjectId ? (
+        <ProjectAssociationPanel
+          key={localProjectId}
+          localProjectId={localProjectId}
+          onAssociation={onAssociation}
           onChanged={onChanged}
         />
       ) : null}

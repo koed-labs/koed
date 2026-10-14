@@ -14,6 +14,7 @@ export interface PdsWorkerSecureRuntime {
   refreshPeerRoutes?(): Promise<void>;
   waitForWake?(signal?: AbortSignal): Promise<void>;
   reconcileArtifacts?(): Promise<number>;
+  reconcileProjectSelections?(): Promise<number>;
   publish(input: {
     workerId: string;
     outboxId: string;
@@ -88,6 +89,7 @@ export interface PdsWorkerSecureRuntime {
         originDeviceId: string;
         artifactState: "ready" | "incompatible";
       }
+    | { kind: "project_selection"; userId: string; originDeviceId: string }
   >;
 }
 
@@ -210,6 +212,9 @@ export const createPdsLocalSyncService = (input: {
       }
       await input.secureRuntime.pollLifecycle?.();
       await refreshPeerRoutesIfDue();
+      const selections =
+        (await input.secureRuntime.reconcileProjectSelections?.()) ?? 0;
+      needsDrain ||= selections >= 10;
       const stagedArtifacts =
         (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
       needsDrain ||= stagedArtifacts >= 50;
@@ -435,7 +440,10 @@ export const createPdsLocalSyncService = (input: {
             packageId: entry.packageId,
             sourceManifestHash: entry.sourceManifestHash
           });
-          if (materialized.kind === "artifact") {
+          if (
+            materialized.kind === "artifact" ||
+            materialized.kind === "project_selection"
+          ) {
             await input.secureRuntime.acknowledge?.({
               inboxId: entry.id,
               groupId: entry.groupId,

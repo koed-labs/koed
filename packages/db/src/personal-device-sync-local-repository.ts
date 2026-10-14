@@ -418,6 +418,14 @@ export const createPersonalDeviceSyncLocalRepository = (
          where o.state in ('pending','uploading')
            and p.enabled=true and p.publication_paused=false
          union all
+         select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
+         from pds_project_selection_outbox o
+         join pds_project_selection_revisions r on r.id=o.revision_row_id
+         join personal_sync_policies p on p.group_id=r.group_id
+         join personal_device_groups g on g.id=r.group_id
+         where o.state in ('pending','committed') and g.state='active'
+           and p.enabled=true and p.publication_paused=false
+         union all
          select greatest(i.retry_at,coalesce(i.lease_until,i.retry_at)) as wake_at
          from pds_inbox_entries i
          where i.state in ('pending','downloading','verifying','processing','failed')

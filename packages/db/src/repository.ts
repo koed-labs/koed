@@ -64,6 +64,7 @@ import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repositor
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
+import { createPersonalProjectSelectionRepository } from "./personal-project-selection-repository.js";
 import { createPersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
@@ -4062,6 +4063,7 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
+    personalProjectSelections: createPersonalProjectSelectionRepository(pool),
     ...createPersonalDeviceArtifactRepository(pool, {
       getEmbeddableSource: (sourceType, sourceId) =>
         repository.getEmbeddableSource(sourceType, sourceId)

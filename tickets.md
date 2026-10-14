@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 is complete and assessed. Continue M3 with tickets 11–13 on the Project integration branch; the Global preview remains separate. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 and M3 are complete and assessed. Continue M4 with tickets 14–15 on the Project integration branch, then preview 18 on the dependent Global branch; its release remains after ticket 16. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -311,16 +311,16 @@ already-published checkpoint chains and offline baselines before release.
 
 **Blocked by:** 02: Select and inspect one repository anchor.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Create stable Project association identifiers scoped to the User and Personal Device Group. Require local acceptance before an unassociated checkout uses a shared selection.
-- [ ] Provide Desktop association and selection controls. Ordinary clone recall can still match independently resolved equal anchors without a configuration association.
-- [ ] Transport separate encrypted, authenticated selection records bound to the association, stable selection identifier, authoring device, unique revision, and replaced revisions.
-- [ ] Deliver sequential set and delete operations independently of Conversation capture. Retain deletion records so offline delivery cannot restore a superseded selection.
-- [ ] Apply only the current selection of the associated Project. Require its anchor among current normalized remotes, tolerate duplicate URLs, and preserve local explicit precedence.
-- [ ] Deletion removes the replicated preference and resumes the normal detection order. Distinguish shared deletion from local anchor override removal; neither reassigns existing sessions.
-- [ ] Detect concurrent revisions and leave affected resolution unresolved rather than choosing arrival order. Ticket 13 supplies the User resolution flow.
-- [ ] Test quiet checkouts, offline replacement/deletion, replay, and the unrelated comparison-remote counterexample. Document association and selection lifecycle behavior.
+- [x] Create stable Project association identifiers scoped to the User and Personal Device Group. Require local acceptance before an unassociated checkout uses a shared selection.
+- [x] Provide Desktop association and selection controls. Ordinary clone recall can still match independently resolved equal anchors without a configuration association.
+- [x] Transport separate encrypted, authenticated selection records bound to the association, stable selection identifier, authoring device, unique revision, and replaced revisions.
+- [x] Deliver sequential set and delete operations independently of Conversation capture. Retain deletion records so offline delivery cannot restore a superseded selection.
+- [x] Apply only the current selection of the associated Project. Require its anchor among current normalized remotes, tolerate duplicate URLs, and preserve local explicit precedence.
+- [x] Deletion removes the replicated preference and resumes the normal detection order. Distinguish shared deletion from local anchor override removal; neither reassigns existing sessions.
+- [x] Detect concurrent revisions and leave affected resolution unresolved rather than choosing arrival order. Ticket 13 supplies the User resolution flow.
+- [x] Test quiet checkouts, offline replacement/deletion, replay, and the unrelated comparison-remote counterexample. Document association and selection lifecycle behavior.
 
 ## 13: Resolve concurrent synced anchor selections
 
@@ -328,15 +328,24 @@ already-published checkpoint chains and offline baselines before release.
 
 **Blocked by:** 12: Associate Projects and sync anchor selection updates.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Show concurrent set/set and set/delete revisions for the same selection record in Desktop.
-- [ ] Keep an affected checkout unresolved while conflict remains, unless a local explicit selection takes precedence.
-- [ ] Let a User select an anchor or deletion through an operation that replaces all reviewed current conflict revisions.
-- [ ] Recheck the reviewed conflict state before resolution. A newly arrived competing revision must not be silently discarded.
-- [ ] Replicate the resolution so online and formerly offline devices converge without relying on wall clock or arrival order.
-- [ ] Re-creating a deleted selection requires an explicit revision replacing the deletion. Replays and superseded revisions have no new effect.
-- [ ] Demonstrate resolution across two devices without session capture or reassignment. Add offline/concurrent tests and user documentation.
+- [x] Show concurrent set/set and set/delete revisions for the same selection record in Desktop.
+- [x] Keep an affected checkout unresolved while conflict remains, unless a local explicit selection takes precedence.
+- [x] Let a User select an anchor or deletion through an operation that replaces all reviewed current conflict revisions.
+- [x] Recheck the reviewed conflict state before resolution. A newly arrived competing revision must not be silently discarded.
+- [x] Replicate the resolution so online and formerly offline devices converge without relying on wall clock or arrival order.
+- [x] Re-creating a deleted selection requires an explicit revision replacing the deletion. Replays and superseded revisions have no new effect.
+- [x] Demonstrate resolution across two devices without session capture or reassignment. Add offline/concurrent tests and user documentation.
+
+**M3 assessment:** Automated checks cover authenticated encrypted delivery between
+separate source/receiver certificates, PostgreSQL assignment and configuration
+journals, quiet checkout discovery, local acceptance, concurrent set/set and
+set/delete states, exact reviewed-head resolution, stale review refresh, replay,
+and renewed publication after recipient-epoch changes. Desktop controls pass
+component and main-process boundary tests. This assessment does not claim a
+physical two-machine rehearsal. The coordinated source-profile release transition
+remains part of ticket 16.
 
 ## 14: Share and recall Team Memory by Project snapshot
 

@@ -14,6 +14,10 @@
 
 # Personal Device Sync Protocol V1
 
+The independent Project configuration contract is described in
+[Personal Project association and selection records](personal-project-selection.md).
+It uses a separate signed plaintext profile; it is not a Session checkpoint.
+
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
 This document freezes Personal Device Sync (PDS) V1. The shared protocol,

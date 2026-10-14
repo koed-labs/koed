@@ -159,6 +159,7 @@ export type PersonalMemoryWorkspaceProps = {
   revealLocalProject?: (localProjectId: string) => Promise<void>;
   setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   reviewRepository?: RendererPlatform["reviewRepository"];
+  projectAssociation?: RendererPlatform["projectAssociation"];
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -783,6 +784,7 @@ function ProjectDetail({
   onRevealLocalProject,
   onSetRepositoryAnchor,
   onReviewRepository,
+  onProjectAssociation,
   onRetry,
   onSelectSession,
   project
@@ -811,6 +813,7 @@ function ProjectDetail({
   onRevealLocalProject?: (localProjectId: string) => void;
   onSetRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   onReviewRepository?: RendererPlatform["reviewRepository"];
+  onProjectAssociation?: RendererPlatform["projectAssociation"];
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
@@ -1099,6 +1102,7 @@ function ProjectDetail({
             project={project}
             onSetAnchor={onSetRepositoryAnchor}
             onReview={onReviewRepository}
+            onAssociation={onProjectAssociation}
             onChanged={async () => onRetry()}
           />
           {(project.checkouts?.length ?? 0) > 1 ? (
@@ -3785,6 +3789,7 @@ export function PersonalMemoryWorkspace({
   revealLocalProject,
   setRepositoryAnchor,
   reviewRepository,
+  projectAssociation,
   projectWorkspaceSuggestions = [],
   ready = true,
   route,
@@ -4077,6 +4082,7 @@ export function PersonalMemoryWorkspace({
                     }
                   : undefined
               }
+              onProjectAssociation={projectAssociation}
               onRetry={() => void store.loadProjects()}
               onSelectSession={(sessionId) => {
                 if (!selectedProject) return;

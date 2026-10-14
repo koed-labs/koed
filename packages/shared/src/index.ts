@@ -1844,3 +1844,5 @@ export {
   pdsSelectedRepositoryToken
 } from "./personal-repository-assignment.js";
 export type { PdsRepositoryAssignment } from "./personal-repository-assignment.js";
+
+export * from "./personal-project-selection.js";

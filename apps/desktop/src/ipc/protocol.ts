@@ -23,6 +23,7 @@ export const desktopCommandNames = [
   "package_install",
   "project_list",
   "project_anchor_set",
+  "project_association",
   "repository_review",
   "ensure_independent_project",
   "select_project_directory",

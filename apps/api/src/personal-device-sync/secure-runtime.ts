@@ -10,7 +10,9 @@ import {
   createPdsSessionPackage,
   createPdsSessionPackageRuntimeContext,
   pdsEd25519PrivateKey,
-  pdsEd25519PublicKey
+  pdsEd25519PublicKey,
+  PDS_PROJECT_SELECTION_PROTOCOL,
+  signPdsProjectSelection
 } from "@koed/shared";
 import type {
   AiClientSourceRuntime,
@@ -338,6 +340,18 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
     groupSecretSetRef: "desktop-secure-runtime",
     originDeploymentId: secret.device.originDeploymentId,
     originDeviceId: secret.device.id,
+    signProjectSelection(input) {
+      return signPdsProjectSelection(
+        {
+          ...input,
+          protocol: PDS_PROJECT_SELECTION_PROTOCOL,
+          groupId: secret.groupId,
+          authorDeviceId: secret.device.id,
+          authorSigningKeyId: secret.device.signingKeyId
+        },
+        signingKey
+      );
+    },
     buildClosedSessionPackage(input) {
       const manifest = createPdsSessionManifest({
         repositoryAssignment: createPdsRepositoryAssignment(

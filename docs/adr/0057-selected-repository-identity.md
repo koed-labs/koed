@@ -46,6 +46,19 @@ independently selected anchors may match without replicating configuration.
 The local editor changes only local checkout configuration. It neither writes
 replicated selections nor changes recorded Captured Session assignments.
 
+Shared selection editing uses a separate encrypted configuration journal scoped
+to the owning User and Personal Device Group. Stable association and selection
+identifiers do not establish checkout acceptance by themselves. Acceptance binds
+the live local checkout incarnation; ordinary anchor equality never creates it.
+Every signed set or deletion revision names the revisions it replaces. Causal
+heads determine the shared selection, including concurrent set/delete conflicts.
+Resolution replaces exactly the heads the User reviewed and rechecks them in the
+write transaction. Retained deletion history prevents offline replay from
+restoring a superseded preference. This retains more configuration history than
+a clock-based register, in exchange for preserving concurrent edits and explicit
+deletions across offline devices. The existing PDS Worker delivers this journal
+independently of Conversation capture.
+
 ## Consequences
 
 Forks match only when their selected anchors match. Custom remote names need

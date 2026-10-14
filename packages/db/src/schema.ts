@@ -26,6 +26,7 @@ import type {
   EncryptedPayloadEnvelope,
   ManagedConversationTargetReadinessEvidence,
   PrivacyLabelPolicy,
+  PdsProjectSelectionRecord,
   RepositoryIdentity
 } from "@koed/shared";
 
@@ -12570,6 +12571,112 @@ export const personalDeviceGroups = pgTable(
     check(
       "personal_device_groups_sequence_check",
       sql`${table.headSequence} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+/** Synced configuration has its own journal, independent of Captured Sessions. */
+export const pdsProjectAssociations = pgTable(
+  "pds_project_associations",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    associationId: text("association_id").notNull(),
+    selectionId: text("selection_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_project_association_group_unique").on(
+      table.groupId,
+      table.associationId
+    ),
+    unique("pds_project_selection_group_unique").on(
+      table.groupId,
+      table.selectionId
+    )
+  ]
+);
+
+export const pdsProjectSelectionRevisions = pgTable(
+  "pds_project_selection_revisions",
+  {
+    id: id(),
+    associationRowId: uuid("association_row_id")
+      .notNull()
+      .references(() => pdsProjectAssociations.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
+    signedRecord: jsonb("signed_record")
+      .$type<PdsProjectSelectionRecord>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_project_selection_revision_group_unique").on(
+      table.groupId,
+      table.revisionId
+    ),
+    index("pds_project_selection_association_idx").on(table.associationRowId)
+  ]
+);
+
+export const pdsProjectSelectionOutbox = pgTable(
+  "pds_project_selection_outbox",
+  {
+    id: id(),
+    revisionRowId: uuid("revision_row_id")
+      .notNull()
+      .unique()
+      .references(() => pdsProjectSelectionRevisions.id, {
+        onDelete: "cascade"
+      }),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    transportId: text("transport_id"),
+    dispatchEpoch: text("dispatch_epoch"),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "pds_project_selection_outbox_state_check",
+      sql`${table.state} in ('pending','committed','acked') and ${table.attemptCount} >= 0`
+    ),
+    index("pds_project_selection_outbox_due_idx").on(table.state, table.retryAt)
+  ]
+);
+
+/** Device-local acceptance is deliberately absent from encrypted selection records. */
+export const pdsProjectAssociationAcceptances = pgTable(
+  "pds_project_association_acceptances",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    associationRowId: uuid("association_row_id")
+      .notNull()
+      .references(() => pdsProjectAssociations.id, { onDelete: "cascade" }),
+    originatingDeviceId: text("originating_device_id").notNull(),
+    checkoutId: text("checkout_id").notNull(),
+    localProjectId: text("local_project_id").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("pds_project_association_checkout_unique").on(
+      table.ownerUserId,
+      table.originatingDeviceId,
+      table.checkoutId
     )
   ]
 );

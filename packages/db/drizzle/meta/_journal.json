@@ -351,6 +351,34 @@
       "when": 1792002544034,
       "tag": "0049_pds_repository_assignments",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792006489672,
+      "tag": "0050_pds_project_selections",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792006886765,
+      "tag": "0051_pds_project_selection_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792007444713,
+      "tag": "0052_pds_project_association_acceptance",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792009365364,
+      "tag": "0053_pds_project_selection_epochs",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,12 @@ import {
 import { safeExternalUrl } from "../../window/external-url.js";
 import { personalDesktopProjectMetadataSchema } from "@koed/shared/personal-desktop";
 import type { DesktopProjectMetadata } from "../../project-memory-ui.js";
+import {
+  projectSelectionCommandSchema,
+  projectSelectionCommandResultSchema,
+  type ProjectSelectionCommand,
+  type ProjectSelectionCommandResult
+} from "@koed/shared/project-selection";
 
 // Discovery includes local indexing details that are not part of the desktop
 // metadata contract. Normalize those responses while validating every UI field.
@@ -26,6 +32,9 @@ const discoveredProjectSchema = personalDesktopProjectMetadataSchema
   .strip();
 
 export type RendererPlatform = {
+  projectAssociation: (
+    input: ProjectSelectionCommand
+  ) => Promise<ProjectSelectionCommandResult>;
   reviewRepository: (
     input: RepositoryReviewCommand
   ) => Promise<RepositoryReviewCommandResult>;
@@ -42,6 +51,13 @@ export type RendererPlatform = {
 };
 
 export const createRendererPlatform = (): RendererPlatform => ({
+  projectAssociation: async (input) =>
+    projectSelectionCommandResultSchema.parse(
+      await window.koedDesktop?.invoke(
+        "project_association",
+        projectSelectionCommandSchema.parse(input)
+      )
+    ),
   reviewRepository: async (input) =>
     repositoryReviewCommandResultSchema.parse(
       await window.koedDesktop?.invoke(

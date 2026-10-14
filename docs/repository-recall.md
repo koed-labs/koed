@@ -107,6 +107,14 @@ The server entry point includes Node dependencies and must not enter the rendere
 
 ## Fixed Assignment Reviews
 
+Shared selection controls are described in
+[Personal Project association and selection records](personal-project-selection.md).
+An accepted association changes live discovery, including quiet checkouts.
+Its encrypted configuration updates and deletions run independently of Conversation
+capture. Existing Session assignments remain recorded; fixed reassignment still
+requires the separate review below. Concurrent shared choices remain unresolved
+until explicitly resolved, while a local explicit choice retains precedence.
+
 Anchor discovery records changes in an atomic, profile-local outbox. An unchanged
 anchor or a branch observation does not create another change. Checkout identity
 includes the filesystem incarnation; replacing a repository at the same path does
