@@ -435,11 +435,7 @@ export const createKoedMcpServer = async (
                     taskId,
                     {
                       signal: context.mcpReq.signal,
-                      waitSeconds:
-                        "wait_seconds" in collection &&
-                        typeof collection.wait_seconds === "number"
-                          ? collection.wait_seconds
-                          : 0
+                      wait: "wait" in collection && collection.wait === true
                     }
                   )
                 : await runtimeClient.getMemoryAnswerTask(

@@ -125,9 +125,11 @@ this selection.
 
 Continue independent work, then collect the same task with
 `memory_answer_result({task_id})` before a memory-dependent decision. Its
-optional `wait_seconds` accepts an integer from 0 to 30; zero checks immediately,
-and a positive value waits up to that bounded interval. If the result is still
-pending, continue useful work or use another bounded collection when needed.
+optional boolean `wait` defaults to false, which checks promptly. Set `wait=true`
+when the result is needed and independent work is exhausted; the existing
+observer waits for the task to settle, subject to expiry, cancellation and harness
+timeouts rather than a separate 30-second cap. A disconnected wait does not cancel
+or restart the durable task; retain its ID to collect later.
 A single-shot run must collect its pending task before exiting if it needs the
 answer. Cancel unnecessary recall with `memory_answer_cancel({task_id})`.
 

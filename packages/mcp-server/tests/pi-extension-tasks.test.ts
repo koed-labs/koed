@@ -91,14 +91,13 @@ const setup = async () => {
   const invoke = (
     name: string,
     params: Record<string, unknown>,
-    session = "session-a"
+    session = "session-a",
+    signal = new AbortController().signal
   ) =>
-    tools
-      .get(name)!
-      .execute("call-1", params, new AbortController().signal, undefined, {
-        cwd: "/work/project",
-        sessionManager: { getSessionId: () => session }
-      });
+    tools.get(name)!.execute("call-1", params, signal, undefined, {
+      cwd: "/work/project",
+      sessionManager: { getSessionId: () => session }
+    });
   return { invoke, tools };
 };
 
@@ -291,7 +290,7 @@ describe("Pi explicit Memory Answer tasks", () => {
     expect(error).not.toHaveProperty("cause");
   });
 
-  it("waits within collection for a delayed result without submitting another recall", async () => {
+  it("waits beyond 30 seconds for a delayed result without submitting another recall", async () => {
     let completed = false;
     const fetchMock = vi.fn(async (url: unknown) => {
       expect(String(url)).toContain(`/v1/tasks/${taskId}`);
@@ -309,37 +308,66 @@ describe("Pi explicit Memory Answer tasks", () => {
     let settled = false;
     const result = invoke("memory_answer_result", {
       task_id: taskId,
-      wait_seconds: 3
+      wait: true
     }).finally(() => {
       settled = true;
     });
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(31_000);
     expect(settled).toBe(false);
     completed = true;
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(5000);
     expect((await result).content[0]?.text).toContain("Delayed answer");
   });
 
-  it("returns pending at the bounded collection deadline and validates wait_seconds", async () => {
-    const fetchMock = vi.fn(async (url: unknown) => {
+  it("stops collection on disconnect without cancelling recall and validates wait", async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       expect(String(url)).toContain(`/v1/tasks/${taskId}`);
+      expect(init?.method).toBe("GET");
       return new Response(JSON.stringify({ task: task("running") }));
     });
     vi.stubGlobal("fetch", fetchMock);
     const { invoke } = await setup();
     await expect(
-      invoke("memory_answer_result", { task_id: taskId, wait_seconds: 31 })
-    ).rejects.toThrow("wait_seconds must be an integer from 0 to 30");
+      invoke("memory_answer_result", { task_id: taskId, wait: 31 })
+    ).rejects.toThrow("wait must be a boolean");
     expect(fetchMock).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const result = invoke(
+      "memory_answer_result",
+      { task_id: taskId, wait: true },
+      "session-a",
+      controller.signal
+    ).catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(1000);
+    controller.abort();
+    expect(await result).toBeInstanceOf(Error);
+  });
+
+  it("stops waiting when the task expires without presenting a stale answer", async () => {
+    const expiresAt = new Date(Date.now() + 2000).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              task: task("running", {
+                expiresAt,
+                result: { markdown: "private stale answer" }
+              })
+            })
+          )
+      )
+    );
+    const { invoke } = await setup();
     vi.useFakeTimers();
     const result = invoke("memory_answer_result", {
       task_id: taskId,
-      wait_seconds: 1
-    });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect((await result).details).toMatchObject({
-      status: "pending",
-      task_id: taskId
-    });
+      wait: true
+    }).catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(await result).toBeInstanceOf(Error);
+    expect(String(await result)).not.toContain("private stale answer");
   });
 });

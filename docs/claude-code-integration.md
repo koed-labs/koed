@@ -14,9 +14,11 @@ The MCP tools expose explicit task collection. Omitted, `auto`, and `blocking`
 `delivery_mode` values return the completed Memory Answer through the ordinary
 MCP result path. Explicit `non_blocking` returns a pending task receipt promptly.
 Continue independent work, then call `memory_answer_result` with the receipt's
-`task_id` when the next action needs recalled memory. Its optional
-`wait_seconds` accepts an integer from 0 to 30; zero checks immediately, and a
-positive value waits up to that bounded interval. Pending is not an answer.
+`task_id` when the next action needs recalled memory. Collection checks promptly
+by default; set `wait=true` to await the same task until it settles, subject to
+existing expiry, cancellation and harness timeouts. There is no separate
+30-second collection cap. A timeout detaches observation, not durable work;
+retain the task ID rather than resubmitting recall. Pending is not an answer.
 Cancel unnecessary work with `memory_answer_cancel({task_id})`.
 
 Claude Code's optional native backgrounding of ordinary MCP calls is independent

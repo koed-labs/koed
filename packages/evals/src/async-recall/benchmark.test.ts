@@ -80,7 +80,7 @@ describe("submit/collect recall traces", () => {
     );
   });
 
-  it("distinguishes bounded collection from excessive tight pending polls", () => {
+  it("distinguishes result collection from excessive tight pending polls", () => {
     const events = referenceTrace(independent.id);
     const base = events[1]!;
     events.splice(
@@ -115,10 +115,15 @@ describe("submit/collect recall traces", () => {
     ).toBe(true);
   });
 
-  it("counts model result requests, not internal reads during a bounded wait", () => {
+  it("counts model result requests, not internal reads while waiting until ready", () => {
     const events = referenceTrace(independent.id);
     const receipt = events[1]!;
-    events.splice(3, 0, { ...receipt, kind: "result_requested", atMs: 100 });
+    events.splice(3, 0, {
+      ...receipt,
+      kind: "result_requested",
+      wait: true,
+      atMs: 100
+    });
     expect(
       scoreRecallTrace(independent, events).advisory.pendingPollCount
     ).toBe(0);
@@ -126,6 +131,19 @@ describe("submit/collect recall traces", () => {
     expect(
       scoreRecallTrace(independent, events).advisory.pendingPollCount
     ).toBe(1);
+  });
+
+  it("does not count a rejected result argument as pending polling", () => {
+    const events = referenceTrace(independent.id);
+    events.splice(3, 0, {
+      ...events[1]!,
+      kind: "result_requested",
+      atMs: 100,
+      invalidArgumentKeys: ["unsupported_setting"]
+    });
+    expect(
+      scoreRecallTrace(independent, events).advisory.pendingPollCount
+    ).toBe(0);
   });
 
   it("requires an honest unknown decision after no relevant memory", () => {
@@ -152,6 +170,22 @@ describe("submit/collect recall traces", () => {
 });
 
 describe("delayed synthetic recall fixture", () => {
+  it("records immediate collection and waiting collection as distinct request modes", async () => {
+    vi.useFakeTimers();
+    const events: RecallEvent[] = [];
+    const host = new RecallFixture(independent, (event) => events.push(event));
+    const receipt = await host.submit("primary", "non_blocking");
+    const id = String(receipt.task_id);
+    host.resultRequested(id);
+    host.resultRequested(id, true);
+    expect(
+      events
+        .filter((event) => event.kind === "result_requested")
+        .map((event) => event.wait)
+    ).toEqual([false, true]);
+    host.close();
+  });
+
   it("returns an immediate receipt, permits diagnostics, and collects only when ready", async () => {
     vi.useFakeTimers();
     const events: RecallEvent[] = [];

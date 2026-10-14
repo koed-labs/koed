@@ -48,7 +48,7 @@ inputLines.on("line", (line) => {
       method?: string;
       params?: {
         name?: string;
-        arguments?: { task_id?: string; wait_seconds?: number };
+        arguments?: Record<string, unknown>;
       };
     };
     if (
@@ -58,7 +58,13 @@ inputLines.on("line", (line) => {
     )
       fixture.resultRequested(
         request.params.arguments.task_id,
-        request.params.arguments.wait_seconds ?? 0
+        request.params.arguments.wait === true,
+        Object.keys(request.params.arguments).filter(
+          (key) =>
+            !["task_id", "wait"].includes(key) ||
+            (key === "wait" &&
+              typeof request.params!.arguments!.wait !== "boolean")
+        )
       );
   } catch {
     // The production transport remains responsible for malformed input errors.

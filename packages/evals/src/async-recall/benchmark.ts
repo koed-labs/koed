@@ -28,7 +28,8 @@ export interface RecallEvent {
   taskId?: string;
   mode?: Mode;
   query?: string;
-  waitSeconds?: number;
+  wait?: boolean;
+  invalidArgumentKeys?: string[];
   outcome?: "found" | "not_found";
   decision?: Record<string, unknown>;
 }
@@ -200,6 +201,7 @@ export function scoreRecallTrace(
     const polls = indexed.filter(({ event, index }) => {
       if (event.kind === "pending_poll") return true;
       if (event.kind !== "result_requested") return false;
+      if (event.invalidArgumentKeys?.length) return false;
       const nextRequest = indexed.find(
         (entry) =>
           entry.index > index &&

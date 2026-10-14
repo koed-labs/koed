@@ -129,7 +129,7 @@ const taskParameters = Type.Object(
 const resultParameters = Type.Object(
   {
     task_id: Type.String({ pattern: taskIdPattern.source }),
-    wait_seconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 30 }))
+    wait: Type.Optional(Type.Boolean())
   },
   { additionalProperties: false }
 );
@@ -194,12 +194,10 @@ export default function koedExtension(pi) {
           );
         if (
           name === "memory_answer_result" &&
-          params.wait_seconds !== undefined &&
-          (!Number.isInteger(params.wait_seconds) ||
-            params.wait_seconds < 0 ||
-            params.wait_seconds > 30)
+          params.wait !== undefined &&
+          typeof params.wait !== "boolean"
         )
-          throw new Error("wait_seconds must be an integer from 0 to 30");
+          throw new Error("wait must be a boolean");
         const combined = AbortSignal.any(
           [signal, sessionController?.signal].filter(Boolean)
         );
@@ -236,7 +234,7 @@ export default function koedExtension(pi) {
                     params.task_id.toLowerCase(),
                     {
                       signal: combined,
-                      waitSeconds: params.wait_seconds ?? 0
+                      wait: params.wait ?? false
                     }
                   )
                 : await port.get(params.task_id.toLowerCase(), combined);
@@ -308,7 +306,7 @@ export default function koedExtension(pi) {
   register(
     "memory_answer_result",
     "Collect Memory Answer",
-    "Collect an accepted Memory Answer by task_id. Omitted or zero wait_seconds returns promptly with pending or compact final answer text. When independent work is finished and recalled memory is needed, set wait_seconds up to 30 to wait within this call. A timeout leaves the same task pending; do not repeat recall or use a tight polling loop.",
+    "Collect an accepted Memory Answer by task_id. Omitted or false wait returns promptly with pending or compact final answer text. When independent work is finished and recalled memory is needed, set wait=true to wait for this task within the call, subject to task expiry, cancellation, client timeout, or disconnection. Waiting does not start another recall. Do not repeat recall or use a tight polling loop.",
     resultParameters
   );
   register(

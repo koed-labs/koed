@@ -1,17 +1,13 @@
-/* global AbortController, setTimeout, clearTimeout */
 import { formatMemoryAnswerCompletion } from "./memory-answer-presentation.mjs";
 import { MemoryAnswerDelivery } from "./memory-answer-delivery.mjs";
 
 export const collectMemoryAnswerTask = async (
   port,
   taskId,
-  { signal, waitSeconds = 0 } = {}
+  { signal, wait = false } = {}
 ) => {
-  if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 30) {
-    throw new Error(
-      "Memory Answer wait must be an integer from 0 to 30 seconds."
-    );
-  }
+  if (typeof wait !== "boolean")
+    throw new Error("Memory Answer wait must be a boolean.");
   if (!isMemoryAnswerTaskId(taskId)) {
     throw new Error("Memory Answer task identity is invalid.");
   }
@@ -19,11 +15,27 @@ export const collectMemoryAnswerTask = async (
     if (signal?.aborted)
       throw new Error("Memory Answer collection was aborted.");
   };
-  let pendingSnapshot;
   let previousIdentity;
   const read = async (id, readSignal = signal) => {
     checkAbort();
-    const task = await port.get(id, readSignal);
+    let onAbort;
+    const detached = new Promise((_, reject) => {
+      onAbort = () =>
+        reject(new Error("Memory Answer collection was aborted."));
+      readSignal?.addEventListener("abort", onAbort, { once: true });
+      if (readSignal?.aborted) onAbort();
+    });
+    let task;
+    try {
+      // Ignore non-cooperative late reads after detachment. The observer owns
+      // the task-expiry and observation-lifecycle deadline signals.
+      task = await Promise.race([
+        Promise.resolve().then(() => port.get(id, readSignal)),
+        detached
+      ]);
+    } finally {
+      readSignal?.removeEventListener("abort", onAbort);
+    }
     checkAbort();
     if (readSignal?.aborted)
       throw new Error("Memory Answer collection was aborted.");
@@ -38,70 +50,26 @@ export const collectMemoryAnswerTask = async (
       invocationKey: task.invocationKey,
       version: task.version
     };
-    if (["accepted", "running", "cancel_requested"].includes(task.status)) {
-      pendingSnapshot = { ...task, result: null };
-    }
     return task;
   };
-  if (waitSeconds === 0) return await read(taskId);
-
-  const controller = new AbortController();
-  const deadline = Date.now() + waitSeconds * 1000;
-  let timer;
-  let onAbort;
-  const bound = new Promise((resolve, reject) => {
-    onAbort = () => {
-      controller.abort();
-      reject(new Error("Memory Answer collection was aborted."));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    if (signal?.aborted) onAbort();
-    timer = setTimeout(() => {
-      controller.abort();
-      try {
-        checkAbort();
-        if (!pendingSnapshot)
-          throw new Error("Memory Answer collection timed out.");
-        validateMemoryAnswerTask(pendingSnapshot, taskId);
-        // A timeout can expose only a pending handle, never cached answer text.
-        resolve(pendingSnapshot);
-      } catch (error) {
-        reject(error);
-      }
-    }, waitSeconds * 1000);
+  if (!wait) return await read(taskId);
+  const delivery = new MemoryAnswerDelivery({
+    get: read,
+    subscribe: port.subscribe?.bind(port)
   });
-  const operation = async () => {
-    const initial = await read(taskId, controller.signal);
-    if (["completed", "failed", "cancelled"].includes(initial.status))
-      return initial;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return await bound;
-    const delivery = new MemoryAnswerDelivery(
-      { get: read, subscribe: port.subscribe?.bind(port) },
-      { maxObservationMs: remaining }
-    );
-    const observed = await delivery.observe(taskId, {
-      signal: controller.signal
-    });
-    checkAbort();
-    if (observed.kind === "terminal") {
-      validateMemoryAnswerTask(observed.task, taskId);
-      return observed.task;
-    }
-    if (observed.reason === "expired")
-      throw new Error("Memory Answer task has expired.");
-    // The outer deadline also bounds initial and final authorization reads.
-    if (observed.reason === "observation-timeout")
-      return await read(taskId, controller.signal);
-    return await bound;
-  };
-  try {
-    return await Promise.race([operation(), bound]);
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", onAbort);
-    controller.abort();
+  const observed = await delivery.observe(taskId, { signal });
+  checkAbort();
+  if (observed.kind === "terminal") {
+    validateMemoryAnswerTask(observed.task, taskId);
+    return observed.task;
   }
+  if (observed.reason === "expired")
+    throw new Error("Memory Answer task has expired.");
+  if (observed.reason === "observation-timeout")
+    throw new Error(
+      "Memory Answer observation lifecycle ended. Collect the existing task again if needed."
+    );
+  throw new Error("Memory Answer collection was aborted.");
 };
 
 export const isMemoryAnswerTaskId = (value) =>

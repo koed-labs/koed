@@ -66,14 +66,19 @@ export class RecallFixture {
     };
   }
 
-  resultRequested(id: string, waitSeconds = 0): void {
+  resultRequested(
+    id: string,
+    wait = false,
+    invalidArgumentKeys: string[] = []
+  ): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error("Unknown task_id");
     this.emit({
       kind: "result_requested",
       phase: task.phase,
       taskId: id,
-      waitSeconds
+      wait,
+      invalidArgumentKeys
     });
   }
 

@@ -333,33 +333,33 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
     let reads = 0;
     const { client, runtime } = await connect({
       getMemoryAnswerTask: vi.fn(async () => {
-        if (++reads === 2) await gate;
+        if (++reads === 1) await gate;
         return current;
       })
     });
     const pending = client.callTool({
       name: "memory_answer_result",
-      arguments: { task_id: current.id, wait_seconds: 2 }
+      arguments: { task_id: current.id, wait: true }
     });
-    await vi.waitFor(() => expect(reads).toBe(2));
+    await vi.waitFor(() => expect(reads).toBe(1));
     current.status = "completed";
     current.version++;
     current.result = { markdown: "Delayed answer" };
     finish();
     expect(JSON.stringify(await pending)).toContain("Delayed answer");
-    expect(runtime.getMemoryAnswerTask).toHaveBeenCalledTimes(3);
+    expect(runtime.getMemoryAnswerTask).toHaveBeenCalledTimes(2);
     expect(runtime.startMemoryAnswerTask).not.toHaveBeenCalled();
     expect(runtime.cancelMemoryAnswerTask).not.toHaveBeenCalled();
   });
 
-  it("enforces bounded integer waits and keeps cancellation task_id-only", async () => {
+  it("validates the boolean wait option and keeps cancellation task_id-only", async () => {
     const { client, runtime, current } = await connect();
-    for (const wait_seconds of [-1, 31, 0.5, "1"]) {
+    for (const wait of [-1, 1, 0.5, "true"]) {
       expect(
         (
           await client.callTool({
             name: "memory_answer_result",
-            arguments: { task_id: current.id, wait_seconds }
+            arguments: { task_id: current.id, wait }
           })
         ).isError
       ).toBe(true);
@@ -368,7 +368,7 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
       (
         await client.callTool({
           name: "memory_answer_cancel",
-          arguments: { task_id: current.id, wait_seconds: 1 }
+          arguments: { task_id: current.id, wait: true }
         })
       ).isError
     ).toBe(true);
@@ -414,7 +414,7 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
   );
 });
 
-describe("bounded shared task collection", () => {
+describe("shared wait-until-ready task collection", () => {
   it("rejects task identity changes across the initial and observation reads", async () => {
     const current = task({ invocationKey: "first-invocation", version: 2 });
     let reads = 0;
@@ -429,24 +429,38 @@ describe("bounded shared task collection", () => {
           }
     );
     await expect(
-      collectMemoryAnswerTask({ get }, current.id, { waitSeconds: 1 })
+      collectMemoryAnswerTask({ get }, current.id, { wait: true })
     ).rejects.toThrow("identity or version changed");
   });
 
-  it("returns only a pending handle at the whole-call deadline", async () => {
+  it("waits for completion after more than thirty seconds", async () => {
     vi.useFakeTimers();
     const current = task();
     const get = vi.fn(async () => current);
-    const pending = collectMemoryAnswerTask({ get }, current.id, {
-      waitSeconds: 1
+    let wake = () => {};
+    const subscribe = (_id: string, listener: () => void) => {
+      wake = listener;
+      return () => {};
+    };
+    let settled = false;
+    const pending = collectMemoryAnswerTask({ get, subscribe }, current.id, {
+      wait: true
+    }).then((value) => {
+      settled = true;
+      return value;
     });
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(settled).toBe(false);
+    current.status = "completed";
+    current.version++;
+    current.result = { markdown: "Ready after useful work" };
+    wake();
+    await vi.advanceTimersByTimeAsync(5000);
     expect(await pending).toMatchObject({
       id: current.id,
-      status: "running",
-      result: null
+      status: "completed",
+      result: { markdown: "Ready after useful work" }
     });
-    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("detaches on abort without cancelling execution or exposing a late result", async () => {
@@ -462,10 +476,10 @@ describe("bounded shared task collection", () => {
     const pending = collectMemoryAnswerTask(
       { get, ...{ cancel } },
       current.id,
-      { signal: controller.signal, waitSeconds: 30 }
+      { signal: controller.signal, wait: true }
     );
     const outcome = expect(pending).rejects.toThrow("aborted");
-    await vi.waitFor(() => expect(reads).toBe(2));
+    await vi.waitFor(() => expect(reads).toBe(2), { timeout: 2000 });
     controller.abort();
     await outcome;
     finish(
@@ -487,15 +501,15 @@ describe("bounded shared task collection", () => {
       return current;
     });
     const pending = collectMemoryAnswerTask({ get }, current.id, {
-      waitSeconds: 1
+      wait: true
     });
     const outcome = expect(pending).rejects.toThrow("access denied");
     await vi.advanceTimersByTimeAsync(1000);
     await outcome;
   });
 
-  it("bounds an uninterruptible initial read and discards its late result", async () => {
-    vi.useFakeTimers();
+  it("aborts an uninterruptible initial read and discards its late result", async () => {
+    const controller = new AbortController();
     const current = task();
     let finish!: (value: MemoryAnswerTask) => void;
     const gate = new Promise<MemoryAnswerTask>((resolve) => {
@@ -504,10 +518,10 @@ describe("bounded shared task collection", () => {
     const pending = collectMemoryAnswerTask(
       { get: async () => await gate },
       current.id,
-      { waitSeconds: 1 }
+      { wait: true, signal: controller.signal }
     );
-    const outcome = expect(pending).rejects.toThrow("timed out");
-    await vi.advanceTimersByTimeAsync(1000);
+    const outcome = expect(pending).rejects.toThrow("aborted");
+    controller.abort();
     await outcome;
     finish({
       ...current,
@@ -516,8 +530,8 @@ describe("bounded shared task collection", () => {
     });
   });
 
-  it("does not disclose a terminal snapshot when its final authorization read stalls", async () => {
-    vi.useFakeTimers();
+  it("does not disclose a terminal snapshot when its final authorization read is aborted", async () => {
+    const controller = new AbortController();
     const current = task();
     let reads = 0;
     let finish!: (value: MemoryAnswerTask) => void;
@@ -526,8 +540,7 @@ describe("bounded shared task collection", () => {
     });
     const get = vi.fn(async () => {
       reads++;
-      if (reads === 1) return current;
-      if (reads === 2)
+      if (reads === 1)
         return {
           ...current,
           status: "completed" as const,
@@ -536,17 +549,40 @@ describe("bounded shared task collection", () => {
       return await gate;
     });
     const pending = collectMemoryAnswerTask({ get }, current.id, {
-      waitSeconds: 1
+      wait: true,
+      signal: controller.signal
     });
-    await vi.advanceTimersByTimeAsync(1000);
-    const response = await pending;
-    expect(response.status).toBe("running");
-    expect(response.result).toBeNull();
-    expect(get).toHaveBeenCalledTimes(3);
+    const outcome = expect(pending).rejects.toThrow("aborted");
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await outcome;
+    expect(get).toHaveBeenCalledTimes(2);
     finish({
       ...current,
       status: "completed",
       result: { markdown: "late protected answer" }
     });
+  });
+
+  it("bounds a stalled final authorization read by the known task expiry", async () => {
+    vi.useFakeTimers();
+    const current = task({
+      status: "completed",
+      expiresAt: new Date(Date.now() + 1000).toISOString(),
+      result: { markdown: "protected answer" }
+    });
+    let finish!: (value: MemoryAnswerTask) => void;
+    const gate = new Promise<MemoryAnswerTask>((resolve) => {
+      finish = resolve;
+    });
+    let reads = 0;
+    const get = vi.fn(async () => (++reads === 1 ? current : await gate));
+    const pending = collectMemoryAnswerTask({ get }, current.id, {
+      wait: true
+    });
+    const outcome = expect(pending).rejects.toThrow("expired");
+    await vi.advanceTimersByTimeAsync(1000);
+    await outcome;
+    finish(current);
   });
 });

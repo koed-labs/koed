@@ -54,7 +54,12 @@ flags more than two pending polls or more than one sub-second pending poll as
 excessive. These thresholds are experimental benchmark policy, not protocol
 invariants or production waiting guidance. The first pending result is allowed.
 Final successful collection is not counted as a pending poll. Internal runtime
-reads during a bounded `wait_seconds` result request are not model polls.
+reads during a `wait: true` result request are not model polls. By default,
+collection returns immediately; `wait: true` awaits the same task until it is
+terminal, expires, or the caller aborts, subject to the existing observation
+lifecycle. No separate short collection timeout is introduced.
+Unexpected result-argument keys are retained in request telemetry; rejected
+argument calls are not classified as pending polls.
 
 The diagnostic and decision tools are explicit fixture-only observability
 points. This suite does not prove production recall quality, shell-work

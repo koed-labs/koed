@@ -51,24 +51,33 @@ not-found answer. Failure, cancellation, expiry and unavailable access are also
 not evidence that relevant memory is absent.
 
 When the answer is needed and independent work is exhausted, collect with an
-explicit bounded wait:
+explicit wait for the existing task:
 
 ```json
 {
   "task_id": "00000000-0000-4000-8000-000000000001",
-  "wait_seconds": 30
+  "wait": true
 }
 ```
 
-`wait_seconds` accepts integers from 0 to 30 and defaults to 0. A positive wait
-blocks only this collection request; it does not resubmit the question or start
-another worker. The existing authorized observer runs outside the model loop.
-Ending the wait detaches observation, not task execution.
+`wait` defaults to `false`, which returns the current state promptly. `true`
+blocks only this collection request until the task settles or existing expiry,
+cancellation, observation or harness timeouts end the wait. There is no separate
+30-second collection cap. The existing authorized observer runs outside the
+model loop; it does not resubmit the question or start another worker.
+
+If the harness times out or disconnects, the call ends rather than promising a
+late automatic message. The durable task can continue; retain its ID and collect
+again when needed. Expired, failed or cancelled tasks return their terminal
+outcome or an appropriate error, not a fabricated answer. Ending observation
+does not explicitly cancel task execution. The harness's own tool timeout must
+allow enough time for the wait; changing it is an Operator/client configuration
+decision, not a permission or execution-priority override.
 
 Do not rapidly poll, resubmit the same question as a blocking recall, manufacture
-busywork or use sleep tools. If still pending after the bounded wait and no
-independent work remains, leave dependent work unresolved rather than guessing.
-A later turn can collect the same task while it remains available.
+busywork or use sleep tools. If collection is unavailable and no independent
+work remains, leave dependent work unresolved rather than guessing. A later
+turn can collect the same task while it remains available.
 
 Use `memory_answer_cancel` with `task_id` when the work is no longer needed.
 Cancellation is idempotent but can race with completion. The response reports
