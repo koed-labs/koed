@@ -1864,7 +1864,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         );
       return teamOverviewSourcesRepository;
     },
-    createOwnerJobWithClient: (client, input) =>
+    createManagedAssignmentWithClient: (client, input) =>
       requireRepository().createManagedConversationAcceptedAgentAssignmentWithClient(
         client,
         input

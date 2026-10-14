@@ -603,7 +603,7 @@ describe("managed Conversation prompt cancellation", () => {
 });
 
 describe("retired managed Agent Job execution protocol", () => {
-  it("rejects legacy Job signals and Team assignment mutation without opening a transaction", async () => {
+  it("rejects legacy Job signals while native Team assignments validate caller input", async () => {
     const connect = vi.fn();
     const repository = createManagedConversationRepository(
       { connect } as unknown as pg.Pool,
@@ -633,7 +633,7 @@ describe("retired managed Agent Job execution protocol", () => {
         {} as pg.PoolClient,
         {} as never
       )
-    ).rejects.toMatchObject({ statusCode: 410 });
+    ).rejects.toMatchObject({ statusCode: 400 });
     expect(connect).not.toHaveBeenCalled();
   });
 });

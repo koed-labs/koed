@@ -1,3 +1,5 @@
+> Current direction, 2026-10-14: [Orys source study](studio-orys-implementation-study.md) and [current integration status](studio-ui-integration-plan.md) supersede legacy Agent Job requirements below. Ticket 16 remains open for native review completion and lightweight five-minute inbox discovery. Earlier completion evidence describes its historical scope.
+
 # Current PR implementation scope (2026-10-02)
 
 The User approved a unified feature covering former integration Tickets 16–18.

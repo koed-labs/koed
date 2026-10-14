@@ -32,6 +32,7 @@ const launchSelection = {
 };
 
 const launchRepository = {
+  getOwnerReviewBindingForExecution: async () => null,
   listAiClientInstances: async () => [
     {
       instanceId: "codex.default",
@@ -237,6 +238,7 @@ describe("managed Conversation capability admission", () => {
         fetch: vi.fn()
       },
       requireRepository: () => ({
+        getOwnerReviewBindingForExecution: async () => null,
         getManagedConversationExecution: async () => ({
           id: executionId,
           ownerUserId: userId,
@@ -2559,6 +2561,7 @@ describe("managed Conversation routes", () => {
         ],
         // No current capability snapshot: only the runner can recheck readiness.
         listCurrentAiClientCapabilitySnapshots: async () => [],
+        getOwnerReviewBindingForExecution: async () => null,
         enqueueManagedConversationPrompt: enqueue
       })
     } as unknown as ApiRouteContext);
@@ -3650,7 +3653,12 @@ describe("managed Conversation routes", () => {
     const executionId = randomUUID();
     const agentId = randomUUID();
     const identityVersionId = randomUUID();
+    const teamId = randomUUID();
+    const requestId = randomUUID();
+    const acceptedCommandId = randomUUID();
     const projectId = "lp_agent_project";
+    let teamRequestState: "awaiting_owner" | "accepted" | "unavailable" | null =
+      null;
     const searchMemoryNodes = vi.fn(async () => ({
       results: [],
       metadata: {}
@@ -3750,6 +3758,44 @@ describe("managed Conversation routes", () => {
         ],
         listTeamWorkspaceContexts: vi.fn(async () => []),
         listPersonalAgentExecutionJobs: vi.fn(async () => ({ jobs: [] })),
+        getAcceptedRequestForExecution: vi.fn(async () => ({
+          ownerId: userId,
+          status: "accepted",
+          jobId: null,
+          agentId
+        })),
+        getAcceptedRequestNativeBinding: vi.fn(async () => ({
+          requestId,
+          teamId,
+          executionId,
+          commandId: acceptedCommandId,
+          agentId,
+          status: "accepted"
+        })),
+        getManagedConversationCommand: vi.fn(async () => ({
+          id: acceptedCommandId,
+          ownerUserId: userId,
+          executionId,
+          commandKind: "prompt",
+          state: "completed"
+        })),
+        getManagedConversationPromptHistoryAnswer: vi.fn(async () => ({
+          commandId: acceptedCommandId,
+          assistantOutput: {
+            text: "Accepted private work result",
+            truncated: false
+          }
+        })),
+        getOwnerReviewBindingForExecution: vi.fn(async () =>
+          teamRequestState
+            ? { ownerUserId: userId, agentId, status: teamRequestState }
+            : null
+        ),
+        getAwaitingOwnerRequestForExecution: vi.fn(async () =>
+          teamRequestState === "awaiting_owner"
+            ? { agentId, agentVersion: 3, localProjectId: projectId }
+            : null
+        ),
         searchMemoryNodes,
         enqueueManagedConversationPrompt: enqueue
       })
@@ -3803,6 +3849,157 @@ describe("managed Conversation routes", () => {
     expect(secondPrompt.statusCode).toBe(202);
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(searchMemoryNodes).not.toHaveBeenCalled();
+
+    teamRequestState = "awaiting_owner";
+    const planningTurn = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "team-review-planning-turn",
+        clientUserMessageId: randomUUID(),
+        prompt: "Please examine the request and tell me what is unclear.",
+        agentId,
+        expectedAgentVersion: 3
+      }
+    });
+    expect(planningTurn.statusCode).toBe(202);
+    expect(enqueue).toHaveBeenCalledTimes(3);
+
+    teamRequestState = "accepted";
+    const acceptedContinuation = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "team-review-accepted-continuation",
+        clientUserMessageId: randomUUID(),
+        prompt: "Continue the private Agent conversation.",
+        agentId,
+        expectedAgentVersion: 3
+      }
+    });
+    expect(acceptedContinuation.statusCode).toBe(202);
+    expect(enqueue).toHaveBeenCalledTimes(4);
+
+    const summaryDraft = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "team-summary-draft-native-1",
+        clientUserMessageId: randomUUID(),
+        prompt: "Draft a channel summary.",
+        agentId,
+        purpose: "team_summary_draft",
+        teamSummary: { teamId, requestId }
+      }
+    });
+    expect(summaryDraft.statusCode).toBe(202);
+    expect(enqueue).toHaveBeenCalledTimes(5);
+    const summaryInput = enqueue.mock.calls[4]![1];
+    expect(summaryInput).toMatchObject({
+      serverPurpose: "team_summary_draft",
+      teamSummary: { teamId, requestId },
+      prompt: expect.stringContaining("Accepted private work result")
+    });
+    expect(summaryInput.teamSummary).not.toHaveProperty("jobId");
+    expect(summaryDraft.body).not.toContain(acceptedCommandId);
+
+    teamRequestState = "unavailable";
+    const unavailableReview = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "team-review-unavailable",
+        clientUserMessageId: randomUUID(),
+        prompt: "Continue this now-unavailable Team review.",
+        agentId,
+        expectedAgentVersion: 3
+      }
+    });
+    expect(unavailableReview.statusCode).toBe(409);
+    expect(enqueue).toHaveBeenCalledTimes(5);
+    await app.close();
+  });
+
+  it("rejects API-token access to an owner-only native Team summary draft", async () => {
+    const executionId = randomUUID();
+    const enqueue = vi.fn();
+    const requireRepository = vi.fn(() => ({
+      ...launchRepository,
+      getManagedConversationExecution: vi.fn(),
+      enqueueManagedConversationPrompt: enqueue
+    }));
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps", koedHome: "/tmp/koed-test" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async (request: {
+          headers: Record<string, unknown>;
+        }) => {
+          if (
+            String(request.headers.authorization ?? "").startsWith("Bearer ")
+          ) {
+            throw Object.assign(
+              new Error("API Tokens cannot authorize managed execution"),
+              { statusCode: 403 }
+            );
+          }
+          return { id: randomUUID() };
+        }
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "healthy",
+          deploymentId: randomUUID(),
+          deviceInstanceId: randomUUID(),
+          remoteOperationsAllowed: true,
+          message: "healthy",
+          platformProtection: "verified"
+        })
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-team-summary-api-token-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository
+    } as unknown as ApiRouteContext);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      headers: { authorization: "Bearer personal-api-token" },
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "team-summary-draft-api-token",
+        clientUserMessageId: randomUUID(),
+        prompt: "Draft a channel summary.",
+        agentId: randomUUID(),
+        purpose: "team_summary_draft",
+        teamSummary: { teamId: randomUUID(), requestId: randomUUID() }
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(requireRepository).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
     await app.close();
   });
 

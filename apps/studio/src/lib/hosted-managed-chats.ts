@@ -1573,7 +1573,7 @@ export async function queueHostedConversationPrompt(
   options: {
     resumeFromStopped?: true;
     purpose?: "team_summary_draft";
-    teamSummary?: { teamId: string; requestId: string; jobId: string };
+    teamSummary?: { teamId: string; requestId: string; jobId?: string };
     selectedResourceIds?: string[];
     selectedResourceHostedInstanceId?: string;
   } = {}

@@ -11,6 +11,7 @@ import type {
   CreateCollaborationThreadInput,
   MemorySourceRepository,
   PersonalNoteRecord,
+  TeamAgentRequestsRepository,
   TeamOverviewRepository,
   TeamOverviewSourcesRepository
 } from "@koed/db";
@@ -858,6 +859,10 @@ const buildTestServer = async (
       repository: TeamOverviewRepository;
       sources: TeamOverviewSourcesRepository;
     };
+    teamAgentRequests?: TeamAgentRequestsRepository;
+    createManagedAssignmentWithClient?: Parameters<
+      TeamAgentRequestsRepository["decideRequest"]
+    >[2];
   } = {}
 ) => {
   const app = Fastify({ logger: false });
@@ -907,6 +912,14 @@ const buildTestServer = async (
       options.teamOverview?.repository ?? ({} as never),
     requireTeamOverviewSourcesRepository: () =>
       options.teamOverview?.sources ?? ({} as never),
+    requireTeamAgentRequestsRepository: () =>
+      options.teamAgentRequests ?? ({} as never),
+    createManagedAssignmentWithClient:
+      options.createManagedAssignmentWithClient ??
+      ((async () => ({
+        executionId: randomUUID(),
+        commandId: randomUUID()
+      })) as never),
     requireSharedMemoryRepository: () => ({
       async listWorkspaceGrants(_actor, input) {
         const available =
@@ -1607,6 +1620,85 @@ describe("collaboration HTTP routes", () => {
     expect(jsonBody<{ error: string }>(response).error).toContain(
       "Device credential is not allowed for this operation"
     );
+    await app.close();
+  });
+
+  it("routes owner acceptance through native assignment creation without exposing private IDs", async () => {
+    const fixture = createCollaborationFixture();
+    const requestId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const createAssignment = vi.fn(async () => ({ executionId, commandId }));
+    const decideRequest = vi.fn(
+      async (_actor: unknown, _input: unknown, queue: AssignmentCallback) => {
+        const assignment = await queue({} as never, {} as never);
+        expect(assignment).toEqual({ executionId, commandId });
+        return {
+          id: requestId,
+          teamId: fixture.ids.teamA,
+          teamProjectId: randomUUID(),
+          channelId: randomUUID(),
+          requestMessageId: randomUUID(),
+          originRootMessageId: null,
+          requesterId: fixture.ids.bob,
+          requesterName: "Bob",
+          ownerId: fixture.ids.alice,
+          ownerName: "Alice",
+          agentId: randomUUID(),
+          agentName: "Mira",
+          status: "accepted",
+          jobId: null,
+          jobStatus: null,
+          executionStatus: "queued",
+          outcomeMessageId: null,
+          version: 2,
+          createdAt: iso,
+          updatedAt: iso,
+          canWithdraw: false,
+          canReview: true
+        };
+      }
+    );
+    type AssignmentCallback = Parameters<
+      TeamAgentRequestsRepository["decideRequest"]
+    >[2];
+    const teamAgentRequests = {
+      decideRequest
+    } as unknown as TeamAgentRequestsRepository;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      teamAgentRequests,
+      createManagedAssignmentWithClient: createAssignment as AssignmentCallback
+    });
+
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${requestId}/decision`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { expectedVersion: 1, decision: "accept" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(createAssignment).toHaveBeenCalledOnce();
+    expect(
+      jsonBody<{ request: Record<string, unknown> }>(response).request
+    ).toMatchObject({
+      status: "accepted",
+      jobId: null,
+      jobStatus: null,
+      executionStatus: "queued"
+    });
+    expect(response.body).not.toContain(executionId);
+    expect(response.body).not.toContain(commandId);
+
+    const apiTokenResponse = await app.inject({
+      method: "PUT",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${requestId}/decision`,
+      headers: { authorization: "Bearer personal-api-token" },
+      payload: { expectedVersion: 1, decision: "accept" }
+    });
+    expect(apiTokenResponse.statusCode).toBe(403);
+    expect(decideRequest).toHaveBeenCalledOnce();
+    expect(createAssignment).toHaveBeenCalledOnce();
     await app.close();
   });
 

@@ -46,6 +46,15 @@ const request = {
 describe("Team Agent Request contracts", () => {
   it("keeps request DTOs safe and separates accepted from actual Job state", () => {
     expect(teamAgentRequestSchema.safeParse(request).success).toBe(true);
+    expect(teamAgentRequestSchema.parse(request).executionStatus).toBeNull();
+    expect(
+      teamAgentRequestSchema.safeParse({
+        ...request,
+        jobId: null,
+        jobStatus: null,
+        executionStatus: "waiting"
+      }).success
+    ).toBe(true);
     expect(
       teamAgentRequestSchema.safeParse({
         ...request,
@@ -55,6 +64,12 @@ describe("Team Agent Request contracts", () => {
     expect(
       teamAgentRequestSchema.safeParse({ ...request, jobStatus: "pending" })
         .success
+    ).toBe(false);
+    expect(
+      teamAgentRequestSchema.safeParse({
+        ...request,
+        executionStatus: "finished"
+      }).success
     ).toBe(false);
   });
 

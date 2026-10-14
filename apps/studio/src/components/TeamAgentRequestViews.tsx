@@ -9,7 +9,12 @@ import {
 } from "@/lib/team-agent-requests-client";
 import { AgentThinkingIndicator } from "./AgentThinkingIndicator";
 import { teamRequestProgress } from "@/lib/agent-chat-progress";
-import { teamAgentRequestCardActions } from "@/lib/team-agent-request-view-state";
+import {
+  teamAgentRequestCanAccept,
+  teamAgentRequestCardActions,
+  teamAgentRequestHasTerminalOutcome,
+  teamAgentRequestStatusLabel
+} from "@/lib/team-agent-request-view-state";
 
 type RequestState = "loading" | "ready" | "unavailable" | "access-lost";
 
@@ -536,15 +541,7 @@ export function TeamAgentRequestReviewPanel({
         setState("unavailable");
       }
     }
-  }, [
-    client,
-    executionId,
-    onAuthorizationLost,
-    onReviewSaved,
-    requestId,
-    scopeKey,
-    teamId
-  ]);
+  }, [client, onAuthorizationLost, onReviewSaved, requestId, scopeKey, teamId]);
 
   useEffect(() => {
     // The private owner review is loaded only for the explicit request handoff.
@@ -553,11 +550,14 @@ export function TeamAgentRequestReviewPanel({
     return () => {
       generation.current += 1;
     };
-  }, [load]);
+  }, [executionId, load]);
 
-  useEffect(() => {
+  const [previousSummaryDraftText, setPreviousSummaryDraftText] =
+    useState(summaryDraftText);
+  if (summaryDraftText !== previousSummaryDraftText) {
+    setPreviousSummaryDraftText(summaryDraftText);
     if (summaryDraftText) setSummary(summaryDraftText);
-  }, [summaryDraftText]);
+  }
 
   useEffect(() => {
     // The owner selected a completed Agent message in the private execution.
@@ -568,17 +568,14 @@ export function TeamAgentRequestReviewPanel({
   useEffect(() => {
     if (
       request?.status !== "accepted" ||
-      request.jobStatus === "succeeded" ||
-      request.jobStatus === "failed" ||
-      request.jobStatus === "canceled" ||
-      request.jobStatus === "interrupted"
+      teamAgentRequestHasTerminalOutcome(request)
     )
       return;
     const timer = window.setInterval(() => {
       void load();
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [load, request?.jobStatus, request?.status]);
+  }, [load, request]);
 
   const save = async () => {
     if (!request || !review || !goal.trim()) return;
@@ -611,10 +608,12 @@ export function TeamAgentRequestReviewPanel({
       !request ||
       !review ||
       (decision === "accept" &&
-        (!goal.trim() ||
-          !executionId ||
-          review.executionId !== executionId ||
-          review.privateGoal !== goal))
+        !teamAgentRequestCanAccept({
+          request,
+          review,
+          goal,
+          executionId
+        }))
     )
       return;
     setBusy(true);
@@ -700,6 +699,16 @@ export function TeamAgentRequestReviewPanel({
   const visibleState = loadedScopeKey === scopeKey ? state : "loading";
   const visibleRequest = loadedScopeKey === scopeKey ? request : null;
   const visibleReview = loadedScopeKey === scopeKey ? review : null;
+  const canAccept = Boolean(
+    visibleRequest &&
+    visibleReview &&
+    teamAgentRequestCanAccept({
+      request: visibleRequest,
+      review: visibleReview,
+      goal,
+      executionId
+    })
+  );
 
   return (
     <section
@@ -724,8 +733,7 @@ export function TeamAgentRequestReviewPanel({
         </div>
         {visibleRequest?.status === "accepted" && (
           <span className="rounded-full border border-border px-2 py-1 text-[10px] text-subtle">
-            Accepted
-            {visibleRequest.jobStatus ? ` · ${visibleRequest.jobStatus}` : ""}
+            {teamAgentRequestStatusLabel(visibleRequest)}
           </span>
         )}
       </div>
@@ -755,8 +763,9 @@ export function TeamAgentRequestReviewPanel({
           <>
             {!executionId && (
               <p className="mt-3 text-xs text-warning">
-                Save a concise private brief before starting this chat. The
-                request remains pending until you explicitly accept it.
+                Send a private message to create this native conversation, then
+                save the brief before accepting. Nothing from the private chat
+                is shared with the Team automatically.
               </p>
             )}
             {executionId &&
@@ -778,7 +787,7 @@ export function TeamAgentRequestReviewPanel({
                 onChange={(event) => setGoal(event.target.value)}
                 maxLength={8_000}
                 rows={3}
-                placeholder="What should the Agent do, and how should it approach the work?"
+                placeholder="Review the proposed work and edit the brief you will explicitly accept."
                 className="mt-1 block w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent disabled:opacity-60"
               />
             </label>
@@ -800,13 +809,7 @@ export function TeamAgentRequestReviewPanel({
               </button>
               <button
                 type="button"
-                disabled={
-                  busy ||
-                  !executionId ||
-                  !goal.trim() ||
-                  visibleReview.executionId !== executionId ||
-                  visibleReview.privateGoal !== goal
-                }
+                disabled={busy || !canAccept}
                 onClick={() => void decide("accept")}
                 className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-accent/90 disabled:opacity-50"
               >
@@ -877,9 +880,7 @@ export function TeamAgentRequestReviewPanel({
               )}
             </div>
           )}
-          {["succeeded", "failed", "canceled"].includes(
-            visibleRequest.jobStatus ?? ""
-          ) && (
+          {teamAgentRequestHasTerminalOutcome(visibleRequest) && (
             <div className="mt-4 space-y-2 rounded-lg border border-border/70 bg-background/40 p-3">
               <div>
                 <p className="text-xs font-medium text-foreground">
@@ -985,16 +986,7 @@ function RequestCard({
 }) {
   const actions = teamAgentRequestCardActions(request, viewerId);
   const progress = teamRequestProgress(request);
-  const status =
-    request.status === "awaiting_owner"
-      ? "Awaiting owner"
-      : request.status === "accepted"
-        ? request.jobStatus
-          ? `Accepted · ${request.jobStatus}`
-          : "Accepted · waiting to start"
-        : request.status === "unavailable"
-          ? "No longer available"
-          : request.status[0]!.toUpperCase() + request.status.slice(1);
+  const status = teamAgentRequestStatusLabel(request);
   return (
     <article className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-surface/25 px-4 py-3">
       <div className="min-w-0">
@@ -1023,7 +1015,7 @@ function RequestCard({
             onClick={() => onReview(request)}
             className="rounded-md border border-border px-2.5 py-1.5 text-[10px] font-medium text-subtle hover:bg-surface-hover"
           >
-            Open private chat
+            Continue private chat
           </button>
         )}
         {actions.canViewWork && (

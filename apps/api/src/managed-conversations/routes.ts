@@ -389,7 +389,11 @@ const promptSchema = z
     expectedAgentVersion: z.number().int().positive().optional(),
     purpose: z.literal("team_summary_draft").optional(),
     teamSummary: z
-      .object({ teamId: z.uuid(), requestId: z.uuid(), jobId: z.uuid() })
+      .object({
+        teamId: z.uuid(),
+        requestId: z.uuid(),
+        jobId: z.uuid().optional()
+      })
       .strict()
       .optional(),
     settingsChange: z
@@ -3682,7 +3686,13 @@ export const registerManagedConversationRoutes = (
         selectedResourceHostedInstanceId =
           matchingInstances[0]!.hostedInstanceId;
       }
-      const pendingTeamRequest =
+      const ownerReviewBinding =
+        await repository.getOwnerReviewBindingForExecution(
+          { userId: user.id },
+          { executionId }
+        );
+      const activePendingTeamRequest =
+        ownerReviewBinding?.status === "awaiting_owner" &&
         typeof repository.getAwaitingOwnerRequestForExecution === "function"
           ? await repository.getAwaitingOwnerRequestForExecution(
               { userId: user.id },
@@ -3690,14 +3700,22 @@ export const registerManagedConversationRoutes = (
             )
           : null;
       if (
-        pendingTeamRequest &&
-        (input.agentId !== pendingTeamRequest.agentId ||
-          input.expectedAgentVersion !== pendingTeamRequest.agentVersion ||
-          pendingTeamRequest.localProjectId !== execution.projectId)
+        (ownerReviewBinding &&
+          ownerReviewBinding.status !== "accepted" &&
+          ownerReviewBinding.status !== "awaiting_owner") ||
+        (ownerReviewBinding &&
+          (ownerReviewBinding.ownerUserId !== user.id ||
+            input.agentId !== ownerReviewBinding.agentId)) ||
+        (ownerReviewBinding?.status === "awaiting_owner" &&
+          (!activePendingTeamRequest ||
+            input.agentId !== activePendingTeamRequest.agentId ||
+            input.expectedAgentVersion !==
+              activePendingTeamRequest.agentVersion ||
+            activePendingTeamRequest.localProjectId !== execution.projectId))
       ) {
         throw Object.assign(
           new Error(
-            "This private Team review must use its selected Agent until you accept the request."
+            "This private Team review must use its selected Agent and remain available before acceptance."
           ),
           { statusCode: 409 }
         );
@@ -3718,7 +3736,9 @@ export const registerManagedConversationRoutes = (
               agentId: input.agentId!,
               teamId: input.teamSummary!.teamId,
               requestId: input.teamSummary!.requestId,
-              jobId: input.teamSummary!.jobId
+              ...(input.teamSummary!.jobId
+                ? { jobId: input.teamSummary!.jobId }
+                : {})
             })
           : input.prompt;
       const agentContext = input.agentId
@@ -3730,6 +3750,18 @@ export const registerManagedConversationRoutes = (
             projectId: execution.projectId
           })
         : null;
+      if (
+        ownerReviewBinding &&
+        (!agentContext ||
+          agentContext.context.project.projectId !== execution.projectId)
+      ) {
+        throw Object.assign(
+          new Error(
+            "This private Team review must remain in its selected Agent Project."
+          ),
+          { statusCode: 409 }
+        );
+      }
       const terminalContexts = (input.terminalContextReferences ?? []).map(
         (contextReference) =>
           context.managedConversations.terminalRuntime.resolveContext({

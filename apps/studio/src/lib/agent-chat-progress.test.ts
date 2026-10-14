@@ -149,6 +149,43 @@ it("keeps Team feedback to shared status and stops when the assignment finishes"
   ).toBeNull();
 });
 
+it("shows only bounded native Team execution states and no owner-only details", () => {
+  const request = {
+    id: "native-request",
+    status: "accepted",
+    agentName: "Rae",
+    jobId: null,
+    jobStatus: null,
+    executionStatus: "queued"
+  } as TeamAgentRequest;
+  expect(teamRequestProgress(request)).toMatchObject({
+    state: "queued",
+    label: "Rae is waiting to start…",
+    steps: []
+  });
+  expect(
+    teamRequestProgress({ ...request, executionStatus: "running" })
+  ).toMatchObject({ state: "working", steps: [] });
+  expect(
+    teamRequestProgress({ ...request, executionStatus: "waiting" })?.state
+  ).toBe("waiting");
+  expect(
+    teamRequestProgress({ ...request, executionStatus: "offline" })?.state
+  ).toBe("uncertain");
+  expect(
+    teamRequestProgress({ ...request, executionStatus: "unknown" })?.state
+  ).toBe("uncertain");
+  for (const executionStatus of [
+    "succeeded",
+    "failed",
+    "canceled",
+    "interrupted"
+  ])
+    expect(
+      teamRequestProgress({ ...request, executionStatus } as TeamAgentRequest)
+    ).toBeNull();
+});
+
 it("uses public summaries for the active turn and retains completed snapshots after reload", () => {
   const item: RuntimeItem = {
     id: "progress",

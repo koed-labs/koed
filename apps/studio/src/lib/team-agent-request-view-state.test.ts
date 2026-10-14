@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
-// @ts-expect-error -- Node's native test runner needs the source extension.
-import { teamAgentRequestCardActions } from "./team-agent-request-view-state.ts";
+const testModulePath = "./team-agent-request-view-state" + ".ts";
+const {
+  teamAgentRequestCanAccept,
+  teamAgentRequestCardActions,
+  teamAgentRequestHasTerminalOutcome,
+  teamAgentRequestReviewHref,
+  teamAgentRequestStatusLabel
+} = await import(testModulePath);
 
 const request = (
   overrides: Partial<TeamAgentRequest> = {}
@@ -22,6 +28,7 @@ const request = (
   status: "accepted",
   jobId: "77777777-7777-4777-8777-777777777777",
   jobStatus: "succeeded",
+  executionStatus: null,
   outcomeMessageId: null,
   version: 2,
   createdAt: "2026-09-30T00:00:00.000Z",
@@ -45,6 +52,37 @@ test("accepted request exposes private reopen only to owner and work link to cur
   });
 });
 
+test("native accepted request shows truthful execution state and keeps private chat owner-only", () => {
+  const accepted = request({
+    jobId: null,
+    jobStatus: null,
+    executionStatus: "running"
+  });
+  assert.deepEqual(teamAgentRequestCardActions(accepted, "owner"), {
+    canReview: false,
+    canOpenPrivateChat: true,
+    canViewWork: false
+  });
+  assert.deepEqual(teamAgentRequestCardActions(accepted, "requester"), {
+    canReview: false,
+    canOpenPrivateChat: false,
+    canViewWork: false
+  });
+  assert.equal(teamAgentRequestStatusLabel(accepted), "Accepted · working");
+  assert.equal(
+    teamAgentRequestStatusLabel({ ...accepted, executionStatus: "succeeded" }),
+    "Completed"
+  );
+  assert.equal(
+    teamAgentRequestStatusLabel({ ...accepted, executionStatus: "offline" }),
+    "Accepted · runner offline"
+  );
+  assert.equal(
+    teamAgentRequestStatusLabel({ ...accepted, executionStatus: "unknown" }),
+    "Accepted · status unavailable"
+  );
+});
+
 test("pending review requires server-granted review permission and never links a nonexistent Job", () => {
   const pending = request({
     status: "awaiting_owner",
@@ -61,5 +99,150 @@ test("pending review requires server-granted review permission and never links a
     teamAgentRequestCardActions({ ...pending, canReview: false }, "owner")
       .canReview,
     false
+  );
+});
+
+test("acceptance waits for the owner's saved goal and bound native conversation", () => {
+  const pending = request({
+    status: "awaiting_owner",
+    jobId: null,
+    jobStatus: null,
+    executionStatus: null
+  });
+  const review = { executionId: null, privateGoal: "Implement the request" };
+  assert.equal(
+    teamAgentRequestCanAccept({
+      request: pending,
+      review,
+      goal: review.privateGoal,
+      executionId: null
+    }),
+    false
+  );
+  const boundReview = {
+    executionId: "native-private-conversation",
+    privateGoal: review.privateGoal
+  };
+  assert.equal(
+    teamAgentRequestCanAccept({
+      request: pending,
+      review: boundReview,
+      goal: boundReview.privateGoal,
+      executionId: boundReview.executionId
+    }),
+    true
+  );
+  assert.equal(
+    teamAgentRequestCanAccept({
+      request: pending,
+      review: boundReview,
+      goal: "An unsaved change",
+      executionId: boundReview.executionId
+    }),
+    false
+  );
+  assert.equal(
+    teamAgentRequestCanAccept({
+      request: { ...pending, status: "accepted" },
+      review: boundReview,
+      goal: boundReview.privateGoal,
+      executionId: boundReview.executionId
+    }),
+    false
+  );
+});
+
+test("native outcome sharing becomes available only after terminal execution", () => {
+  for (const executionStatus of [
+    "succeeded",
+    "failed",
+    "canceled",
+    "interrupted"
+  ] as const) {
+    assert.equal(
+      teamAgentRequestHasTerminalOutcome(
+        request({
+          status: "accepted",
+          jobId: null,
+          jobStatus: null,
+          executionStatus
+        })
+      ),
+      true
+    );
+  }
+  for (const executionStatus of [
+    "queued",
+    "running",
+    "waiting",
+    "offline",
+    "unknown"
+  ] as const) {
+    assert.equal(
+      teamAgentRequestHasTerminalOutcome(
+        request({
+          status: "accepted",
+          jobId: null,
+          jobStatus: null,
+          executionStatus
+        })
+      ),
+      false
+    );
+  }
+  assert.equal(
+    teamAgentRequestHasTerminalOutcome(
+      request({ status: "awaiting_owner", executionStatus: "succeeded" })
+    ),
+    false
+  );
+});
+
+test("review navigation preserves project and draft while reopening the same native conversation", () => {
+  const requestValue = request({
+    status: "awaiting_owner",
+    jobId: null,
+    jobStatus: null,
+    executionStatus: null
+  });
+  const review = {
+    version: 5,
+    executionId: "native-private-conversation"
+  };
+  const href = teamAgentRequestReviewHref({
+    request: requestValue,
+    review,
+    projectId: "local-project",
+    draft: "Forwarded answer"
+  });
+  const params = new URLSearchParams(href.slice(href.indexOf("?") + 1));
+  assert.equal(params.get("agent"), requestValue.agentId);
+  assert.equal(params.get("project"), "local-project");
+  assert.equal(params.get("teamRequest"), requestValue.id);
+  assert.equal(params.get("teamRequestTeam"), requestValue.teamId);
+  assert.equal(params.get("teamRequestVersion"), String(requestValue.version));
+  assert.equal(params.get("teamReviewVersion"), "5");
+  assert.equal(params.get("execution"), review.executionId);
+  assert.equal(params.get("draft"), "Forwarded answer");
+  assert.equal(params.has("provider"), false);
+  assert.equal(params.has("job"), false);
+
+  const firstReviewHref = teamAgentRequestReviewHref({
+    request: requestValue,
+    review: { version: 2, executionId: null },
+    projectId: "local-project"
+  });
+  const firstReviewParams = new URLSearchParams(
+    firstReviewHref.slice(firstReviewHref.indexOf("?") + 1)
+  );
+  assert.equal(firstReviewParams.has("execution"), false);
+  assert.equal(
+    teamAgentRequestReviewHref({
+      request: requestValue,
+      review,
+      projectId: "local-project",
+      draft: "x".repeat(3_000)
+    }).length < 3_500,
+    true
   );
 });

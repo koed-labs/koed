@@ -25,6 +25,20 @@ export const teamAgentRequestJobStatusSchema = z.enum([
   "interrupted",
   "offline"
 ]);
+export const teamAgentRequestExecutionStatusSchema = z.enum([
+  "queued",
+  "running",
+  "waiting",
+  "succeeded",
+  "failed",
+  "canceled",
+  "interrupted",
+  "offline",
+  "unknown"
+]);
+export type TeamAgentRequestExecutionStatus = z.infer<
+  typeof teamAgentRequestExecutionStatusSchema
+>;
 
 export const teamAgentOfferSchema = z
   .object({
@@ -85,6 +99,9 @@ export const teamAgentRequestSchema = z
     status: teamAgentRequestStatusSchema,
     jobId: uuid.nullable(),
     jobStatus: teamAgentRequestJobStatusSchema.nullable(),
+    executionStatus: teamAgentRequestExecutionStatusSchema
+      .nullable()
+      .default(null),
     outcomeMessageId: uuid.nullable(),
     version: version,
     createdAt: timestamp,

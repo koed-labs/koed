@@ -169,7 +169,7 @@ export function teamRequestProgress(
   request: TeamAgentRequest
 ): AgentChatProgress | null {
   if (request.status !== "accepted") return null;
-  const state = request.jobStatus;
+  const state = request.executionStatus ?? request.jobStatus;
   if (state === "running")
     return {
       key: request.id,
@@ -177,11 +177,18 @@ export function teamRequestProgress(
       label: `${request.agentName} is working…`,
       steps: []
     };
-  if (state === "queued" || state === null)
+  if (state === "queued" || (state === null && Boolean(request.jobId)))
     return {
       key: request.id,
       state: "queued",
       label: `${request.agentName} is waiting to start…`,
+      steps: []
+    };
+  if (state === null)
+    return {
+      key: request.id,
+      state: "uncertain",
+      label: `${request.agentName}'s status is unavailable`,
       steps: []
     };
   if (state === "waiting")
@@ -189,6 +196,20 @@ export function teamRequestProgress(
       key: request.id,
       state: "waiting",
       label: `${request.agentName} is waiting for input`,
+      steps: []
+    };
+  if (state === "offline")
+    return {
+      key: request.id,
+      state: "uncertain",
+      label: `${request.agentName}'s runner is offline`,
+      steps: []
+    };
+  if (state === "unknown")
+    return {
+      key: request.id,
+      state: "uncertain",
+      label: `${request.agentName}'s status is unavailable`,
       steps: []
     };
   return null;

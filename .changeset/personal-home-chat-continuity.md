@@ -37,3 +37,5 @@ Simplify Agents to a name, optional free-text job title and Pixelkin appearance.
 Use native conversation execution and retained delivery records for new Agent work, history and progress. Retire the extra Agent assignment and phase-reporting protocol, remove eager Agent-specific Memory searches, and use the supported Memory flow for all AI chats. Preserve legacy history and sequential conversations with Agents from the same or different AI Clients.
 
 Share local and hosted Personal recipient validation for model, reasoning, permissions and verified device selection. Keep the progress panel with native command activity, readable conversation summaries and labeled file diffs.
+
+Restore owner-approved Agent execution from Team channel requests through the existing native conversation and command lifecycle. Keep private review, durable request status, owner-only controls and explicit question/result sharing, while preserving legacy request history. Draft native request summaries from the exact accepted command rather than unrelated private follow-ups.

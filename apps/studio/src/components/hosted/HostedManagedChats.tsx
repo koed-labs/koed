@@ -81,6 +81,7 @@ import { BuildActivityPanel } from "@/components/BuildActivityPanel";
 import { AgentChatMessage, SharedChatUI } from "@/components/SharedChatUI";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
+import { teamAgentRequestHasTerminalOutcome } from "@/lib/team-agent-request-view-state";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
 import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import {
@@ -1463,12 +1464,7 @@ export function HostedManagedChats({
   const draftTeamSummary = async (
     request: import("@koed/shared/team-agent-requests").TeamAgentRequest
   ) => {
-    if (
-      !selectedRuntime ||
-      request.status !== "accepted" ||
-      !["succeeded", "failed", "canceled"].includes(request.jobStatus ?? "") ||
-      !request.jobId
-    )
+    if (!selectedRuntime || !teamAgentRequestHasTerminalOutcome(request))
       return;
     setTeamSummaryState({ status: "drafting", text: "" });
     try {
@@ -1478,7 +1474,7 @@ export function HostedManagedChats({
           teamSummary: {
             teamId: teamRequestTeamId ?? request.teamId,
             requestId: request.id,
-            jobId: request.jobId
+            ...(request.jobId ? { jobId: request.jobId } : {})
           }
         },
         "Draft a summary for my review"
@@ -1886,7 +1882,7 @@ export function HostedManagedChats({
   const send = async (
     purpose?: {
       purpose: "team_summary_draft";
-      teamSummary: { teamId: string; requestId: string; jobId: string };
+      teamSummary: { teamId: string; requestId: string; jobId?: string };
     },
     promptOverride?: string,
     selectedResourceIds: string[] = [],

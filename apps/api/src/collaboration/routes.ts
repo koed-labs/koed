@@ -6,8 +6,7 @@ import type {
   SharedMemoryRepository,
   TeamAgentRequestsRepository,
   TeamOverviewRepository,
-  TeamOverviewSourcesRepository,
-  CreateOwnerJobWithClient
+  TeamOverviewSourcesRepository
 } from "@koed/db";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -103,7 +102,9 @@ export interface CollaborationRouteContext extends Pick<
   requireTeamAgentRequestsRepository(): TeamAgentRequestsRepository;
   requireTeamOverviewRepository(): TeamOverviewRepository;
   requireTeamOverviewSourcesRepository(): TeamOverviewSourcesRepository;
-  createOwnerJobWithClient: CreateOwnerJobWithClient;
+  createManagedAssignmentWithClient: Parameters<
+    TeamAgentRequestsRepository["decideRequest"]
+  >[2];
   projectPersonalNote(input: {
     ownerUserId: string;
     note: PersonalNoteRecord;
@@ -926,7 +927,8 @@ export const registerCollaborationRoutes = (
       const result = await repo.decideRequest(
         { userId: user.id },
         { ...params, ...input },
-        (client, jobInput) => context.createOwnerJobWithClient(client, jobInput)
+        (client, assignmentInput) =>
+          context.createManagedAssignmentWithClient(client, assignmentInput)
       );
       if (!result) throw forbidden();
       return { request: result };

@@ -1,3 +1,5 @@
+> Current direction, 2026-10-14: [Orys source study](studio-orys-implementation-study.md) and [current integration status](studio-ui-integration-plan.md) supersede legacy Agent Job requirements below. Ticket 16 remains open for native review completion and lightweight five-minute inbox discovery. Earlier completion evidence describes its historical scope.
+
 # Studio Pull Request review
 
 This implements the combined scope of frontend Tickets 16–18. The existing Studio prototype defines the layout. Orys is a code reference.

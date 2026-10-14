@@ -1154,6 +1154,99 @@ const managedConversationError = (name: string, cause?: unknown): Error => {
   return error;
 };
 
+export const managedConversationOwnerReviewTurnMode = async (input: {
+  repository: Pick<
+    MemorySourceRepository,
+    "getOwnerReviewBindingForExecution" | "getAwaitingOwnerRequestForExecution"
+  >;
+  ownerUserId: string;
+  executionId: string;
+  executionProjectId: string | null;
+  resolvePersonalAgentIdentity(): {
+    agentId: string;
+    agentVersion: number;
+    projectId: string | null;
+  } | null;
+}): Promise<"planning" | "work"> => {
+  const binding = await input.repository.getOwnerReviewBindingForExecution(
+    { userId: input.ownerUserId },
+    { executionId: input.executionId }
+  );
+  if (!binding) return "work";
+  if (binding.ownerUserId !== input.ownerUserId) {
+    throw managedConversationError("ManagedConversationPayloadError");
+  }
+  if (binding.status !== "awaiting_owner" && binding.status !== "accepted") {
+    throw managedConversationError(
+      "ManagedConversationTeamRequestUnavailableError"
+    );
+  }
+  const agent = input.resolvePersonalAgentIdentity();
+  if (
+    !agent ||
+    agent.agentId !== binding.agentId ||
+    agent.projectId !== input.executionProjectId
+  ) {
+    throw managedConversationError("ManagedConversationPayloadError");
+  }
+  if (binding.status === "accepted") return "work";
+  const pending = await input.repository.getAwaitingOwnerRequestForExecution(
+    { userId: input.ownerUserId },
+    { executionId: input.executionId }
+  );
+  if (
+    !pending ||
+    pending.agentId !== agent.agentId ||
+    pending.agentVersion !== agent.agentVersion ||
+    pending.localProjectId !== input.executionProjectId
+  ) {
+    throw managedConversationError(
+      "ManagedConversationTeamRequestUnavailableError"
+    );
+  }
+  return "planning";
+};
+
+export const requeueTeamAgentReviewBindingBackfill = async (input: {
+  error: unknown;
+  command: {
+    id: string;
+    commandKind: string;
+    leaseToken?: string | null;
+  };
+  hasPendingCheckpoint: boolean;
+  providerTurnDispatched: boolean;
+  repository: Pick<MemorySourceRepository, "failManagedConversationCommand">;
+}): Promise<{ handled: boolean; updated: boolean }> => {
+  const errorRecord =
+    typeof input.error === "object" && input.error !== null
+      ? (input.error as Record<string, unknown>)
+      : null;
+  if (
+    input.command.commandKind !== "prompt" ||
+    !input.command.leaseToken ||
+    input.hasPendingCheckpoint ||
+    input.providerTurnDispatched ||
+    errorRecord?.code !== "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING" ||
+    errorRecord.statusCode !== 503
+  ) {
+    return { handled: false, updated: false };
+  }
+  try {
+    const result = await input.repository.failManagedConversationCommand({
+      commandId: input.command.id,
+      leaseToken: input.command.leaseToken,
+      state: "queued",
+      errorCode: "ManagedConversationReviewBindingBackfillPendingError"
+    });
+    return { handled: true, updated: result.updated };
+  } catch {
+    // The dispatch lease expires if persistence is unavailable. Do not fall
+    // through to prompt failure or execution cleanup for this maintenance retry.
+    return { handled: true, updated: false };
+  }
+};
+
 export const assertManagedConversationExecutionOwner = (input: {
   provider: string;
   aiClientInstanceId?: string | null;
@@ -2270,7 +2363,8 @@ export const createManagedConversationService = (options: {
     }
     return {
       agentId: context.data.identity.agentId,
-      agentVersion: context.data.identity.version
+      agentVersion: context.data.identity.version,
+      projectId: context.data.project.projectId
     };
   };
 
@@ -2286,22 +2380,14 @@ export const createManagedConversationService = (options: {
     command: PersonalAgentCommandContext
   ): Promise<void> => {
     pendingTeamReviewCommands.delete(command.id);
-    const agent = personalAgentIdentityFor(command);
-    if (!agent) return;
-    const pending =
-      await options.repository.getAwaitingOwnerRequestForExecution(
-        { userId: command.ownerUserId },
-        { executionId: command.executionId }
-      );
-    if (!pending) return;
-    if (
-      pending.agentId !== agent.agentId ||
-      pending.agentVersion !== agent.agentVersion ||
-      pending.localProjectId !== command.execution.projectId
-    ) {
-      throw managedConversationError("ManagedConversationPayloadError");
-    }
-    pendingTeamReviewCommands.add(command.id);
+    const mode = await managedConversationOwnerReviewTurnMode({
+      repository: options.repository,
+      ownerUserId: command.ownerUserId,
+      executionId: command.executionId,
+      executionProjectId: command.execution.projectId,
+      resolvePersonalAgentIdentity: () => personalAgentIdentityFor(command)
+    });
+    if (mode === "planning") pendingTeamReviewCommands.add(command.id);
   };
 
   const formatManagedTurnPrompt = (
@@ -10337,6 +10423,37 @@ export const createManagedConversationService = (options: {
           },
           "managed Conversation captured command error before cleanup"
         );
+        const reviewBindingBackfillRetry =
+          await requeueTeamAgentReviewBindingBackfill({
+            error,
+            command: {
+              id: command.id,
+              commandKind: command.commandKind,
+              leaseToken: command.leaseToken
+            },
+            hasPendingCheckpoint: pendingCheckpointFor(command) !== null,
+            providerTurnDispatched: providerTurnDispatchAttempts.has(
+              command.id
+            ),
+            repository: options.repository
+          });
+        if (reviewBindingBackfillRetry.handled) {
+          pendingTeamReviewCommands.delete(command.id);
+          options.logger[reviewBindingBackfillRetry.updated ? "info" : "warn"](
+            {
+              event: {
+                name: "worker.managed_conversation.review_binding_backfill_pending",
+                category: "managed_conversation"
+              },
+              command_id: command.id,
+              requeued: reviewBindingBackfillRetry.updated
+            },
+            reviewBindingBackfillRetry.updated
+              ? "managed Conversation prompt was requeued after bounded Team review backfill"
+              : "managed Conversation prompt backfill retry could not be persisted under its lease"
+          );
+          continue;
+        }
         if (
           error instanceof ManagedConversationSourceReplicaPendingError &&
           command.leaseToken

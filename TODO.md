@@ -2,6 +2,22 @@
 
 See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–28 replace the historical soul, role-template, Agent Job protocol and parallel-recall direction below. Ticket 29 plans recurring tasks for both Codex and Claude using OpenDots concepts. Ticket 30 tracks retained-UI and release acceptance. Historical completed entries below are evidence, not approval to preserve superseded behavior.
 
+## Current open tickets
+
+The [separate Personal and Collaboration tables](docs/studio-ui-integration-plan.md) replace the earlier five-ticket count.
+There are 12 distinct open tickets. Nine contain implementation, rewiring or scope assessment. Three contain testing/release acceptance.
+
+| Area          | Open ticket IDs    | Count |
+| ------------- | ------------------ | ----- |
+| Personal      | 04, 16, 19         | 3     |
+| Collaboration | 12, 13, 15, 20, 27 | 5     |
+| Shared        | 03, 22, 29, 30     | 4     |
+
+Tickets 12, 16, 19 and 20 retain Job-based data dependencies. Ticket 13's native channel execution is implemented and focused automated checks pass; live provider and deployed Team acceptance remain open.
+Ticket 04 needs scope reconciliation before adding code. Existing human messaging remains implemented.
+Keep original acceptance records and explicit deferrals. Do not count superseded tickets or repeated tests twice.
+The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.
+
 # Implementation backlog
 
 ## Studio Personal Agents
@@ -24,6 +40,8 @@ Plan: [persistent identities, conversation participation and runtime context](do
 - Extend retained job history beyond the first bounded page.
 
 ## Studio Pull Requests and Orys integration
+
+Current source study: [Orys refresh, review, recovery and reuse](docs/studio-orys-implementation-study.md). Ticket 16 includes lightweight five-minute inbox discovery and native review completion. Refresh must not automatically fetch repositories or start reviews.
 
 Planning baseline: [feature map and porting plan](docs/studio-pr-orys-port-plan.md).
 

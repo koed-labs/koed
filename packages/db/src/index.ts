@@ -386,8 +386,11 @@ export {
   createTeamAgentRequestsRepository,
   TeamAgentRequestUnavailableError,
   TeamAgentRequestVersionConflictError,
-  type CreateOwnerJobWithClient,
-  type TeamAgentRequestJobContext,
+  type CreateManagedAssignmentWithClient,
+  type TeamAgentRequestExecutionStatus,
+  type TeamAgentRequestNativeAssignmentContext,
+  type TeamAgentRequestNativeBinding,
+  type TeamAgentRequestOwnerReviewBinding,
   type PendingTeamAgentRequestExecutionBinding,
   type TeamAgentRequestsRepository
 } from "./team-agent-requests-repository.js";

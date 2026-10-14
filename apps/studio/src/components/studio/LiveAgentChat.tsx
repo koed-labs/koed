@@ -40,6 +40,7 @@ import {
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
 import { ProjectMovePicker } from "@/components/ProjectMovePicker";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
+import { teamAgentRequestHasTerminalOutcome } from "@/lib/team-agent-request-view-state";
 import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
 import {
   teamQuestionReceiptMatches,
@@ -1721,7 +1722,7 @@ export function LiveAgentChat({
     selection: ChatComposerSelection,
     purpose?: {
       purpose: "team_summary_draft";
-      teamSummary: { teamId: string; requestId: string; jobId: string };
+      teamSummary: { teamId: string; requestId: string; jobId?: string };
     }
   ) => {
     if (operationRef.current)
@@ -2630,9 +2631,7 @@ export function LiveAgentChat({
     if (
       !currentExecution ||
       !lifecycle.current ||
-      request.status !== "accepted" ||
-      !["succeeded", "failed", "canceled"].includes(request.jobStatus ?? "") ||
-      !request.jobId
+      !teamAgentRequestHasTerminalOutcome(request)
     )
       return;
     const agent = agents.find(
@@ -2666,7 +2665,7 @@ export function LiveAgentChat({
           teamSummary: {
             teamId: teamRequestTeamId ?? request.teamId,
             requestId: request.id,
-            jobId: request.jobId
+            ...(request.jobId ? { jobId: request.jobId } : {})
           }
         }
       );

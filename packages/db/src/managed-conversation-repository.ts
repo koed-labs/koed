@@ -23,7 +23,10 @@ import {
   type PersonalAgentTurnStatus
 } from "@koed/shared";
 import pg from "pg";
-import type { PendingTeamAgentRequestExecutionBinding } from "./team-agent-requests-repository.js";
+import type {
+  PendingTeamAgentRequestExecutionBinding,
+  TeamAgentRequestNativeAssignmentContext
+} from "./team-agent-requests-repository.js";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings,
@@ -304,21 +307,11 @@ export interface ManagedConversationCommandRecord {
   };
 }
 
-export interface ManagedConversationAcceptedAgentAssignmentInput {
-  requestId: string;
-  teamId: string;
-  teamProjectId: string;
-  ownerUserId: string;
-  agentId: string;
-  agentVersion: number;
-  localProjectId: string;
-  executionId: string;
-  privateGoal: string;
-  idempotencyKey: string;
-}
+export type ManagedConversationAcceptedAgentAssignmentInput =
+  TeamAgentRequestNativeAssignmentContext;
 
 export interface ManagedConversationAcceptedAgentAssignment {
-  jobId: string;
+  executionId: string;
   commandId: string;
 }
 
@@ -563,7 +556,7 @@ export interface ManagedConversationRepository {
       expectedAgentVersion?: number;
       personalAgentContext?: PersonalAgentExecutionContext;
       serverPurpose?: "team_summary_draft";
-      teamSummary?: { teamId: string; requestId: string; jobId: string };
+      teamSummary?: { teamId: string; requestId: string; jobId?: string };
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
       personalAgentChatContextText?: string | null;
@@ -1761,7 +1754,7 @@ export const createManagedConversationRepository = (
     personalAgentContext?: PersonalAgentExecutionContext;
     personalAgentChatContextText?: string | null;
     serverPurpose?: "team_summary_draft";
-    teamSummary?: { teamId: string; requestId: string; jobId: string };
+    teamSummary?: { teamId: string; requestId: string; jobId?: string };
   }) =>
     encryptCommandPayload({
       ownerUserId: input.ownerUserId,
@@ -2773,10 +2766,363 @@ export const createManagedConversationRepository = (
         statusError("Personal Agent Job execution is no longer supported", 410)
       );
     },
-    createManagedConversationAcceptedAgentAssignmentWithClient() {
-      return Promise.reject(
-        statusError("Personal Agent Job execution is no longer supported", 410)
+    async createManagedConversationAcceptedAgentAssignmentWithClient(
+      client,
+      input
+    ) {
+      if (
+        !UUID_PATTERN.test(input.requestId) ||
+        !UUID_PATTERN.test(input.teamId) ||
+        !UUID_PATTERN.test(input.teamProjectId) ||
+        !UUID_PATTERN.test(input.channelId) ||
+        !UUID_PATTERN.test(input.requesterUserId) ||
+        !UUID_PATTERN.test(input.ownerUserId) ||
+        !UUID_PATTERN.test(input.agentId) ||
+        !UUID_PATTERN.test(input.executionId) ||
+        !Number.isSafeInteger(input.expectedRequestVersion) ||
+        input.expectedRequestVersion < 0 ||
+        !Number.isSafeInteger(input.expectedReviewVersion) ||
+        input.expectedReviewVersion < 0 ||
+        !Number.isSafeInteger(input.expectedOfferVersion) ||
+        input.expectedOfferVersion < 1 ||
+        !Number.isSafeInteger(input.agentVersion) ||
+        input.agentVersion < 1 ||
+        !input.idempotencyKey.trim() ||
+        !input.privateGoal.trim() ||
+        Buffer.byteLength(input.privateGoal, "utf8") > 12_000
+      ) {
+        throw statusError("Team Agent assignment is invalid", 400);
+      }
+
+      const request = await client.query<{
+        status: string;
+        version: number;
+        team_id: string;
+        team_project_id: string;
+        channel_id: string;
+        requester_user_id: string;
+        owner_user_id: string;
+        agent_id: string;
+        job_id: string | null;
+        managed_execution_id: string | null;
+        managed_command_id: string | null;
+      }>(
+        `select status,version,team_id,team_project_id,channel_id,
+                requester_user_id,owner_user_id,agent_id,job_id,
+                managed_execution_id,managed_command_id
+           from team_agent_requests
+          where id=$1 and team_id=$2 and owner_user_id=$3
+          for update`,
+        [input.requestId, input.teamId, input.ownerUserId]
       );
+      const requestRow = request.rows[0];
+      if (
+        !requestRow ||
+        requestRow.status !== "awaiting_owner" ||
+        requestRow.version !== input.expectedRequestVersion ||
+        requestRow.team_project_id !== input.teamProjectId ||
+        requestRow.channel_id !== input.channelId ||
+        requestRow.requester_user_id !== input.requesterUserId ||
+        requestRow.owner_user_id !== input.ownerUserId ||
+        requestRow.agent_id !== input.agentId ||
+        requestRow.job_id !== null ||
+        requestRow.managed_execution_id !== null ||
+        requestRow.managed_command_id !== null
+      ) {
+        throw statusError("Team Agent Request changed concurrently", 409);
+      }
+
+      const members = await client.query<{ user_id: string }>(
+        `select tm.user_id
+           from team_memberships tm
+           join teams t on t.id=tm.team_id
+           join users u on u.id=tm.user_id
+          where tm.team_id=$1 and tm.user_id=any($2::uuid[])
+            and tm.status='enabled' and tm.disabled_at is null
+            and t.lifecycle='active' and t.entitlement_status in ('active','grace')
+            and u.disabled_at is null and u.deleted_at is null
+          order by tm.user_id for share of tm`,
+        [input.teamId, [input.ownerUserId, input.requesterUserId].sort()]
+      );
+      if (members.rowCount !== 2) {
+        throw statusError("Team Agent Request is no longer available", 409);
+      }
+      const project = await client.query(
+        `select id from collaboration_team_shared_projects
+          where id=$1 and team_id=$2 and unshared_at is null
+          for share`,
+        [input.teamProjectId, input.teamId]
+      );
+      const channel = await client.query<{
+        kind: string;
+        team_project_id: string | null;
+      }>(
+        `select kind,team_project_id from collaboration_threads
+          where id=$1 and team_id=$2 and scope='team' and lifecycle='active'
+            and kind in ('team_channel','team_project_channel')
+          for share`,
+        [input.channelId, input.teamId]
+      );
+      if (
+        project.rowCount !== 1 ||
+        !channel.rows[0] ||
+        (channel.rows[0].kind === "team_project_channel" &&
+          channel.rows[0].team_project_id !== input.teamProjectId)
+      ) {
+        throw statusError("Team Agent Request is no longer available", 409);
+      }
+
+      const offer = await client.query<{
+        enabled: boolean;
+        version: number;
+        current_version: number;
+        lifecycle: string;
+      }>(
+        `select o.enabled,o.version,i.current_version,i.lifecycle
+           from team_agent_offers o
+           join personal_agent_identities i
+             on i.id=o.agent_id and i.owner_user_id=o.owner_user_id
+          where o.team_id=$1 and o.owner_user_id=$2 and o.agent_id=$3
+          for share of o,i`,
+        [input.teamId, input.ownerUserId, input.agentId]
+      );
+      const currentOffer = offer.rows[0];
+      if (
+        !currentOffer ||
+        !currentOffer.enabled ||
+        currentOffer.version !== input.expectedOfferVersion ||
+        currentOffer.lifecycle !== "active" ||
+        currentOffer.current_version !== input.agentVersion
+      ) {
+        throw statusError("Offered Agent changed; reload this request", 409);
+      }
+
+      const connection = await client.query<{ local_project_id: string }>(
+        `select local_project_id from public_square_project_connections
+          where actor_user_id=$1 and team_id=$2 and team_project_id=$3
+            and local_project_id is not null
+          for update`,
+        [input.ownerUserId, input.teamId, input.teamProjectId]
+      );
+      if (connection.rows[0]?.local_project_id !== input.localProjectId) {
+        throw statusError("Owner Project connection changed", 409);
+      }
+
+      const execution = await client.query<{
+        id: string;
+        owner_user_id: string;
+        project_id: string | null;
+        model: string;
+        reasoning_effort: string | null;
+        permission_mode: ManagedConversationSettings["permissionMode"];
+        state: ManagedConversationExecutionState;
+        execution_generation: number;
+        runner_deployment_id: string;
+        runner_device_id: string;
+      }>(
+        `select id,owner_user_id,project_id,model,reasoning_effort,
+                permission_mode,state,execution_generation,
+                runner_deployment_id,runner_device_id
+           from managed_conversation_executions
+          where id=$1 and owner_user_id=$2
+          for update`,
+        [input.executionId, input.ownerUserId]
+      );
+      const current = execution.rows[0];
+      if (!current || current.project_id !== input.localProjectId) {
+        throw statusError("Owner review execution changed", 409);
+      }
+
+      const agentConversation = await client.query<{
+        active_agent_id: string | null;
+      }>(
+        `select active_agent_id from personal_agent_conversations
+          where conversation_id=$1 and owner_user_id=$2
+          for update`,
+        [input.executionId, input.ownerUserId]
+      );
+      if (agentConversation.rows[0]?.active_agent_id !== input.agentId) {
+        throw statusError("Owner review Agent changed", 409);
+      }
+      const participant = await client.query(
+        `select 1 from personal_agent_conversation_participants
+          where conversation_id=$1 and owner_user_id=$2 and agent_id=$3
+          for share`,
+        [input.executionId, input.ownerUserId, input.agentId]
+      );
+      if (participant.rowCount !== 1) {
+        throw statusError("Owner review Agent is unavailable", 409);
+      }
+
+      const identityVersion = await client.query<{
+        id: string;
+        name: string;
+        role: string;
+        avatar_reference: string | null;
+      }>(
+        `select id,name,role,avatar_reference
+           from personal_agent_identity_versions
+          where owner_user_id=$1 and agent_id=$2 and version=$3
+          for share`,
+        [input.ownerUserId, input.agentId, input.agentVersion]
+      );
+      const identity = identityVersion.rows[0];
+      if (!identity) {
+        throw statusError("Personal Agent version is unavailable", 409);
+      }
+
+      const pendingMove = await client.query(
+        `select 1 from managed_conversation_project_moves
+          where owner_user_id=$1 and execution_id=$2
+            and state in ('pending','claimed')
+          limit 1`,
+        [input.ownerUserId, input.executionId]
+      );
+      if (pendingMove.rowCount) {
+        throw statusError("Managed Conversation Project move is pending", 409);
+      }
+      if (!["starting", "running", "stopped"].includes(current.state)) {
+        throw statusError("Owner review execution is not writable", 409);
+      }
+      if (current.state === "stopped") {
+        const unsettled = await client.query(
+          `select 1 from managed_conversation_commands
+            where owner_user_id=$1 and execution_id=$2
+              and execution_generation=$3
+              and state not in ('completed','failed','canceled')
+            limit 1`,
+          [input.ownerUserId, input.executionId, current.execution_generation]
+        );
+        if (unsettled.rowCount) {
+          throw statusError(
+            "Stopped Managed Conversation has an unresolved operation",
+            409
+          );
+        }
+      }
+
+      const prompt = input.privateGoal.trim();
+      const clientUserMessageId = stableUuidFromSeed(
+        `${input.idempotencyKey}:message`
+      );
+      const requestDigest = sha256(
+        JSON.stringify({
+          kind: "prompt",
+          executionId: input.executionId,
+          executionGeneration: current.execution_generation,
+          clientUserMessageId,
+          prompt,
+          agentId: input.agentId,
+          agentVersion: input.agentVersion,
+          identityVersionId: identity.id
+        })
+      );
+      const existing = await client.query<CommandRow>(
+        `select ${COMMAND_COLUMNS}
+           from managed_conversation_commands
+          where owner_user_id=$1 and idempotency_key=$2
+          for share`,
+        [input.ownerUserId, input.idempotencyKey]
+      );
+      if (existing.rows[0]) {
+        const replay = existing.rows[0];
+        if (
+          replay.request_digest !== requestDigest ||
+          replay.execution_id !== input.executionId ||
+          replay.command_kind !== "prompt"
+        ) {
+          throw statusError(
+            "Managed Conversation idempotency key was reused",
+            409
+          );
+        }
+        return { executionId: input.executionId, commandId: replay.id };
+      }
+
+      if (current.state === "stopped") {
+        const resumed = await client.query<{ state_version: number }>(
+          `update managed_conversation_executions
+              set state='running',state_version=state_version+1,
+                  last_error_code=null,stopped_at=null,updated_at=now()
+            where owner_user_id=$1 and id=$2 and execution_generation=$3
+              and state='stopped'
+            returning state_version`,
+          [input.ownerUserId, input.executionId, current.execution_generation]
+        );
+        if (!resumed.rows[0]) {
+          throw statusError("Managed Conversation resume conflicted", 409);
+        }
+        await appendManagedConversationEvent(client, {
+          ownerUserId: input.ownerUserId,
+          executionId: input.executionId,
+          mutationId: `managed-conversation:${input.executionId}:state:${resumed.rows[0].state_version}`
+        });
+      }
+
+      const commandId = stableUuidFromSeed(input.idempotencyKey);
+      const sequenceResult = await client.query<{ sequence: number }>(
+        `select coalesce(max(sequence),-1)+1 as sequence
+           from managed_conversation_commands
+          where execution_id=$1`,
+        [input.executionId]
+      );
+      const sequence = sequenceResult.rows[0]!.sequence;
+      const personalAgentContext = personalAgentExecutionContextSchema.parse({
+        schemaVersion: 1,
+        identity: {
+          agentId: input.agentId,
+          version: input.agentVersion,
+          identityVersionId: identity.id,
+          name: identity.name,
+          role: identity.role,
+          avatarReference: identity.avatar_reference
+        },
+        project: { projectId: current.project_id, name: null }
+      });
+      const encryptedPayload = await encryptPrompt({
+        ownerUserId: input.ownerUserId,
+        executionId: input.executionId,
+        commandId,
+        prompt,
+        clientUserMessageId,
+        settings: {
+          model: current.model,
+          reasoningEffort: current.reasoning_effort,
+          permissionMode: current.permission_mode
+        },
+        personalAgent: {
+          jobId: null,
+          agentId: input.agentId,
+          agentVersion: input.agentVersion,
+          identityVersionId: identity.id
+        },
+        personalAgentContext
+      });
+      await client.query(
+        `insert into managed_conversation_commands (
+           id,owner_user_id,execution_id,idempotency_key,sequence,
+           command_kind,request_digest,client_user_message_id,
+           execution_generation,allow_archived_resume,encrypted_payload,state
+         ) values ($1,$2,$3,$4,$5,'prompt',$6,$7,$8,true,$9::jsonb,'queued')`,
+        [
+          commandId,
+          input.ownerUserId,
+          input.executionId,
+          input.idempotencyKey,
+          sequence,
+          requestDigest,
+          clientUserMessageId,
+          current.execution_generation,
+          encryptedPayload
+        ]
+      );
+      await appendManagedConversationEvent(client, {
+        ownerUserId: input.ownerUserId,
+        executionId: input.executionId,
+        mutationId: `managed-conversation:${input.executionId}:team-request:${input.requestId}:accepted`
+      });
+      await notifyManagedConversationCommand(client, input.executionId);
+      return { executionId: input.executionId, commandId };
     },
     async createManagedConversation(actor, input) {
       const projectId = input.projectId?.trim() || null;
@@ -3860,7 +4206,8 @@ export const createManagedConversationRepository = (
         (input.serverPurpose === "team_summary_draft" &&
           (!UUID_PATTERN.test(input.teamSummary!.teamId) ||
             !UUID_PATTERN.test(input.teamSummary!.requestId) ||
-            !UUID_PATTERN.test(input.teamSummary!.jobId))) ||
+            (input.teamSummary!.jobId !== undefined &&
+              !UUID_PATTERN.test(input.teamSummary!.jobId)))) ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
           input.clientUserMessageId
         ) ||

@@ -97,7 +97,7 @@ test("owner suffix stays in the display label while the canonical mention resolv
   ]);
 });
 
-test("owned-Agent handoff quotes bounded visible channel context and asks before work", () => {
+test("owned-Agent handoff quotes only bounded visible context in an editable private draft", () => {
   const draft = buildOwnedAgentHandoffDraft({
     agentName: "Analyst",
     channelName: "planning",
@@ -110,7 +110,10 @@ test("owned-Agent handoff quotes bounded visible channel context and asks before
   assert.match(draft, /untrusted Team discussion/);
   assert.match(draft, /Maya: The launch is next week\./);
   assert.match(draft, /You in the Team channel: @Analyst can you check this\?/);
-  assert.match(draft, /Discuss this request with me before starting work/);
+  assert.doesNotMatch(
+    draft,
+    /Discuss this request|Do not begin the assignment/
+  );
   assert.doesNotMatch(draft, /Hidden: not sent/);
   assert.ok(draft.length <= 8_000);
 });

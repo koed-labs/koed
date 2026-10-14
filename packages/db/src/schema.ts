@@ -5479,6 +5479,11 @@ export const managedConversationCommands = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true })
   },
   (table) => [
+    unique("managed_conversation_commands_id_execution_owner_unique").on(
+      table.id,
+      table.executionId,
+      table.ownerUserId
+    ),
     unique("managed_conversation_commands_idempotency_unique").on(
       table.ownerUserId,
       table.idempotencyKey
@@ -10864,6 +10869,13 @@ export const teamAgentRequests = pgTable(
     agentName: text("agent_name").notNull(),
     status: text("status").notNull().default("awaiting_owner"),
     jobId: uuid("job_id"),
+    managedExecutionId: uuid("managed_execution_id"),
+    managedCommandId: uuid("managed_command_id"),
+    nativeStatusFrozen: text("native_status_frozen"),
+    reviewExecutionId: uuid("review_execution_id"),
+    reviewBindingChecked: boolean("review_binding_checked")
+      .notNull()
+      .default(true),
     outcomeMessageId: uuid("outcome_message_id"),
     idempotencyKeyHash: text("idempotency_key_hash").notNull(),
     requestHash: text("request_hash").notNull(),
@@ -10874,6 +10886,9 @@ export const teamAgentRequests = pgTable(
   (table) => [
     unique("team_agent_requests_id_team_unique").on(table.id, table.teamId),
     unique("team_agent_requests_job_unique").on(table.jobId),
+    unique("team_agent_requests_managed_command_unique").on(
+      table.managedCommandId
+    ),
     unique("team_agent_requests_request_message_unique").on(
       table.channelId,
       table.requestMessageId
@@ -10923,6 +10938,35 @@ export const teamAgentRequests = pgTable(
       name: "team_agent_requests_owner_job_fk"
     }).onDelete("restrict"),
     foreignKey({
+      columns: [table.managedExecutionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "team_agent_requests_owner_managed_execution_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.reviewExecutionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "team_agent_requests_owner_review_execution_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.managedCommandId,
+        table.managedExecutionId,
+        table.ownerUserId
+      ],
+      foreignColumns: [
+        managedConversationCommands.id,
+        managedConversationCommands.executionId,
+        managedConversationCommands.ownerUserId
+      ],
+      name: "team_agent_requests_owner_managed_command_fk"
+    }).onDelete("restrict"),
+    foreignKey({
       columns: [table.channelId, table.outcomeMessageId],
       foreignColumns: [
         collaborationMessages.threadId,
@@ -10938,8 +10982,27 @@ export const teamAgentRequests = pgTable(
     ),
     check(
       "team_agent_requests_status_shape_check",
-      sql`(${table.status} = 'accepted' and ${table.jobId} is not null)
-        or (${table.status} <> 'accepted' and ${table.jobId} is null)`
+      sql`(${table.status} = 'accepted'
+            and ((${table.jobId} is not null
+                  and ${table.managedExecutionId} is null
+                  and ${table.managedCommandId} is null)
+              or (${table.jobId} is null
+                  and ${table.managedExecutionId} is not null
+                  and ${table.managedCommandId} is not null)))
+        or (${table.status} <> 'accepted'
+            and ${table.jobId} is null
+            and ${table.managedExecutionId} is null
+            and ${table.managedCommandId} is null)`
+    ),
+    check(
+      "team_agent_requests_native_status_frozen_check",
+      sql`${table.nativeStatusFrozen} is null or (
+        ${table.managedExecutionId} is not null
+        and ${table.nativeStatusFrozen} in (
+          'queued','running','waiting','succeeded','failed','canceled',
+          'interrupted','offline','unknown'
+        )
+      )`
     ),
     check(
       "team_agent_requests_status_check",
@@ -10971,7 +11034,13 @@ export const teamAgentRequests = pgTable(
       table.requesterUserId,
       table.teamId,
       table.createdAt.desc()
-    )
+    ),
+    index("team_agent_requests_owner_review_execution_idx")
+      .on(table.ownerUserId, table.reviewExecutionId)
+      .where(sql`${table.reviewExecutionId} is not null`),
+    index("team_agent_requests_owner_review_unchecked_idx")
+      .on(table.ownerUserId, table.id)
+      .where(sql`${table.reviewBindingChecked} = false`)
   ]
 );
 

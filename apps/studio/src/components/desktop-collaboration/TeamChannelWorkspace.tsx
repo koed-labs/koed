@@ -118,6 +118,7 @@ import {
   forwardableTeamRequestsForChannelMessage,
   forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
+import { teamAgentRequestReviewHref } from "@/lib/team-agent-request-view-state";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
 import type { TeamOverviewItem } from "@koed/shared/team-overview";
 import { TeamAttentionView } from "@/components/TeamAttentionView";
@@ -418,18 +419,14 @@ export function TeamChannelWorkspace({
           );
           return;
         }
-        const query = new URLSearchParams({
-          chat: "1",
-          agent: request.agentId,
-          project: connection.localProjectId,
-          teamRequest: request.id,
-          teamRequestTeam: teamId
-        });
-        query.set("teamRequestVersion", String(request.version));
-        query.set("teamReviewVersion", String(review.version));
-        if (review.executionId) query.set("execution", review.executionId);
-        if (draft) query.set("draft", draft.slice(0, 2_400));
-        router.push(`/?${query.toString()}`);
+        router.push(
+          teamAgentRequestReviewHref({
+            request,
+            review,
+            projectId: connection.localProjectId,
+            ...(draft ? { draft } : {})
+          })
+        );
       } catch (failure) {
         if (!stillAuthorized() || capturedSelectedTeamId !== teamId) return;
         setStatus(

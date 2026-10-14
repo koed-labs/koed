@@ -39,6 +39,8 @@ import {
   managedConversationCodexHistoryProof,
   managedConversationRebasedPrefixMatches,
   managedConversationOriginSourceGeneration,
+  managedConversationOwnerReviewTurnMode,
+  requeueTeamAgentReviewBindingBackfill,
   managedConversationCodexRebaseSourceMatches,
   managedConversationCodexRebaseRequired,
   managedConversationAssistantOutputForTurn,
@@ -59,6 +61,288 @@ import {
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("managed Conversation Team owner-review turn policy", () => {
+  const ownerUserId = randomUUID();
+  const executionId = randomUUID();
+  const projectId = "lp_team_project";
+  const agentId = randomUUID();
+  const binding = {
+    requestId: randomUUID(),
+    teamId: randomUUID(),
+    teamProjectId: randomUUID(),
+    channelId: randomUUID(),
+    ownerUserId,
+    agentId,
+    status: "awaiting_owner" as const
+  };
+  const matchingAgent = () => ({
+    agentId,
+    agentVersion: 4,
+    projectId
+  });
+
+  it("keeps a persisted awaiting-owner review in planning mode", async () => {
+    const getBinding = vi.fn(async () => binding);
+    const getPending = vi.fn(
+      async () =>
+        ({
+          agentId,
+          agentVersion: 4,
+          localProjectId: projectId
+        }) as never
+    );
+    const resolveAgent = vi.fn(matchingAgent);
+    await expect(
+      managedConversationOwnerReviewTurnMode({
+        repository: {
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: getPending
+        },
+        ownerUserId,
+        executionId,
+        executionProjectId: projectId,
+        resolvePersonalAgentIdentity: resolveAgent
+      })
+    ).resolves.toBe("planning");
+    expect(getBinding).toHaveBeenCalledWith(
+      { userId: ownerUserId },
+      { executionId }
+    );
+    expect(getPending).toHaveBeenCalledWith(
+      { userId: ownerUserId },
+      { executionId }
+    );
+    expect(resolveAgent).toHaveBeenCalledOnce();
+  });
+
+  it("restores work mode only after the bound request is accepted", async () => {
+    const getBinding = vi.fn(async () => ({
+      ...binding,
+      status: "accepted" as const
+    }));
+    await expect(
+      managedConversationOwnerReviewTurnMode({
+        repository: {
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: async () => null as never
+        },
+        ownerUserId,
+        executionId,
+        executionProjectId: projectId,
+        resolvePersonalAgentIdentity: matchingAgent
+      })
+    ).resolves.toBe("work");
+  });
+
+  it.each(["declined", "withdrawn", "unavailable"] as const)(
+    "fails closed for a request-bound review in %s state",
+    async (status) => {
+      const getBinding = vi.fn(async () => ({ ...binding, status }));
+      await expect(
+        managedConversationOwnerReviewTurnMode({
+          repository: {
+            getOwnerReviewBindingForExecution: getBinding,
+            getAwaitingOwnerRequestForExecution: async () => null as never
+          },
+          ownerUserId,
+          executionId,
+          executionProjectId: projectId,
+          resolvePersonalAgentIdentity: matchingAgent
+        })
+      ).rejects.toMatchObject({
+        name: "ManagedConversationTeamRequestUnavailableError"
+      });
+    }
+  );
+
+  it("fails closed when an awaiting review loses its live Team authority", async () => {
+    const getBinding = vi.fn(async () => binding);
+    const getPending = vi.fn(async () => null);
+    await expect(
+      managedConversationOwnerReviewTurnMode({
+        repository: {
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: getPending
+        },
+        ownerUserId,
+        executionId,
+        executionProjectId: projectId,
+        resolvePersonalAgentIdentity: matchingAgent
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationTeamRequestUnavailableError"
+    });
+    expect(getPending).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the live Agent version fence for an awaiting review", async () => {
+    const getBinding = vi.fn(async () => binding);
+    const getPending = vi.fn(
+      async () =>
+        ({
+          agentId,
+          agentVersion: 3,
+          localProjectId: projectId
+        }) as never
+    );
+    await expect(
+      managedConversationOwnerReviewTurnMode({
+        repository: {
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: getPending
+        },
+        ownerUserId,
+        executionId,
+        executionProjectId: projectId,
+        resolvePersonalAgentIdentity: matchingAgent
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationTeamRequestUnavailableError"
+    });
+  });
+
+  it("does not treat an unrelated Personal execution as a Team review", async () => {
+    const getBinding = vi.fn(async () => null);
+    const resolveAgent = vi.fn(matchingAgent);
+    await expect(
+      managedConversationOwnerReviewTurnMode({
+        repository: {
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: async () => null as never
+        },
+        ownerUserId,
+        executionId,
+        executionProjectId: projectId,
+        resolvePersonalAgentIdentity: resolveAgent
+      })
+    ).resolves.toBe("work");
+    expect(resolveAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { agentId: randomUUID(), agentVersion: 4, projectId },
+    { agentId, agentVersion: 4, projectId: "another-project" },
+    null
+  ])(
+    "rejects mismatched or missing Agent context for a bound review",
+    async (agent) => {
+      const getBinding = vi.fn(async () => binding);
+      await expect(
+        managedConversationOwnerReviewTurnMode({
+          repository: {
+            getOwnerReviewBindingForExecution: getBinding,
+            getAwaitingOwnerRequestForExecution: async () => null as never
+          },
+          ownerUserId,
+          executionId,
+          executionProjectId: projectId,
+          resolvePersonalAgentIdentity: () => agent
+        })
+      ).rejects.toMatchObject({ name: "ManagedConversationPayloadError" });
+    }
+  );
+});
+
+describe("managed Conversation Team review binding backfill retry", () => {
+  const retryError = Object.assign(
+    new Error(
+      "Owner review binding lookup is incomplete; retry before dispatch"
+    ),
+    {
+      code: "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING",
+      statusCode: 503
+    }
+  );
+
+  it("requeues the same pre-provider prompt under its dispatch lease", async () => {
+    const commandId = randomUUID();
+    const leaseToken = randomUUID();
+    const fail = vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: false
+    }));
+
+    await expect(
+      requeueTeamAgentReviewBindingBackfill({
+        error: retryError,
+        command: { id: commandId, commandKind: "prompt", leaseToken },
+        hasPendingCheckpoint: false,
+        providerTurnDispatched: false,
+        repository: { failManagedConversationCommand: fail } as never
+      })
+    ).resolves.toEqual({ handled: true, updated: true });
+    expect(fail).toHaveBeenCalledOnce();
+    expect(fail).toHaveBeenCalledWith({
+      commandId,
+      leaseToken,
+      state: "queued",
+      errorCode: "ManagedConversationReviewBindingBackfillPendingError"
+    });
+  });
+
+  it.each([
+    ["other status 503", { ...retryError, code: "OTHER_ERROR" }, false, false],
+    ["same code without 503", { ...retryError, statusCode: 409 }, false, false],
+    ["checkpoint recovery", retryError, true, false],
+    ["provider dispatch started", retryError, false, true]
+  ] as const)(
+    "does not intercept %s",
+    async (_label, error, hasPendingCheckpoint, providerTurnDispatched) => {
+      const fail = vi.fn();
+      await expect(
+        requeueTeamAgentReviewBindingBackfill({
+          error,
+          command: {
+            id: randomUUID(),
+            commandKind: "prompt",
+            leaseToken: randomUUID()
+          },
+          hasPendingCheckpoint,
+          providerTurnDispatched,
+          repository: { failManagedConversationCommand: fail } as never
+        })
+      ).resolves.toEqual({ handled: false, updated: false });
+      expect(fail).not.toHaveBeenCalled();
+    }
+  );
+
+  it("treats a lost lease or unavailable requeue write as handled without provider work", async () => {
+    const base = {
+      error: retryError,
+      command: {
+        id: randomUUID(),
+        commandKind: "prompt",
+        leaseToken: randomUUID()
+      },
+      hasPendingCheckpoint: false,
+      providerTurnDispatched: false
+    } as const;
+    await expect(
+      requeueTeamAgentReviewBindingBackfill({
+        ...base,
+        repository: {
+          failManagedConversationCommand: async () => ({
+            updated: false,
+            reconciled: false,
+            requeued: false
+          })
+        } as never
+      })
+    ).resolves.toEqual({ handled: true, updated: false });
+    await expect(
+      requeueTeamAgentReviewBindingBackfill({
+        ...base,
+        repository: {
+          failManagedConversationCommand: async () => {
+            throw new Error("database unavailable");
+          }
+        } as never
+      })
+    ).resolves.toEqual({ handled: true, updated: false });
+  });
+});
 
 describe("managed Conversation provider history recovery", () => {
   it("checks the durable accepted prefix even when a rebased child has no segments", () => {
@@ -2477,6 +2761,7 @@ describe("Managed Conversation service lifecycle", () => {
         ]),
         getManagedConversationExecution: vi.fn(async () => execution),
         setManagedConversationExecutionState: vi.fn(async () => execution),
+        getOwnerReviewBindingForExecution: vi.fn(async () => null),
         getManagedConversationRuntimeBinding: vi.fn(async () => binding),
         getCapturedSession: vi.fn(async () => ({
           id: localSessionId,
@@ -2766,6 +3051,7 @@ describe("Managed Conversation service lifecycle", () => {
         ]),
         getManagedConversationExecution: vi.fn(async () => execution),
         setManagedConversationExecutionState: vi.fn(async () => execution),
+        getOwnerReviewBindingForExecution: vi.fn(async () => null),
         getManagedConversationRuntimeBinding: vi.fn(async () => binding),
         getCapturedSession: vi.fn(async () => ({
           id: localSessionId,
@@ -3280,6 +3566,7 @@ describe("Managed Conversation service lifecycle", () => {
       })),
       setManagedConversationExecutionState: vi.fn(async () => true),
       getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+      getOwnerReviewBindingForExecution: vi.fn(async () => null),
       getAwaitingOwnerRequestForExecution: vi.fn(async () => null),
       listManagedConversationExecutionCheckpoints: vi.fn(
         async () => checkpoints

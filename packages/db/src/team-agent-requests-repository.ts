@@ -10,8 +10,6 @@ import { sendCollaborationMessageWithClient } from "./collaboration-repository.j
 import type { ActorContext } from "./types.js";
 
 const REQUEST_REVIEW_COLUMN = "owner_review";
-const OFFER_DESCRIPTION_MARKER =
-  "[koed encrypted Team Agent offer description]";
 const REQUEST_MESSAGE_MAX_BYTES = 8_000;
 const REQUEST_REVIEW_MAX_BYTES = 12_000;
 const MAX_PAGE_SIZE = 100;
@@ -24,6 +22,16 @@ export type TeamAgentRequestStatus =
   | "declined"
   | "withdrawn"
   | "unavailable";
+export type TeamAgentRequestExecutionStatus =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "interrupted"
+  | "offline"
+  | "unknown";
 export interface TeamAgentOffer {
   teamId: string;
   agentId: string;
@@ -66,6 +74,7 @@ export interface TeamAgentRequest {
     | "interrupted"
     | "offline"
     | null;
+  executionStatus: TeamAgentRequestExecutionStatus | null;
   outcomeMessageId: string | null;
   version: number;
   createdAt: string;
@@ -123,11 +132,16 @@ export class TeamAgentRequestUnavailableError extends Error {
   }
 }
 
-export interface TeamAgentRequestJobContext {
+export interface TeamAgentRequestNativeAssignmentContext {
   requestId: string;
   teamId: string;
   teamProjectId: string;
+  channelId: string;
+  requesterUserId: string;
   ownerUserId: string;
+  expectedRequestVersion: number;
+  expectedReviewVersion: number;
+  expectedOfferVersion: number;
   agentId: string;
   agentVersion: number;
   localProjectId: string;
@@ -136,10 +150,29 @@ export interface TeamAgentRequestJobContext {
   idempotencyKey: string;
 }
 
-export type CreateOwnerJobWithClient = (
+export interface TeamAgentRequestNativeBinding {
+  requestId: string;
+  teamId: string;
+  executionId: string;
+  commandId: string;
+  agentId: string;
+  status: "accepted";
+}
+
+export interface TeamAgentRequestOwnerReviewBinding {
+  requestId: string;
+  teamId: string;
+  teamProjectId: string;
+  channelId: string;
+  ownerUserId: string;
+  agentId: string;
+  status: TeamAgentRequestStatus;
+}
+
+export type CreateManagedAssignmentWithClient = (
   client: pg.PoolClient,
-  input: TeamAgentRequestJobContext
-) => Promise<{ jobId: string }>;
+  input: TeamAgentRequestNativeAssignmentContext
+) => Promise<{ executionId: string; commandId: string }>;
 
 export interface TeamAgentRequestsRepository {
   listOffers(
@@ -188,10 +221,18 @@ export interface TeamAgentRequestsRepository {
     actor: ActorContext,
     input: { executionId: string }
   ): Promise<PendingTeamAgentRequestExecutionBinding | null>;
+  getOwnerReviewBindingForExecution(
+    actor: ActorContext,
+    input: { executionId: string }
+  ): Promise<TeamAgentRequestOwnerReviewBinding | null>;
   getAcceptedRequestForExecution(
     actor: ActorContext,
     input: { teamId: string; requestId: string; executionId: string }
   ): Promise<TeamAgentRequest | null>;
+  getAcceptedRequestNativeBinding(
+    actor: ActorContext,
+    input: { teamId: string; requestId: string; executionId: string }
+  ): Promise<TeamAgentRequestNativeBinding | null>;
   bindOwnerReviewExecutionWithClient(
     client: pg.PoolClient,
     actor: ActorContext,
@@ -221,7 +262,7 @@ export interface TeamAgentRequestsRepository {
       expectedVersion: number;
       decision: "accept" | "decline";
     },
-    createOwnerJob: CreateOwnerJobWithClient
+    createManagedAssignment: CreateManagedAssignmentWithClient
   ): Promise<TeamAgentRequest | null>;
   withdrawRequest(
     actor: ActorContext,
@@ -259,12 +300,20 @@ interface RequestRow {
   status: TeamAgentRequestStatus;
   job_id: string | null;
   job_status: string | null;
+  managed_execution_id: string | null;
+  managed_command_id: string | null;
+  review_execution_id: string | null;
+  review_binding_checked: boolean;
+  execution_status: string | null;
+  native_status_frozen: string | null;
   job_shared: boolean;
   outcome_message_id: string | null;
   version: number;
   created_at: Date;
   updated_at: Date;
   offer_enabled: boolean;
+  offer_version: number | null;
+  current_agent_version: number | null;
   project_active: boolean;
 }
 
@@ -446,9 +495,20 @@ const requestSelect = `
               ) then 'waiting'
               when j.state='running' and pub.state='active' and e.runner_lease_expires_at <= now() then 'offline'
               else j.state end as job_status,
+         r.managed_execution_id,r.managed_command_id,r.native_status_frozen,
+         r.review_execution_id,r.review_binding_checked,
+         case
+           when r.managed_execution_id is null then null
+           when r.native_status_frozen is not null then r.native_status_frozen
+           else team_agent_request_native_execution_status(
+             r.managed_execution_id,r.managed_command_id,r.owner_user_id
+           )
+         end as execution_status,
          coalesce(pub.state in ('active','frozen'),false) as job_shared,
          r.outcome_message_id,r.version,r.created_at,r.updated_at,
          coalesce(o.enabled,false) as offer_enabled,
+         o.version as offer_version,
+         offered_identity.current_version as current_agent_version,
          (sp.unshared_at is null) as project_active
     from team_agent_requests r
     join users requester on requester.id=r.requester_user_id
@@ -457,6 +517,7 @@ const requestSelect = `
     left join personal_agent_team_job_publications pub on pub.job_id=j.id and pub.owner_user_id=j.owner_user_id and pub.team_id=r.team_id and pub.team_project_id=r.team_project_id and pub.state in ('active','frozen')
     left join managed_conversation_executions e on e.id=j.conversation_id and e.owner_user_id=j.owner_user_id
     left join team_agent_offers o on o.team_id=r.team_id and o.owner_user_id=r.owner_user_id and o.agent_id=r.agent_id
+    left join personal_agent_identities offered_identity on offered_identity.id=r.agent_id and offered_identity.owner_user_id=r.owner_user_id
     left join collaboration_messages request_message on request_message.id=r.request_message_id and request_message.thread_id=r.channel_id
     join collaboration_team_shared_projects sp on sp.id=r.team_project_id and sp.team_id=r.team_id
 `;
@@ -478,6 +539,9 @@ const mapRequest = (row: RequestRow, viewerId: string): TeamAgentRequest => ({
   jobId: row.job_shared ? row.job_id : null,
   jobStatus: row.job_shared
     ? (row.job_status as TeamAgentRequest["jobStatus"])
+    : null,
+  executionStatus: row.managed_execution_id
+    ? (row.execution_status as TeamAgentRequestExecutionStatus)
     : null,
   outcomeMessageId: row.outcome_message_id,
   version: row.version,
@@ -526,8 +590,7 @@ const mapOffer = async (
 };
 
 const parsePrivateReview = (
-  value: unknown,
-  input: { teamId: string; requestId: string }
+  value: unknown
 ): { privateGoal: string; executionId: string | null; version: number } => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { privateGoal: "", executionId: null, version: 0 };
@@ -555,8 +618,7 @@ const readPrivateReview = async (
   client: pg.PoolClient,
   actor: ActorContext,
   options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider },
-  requestId: string,
-  teamId: string
+  requestId: string
 ) => {
   const stored = await decryptAuthorizedEncryptedFieldPayloadWithClient(
     client,
@@ -568,7 +630,7 @@ const readPrivateReview = async (
       sourceColumn: REQUEST_REVIEW_COLUMN
     }
   );
-  return parsePrivateReview(stored?.plaintext, { teamId, requestId });
+  return parsePrivateReview(stored?.plaintext);
 };
 
 const requestReviewDto = (
@@ -1042,13 +1104,7 @@ export const createTeamAgentRequestsRepository = (
         await client.query("rollback");
         return null;
       }
-      const review = await readPrivateReview(
-        client,
-        actor,
-        options,
-        row.id,
-        row.team_id
-      );
+      const review = await readPrivateReview(client, actor, options, row.id);
       await client.query("commit");
       return requestReviewDto(input, review);
     } catch (error) {
@@ -1120,8 +1176,7 @@ export const createTeamAgentRequestsRepository = (
           client,
           actor,
           options,
-          request.id,
-          request.team_id
+          request.id
         );
         if (review.executionId !== input.executionId) continue;
         await client.query("commit");
@@ -1138,6 +1193,149 @@ export const createTeamAgentRequestsRepository = (
       }
       await client.query("commit");
       return null;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async getOwnerReviewBindingForExecution(actor, input) {
+    if (!UUID_PATTERN.test(input.executionId)) return null;
+    const client = await pool.connect();
+    try {
+      await client.query("begin isolation level repeatable read");
+      // Requests created before the indexed private binding existed are
+      // backfilled in bounded pages. An incomplete page always fails closed;
+      // after backfill, dispatch checks use the owner/execution index below.
+      const unchecked = await client.query<{
+        id: string;
+        team_id: string;
+      }>(
+        `select id,team_id from team_agent_requests
+          where owner_user_id=$1 and review_binding_checked=false
+          order by id limit 101
+          for update`,
+        [actor.userId]
+      );
+      for (const legacy of unchecked.rows.slice(0, 100)) {
+        const review = await readPrivateReview(
+          client,
+          actor,
+          options,
+          legacy.id
+        );
+        const referencedExecution = review.executionId
+          ? await client.query(
+              `select 1 from managed_conversation_executions
+                where id=$1 and owner_user_id=$2`,
+              [review.executionId, actor.userId]
+            )
+          : null;
+        const validExecutionId =
+          referencedExecution?.rowCount === 1 ? review.executionId : null;
+        await client.query(
+          `update team_agent_requests
+              set review_execution_id=$3,review_binding_checked=true,
+                  status=case when $4::boolean and status='awaiting_owner'
+                              then 'unavailable' else status end
+            where id=$1 and owner_user_id=$2 and review_binding_checked=false`,
+          [
+            legacy.id,
+            actor.userId,
+            validExecutionId,
+            Boolean(review.executionId && !validExecutionId)
+          ]
+        );
+      }
+      if (unchecked.rows.length > 100) {
+        await client.query("commit");
+        throw Object.assign(
+          statusError(
+            "Owner review binding lookup is incomplete; retry before dispatch",
+            503
+          ),
+          { code: "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING" }
+        );
+      }
+      const matched = await client.query<RequestRow>(
+        `${requestSelect}
+          where r.owner_user_id=$1
+            and (r.review_execution_id=$2 or r.managed_execution_id=$2)
+          order by case when r.status='awaiting_owner' then 0 else 1 end,
+                   r.updated_at desc,r.id
+          limit 2`,
+        [actor.userId, input.executionId]
+      );
+      if (matched.rows.length > 1) {
+        throw statusError(
+          "Multiple Team Agent Requests are bound to this review execution",
+          409
+        );
+      }
+      const row = matched.rows[0];
+      if (!row) {
+        await client.query("commit");
+        return null;
+      }
+      let status: TeamAgentRequestStatus = row.status;
+      if (status === "awaiting_owner") {
+        const access =
+          (await activeTeamMembers(client, row.team_id, [
+            row.owner_user_id,
+            row.requester_user_id
+          ])) &&
+          (await requireCurrentProject(client, {
+            teamId: row.team_id,
+            teamProjectId: row.team_project_id
+          })) &&
+          (await requireRequestChannel(client, inputChannel(row)));
+        const offer = access
+          ? await client.query(
+              `select 1 from team_agent_offers o
+                 join personal_agent_identities i
+                   on i.id=o.agent_id and i.owner_user_id=o.owner_user_id
+                where o.team_id=$1 and o.owner_user_id=$2 and o.agent_id=$3
+                  and o.enabled=true and i.lifecycle='active'
+                for share of o,i`,
+              [row.team_id, row.owner_user_id, row.agent_id]
+            )
+          : null;
+        const connection = access
+          ? await client.query<{ local_project_id: string | null }>(
+              `select local_project_id from public_square_project_connections
+                where actor_user_id=$1 and team_id=$2 and team_project_id=$3
+                for share`,
+              [row.owner_user_id, row.team_id, row.team_project_id]
+            )
+          : null;
+        const execution = connection?.rows[0]?.local_project_id
+          ? await client.query<{ project_id: string | null }>(
+              `select project_id from managed_conversation_executions
+                where id=$1 and owner_user_id=$2`,
+              [input.executionId, row.owner_user_id]
+            )
+          : null;
+        if (
+          !access ||
+          offer?.rowCount !== 1 ||
+          !connection?.rows[0]?.local_project_id ||
+          execution?.rows[0]?.project_id !== connection.rows[0].local_project_id
+        ) {
+          status = "unavailable";
+        }
+      }
+      await client.query("commit");
+      return {
+        requestId: row.id,
+        teamId: row.team_id,
+        teamProjectId: row.team_project_id,
+        channelId: row.channel_id,
+        ownerUserId: row.owner_user_id,
+        agentId: row.agent_id,
+        status
+      };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw error;
@@ -1175,19 +1373,69 @@ export const createTeamAgentRequestsRepository = (
         await client.query("rollback");
         return null;
       }
-      const review = await readPrivateReview(
-        client,
-        actor,
-        options,
-        row.id,
-        row.team_id
-      );
-      if (review.executionId !== input.executionId) {
+      const review = await readPrivateReview(client, actor, options, row.id);
+      if (
+        (row.managed_execution_id ?? review.executionId) !== input.executionId
+      ) {
         await client.query("rollback");
         return null;
       }
       await client.query("commit");
       return mapRequest(row, actor.userId);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async getAcceptedRequestNativeBinding(actor, input) {
+    if (
+      !UUID_PATTERN.test(input.teamId) ||
+      !UUID_PATTERN.test(input.requestId) ||
+      !UUID_PATTERN.test(input.executionId)
+    ) {
+      return null;
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("begin isolation level repeatable read");
+      const row = await ensureReviewRequest(
+        client,
+        actor,
+        { teamId: input.teamId, requestId: input.requestId },
+        true,
+        true
+      );
+      if (
+        !row ||
+        row.status !== "accepted" ||
+        !row.managed_execution_id ||
+        !row.managed_command_id ||
+        row.managed_execution_id !== input.executionId ||
+        !(await requireCurrentProject(client, {
+          teamId: row.team_id,
+          teamProjectId: row.team_project_id
+        }))
+      ) {
+        await client.query("rollback");
+        return null;
+      }
+      const review = await readPrivateReview(client, actor, options, row.id);
+      if (review.executionId !== row.managed_execution_id) {
+        await client.query("rollback");
+        return null;
+      }
+      await client.query("commit");
+      return {
+        requestId: row.id,
+        teamId: row.team_id,
+        executionId: row.managed_execution_id,
+        commandId: row.managed_command_id,
+        agentId: row.agent_id,
+        status: "accepted" as const
+      };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw error;
@@ -1247,13 +1495,29 @@ export const createTeamAgentRequestsRepository = (
       throw statusError("Owner must connect this Team Project first", 409);
     }
 
-    const review = await readPrivateReview(
-      client,
-      actor,
-      options,
-      row.id,
-      row.team_id
+    const execution = await client.query<{ project_id: string | null }>(
+      `select project_id from managed_conversation_executions
+        where id=$1 and owner_user_id=$2 for update`,
+      [input.executionId, actor.userId]
     );
+    if (execution.rows[0]?.project_id !== localProjectId) {
+      throw statusError("Owner review execution is unavailable", 409);
+    }
+    const otherBinding = await client.query(
+      `select id from team_agent_requests
+        where owner_user_id=$1 and id<>$2
+          and (review_execution_id=$3 or managed_execution_id=$3)
+        limit 1 for update`,
+      [actor.userId, row.id, input.executionId]
+    );
+    if (otherBinding.rowCount) {
+      throw statusError(
+        "This Managed Conversation is already bound to another Team Agent Request",
+        409
+      );
+    }
+
+    const review = await readPrivateReview(client, actor, options, row.id);
     if (review.version !== input.expectedReviewVersion) {
       throw new TeamAgentRequestVersionConflictError(
         "Owner review changed concurrently"
@@ -1286,6 +1550,12 @@ export const createTeamAgentRequestsRepository = (
         }
       }
     );
+    await client.query(
+      `update team_agent_requests
+          set review_execution_id=$3,review_binding_checked=true
+        where id=$1 and owner_user_id=$2`,
+      [row.id, actor.userId, input.executionId]
+    );
     return {
       requestId: row.id,
       teamId: row.team_id,
@@ -1315,13 +1585,7 @@ export const createTeamAgentRequestsRepository = (
         await client.query("rollback");
         return null;
       }
-      const current = await readPrivateReview(
-        client,
-        actor,
-        options,
-        row.id,
-        row.team_id
-      );
+      const current = await readPrivateReview(client, actor, options, row.id);
       if (current.version !== input.expectedVersion) {
         throw new TeamAgentRequestVersionConflictError(
           "Owner review changed concurrently"
@@ -1334,6 +1598,29 @@ export const createTeamAgentRequestsRepository = (
         throw new TeamAgentRequestVersionConflictError(
           "Owner review is bound to another Agent execution"
         );
+      }
+      if (input.executionId !== null) {
+        const execution = await client.query<{ project_id: string | null }>(
+          `select project_id from managed_conversation_executions
+            where id=$1 and owner_user_id=$2 for update`,
+          [input.executionId, actor.userId]
+        );
+        if (!execution.rows[0]) {
+          throw statusError("Owner review execution is unavailable", 409);
+        }
+        const otherBinding = await client.query(
+          `select id from team_agent_requests
+            where owner_user_id=$1 and id<>$2
+              and (review_execution_id=$3 or managed_execution_id=$3)
+            limit 1 for update`,
+          [actor.userId, row.id, input.executionId]
+        );
+        if (otherBinding.rowCount) {
+          throw statusError(
+            "This Managed Conversation is already bound to another Team Agent Request",
+            409
+          );
+        }
       }
       const next = {
         privateGoal: input.privateGoal,
@@ -1359,6 +1646,12 @@ export const createTeamAgentRequestsRepository = (
           }
         }
       );
+      await client.query(
+        `update team_agent_requests
+            set review_execution_id=$3,review_binding_checked=true
+          where id=$1 and owner_user_id=$2`,
+        [row.id, actor.userId, input.executionId]
+      );
       await client.query("commit");
       return requestReviewDto(input, next);
     } catch (error) {
@@ -1369,7 +1662,7 @@ export const createTeamAgentRequestsRepository = (
     }
   },
 
-  async decideRequest(actor, input, createOwnerJob) {
+  async decideRequest(actor, input, createManagedAssignment) {
     const client = await pool.connect();
     try {
       await client.query("begin");
@@ -1405,7 +1698,8 @@ export const createTeamAgentRequestsRepository = (
       if (row.version !== input.expectedVersion) {
         throw new TeamAgentRequestVersionConflictError();
       }
-      let jobId: string | null = null;
+      let managedExecutionId: string | null = null;
+      let managedCommandId: string | null = null;
       if (input.decision === "accept") {
         const project = await client.query<{ local_project_id: string | null }>(
           `select local_project_id from public_square_project_connections
@@ -1414,46 +1708,62 @@ export const createTeamAgentRequestsRepository = (
           [actor.userId, row.team_id, row.team_project_id]
         );
         const localProjectId = project.rows[0]?.local_project_id;
-        const review = await readPrivateReview(
-          client,
-          actor,
-          options,
-          row.id,
-          row.team_id
-        );
+        const review = await readPrivateReview(client, actor, options, row.id);
         if (
           !localProjectId ||
           !review.privateGoal.trim() ||
-          !review.executionId
+          !review.executionId ||
+          row.offer_version === null
         ) {
           throw statusError(
-            "Owner must connect a Project and review an Agent execution before accepting",
+            "Owner must connect a Project and review a native Agent execution before accepting",
             409
           );
         }
-        const created = await createOwnerJob(client, {
+        const created = await createManagedAssignment(client, {
           requestId: row.id,
           teamId: row.team_id,
           teamProjectId: row.team_project_id,
+          channelId: row.channel_id,
+          requesterUserId: row.requester_user_id,
           ownerUserId: row.owner_user_id,
+          expectedRequestVersion: input.expectedVersion,
+          expectedReviewVersion: review.version,
+          expectedOfferVersion: row.offer_version,
           agentId: row.agent_id,
-          agentVersion: row.agent_version,
+          agentVersion: row.current_agent_version ?? row.agent_version,
           localProjectId,
           executionId: review.executionId,
           privateGoal: review.privateGoal,
           idempotencyKey: `team-agent-request:${row.id}:accept:v${input.expectedVersion}`
         });
-        if (!UUID_PATTERN.test(created.jobId))
-          throw new Error("Owner Job callback returned an invalid Job ID");
-        jobId = created.jobId;
+        if (
+          !UUID_PATTERN.test(created.executionId) ||
+          !UUID_PATTERN.test(created.commandId) ||
+          created.executionId !== review.executionId
+        ) {
+          throw new Error(
+            "Native assignment callback returned an invalid binding"
+          );
+        }
+        managedExecutionId = created.executionId;
+        managedCommandId = created.commandId;
       }
       const status = input.decision === "accept" ? "accepted" : "declined";
       const updated = await client.query(
         `update team_agent_requests
-            set status=$4,job_id=$5,version=version+1,updated_at=now()
+            set status=$4,job_id=null,managed_execution_id=$5,
+                managed_command_id=$6,version=version+1,updated_at=now()
           where id=$1 and team_id=$2 and version=$3 and status='awaiting_owner'
           returning id`,
-        [row.id, row.team_id, input.expectedVersion, status, jobId]
+        [
+          row.id,
+          row.team_id,
+          input.expectedVersion,
+          status,
+          managedExecutionId,
+          managedCommandId
+        ]
       );
       if (updated.rowCount !== 1)
         throw new TeamAgentRequestVersionConflictError();
@@ -1549,13 +1859,16 @@ export const createTeamAgentRequestsRepository = (
         throw new TeamAgentRequestVersionConflictError();
       if (row.outcome_message_id)
         throw new TeamAgentRequestVersionConflictError();
+      const terminalStatus = row.managed_execution_id
+        ? row.execution_status
+        : row.job_status;
       if (
-        !row.job_status ||
+        !terminalStatus ||
         !["succeeded", "failed", "canceled", "interrupted"].includes(
-          row.job_status
+          terminalStatus
         )
       ) {
-        throw statusError("Agent Job has not reached a terminal state", 409);
+        throw statusError("Agent work has not reached a terminal state", 409);
       }
       const message = await sendCollaborationMessageWithClient(
         client,
