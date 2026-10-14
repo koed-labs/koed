@@ -1,3 +1,4 @@
+import type { RepositoryReviewRepository } from "./repository-review-repository.js";
 import type { RepositoryAssignment } from "@koed/shared";
 import type {
   LcmSourceItem,
@@ -1943,6 +1944,7 @@ export interface CuratedMemoryExportRecords {
 export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
+    RepositoryReviewRepository,
     CapturedSessionRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,

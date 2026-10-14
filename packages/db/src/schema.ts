@@ -14067,3 +14067,62 @@ export const sessionRepositoryObservations = pgTable(
     )
   ]
 );
+
+export const repositoryChangeEvents = pgTable(
+  "repository_change_events",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    originatingDeviceId: text("originating_device_id").notNull(),
+    checkoutId: text("checkout_id").notNull(),
+    revision: integer("revision").notNull(),
+    originatingRevision: integer("originating_revision"),
+    kind: text("kind").notNull(),
+    previousIdentity: jsonb("previous_identity").$type<RepositoryIdentity>(),
+    targetIdentity: jsonb("target_identity")
+      .$type<RepositoryIdentity>()
+      .notNull(),
+    status: text("status").notNull().default("pending"),
+    createdAt: now(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    uniqueIndex("repository_change_revision_idx").on(
+      table.ownerUserId,
+      table.originatingDeviceId,
+      table.checkoutId,
+      table.revision
+    ),
+    index("repository_change_owner_status_idx").on(
+      table.ownerUserId,
+      table.status
+    )
+  ]
+);
+export const repositoryAssignmentReviews = pgTable(
+  "repository_assignment_reviews",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => repositoryChangeEvents.id),
+    eventRevision: integer("event_revision").notNull(),
+    options: jsonb("options").notNull(),
+    sessions: jsonb("sessions").notNull(),
+    status: text("status").notNull().default("reviewed"),
+    selectedSessionIds: jsonb("selected_session_ids"),
+    createdAt: now(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    index("repository_review_owner_event_idx").on(
+      table.ownerUserId,
+      table.eventId
+    )
+  ]
+);

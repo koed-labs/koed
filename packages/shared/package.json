@@ -70,6 +70,10 @@
     "./repository-recall": {
       "types": "./dist/repository-recall.d.ts",
       "import": "./dist/repository-recall.js"
+    },
+    "./repository-review": {
+      "types": "./dist/repository-review.d.ts",
+      "import": "./dist/repository-review.js"
     }
   },
   "files": [

@@ -1,3 +1,4 @@
+import { registerRepositoryReviewRoutes } from "./repository-review-routes.js";
 import type { FastifyInstance } from "fastify";
 import {
   createEncryptedJsonPackage,
@@ -68,6 +69,7 @@ export const registerGraphRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
+  registerRepositoryReviewRoutes(app, context);
   const {
     requireRepository,
     config,

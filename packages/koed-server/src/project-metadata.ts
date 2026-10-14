@@ -10,6 +10,9 @@ import {
 } from "node:fs";
 import path, { dirname, relative, resolve } from "node:path";
 import {
+  repositoryIdentityMatches,
+  repositoryChangeInputSchema,
+  type RepositoryChangeInput,
   deriveLocalProjectId,
   hmacProjectValue,
   mergeGitRemoteAliases,
@@ -32,11 +35,13 @@ export interface ProjectMetadataStore {
   updatedAt: string;
   deviceSaltId: string;
   projects: ProjectMetadataV1[];
+  repositoryChanges: RepositoryChangeInput[];
   checkouts: Array<{
     id: string;
     root: string;
     marker: string;
     selectedRemote?: string;
+    repositoryRevision?: number;
   }>;
 }
 
@@ -88,6 +93,7 @@ const defaultStore = (
   schemaVersion: 3,
   updatedAt: now,
   deviceSaltId: `pms_${deps.randomId()}`,
+  repositoryChanges: [],
   checkouts: [],
   projects: []
 });
@@ -111,6 +117,11 @@ const readStore = (
         typeof parsed.deviceSaltId === "string" && parsed.deviceSaltId.trim()
           ? parsed.deviceSaltId.trim()
           : `pms_${deps.randomId()}`,
+      repositoryChanges: Array.isArray(parsed.repositoryChanges)
+        ? parsed.repositoryChanges.map((change) =>
+            repositoryChangeInputSchema.parse(change)
+          )
+        : [],
       checkouts: Array.isArray(parsed.checkouts)
         ? parsed.checkouts.filter(
             (entry) =>
@@ -339,6 +350,31 @@ export const discoverProjectMetadata = async (
       entry.localProjectId === localProjectId &&
       entry.repository?.checkoutId === repository.checkoutId
   );
+  const previous = previousProject?.repository;
+  if (
+    checkout &&
+    previous &&
+    previous.checkoutId === repository.checkoutId &&
+    !(
+      previous.kind === "unresolved" &&
+      repository.kind === "unresolved" &&
+      previous.reason === repository.reason
+    ) &&
+    !repositoryIdentityMatches(previous, repository)
+  ) {
+    checkout.repositoryRevision = (checkout.repositoryRevision ?? 0) + 1;
+    store.repositoryChanges.push(
+      repositoryChangeInputSchema.parse({
+        id: randomUUID(),
+        kind: "anchor_change",
+        originatingDeviceId: repository.originatingDeviceId,
+        checkoutId: checkout.id,
+        originatingRevision: checkout.repositoryRevision,
+        previousIdentity: previous,
+        targetIdentity: repository
+      })
+    );
+  }
   const remoteAliases = mergeGitRemoteAliases(
     previousProject?.git?.remoteAliases ?? [],
     previousProject?.git?.remotes ?? [],
@@ -541,4 +577,22 @@ export const setProjectRepositoryAnchor = async (
     { cwd: original.path.projectRoot ?? original.path.cwd },
     depsInput
   );
+};
+
+export const listPendingRepositoryChanges = (
+  paths: KoedServerPaths,
+  depsInput: ProjectMetadataDeps = {}
+): RepositoryChangeInput[] =>
+  readStore(paths, depsWithDefaults(depsInput)).repositoryChanges;
+export const acknowledgeRepositoryChange = (
+  paths: KoedServerPaths,
+  id: string,
+  depsInput: ProjectMetadataDeps = {}
+): void => {
+  const deps = depsWithDefaults(depsInput);
+  const store = readStore(paths, deps);
+  store.repositoryChanges = store.repositoryChanges.filter(
+    (change) => change.id !== id
+  );
+  writeStore(paths, store, deps);
 };

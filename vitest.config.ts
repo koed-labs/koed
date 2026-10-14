@@ -11,6 +11,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@koed/shared/repository-review",
+        replacement: `${root}packages/shared/src/repository-review.ts`
+      },
+      {
         find: "@koed/shared/repository-recall",
         replacement: `${root}packages/shared/src/repository-recall.ts`
       },

@@ -183,3 +183,8 @@ export type {
 } from "./git-project-probe.js";
 
 export { resolveRepositoryIdentity } from "./repository-identity.js";
+
+export {
+  listPendingRepositoryChanges,
+  acknowledgeRepositoryChange
+} from "./project-metadata.js";

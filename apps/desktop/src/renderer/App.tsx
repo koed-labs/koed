@@ -1840,6 +1840,7 @@ export function App({
             openExternal={platform.openExternal}
             revealLocalProject={platform.revealLocalProject}
             setRepositoryAnchor={platform.setRepositoryAnchor}
+            reviewRepository={platform.reviewRepository}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);

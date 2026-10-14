@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. The next implementation frontier is ticket 10. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. Ticket 10 is complete; the current M2 frontier is ticket 17 on a dependent branch. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -267,16 +267,18 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 09: Group Desktop Projects and reassign individual sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Persist anchor-change and capture-conflict events with owner, originating device, stable checkout identifier, previous and target identities, and event revision.
-- [ ] Display a fixed session set with assignment versions and an exact count. By default include only that checkout's sessions with the previous automatic identity and no manual override.
-- [ ] Exclude unresolved history and manual overrides unless the User explicitly includes them. Show every override that will be replaced.
-- [ ] Recheck ownership, checkout, event revision, and every assignment version at execution. Reject the whole action if the review is stale.
-- [ ] Apply the accepted set atomically as User overrides and record completion so replay cannot apply it again. Never expand the reviewed set with later sessions.
-- [ ] Supersede stale A-to-B events after a B-to-C change. Dismissal changes no assignments, and a reused or same-path checkout cannot be included accidentally.
-- [ ] Test stale reviews, concurrent edits, explicitly included unresolved sessions, replay, and Desktop/recall agreement. Team snapshots remain unchanged.
-- [ ] Document the review, reassignment, and dismissal behavior.
+- [x] Persist anchor-change and capture-conflict events with owner, originating device, stable checkout identifier, previous and target identities, and event revision.
+- [x] Display a fixed session set with assignment versions and an exact count. By default include only that checkout's sessions with the previous automatic identity and no manual override.
+- [x] Exclude unresolved history and manual overrides unless the User explicitly includes them. Show every override that will be replaced.
+- [x] Recheck ownership, checkout, event revision, and every assignment version at execution. Reject the whole action if the review is stale.
+- [x] Apply the accepted set atomically as User overrides and record completion so replay cannot apply it again. Never expand the reviewed set with later sessions.
+- [x] Supersede stale A-to-B events after a B-to-C change. Dismissal changes no assignments, and a reused or same-path checkout cannot be included accidentally.
+- [x] Test stale reviews, concurrent edits, explicitly included unresolved sessions, replay, and Desktop/recall agreement. Team snapshots remain unchanged.
+- [x] Document the review, reassignment, and dismissal behavior.
+
+**Validation:** PostgreSQL fixed-set, stale/concurrent-edit, ownership, provenance, explicit-history, capture-conflict, supersession, and replay checks pass. The API and Desktop regression run passed 285 tests. The deterministic Team fixture verified unchanged encrypted snapshots and authorization after apply/reset. Native Desktop exercised a one-session bulk apply, source inspection, automatic reset, and dismissal; semantic recall followed apply/reset. Moving the copper sample to Indigo made Cobalt recall omit it and Indigo recall cite its original source. Build, test typecheck, lint, formatting, and migration checks passed.
 
 ## 11: Preserve repository assignments across Personal Device Sync
 

@@ -337,6 +337,13 @@
       "when": 1791986091543,
       "tag": "0047_repository_project_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791990563568,
+      "tag": "0048_repository_assignment_reviews",
+      "breakpoints": true
     }
   ]
 }

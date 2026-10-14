@@ -104,3 +104,54 @@ it does not change retained capture source bytes or existing Team snapshots.
 
 Renderer code imports the browser-safe `@koed/shared/repository-recall` entry point.
 The server entry point includes Node dependencies and must not enter the renderer bundle.
+
+## Fixed Assignment Reviews
+
+Anchor discovery records changes in an atomic, profile-local outbox. An unchanged
+anchor or a branch observation does not create another change. Checkout identity
+includes the filesystem incarnation; replacing a repository at the same path does
+not inherit pending changes. Desktop publishes the outbox through the authenticated
+Personal API when the User inspects repository changes. A failed publication leaves
+the item pending for retry. The API binds every event to the authenticated owner,
+originating device, stable checkout, previous/target identities, and a revision.
+Continued capture records conflicting anchor observations through the same event
+store without replacing the Session's recorded automatic assignment.
+
+A newer target supersedes a pending change for that checkout. Delayed local event
+revisions cannot replace the current target. Repeated capture observations with the
+same anchor do not reopen applied or dismissed work. The source revision watermark
+can advance without changing a fixed review's target revision.
+
+**Review repository changes** shows pending changes for the selected local checkout.
+**Prepare fixed review** persists the exact Sessions, assignment versions, options,
+and count. By default, it selects that checkout's Sessions with the previous resolved
+automatic identity and no manual override. The User can explicitly include manual
+overrides or unresolved history that has recorded observations from this exact
+checkout and device. Every included override is shown. Paths alone never qualify.
+A review is limited to 500 Sessions; exceeding that limit rejects preparation instead
+of truncating the count. The User can select a subset of the fixed list.
+
+Applying locks the reviewed Sessions in stable order, then the checkout/event and
+review. This follows capture's Session-before-event lock order. The transaction
+rechecks ownership, live Session eligibility, checkout/device provenance, event
+revision/state, and every reviewed assignment version. A stale set returns 409 and
+changes nothing. Accepted Sessions receive User overrides and incremented versions;
+Session source bytes, automatic assignments, and existing Team snapshots stay intact.
+Later Sessions never join the set. Completion and selected ids are recorded in the
+same transaction, so exact replay returns the result without applying again.
+
+Desktop rediscovery also checks the actual local checkout and current target before
+execution. Replaced checkouts and changed anchors require a new review. **Dismiss
+without reassignment** records dismissal and changes no Session assignments. Project
+grouping and subsequent recall use the resulting effective assignments immediately.
+The API exposes owner-scoped event listing, review preparation/read, and apply/dismiss
+under `/v1/memory/repository-changes` and `/v1/memory/repository-reviews`. Renderer
+commands use validated opaque ids; local paths and API credentials stay main-owned.
+
+`pnpm test:repository-review-fixture` runs the snapshot-preservation regression when
+`KOED_REPOSITORY_REVIEW_FIXTURE_DATABASE_URL` names a disposable fixture database.
+Run under the fixture's test/developer guard. It seeds the existing truth sheet with
+three synthetic encryption providers, stages a recorded Personal repository identity,
+applies/resets a fixed review, and compares materialized Team families and decrypted
+representations. It also repeats the fixture's positive and negative access validation.
+It does not replace the later Team Project snapshot or staged release gates.

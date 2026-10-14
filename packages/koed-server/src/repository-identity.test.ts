@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { normalizeGitRemoteUrl, repositoryIdentitySchema } from "@koed/shared";
 import { resolveRepositoryIdentity } from "./repository-identity.js";
 import {
+  acknowledgeRepositoryChange,
+  listPendingRepositoryChanges,
   discoverProjectMetadata,
   setProjectRepositoryAnchor
 } from "./project-metadata.js";
@@ -240,12 +242,26 @@ describe("selected repository identity", () => {
       expect(
         (await discoverProjectMetadata(paths, { cwd })).project?.repository
       ).toEqual(edited.repository);
+      const pending = listPendingRepositoryChanges(paths);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        kind: "anchor_change",
+        originatingRevision: 1,
+        checkoutId: first.repository!.checkoutId,
+        previousIdentity: first.repository,
+        targetIdentity: edited.repository
+      });
+      expect(listPendingRepositoryChanges(paths)).toEqual(pending);
       const reset = await setProjectRepositoryAnchor(paths, {
         localProjectId: first.localProjectId,
         expectedCheckoutId: first.repository!.checkoutId!,
         remoteName: null
       });
       expect(reset.project?.repository?.key).toBe(first.repository?.key);
+      expect(listPendingRepositoryChanges(paths)).toHaveLength(2);
+      expect(listPendingRepositoryChanges(paths)[1]?.originatingRevision).toBe(
+        2
+      );
       // Retain the old directory, guaranteeing a distinct filesystem identity.
       fs.renameSync(path.join(cwd, ".git"), path.join(directory, "old-git"));
       git("init", "--initial-branch=replacement");
@@ -256,6 +272,9 @@ describe("selected repository identity", () => {
         first.repository?.checkoutId
       );
       expect(replacement.repository?.reason).toBe("origin");
+      expect(listPendingRepositoryChanges(paths)).toHaveLength(2);
+      acknowledgeRepositoryChange(paths, pending[0]!.id);
+      expect(listPendingRepositoryChanges(paths)).toHaveLength(1);
       await expect(
         setProjectRepositoryAnchor(paths, {
           localProjectId: first.localProjectId,

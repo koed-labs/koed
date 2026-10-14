@@ -1831,3 +1831,5 @@ export {
   repositoryScopeId,
   repositoryIdentityMatches
 } from "./repository-recall.js";
+
+export * from "./repository-review.js";

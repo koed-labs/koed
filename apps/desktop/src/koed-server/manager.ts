@@ -4,6 +4,8 @@ import {
   writePersonalDeviceName
 } from "../personal-device-names.js";
 import {
+  acknowledgeRepositoryChange,
+  listPendingRepositoryChanges,
   deviceRequestCommand,
   exchangeDeviceRequest,
   parseDeviceRequestLink
@@ -14,6 +16,11 @@ import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import {
+  repositoryIdentityMatches,
+  repositoryReviewCommandSchema,
+  repositoryReviewSchema,
+  repositoryChangeSchema,
+  repositoryReviewCommandResultSchema,
   approvalActivityClassificationSchema,
   approvalReviewTranscriptDisplayFromText,
   approvalReviewTranscriptDisplaySchema,
@@ -2835,6 +2842,128 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
+  const repositoryReviewJson = (
+    path: string,
+    init: RequestInit = { method: "GET" }
+  ) =>
+    authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
+      2 * 1024 * 1024
+    );
+  const publishRepositoryChanges = async () => {
+    const paths = resolveKoedServerPaths(environment);
+    for (const event of listPendingRepositoryChanges(paths)) {
+      const response = await repositoryReviewJson(
+        "/v1/memory/repository-changes",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(event)
+        }
+      );
+      repositoryChangeSchema.parse(response.event);
+      acknowledgeRepositoryChange(paths, event.id);
+    }
+  };
+  const repositoryReviewCommand = async (raw: unknown) => {
+    const input = repositoryReviewCommandSchema.parse(raw);
+    const paths = resolveKoedServerPaths(environment);
+    const local = (listProjectMetadata(paths).projects ?? []).find(
+      (project) => project.localProjectId === input.localProjectId
+    );
+    if (!local)
+      throw new Error(
+        "Local Project is unavailable. Inspect the checkout again."
+      );
+    const discovery = await discoverProjectMetadata(paths, {
+      cwd: local.path.projectRoot ?? local.path.cwd
+    });
+    const repository = discovery.project?.repository;
+    if (!repository?.checkoutId)
+      throw new Error(
+        "Checkout provenance is unavailable. Nothing was reassigned."
+      );
+    await publishRepositoryChanges();
+    if (input.operation === "list")
+      return repositoryReviewCommandResultSchema.parse(
+        await repositoryReviewJson(
+          `/v1/memory/repository-changes?checkoutId=${encodeURIComponent(repository.checkoutId)}`
+        )
+      );
+    if (input.operation === "preview") {
+      const events = await repositoryReviewJson(
+        `/v1/memory/repository-changes?checkoutId=${encodeURIComponent(repository.checkoutId)}`
+      );
+      const pending = repositoryReviewCommandResultSchema
+        .parse(events)
+        .events?.find(
+          (event) =>
+            event.id === input.eventId &&
+            event.originatingDeviceId === repository.originatingDeviceId
+        );
+      if (!pending)
+        throw new Error(
+          "Repository change is stale. Inspect the current change again."
+        );
+      return repositoryReviewCommandResultSchema.parse(
+        await repositoryReviewJson(
+          `/v1/memory/repository-changes/${input.eventId}/reviews`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input.options)
+          }
+        )
+      );
+    }
+    const retained = await repositoryReviewJson(
+      `/v1/memory/repository-reviews/${input.reviewId}`
+    );
+    const review = repositoryReviewSchema.parse(retained.review);
+    const event = review.event;
+    if (
+      event.checkoutId !== repository.checkoutId ||
+      event.originatingDeviceId !== repository.originatingDeviceId ||
+      !(
+        repositoryIdentityMatches(event.targetIdentity, repository) ||
+        (event.targetIdentity.kind === "unresolved" &&
+          repository.kind === "unresolved" &&
+          event.targetIdentity.reason === repository.reason)
+      )
+    )
+      throw new Error(
+        "The checkout or selected anchor changed. Nothing was reassigned. Inspect it again."
+      );
+    try {
+      return repositoryReviewCommandResultSchema.parse(
+        await repositoryReviewJson(
+          `/v1/memory/repository-reviews/${input.reviewId}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: input.operation,
+              expectedRevision: input.expectedRevision,
+              ...(input.operation === "apply"
+                ? { sessionIds: input.sessionIds }
+                : {})
+            })
+          }
+        )
+      );
+    } catch (error) {
+      if (
+        error instanceof PersonalMemoryBoundaryError &&
+        error.code === "conflict"
+      )
+        throw new Error(
+          "The review or a session changed. Nothing was reassigned. Inspect the current change again.",
+          { cause: error }
+        );
+      throw error;
+    }
+  };
+
   const listPersonalProjects = async () => {
     const projects = personalProjectsData(
       await authenticatedPersonalMemoryRequest(
@@ -5613,6 +5742,7 @@ export const createKoedServerManager = ({
       models_install: () => runModelInstallJson(),
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
+      repository_review: (args) => repositoryReviewCommand(args),
       project_list: () => runJson(["project", "list"], 10_000),
       project_anchor_set: async (args) => {
         const input = exactDesktopArgs(args, [

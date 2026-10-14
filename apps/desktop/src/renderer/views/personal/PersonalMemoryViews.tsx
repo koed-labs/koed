@@ -158,6 +158,7 @@ export type PersonalMemoryWorkspaceProps = {
   openExternal?: (url: string) => Promise<void>;
   revealLocalProject?: (localProjectId: string) => Promise<void>;
   setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
+  reviewRepository?: RendererPlatform["reviewRepository"];
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -781,6 +782,7 @@ function ProjectDetail({
   onOpenRepository,
   onRevealLocalProject,
   onSetRepositoryAnchor,
+  onReviewRepository,
   onRetry,
   onSelectSession,
   project
@@ -808,6 +810,7 @@ function ProjectDetail({
   onOpenRepository?: (url: string) => void;
   onRevealLocalProject?: (localProjectId: string) => void;
   onSetRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
+  onReviewRepository?: RendererPlatform["reviewRepository"];
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
@@ -1095,6 +1098,8 @@ function ProjectDetail({
             key={project.repository?.checkoutId ?? project.id}
             project={project}
             onSetAnchor={onSetRepositoryAnchor}
+            onReview={onReviewRepository}
+            onChanged={async () => onRetry()}
           />
           {(project.checkouts?.length ?? 0) > 1 ? (
             <ul aria-label="Project checkouts">
@@ -3779,6 +3784,7 @@ export function PersonalMemoryWorkspace({
   openExternal,
   revealLocalProject,
   setRepositoryAnchor,
+  reviewRepository,
   projectWorkspaceSuggestions = [],
   ready = true,
   route,
@@ -4053,6 +4059,16 @@ export function PersonalMemoryWorkspace({
               }}
               onOpenRepository={onOpenRepository}
               onRevealLocalProject={onRevealLocalProject}
+              onReviewRepository={
+                reviewRepository
+                  ? async (input) => {
+                      const result = await reviewRepository(input);
+                      if (input.operation === "apply")
+                        await store.loadProjects();
+                      return result;
+                    }
+                  : undefined
+              }
               onSetRepositoryAnchor={
                 setRepositoryAnchor
                   ? async (input) => {

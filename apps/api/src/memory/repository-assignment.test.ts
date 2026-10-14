@@ -143,4 +143,103 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
         .repositoryAssignment
     ).toMatchObject({ version: 3, effective: a, override: null });
   });
+  it("exposes owner-scoped fixed reviews, applies once, and rejects later or stale selections", async () => {
+    const a: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_review_a",
+      root: "/fixture/review",
+      branch: "main",
+      reason: "origin",
+      checkoutId: `checkout_${randomUUID()}`,
+      originatingDeviceId: "review_device",
+      selectedRemote: "origin",
+      anchorDisplay: "example/review-a"
+    };
+    const b = { ...a, key: "gr_review_b", anchorDisplay: "example/review-b" };
+    const actor = { userId: ownerId };
+    const captured = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: a
+    });
+    const record = await app.inject({
+      method: "POST",
+      url: "/v1/memory/repository-changes",
+      payload: {
+        id: randomUUID(),
+        kind: "anchor_change",
+        originatingDeviceId: a.originatingDeviceId,
+        checkoutId: a.checkoutId,
+        originatingRevision: 1,
+        previousIdentity: a,
+        targetIdentity: b
+      }
+    });
+    expect(record.statusCode, record.body).toBe(200);
+    const event = record.json().event as { id: string; revision: number };
+    const denied = await app.inject({
+      method: "POST",
+      url: `/v1/memory/repository-changes/${event.id}/reviews`,
+      headers: { "x-fixture-owner": "other" },
+      payload: { includeOverrides: false, includeUnresolved: false }
+    });
+    expect(denied.statusCode).toBe(404);
+    const preview = await app.inject({
+      method: "POST",
+      url: `/v1/memory/repository-changes/${event.id}/reviews`,
+      payload: { includeOverrides: false, includeUnresolved: false }
+    });
+    expect(preview.statusCode, preview.body).toBe(200);
+    const review = preview.json().review as {
+      id: string;
+      count: number;
+      sessions: Array<{ id: string; assignment: { version: number } }>;
+    };
+    expect(review.count).toBe(1);
+    expect(review.sessions[0]?.assignment.version).toBe(1);
+    const late = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: a
+    });
+    const action = {
+      action: "apply",
+      expectedRevision: event.revision,
+      sessionIds: [captured.id]
+    };
+    const url = `/v1/memory/repository-reviews/${review.id}`;
+    const expanded = await app.inject({
+      method: "POST",
+      url,
+      payload: { ...action, sessionIds: [captured.id, late.id] }
+    });
+    expect(expanded.statusCode).toBe(400);
+    const stale = await app.inject({
+      method: "POST",
+      url,
+      payload: { ...action, expectedRevision: event.revision + 1 }
+    });
+    expect(stale.statusCode).toBe(409);
+    const apply = await app.inject({ method: "POST", url, payload: action });
+    expect(apply.statusCode, apply.body).toBe(200);
+    expect(
+      (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
+        ?.version
+    ).toBe(2);
+    expect(
+      (await repo.getCapturedSession(actor, late.id))?.repositoryAssignment
+        ?.version
+    ).toBe(1);
+    expect(
+      (await app.inject({ method: "POST", url, payload: action })).statusCode
+    ).toBe(200);
+    expect(
+      (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
+        ?.version
+    ).toBe(2);
+    const other = await app.inject({
+      method: "GET",
+      url,
+      headers: { "x-fixture-owner": "other" }
+    });
+    expect(other.statusCode).toBe(404);
+  });
 });

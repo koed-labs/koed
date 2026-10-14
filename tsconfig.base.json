@@ -71,6 +71,9 @@
       ],
       "@koed/shared/repository-recall": [
         "packages/shared/src/repository-recall.ts"
+      ],
+      "@koed/shared/repository-review": [
+        "packages/shared/src/repository-review.ts"
       ]
     },
     "resolveJsonModule": true,

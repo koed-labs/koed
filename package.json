@@ -93,7 +93,8 @@
     "fmt": "pnpm fmt:prettier",
     "fmt:check": "pnpm fmt:prettier:check",
     "fmt:prettier": "prettier --write .",
-    "fmt:prettier:check": "prettier --check ."
+    "fmt:prettier:check": "prettier --check .",
+    "test:repository-review-fixture": "node --test scripts/repository-review-fixture.test.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

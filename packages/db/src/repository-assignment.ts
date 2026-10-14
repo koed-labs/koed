@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { recordRepositoryChange } from "./repository-change-events.js";
+import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
   effectiveRepositoryIdentity,
@@ -86,11 +87,11 @@ export const recordRepositoryObservation = async (
   const observationHash = createHash("sha256")
     .update(JSON.stringify({ identity, cwd: cwd ?? null }))
     .digest("hex");
-  await client.query(
+  const observation = await client.query(
     `insert into session_repository_observations
     (session_id, owner_user_id, observation_hash, identity, captured_cwd, is_conflict, assignment_version)
     values ($1, $2, $3, $4, $5, $6, $7)
-    on conflict (session_id, observation_hash) do nothing`,
+    on conflict (session_id, observation_hash) do nothing returning id`,
     [
       row.id,
       row.owner_user_id,
@@ -101,6 +102,17 @@ export const recordRepositoryObservation = async (
       row.repository_assignment_version
     ]
   );
+  if (conflict && observation.rowCount && identity.checkoutId) {
+    await recordRepositoryChange(client, row.owner_user_id, {
+      id: randomUUID(),
+      kind: "capture_conflict",
+      originatingDeviceId: identity.originatingDeviceId,
+      checkoutId: identity.checkoutId,
+      originatingRevision: null,
+      previousIdentity: automatic,
+      targetIdentity: identity
+    });
+  }
 };
 
 export const updateSessionRepositoryOverride = async (

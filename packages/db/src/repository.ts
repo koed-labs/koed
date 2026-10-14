@@ -1,3 +1,4 @@
+import { createRepositoryReviewRepository } from "./repository-review-repository.js";
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
@@ -4005,6 +4006,7 @@ export const createMemorySourceRepository = (
     Promise.all(rows.map((row) => hydrateRepositoryMemoryNodeRow(client, row)));
 
   const repository: MemorySourceRepository = {
+    ...createRepositoryReviewRepository(pool),
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
     // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
     ...createUserApiTokenRepository(db),

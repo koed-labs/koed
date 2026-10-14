@@ -1,3 +1,9 @@
+import {
+  repositoryReviewCommandSchema,
+  repositoryReviewCommandResultSchema,
+  type RepositoryReviewCommand,
+  type RepositoryReviewCommandResult
+} from "@koed/shared/repository-review";
 import { safeExternalUrl } from "../../window/external-url.js";
 import { personalDesktopProjectMetadataSchema } from "@koed/shared/personal-desktop";
 import type { DesktopProjectMetadata } from "../../project-memory-ui.js";
@@ -20,6 +26,9 @@ const discoveredProjectSchema = personalDesktopProjectMetadataSchema
   .strip();
 
 export type RendererPlatform = {
+  reviewRepository: (
+    input: RepositoryReviewCommand
+  ) => Promise<RepositoryReviewCommandResult>;
   setRepositoryAnchor: (input: {
     localProjectId: string;
     expectedCheckoutId: string;
@@ -33,6 +42,13 @@ export type RendererPlatform = {
 };
 
 export const createRendererPlatform = (): RendererPlatform => ({
+  reviewRepository: async (input) =>
+    repositoryReviewCommandResultSchema.parse(
+      await window.koedDesktop?.invoke(
+        "repository_review",
+        repositoryReviewCommandSchema.parse(input)
+      )
+    ),
   setRepositoryAnchor: async (input) => {
     const result = await window.koedDesktop?.invoke<{
       ok?: boolean;

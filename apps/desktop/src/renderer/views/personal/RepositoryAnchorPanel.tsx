@@ -1,13 +1,18 @@
+import { RepositoryReviewPanel } from "./RepositoryReviewPanel.js";
 import { useEffect, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { RendererPlatform } from "../../services/platform.js";
 
 export function RepositoryAnchorPanel({
   project,
-  onSetAnchor
+  onSetAnchor,
+  onReview,
+  onChanged
 }: {
   project: DesktopProject;
   onSetAnchor?: RendererPlatform["setRepositoryAnchor"];
+  onReview?: RendererPlatform["reviewRepository"];
+  onChanged?: () => Promise<void>;
 }) {
   const [selectedCheckoutId, setSelectedCheckoutId] = useState(
     project.localProjectId
@@ -131,6 +136,14 @@ export function RepositoryAnchorPanel({
             assignments stay as recorded.
           </p>
         </form>
+      ) : null}
+      {onReview && localProjectId ? (
+        <RepositoryReviewPanel
+          key={localProjectId}
+          localProjectId={localProjectId}
+          onReview={onReview}
+          onChanged={onChanged}
+        />
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
     </details>
