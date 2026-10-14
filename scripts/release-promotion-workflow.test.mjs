@@ -13,6 +13,17 @@ const recovery = readFileSync(
   "utf8"
 );
 
+test("asset jobs only run for absent releases or resumable drafts", () => {
+  assert.match(
+    release,
+    /echo "draft=\$\(jq -r '\.draft' <<< "\$\{release\}"\)" >> "\$\{GITHUB_OUTPUT\}"/
+  );
+  assert.match(
+    release,
+    /id: release_assets\n\s+if: steps\.changesets\.outputs\.hasChangesets == 'false' && \(steps\.release\.outputs\.exists == 'false' \|\| steps\.release\.outputs\.draft == 'true'\)/
+  );
+});
+
 test("release retries verify existing asset bytes and never clobber", () => {
   assert.doesNotMatch(release, /--clobber/);
   assert.doesNotMatch(recovery, /--clobber/);

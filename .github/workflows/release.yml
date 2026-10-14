@@ -92,6 +92,7 @@ jobs:
           else
             echo "exists=true" >> "${GITHUB_OUTPUT}"
             echo "release_id=$(jq -r '.id' <<< "${release}")" >> "${GITHUB_OUTPUT}"
+            echo "draft=$(jq -r '.draft' <<< "${release}")" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Verify release commit
@@ -123,7 +124,7 @@ jobs:
 
       - name: Mark Desktop release assets enabled
         id: release_assets
-        if: steps.changesets.outputs.hasChangesets == 'false'
+        if: steps.changesets.outputs.hasChangesets == 'false' && (steps.release.outputs.exists == 'false' || steps.release.outputs.draft == 'true')
         run: |
           # Existing drafts are resumable; asset builders verify exact bytes.
           echo "enabled=true" >> "${GITHUB_OUTPUT}"
