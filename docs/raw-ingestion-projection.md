@@ -731,3 +731,13 @@ processing reuse the same logical Captured Session. Repository metadata does not
 change source fingerprints, cursor identities, or the existing append-only and
 rewrite-generation checks. Recorded assignments, User overrides, and historical
 unresolved state remain authoritative across duplicate and delayed ingestion.
+
+### Managed runtime registration ordering
+
+Managed runtime capture resolves repository context before initial Session
+registration, including managed Codex child threads. This ordering matters:
+adding a repository observation only when the transcript journal arrives cannot
+resolve a Session that was already created unresolved. Managed runtime bindings
+supply the target checkout to the shared resolver. Transcript replay and recovery
+reuse the recorded Session assignment; they do not rediscover identity for every
+page or automatically repair historical Sessions.

@@ -1574,3 +1574,5 @@ export const memoryAccessCheck = async (
       : []
   };
 };
+
+export { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";

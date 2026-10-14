@@ -31,6 +31,7 @@ import {
   ClaudeManagedConversationSession,
   CodexManagedConversationIdentityError,
   CodexManagedConversationSession,
+  resolveCaptureRepositoryIdentity,
   PiManagedConversationSession,
   destroyManagedClaudeHome,
   environmentForLocalAiClientInstance,
@@ -1488,7 +1489,7 @@ export const createManagedConversationService = (options: {
           ? { reasoningEffort: execution.reasoningEffort }
           : {}),
         cwd: override?.projectPath ?? binding.projectPath,
-        env: runtimeEnvironment,
+        env: { ...runtimeEnvironment, KOED_HOME: options.koedHome },
         clientName: "koed-server-managed-conversation",
         baseInstructions:
           "You are Codex, an AI coding agent working with the user in the selected Project.",
@@ -2224,6 +2225,10 @@ export const createManagedConversationService = (options: {
               captureMethod: "api",
               model: execution.model,
               cwd: binding.projectPath,
+              repositoryIdentity: await resolveCaptureRepositoryIdentity({
+                cwd: binding.projectPath,
+                env: { ...process.env, KOED_HOME: options.koedHome }
+              }),
               idempotencyKey: `managed-codex-session:${execution.providerThreadId}`,
               detectedProjects: [
                 {
@@ -4845,6 +4850,10 @@ export const createManagedConversationService = (options: {
                   captureMethod: "api",
                   model: command.execution.model,
                   cwd: binding.projectPath,
+                  repositoryIdentity: await resolveCaptureRepositoryIdentity({
+                    cwd: binding.projectPath,
+                    env: { ...process.env, KOED_HOME: options.koedHome }
+                  }),
                   idempotencyKey: `pi-session:${identity.sessionId}`,
                   detectedProjects: [
                     {
@@ -4961,6 +4970,10 @@ export const createManagedConversationService = (options: {
                 captureMethod: "api",
                 model: command.execution.model,
                 cwd: binding.projectPath,
+                repositoryIdentity: await resolveCaptureRepositoryIdentity({
+                  cwd: binding.projectPath,
+                  env: { ...process.env, KOED_HOME: options.koedHome }
+                }),
                 idempotencyKey: `managed-claude-session:${started.identity.sessionId}`,
                 detectedProjects: [
                   {

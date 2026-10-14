@@ -231,7 +231,7 @@ describe("Managed Codex runtime environment", () => {
         }
       });
 
-      expect(environment.CODEX_HOME).toBe(codexHome);
+      expect(environment.CODEX_HOME).toBe(await realpath(codexHome));
       expect(environment.MEMORY_CODEX_APP_SERVER_BINARY).toBe(
         await realpath(process.execPath)
       );

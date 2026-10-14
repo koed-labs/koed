@@ -204,14 +204,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Pass the managed Conversation's Project and checkout context through each supported managed runtime to the shared capture contract.
-- [ ] Resolve the Conversation's target Project rather than the supervisor's or API process's cwd.
-- [ ] Retain non-Git and standalone Conversation Project behavior without assigning an unrelated repository.
-- [ ] Demonstrate a new managed Conversation, a worktree Conversation, and a continued unresolved Conversation.
-- [ ] Duplicate observations and runtime restarts preserve the same assignment and logical session.
-- [ ] Update managed Conversation integration documentation and add focused runtime-to-capture integration coverage using the shared assignment fixtures.
+- [x] Pass the managed Conversation's Project and checkout context through each supported managed runtime to the shared capture contract.
+- [x] Resolve the Conversation's target Project rather than the supervisor's or API process's cwd.
+- [x] Retain non-Git and standalone Conversation Project behavior without assigning an unrelated repository.
+- [x] Demonstrate a new managed Conversation, a worktree Conversation, and a continued unresolved Conversation.
+- [x] Duplicate observations and runtime restarts preserve the same assignment and logical session.
+- [x] Update managed Conversation integration documentation and add focused runtime-to-capture integration coverage using the shared assignment fixtures.
+
+**Validation:** Managed Codex runtime-to-capture tests verify initial registration from a root, subdirectory, worktree, and standalone target before transcript ingestion. All 44 managed Codex cases pass, including restart, replay, child identity, and graceful close. The shared capture and managed Worker regression suites pass 70 cases. Nine native integration cases resolve real target checkouts and exercise the database capture boundary for managed Codex, Claude Code, and Pi, preserving navigation Project, assignment, override, logical Session, and historical-unresolved state across replay. Production builds, full test typechecking, targeted lint, and formatting pass. Managed runtime and ingestion documentation explain registration ordering and the bound-checkout context. The close fixture now gates its idle notification on capture readiness so startup duration cannot invalidate the scenario.
 
 ## 07: Preserve assignments during historical imports
 

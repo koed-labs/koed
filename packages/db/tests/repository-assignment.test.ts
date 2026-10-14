@@ -23,7 +23,9 @@ const identity = (name: string, branch = "main"): RepositoryIdentity => ({
   anchorDisplay: `example.test/team/${name}`
 });
 
-describe.skipIf(!databaseUrl).each(["codex-cli", "claude-code", "pi"] as const)(
+describe
+  .skipIf(!databaseUrl)
+  .each(["codex-cli", "codex", "claude-code", "pi"] as const)(
   "%s recorded repository assignments in PostgreSQL",
   (sourceRuntime) => {
     let pool: pg.Pool;

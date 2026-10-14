@@ -289,3 +289,26 @@ buffer only after their batch succeeds. This reduces capture requests during
 new launches and recovery without releasing prompts before startup capture.
 Desktop recognises both `agent` capture events and `assistant` message events
 when deciding whether the current response still needs an empty placeholder.
+
+## Capture repository assignments
+
+Managed Codex, Claude Code, and Pi register repository observations from the
+checked runtime binding's target checkout. Codex also resolves the provider
+thread's target for primary and child capture registration. The shared capture
+resolver uses the configured Koed profile and selected anchor; it never falls
+back to the Worker, supervisor, or API process directory.
+
+Registration carries the observation before the first Captured Session is
+created. Transcript paging and Projection reuse that Session. A worktree with
+the same selected remote has the same portable repository fingerprint while
+retaining its checkout path. Standalone Conversations retain their Independent
+Project navigation identity and their own non-Git working-directory identity.
+Unavailable checkout metadata produces unresolved repository context.
+
+Runtime restart, duplicate observations, delayed capture, and later turns cannot
+replace a recorded assignment or User override. A continued pre-cutover Session
+remains historically unresolved until explicit reassignment. Recovery that must
+register a missing Session uses the persisted target binding and the same shared
+capture boundary. Existing Sessions are read without assigning them from a
+new checkout. Desktop inspection displays the effective assignment stored by
+that boundary.

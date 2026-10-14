@@ -1,3 +1,4 @@
+import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -606,6 +607,10 @@ export class CodexManagedConversationSession {
         captureMethod: "api",
         model: this.config.appServer.model,
         cwd: thread.cwd ?? this.config.appServer.cwd,
+        repositoryIdentity: await resolveCaptureRepositoryIdentity({
+          cwd: thread.cwd ?? this.config.appServer.cwd,
+          env: this.config.appServer.env
+        }),
         idempotencyKey: `managed-codex-session:${thread.id}`,
         sourceHash: sha256({
           adapter: "codex-app-server-conversation-v1",
@@ -1550,6 +1555,10 @@ export class CodexManagedConversationSession {
       captureMethod: "api",
       model: this.config.appServer.model,
       cwd: thread.cwd ?? this.config.appServer.cwd,
+      repositoryIdentity: await resolveCaptureRepositoryIdentity({
+        cwd: thread.cwd ?? this.config.appServer.cwd,
+        env: this.config.appServer.env
+      }),
       idempotencyKey: `managed-codex-session:${thread.id}`,
       sourceHash: sha256({
         adapter: "codex-app-server-conversation-v1",
