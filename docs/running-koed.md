@@ -172,6 +172,17 @@ Privacy Filter health requests have a five-second deadline. Startup polling
 does not request accelerator diagnostics, so those diagnostics cannot delay
 the next readiness check.
 
+Privacy Filter model installation retries interrupted network transfers and
+transient HTTP 408/429/5xx responses up to three attempts per file. Partial files
+are removed on failure; only complete files with the pinned SHA-256 and size
+are published. Checksum mismatches and permanent HTTP errors fail closed rather
+than being retried as successful downloads.
+
+Privacy Filter startup emits `privacy.startup` stage timings for CPU model load,
+CPU parity validation, provider selection and HTTP listening. These logs contain
+no classified text or credentials. A timeout still fails readiness; use the last
+completed stage to distinguish slow loading from an unavailable service.
+
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
 running service health response and does not read the model again. A later

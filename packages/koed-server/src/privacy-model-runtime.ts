@@ -13,6 +13,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { KoedServerPaths } from "./paths.js";
 import {
   PINNED_PRIVACY_MODEL_FILES,
@@ -109,6 +110,76 @@ const materializeCacheEntry = (
   materializePrivacyModelCacheEntry(blobPath(paths, file), target);
 };
 
+const retryableTransferError = (error: unknown): boolean => {
+  if (error instanceof TypeError) return true;
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT"
+  ].includes(code ?? "");
+};
+
+const downloadPrivacyAsset = async (
+  file: PrivacyModelFile,
+  temporary: string,
+  fetcher: typeof fetch
+): Promise<number | undefined> => {
+  const url = `https://huggingface.co/${PRIVACY_MODEL_ID}/resolve/${PRIVACY_MODEL_REVISION}/${file.path}`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    rmSync(temporary, { force: true });
+    try {
+      const response = await fetcher(url);
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        const retryAfter = response.headers.get("retry-after");
+        const seconds = retryAfter === null ? NaN : Number(retryAfter);
+        const requestedDelay =
+          retryAfter === null
+            ? NaN
+            : Number.isFinite(seconds)
+              ? seconds * 1000
+              : Date.parse(retryAfter) - Date.now();
+        const retryDelay = Number.isFinite(requestedDelay)
+          ? Math.max(0, requestedDelay)
+          : 250 * attempt;
+        if (
+          attempt < 3 &&
+          retryDelay <= 30_000 &&
+          (response.status === 408 ||
+            response.status === 429 ||
+            response.status >= 500)
+        ) {
+          await delay(retryDelay);
+          continue;
+        }
+        return response.status;
+      }
+      await pipeline(
+        Readable.fromWeb(response.body as never),
+        createWriteStream(temporary, { mode: 0o600 })
+      );
+      return undefined;
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      if (!retryableTransferError(error)) throw error;
+      if (attempt === 3) {
+        throw new Error(
+          `Could not download pinned Privacy Filter model asset ${file.path}: transfer failed after ${attempt} attempts.`,
+          { cause: error }
+        );
+      }
+      await delay(250 * attempt);
+    }
+  }
+  throw new Error("Privacy Filter model transfer did not complete.");
+};
+
 export const collectPrivacyModelStatus = async (
   serverPaths: KoedServerPaths
 ): Promise<PrivacyModelStatus> => {
@@ -179,44 +250,41 @@ export const installPrivacyModel = async (
       materializeCacheEntry(paths, file);
       continue;
     }
-    const url = `https://huggingface.co/${PRIVACY_MODEL_ID}/resolve/${PRIVACY_MODEL_REVISION}/${file.path}`;
-    const response = await fetcher(url);
-    if (!response.ok || !response.body) {
-      return {
-        ok: false,
-        state: "missing",
-        message: `Could not download pinned Privacy Filter model asset ${file.path} (HTTP ${response.status}).`,
-        action: "Check network access to huggingface.co and retry.",
-        modelPath: paths.cacheDir,
-        files: []
-      };
-    }
     const temporary = `${blob}.${process.pid}.download`;
-    rmSync(temporary, { force: true });
-    await pipeline(
-      Readable.fromWeb(response.body as never),
-      createWriteStream(temporary, { mode: 0o600 })
-    );
-    const sizeBytes = statSync(temporary).size;
-    const actual = await sha256File(temporary);
-    if (
-      actual !== file.sha256 ||
-      (file.size !== undefined && sizeBytes !== file.size)
-    ) {
+    try {
+      const failedStatus = await downloadPrivacyAsset(file, temporary, fetcher);
+      if (failedStatus !== undefined) {
+        return {
+          ok: false,
+          state: "missing",
+          message: `Could not download pinned Privacy Filter model asset ${file.path} (HTTP ${failedStatus}).`,
+          action: "Check network access to huggingface.co and retry.",
+          modelPath: paths.cacheDir,
+          files: []
+        };
+      }
+      const sizeBytes = statSync(temporary).size;
+      const actual = await sha256File(temporary);
+      if (
+        actual !== file.sha256 ||
+        (file.size !== undefined && sizeBytes !== file.size)
+      ) {
+        return {
+          ok: false,
+          state: "checksum_mismatch",
+          message: `Downloaded Privacy Filter model asset failed verification: ${file.path}.`,
+          action:
+            "Do not use the asset; verify the pinned upstream revision and retry.",
+          modelPath: paths.cacheDir,
+          files: [{ path: file.path, sha256: actual, sizeBytes }]
+        };
+      }
+      rmSync(blob, { force: true });
+      renameSync(temporary, blob);
+      materializeCacheEntry(paths, file);
+    } finally {
       rmSync(temporary, { force: true });
-      return {
-        ok: false,
-        state: "checksum_mismatch",
-        message: `Downloaded Privacy Filter model asset failed verification: ${file.path}.`,
-        action:
-          "Do not use the asset; verify the pinned upstream revision and retry.",
-        modelPath: paths.cacheDir,
-        files: [{ path: file.path, sha256: actual, sizeBytes }]
-      };
     }
-    rmSync(blob, { force: true });
-    renameSync(temporary, blob);
-    materializeCacheEntry(paths, file);
   }
   return collectPrivacyModelStatus(serverPaths);
 };

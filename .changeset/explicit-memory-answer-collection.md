@@ -7,3 +7,5 @@ the existing local task runtime, with cancellation tools and guidance for doing
 independent work before collecting an answer. Preserve blocking recall and
 replace Codex answer-delivery Stop hooks with ordinary tool results.
 Both delivery modes support requested citations and evidence.
+Retry interrupted Privacy Filter model downloads with bounded attempts and
+strict verification, and report privacy-service startup stages for diagnosis.
