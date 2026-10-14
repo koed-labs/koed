@@ -1,3 +1,5 @@
+import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+import { createPdsRepositoryAssignment } from "@koed/shared";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
@@ -8,7 +10,9 @@ import {
   createPdsSessionPackage,
   createPdsSessionPackageRuntimeContext,
   pdsEd25519PrivateKey,
-  pdsEd25519PublicKey
+  pdsEd25519PublicKey,
+  PDS_PROJECT_SELECTION_PROTOCOL,
+  signPdsProjectSelection
 } from "@koed/shared";
 import type {
   AiClientSourceRuntime,
@@ -43,6 +47,7 @@ type PdsRuntimeSecret = {
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
+  historicalProjectKeys?: Record<string, string>;
   groupSecrets: {
     currentEpoch: string;
     contentKey: string;
@@ -72,9 +77,15 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
       | Record<string, unknown>
       | undefined;
     if (
-      (Object.keys(parsed).sort().join(",") !==
+      (Object.keys(parsed)
+        .filter((key) => key !== "historicalProjectKeys")
+        .sort()
+        .join(",") !==
         "authority,certificate,device,groupId,groupSecrets,historicalOriginCertificates,recipientCertificates,recovery,relayUrl,userId,version" &&
-        Object.keys(parsed).sort().join(",") !==
+        Object.keys(parsed)
+          .filter((key) => key !== "historicalProjectKeys")
+          .sort()
+          .join(",") !==
           "authority,certificate,device,groupId,groupSecrets,recipientCertificates,recovery,relayUrl,userId,version") ||
       parsed.version !== 1 ||
       ![
@@ -110,6 +121,9 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
         "tombstoneFloorKey",
         "projectAliasKey"
       ].every((key) => strictString(groupSecrets[key])) ||
+      (parsed.historicalProjectKeys !== undefined &&
+        !pdsRepositoryKeyHistorySchema.safeParse(parsed.historicalProjectKeys)
+          .success) ||
       !Array.isArray(parsed.recipientCertificates) ||
       !parsed.recipientCertificates.every(strictString) ||
       (parsed.historicalOriginCertificates !== undefined &&
@@ -326,8 +340,35 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
     groupSecretSetRef: "desktop-secure-runtime",
     originDeploymentId: secret.device.originDeploymentId,
     originDeviceId: secret.device.id,
+    signProjectSelection(input) {
+      return signPdsProjectSelection(
+        {
+          ...input,
+          protocol: PDS_PROJECT_SELECTION_PROTOCOL,
+          groupId: secret.groupId,
+          authorDeviceId: secret.device.id,
+          authorSigningKeyId: secret.device.signingKeyId
+        },
+        signingKey
+      );
+    },
     buildClosedSessionPackage(input) {
       const manifest = createPdsSessionManifest({
+        repositoryAssignment: createPdsRepositoryAssignment(
+          input.source.repositoryAssignment ?? {
+            state: "historical_unresolved",
+            version: 1,
+            automatic: null,
+            override: null,
+            effective: null
+          },
+          secret.groupSecrets.currentEpoch,
+          secret.groupSecrets.projectAliasKey,
+          {
+            capturedCwd: input.source.capturedCwd,
+            branchObservation: input.source.branchObservation
+          }
+        ),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,
@@ -393,6 +434,21 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         sourceCreatedAt: input.source.sourceCreatedAt
       };
       const manifest = createPdsSessionCheckpointManifest({
+        repositoryAssignment: createPdsRepositoryAssignment(
+          input.source.repositoryAssignment ?? {
+            state: "historical_unresolved",
+            version: 1,
+            automatic: null,
+            override: null,
+            effective: null
+          },
+          secret.groupSecrets.currentEpoch,
+          secret.groupSecrets.projectAliasKey,
+          {
+            capturedCwd: input.source.capturedCwd,
+            branchObservation: input.source.branchObservation
+          }
+        ),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,

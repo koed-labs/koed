@@ -1,11 +1,16 @@
 import { hostname } from "node:os";
 import {
+  createProjectSelectionCommand,
+  createProjectSelectionLookup
+} from "./project-selection-command.js";
+import {
   readPersonalDeviceNames,
   writePersonalDeviceName
 } from "../personal-device-names.js";
 import {
   acknowledgeRepositoryChange,
   listPendingRepositoryChanges,
+  refreshProjectAssociations,
   deviceRequestCommand,
   exchangeDeviceRequest,
   parseDeviceRequestLink
@@ -2850,6 +2855,34 @@ export const createKoedServerManager = ({
       ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
       2 * 1024 * 1024
     );
+  const projectSelectionRequest = async (
+    path: string,
+    init: RequestInit = { method: "GET" }
+  ): Promise<Record<string, unknown>> => {
+    const access = await personalSyncEnvironment();
+    const origin = access.environment.PDS_CONTROL_URL;
+    if (!origin) throw new Error("Local Personal API is unavailable");
+    const { response, payload } = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL(path, origin),
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          ...Object.fromEntries(new Headers(init.headers)),
+          authorization: access.desktopAuthorization
+        }
+      },
+      { timeoutMs: 30_000, maxBytes: 2 * 1024 * 1024, readErrorBody: true }
+    );
+    if (!response.ok)
+      throw new Error(
+        response.status === 409
+          ? "Project selection changed; inspect its current revisions again."
+          : "Project association request failed."
+      );
+    return payload;
+  };
   const publishRepositoryChanges = async () => {
     const paths = resolveKoedServerPaths(environment);
     for (const event of listPendingRepositoryChanges(paths)) {
@@ -2875,9 +2908,17 @@ export const createKoedServerManager = ({
       throw new Error(
         "Local Project is unavailable. Inspect the checkout again."
       );
-    const discovery = await discoverProjectMetadata(paths, {
-      cwd: local.path.projectRoot ?? local.path.cwd
-    });
+    const discovery = await discoverProjectMetadata(
+      paths,
+      {
+        cwd: local.path.projectRoot ?? local.path.cwd
+      },
+      {
+        lookupAssociatedSelection: createProjectSelectionLookup(
+          projectSelectionRequest
+        )
+      }
+    );
     const repository = discovery.project?.repository;
     if (!repository?.checkoutId)
       throw new Error(
@@ -3117,7 +3158,15 @@ export const createKoedServerManager = ({
           for (const cwd of projectPaths) {
             if (!projectMetadataIsStale(metadataByPath.get(cwd))) continue;
             try {
-              await discoverProjectMetadata(paths, { cwd });
+              await discoverProjectMetadata(
+                paths,
+                { cwd },
+                {
+                  lookupAssociatedSelection: createProjectSelectionLookup(
+                    projectSelectionRequest
+                  )
+                }
+              );
             } catch {
               // One unavailable Project must not block Personal Memory.
             }
@@ -5743,7 +5792,19 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       repository_review: (args) => repositoryReviewCommand(args),
-      project_list: () => runJson(["project", "list"], 10_000),
+      project_list: async () => {
+        await refreshProjectAssociations(resolveKoedServerPaths(environment), {
+          lookupAssociatedSelection: createProjectSelectionLookup(
+            projectSelectionRequest
+          )
+        });
+        return runJson(["project", "list"], 10_000);
+      },
+      project_association: createProjectSelectionCommand({
+        paths: resolveKoedServerPaths(environment),
+        status: personalSyncStatusWithLanRelay,
+        request: projectSelectionRequest
+      }),
       project_anchor_set: async (args) => {
         const input = exactDesktopArgs(args, [
           "localProjectId",
@@ -5758,11 +5819,19 @@ export const createKoedServerManager = ({
           (input.remoteName !== null && typeof input.remoteName !== "string")
         )
           throw new Error("Repository anchor input is invalid.");
-        return setProjectRepositoryAnchor(resolveKoedServerPaths(environment), {
-          localProjectId: input.localProjectId,
-          expectedCheckoutId: input.expectedCheckoutId,
-          remoteName: input.remoteName
-        });
+        return setProjectRepositoryAnchor(
+          resolveKoedServerPaths(environment),
+          {
+            localProjectId: input.localProjectId,
+            expectedCheckoutId: input.expectedCheckoutId,
+            remoteName: input.remoteName
+          },
+          {
+            lookupAssociatedSelection: createProjectSelectionLookup(
+              projectSelectionRequest
+            )
+          }
+        );
       },
 
       ensure_independent_project: async () => {

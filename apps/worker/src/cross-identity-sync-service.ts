@@ -332,7 +332,8 @@ export const createCrossIdentitySyncService = (options: {
       !delta ||
       (delta.changes.length === 0 &&
         summaryNodes.length === 0 &&
-        !delta.summarySnapshotIncluded)
+        !delta.summarySnapshotIncluded &&
+        !delta.repositorySnapshotChanged)
     ) {
       return null;
     }
@@ -455,7 +456,8 @@ export const createCrossIdentitySyncService = (options: {
     }
     if (
       selectedChanges.length + selectedSummaryNodes.length === 0 &&
-      !delta.summarySnapshotIncluded
+      !delta.summarySnapshotIncluded &&
+      !delta.repositorySnapshotChanged
     ) {
       throw new InvalidSyncPackageError(
         "A synchronized record exceeds the package limit"
@@ -494,7 +496,7 @@ export const createCrossIdentitySyncService = (options: {
       base,
       selectedChanges,
       selectedSummaryNodes,
-      delta.summarySnapshotIncluded,
+      delta.summarySnapshotIncluded || Boolean(delta.repositorySnapshotChanged),
       (partition) =>
         Buffer.byteLength(
           JSON.stringify(
@@ -573,6 +575,9 @@ export const createCrossIdentitySyncService = (options: {
           format: CAPTURED_SESSION_SYNC_FORMAT,
           formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
           packageDigest,
+          repositorySnapshotHash: base.session.repositorySnapshot
+            ? crossIdentitySyncDigest(base.session.repositorySnapshot)
+            : null,
           summaryRevisionHash: delta.summarySnapshotIncluded
             ? base.summaryRevisionHash
             : null,
@@ -925,6 +930,10 @@ export const createCrossIdentitySyncService = (options: {
         targetProcessingCursor: remoteProcessingCursor,
         packageSequence: upload.sourceSequence,
         summaryRevisionHash,
+        repositorySnapshotHash:
+          typeof upload.packageManifest.repositorySnapshotHash === "string"
+            ? upload.packageManifest.repositorySnapshotHash
+            : null,
         staleAfterSeconds: options.staleAfterSeconds
       };
       await options.repository.acknowledgeSourceSyncPackage(acknowledgement);
@@ -1078,6 +1087,8 @@ export const createCrossIdentitySyncService = (options: {
       };
       const mergedBytes = Buffer.byteLength(JSON.stringify(merged), "utf8");
       const manifestRecordCount = persisted.upload.packageManifest.recordCount;
+      const manifestRepositorySnapshotHash =
+        persisted.upload.packageManifest.repositorySnapshotHash;
       if (
         merged.changes.length > CAPTURED_SESSION_SYNC_MAX_CHANGES ||
         merged.summaryNodes.length >
@@ -1089,6 +1100,10 @@ export const createCrossIdentitySyncService = (options: {
         merged.packageSequence !== persisted.upload.sourceSequence ||
         merged.fromCursor !== persisted.upload.fromCursor ||
         merged.toCursor !== persisted.upload.toCursor ||
+        (manifestRepositorySnapshotHash != null &&
+          (!merged.session.repositorySnapshot ||
+            manifestRepositorySnapshotHash !==
+              crossIdentitySyncDigest(merged.session.repositorySnapshot))) ||
         !Number.isSafeInteger(manifestRecordCount) ||
         manifestRecordCount !==
           merged.changes.length + merged.summaryNodes.length ||

@@ -107,6 +107,7 @@ export interface CollaborationPersistedSharedMemoryConsent extends Collaboration
 }
 
 export interface CollaborationRemoteSharedMemoryGrant {
+  repositorySnapshot?: SharedMemoryGrant["repositorySnapshot"];
   source: SharedMemorySourceRef;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
@@ -911,6 +912,9 @@ const mapGrant = (
   grant: CollaborationRemoteSharedMemoryGrant,
   companionThreadId: string
 ): SharedMemoryGrant => ({
+  ...(grant.repositorySnapshot
+    ? { repositorySnapshot: grant.repositorySnapshot }
+    : {}),
   source: grant.source,
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,

@@ -12,6 +12,63 @@ describe("Personal Device Sync service", () => {
   };
   const logger = { warn: vi.fn() } as unknown as Logger;
 
+  it("reconciles and acknowledges Project configuration without source materialization", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      receivePdsInbox: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([
+        {
+          id: "inbox",
+          groupId: "group",
+          packageId: "package",
+          sourceManifestHash: "hash",
+          attemptCount: 1
+        }
+      ]),
+      completePdsInbox: vi.fn().mockResolvedValue(true),
+      materializePdsReplica: vi.fn(),
+      markPdsInboxFailure: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      reconcileProjectSelections: vi.fn().mockResolvedValue(1),
+      poll: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      acknowledge: vi.fn().mockResolvedValue(undefined),
+      materialize: vi.fn().mockResolvedValue({
+        kind: "project_selection",
+        userId: "owner",
+        originDeviceId: "origin"
+      })
+    } as PdsWorkerSecureRuntime;
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+    expect(secureRuntime.reconcileProjectSelections).toHaveBeenCalledOnce();
+    expect(secureRuntime.acknowledge).toHaveBeenCalledWith({
+      inboxId: "inbox",
+      groupId: "group",
+      packageId: "package",
+      sourceManifestHash: "hash",
+      originDeviceId: "origin"
+    });
+    expect(repository.completePdsInbox).toHaveBeenCalledWith({
+      workerId: "worker",
+      inboxId: "inbox",
+      state: "ready"
+    });
+    expect(repository.materializePdsReplica).not.toHaveBeenCalled();
+    expect(repository.markPdsInboxFailure).not.toHaveBeenCalled();
+  });
+
   it("stays idle before a device has joined a Personal Device Group", async () => {
     const repository = {
       heartbeatPdsWorker: vi.fn(),

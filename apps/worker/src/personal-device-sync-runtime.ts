@@ -1,4 +1,20 @@
-import { createHash, type KeyObject } from "node:crypto";
+import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+import {
+  verifyPdsRepositoryAssignmentWithKeyHistory,
+  type RepositoryAssignment
+} from "@koed/shared";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  type KeyObject
+} from "node:crypto";
+import {
+  PDS_PROJECT_SELECTION_PROTOCOL,
+  pdsProjectSelectionPackageId,
+  pdsProjectSelectionRecordSchema,
+  verifyPdsProjectSelection
+} from "@koed/shared";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -72,6 +88,7 @@ type RuntimeSecret = {
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
+  historicalProjectKeys?: Record<string, string>;
   groupSecrets: {
     currentEpoch: string;
     contentKey: string;
@@ -194,6 +211,9 @@ export const resolvePdsProviderRuntimeSecret = (
       !value.device ||
       !value.authority ||
       !value.groupSecrets ||
+      (value.historicalProjectKeys !== undefined &&
+        !pdsRepositoryKeyHistorySchema.safeParse(value.historicalProjectKeys)
+          .success) ||
       !Array.isArray(value.recipientCertificates) ||
       !(value.recipientCertificates as unknown[]).every(
         (entry) => typeof entry === "string"
@@ -542,6 +562,7 @@ const createPdsWorkerRuntimeFromSecret = (
       }
     >();
     const pendingOutboundTransports = new Set<string>();
+    const selectionWorkerId = randomUUID();
     const peerClientsFor = (
       pkg: PdsSessionPackage
     ): Map<string, PdsRelayClient> | null => {
@@ -613,6 +634,124 @@ const createPdsWorkerRuntimeFromSecret = (
             authorityKeyId: secret.authority.keyId,
             activeCertificates: secret.recipientCertificates
           }) ?? new Map<string, string>();
+      },
+      async reconcileProjectSelections() {
+        const journal = input.repository.personalProjectSelections;
+        if (!journal) return 0;
+        await journal.refreshRecipients({
+          userId: secret.userId,
+          groupId: secret.groupId,
+          epoch: runtime.epoch,
+          authorDeviceId: runtime.recipient.deviceId
+        });
+        const claimed = await journal.claimDelivery({
+          userId: secret.userId,
+          groupId: secret.groupId,
+          workerId: selectionWorkerId
+        });
+        for (const entry of claimed) {
+          const lease = { workerId: selectionWorkerId, outboxId: entry.id };
+          try {
+            if (
+              !(await journal.beginDelivery({
+                ...lease,
+                userId: secret.userId,
+                groupId: secret.groupId,
+                expectedEpoch: runtime.epoch
+              }))
+            ) {
+              await journal.settleDelivery({
+                ...lease,
+                state: entry.state,
+                transportId: entry.transportId ?? undefined,
+                retryAt: new Date(Date.now() + 30_000)
+              });
+              continue;
+            }
+            if (entry.state === "committed" && entry.transportId) {
+              try {
+                const response = record(
+                  await relay.transport(entry.transportId),
+                  "selection receipt"
+                );
+                const receipt = record(
+                  response.transport,
+                  "selection transport"
+                );
+                if (
+                  receipt.transportId !== entry.transportId ||
+                  !["pending", "acked"].includes(String(receipt.deliveryState))
+                )
+                  throw new TypeError("PdsCryptoIdentityError");
+                await journal.settleDelivery({
+                  ...lease,
+                  state:
+                    receipt.deliveryState === "acked" ? "acked" : "committed",
+                  transportId: entry.transportId,
+                  retryAt: new Date(Date.now() + 30_000)
+                });
+                continue;
+              } catch (error) {
+                if (
+                  !(error instanceof Error) ||
+                  error.name !== "PdsRelayNotFoundError"
+                )
+                  throw error;
+              }
+            }
+            const plaintext = canonicalizePdsJson(entry.record);
+            const manifestHash = createHash("sha256")
+              .update(plaintext)
+              .digest("base64url");
+            if (
+              entry.record.revision.authorDeviceId !==
+                runtime.recipient.deviceId ||
+              entry.record.revision.authorSigningKeyId !==
+                runtime.recipient.signingKeyId
+            )
+              throw new TypeError("PdsCryptoAuthorityError");
+            const transportId = randomBytes(32).toString("base64url");
+            const pkg = createPdsEncryptedPayloadPackage({
+              runtime,
+              expiresAt: new Date(
+                Date.now() + 24 * 60 * 60 * 1000
+              ).toISOString(),
+              servingSigningPrivateKey: signingKey,
+              transportId,
+              packageId: pdsProjectSelectionPackageId(
+                manifestHash,
+                transportId
+              ),
+              manifestHash,
+              originDeviceId: runtime.recipient.deviceId,
+              contentEpoch: runtime.epoch,
+              plaintext
+            });
+            const direct = await deliverDirect(pkg);
+            const committed = direct
+              ? {
+                  deliveryState: "acked" as const,
+                  transportId: pkg.header.transportId
+                }
+              : await relay.upload(pkg);
+            await journal.settleDelivery({
+              ...lease,
+              state: committed.deliveryState,
+              transportId: committed.transportId,
+              retryAt: new Date(Date.now() + 30_000)
+            });
+          } catch {
+            await journal.settleDelivery({
+              ...lease,
+              state: "pending",
+              retryAt: new Date(
+                Date.now() +
+                  Math.min(300_000, 1000 * 2 ** Math.min(entry.attemptCount, 8))
+              )
+            });
+          }
+        }
+        return claimed.length;
       },
       async reconcileArtifacts() {
         const pendingCompletions =
@@ -1541,6 +1680,56 @@ const createPdsWorkerRuntimeFromSecret = (
           ),
           "decrypted package payload"
         );
+        if (
+          typeof plaintextRecord.revision === "object" &&
+          plaintextRecord.revision !== null &&
+          (plaintextRecord.revision as Record<string, unknown>).protocol ===
+            PDS_PROJECT_SELECTION_PROTOCOL
+        ) {
+          const verified = (() => {
+            try {
+              const candidate =
+                pdsProjectSelectionRecordSchema.parse(plaintextRecord);
+              const author = servingRuntime.serving;
+              const verified = verifyPdsProjectSelection(candidate, {
+                groupId: secret.groupId,
+                deviceId: author.deviceId,
+                signingKeyId: author.signingKeyId,
+                publicKey: author.signingPublicKey
+              });
+              const hash = createHash("sha256")
+                .update(canonicalizePdsJson(verified))
+                .digest("base64url");
+              if (
+                work.groupId !== secret.groupId ||
+                pdsProjectSelectionPackageId(hash, pkg.header.transportId) !==
+                  work.packageId ||
+                hash !== work.sourceManifestHash ||
+                pkg.header.packageId !== work.packageId ||
+                pkg.header.sourceManifestHash !== hash ||
+                pkg.header.originDeviceId !== author.deviceId
+              )
+                throw new TypeError("PdsCryptoIdentityError");
+              return verified;
+            } catch {
+              throw new TypeError("PdsCryptoProjectSelectionError");
+            }
+          })();
+          await input.repository.personalProjectSelections.appendVerified({
+            userId: secret.userId,
+            record: verified
+          });
+          downloaded.set(work.inboxId, {
+            pkg,
+            transport,
+            client: sourceClient
+          });
+          return {
+            kind: "project_selection" as const,
+            userId: secret.userId,
+            originDeviceId: servingRuntime.serving.deviceId
+          };
+        }
         if (plaintextRecord.protocol === PDS_ARTIFACT_PROTOCOL) {
           const unverifiedArtifact = parsePdsArtifactRecordJson(
             decrypted.plaintext
@@ -1624,20 +1813,48 @@ const createPdsWorkerRuntimeFromSecret = (
         if (plaintextRecord.protocol !== PDS_PROTOCOL) {
           throw new TypeError("PdsCryptoPackageError");
         }
-        const manifest = verifyAndDecryptPdsSessionSourcePackage(
-          canonicalizePdsJson(pkg),
-          {
-            runtime: servingRuntime,
-            recipientKemPrivateKey: secret.device.kemPrivateSeed,
-            deletionFloors
+        const manifest = (() => {
+          try {
+            return verifyAndDecryptPdsSessionSourcePackage(
+              canonicalizePdsJson(pkg),
+              {
+                runtime: servingRuntime,
+                recipientKemPrivateKey: secret.device.kemPrivateSeed,
+                deletionFloors
+              }
+            );
+          } catch (error) {
+            throw new TypeError("PdsCryptoPackageError", { cause: error });
           }
-        );
+        })();
         if (
           manifest.packageId !== work.packageId ||
           pkg.header.sourceManifestHash !== work.sourceManifestHash
         ) {
           throw new Error("PdsCryptoIdentityError");
         }
+        const repositoryAssignment = (() => {
+          try {
+            return verifyPdsRepositoryAssignmentWithKeyHistory(
+              manifest.repositoryAssignment,
+              manifest.contentEpoch,
+              {
+                currentEpoch: secret.groupSecrets.currentEpoch,
+                projectKey: secret.groupSecrets.projectAliasKey,
+                historicalProjectKeys: secret.historicalProjectKeys
+              }
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.includes("key epoch is unavailable")
+            )
+              throw error;
+            throw new TypeError("PdsCryptoRepositoryAssignmentError", {
+              cause: error
+            });
+          }
+        })();
         const encryptedEnvelope =
           await input.envelopeEncryptionProvider.encrypt({
             plaintext: canonicalizePdsJson(pkg),
@@ -1683,7 +1900,8 @@ const createPdsWorkerRuntimeFromSecret = (
         if (isPdsSessionCheckpointManifest(manifest)) {
           const checkpointInput = pdsCheckpointMaterializationSource(
             secret.groupId,
-            manifest
+            manifest,
+            repositoryAssignment
           );
           const result = await input.repository.materializePdsSessionCheckpoint(
             {
@@ -1728,7 +1946,8 @@ const createPdsWorkerRuntimeFromSecret = (
           input.repository,
           secret.userId,
           secret.groupId,
-          manifest
+          manifest,
+          repositoryAssignment
         );
         downloaded.set(work.inboxId, {
           pkg,
@@ -1819,6 +2038,9 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
     async refreshPeerRoutes() {
       await requiredRuntime().refreshPeerRoutes?.();
     },
+    async reconcileProjectSelections() {
+      return (await requiredRuntime().reconcileProjectSelections?.()) ?? 0;
+    },
     async publish(input) {
       return await requiredRuntime().publish(input);
     },
@@ -1849,12 +2071,15 @@ export const materializePdsSession = async (
   repository: MemorySourceRepository,
   userId: string,
   groupId: string,
-  manifest: PdsSessionManifest
+  manifest: PdsSessionManifest,
+  repositoryAssignment: RepositoryAssignment
 ): Promise<{ id: string; itemIds: string[] }> => {
   const identity = manifest.sourceFingerprint ?? manifest.sourceClosureHash;
   const session = await repository.createCapturedSession(
     { userId },
     {
+      replicatedRepositoryAssignment: repositoryAssignment,
+      cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
       // Signed logical and provider identities converge across Personal devices.
       idempotencyKey: `pds-session:${groupId}:${identity}`,
       logicalSessionId: manifest.closedSession.logicalSessionId,
@@ -1866,6 +2091,7 @@ export const materializePdsSession = async (
       captureMethod: "transcript",
       metadata: {
         pds: {
+          repositoryAssignment: manifest.repositoryAssignment,
           groupId,
           originDeploymentId: manifest.originDeploymentId,
           sourceSequence: manifest.sourceSequence
@@ -1962,7 +2188,8 @@ export const materializePdsSession = async (
 /** Converts only authenticated checkpoint records; the DB receiver owns atomic append. */
 export const pdsCheckpointMaterializationSource = (
   groupId: string,
-  manifest: PdsSessionCheckpointManifest
+  manifest: PdsSessionCheckpointManifest,
+  repositoryAssignment: RepositoryAssignment
 ): {
   sourceSession: PdsCheckpointSessionInput;
   sourceItems: PdsCheckpointConversationItem[];
@@ -1971,6 +2198,9 @@ export const pdsCheckpointMaterializationSource = (
   const source = manifest.sourceSession;
   return {
     sourceSession: {
+      replicatedRepositoryAssignment: repositoryAssignment,
+      cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
+      pdsRepositoryAssignment: manifest.repositoryAssignment,
       logicalSessionId: source.logicalSessionId,
       externalSessionId: source.externalSessionId,
       ...(source.forkedFromExternalThreadId

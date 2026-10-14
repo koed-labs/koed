@@ -1841,6 +1841,7 @@ export function App({
             revealLocalProject={platform.revealLocalProject}
             setRepositoryAnchor={platform.setRepositoryAnchor}
             reviewRepository={platform.reviewRepository}
+            projectAssociation={platform.projectAssociation}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);

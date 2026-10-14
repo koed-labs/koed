@@ -1199,6 +1199,187 @@ describe("Personal Sync control client", () => {
     }
   });
 
+  it("archives the verified Project key when refreshing the active epoch", async () => {
+    const directory = root();
+    const authority = testKey("ed25519"),
+      signing = testKey("ed25519"),
+      kem = testKey("x25519");
+    const groupId = Buffer.alloc(16, 1).toString("base64url"),
+      deviceId = Buffer.alloc(16, 2).toString("base64url"),
+      signingKeyId = Buffer.alloc(16, 3).toString("base64url"),
+      kemKeyId = Buffer.alloc(16, 4).toString("base64url"),
+      authorityKeyId = Buffer.alloc(16, 5).toString("base64url");
+    const head = Buffer.alloc(32, 6).toString("base64url");
+    const oldProjectKey = Buffer.alloc(32, 7).toString("base64url");
+    const secrets = {
+      epochSecret: Buffer.alloc(32, 8).toString("base64url"),
+      sourceFingerprintKey: Buffer.alloc(32, 9).toString("base64url"),
+      tombstoneFloorKey: Buffer.alloc(32, 10).toString("base64url"),
+      projectAliasKey: Buffer.alloc(32, 11).toString("base64url")
+    };
+    const authorized = createPdsAuthorizedKeyBundle({
+      groupId,
+      epoch: "2",
+      transitionKind: "add-device",
+      recipients: [
+        {
+          recipientId: deviceId,
+          recipientKind: "device",
+          recipientKemKeyId: kemKeyId,
+          recipientKemPublicKey: kem.publicKey
+        }
+      ],
+      secrets,
+      authorizationKeyId: signingKeyId,
+      authorizationPrivateKey: signing.privateKey
+    });
+    const bundle = {
+      ...authorized.bundle,
+      authority: {
+        keyId: authorityKeyId,
+        signature: signPdsTwoStageFinal(
+          "key-bundle",
+          authorized.bundle,
+          authority.privateKey
+        )
+      }
+    };
+    const certificateBody = {
+      protocol: "koed/pds/v1",
+      groupId,
+      deviceId,
+      deviceSigningKeyId: signingKeyId,
+      deviceSigningPublicKey: signing.publicKey,
+      deviceKemKeyId: kemKeyId,
+      deviceKemPublicKey: kem.publicKey,
+      epoch: "2",
+      operationFamilies: ["pds_relay"],
+      statementSequence: "2",
+      statementHash: head,
+      issuedAt: new Date(Date.now() - 60000).toISOString(),
+      expiresAt: new Date(Date.now() + 60000).toISOString()
+    };
+    const certificate = {
+      ...certificateBody,
+      authoritySignature: {
+        keyId: authorityKeyId,
+        signature: signPdsRecord(
+          "membership-certificate",
+          certificateBody,
+          authority.privateKey
+        )
+      }
+    };
+    const oldHead = Buffer.alloc(32, 13).toString("base64url");
+    const previousCertificateBody = {
+      ...certificateBody,
+      epoch: "1",
+      statementSequence: "1",
+      statementHash: oldHead,
+      issuedAt: new Date(Date.now() - 120000).toISOString()
+    };
+    const previousCertificate = canonicalizePdsJson({
+      ...previousCertificateBody,
+      authoritySignature: {
+        keyId: authorityKeyId,
+        signature: signPdsRecord(
+          "membership-certificate",
+          previousCertificateBody,
+          authority.privateKey
+        )
+      }
+    });
+    const previous = {
+      version: 1,
+      userId: "fixture-user",
+      relayUrl: "https://pds.test/pds",
+      groupId,
+      device: {
+        id: deviceId,
+        originDeploymentId: Buffer.alloc(16, 12).toString("base64url"),
+        signingKeyId,
+        signingPrivateSeed: signing.privateSeed,
+        kemKeyId,
+        kemPrivateSeed: kem.privateSeed
+      },
+      authority: {
+        keyId: authorityKeyId,
+        publicKey: authority.publicKey,
+        head: Buffer.alloc(32, 13).toString("base64url")
+      },
+      recovery: {
+        signingKeyId: "recovery",
+        signingPublicKey: Buffer.alloc(32, 14).toString("base64url")
+      },
+      certificate: previousCertificate,
+      recipientCertificates: [previousCertificate],
+      groupSecrets: {
+        currentEpoch: "1",
+        contentKey: Buffer.alloc(32, 15).toString("base64url"),
+        sourceFingerprintKey: secrets.sourceFingerprintKey,
+        tombstoneFloorKey: secrets.tombstoneFloorKey,
+        projectAliasKey: oldProjectKey
+      }
+    };
+    let saved = "";
+    const result = await runPersonalSyncCommand(
+      ["active-device", "refresh"],
+      pathsFor(directory),
+      {
+        PDS_CONTROL_URL: "https://pds.test",
+        PDS_RUNTIME_SECRET_REF: "fixture-runtime"
+      },
+      {
+        desktopAuthorization: "Bearer fixture",
+        getSecret: () => JSON.stringify(previous),
+        putSecret: (_ref, value) => {
+          saved = value;
+        },
+        fetch: (async (url: string | URL) => {
+          const pathname = new URL(String(url)).pathname;
+          if (pathname.includes("key-bundles"))
+            return response({ key_bundle: bundle });
+          if (pathname.includes("certificates"))
+            return response({ certificate });
+          return response({
+            group: {
+              state: "active",
+              pending_epoch: null,
+              current_epoch: "2",
+              authority_key_id: authorityKeyId,
+              authority_public_key: authority.publicKey,
+              head: { hash: head },
+              members: [
+                {
+                  device_id: deviceId,
+                  signing_key_id: signingKeyId,
+                  signing_public_key: signing.publicKey,
+                  kem_key_id: kemKeyId,
+                  kem_public_key: kem.publicKey,
+                  status: "active"
+                }
+              ]
+            }
+          });
+        }) as never
+      }
+    );
+    expect(result).toMatchObject({ state: "refreshed", epoch: "2" });
+    const stored = JSON.parse(saved) as {
+      historicalProjectKeys: Record<string, string>;
+      groupSecrets: { currentEpoch: string; projectAliasKey: string };
+    };
+    expect(
+      (JSON.parse(saved) as { historicalOriginCertificates: string[] })
+        .historicalOriginCertificates
+    ).toEqual([previousCertificate]);
+    expect(stored.historicalProjectKeys).toEqual({ "1": oldProjectKey });
+    expect(stored.groupSecrets).toMatchObject({
+      currentEpoch: "2",
+      projectAliasKey: secrets.projectAliasKey
+    });
+  });
+
   it("resumes exact pending epoch approval after lost response", async () => {
     const directory = root();
     const fixture = pendingApprovalFixture();

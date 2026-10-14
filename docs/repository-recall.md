@@ -1,5 +1,51 @@
 # Personal Repository Recall
 
+## Team Project snapshots
+
+Ticket 14 adds a Share Grant repository snapshot for Team Project matching.
+It records only the effective portable fingerprint; nonportable overrides and
+unresolved history produce an unresolved snapshot. It contains no checkout path,
+device-local identity, or suppressed automatic repository. Project labels must
+pass the representation's disclosure policy before inclusion.
+
+The snapshot stays independent of later Personal moves, resets, and anchor edits.
+Team semantic search and expansion match the snapshot rather than mutable local
+Project fields. Workspace selection, Membership, Share Grants, consent, policy
+checks, and source access continue to authorize every read. A repository fingerprint
+grants no access and cannot select a Workspace. Team Project tasks require pinned
+portable context; device-local and unresolved targets produce a resolution error.
+
+Team fingerprints are unsalted selected-remote hashes. A Team member may guess a
+repository name and compute its normalized fingerprint. This accepted exposure
+does not bypass Share Grant or Workspace authorization. Personal Device Sync
+continues to use its separate encrypted, group-keyed boundary.
+
+The full Team milestone still requires the explicit snapshot update action in
+ticket 15 and the Team Global preview in ticket 18. Release remains gated by
+the complete Project cutover in ticket 16.
+
+Directed Captured Session Sync transfers an owner-authenticated selected-repository
+snapshot into the owner-private replica. It carries no checkout path, device-local
+identity, or suppressed automatic anchor. Subsequent accepted packages update the
+replica's current source context; they do not mutate existing Share Grant snapshots.
+The Team snapshot is recorded separately when a new share is created. Permitted
+labels and branch observations still require the representation disclosure path.
+
+The encrypted source artifact carries repository provenance separately from its
+conversation content. Semantic privacy classifies the Project label and branch
+alongside the representation's other text. Reconstruction preserves the exact
+fingerprint and rejects additional checkout or device fields. Only the sanitized
+label and branch can complete a matching Share Grant snapshot, and only for the
+source revision recorded when that snapshot was created. Later source revisions
+cannot fill it with newer Personal context. Project routing never waits for or
+uses a raw label.
+
+The receiving owner-private replica stores only classification and fingerprint
+in its routing metadata. Raw label and branch values stay in an envelope encrypted
+with the owner-private replica provider and bound to the local Session, receiving
+User, and source owner principal. Privacy review decrypts that envelope only after
+source authorization. Changing the source to unresolved removes the old envelope.
+
 The Project integration branch targets Personal Memory using one effective
 repository identity. The complete release is gated by ticket 16. Team matching
 and Personal Device Sync assignment transport are implemented by their later
@@ -106,6 +152,14 @@ Renderer code imports the browser-safe `@koed/shared/repository-recall` entry po
 The server entry point includes Node dependencies and must not enter the renderer bundle.
 
 ## Fixed Assignment Reviews
+
+Shared selection controls are described in
+[Personal Project association and selection records](personal-project-selection.md).
+An accepted association changes live discovery, including quiet checkouts.
+Its encrypted configuration updates and deletions run independently of Conversation
+capture. Existing Session assignments remain recorded; fixed reassignment still
+requires the separate review below. Concurrent shared choices remain unresolved
+until explicitly resolved, while a local explicit choice retains precedence.
 
 Anchor discovery records changes in an atomic, profile-local outbox. An unchanged
 anchor or a branch observation does not create another change. Checkout identity

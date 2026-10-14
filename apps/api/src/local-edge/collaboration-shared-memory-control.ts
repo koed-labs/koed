@@ -8,6 +8,9 @@ import {
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
   crossIdentitySyncDigest,
+  teamRepositorySnapshotSchema,
+  teamRepositorySnapshotReviewSchema,
+  sharedMemoryRepositorySnapshotActionGrantBinding,
   crossIdentitySyncDeterministicUuid,
   fetchBoundedJsonObject,
   readLocalEdgeClientCredentialAuthorization,
@@ -76,7 +79,9 @@ const sharedMemoryControlCommandNames = [
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
-  "collaboration.change_shared_memory_fidelity"
+  "collaboration.change_shared_memory_fidelity",
+  "collaboration.review_shared_project_snapshot",
+  "collaboration.update_shared_project_snapshot"
 ] as const;
 
 type SharedMemoryControlCommandName =
@@ -170,6 +175,7 @@ const redactedSourceItemSchema = z
     sourceLogicalMemoryId: uuidSchema,
     sourceRevision: z.number().int().safe().min(0),
     occurredAt: timestampSchema.nullable(),
+    repositorySnapshot: teamRepositorySnapshotSchema.optional(),
     content: z.record(z.string(), z.unknown())
   })
   .strict();
@@ -301,6 +307,7 @@ const companionScopeSchema = z
 
 const remoteGrantSchema = z
   .object({
+    repositorySnapshot: teamRepositorySnapshotSchema.optional(),
     source: sharedMemorySourceRefSchema,
     sourceCapabilities: z.array(representationSchema).min(1).max(4),
     activationRepresentation: representationSchema,
@@ -334,6 +341,7 @@ const remoteGrantSchema = z
 
 const remoteTeamGrantSchema = z
   .object({
+    repositorySnapshot: teamRepositorySnapshotSchema.optional(),
     sourceCapabilities: z.array(representationSchema).min(1).max(4),
     activationRepresentation: representationSchema,
     id: uuidSchema,
@@ -481,6 +489,7 @@ const ownerSafeGrant = (
 const remoteOwnedGrantDto = (
   grant: z.infer<typeof remoteOwnedShareGrantSchema>
 ) => ({
+  repositorySnapshot: grant.repositorySnapshot,
   source: grant.source,
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
@@ -1638,6 +1647,8 @@ const remoteGrantMatchesPersisted = (
   return (
     sameIdentity(persisted, identity) &&
     grant.id === remote.id &&
+    crossIdentitySyncDigest(grant.repositorySnapshot ?? null) ===
+      crossIdentitySyncDigest(remote.repositorySnapshot ?? null) &&
     crossIdentitySyncDigest(grant.source ?? null) ===
       crossIdentitySyncDigest(remote.source ?? null) &&
     canonicalJson(grant.sourceCapabilities) ===
@@ -2557,6 +2568,97 @@ const dispatchShare = async (
   return result;
 };
 
+const dispatchRepositorySnapshot = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<
+    CollaborationSharedMemoryControlCommand,
+    {
+      command:
+        | "collaboration.review_shared_project_snapshot"
+        | "collaboration.update_shared_project_snapshot";
+    }
+  >
+): Promise<CollaborationCommandResult> => {
+  const identity = authorityIdentity(authority);
+  const prior = await requirePersistedGrant(
+    options.authorityStore,
+    identity,
+    command.input.shareGrantId,
+    command.input.teamId,
+    command.input.workspaceId
+  );
+  if (command.command === "collaboration.review_shared_project_snapshot") {
+    const payload = await remoteRequest(options, authority, {
+      method: "GET",
+      path: `/v1/shared-memory/share-grants/${command.input.shareGrantId}/repository-snapshot/review`
+    });
+    const parsed = teamRepositorySnapshotReviewSchema.safeParse(payload.review);
+    if (
+      !parsed.success ||
+      parsed.data.shareGrantId !== prior.grant.id ||
+      parsed.data.teamId !== command.input.teamId ||
+      parsed.data.teamWorkspaceId !== command.input.workspaceId ||
+      parsed.data.grantVersion !== prior.grant.grantVersion
+    )
+      throw new ControlFailure("conflict");
+    const result = success(command, { review: parsed.data });
+    if (!result) throw new ControlFailure("internal_error");
+    return result;
+  }
+  if (
+    command.input.expected.shareGrantId !== prior.grant.id ||
+    command.input.expected.grantVersion !== prior.grant.grantVersion ||
+    command.input.expected.teamId !== command.input.teamId ||
+    command.input.expected.teamWorkspaceId !== command.input.workspaceId
+  )
+    throw new ControlFailure("conflict");
+  const binding = sharedMemoryRepositorySnapshotActionGrantBinding({
+    ...command.input,
+    teamWorkspaceId: command.input.workspaceId,
+    referenceId: command.input.actionGrant.id
+  });
+  const payload = await remoteRequest(options, authority, {
+    method: binding.method,
+    path: binding.path,
+    body: binding.body,
+    idempotencyKey: command.input.mutationId,
+    actionGrant: resolveProtectedActionGrant(
+      options,
+      authority,
+      command,
+      binding
+    )
+  });
+  const remote = readRemoteGrant(payload);
+  if (
+    remote.id !== prior.grant.id ||
+    remote.teamId !== command.input.teamId ||
+    remote.teamWorkspaceId !== command.input.workspaceId ||
+    remote.logicalMemoryId !== prior.grant.logicalMemoryId ||
+    remote.lifecycle !== "active" ||
+    remote.grantVersion <= prior.grant.grantVersion ||
+    remote.repositorySnapshot?.classification !==
+      command.input.expected.currentSnapshot.classification ||
+    remote.repositorySnapshot?.fingerprint !==
+      command.input.expected.currentSnapshot.fingerprint
+  )
+    throw new ControlFailure("permission_denied");
+  const persisted = await persistGrant(
+    options.authorityStore,
+    identity,
+    remote,
+    prior,
+    {
+      companionThreadId: prior.grant.companionThreadId,
+      sharedSessionId: remote.id
+    }
+  );
+  const result = success(command, { grant: ownerSafeGrant(persisted.grant) });
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
 const dispatchRevoke = async (
   options: CollaborationSharedMemoryControlOptions,
   authority: ResolvedAuthority,
@@ -3471,6 +3573,9 @@ const dispatchResolved = async (
       return dispatchShare(options, authority, command);
     case "collaboration.revoke_shared_memory":
       return dispatchRevoke(options, authority, command);
+    case "collaboration.review_shared_project_snapshot":
+    case "collaboration.update_shared_project_snapshot":
+      return dispatchRepositorySnapshot(options, authority, command);
     case "collaboration.change_shared_memory_fidelity":
       return dispatchChangeFidelity(options, authority, command);
   }

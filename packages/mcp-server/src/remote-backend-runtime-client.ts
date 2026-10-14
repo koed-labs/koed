@@ -2,6 +2,7 @@ import { pinRepositoryRecallContext } from "./repository-recall-context.js";
 import path from "node:path";
 import {
   isTeamMemoryAnswerTaskCapability,
+  requirePortableTeamRepositoryContext,
   type MemoryAnswerTask
 } from "@koed/shared";
 import { MemoryAnswerDelivery } from "../integrations/pi/memory-answer-delivery.mjs";
@@ -176,11 +177,13 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
   ): Promise<MemoryAnswerTask> {
     assertActive(signal);
     let input = memoryAnswerInputSchema.parse(rawInput);
-    if (input.repository_context && !input.team_workspace_id)
-      input = await pinRepositoryRecallContext(input, caller, process.env);
+    input = await pinRepositoryRecallContext(input, caller, process.env);
     requireProject(input);
-    if (!input.team_workspace_id && !input.team_backend_id)
-      input = await pinRepositoryRecallContext(input, caller, process.env);
+    if (
+      (input.team_workspace_id || input.team_backend_id) &&
+      input.search_domain === "project"
+    )
+      requirePortableTeamRepositoryContext(input.repository_context);
     if (input.team_workspace_id || input.team_backend_id) {
       const support = this.options.supportedTaskScopes?.team;
       if (

@@ -28,6 +28,7 @@ import {
   type GitProjectProbeResult
 } from "./git-project-probe.js";
 import { resolveRepositoryIdentity } from "./repository-identity.js";
+import { lookupAcceptedProjectSelection } from "./project-associated-selection.js";
 import type { KoedServerPaths } from "./paths.js";
 
 export interface ProjectMetadataStore {
@@ -42,6 +43,7 @@ export interface ProjectMetadataStore {
     marker: string;
     selectedRemote?: string;
     repositoryRevision?: number;
+    associationLookupRequired?: boolean;
   }>;
 }
 
@@ -65,6 +67,7 @@ export interface ProjectMetadataDeps {
   randomId?: () => string;
   probeGit?: typeof probeGitProject;
   statSync?: typeof statSync;
+  lookupAssociatedSelection?: typeof lookupAcceptedProjectSelection;
 }
 
 const depsWithDefaults = (
@@ -76,6 +79,8 @@ const depsWithDefaults = (
   renameSync: deps.renameSync ?? renameSync,
   mkdirSync: deps.mkdirSync ?? mkdirSync,
   statSync: deps.statSync ?? statSync,
+  lookupAssociatedSelection:
+    deps.lookupAssociatedSelection ?? lookupAcceptedProjectSelection,
   execFile: deps.execFile ?? nodeExecFile,
   now: deps.now ?? (() => new Date()),
   randomId: deps.randomId ?? randomUUID,
@@ -129,7 +134,9 @@ const readStore = (
               typeof entry.root === "string" &&
               typeof entry.marker === "string" &&
               (entry.selectedRemote === undefined ||
-                typeof entry.selectedRemote === "string")
+                typeof entry.selectedRemote === "string") &&
+              (entry.associationLookupRequired === undefined ||
+                typeof entry.associationLookupRequired === "boolean")
           )
         : [],
       projects: Array.isArray(parsed.projects)
@@ -322,13 +329,51 @@ export const discoverProjectMetadata = async (
     };
     store.checkouts.push(checkout);
   }
+  let associatedSelection = input.associatedSelection;
+  if (
+    !associatedSelection &&
+    checkout?.associationLookupRequired &&
+    checkout.selectedRemote === undefined
+  ) {
+    const checkoutId = checkout.id;
+    const profileId = store.deviceSaltId;
+    associatedSelection = await deps.lookupAssociatedSelection(paths, {
+      originatingDeviceId: store.deviceSaltId,
+      checkoutId
+    });
+    // Merge local explicit edits/forgetting that happened during the API lookup.
+    store = readStore(paths, deps);
+    const currentStat = deps.statSync(observation.gitDir ?? checkoutRoot);
+    if (
+      profileId !== store.deviceSaltId ||
+      JSON.stringify([
+        currentStat.dev,
+        currentStat.ino,
+        currentStat.birthtimeMs
+      ]) !== checkoutMarker
+    )
+      throw new Error(
+        "Checkout changed during association lookup; retry discovery"
+      );
+    checkout = store.checkouts.find(
+      (entry) =>
+        entry.id === checkoutId &&
+        entry.marker === checkoutMarker &&
+        entry.root === checkoutRoot
+    );
+    if (!checkout)
+      throw new Error(
+        "Checkout changed during association lookup; retry discovery"
+      );
+    if (!checkout.associationLookupRequired) associatedSelection = undefined;
+  }
   const repository = resolveRepositoryIdentity({
     observation,
     cwd,
     deviceSalt: store.deviceSaltId,
     checkoutId: checkout?.id ?? null,
     localSelection: checkout?.selectedRemote,
-    associatedSelection: input.associatedSelection,
+    associatedSelection,
     commonDirMarker: (() => {
       try {
         const stat = deps.statSync(observation.commonDir!);
@@ -577,6 +622,60 @@ export const setProjectRepositoryAnchor = async (
     { cwd: original.path.projectRoot ?? original.path.cwd },
     depsInput
   );
+};
+
+/** This local marker enables a lookup, never a selection or an inferred association. */
+export const setProjectAssociationLookup = async (
+  paths: KoedServerPaths,
+  input: {
+    localProjectId: string;
+    expectedCheckoutId: string;
+    enabled: boolean;
+  },
+  depsInput: ProjectMetadataDeps = {}
+): Promise<void> => {
+  const deps = depsWithDefaults(depsInput);
+  const original = readStore(paths, deps).projects.find(
+    (entry) => entry.localProjectId === input.localProjectId
+  );
+  if (!original) throw new Error("Local Project is unavailable");
+  const discovery = await discoverProjectMetadata(
+    paths,
+    { cwd: original.path.projectRoot ?? original.path.cwd },
+    depsInput
+  );
+  if (discovery.project?.repository?.checkoutId !== input.expectedCheckoutId)
+    throw new Error("Checkout changed; inspect the Project again");
+  const store = readStore(paths, deps);
+  const checkout = store.checkouts.find(
+    (entry) => entry.id === input.expectedCheckoutId
+  );
+  if (!checkout) throw new Error("Checkout provenance is unavailable");
+  checkout.associationLookupRequired = input.enabled;
+  writeStore(paths, store, deps);
+};
+
+/** Refresh accepted quiet checkouts for owner inspection without Conversation capture. */
+export const refreshProjectAssociations = async (
+  paths: KoedServerPaths,
+  depsInput: ProjectMetadataDeps = {}
+): Promise<void> => {
+  const store = readStore(paths, depsWithDefaults(depsInput));
+  for (const project of store.projects) {
+    if (
+      !store.checkouts.some(
+        (entry) =>
+          entry.id === project.repository?.checkoutId &&
+          entry.associationLookupRequired
+      )
+    )
+      continue;
+    await discoverProjectMetadata(
+      paths,
+      { cwd: project.path.projectRoot ?? project.path.cwd },
+      depsInput
+    );
+  }
 };
 
 export const listPendingRepositoryChanges = (

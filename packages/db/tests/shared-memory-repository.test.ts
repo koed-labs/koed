@@ -87,6 +87,7 @@ import {
   type SharedMemoryRepository
 } from "../src/shared-memory-repository.js";
 import type { ActorContext } from "../src/types.js";
+import { writeOwnerPrivateRepositorySnapshot } from "../src/owner-private-repository-snapshot.js";
 
 const databaseUrl = process.env.SHARED_MEMORY_TEST_DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;
@@ -7881,14 +7882,25 @@ describeDb("Shared Memory repository", () => {
       new Set([rollupGrant.shareGrantId])
     );
 
-    const projectId = `scope-project-${randomUUID()}`;
+    const fingerprint = `gr_scope_${randomUUID()}`;
+    const projectId = `repository:${JSON.stringify({ kind: "portable_repository", key: fingerprint, device: null })}`;
     await pool.query(
-      `update sessions
-          set automatic_project_id=$2,
-              automatic_project_name='Scope test project',
-              automatic_project_detected_at=now()
-        where id=$1`,
-      [rollupGrant.sessionId, projectId]
+      "update team_memory_share_grants set repository_snapshot=$2::jsonb where id=$1",
+      [
+        rollupGrant.shareGrantId,
+        JSON.stringify({
+          version: 1,
+          classification: "portable_repository",
+          fingerprint,
+          label: "Scope test project",
+          branchObservation: null
+        })
+      ]
+    );
+    // A later Personal move cannot retarget an existing Team representation.
+    await pool.query(
+      "update sessions set automatic_project_id='different-personal-project',automatic_project_name='Different Personal Project',automatic_project_detected_at=now() where id=$1",
+      [rollupGrant.sessionId]
     );
     const projectScoped =
       await repository.searchAuthorizedSharedMemorySemanticItems(
@@ -8727,6 +8739,464 @@ describeDb("Shared Memory repository", () => {
         offset: 0
       })
     ).resolves.toMatchObject({ entries: [], hasMore: false });
+  });
+
+  it("keeps existing Team snapshots while new shares use current context and captures continue", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "snapshot-stability");
+    await putOwnerPolicy(fixture, source);
+    const setContext = async (fingerprint: string | null) =>
+      pool.query(
+        "update sessions set metadata=(metadata-'repositorySnapshotMetadataEnvelope') || $2::jsonb where id=$1",
+        [
+          source.localSessionId,
+          JSON.stringify({
+            syncReplica: true,
+            repositorySnapshot: {
+              version: 1,
+              classification: fingerprint
+                ? "portable_repository"
+                : "unresolved",
+              fingerprint,
+              label: null,
+              branchObservation: null
+            }
+          })
+        ]
+      );
+    const share = async (destination: WorkspaceFixture) => {
+      const consent = await createConsent(destination, source, {
+        representation: "memory_events",
+        mode: "continuous",
+        label: "snapshot-stability"
+      });
+      const grant = await repository.createShareGrant(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: consent.consentId,
+          authority: authority(fixture)
+        }
+      );
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        consent.preview
+      );
+      return grant;
+    };
+    await setContext("gr_original");
+    const first = await share(fixture);
+    await setContext("gr_reassigned");
+    const workspace = await pool.query<{ id: string }>(
+      "insert into team_workspaces(team_id,name) values($1,'Second snapshot Workspace') returning id",
+      [fixture.teamId]
+    );
+    const secondFixture = {
+      ...fixture,
+      teamWorkspaceId: workspace.rows[0]!.id
+    };
+    await pool.query(
+      "insert into team_workspace_access_grants(team_workspace_id,team_id,user_id,access,can_share_owned_memory,granted_by_user_id) values($1,$2,$3,'write',true,$3)",
+      [secondFixture.teamWorkspaceId, fixture.teamId, fixture.ownerUserId]
+    );
+    await repository.putWorkspacePolicy(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      teamId: fixture.teamId,
+      teamWorkspaceId: secondFixture.teamWorkspaceId,
+      expectedCurrentVersion: 0,
+      ...fidelityConsent(allRepresentations)
+    });
+    const second = await share(secondFixture);
+    expect(first.repositorySnapshot?.fingerprint).toBe("gr_original");
+    expect(second.repositorySnapshot?.fingerprint).toBe("gr_reassigned");
+    await ensureSourceRevision(fixture, source, 2, "continued-capture");
+    await repository.advanceContinuousGrantRepresentations({
+      remoteReplicaId: source.remoteReplicaId,
+      sourceRevision: 2
+    });
+    await flushSanitizedSemanticPublication();
+    for (const fingerprint of [null, "gr_anchor_changed", "gr_original"]) {
+      await setContext(fingerprint);
+      const snapshots = await pool.query<{
+        id: string;
+        repository_snapshot: { fingerprint: string };
+      }>(
+        "select id,repository_snapshot from team_memory_share_grants where id=any($1::uuid[])",
+        [[first.id, second.id]]
+      );
+      expect(
+        snapshots.rows.find((row) => row.id === first.id)?.repository_snapshot
+          .fingerprint
+      ).toBe("gr_original");
+      expect(
+        snapshots.rows.find((row) => row.id === second.id)?.repository_snapshot
+          .fingerprint
+      ).toBe("gr_reassigned");
+    }
+  });
+
+  it("queues assignment-only source work and retries context changed during an in-flight acknowledgement", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 0, "assignment-only");
+    // This empty owned Session is a source-side fixture; no replicated event
+    // payloads are reinterpreted or decrypted by this queue/ack regression.
+    await pool.query(
+      "update memory_replicas set replica_role='source',encryption_scope='personal' where id=$1",
+      [source.remoteReplicaId]
+    );
+    await pool.query(
+      "update cross_identity_sync_relationships set side='source',device_credential_id=null where id=$1",
+      [source.syncRelationshipId]
+    );
+    const identity = {
+      kind: "portable_repository",
+      key: "gr_after_edit",
+      root: "/fixture/source",
+      branch: null,
+      reason: "origin",
+      checkoutId: "fixture_checkout",
+      originatingDeviceId: "fixture_device",
+      selectedRemote: "origin",
+      anchorDisplay: null
+    };
+    await pool.query(
+      "update sessions set repository_override_identity=$2::jsonb,repository_assignment_version=repository_assignment_version+1 where id=$1",
+      [source.localSessionId, JSON.stringify(identity)]
+    );
+    const queued = await pool.query<{ payload_manifest: { kind: string } }>(
+      "select payload_manifest from sync_outbox_entries where sync_relationship_id=$1",
+      [source.syncRelationshipId]
+    );
+    expect(
+      queued.rows.some(
+        (row) => row.payload_manifest.kind === "repository_assignment"
+      )
+    ).toBe(true);
+    const oldHash = crossIdentitySyncDigest({
+      version: 1,
+      classification: "unresolved",
+      fingerprint: null,
+      label: null,
+      branchObservation: null
+    });
+    const packageId = randomUUID();
+    const acknowledgement = {
+      relationshipId: source.syncRelationshipId,
+      packageId,
+      sourceCursor: 0,
+      targetProcessingCursor: 0,
+      packageSequence: 1,
+      summaryRevisionHash: null,
+      repositorySnapshotHash: oldHash,
+      staleAfterSeconds: 3600
+    };
+    await syncRepository.acknowledgeSourceSyncPackage(acknowledgement);
+    const after = await pool.query<{
+      source_cursor: string;
+      source_repository_snapshot_hash: string;
+    }>(
+      "select source_cursor,source_repository_snapshot_hash from cross_identity_sync_relationships where id=$1",
+      [source.syncRelationshipId]
+    );
+    expect(Number(after.rows[0]!.source_cursor)).toBe(0);
+    expect(after.rows[0]!.source_repository_snapshot_hash).toBe(oldHash);
+    const followup = await pool.query<{ idempotency_key: string }>(
+      "select idempotency_key from sync_outbox_entries where sync_relationship_id=$1 and payload_manifest->>'kind'='repository_snapshot'",
+      [source.syncRelationshipId]
+    );
+    expect(followup.rows).toHaveLength(1);
+    await syncRepository.acknowledgeSourceSyncPackage(acknowledgement);
+    expect(
+      (
+        await pool.query(
+          "select id from sync_outbox_entries where sync_relationship_id=$1 and payload_manifest->>'kind'='repository_snapshot'",
+          [source.syncRelationshipId]
+        )
+      ).rows
+    ).toHaveLength(1);
+    const currentHash = crossIdentitySyncDigest({
+      version: 1,
+      classification: "portable_repository",
+      fingerprint: "gr_after_edit",
+      label: null,
+      branchObservation: null
+    });
+    await syncRepository.acknowledgeSourceSyncPackage({
+      ...acknowledgement,
+      packageId: randomUUID(),
+      packageSequence: 2,
+      repositorySnapshotHash: currentHash
+    });
+    expect(
+      (
+        await pool.query<{ source_repository_snapshot_hash: string }>(
+          "select source_repository_snapshot_hash from cross_identity_sync_relationships where id=$1",
+          [source.syncRelationshipId]
+        )
+      ).rows[0]!.source_repository_snapshot_hash
+    ).toBe(currentHash);
+  });
+
+  it("publishes only the sanitized Project label from the original Share Grant source revision", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "project-label");
+    const privateSnapshot = {
+      version: 1,
+      classification: "portable_repository",
+      fingerprint: "gr_label_fixture",
+      label: "Alice's Project",
+      branchObservation: "Alice/release"
+    } as const;
+    await pool.query(
+      "update sessions set metadata=metadata || $2::jsonb where id=$1",
+      [
+        source.localSessionId,
+        JSON.stringify({
+          syncReplica: true,
+          repositorySnapshot: {
+            ...privateSnapshot,
+            label: null,
+            branchObservation: null
+          }
+        })
+      ]
+    );
+    const snapshotClient = await pool.connect();
+    try {
+      await writeOwnerPrivateRepositorySnapshot(
+        snapshotClient,
+        ownerProvider,
+        {
+          sessionId: source.localSessionId,
+          ownerUserId: fixture.ownerUserId,
+          ownerPrincipalId: source.ownerPrincipalId
+        },
+        privateSnapshot
+      );
+    } finally {
+      snapshotClient.release();
+    }
+    const metadata = await pool.query<{ metadata: unknown }>(
+      "select metadata from sessions where id=$1",
+      [source.localSessionId]
+    );
+    expect(JSON.stringify(metadata.rows[0]!.metadata)).not.toMatch(
+      /Alice|release/
+    );
+    await putOwnerPolicy(fixture, source);
+    const preview = await repository.createAuthoritativeSourcePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        remoteReplicaId: source.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "continuous",
+        ...fidelityConsent(allRepresentations),
+        authority: authority(fixture)
+      }
+    );
+    const consentId = randomUUID();
+    await repository.createSourceOwnerConsent(actor(fixture.ownerUserId), {
+      source: preview.source!,
+      sourceCapabilities: preview.sourceCapabilities,
+      activationRepresentation: preview.activationRepresentation,
+      consentId,
+      mode: "continuous",
+      ...fidelityConsent(allRepresentations),
+      authority: authority(fixture),
+      preview
+    });
+    const grant = await repository.createShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId,
+        authority: authority(fixture)
+      }
+    );
+    expect(grant.repositorySnapshot).toEqual({
+      ...privateSnapshot,
+      label: null,
+      branchObservation: null
+    });
+    await prepareSanitizedSemanticPreview(
+      fixture.ownerUserId,
+      preview,
+      repository,
+      (text) => text.replaceAll("Alice", "[PERSON_1]")
+    );
+    await flushSanitizedSemanticPublication();
+    const stored = await pool.query<{
+      repository_snapshot: unknown;
+      repository_snapshot_source_revision: string;
+    }>(
+      "select repository_snapshot,repository_snapshot_source_revision from team_memory_share_grants where id=$1",
+      [grant.id]
+    );
+    expect(stored.rows[0]!.repository_snapshot).toEqual({
+      ...privateSnapshot,
+      label: "[PERSON_1]'s Project",
+      branchObservation: "[PERSON_1]/release"
+    });
+    expect(Number(stored.rows[0]!.repository_snapshot_source_revision)).toBe(1);
+    await pool.query(
+      "update sessions set metadata=(metadata-'repositorySnapshotMetadataEnvelope') || $2::jsonb where id=$1",
+      [
+        source.localSessionId,
+        JSON.stringify({
+          repositorySnapshot: {
+            ...privateSnapshot,
+            fingerprint: "gr_moved",
+            label: null,
+            branchObservation: null
+          }
+        })
+      ]
+    );
+    expect(
+      (
+        await pool.query<{ repository_snapshot: unknown }>(
+          "select repository_snapshot from team_memory_share_grants where id=$1",
+          [grant.id]
+        )
+      ).rows[0]!.repository_snapshot
+    ).toEqual(stored.rows[0]!.repository_snapshot);
+    const review = await repository.reviewGrantRepositorySnapshot(
+      actor(fixture.ownerUserId),
+      {
+        shareGrantId: grant.id,
+        authority: authority(fixture)
+      }
+    );
+    expect(review.currentSnapshot).toMatchObject({
+      fingerprint: "gr_moved",
+      label: null,
+      branchObservation: null
+    });
+    await pool.query(
+      "update sessions set metadata=jsonb_set(metadata,'{repositorySnapshot,fingerprint}',to_jsonb('gr_second_move'::text)),repository_assignment_version=repository_assignment_version+1 where id=$1",
+      [source.localSessionId]
+    );
+    await expect(
+      repository.updateGrantRepositorySnapshot(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        authority: authority(fixture),
+        expected: review
+      })
+    ).rejects.toThrow("review it again");
+    const fresh = await repository.reviewGrantRepositorySnapshot(
+      actor(fixture.ownerUserId),
+      {
+        shareGrantId: grant.id,
+        authority: authority(fixture)
+      }
+    );
+    const update = {
+      mutationId: randomUUID(),
+      shareGrantId: grant.id,
+      authority: authority(fixture),
+      expected: fresh
+    };
+    const changed = await repository.updateGrantRepositorySnapshot(
+      actor(fixture.ownerUserId),
+      update
+    );
+    expect(changed.repositorySnapshot).toMatchObject({
+      fingerprint: "gr_second_move",
+      label: null,
+      branchObservation: null
+    });
+    expect(changed.grantVersion).toBe(fresh.grantVersion + 1);
+    expect(
+      (
+        await repository.updateGrantRepositorySnapshot(
+          actor(fixture.ownerUserId),
+          update
+        )
+      ).grantVersion
+    ).toBe(changed.grantVersion);
+    await expect(
+      repository.updateGrantRepositorySnapshot(actor(fixture.ownerUserId), {
+        ...update,
+        expected: { ...fresh, assignmentVersion: fresh.assignmentVersion + 1 }
+      })
+    ).rejects.toThrow("mutation identity was reused");
+    await expect(
+      repository.reviewGrantRepositorySnapshot(actor(fixture.readerUserId), {
+        shareGrantId: grant.id,
+        authority: authority(fixture)
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
+    const beforeRepresentationChange =
+      await repository.reviewGrantRepositorySnapshot(
+        actor(fixture.ownerUserId),
+        { shareGrantId: grant.id }
+      );
+    await pool.query(
+      "update team_memory_representations set record_version=record_version+1 where id=$1",
+      [beforeRepresentationChange.representationId]
+    );
+    await expect(
+      repository.updateGrantRepositorySnapshot(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        authority: authority(fixture),
+        expected: beforeRepresentationChange
+      })
+    ).rejects.toThrow("review it again");
+    await pool.query(
+      "update sessions set metadata=(metadata-'repositorySnapshotMetadataEnvelope') || $2::jsonb where id=$1",
+      [
+        source.localSessionId,
+        JSON.stringify({
+          repositorySnapshot: {
+            version: 1,
+            classification: "unresolved",
+            fingerprint: null,
+            label: null,
+            branchObservation: null
+          }
+        })
+      ]
+    );
+    const unresolvedReview = await repository.reviewGrantRepositorySnapshot(
+      actor(fixture.ownerUserId),
+      { shareGrantId: grant.id }
+    );
+    const unresolvedGrant = await repository.updateGrantRepositorySnapshot(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        authority: authority(fixture),
+        expected: unresolvedReview
+      }
+    );
+    expect(unresolvedGrant.repositorySnapshot).toEqual({
+      version: 1,
+      classification: "unresolved",
+      fingerprint: null,
+      label: null,
+      branchObservation: null
+    });
+    expect(JSON.stringify(unresolvedGrant.repositorySnapshot)).not.toMatch(
+      /gr_label_fixture|gr_second_move|Alice/
+    );
+    await pool.query(
+      "update team_memory_share_grants set lifecycle='revoked',revoked_at=now(),grant_version=grant_version+1 where id=$1",
+      [grant.id]
+    );
+    await expect(
+      repository.updateGrantRepositorySnapshot(
+        actor(fixture.ownerUserId),
+        update
+      )
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
   });
 
   it("rejects sanitized Team material when owner-private and Team encryption keys are not distinct", async () => {

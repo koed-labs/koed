@@ -19,6 +19,7 @@ import {
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   pendingShareSchema,
@@ -59,6 +60,7 @@ import {
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
   shareGrantParamsSchema,
+  updateSharedMemoryRepositorySnapshotSchema,
   sharedMemoryItemDetailParamsSchema,
   sourceOwnerPolicyParamsSchema,
   teamPolicyParamsSchema,
@@ -420,6 +422,7 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
 });
 
 const ownerGrantDto = (grant: SharedMemoryGrantRecord) => ({
+  repositorySnapshot: grant.repositorySnapshot,
   source: requiredSource(grant.source),
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
@@ -471,6 +474,7 @@ const teamCompanionScopeDto = (
 });
 
 const teamGrantDto = (grant: SharedMemoryGrantRecord) => ({
+  repositorySnapshot: grant.repositorySnapshot,
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
   id: grant.id,
@@ -1255,6 +1259,79 @@ export const registerSharedMemoryRoutes = (
             return {
               statusCode: 200,
               body: { grant: ownedShareGrantDto(grant) }
+            };
+          }
+        )
+      );
+      return result.body;
+    }
+  );
+
+  app.get(
+    "/v1/shared-memory/share-grants/:shareGrantId/repository-snapshot/review",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const owner = await authenticateSourceOwner(request, context);
+      return executeRepositoryOperation(async () => ({
+        review: await context
+          .requireSharedMemoryRepository()
+          .reviewGrantRepositorySnapshot(
+            { userId: owner.id },
+            { shareGrantId: params.shareGrantId }
+          )
+      }));
+    }
+  );
+  app.post(
+    "/v1/shared-memory/share-grants/:shareGrantId/repository-snapshot",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const input = updateSharedMemoryRepositorySnapshotSchema.parse(
+        request.body
+      );
+      if (
+        input.expected.shareGrantId !== params.shareGrantId ||
+        input.expected.teamId !== input.teamId ||
+        input.expected.teamWorkspaceId !== input.teamWorkspaceId
+      )
+        throw conflict();
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryRepositorySnapshotActionGrantBinding({
+        ...input,
+        shareGrantId: params.shareGrantId,
+        referenceId: authenticated.authority.referenceId
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const grant = await repository.updateGrantRepositorySnapshot(
+              { userId: authenticated.actor.id },
+              {
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                authority: authenticated.authority,
+                expected: input.expected
+              }
+            );
+            if (
+              grant.teamId !== input.teamId ||
+              grant.teamWorkspaceId !== input.teamWorkspaceId
+            )
+              throw conflict();
+            return {
+              statusCode: 200,
+              body: { grant: ownerGrantDto(grant) }
             };
           }
         )

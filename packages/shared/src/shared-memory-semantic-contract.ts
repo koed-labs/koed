@@ -4,6 +4,10 @@ import { classifyApprovalActivity } from "./approval-activity.js";
 import type { SharedMemoryRepresentation } from "./collaboration-contract.js";
 import { crossIdentitySyncDigest } from "./cross-identity-sync.js";
 import {
+  teamRepositorySnapshotSchema,
+  type TeamRepositorySnapshot
+} from "./team-repository-snapshot.js";
+import {
   LCM_LEXICAL_ANCHOR_MAX_COUNT,
   LCM_LEXICAL_ANCHOR_MAX_LENGTH
 } from "./lcm-summary-limits.js";
@@ -43,6 +47,8 @@ export interface SharedMemorySourceItemInput {
   sourceLogicalMemoryId: string;
   sourceRevision: number;
   occurredAt?: string | null;
+  /** Captured provenance; label and branch must pass semantic privacy before disclosure. */
+  repositorySnapshot?: TeamRepositorySnapshot;
   classification?: {
     hiddenReasoning?: boolean;
     systemInstruction?: boolean;
@@ -59,6 +65,7 @@ export interface SharedMemoryCanonicalSourceItemDto {
   sourceLogicalMemoryId: string;
   sourceRevision: number;
   occurredAt: string | null;
+  repositorySnapshot?: TeamRepositorySnapshot;
   content: Record<string, unknown>;
 }
 
@@ -469,6 +476,16 @@ const collectClassificationFields = (
     path: string,
     segments: Array<string | number>
   ): void => {
+    for (const key of ["label", "branchObservation"] as const) {
+      const text = item.repositorySnapshot?.[key];
+      if (typeof text === "string") {
+        add(
+          `${path}.repositorySnapshot.${key}`,
+          [...segments, "repositorySnapshot", key],
+          text
+        );
+      }
+    }
     const contentPath = `${path}.content`;
     const contentSegments = [...segments, "content"];
     const addContent = (key: string, text: string): void =>
@@ -687,6 +704,7 @@ export const validateSharedMemoryCanonicalSourceItem = (input: {
       "sourceLogicalMemoryId",
       "sourceRevision",
       "occurredAt",
+      "repositorySnapshot",
       "classification",
       "content"
     ]) ||
@@ -790,6 +808,14 @@ export const validateSharedMemoryCanonicalSourceItem = (input: {
   };
   assertExpansionBoundary(content);
 
+  const repositorySnapshot =
+    item.repositorySnapshot === undefined
+      ? undefined
+      : teamRepositorySnapshotSchema.safeParse(item.repositorySnapshot);
+  if (repositorySnapshot && !repositorySnapshot.success) {
+    throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
+  }
+
   return {
     itemType,
     schemaVersion: 1,
@@ -797,6 +823,9 @@ export const validateSharedMemoryCanonicalSourceItem = (input: {
     sourceLogicalMemoryId: item.sourceLogicalMemoryId,
     sourceRevision: item.sourceRevision,
     occurredAt: item.occurredAt ?? null,
+    ...(repositorySnapshot?.success
+      ? { repositorySnapshot: repositorySnapshot.data }
+      : {}),
     content
   };
 };

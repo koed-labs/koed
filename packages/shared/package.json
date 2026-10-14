@@ -7,6 +7,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./project-selection": {
+      "types": "./dist/project-selection-desktop.d.ts",
+      "import": "./dist/project-selection-desktop.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

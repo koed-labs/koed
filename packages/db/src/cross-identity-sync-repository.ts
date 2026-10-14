@@ -1,4 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { writeOwnerPrivateRepositorySnapshot } from "./owner-private-repository-snapshot.js";
+import {
+  mapRepositoryAssignment,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
+import {
+  createTeamRepositorySnapshot,
+  unresolvedTeamRepositorySnapshot
+} from "@koed/shared";
 import pg from "pg";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
@@ -32,6 +41,17 @@ import {
 } from "./cross-identity-sync-canonical.js";
 import type { RecordAuditEventInput } from "./types.js";
 import type { ActorContext } from "./types.js";
+
+// This metadata stays in the directed owner-private package. Team disclosure
+// separately classifies label/branch in the encrypted representation preview.
+const privateSourceRepositorySnapshot = (
+  row: Row & RepositoryAssignmentRow
+) => {
+  const assignment = mapRepositoryAssignment(row);
+  return createTeamRepositorySnapshot(assignment, {
+    permittedLabel: assignment.effective?.anchorDisplay
+  });
+};
 
 export interface SyncActorContext extends ActorContext {
   deviceCredentialId?: string | null;
@@ -241,6 +261,7 @@ export interface CrossIdentitySyncRelationshipRecord {
   targetProcessingCursor: number;
   packageSequence: number;
   sourceSummaryRevisionHash: string | null;
+  sourceRepositorySnapshotHash?: string | null;
   targetSummaryRevisionHash: string | null;
   lastPackageId: string | null;
   lastSyncedAt: string | null;
@@ -466,6 +487,7 @@ export interface CrossIdentitySyncRepository {
     changes: CapturedSessionSyncChangeV1[];
     summaryNodes: CapturedSessionSyncSummaryNodeV1[];
     summarySnapshotIncluded: boolean;
+    repositorySnapshotChanged?: boolean;
     summaryRevisionHash: string;
     fromCursor: number;
     toCursor: number;
@@ -627,6 +649,7 @@ export interface CrossIdentitySyncRepository {
     targetProcessingCursor: number;
     packageSequence: number;
     summaryRevisionHash: string | null;
+    repositorySnapshotHash?: string | null;
     staleAfterSeconds: number;
   }): Promise<void>;
   markSourceSyncProcessing(input: {
@@ -778,6 +801,9 @@ const mapRelationship = (r: Row): CrossIdentitySyncRelationshipRecord => ({
   targetProcessingCursor: numberValue(r.target_processing_cursor),
   packageSequence: numberValue(r.package_sequence),
   sourceSummaryRevisionHash: optionalString(r.source_summary_revision_hash),
+  sourceRepositorySnapshotHash: optionalString(
+    r.source_repository_snapshot_hash
+  ),
   targetSummaryRevisionHash: optionalString(r.target_summary_revision_hash),
   lastPackageId: optionalString(r.last_package_id),
   lastSyncedAt: iso(r.last_synced_at),
@@ -1334,6 +1360,9 @@ export const createCrossIdentitySyncRepository = (
       const session = result.rows[0];
       if (!session) return null;
       return {
+        repositorySnapshot: privateSourceRepositorySnapshot(
+          session as Row & RepositoryAssignmentRow
+        ),
         originSessionId: String(session.id),
         externalSessionId: optionalString(session.external_session_id),
         sourceRuntime: String(session.source_runtime),
@@ -2084,13 +2113,34 @@ export const createCrossIdentitySyncRepository = (
             input.session.sourceAdapterVersion,
             JSON.stringify({
               syncReplica: true,
-              contentEncrypted: true
+              contentEncrypted: true,
+              repositorySnapshot: {
+                ...(input.session.repositorySnapshot ??
+                  unresolvedTeamRepositorySnapshot()),
+                label: null,
+                branchObservation: null
+              }
             }),
             input.session.capturedAt
           ]
         );
         if (!sessionResult.rows[0]) throw new SyncIdempotencyConflictError();
         const sessionId = String((sessionResult.rows[0] as Row).id);
+        if (
+          input.session.repositorySnapshot?.label ||
+          input.session.repositorySnapshot?.branchObservation
+        ) {
+          await writeOwnerPrivateRepositorySnapshot(
+            client,
+            requireOwnerPrivateReplicaEnvelopeEncryptionProvider(),
+            {
+              sessionId,
+              ownerUserId: actor.userId,
+              ownerPrincipalId: input.sourceUserId
+            },
+            input.session.repositorySnapshot
+          );
+        }
         const logicalResult = await client.query(
           "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_kind,logical_key) values ($1,$2,$5,$3,'captured_session',$4) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.source_kind=excluded.source_kind and logical_memories.logical_key=excluded.logical_key returning *",
           [
@@ -2623,9 +2673,13 @@ export const createCrossIdentitySyncRepository = (
           (relationship.sourceSummaryRevisionHash !== null &&
             summarySnapshot.nodes.length === 0));
       const summaryNodes = summarySnapshotIncluded ? summarySnapshot.nodes : [];
+      const repositorySnapshot = privateSourceRepositorySnapshot(
+        session as Row & RepositoryAssignmentRow
+      );
       return {
         relationship,
         session: {
+          repositorySnapshot,
           originSessionId: sessionId,
           externalSessionId: optionalString(session.external_session_id),
           sourceRuntime: String(session.source_runtime),
@@ -2640,6 +2694,9 @@ export const createCrossIdentitySyncRepository = (
         changes,
         summaryNodes,
         summarySnapshotIncluded,
+        repositorySnapshotChanged:
+          crossIdentitySyncDigest(repositorySnapshot) !==
+          relationship.sourceRepositorySnapshotHash,
         summaryRevisionHash: summarySnapshotIncluded
           ? summarySnapshot.revisionHash
           : crossIdentitySyncDigest([]),
@@ -3637,6 +3694,18 @@ export const createCrossIdentitySyncRepository = (
           uploadManifest.summaryRevisionHash
         );
         const summarySnapshotIncluded = manifestSummaryRevisionHash !== null;
+        const manifestRepositorySnapshotHash =
+          uploadManifest.repositorySnapshotHash;
+        if (
+          manifestRepositorySnapshotHash !== undefined &&
+          manifestRepositorySnapshotHash !== null &&
+          (!input.package.session.repositorySnapshot ||
+            manifestRepositorySnapshotHash !==
+              crossIdentitySyncDigest(input.package.session.repositorySnapshot))
+        )
+          throw new SyncStateConflictError(
+            "Package repository snapshot does not match its upload manifest"
+          );
         if (
           (summarySnapshotIncluded &&
             manifestSummaryRevisionHash !==
@@ -3698,6 +3767,17 @@ export const createCrossIdentitySyncRepository = (
             "Package cursor or identity mismatch"
           );
         }
+        if (input.package.session.repositorySnapshot)
+          await writeOwnerPrivateRepositorySnapshot(
+            client,
+            ownerPrivateReplicaEncryptionProvider,
+            {
+              sessionId,
+              ownerUserId: relationship.localUserId,
+              ownerPrincipalId
+            },
+            input.package.session.repositorySnapshot
+          );
         for (const change of input.package.changes) {
           const active = await client.query<Row>(
             "select * from sync_event_mappings where sync_relationship_id=$1 and origin_event_id=$2 and active=true for update",
@@ -4395,7 +4475,7 @@ export const createCrossIdentitySyncRepository = (
               and local_memory.owner_user_id=relationship.local_user_id
             where relationship.id = $1
               and relationship.side = 'source'
-            for update of relationship`,
+            for no key update of relationship`,
           [input.relationshipId]
         );
         const relationship = await client.query(
@@ -4408,6 +4488,7 @@ export const createCrossIdentitySyncRepository = (
                     when $6::text is null then source_summary_revision_hash
                     else $6
                   end,
+                  source_repository_snapshot_hash=coalesce($8::text,source_repository_snapshot_hash),
                   state='ready',
                   last_synced_at=now(),
                   stale_after=now()+($7::int*interval '1 second'),
@@ -4428,7 +4509,8 @@ export const createCrossIdentitySyncRepository = (
             input.packageSequence,
             input.packageId,
             input.summaryRevisionHash,
-            input.staleAfterSeconds
+            input.staleAfterSeconds,
+            input.repositorySnapshotHash ?? null
           ]
         );
         if (!relationship.rows[0]) {
@@ -4437,6 +4519,38 @@ export const createCrossIdentitySyncRepository = (
           );
         }
         const acknowledgedSource = source.rows[0];
+        if (acknowledgedSource && input.repositorySnapshotHash) {
+          const currentSession = await client.query<
+            Row & RepositoryAssignmentRow
+          >(
+            "select * from sessions where id=$1 and owner_user_id=$2 and personal_deleted_at is null and invalidated_at is null for share",
+            [
+              acknowledgedSource.local_session_id,
+              acknowledgedSource.local_user_id
+            ]
+          );
+          if (currentSession.rows[0]) {
+            const currentHash = crossIdentitySyncDigest(
+              privateSourceRepositorySnapshot(currentSession.rows[0])
+            );
+            if (currentHash !== input.repositorySnapshotHash) {
+              const key = `repository-snapshot:${input.packageSequence}:${currentHash}`;
+              await client.query(
+                `insert into sync_outbox_entries(sync_relationship_id,idempotency_key,request_hash,payload_manifest)
+                 values($1,$2,$3,$4::jsonb) on conflict(sync_relationship_id,idempotency_key) do nothing`,
+                [
+                  input.relationshipId,
+                  key,
+                  crossIdentitySyncDigest({
+                    kind: "repository_snapshot",
+                    hash: currentHash
+                  }),
+                  JSON.stringify({ kind: "repository_snapshot" })
+                ]
+              );
+            }
+          }
+        }
         if (
           acknowledgedSource?.state === "processing" &&
           (!acknowledgedSource.local_user_id ||

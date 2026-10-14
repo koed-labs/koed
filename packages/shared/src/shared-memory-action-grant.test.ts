@@ -7,10 +7,68 @@ import {
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
-  sharedMemoryTranscriptRevokeActionGrantBinding
+  sharedMemoryTranscriptRevokeActionGrantBinding,
+  sharedMemoryRepositorySnapshotActionGrantBinding
 } from "./shared-memory-action-grant.js";
 
 describe("Shared Memory fidelity action grant bindings", () => {
+  it("binds a Project snapshot update to its exact reviewed assignment and representation", () => {
+    const teamId = randomUUID(),
+      teamWorkspaceId = randomUUID(),
+      shareGrantId = randomUUID();
+    const input = {
+      referenceId: randomUUID(),
+      mutationId: randomUUID(),
+      teamId,
+      teamWorkspaceId,
+      shareGrantId,
+      expected: {
+        shareGrantId,
+        teamId,
+        teamWorkspaceId,
+        grantVersion: 2,
+        sourceRevision: 3,
+        representationId: randomUUID(),
+        representationVersion: 4,
+        assignmentVersion: 5,
+        sourceContextHash: "a".repeat(64),
+        currentSnapshot: {
+          version: 1 as const,
+          classification: "portable_repository" as const,
+          fingerprint: "gr_reviewed",
+          label: null,
+          branchObservation: null
+        }
+      }
+    };
+    const binding = sharedMemoryRepositorySnapshotActionGrantBinding(input);
+    expect(binding.path).toBe(
+      `/v1/shared-memory/share-grants/${shareGrantId}/repository-snapshot`
+    );
+    for (const expected of [
+      { ...input.expected, assignmentVersion: 6 },
+      { ...input.expected, representationVersion: 5 },
+      { ...input.expected, sourceContextHash: "b".repeat(64) },
+      {
+        ...input.expected,
+        currentSnapshot: {
+          ...input.expected.currentSnapshot,
+          fingerprint: "gr_other"
+        }
+      }
+    ])
+      expect(
+        sharedMemoryRepositorySnapshotActionGrantBinding({ ...input, expected })
+          .requestHash
+      ).not.toBe(binding.requestHash);
+    expect(
+      sharedMemoryRepositorySnapshotActionGrantBinding({
+        ...input,
+        teamWorkspaceId: randomUUID()
+      }).scopeHash
+    ).not.toBe(binding.scopeHash);
+  });
+
   const base = () => ({
     referenceId: randomUUID(),
     mutationId: randomUUID(),

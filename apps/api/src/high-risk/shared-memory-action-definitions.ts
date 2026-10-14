@@ -10,6 +10,8 @@ import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRepositorySnapshotActionGrantBinding,
+  crossIdentitySyncDigest,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemoryRepresentation,
@@ -32,6 +34,7 @@ type SharedMemoryAction =
   | "shared_memory.pending_share"
   | "shared_memory.preview"
   | "shared_memory.revoke"
+  | "shared_memory.update_repository_snapshot"
   | "shared_memory.conversation_source_grant"
   | "shared_memory.conversation_source_revoke"
   | "shared_memory.change_fidelity";
@@ -47,6 +50,7 @@ type SharedMemoryActionRepository = Pick<
   | "getSharedMemoryCandidatePreviewAdmission"
   | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryRevokeReview"
+  | "reviewGrantRepositorySnapshot"
   | "getSharedMemoryFidelityChangeReview"
   | "getTeamConversationSourceGrantReview"
 >;
@@ -190,6 +194,15 @@ export const bindSharedMemoryRevokeOperation = (
     expectedGrantVersion: intent.expectedGrantVersion,
     reasonCode: intent.reasonCode
   });
+
+export const bindSharedMemoryRepositorySnapshotOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.update_repository_snapshot" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryRepositorySnapshotActionGrantBinding({ ...intent, referenceId });
 
 export const bindSharedMemoryFidelityChangeOperation = (
   intent: Extract<
@@ -642,7 +655,49 @@ const conversationSourceRevokeDefinition = {
   }
 };
 
+const repositorySnapshotDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.update_repository_snapshot")
+      return null;
+    const review = await input.repository.reviewGrantRepositorySnapshot(
+      { userId: input.userId },
+      { shareGrantId: input.intent.shareGrantId }
+    );
+    if (
+      review.teamId !== input.intent.teamId ||
+      review.teamWorkspaceId !== input.intent.teamWorkspaceId ||
+      crossIdentitySyncDigest(review) !==
+        crossIdentitySyncDigest(input.intent.expected)
+    )
+      return null;
+    return {
+      operation: bindSharedMemoryRepositorySnapshotOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: reviewedAction("native_review", {
+        title: "Update shared Project?",
+        description: "Apply the current source Project to this share.",
+        consequence:
+          "This changes which Project can recall the shared memory. Personal Memory stays unchanged.",
+        confirmLabel: "Update Project",
+        details: [
+          {
+            label: "Project",
+            value:
+              review.currentSnapshot.classification === "portable_repository"
+                ? "Current source repository"
+                : "Unresolved"
+          }
+        ]
+      })
+    };
+  }
+};
+
 export const sharedMemoryActionDefinitions = {
+  "shared_memory.update_repository_snapshot": repositorySnapshotDefinition,
   "shared_memory.candidate_preview": candidatePreviewDefinition,
   "shared_memory.pending_share": pendingShareDefinition,
   "shared_memory.preview": previewDefinition,

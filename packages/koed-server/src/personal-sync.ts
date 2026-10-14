@@ -1,3 +1,4 @@
+import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
 import {
   createCipheriv,
   createDecipheriv,
@@ -95,6 +96,7 @@ type RuntimeSecret = {
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
+  historicalProjectKeys?: Record<string, string>;
   groupSecrets: {
     currentEpoch: string;
     contentKey: string;
@@ -895,7 +897,7 @@ const runtimeSecret = async (
         "historicalOriginCertificates",
         "groupSecrets"
       ]
-    ],
+    ].flatMap((fields) => [fields, [...fields, "historicalProjectKeys"]]),
     "PDS runtime secret"
   );
   if (
@@ -903,6 +905,9 @@ const runtimeSecret = async (
     !Object.values(value.device).every(strictString) ||
     !Object.values(value.authority).every(strictString) ||
     !Object.values(value.recovery).every(strictString) ||
+    (value.historicalProjectKeys !== undefined &&
+      !pdsRepositoryKeyHistorySchema.safeParse(value.historicalProjectKeys)
+        .success) ||
     !Object.values(value.groupSecrets).every(strictString) ||
     !Array.isArray(value.recipientCertificates) ||
     !value.recipientCertificates.every(strictString) ||
@@ -2606,6 +2611,17 @@ const refreshActiveDevice = async (
   const nextRuntime = validatedRuntimeSecret(
     {
       ...runtimeWithoutCertificates,
+      historicalOriginCertificates: [
+        ...new Set([
+          ...(runtime.historicalOriginCertificates ?? []),
+          ...runtime.recipientCertificates
+        ])
+      ],
+      historicalProjectKeys: {
+        ...runtime.historicalProjectKeys,
+        [runtime.groupSecrets.currentEpoch]:
+          runtime.groupSecrets.projectAliasKey
+      },
       authority: { ...runtime.authority, head: head.hash as string },
       groupSecrets: {
         currentEpoch,

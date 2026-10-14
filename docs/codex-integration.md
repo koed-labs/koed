@@ -404,3 +404,12 @@ turns and re-ingestion. Changing an anchor alone does not move recorded memory.
 The Supported Capture Hook still only signals the Transcript Watcher.
 See [recorded assignments](raw-ingestion-projection.md#recorded-repository-assignments)
 for persistence and the prepared release cutover.
+
+For an explicitly associated checkout, live repository discovery reads the
+current accepted selection from the local Personal API before capturing or
+pinning recall context. The lookup uses the requesting User's local API
+credential and the checkout incarnation. It exposes no configuration journal.
+Failed lookup defers discovery instead of choosing a different repository.
+Local explicit anchor choices retain precedence. Shared selections and conflicts
+can be managed in Desktop's **Shared Project selection** controls without
+Conversation capture; see [Project associations](personal-project-selection.md).

@@ -1,3 +1,12 @@
+import { applyPdsRepositoryAssignmentSnapshot } from "./pds-repository-assignment.js";
+import {
+  mapRepositoryAssignment,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
+import type {
+  RepositoryAssignment,
+  PdsRepositoryAssignment
+} from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import {
@@ -23,6 +32,9 @@ export type PdsMaterializationState =
   | "revoked";
 
 export interface PdsClosureSource {
+  repositoryAssignment?: RepositoryAssignment;
+  capturedCwd?: string | null;
+  branchObservation?: string | null;
   groupDbId: string;
   groupId: string;
   sessionId: string;
@@ -84,6 +96,9 @@ export interface PdsClaimedInboxEntry {
 }
 
 export interface PdsCheckpointSessionInput {
+  cwd?: string;
+  replicatedRepositoryAssignment?: RepositoryAssignment;
+  pdsRepositoryAssignment?: PdsRepositoryAssignment;
   logicalSessionId: string;
   externalSessionId: string;
   forkedFromExternalThreadId?: string;
@@ -403,6 +418,14 @@ export const createPersonalDeviceSyncLocalRepository = (
          where o.state in ('pending','uploading')
            and p.enabled=true and p.publication_paused=false
          union all
+         select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
+         from pds_project_selection_outbox o
+         join pds_project_selection_revisions r on r.id=o.revision_row_id
+         join personal_sync_policies p on p.group_id=r.group_id
+         join personal_device_groups g on g.id=r.group_id
+         where o.state in ('pending','committed') and g.state='active'
+           and p.enabled=true and p.publication_paused=false
+         union all
          select greatest(i.retry_at,coalesce(i.lease_until,i.retry_at)) as wake_at
          from pds_inbox_entries i
          where i.state in ('pending','downloading','verifying','processing','failed')
@@ -426,19 +449,27 @@ export const createPersonalDeviceSyncLocalRepository = (
     );
     const groupRow = group.rows[0];
     if (!groupRow) return null;
-    const session = await pool.query<{
-      id: string;
-      external_session_id: string | null;
-      logical_session_id: string;
-      forked_from_external_thread_id: string | null;
-      source_kind: string;
-      source_runtime: string | null;
-      metadata: unknown;
-      source_adapter_version: string;
-      created_at: Date;
-    }>(
+    const session = await pool.query<
+      RepositoryAssignmentRow & {
+        id: string;
+        external_session_id: string | null;
+        logical_session_id: string;
+        forked_from_external_thread_id: string | null;
+        source_kind: string;
+        source_runtime: string | null;
+        metadata: unknown;
+        source_adapter_version: string;
+        created_at: Date;
+        cwd: string | null;
+        repository_branch: string | null;
+      }
+    >(
       `select id,external_session_id,logical_session_id,forked_from_external_thread_id,
-              source_kind,source_runtime,source_adapter_version,created_at,metadata
+              source_kind,source_runtime,source_adapter_version,created_at,metadata,
+              repository_assignment_state,repository_assignment_version,repository_automatic_identity,repository_override_identity,cwd,
+              case when repository_automatic_identity is not null
+                and not exists(select 1 from session_repository_observations o where o.session_id=sessions.id and o.owner_user_id=sessions.owner_user_id and (not repository_scope_matches(o.identity,repository_scope_id(repository_automatic_identity)) or o.identity->>'branch' is distinct from repository_automatic_identity->>'branch'))
+                then repository_automatic_identity->>'branch' else null end as repository_branch
        from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
        and invalidated_at is null and personal_deleted_at is null`,
       [input.sessionId, input.userId]
@@ -486,6 +517,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         : {}),
       sourceAdapter: sourceSession.source_kind,
       sourceAdapterVersion: sourceSession.source_adapter_version,
+      repositoryAssignment: mapRepositoryAssignment(sourceSession),
+      capturedCwd: sourceSession.cwd,
+      branchObservation: sourceSession.repository_branch,
       sourceCreatedAt: iso(sourceSession.created_at),
       items: items.rows.map((item, index) => ({
         id: item.id,
@@ -1629,8 +1663,13 @@ export const createPersonalDeviceSyncLocalRepository = (
       }
 
       if (!replica) {
-        const { sourceTitle, sourceCreatedAt, sourceKind, ...sessionSource } =
-          input.sourceSession;
+        const {
+          sourceTitle,
+          sourceCreatedAt,
+          sourceKind,
+          pdsRepositoryAssignment,
+          ...sessionSource
+        } = input.sourceSession;
         const preexistingSession = await client.query<{ id: string }>(
           `select id from sessions where owner_user_id=$1 and external_session_id=$2
            for update`,
@@ -1667,6 +1706,7 @@ export const createPersonalDeviceSyncLocalRepository = (
             originDeviceId: input.originDeviceId,
             sourceFingerprint: input.sourceFingerprint,
             sourceProfile: "cumulative_checkpoint",
+            repositoryAssignment: pdsRepositoryAssignment ?? null,
             sourceCreatedAt
           }
         };
@@ -1750,6 +1790,22 @@ export const createPersonalDeviceSyncLocalRepository = (
         );
       }
 
+      if (replica && input.sourceSession.pdsRepositoryAssignment)
+        await applyPdsRepositoryAssignmentSnapshot(
+          client,
+          input.userId,
+          localSessionId,
+          input.sourceSession.pdsRepositoryAssignment
+        );
+      if (input.sourceSession.pdsRepositoryAssignment)
+        await client.query(
+          "update sessions set metadata=jsonb_set(metadata,'{pds,repositoryAssignment}',$3::jsonb,true),updated_at=now() where id=$1 and owner_user_id=$2",
+          [
+            localSessionId,
+            input.userId,
+            JSON.stringify(input.sourceSession.pdsRepositoryAssignment)
+          ]
+        );
       const sourceSessionId = localSessionId;
       const suffix = input.sourceItems
         .slice(Number(previousCount))
@@ -2266,19 +2322,27 @@ async function publishPdsSource(
       [groupRow.id, input.originDeviceId]
     );
     if (!member.rowCount) throw new Error("PdsPublicationMembershipError");
-    const session = await client.query<{
-      id: string;
-      external_session_id: string | null;
-      logical_session_id: string;
-      forked_from_external_thread_id: string | null;
-      source_kind: string;
-      source_runtime: string | null;
-      metadata: unknown;
-      source_adapter_version: string;
-      created_at: Date;
-    }>(
+    const session = await client.query<
+      RepositoryAssignmentRow & {
+        id: string;
+        external_session_id: string | null;
+        logical_session_id: string;
+        forked_from_external_thread_id: string | null;
+        source_kind: string;
+        source_runtime: string | null;
+        metadata: unknown;
+        source_adapter_version: string;
+        created_at: Date;
+        cwd: string | null;
+        repository_branch: string | null;
+      }
+    >(
       `select id,external_session_id,logical_session_id,forked_from_external_thread_id,
-                source_kind,source_runtime,source_adapter_version,created_at,metadata
+                source_kind,source_runtime,source_adapter_version,created_at,metadata,
+              repository_assignment_state,repository_assignment_version,repository_automatic_identity,repository_override_identity,cwd,
+              case when repository_automatic_identity is not null
+                and not exists(select 1 from session_repository_observations o where o.session_id=sessions.id and o.owner_user_id=sessions.owner_user_id and (not repository_scope_matches(o.identity,repository_scope_id(repository_automatic_identity)) or o.identity->>'branch' is distinct from repository_automatic_identity->>'branch'))
+                then repository_automatic_identity->>'branch' else null end as repository_branch
          from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
            and invalidated_at is null and personal_deleted_at is null for update`,
       [input.sessionId, input.userId]
@@ -2390,6 +2454,9 @@ async function publishPdsSource(
         : {}),
       sourceAdapter: sourceSession.source_kind,
       sourceAdapterVersion: sourceSession.source_adapter_version,
+      repositoryAssignment: mapRepositoryAssignment(sourceSession),
+      capturedCwd: sourceSession.cwd,
+      branchObservation: sourceSession.repository_branch,
       sourceCreatedAt: iso(sourceSession.created_at),
       items: items.rows.map((item, index) => ({
         id: item.id,

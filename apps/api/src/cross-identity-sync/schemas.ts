@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { teamRepositorySnapshotSchema } from "@koed/shared";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CHUNKS,
@@ -209,7 +210,8 @@ export const createTargetSyncRelationshipSchema = z
         captureMethod: z.enum(["transcript", "mcp", "web", "api"]),
         capturedAt: z.iso.datetime(),
         title: z.string().max(500).nullable(),
-        sourceAdapterVersion: z.string().max(120).nullable()
+        sourceAdapterVersion: z.string().max(120).nullable(),
+        repositorySnapshot: teamRepositorySnapshotSchema.optional()
       })
       .strict()
   })

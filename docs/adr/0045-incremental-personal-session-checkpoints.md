@@ -52,3 +52,14 @@ or let the receiving installation resume or edit the originating Conversation.
 
 The internet-accessible relay, restricted-network traversal, and transfer of
 content authority remain deferred. The existing LAN/Tailscale transport applies.
+
+## Selected repository assignment amendment
+
+Ticket 11 adds cumulative source manifest version `"3"` with the encrypted, signed
+assignment described in section 9 of the Personal Device Sync protocol. The
+checkpoint ordinal and raw-prefix guarantees stay the same. Source records remain
+read-only; a User may edit the local effective assignment. A verified later source
+assignment may update an unchanged replica but cannot replace a local User edit or
+resolve historical state through capture. Prior signed source bytes are retained;
+the new reader rejects prior source profiles. Ticket 16 gates activation and the
+coordinated transition of existing logical Sessions.

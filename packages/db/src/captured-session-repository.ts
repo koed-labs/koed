@@ -1,3 +1,7 @@
+import {
+  repositoryAssignmentSchema,
+  type RepositoryAssignment
+} from "@koed/shared";
 import { basename } from "node:path";
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
@@ -45,6 +49,8 @@ export interface CapturedSessionRepository {
       metadata?: Record<string, unknown>;
       detectedProjects?: PersonalProjectReference[];
       repositoryIdentity?: RepositoryIdentity;
+      // Internal verified PDS import, never accepted from a capture API request.
+      replicatedRepositoryAssignment?: RepositoryAssignment;
     }
   ): Promise<CapturedSessionRecord>;
   getCapturedSession(
@@ -542,6 +548,9 @@ export const createCapturedSessionRepository = (
           [`captured-session-logical:${actor.userId}:${input.logicalSessionId}`]
         );
       }
+      const replicatedAssignment = input.replicatedRepositoryAssignment
+        ? repositoryAssignmentSchema.parse(input.replicatedRepositoryAssignment)
+        : undefined;
       const repositoryIdentity = input.repositoryIdentity
         ? repositoryIdentitySchema.parse(input.repositoryIdentity)
         : undefined;
@@ -735,7 +744,7 @@ export const createCapturedSessionRepository = (
           source_fingerprint,
           captured_project,
           import_observed_at,
-          logical_session_id, repository_assignment_state, repository_automatic_identity
+          logical_session_id, repository_assignment_state, repository_automatic_identity, repository_override_identity, repository_assignment_version
         )
         values (
           $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9,
@@ -756,7 +765,7 @@ export const createCapturedSessionRepository = (
           $15, $16, $17, $18, $19,
           $20, $21, $22, $23,
           case when $21::text is null then null else now() end,
-          $24, $25, $26, coalesce($29::uuid, gen_random_uuid()), 'recorded', $31::jsonb
+          $24, $25, $26, coalesce($29::uuid, gen_random_uuid()), coalesce($32::text,'recorded'), $31::jsonb, $33::jsonb, coalesce($34::integer,1)
         )
         on conflict (owner_user_id, visibility, idempotency_key)
         where idempotency_key is not null
@@ -886,7 +895,12 @@ export const createCapturedSessionRepository = (
           explicitProjectIdentityProvided,
           input.logicalSessionId ?? null,
           input.externalThreadId ?? null,
-          repositoryIdentity ?? null
+          replicatedAssignment
+            ? replicatedAssignment.automatic
+            : (repositoryIdentity ?? null),
+          replicatedAssignment?.state ?? null,
+          replicatedAssignment?.override ?? null,
+          replicatedAssignment?.version ?? null
         ]
       );
 

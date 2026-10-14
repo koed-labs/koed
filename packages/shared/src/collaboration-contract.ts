@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  teamRepositorySnapshotSchema,
+  teamRepositorySnapshotReviewSchema
+} from "./team-repository-snapshot.js";
+import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
 } from "./team-presence.js";
@@ -1751,6 +1755,13 @@ export const collaborationActionGrantIntentSchema = z
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable()
     }),
+    actionGrantIntent("collaboration.update_shared_project_snapshot", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expected: teamRepositorySnapshotReviewSchema
+    }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
       teamId: z.uuid(),
@@ -2224,6 +2235,7 @@ export const sharedMemoryConsentSchema = z
 
 const sharedMemoryGrantBaseSchema = z
   .object({
+    repositorySnapshot: teamRepositorySnapshotSchema.optional(),
     source: sharedMemorySourceRefSchema,
     sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
     activationRepresentation: sharedMemoryRepresentationSchema,
@@ -2722,6 +2734,19 @@ export const collaborationRendererCommandSchema = z
       expiresAt: collaborationTimestampSchema.nullable(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
+    command("collaboration.review_shared_project_snapshot", {
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid()
+    }),
+    command("collaboration.update_shared_project_snapshot", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expected: teamRepositorySnapshotReviewSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
     command("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
       teamId: z.uuid(),
@@ -2936,6 +2961,8 @@ const commandNameSchema = z.enum([
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_fidelity",
+  "collaboration.review_shared_project_snapshot",
+  "collaboration.update_shared_project_snapshot",
   "collaboration.subscribe",
   "collaboration.unsubscribe",
   "collaboration.acknowledge_delivery"
@@ -3140,6 +3167,14 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.change_shared_memory_fidelity",
     z.object({ pendingShare: pendingShareSchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_shared_project_snapshot",
+    z.object({ review: teamRepositorySnapshotReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.update_shared_project_snapshot",
+    z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
   ),
   successResult(
     "collaboration.subscribe",

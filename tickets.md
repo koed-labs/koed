@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. Ticket 10 is complete; the current M2 frontier is ticket 17 on a dependent branch. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 and M3 are complete and assessed. Continue M4 with tickets 14–15 on the Project integration branch, then preview 18 on the dependent Global branch; its release remains after ticket 16. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -286,15 +286,24 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Derive the selected anchor's group-keyed token and carry assignment provenance through authenticated encrypted session and checkpoint transport.
-- [ ] Match in the verified group and key epoch while preserving separate local checkout identities.
-- [ ] Preserve effective assignments and historical-unresolved state across import, later checkpoints, replay, and continued source capture.
-- [ ] Keep device-local identities bound to the originating device and prevent same-path matches on another device.
-- [ ] Version affected wire semantics and update producers, consumers, and fixtures together without rewriting signed historical packages or adding legacy readers.
-- [ ] Demonstrate two-device capture, sync, Project recall, and owner inspection, including a session that remains unresolved after a later checkpoint.
-- [ ] Test authorization, key-epoch handling, duplicate delivery, and relay-visible privacy. Update the Personal Device Sync protocol and operational documentation.
+- [x] Derive the selected anchor's group-keyed token and carry assignment provenance through authenticated encrypted session and checkpoint transport.
+- [x] Match in the verified group and key epoch while preserving separate local checkout identities.
+- [x] Preserve effective assignments and historical-unresolved state across import, later checkpoints, replay, and continued source capture.
+- [x] Keep device-local identities bound to the originating device and prevent same-path matches on another device.
+- [x] Version affected wire semantics and update producers, consumers, and fixtures together without rewriting signed historical packages or adding legacy readers.
+- [x] Demonstrate two-device capture, sync, Project recall, and owner inspection, including a session that remains unresolved after a later checkpoint.
+- [x] Test authorization, key-epoch handling, duplicate delivery, and relay-visible privacy. Update the Personal Device Sync protocol and operational documentation.
+
+**Assessment:** Verified with signed encrypted package fixtures, API/Worker
+contract tests, and PostgreSQL publication/receiver tests representing separate
+source and receiving devices. Portable recall matches despite different checkout
+paths; historical and device-local cases remain excluded, and local overrides
+survive later source checkpoints. Epoch refresh retains private verification keys
+and origin certificates. This is an automated assessment, not a physical
+two-machine rehearsal. Ticket 16 still owns the coordinated transition for
+already-published checkpoint chains and offline baselines before release.
 
 ## 12: Associate Projects and sync anchor selection updates
 
@@ -302,16 +311,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 02: Select and inspect one repository anchor.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Create stable Project association identifiers scoped to the User and Personal Device Group. Require local acceptance before an unassociated checkout uses a shared selection.
-- [ ] Provide Desktop association and selection controls. Ordinary clone recall can still match independently resolved equal anchors without a configuration association.
-- [ ] Transport separate encrypted, authenticated selection records bound to the association, stable selection identifier, authoring device, unique revision, and replaced revisions.
-- [ ] Deliver sequential set and delete operations independently of Conversation capture. Retain deletion records so offline delivery cannot restore a superseded selection.
-- [ ] Apply only the current selection of the associated Project. Require its anchor among current normalized remotes, tolerate duplicate URLs, and preserve local explicit precedence.
-- [ ] Deletion removes the replicated preference and resumes the normal detection order. Distinguish shared deletion from local anchor override removal; neither reassigns existing sessions.
-- [ ] Detect concurrent revisions and leave affected resolution unresolved rather than choosing arrival order. Ticket 13 supplies the User resolution flow.
-- [ ] Test quiet checkouts, offline replacement/deletion, replay, and the unrelated comparison-remote counterexample. Document association and selection lifecycle behavior.
+- [x] Create stable Project association identifiers scoped to the User and Personal Device Group. Require local acceptance before an unassociated checkout uses a shared selection.
+- [x] Provide Desktop association and selection controls. Ordinary clone recall can still match independently resolved equal anchors without a configuration association.
+- [x] Transport separate encrypted, authenticated selection records bound to the association, stable selection identifier, authoring device, unique revision, and replaced revisions.
+- [x] Deliver sequential set and delete operations independently of Conversation capture. Retain deletion records so offline delivery cannot restore a superseded selection.
+- [x] Apply only the current selection of the associated Project. Require its anchor among current normalized remotes, tolerate duplicate URLs, and preserve local explicit precedence.
+- [x] Deletion removes the replicated preference and resumes the normal detection order. Distinguish shared deletion from local anchor override removal; neither reassigns existing sessions.
+- [x] Detect concurrent revisions and leave affected resolution unresolved rather than choosing arrival order. Ticket 13 supplies the User resolution flow.
+- [x] Test quiet checkouts, offline replacement/deletion, replay, and the unrelated comparison-remote counterexample. Document association and selection lifecycle behavior.
 
 ## 13: Resolve concurrent synced anchor selections
 
@@ -319,15 +328,24 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 12: Associate Projects and sync anchor selection updates.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Show concurrent set/set and set/delete revisions for the same selection record in Desktop.
-- [ ] Keep an affected checkout unresolved while conflict remains, unless a local explicit selection takes precedence.
-- [ ] Let a User select an anchor or deletion through an operation that replaces all reviewed current conflict revisions.
-- [ ] Recheck the reviewed conflict state before resolution. A newly arrived competing revision must not be silently discarded.
-- [ ] Replicate the resolution so online and formerly offline devices converge without relying on wall clock or arrival order.
-- [ ] Re-creating a deleted selection requires an explicit revision replacing the deletion. Replays and superseded revisions have no new effect.
-- [ ] Demonstrate resolution across two devices without session capture or reassignment. Add offline/concurrent tests and user documentation.
+- [x] Show concurrent set/set and set/delete revisions for the same selection record in Desktop.
+- [x] Keep an affected checkout unresolved while conflict remains, unless a local explicit selection takes precedence.
+- [x] Let a User select an anchor or deletion through an operation that replaces all reviewed current conflict revisions.
+- [x] Recheck the reviewed conflict state before resolution. A newly arrived competing revision must not be silently discarded.
+- [x] Replicate the resolution so online and formerly offline devices converge without relying on wall clock or arrival order.
+- [x] Re-creating a deleted selection requires an explicit revision replacing the deletion. Replays and superseded revisions have no new effect.
+- [x] Demonstrate resolution across two devices without session capture or reassignment. Add offline/concurrent tests and user documentation.
+
+**M3 assessment:** Automated checks cover authenticated encrypted delivery between
+separate source/receiver certificates, PostgreSQL assignment and configuration
+journals, quiet checkout discovery, local acceptance, concurrent set/set and
+set/delete states, exact reviewed-head resolution, stale review refresh, replay,
+and renewed publication after recipient-epoch changes. Desktop controls pass
+component and main-process boundary tests. This assessment does not claim a
+physical two-machine rehearsal. The coordinated source-profile release transition
+remains part of ticket 16.
 
 ## 14: Share and recall Team Memory by Project snapshot
 
@@ -335,16 +353,43 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Snapshot the effective portable identity and permitted Project label when creating a Share Grant representation.
-- [ ] Snapshot unresolved classification when no portable identity exists. Never export the original automatic identity through a non-portable override.
-- [ ] Use the snapshot for Team search, expansion, and graph paths without requiring the sharer's local session row to establish repository identity.
-- [ ] Resolve caller or explicit-target context to a portable identity before accepting a Project task. Return a Project-resolution error for device-local or unresolved targets without falling back to local path equality or Global scope.
-- [ ] Keep persisted repository context separate from the selected Workspace/backend, Team Membership, Share Grants, and source access. Collection cannot retarget the task to another Workspace or Personal Memory. Apply authorization and time bounds to every path, and fresh access checks to result collection.
-- [ ] Use only the selected portable fingerprint for Team matching and document the accepted repository-name guessing exposure.
-- [ ] Use the Team fixture to demonstrate member A sharing repo X, member B asking from another clone of X, exclusion of repo Y, and denial of private or revoked sources. Extend existing task authorization coverage to deny a completed Project answer when access is revoked before collection.
-- [ ] Update Team sharing, retrieval, and integration documentation.
+- [x] Snapshot the effective portable identity and permitted Project label when creating a Share Grant representation.
+- [x] Snapshot unresolved classification when no portable identity exists. Never export the original automatic identity through a non-portable override.
+- [x] Use the snapshot for Team search, expansion, and graph paths without requiring the sharer's local session row to establish repository identity.
+- [x] Resolve caller or explicit-target context to a portable identity before accepting a Project task. Return a Project-resolution error for device-local or unresolved targets without falling back to local path equality or Global scope.
+- [x] Keep persisted repository context separate from the selected Workspace/backend, Team Membership, Share Grants, and source access. Collection cannot retarget the task to another Workspace or Personal Memory. Apply authorization and time bounds to every path, and fresh access checks to result collection.
+- [x] Use only the selected portable fingerprint for Team matching and document the accepted repository-name guessing exposure.
+- [x] Use the Team fixture to demonstrate member A sharing repo X, member B asking from another clone of X, exclusion of repo Y, and denial of private or revoked sources. Extend existing task authorization coverage to deny a completed Project answer when access is revoked before collection.
+- [x] Update Team sharing, retrieval, and integration documentation.
+
+**Assessment so far:** The native PostgreSQL Team authority suite passes 15
+cases, including a completed Project answer denied before payload decryption
+after Share Grant revocation, snapshot changes invalidating frozen authority,
+and a receiving device using transferred source context instead of its local
+assignment. The isolated UTF-8 Team fixture has also completed normal semantic
+indexing: 10 items embedded, zero failures, and no pending items in the next
+batch. A disposable copy of that indexed fixture also passed same-fingerprint
+matching from two different clone paths, exclusion of another repository, stage
+scan and candidate expansion, revoked-source exclusion from search and expansion,
+and rejection of a raw local path as a Team Project target. Project labels and
+branch names now enter the representation's semantic privacy classification with
+immutable fingerprint reconstruction and original-source-revision disclosure.
+The focused API and contract suites pass 137 cases, the caller/sync contracts pass
+28 cases, and all 85 native Shared Memory repository cases pass. The real share
+workflow verifies that a grant initially exposes no raw label or branch, then
+publishes only sanitized metadata, and retains its snapshot after source context
+changes. Migration checks, DB build, API typecheck, and focused lint/format checks
+pass. M4 remains unfinished until ticket 15's explicit update action and ticket
+18's dependent Global preview are assessed.
+
+While preparing ticket 15, the raw label storage path was corrected: received
+labels and branches now use a Session/source-owner-bound owner-private envelope,
+while plaintext routing metadata contains only classification and fingerprint.
+Envelope-copy rejection, routing consistency, unresolved cleanup, and real
+sanitized label publication pass; all 85 native sharing cases still pass after
+the storage change.
 
 ## 15: Update Team Project snapshots only through explicit action
 
@@ -352,15 +397,37 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 09: Group Desktop Projects and reassign individual sessions; 14: Share and recall Team Memory by Project snapshot.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Demonstrate that personal moves, resets, anchor edits, and new captures do not mutate an existing Team Project snapshot.
-- [ ] New shares use the current effective assignment, while an existing share retains its recorded assignment.
-- [ ] Provide an authorized explicit share-update action that snapshots the current effective portable identity or unresolved classification.
-- [ ] Recheck current owner authority, Share Grant state, and relevant assignment/representation revisions before committing the update.
-- [ ] Never expose the previous automatic repository when the current override has no portable identity.
-- [ ] Use the Team fixture to test overrides before sharing, after sharing, snapshot updates, revoked grants, private sources, and expansion boundaries.
-- [ ] Document the difference between Personal reassignment and Team snapshot update.
+- [x] Demonstrate that personal moves, resets, anchor edits, and new captures do not mutate an existing Team Project snapshot.
+- [x] New shares use the current effective assignment, while an existing share retains its recorded assignment.
+- [x] Provide an authorized explicit share-update action that snapshots the current effective portable identity or unresolved classification.
+- [x] Recheck current owner authority, Share Grant state, and relevant assignment/representation revisions before committing the update.
+- [x] Never expose the previous automatic repository when the current override has no portable identity.
+- [x] Use the Team fixture to test overrides before sharing, after sharing, snapshot updates, revoked grants, private sources, and expansion boundaries.
+- [x] Document the difference between Personal reassignment and Team snapshot update.
+
+**Implementation progress:** Backend review and explicit update operations now
+pin Team/Workspace identity, grant and source revisions, representation version,
+assignment version, and source context. The native share workflow covers stale
+reviews, an explicit move, exact and divergent retries, non-owner denial, and
+revocation before replay. API tests reject Workspace retargeting before mutation,
+deny API Tokens, and preserve optimistic conflicts. Forty focused API/contract
+cases pass. Assignment-only delivery now encrypts context updates without moving
+the capture cursor, queues work on assignment edits, and schedules a follow-up
+when acknowledgement discovers newer context. The focused Worker/wire suites
+pass 34 cases, and all 86 native sharing cases pass with the new source outbox
+and in-flight acknowledgement regression. Desktop now exposes **Update Project**
+for active Captured Session shares. Its device bridge, native approval, Workspace
+binding, and snapshot persistence are covered by the Desktop/control suites:
+219 cases pass, including review-before-update and stale-approval denial.
+The final acceptance assessment also passed new-share/current-context and
+continued-capture stability, stale representation review denial, and an explicit
+unresolved update with no prior repository metadata. A disposable copy of the
+indexed deterministic fixture rehearsed Bob's authorized Electron Workspace
+update: the Personal move retained the Team snapshot, explicit update changed it,
+raw labels stayed absent, and non-owner/revoked access was denied. The complete
+source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 ## 16: Integrate and validate the Project recall cutover
 

@@ -5,7 +5,8 @@ import {
   sharedMemoryCeilingAuthorizes,
   sharedMemoryFidelityCeilings,
   sharedMemorySourceCapabilitiesSchema,
-  sharedMemorySourceRefSchema
+  sharedMemorySourceRefSchema,
+  teamRepositorySnapshotReviewSchema
 } from "@koed/shared";
 import { z } from "zod";
 import { SHARED_MEMORY_AUTHORITY } from "@koed/db";
@@ -398,6 +399,16 @@ export const changeSharedMemoryFidelityBundleSchema = z
 
 export const shareGrantParamsSchema = z
   .object({ shareGrantId: uuidSchema })
+  .strict();
+
+export const updateSharedMemoryRepositorySnapshotSchema = z
+  .object({
+    mutationId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    expected: teamRepositorySnapshotReviewSchema,
+    authority: sharedMemoryAuthoritySchema
+  })
   .strict();
 
 export const putTeamConversationSourceGrantSchema = z

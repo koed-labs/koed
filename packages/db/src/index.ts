@@ -460,3 +460,5 @@ export {
 } from "./repository-assignment.js";
 
 export * from "./repository-review-repository.js";
+
+export { createPersonalProjectSelectionRepository } from "./personal-project-selection-repository.js";

@@ -48,6 +48,24 @@ const destination = {
 };
 
 const repository = (options?: { sourceOwnerPolicyWillReplace?: boolean }) => ({
+  reviewGrantRepositorySnapshot: vi.fn().mockResolvedValue({
+    shareGrantId: ids.shareGrant,
+    teamId: ids.team,
+    teamWorkspaceId: ids.workspace,
+    grantVersion: 1,
+    sourceRevision: 2,
+    representationId: ids.preview,
+    representationVersion: 1,
+    assignmentVersion: 3,
+    sourceContextHash: "a".repeat(64),
+    currentSnapshot: {
+      version: 1,
+      classification: "portable_repository",
+      fingerprint: "gr_reviewed",
+      label: null,
+      branchObservation: null
+    }
+  }),
   getSharedMemoryCandidatePreviewAdmission: vi.fn(async (_actor, input) => ({
     effectiveMaximumFidelity: input.maximumFidelity,
     effectiveIncludeCuratedMemory: input.includeCuratedMemory,
@@ -198,6 +216,42 @@ const fidelityIntent = (
   }) as const satisfies HighRiskActionGrantIntent;
 
 describe("Shared Memory action definitions", () => {
+  it("requires the exact current Project review before approving a device snapshot update", async () => {
+    const repo = repository();
+    const expected = await repo.reviewGrantRepositorySnapshot();
+    const intent = highRiskActionGrantIntentSchema.parse({
+      action: "shared_memory.update_repository_snapshot",
+      mutationId: ids.mutation,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      shareGrantId: ids.shareGrant,
+      expected
+    });
+    const allowed = await admit(intent, repo);
+    expect(allowed?.operation.path).toBe(
+      `/v1/shared-memory/share-grants/${ids.shareGrant}/repository-snapshot`
+    );
+    expect(allowed?.policy.disposition).toBe("native_review");
+    expect(
+      await admit(
+        highRiskActionGrantIntentSchema.parse({
+          ...intent,
+          expected: { ...expected, assignmentVersion: 4 }
+        }),
+        repo
+      )
+    ).toBeNull();
+    expect(
+      await admit(
+        highRiskActionGrantIntentSchema.parse({
+          ...intent,
+          teamWorkspaceId: randomUUID()
+        }),
+        repo
+      )
+    ).toBeNull();
+  });
+
   it("uses the public admission reference for candidate-preview execution", async () => {
     const intent = {
       action: "shared_memory.candidate_preview",

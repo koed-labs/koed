@@ -1,11 +1,19 @@
 import type {
   PdsConversationSourceItem,
   PdsSessionCheckpointManifest,
-  PdsSessionPackage
+  PdsSessionPackage,
+  PdsProjectSelectionRevision,
+  PdsProjectSelectionRecord
 } from "@koed/shared";
 import type { PdsClosureSource } from "@koed/db";
 
 export interface PdsSecureSourceKeyContext {
+  signProjectSelection?(
+    input: Pick<
+      PdsProjectSelectionRevision,
+      "associationId" | "selectionId" | "revisionId" | "replaces" | "operation"
+    >
+  ): PdsProjectSelectionRecord;
   /** Opaque references only. Never serialize, log, persist, or derive from API Tokens. */
   deviceSigningPrivateKeyRef: string;
   deviceKemPrivateKeyRef: string;
