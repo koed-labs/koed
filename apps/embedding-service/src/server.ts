@@ -11,11 +11,7 @@ import {
   embeddingTokenAuthStatus,
   requireInternalToken
 } from "./auth.js";
-import {
-  rerankerEnabled,
-  rerankerModel,
-  type EmbeddingServiceEnv
-} from "./env-config.js";
+import { type EmbeddingServiceEnv } from "./env-config.js";
 import type { EmbeddingLogger } from "./logging.js";
 import {
   errorType,
@@ -26,7 +22,7 @@ import {
 import { normalizeEmbeddingPriority } from "./priority-scheduler.js";
 import type { EmbeddingRuntime } from "./runtime.js";
 import type { ResolvedAcceleration } from "./acceleration.js";
-import { validateEmbedRequest, validateRerankRequest } from "./schemas.js";
+import { validateEmbedRequest } from "./schemas.js";
 
 export interface EmbeddingService {
   handle(request: Request): Promise<Response>;
@@ -100,16 +96,6 @@ export const createEmbeddingService = (
           }
           if (request.method === "POST" && url.pathname === "/embed") {
             return await handleEmbed(
-              config,
-              runtime,
-              logger,
-              request,
-              requestId,
-              started
-            );
-          }
-          if (request.method === "POST" && url.pathname === "/rerank") {
-            return await handleRerank(
               config,
               runtime,
               logger,
@@ -248,9 +234,9 @@ const handleHealth = (
     config,
     headerValue(request, "x-koed-embedding-token")
   );
-  const rerankerReady = !rerankerEnabled(config) || runtime.isRerankerLoaded();
-  const status = runtime.isModelLoaded() && rerankerReady ? "ok" : "loading";
-  const rerankerProvenance = runtime.rerankerProvenance();
+
+  const status = runtime.isModelLoaded() ? "ok" : "loading";
+
   const embeddingAcceleration = runtime.embeddingAcceleration();
   const exposeConfiguredArtifacts = auth.authRequired && auth.authValid;
   return jsonResponse(
@@ -293,32 +279,7 @@ const handleHealth = (
                 ? 0
                 : runtime.config.embeddingGpuIdleUnloadSeconds
           }
-        : {}),
-      reranker: {
-        enabled: rerankerEnabled(config),
-        loaded: runtime.isRerankerLoaded(),
-        modelKey: config.rerankerKey,
-        model: rerankerModel(config),
-        artifact: rerankerProvenance
-          ? exposeConfiguredArtifacts
-            ? rerankerProvenance.artifact
-            : `sha256:${rerankerProvenance.artifactHash}`
-          : null,
-        artifactRevision: rerankerProvenance?.artifactRevision ?? null,
-        artifactHash: rerankerProvenance?.artifactHash ?? null,
-        batchLimit: config.rerankerBatchLimit,
-        acceleration: runtime.rerankerAcceleration()
-          ? runtime.rerankerAcceleration()!.backend
-          : null,
-        ...(exposeConfiguredArtifacts && runtime.rerankerAcceleration()
-          ? {
-              gpuIdleUnloadSeconds:
-                runtime.rerankerAcceleration()!.backend === "cpu"
-                  ? 0
-                  : runtime.config.rerankerGpuIdleUnloadSeconds
-            }
-          : {})
-      }
+        : {})
     },
     status === "ok" ? 200 : 503,
     requestId
@@ -371,50 +332,6 @@ const handleEmbed = async (
       error instanceof HttpError && error.statusCode === 503
         ? "embedding_unavailable"
         : "embedding_runtime_error"
-    );
-  }
-};
-
-const handleRerank = async (
-  config: EmbeddingServiceEnv,
-  runtime: EmbeddingRuntime,
-  logger: EmbeddingLogger,
-  request: Request,
-  requestId: string,
-  started: bigint
-): Promise<Response> => {
-  requireInternalToken(config, headerValue(request, "x-koed-embedding-token"));
-  const payload = validateRerankRequest(config, await parseJsonBody(request));
-  try {
-    const result = await runtime.rerankTexts(payload.query, payload.documents);
-    logger.info("rerank request completed", {
-      event: event("embedding.rerank.completed"),
-      http: { status_code: 200, duration_ms: elapsedMs(started) },
-      reranker: {
-        model: result.model,
-        document_count: payload.documents.length,
-        score_count: result.scores.length,
-        measured_tokens: result.inputTokens,
-        latency_ms: result.latencyMs,
-        cost_usd: result.costUsd
-      }
-    });
-    return jsonResponse(result, 200, requestId);
-  } catch (error) {
-    const statusCode = error instanceof HttpError ? error.statusCode : 500;
-    logger.info("rerank request failed", {
-      event: event("embedding.rerank.failed"),
-      http: { status_code: statusCode, duration_ms: elapsedMs(started) },
-      error: errorType(error)
-    });
-    throw new HttpError(
-      error instanceof HttpError && error.statusCode === 503 ? 503 : 500,
-      error instanceof HttpError && error.statusCode === 503
-        ? "reranking service is temporarily unavailable"
-        : "reranking request failed",
-      error instanceof HttpError && error.statusCode === 503
-        ? "reranking_unavailable"
-        : "reranking_runtime_error"
     );
   }
 };

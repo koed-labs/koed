@@ -321,10 +321,7 @@ export {
   type EmbeddingTelemetrySourceClass,
   type EmbeddingTelemetryWindow
 } from "./embedding-capacity-repository.js";
-export {
-  createMemorySourceRepository,
-  localRerankingEnabled
-} from "./repository.js";
+export { createMemorySourceRepository } from "./repository.js";
 export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,

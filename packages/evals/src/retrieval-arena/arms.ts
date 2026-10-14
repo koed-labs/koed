@@ -151,12 +151,7 @@ export interface EmbeddingProvider {
   id: string;
   model: string;
   dimensions?: number;
-  reranker?: {
-    model: string | null;
-    artifact: string | null;
-    artifactRevision: string | null;
-    artifactHash: string | null;
-  };
+
   embed(
     texts: string[],
     options?: {
@@ -164,23 +159,6 @@ export interface EmbeddingProvider {
       onUsage?: (usage: { calls: number; tokens: number }) => void;
     }
   ): Promise<number[][]>;
-  rerank?(
-    query: string,
-    documents: string[],
-    options?: { signal?: AbortSignal }
-  ): Promise<
-    | number[]
-    | {
-        scores: number[];
-        model: string | null;
-        artifact: string | null;
-        artifactRevision: string | null;
-        artifactHash: string | null;
-        latencyMs: number | null;
-        inputTokens: number | null;
-        costUsd: number | null;
-      }
-  >;
 }
 
 export class ProviderUnavailableError extends Error {
@@ -222,15 +200,6 @@ interface EmbeddingHealthResponse {
   tokenizerRevision?: unknown;
   acceleration?: unknown;
   batchLimit?: unknown;
-  reranker?: {
-    enabled?: unknown;
-    loaded?: unknown;
-    modelKey?: unknown;
-    model?: unknown;
-    artifact?: unknown;
-    artifactRevision?: unknown;
-    artifactHash?: unknown;
-  };
 }
 
 export const resolveKoedEmbeddingServiceReproducibility = async (options: {
@@ -238,7 +207,6 @@ export const resolveKoedEmbeddingServiceReproducibility = async (options: {
   token?: string;
   model?: string;
   strict?: boolean;
-  requireReranker?: boolean;
 }): Promise<{
   artifact: string | null;
   artifactRevision: string | null;
@@ -248,12 +216,6 @@ export const resolveKoedEmbeddingServiceReproducibility = async (options: {
   tokenizerRevision: string | null;
   acceleration: string | null;
   batchLimit: number;
-  reranker: {
-    model: string | null;
-    artifact: string | null;
-    artifactRevision: string | null;
-    artifactHash: string | null;
-  } | null;
 }> => {
   const canonical = resolveSupportedEmbeddingModelConfig(
     options.model ?? DEFAULT_EMBEDDING_MODEL_KEY
@@ -297,34 +259,10 @@ export const resolveKoedEmbeddingServiceReproducibility = async (options: {
     batchLimit:
       Number.isInteger(health.batchLimit) && Number(health.batchLimit) > 0
         ? Number(health.batchLimit)
-        : 0,
-    reranker:
-      health.reranker?.enabled === true
-        ? {
-            model:
-              typeof health.reranker.modelKey === "string"
-                ? health.reranker.modelKey
-                : null,
-            artifact:
-              typeof health.reranker.artifact === "string"
-                ? health.reranker.artifact
-                : typeof health.reranker.model === "string"
-                  ? health.reranker.model
-                  : null,
-            artifactRevision:
-              typeof health.reranker.artifactRevision === "string"
-                ? health.reranker.artifactRevision
-                : null,
-            artifactHash:
-              typeof health.reranker.artifactHash === "string"
-                ? health.reranker.artifactHash
-                : null
-          }
-        : null
+        : 0
   };
   if (options.strict) {
     const missing = Object.entries(metadata)
-      .filter(([key]) => key !== "reranker")
       .filter(([, value]) => value === null || value === 0)
       .map(([key]) => key);
     if (missing.length > 0) {
@@ -342,30 +280,6 @@ export const resolveKoedEmbeddingServiceReproducibility = async (options: {
       throw new Error(
         "strict embedding reproducibility rejected metadata that differs from the canonical supported model"
       );
-    }
-    if (options.requireReranker) {
-      if (!metadata.reranker || health.reranker?.loaded !== true) {
-        throw new Error(
-          "strict reranker reproducibility requires a loaded service reranker"
-        );
-      }
-      const missingReranker = Object.entries(metadata.reranker)
-        .filter(([, value]) => value === null)
-        .map(([key]) => key);
-      if (missingReranker.length > 0) {
-        throw new Error(
-          `strict reranker reproducibility requires service-verified ${missingReranker.join(", ")}`
-        );
-      }
-      if (
-        !/^[a-f0-9]{64}$/.test(metadata.reranker.artifactHash!) ||
-        metadata.reranker.artifactRevision !==
-          `sha256:${metadata.reranker.artifactHash}`
-      ) {
-        throw new Error(
-          "strict reranker reproducibility requires an artifact revision proved by the loaded artifact SHA-256"
-        );
-      }
     }
   }
   return metadata;
@@ -400,12 +314,6 @@ export const createKoedEmbeddingServiceProvider = (options: {
   id?: string;
   dimensions?: number;
   batchLimit?: number;
-  reranker?: {
-    model: string | null;
-    artifact: string | null;
-    artifactRevision: string | null;
-    artifactHash: string | null;
-  } | null;
 }): EmbeddingProvider => {
   const configured = resolveSupportedEmbeddingModelConfig(
     options.model ?? DEFAULT_EMBEDDING_MODEL_KEY
@@ -421,7 +329,6 @@ export const createKoedEmbeddingServiceProvider = (options: {
     id: options.id ?? "koed-embedding-service",
     model: configured.key,
     dimensions: expectedDimensions,
-    ...(options.reranker ? { reranker: options.reranker } : {}),
     async embed(texts, requestOptions) {
       const vectors: number[][] = [];
       for (let offset = 0; offset < texts.length; offset += batchLimit) {
@@ -462,69 +369,6 @@ export const createKoedEmbeddingServiceProvider = (options: {
         requestOptions?.onUsage?.({ calls: 1, tokens: result.measuredTokens });
       }
       return vectors;
-    },
-    async rerank(query, documents, requestOptions) {
-      const result = await postJson<{
-        model?: unknown;
-        artifact?: unknown;
-        artifactRevision?: unknown;
-        artifactHash?: unknown;
-        latencyMs?: unknown;
-        scores: number[];
-        inputTokens?: unknown;
-        costUsd?: unknown;
-      }>(
-        `${options.baseUrl.replace(/\/$/, "")}/rerank`,
-        options.token,
-        { query, documents },
-        requestOptions?.signal
-      );
-      const model = typeof result.model === "string" ? result.model : null;
-      if (options.reranker?.model && model !== options.reranker.model) {
-        throw new Error(
-          `reranker service reported model ${model ?? "unknown"}; expected ${options.reranker.model}`
-        );
-      }
-      const artifact =
-        typeof result.artifact === "string" ? result.artifact : null;
-      const artifactRevision =
-        typeof result.artifactRevision === "string"
-          ? result.artifactRevision
-          : null;
-      const artifactHash =
-        typeof result.artifactHash === "string" ? result.artifactHash : null;
-      if (
-        options.reranker?.artifact &&
-        artifact !== options.reranker.artifact
-      ) {
-        throw new Error("reranker service reported a mismatched artifact");
-      }
-      if (
-        options.reranker?.artifactRevision &&
-        artifactRevision !== options.reranker.artifactRevision
-      ) {
-        throw new Error(
-          "reranker service reported a mismatched artifact revision"
-        );
-      }
-      if (
-        options.reranker?.artifactHash &&
-        artifactHash !== options.reranker.artifactHash
-      ) {
-        throw new Error("reranker service reported a mismatched artifact hash");
-      }
-      return {
-        scores: result.scores,
-        model,
-        artifact,
-        artifactRevision,
-        artifactHash,
-        latencyMs:
-          typeof result.latencyMs === "number" ? result.latencyMs : null,
-        inputTokens:
-          typeof result.inputTokens === "number" ? result.inputTokens : null,
-        costUsd: typeof result.costUsd === "number" ? result.costUsd : null
-      };
     }
   };
 };
@@ -622,91 +466,6 @@ export const createDenseArm = (
         candidateCount: ranked.length,
         embeddingCalls,
         embeddingTokens
-      }
-    };
-  }
-});
-
-export const createRerankedArm = (provider: EmbeddingProvider): ArenaArm => ({
-  id: "qwen-0.6b-reranked",
-  label: "Qwen3 Embedding 0.6B plus reranker",
-  layer: "retrieval_only",
-  modelRoles: ["embedding", "reranker"],
-  providerRequirement: `${provider.id}:reranker`,
-  configuration: {
-    denseModel: provider.model,
-    reranker: provider.reranker ?? {
-      model: null,
-      artifact: null,
-      artifactRevision: null,
-      artifactHash: null
-    },
-    queryTransform: EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
-    documentTransform: EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
-    candidatePool: "maxCandidates",
-    index: "isolated-eval"
-  },
-  async run(context) {
-    if (!provider.rerank)
-      throw new Error("embedding provider does not support reranking");
-    const denseResult = await denseRank(context, provider);
-    const dense = denseResult.ranked.slice(
-      0,
-      context.benchmarkCase.budget.maxCandidates
-    );
-    const rerankerStarted = performance.now();
-    const rerankerResult = await provider.rerank(
-      context.benchmarkCase.question,
-      dense.map(({ item }) => item.text),
-      { signal: context.signal }
-    );
-    const rerankerLatencyMs = Math.round(performance.now() - rerankerStarted);
-    const scores = Array.isArray(rerankerResult)
-      ? rerankerResult
-      : rerankerResult.scores;
-    if (scores.length !== dense.length)
-      throw new Error("reranker returned an unexpected score count");
-    const ranked = dense
-      .map(({ item }, index) => ({ item, score: scores[index]! }))
-      .sort(
-        (left, right) =>
-          right.score - left.score || left.item.id.localeCompare(right.item.id)
-      );
-    const candidates = rankCandidates(
-      ranked.map(({ item, score }) => evidence(item, score))
-    );
-    return {
-      candidates,
-      evidence: applyEvidenceBudget(candidates, context),
-      model: provider.model,
-      provider: provider.id,
-      rerankerMetrics: {
-        model: Array.isArray(rerankerResult)
-          ? (provider.reranker?.model ?? null)
-          : rerankerResult.model,
-        artifact: Array.isArray(rerankerResult)
-          ? (provider.reranker?.artifact ?? null)
-          : rerankerResult.artifact,
-        artifactRevision: Array.isArray(rerankerResult)
-          ? (provider.reranker?.artifactRevision ?? null)
-          : rerankerResult.artifactRevision,
-        artifactHash: Array.isArray(rerankerResult)
-          ? (provider.reranker?.artifactHash ?? null)
-          : rerankerResult.artifactHash,
-        latencyMs: Array.isArray(rerankerResult)
-          ? rerankerLatencyMs
-          : rerankerResult.latencyMs,
-        calls: 1,
-        inputTokens: Array.isArray(rerankerResult)
-          ? null
-          : rerankerResult.inputTokens,
-        costUsd: Array.isArray(rerankerResult) ? null : rerankerResult.costUsd
-      },
-      metrics: {
-        searchCalls: 1,
-        candidateCount: dense.length,
-        embeddingCalls: denseResult.embeddingCalls,
-        embeddingTokens: denseResult.embeddingTokens
       }
     };
   }
@@ -977,7 +736,6 @@ export const createRetrievalArenaArms = (
   const retrievalArms: ArenaArm[] = embedding
     ? [
         createDenseArm(embedding),
-        createRerankedArm(embedding),
         createHybridArm(embedding),
         options.rewriteProvider
           ? createRewriteDenseArm(embedding, options.rewriteProvider)
@@ -994,12 +752,6 @@ export const createRetrievalArenaArms = (
           "Qwen3 Embedding 0.6B dense",
           "retrieval_only",
           "koed-embedding-service"
-        ),
-        unavailableArm(
-          "qwen-0.6b-reranked",
-          "Qwen3 Embedding 0.6B plus reranker",
-          "retrieval_only",
-          "koed-embedding-service:reranker"
         ),
         unavailableArm(
           "bm25-qwen-0.6b-hybrid",

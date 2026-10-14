@@ -18,7 +18,6 @@ import {
   createKoedEmbeddingServiceProvider,
   createProductArms,
   createRetrievalArenaArms,
-  createRerankedArm,
   externalDatasetManifestSchema,
   observedModelMatchesDescriptor,
   productControllerConfigurations,
@@ -237,54 +236,6 @@ describe("Retrieval Arena embedding reproducibility", () => {
       /strict embedding reproducibility requires.*artifactHash/
     );
   });
-
-  it("requires loaded reranker provenance proved by its artifact hash", async () => {
-    const artifactHash = "b".repeat(64);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            status: "ok",
-            modelKey: "qwen3-0.6b",
-            dimensions: 1024,
-            artifact:
-              "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
-            artifactRevision: "main",
-            artifactHash:
-              "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
-            tokenizer: "qwen3-embedding-0.6b-gguf",
-            tokenizerRevision:
-              "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
-            acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0",
-            batchLimit: 16,
-            reranker: {
-              enabled: true,
-              loaded: true,
-              modelKey: "qwen3-reranker-0.6b",
-              artifact: "repo:reranker.gguf",
-              artifactRevision: `sha256:${artifactHash}`,
-              artifactHash
-            }
-          })
-        )
-      )
-    );
-
-    await expect(
-      resolveKoedEmbeddingServiceReproducibility({
-        baseUrl: "http://127.0.0.1:3800",
-        strict: true,
-        requireReranker: true
-      })
-    ).resolves.toMatchObject({
-      reranker: {
-        model: "qwen3-reranker-0.6b",
-        artifactRevision: `sha256:${artifactHash}`,
-        artifactHash
-      }
-    });
-  });
 });
 
 describe("Retrieval Arena model identity", () => {
@@ -434,73 +385,6 @@ describe("Retrieval Arena Qwen embedding contract", () => {
     expect(onUsage).toHaveBeenNthCalledWith(1, { calls: 1, tokens: 16 });
     expect(onUsage).toHaveBeenNthCalledWith(2, { calls: 1, tokens: 1 });
   });
-
-  it("pins and validates the service-reported reranker identity", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({ model: "wrong-reranker", scores: [0.5] }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          )
-        )
-    );
-    const provider = createKoedEmbeddingServiceProvider({
-      baseUrl: "http://embedding.test",
-      reranker: {
-        model: "pinned-reranker",
-        artifact: "pinned.gguf",
-        artifactRevision: "revision-1",
-        artifactHash: "a".repeat(64)
-      }
-    });
-    await expect(provider.rerank!("query", ["document"])).rejects.toThrow(
-      "reranker service reported model wrong-reranker; expected pinned-reranker"
-    );
-  });
-
-  it("retains service-measured local reranker call telemetry", async () => {
-    const artifactHash = "a".repeat(64);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            model: "pinned-reranker",
-            artifact: "pinned.gguf",
-            artifactRevision: `sha256:${artifactHash}`,
-            artifactHash,
-            latencyMs: 14,
-            inputTokens: 37,
-            costUsd: 0,
-            scores: [0.5]
-          })
-        )
-      )
-    );
-    const provider = createKoedEmbeddingServiceProvider({
-      baseUrl: "http://embedding.test",
-      reranker: {
-        model: "pinned-reranker",
-        artifact: "pinned.gguf",
-        artifactRevision: `sha256:${artifactHash}`,
-        artifactHash
-      }
-    });
-
-    await expect(provider.rerank!("query", ["document"])).resolves.toEqual({
-      model: "pinned-reranker",
-      artifact: "pinned.gguf",
-      artifactRevision: `sha256:${artifactHash}`,
-      artifactHash,
-      latencyMs: 14,
-      inputTokens: 37,
-      costUsd: 0,
-      scores: [0.5]
-    });
-  });
 });
 
 describe("Retrieval Arena arms and metrics", () => {
@@ -552,17 +436,7 @@ describe("Retrieval Arena arms and metrics", () => {
     ).toEqual(declared);
 
     const defaultArms = createRetrievalArenaArms();
-    expect(
-      defaultArms
-        .filter((arm) => arm.layer === "retrieval_only")
-        .map((arm) => arm.id)
-    ).toEqual([
-      "bm25",
-      "qwen-0.6b-dense",
-      "qwen-0.6b-reranked",
-      "bm25-qwen-0.6b-hybrid",
-      "one-rewrite-one-search"
-    ]);
+
     expect(
       defaultArms.filter((arm) => arm.layer === "product").map((arm) => arm.id)
     ).toEqual(declared.map(({ id }) => id));
@@ -589,54 +463,6 @@ describe("Retrieval Arena arms and metrics", () => {
     ]);
     expect(fused.map(({ item }) => item.id)).toEqual(["d1", "d2"]);
     expect(fused[0]?.score).toBe(fused[1]?.score);
-  });
-
-  it("retains reranker identity and call provenance separately from embeddings", async () => {
-    const arm = createRerankedArm({
-      id: "fixture-provider",
-      model: "fixture-embedding",
-      reranker: {
-        model: "fixture-reranker",
-        artifact: "fixture-reranker.gguf",
-        artifactRevision: "revision-1",
-        artifactHash: "a".repeat(64)
-      },
-      async embed(texts, options) {
-        options?.onUsage?.({ calls: 1, tokens: 11 });
-        return texts.map((_text, index) => [index + 1, 1]);
-      },
-      async rerank(_query, documents) {
-        return {
-          scores: documents.map((_document, index) => documents.length - index),
-          model: "fixture-reranker",
-          artifact: "fixture-reranker.gguf",
-          artifactRevision: "revision-1",
-          artifactHash: "a".repeat(64),
-          latencyMs: 7,
-          inputTokens: 23,
-          costUsd: 0.004
-        };
-      }
-    });
-    const output = await arm.run({
-      benchmarkCase,
-      runIndex: 0,
-      deadlineAt: Date.now() + 1_000
-    });
-    expect(output.rerankerMetrics).toMatchObject({
-      model: "fixture-reranker",
-      artifact: "fixture-reranker.gguf",
-      artifactRevision: "revision-1",
-      artifactHash: "a".repeat(64),
-      latencyMs: 7,
-      calls: 1,
-      inputTokens: 23,
-      costUsd: 0.004
-    });
-    expect(output.metrics).toMatchObject({
-      embeddingCalls: 1,
-      embeddingTokens: 11
-    });
   });
 
   it("scores graded relevance, required groups, and forbidden evidence separately", () => {
@@ -1113,101 +939,6 @@ describe("Retrieval Arena runner", () => {
         databaseReads: null,
         costUsd: null
       });
-    } finally {
-      if (previousAcceleration === undefined) {
-        delete process.env.KOED_EVAL_ACCELERATION;
-      } else {
-        process.env.KOED_EVAL_ACCELERATION = previousAcceleration;
-      }
-    }
-  });
-
-  it("requires strict reranker artifact proof and measured call telemetry", async () => {
-    const previousAcceleration = process.env.KOED_EVAL_ACCELERATION;
-    process.env.KOED_EVAL_ACCELERATION = "cpu-test";
-    const artifactHash = "b".repeat(64);
-    const arm = (costUsd: number | null): ArenaArm => ({
-      id: "strict-reranker",
-      label: "strict reranker",
-      layer: "retrieval_only",
-      modelRoles: ["embedding", "reranker"],
-      configuration: {},
-      run: async () => ({
-        candidates: [],
-        evidence: [],
-        metrics: {
-          searchCalls: 1,
-          candidateCount: 0,
-          embeddingCalls: 1,
-          embeddingTokens: 17
-        },
-        rerankerMetrics: {
-          model: "fixture-reranker",
-          artifact: "fixture-reranker.gguf",
-          artifactRevision: `sha256:${artifactHash}`,
-          artifactHash,
-          latencyMs: 7,
-          calls: 1,
-          inputTokens: 23,
-          costUsd
-        }
-      })
-    });
-    const modelMetadata = {
-      embedding: {
-        provider: "fixture",
-        model: "fixture-embedding",
-        artifact: "fixture-embedding.gguf",
-        artifactRevision: "fixture-revision",
-        artifactHash: "a".repeat(64),
-        dimensions: 1024,
-        tokenizer: "fixture-tokenizer",
-        tokenizerRevision: "fixture-tokenizer-revision",
-        reasoningEffort: "none",
-        inputPricePerMillionTokensUsd: null,
-        outputPricePerMillionTokensUsd: null,
-        acceleration: "cpu-test"
-      },
-      reranker: {
-        provider: "fixture",
-        model: "fixture-reranker",
-        artifact: "fixture-reranker.gguf",
-        artifactRevision: `sha256:${artifactHash}`,
-        artifactHash,
-        dimensions: null,
-        tokenizer: null,
-        tokenizerRevision: null,
-        reasoningEffort: "none",
-        inputPricePerMillionTokensUsd: null,
-        outputPricePerMillionTokensUsd: null,
-        acceleration: "cpu-test"
-      }
-    };
-    try {
-      const complete = await runRetrievalArena({
-        arms: [arm(0)],
-        caseIds: ["dev-exact-anchor"],
-        strictProviders: true,
-        modelMetadata
-      });
-      expect(complete.results[0]).toMatchObject({
-        status: "completed",
-        rerankerResources: {
-          artifactHash,
-          latencyMs: 7,
-          inputTokens: 23,
-          costUsd: 0
-        }
-      });
-
-      const missingCost = await runRetrievalArena({
-        arms: [arm(null)],
-        caseIds: ["dev-exact-anchor"],
-        strictProviders: true,
-        modelMetadata
-      });
-      expect(missingCost.results[0]?.status).toBe("failed");
-      expect(missingCost.results[0]?.error).toContain("rerankerCostUsd");
     } finally {
       if (previousAcceleration === undefined) {
         delete process.env.KOED_EVAL_ACCELERATION;

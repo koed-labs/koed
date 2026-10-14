@@ -1,8 +1,7 @@
 import {
   resolveApiDataEncryptionKeyFromEnv,
   resolveKoedQueueBackend,
-  type KoedQueueBackend,
-  resolveRerankerKeyFromEnv
+  type KoedQueueBackend
 } from "@koed/shared";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -78,7 +77,7 @@ export interface ApiServerConfig {
   };
   crossIdentitySyncStaleAfterSeconds: number;
   embeddingModel?: string;
-  rerankerKey?: string;
+
   workos: {
     authkitEnabled: boolean;
     apiBaseUrl: string;
@@ -493,7 +492,7 @@ export const resolveApiServerConfig = (
       86_400
     ),
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
-    rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment)),
+
     workos: {
       authkitEnabled: environment.WORKOS_AUTHKIT_ENABLED === "true",
       apiBaseUrl:

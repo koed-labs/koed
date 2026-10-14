@@ -892,7 +892,7 @@ and Recall remain device-local.
 - `state/` for content-free Transcript Watcher activation state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
-- `models/` for embedding and reranker model files
+- `models/` for embedding model files
 - `cache/` for installer metadata and downloaded artifact cache
 - `runtime/` for bundled or packaged native runtime binaries
 
@@ -1023,7 +1023,7 @@ pnpm models:install:embedding
 pnpm models:install:privacy
 ```
 
-Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
+Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact.
 
 ### WSL development
 
@@ -1077,8 +1077,8 @@ start Metal must fail rather than silently use CPU.
 Koed Desktop exposes a Hardware acceleration toggle in General preferences.
 The preference is stored in `KOED_HOME/config/server.json`; changing it restarts
 the local Koed services. An explicit Operator environment policy remains
-authoritative and makes the toggle read-only. Accelerated embedding and
-reranker models unload after five idle minutes by default and reload on the
+authoritative and makes the toggle read-only. Accelerated embedding
+models unload after five idle minutes by default and reload on the
 next request. Set the corresponding idle-unload value to `0` only when keeping
 the model resident is an intentional resource decision.
 

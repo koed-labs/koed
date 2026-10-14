@@ -1239,6 +1239,204 @@ process.stdin.once("data", () => {
     }
   });
 
+  it("retains selected rollout facts and resolves a deduplicated expansion in the final bundle", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        mode: "expandSuccess",
+        answer: {
+          ...answerObject(
+            "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+          ),
+          evidence: [
+            {
+              source_type: "memory_node",
+              source_id: "summary-parent-1",
+              source_chunk_index: 0,
+              node_id: "node-1",
+              visibility: "personal"
+            },
+            {
+              source_type: "memory_event",
+              source_id: "event-child-1",
+              source_chunk_index: 4,
+              node_id: "node-1:source:event-child-1:4",
+              visibility: "personal",
+              relevance: "grounded expanded source",
+              support: "GROUNDED_CHILD_EVIDENCE"
+            }
+          ]
+        }
+      });
+      const expansions: string[] = [];
+      const client: MemoryAnswerRetrievalClient = {
+        async search(input) {
+          if (input.retrieval_stage === "score_scan") {
+            return {
+              retrieval: {
+                stages: [
+                  {
+                    name: "leaf_search",
+                    countAboveThreshold: 1,
+                    maxAllowed: 1
+                  }
+                ]
+              }
+            };
+          }
+          return {
+            hits: [
+              {
+                nodeId: "node-1",
+                sourceType: "memory_node",
+                sourceId: "summary-parent-1",
+                citation: {
+                  nodeId: "node-1",
+                  sourceType: "memory_node",
+                  sourceId: "summary-parent-1",
+                  sourceChunkIndex: 0,
+                  visibility: "personal"
+                },
+                sourceChunkIndex: 0,
+                visibility: "personal",
+                summaryText:
+                  "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+              },
+              {
+                nodeId: "searched-event-child-1",
+                sourceType: "memory_event",
+                sourceId: "event-child-1",
+                sourceChunkIndex: 4,
+                visibility: "personal",
+                summaryText:
+                  "GROUNDED_CHILD_EVIDENCE: restore backup and replay 120 items with zero missing IDs.",
+                citation: {
+                  nodeId: "searched-event-child-1",
+                  sourceType: "memory_event",
+                  sourceId: "event-child-1",
+                  sourceChunkIndex: 4,
+                  visibility: "personal"
+                }
+              }
+            ],
+            retrieval: { stage: input.retrieval_stage }
+          };
+        },
+        async expand(nodeId) {
+          expansions.push(nodeId);
+          return {
+            expanded: {
+              nodeId,
+              visibility: "personal",
+              sourceItems: [
+                {
+                  sourceId: "event-child-1",
+                  sourceChunkIndex: 4,
+                  text: "GROUNDED_CHILD_EVIDENCE: restore backup and replay 120 items with zero missing IDs."
+                }
+              ]
+            }
+          };
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What enables the deployment sentinel?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            MEMORY_ANSWER_MAX_EXPANSIONS: "1"
+          })
+        }
+      );
+
+      expect(expansions).toEqual(["node-1"]);
+      expect(response.markdown).toContain("90 seconds");
+      expect(response.localMemoryWorker).toMatchObject({
+        usedFallback: false,
+        memoryStatus: "found",
+        expandCount: 1
+      });
+      expect(response.evidence).toHaveLength(2);
+      expect(response.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sourceId: "summary-parent-1",
+            summaryText:
+              "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+          }),
+          expect.objectContaining({
+            sourceId: "event-child-1",
+            sourceChunkIndex: 4,
+            parentNodeIds: ["node-1"]
+          })
+        ])
+      );
+      expect(response.citations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sourceId: "summary-parent-1" }),
+          expect.objectContaining({
+            sourceId: "event-child-1",
+            sourceChunkIndex: 4,
+            nodeId: "searched-event-child-1"
+          })
+        ])
+      );
+      expect(response.evidenceBundle?.retrieval).toMatchObject({
+        expansions: [{ nodeId: "node-1" }],
+        trace: {
+          budgets: { consumed: { expansions: 1 } }
+        }
+      });
+      expect(response.evidence?.[0]).not.toHaveProperty("observedReferences");
+      expect(response.citations?.[1]).not.toHaveProperty("observedReferences");
+
+      const capped = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What enables the deployment sentinel?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          limit: 1,
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            MEMORY_ANSWER_MAX_EXPANSIONS: "1"
+          })
+        }
+      );
+      expect(capped.localMemoryWorker.memoryStatus).toBe("insufficient");
+      expect(capped.localMemoryWorker.errorMessage).toContain(
+        "Memory answer budget exhausted: evidence_items"
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("bounds a worker-refined semantic search and narrows exact anchors", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
@@ -2859,6 +3057,187 @@ process.stdin.once("data", () => {
 
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ canonicalSourceIdentity });
+  });
+
+  it("resolves observed searched and expanded identities after canonical merging", () => {
+    const searched = {
+      nodeId: "searched-child",
+      sourceType: "memory_node",
+      sourceId: "child",
+      sourceChunkIndex: 7,
+      visibility: "personal",
+      summaryText: "Selected child",
+      citation: {
+        nodeId: "searched-child",
+        sourceType: "memory_node",
+        sourceId: "child",
+        sourceChunkIndex: 7
+      }
+    };
+    const [expanded] = evidenceFromExpansion({
+      expanded: {
+        nodeId: "parent",
+        visibility: "personal",
+        sourceItems: [
+          {
+            kind: "lcm_child",
+            sourceId: "child",
+            position: 7,
+            canonicalSourceIdentity: {
+              sourceType: "memory_node",
+              sourceId: "child",
+              sourceChunkIndex: 7
+            },
+            text: "Selected child"
+          }
+        ]
+      }
+    });
+    const merged = mergeMemoryAnswerCandidateLists(
+      [searched],
+      [{ query: "child", stage: "expanded_source", hits: [expanded] }]
+    );
+    for (const node_id of [
+      searched.nodeId,
+      (expanded as { nodeId: string }).nodeId
+    ]) {
+      const selected = evidenceSelectedByAnswer(merged, {
+        ...answerObject("Selected child"),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: "child",
+            source_chunk_index: 7,
+            node_id,
+            visibility: "personal"
+          }
+        ]
+      } as StructuredMemoryAnswer);
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({
+        sourceId: "child",
+        sourceChunkIndex: 7
+      });
+    }
+  });
+
+  it("rejects ambiguous and conflicting observed references", () => {
+    const searched = {
+      nodeId: "searched",
+      sourceType: "memory_node",
+      sourceId: "child",
+      sourceChunkIndex: 7,
+      visibility: "personal"
+    };
+    const expanded = {
+      ...searched,
+      nodeId: "expanded",
+      parentNodeIds: ["parent"]
+    };
+    const merged = mergeMemoryAnswerCandidateLists(
+      [searched],
+      [{ query: "q", stage: "expanded_source", hits: [expanded] }]
+    );
+    const selection = {
+      source_type: "memory_node",
+      source_id: "child",
+      source_chunk_index: 7,
+      node_id: "searched",
+      visibility: "personal"
+    };
+    for (const change of [
+      { source_chunk_index: 0 },
+      { source_id: "unauthorized" },
+      { node_id: "unobserved" },
+      { node_id: "parent" },
+      { visibility: "team" }
+    ]) {
+      expect(() =>
+        evidenceSelectedByAnswer(merged, {
+          ...answerObject("child"),
+          evidence: [{ ...selection, ...change }]
+        } as StructuredMemoryAnswer)
+      ).toThrow("without resolvable supporting evidence");
+    }
+    expect(
+      evidenceSelectedByAnswer([searched, { ...searched }], {
+        ...answerObject("child"),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: "child",
+            source_chunk_index: 7
+          }
+        ]
+      } as StructuredMemoryAnswer)
+    ).toEqual([searched]);
+    expect(() =>
+      evidenceSelectedByAnswer(
+        [searched, { ...searched, visibility: "team" }],
+        {
+          ...answerObject("child"),
+          evidence: [
+            {
+              source_type: "memory_node",
+              source_id: "child",
+              source_chunk_index: 7
+            }
+          ]
+        } as StructuredMemoryAnswer
+      )
+    ).toThrow("without resolvable supporting evidence");
+  });
+
+  it("keeps a complete selected rollout parent alongside partial children", () => {
+    const summaryText =
+      "Restore backup; replay 120 items with zero missing IDs within 90 seconds; persisted byte cursor equals final source offset; Store owner and Capture owner approve; then move traffic.";
+    const parent = {
+      nodeId: "rollout",
+      sourceType: "memory_node",
+      sourceId: "rollout",
+      sourceChunkIndex: 0,
+      summaryText,
+      visibility: "personal",
+      corroborationGroupId: "rollout"
+    };
+    const children = evidenceFromExpansion({
+      expanded: {
+        nodeId: "rollout",
+        visibility: "personal",
+        sourceItems: [
+          {
+            sourceId: "restore",
+            position: 4,
+            text: "Restore backup and replay 120 items with zero missing IDs."
+          },
+          {
+            sourceId: "traffic",
+            position: 8,
+            text: "Move traffic after approvals."
+          }
+        ]
+      }
+    });
+    const evidence = [parent, ...children];
+    const selected = evidenceSelectedByAnswer(evidence, {
+      ...answerObject(summaryText),
+      evidence: [
+        { evidence_index: 0 },
+        { evidence_index: 1 },
+        { evidence_index: 2 },
+        { evidence_index: 0 }
+      ]
+    } as StructuredMemoryAnswer);
+    expect(selected).toEqual(evidence);
+    expect(selected[0]).toMatchObject({ summaryText });
+    expect(children).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentNodeIds: ["rollout"],
+          corroborationGroupId: "rollout"
+        })
+      ])
+    );
   });
 
   it("bounds an adversarial retrieval trace to 32 KiB deterministically", () => {

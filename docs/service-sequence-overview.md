@@ -1682,8 +1682,12 @@ grant-based visibility model.
    authorization during candidate selection, and runs retrieval stages over
    Memory Nodes, Curated Memory, fresh pending Memory Events, and raw fallback
    evidence.
-   Semantic stages use local embedding search and may be reranked when
-   configured.
+   Semantic stages use local embedding search.
+   Memory Answer retains complete observed references when canonical candidates
+   merge. Reference resolution checks complete identity, node, and visibility
+   together and rejects unresolved or ambiguous selections. Distinct selected
+   parent summaries and expanded children remain in the Evidence Bundle, with
+   shared lineage and the existing evidence budgets.
    Personal assignment changes only Personal Memory grouping and candidate
    filtering; immutable capture provenance remains available independently.
    Supplying a Team Workspace id changes the authentication requirement but does
@@ -1697,7 +1701,7 @@ grant-based visibility model.
    In commercial encrypted-field mode, any decrypt needed for source text,
    Evidence Bundle expansion, graph/source expansion, LCM Summary source items,
    Memory Node summary text, embedding source text, Memory Question result
-   persistence, or reranking inputs must happen only after this authorization
+   or persistence must happen only after this authorization
    boundary admits the row.
    Koed-managed cloud treats queryable vectors as sensitive in-boundary search
    data. Production exposes semantic candidate generation plus narrowed exact

@@ -24,7 +24,6 @@ export const appEnvSources = [
 const sharedRootKeyPrefixes = ["MEMORY_"];
 const sharedRootKeys = new Set([
   "EMBEDDING_MODEL_KEY",
-  "EMBEDDING_RERANKER_KEY",
   "SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS"
 ]);
 

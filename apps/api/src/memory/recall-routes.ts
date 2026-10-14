@@ -267,10 +267,7 @@ export const registerRecallRoutes = (
           embeddingDimensions: embedding.dimensions,
           semanticRetrievalComplete: true,
           vectorCandidateCount: candidateCount,
-          rerankedCount: 0,
-          rerankerModel: null,
-          rerankingEnabled: false,
-          rerankingUnavailable: false,
+
           visibilityLabels: ["team"]
         };
       }
@@ -311,11 +308,7 @@ export const registerRecallRoutes = (
         embeddingModel: result.metadata.embeddingModel,
         embeddingDimensions: result.metadata.embeddingDimensions,
         vectorCandidateCount: result.metadata.vectorCandidateCount,
-        rerankedCount: result.metadata.rerankedCount,
-        rerankerModel: result.metadata.rerankerModel,
-        rerankingEnabled: result.metadata.rerankingEnabled,
-        rerankingUnavailable: result.metadata.rerankingUnavailable,
-        rerankingError: result.metadata.rerankingError,
+
         visibilityLabels: [
           ...new Set(result.results.map((hit) => hit.visibility))
         ]
@@ -441,10 +434,7 @@ export const registerRecallRoutes = (
           embeddingModel: embedding.model,
           embeddingDimensions: embedding.dimensions,
           vectorCandidateCount: candidateCount,
-          rerankedCount: 0,
-          rerankerModel: null,
-          rerankingEnabled: false,
-          rerankingUnavailable: false,
+
           stages
         };
         const instructions =
@@ -533,12 +523,7 @@ export const registerRecallRoutes = (
           result.evidenceBundle.retrieval.embeddingDimensions,
         vectorCandidateCount:
           result.evidenceBundle.retrieval.vectorCandidateCount,
-        rerankedCount: result.evidenceBundle.retrieval.rerankedCount,
-        rerankerModel: result.evidenceBundle.retrieval.rerankerModel,
-        rerankingEnabled: result.evidenceBundle.retrieval.rerankingEnabled,
-        rerankingUnavailable:
-          result.evidenceBundle.retrieval.rerankingUnavailable,
-        rerankingError: result.evidenceBundle.retrieval.rerankingError,
+
         expandedNodeIds,
         visibilityLabels,
         memoryIndexVersion: "lcm-depth0-contiguous-v1",

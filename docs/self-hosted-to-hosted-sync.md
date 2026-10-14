@@ -73,7 +73,7 @@ Required V1.0 decisions:
   expansions because they need separate closure, consent, and retention rules.
 - Freshness: synchronized memory becomes stale when the sync relationship's
   `stale_after` timestamp has passed. Stale replicas remain retained but cannot
-  influence Recall, ranking, graph expansion, citations, reranking, or Evidence
+  influence Recall, ranking, graph expansion, citations, or Evidence
   Bundles until a successful package makes them ready again.
 - Hosted processing outputs: the hosted side validates package provenance and
   may reuse source projection metadata, but hosted indexing owns the target

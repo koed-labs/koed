@@ -60,7 +60,7 @@ test("migrates old accelerator allocation defaults", () => {
       [
         "EMBEDDING_LLAMA_N_CTX=32768",
         "EMBEDDING_LLAMA_N_UBATCH=8192",
-        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=8192",
+
         "EMBEDDING_LLAMA_N_BATCH=8192",
         "CUSTOM_SETTING=32768"
       ].join("\n")
@@ -69,7 +69,7 @@ test("migrates old accelerator allocation defaults", () => {
 
   assert.equal(migrated.get("EMBEDDING_LLAMA_N_CTX"), "8192");
   assert.equal(migrated.get("EMBEDDING_LLAMA_N_UBATCH"), "512");
-  assert.equal(migrated.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "512");
+
   assert.equal(migrated.get("EMBEDDING_LLAMA_N_BATCH"), "8192");
   assert.equal(migrated.get("CUSTOM_SETTING"), "32768");
 });
@@ -77,17 +77,12 @@ test("migrates old accelerator allocation defaults", () => {
 test("preserves explicit accelerator allocation overrides", () => {
   const migrated = parseEnv(
     migrateLegacyEmbeddingAccelerationDefaults(
-      [
-        "EMBEDDING_LLAMA_N_CTX=16384",
-        "EMBEDDING_LLAMA_N_UBATCH=256",
-        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=1024"
-      ].join("\n")
+      ["EMBEDDING_LLAMA_N_CTX=16384", "EMBEDDING_LLAMA_N_UBATCH=256"].join("\n")
     )
   );
 
   assert.equal(migrated.get("EMBEDDING_LLAMA_N_CTX"), "16384");
   assert.equal(migrated.get("EMBEDDING_LLAMA_N_UBATCH"), "256");
-  assert.equal(migrated.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "1024");
 });
 
 test("setup migrates old accelerator defaults in an existing env", async () => {
@@ -96,11 +91,9 @@ test("setup migrates old accelerator defaults in an existing env", async () => {
   try {
     await writeFile(
       envPath,
-      [
-        "EMBEDDING_LLAMA_N_CTX=32768",
-        "EMBEDDING_LLAMA_N_UBATCH=8192",
-        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=1024"
-      ].join("\n")
+      ["EMBEDDING_LLAMA_N_CTX=32768", "EMBEDDING_LLAMA_N_UBATCH=8192"].join(
+        "\n"
+      )
     );
     const result = spawnSync(process.execPath, ["scripts/setup-env.mjs"], {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -112,7 +105,6 @@ test("setup migrates old accelerator defaults in an existing env", async () => {
     const rendered = parseEnv(await readFile(envPath, "utf8"));
     assert.equal(rendered.get("EMBEDDING_LLAMA_N_CTX"), "8192");
     assert.equal(rendered.get("EMBEDDING_LLAMA_N_UBATCH"), "512");
-    assert.equal(rendered.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "1024");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

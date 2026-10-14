@@ -111,9 +111,7 @@ import {
   DEFAULT_EMBEDDING_QUERY_INSTRUCTION,
   formatEmbeddingRetrievalQuery,
   metadataWithStorageSanitization,
-  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig,
   pdsArtifactCompatibilityHash,
   lcmCompactionQueueJobId,
   RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES,
@@ -169,11 +167,6 @@ interface LcmNodeForSummarizationRow {
   summary_structured_json: Record<string, unknown> | null;
   summary_structured_schema_version: string | null;
   lcm_algorithm_version: string | null;
-}
-
-interface RerankResult {
-  model: string;
-  scores: number[];
 }
 
 type ConversationProjectionRawRow = {
@@ -2093,15 +2086,6 @@ const localEmbeddingDimensions = (): number =>
 const localEmbeddingVersion = (): string =>
   resolveSupportedEmbeddingModelConfig(process.env.EMBEDDING_MODEL).key;
 
-export const localRerankingEnabled = (
-  environment: NodeJS.ProcessEnv = process.env
-): boolean =>
-  resolveSupportedRerankerModelConfig(
-    resolveRerankerKeyFromEnv(environment)
-  ) !== null;
-
-const rerankingEnabled = (): boolean => localRerankingEnabled();
-
 const sourceHash = (
   sourceType: EmbeddableSourceType,
   sourceId: string,
@@ -2718,12 +2702,6 @@ const positiveIntEnvCapped = (
   fallback: number,
   max: number
 ): number => Math.min(positiveIntEnv(name, fallback), max);
-
-const vectorCandidateLimit = (resultLimit: number): number =>
-  Math.max(resultLimit, positiveIntEnv("MEMORY_VECTOR_CANDIDATE_LIMIT", 20));
-
-const prepareRerankDocument = (text: string): string =>
-  text.replace(/\s+/g, " ").trim();
 
 const nonNegativeIntEnv = (name: string, fallback: number): number => {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
@@ -3736,50 +3714,6 @@ const embedQueryTexts = (
   vectors: number[][];
   measuredTokens: number | null;
 }> => embedTexts(texts.map(formatEmbeddingQuery));
-
-const rerankTexts = async (
-  query: string,
-  documents: string[]
-): Promise<RerankResult> => {
-  const baseUrl = localEmbeddingServiceUrl();
-  if (!baseUrl) {
-    throw new Error("EMBEDDING_SERVICE_URL is not configured");
-  }
-
-  const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/rerank`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...embeddingServiceHeaders()
-    },
-    body: JSON.stringify({ query, documents })
-  });
-  const payload = (await response.json().catch(() => ({}))) as {
-    model?: string;
-    scores?: number[];
-    detail?: string;
-  };
-
-  if (!response.ok) {
-    throw new Error(
-      payload.detail ?? `reranking service failed with ${response.status}`
-    );
-  }
-  if (!payload.model || !Array.isArray(payload.scores)) {
-    throw new Error("reranking service returned an invalid response");
-  }
-  const scores = payload.scores.map(Number);
-  if (
-    scores.length !== documents.length ||
-    scores.some((score) => !Number.isFinite(score))
-  ) {
-    throw new Error("reranking service returned invalid scores");
-  }
-  return {
-    model: payload.model,
-    scores
-  };
-};
 
 const mapMemoryEvent = (row: {
   id: string;
@@ -11040,7 +10974,6 @@ export const createMemorySourceRepository = (
           ).map((node) => node.id)
         : [];
       const requestedLimit = input.limit ?? 10;
-      const shouldRerank = rerankingEnabled();
       const now = new Date();
       const sourceAfter = input.recentDays
         ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
@@ -11076,7 +11009,6 @@ export const createMemorySourceRepository = (
             }
           : undefined;
       let embeddingMetadata = defaultRetrievalMetadata({
-        rerankingEnabled: shouldRerank,
         temporalFilter
       });
 
@@ -11110,7 +11042,6 @@ export const createMemorySourceRepository = (
         summary_text: string;
         summary_structured_json: unknown;
         lexical_anchors: string[] | null;
-        rerank_text: string | null;
         lcm_summary_model: string | null;
         lcm_summary_pending: boolean;
         source_generation: number | null;
@@ -11126,11 +11057,6 @@ export const createMemorySourceRepository = (
         name: RetrievalStageName;
         rows: VectorRow[];
         durationMs: number;
-        reranked: boolean;
-        rerankedCount: number;
-        rerankerModel?: string | null;
-        rerankingUnavailable?: boolean;
-        rerankingError?: string;
         parentNodeIds?: string[];
       };
       const stageDiagnostics: NonNullable<RetrievalMetadata["stages"]> = [];
@@ -11154,15 +11080,11 @@ export const createMemorySourceRepository = (
         positiveIntEnv(name, fallback);
       const rollupCandidateLimit = stageCandidateLimit(
         "MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT",
-        shouldRerank
-          ? vectorCandidateLimit(requestedLimit)
-          : Math.max(requestedLimit, 20)
+        Math.max(requestedLimit, 20)
       );
       const leafCandidateLimit = stageCandidateLimit(
         "MEMORY_RAG_LEAF_CANDIDATE_LIMIT",
-        shouldRerank
-          ? vectorCandidateLimit(requestedLimit * 2)
-          : Math.max(requestedLimit * 2, 20)
+        Math.max(requestedLimit * 2, 20)
       );
       const freshCandidateLimit = stageCandidateLimit(
         "MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT",
@@ -11300,12 +11222,7 @@ export const createMemorySourceRepository = (
               }
               hydrated = {
                 ...row,
-                summary_text: sourceText,
-                rerank_text:
-                  row.rerank_text === ENCRYPTED_EMBEDDING_SOURCE_TEXT ||
-                  row.rerank_text?.includes(ENCRYPTED_EMBEDDING_SOURCE_TEXT)
-                    ? sourceText
-                    : row.rerank_text
+                summary_text: sourceText
               };
             }
             if (
@@ -11337,12 +11254,7 @@ export const createMemorySourceRepository = (
               }
               hydrated = {
                 ...hydrated,
-                summary_text: summaryText,
-                rerank_text:
-                  hydrated.rerank_text === ENCRYPTED_MEMORY_NODE_TEXT ||
-                  hydrated.rerank_text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
-                    ? summaryText
-                    : hydrated.rerank_text
+                summary_text: summaryText
               };
             }
             if (hydrated.source_type !== "memory_node") {
@@ -11388,83 +11300,6 @@ export const createMemorySourceRepository = (
           })
         );
         return hydratedRows.filter((row): row is VectorRow => row !== null);
-      };
-
-      const rerankStageRows = async (
-        stage: RetrievalStageName,
-        rows: VectorRow[]
-      ): Promise<{
-        rows: VectorRow[];
-        reranked: boolean;
-        rerankedCount: number;
-        rerankerModel?: string | null;
-        rerankingUnavailable?: boolean;
-        rerankingError?: string;
-      }> => {
-        if (!shouldRerank || rows.length === 0) {
-          return { rows, reranked: false, rerankedCount: 0 };
-        }
-        const rerankableRows = rows.filter((row) => row.rerank_text?.trim());
-        if (rerankableRows.length === 0) {
-          return {
-            rows,
-            reranked: false,
-            rerankedCount: 0,
-            rerankingUnavailable: true,
-            rerankingError: `no completed summary nodes available for reranking in ${stage}`
-          };
-        }
-        try {
-          const reranked = await rerankTexts(
-            input.query,
-            rerankableRows.map((row) => prepareRerankDocument(row.rerank_text!))
-          );
-          const rerankedRows = rerankableRows.map((row, index) => ({
-            ...row,
-            score: reranked.scores[index] ?? row.score
-          }));
-          const rerankableKeys = new Set(
-            rerankableRows.map(
-              (row) =>
-                `${row.source_type}:${row.source_id}:${
-                  row.source_chunk_index ?? 0
-                }`
-            )
-          );
-          const nonRerankableRows = rows.filter(
-            (row) =>
-              !rerankableKeys.has(
-                `${row.source_type}:${row.source_id}:${
-                  row.source_chunk_index ?? 0
-                }`
-              )
-          );
-          return {
-            rows: [...rerankedRows, ...nonRerankableRows].sort(
-              (left, right) =>
-                Number(right.score) - Number(left.score) ||
-                right.created_at.getTime() - left.created_at.getTime() ||
-                left.source_id.localeCompare(right.source_id)
-            ),
-            reranked: true,
-            rerankedCount: reranked.scores.length,
-            rerankerModel: reranked.model
-          };
-        } catch (error) {
-          console.warn(
-            `Local reranking failed for ${stage}; using vector order: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-          return {
-            rows,
-            reranked: false,
-            rerankedCount: 0,
-            rerankingUnavailable: true,
-            rerankingError:
-              error instanceof Error ? error.message : String(error)
-          };
-        }
       };
 
       try {
@@ -11625,14 +11460,6 @@ export const createMemorySourceRepository = (
                     then coalesce(mn.summary_text, me.source_text, '')
                     else coalesce(me.source_text, ev.payload ->> 'content', msg.content, '')
                   end as summary_text,
-                  case
-                    when mn.summary_model is not null then mn.summary_text
-                    when cma.id is not null then me.source_text
-                    when linked_mn.summary_model is not null
-                      and me.owner_user_id = $1
-                    then linked_mn.summary_text
-                    else null
-                  end as rerank_text,
                   coalesce(mn.summary_model, linked_mn.summary_model) as lcm_summary_model,
                   (
                     (mn.id is not null and mn.summary_model is null)
@@ -12000,22 +11827,15 @@ export const createMemorySourceRepository = (
                   return filteredSummary
                     ? {
                         ...row,
-                        summary_text: filteredSummary,
-                        rerank_text: filteredSummary
+                        summary_text: filteredSummary
                       }
                     : row;
                 })
               );
-              const reranked = await rerankStageRows(stage, rows);
               return {
                 name: stage,
-                rows: reranked.rows,
+                rows,
                 durationMs: Date.now() - started,
-                reranked: reranked.reranked,
-                rerankedCount: reranked.rerankedCount,
-                rerankerModel: reranked.rerankerModel,
-                rerankingUnavailable: reranked.rerankingUnavailable,
-                rerankingError: reranked.rerankingError,
                 parentNodeIds
               };
             };
@@ -12024,8 +11844,6 @@ export const createMemorySourceRepository = (
               name: "raw_fallback_search",
               rows: [],
               durationMs: 0,
-              reranked: false,
-              rerankedCount: 0,
               parentNodeIds: []
             };
             const emptyStage = (
@@ -12035,8 +11853,6 @@ export const createMemorySourceRepository = (
               name,
               rows: [],
               durationMs: 0,
-              reranked: false,
-              rerankedCount: 0,
               parentNodeIds
             });
             const runScopedLeaves = async (
@@ -12130,14 +11946,8 @@ export const createMemorySourceRepository = (
                   )
                 )
               );
-              const anyReranked = stages.some((stage) => stage.reranked);
-              const rerankingErrors = stages
-                .map((stage) => stage.rerankingError)
-                .filter((value): value is string => Boolean(value));
               embeddingMetadata = defaultRetrievalMetadata({
-                retrievalMode: anyReranked
-                  ? "semantic_vector_reranked"
-                  : "semantic_vector",
+                retrievalMode: "semantic_vector",
                 vectorHitsCount: vectorRows.length,
                 vectorCandidateCount: vectorRows.length,
                 embeddingModel: embedded.model,
@@ -12150,21 +11960,6 @@ export const createMemorySourceRepository = (
                 decryptBytes,
                 embeddingCalls: 1,
                 embeddingTokens: embedded.measuredTokens,
-                rerankedCount: stages.reduce(
-                  (sum, stage) => sum + stage.rerankedCount,
-                  0
-                ),
-                rerankerModel:
-                  stages.find((stage) => stage.rerankerModel)?.rerankerModel ??
-                  null,
-                rerankingEnabled: shouldRerank,
-                rerankingUnavailable:
-                  shouldRerank &&
-                  stages.some((stage) => stage.rerankingUnavailable),
-                rerankingError:
-                  rerankingErrors.length > 0
-                    ? rerankingErrors.join("; ")
-                    : undefined,
                 temporalFilter
               });
               stageDiagnostics.push(
@@ -12183,7 +11978,6 @@ export const createMemorySourceRepository = (
                       ? "post_rollup"
                       : "initial_candidates",
                   temporalFilterApplied: Boolean(temporalFilter),
-                  reranked: stage.reranked,
                   parentNodeIds: stage.parentNodeIds,
                   topScore: stage.rows[0]?.score,
                   scoreThreshold: scoreThresholds[stage.name],
@@ -12223,7 +12017,6 @@ export const createMemorySourceRepository = (
           decryptBytes,
           embeddingCalls: 1,
           embeddingTokens: null,
-          rerankingEnabled: shouldRerank,
           temporalFilter
         });
         stageDiagnostics.push({

@@ -583,7 +583,7 @@ Koed-owned local state lives under `KOED_HOME`:
   state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
-- `models/` for embedding and reranker model files
+- `models/` for embedding model files
 - `cache/` for installer metadata and downloaded artifact cache
 - `runtime/` for bundled or packaged native runtime binaries
 
@@ -934,7 +934,6 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.
 - `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
-- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed models install --kind reranker`. The SHA-256 is required whenever reranking is enabled; Embedding Service startup hashes the exact GGUF passed to llama-server and rejects a mismatch. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
 - `KOED_BUNDLED_POSTGRES_MODE`: deprecated. Bundled-local Postgres is native-only; `compose` is ignored and missing native binaries report setup guidance.
 - `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, `psql`, `pg_dump`, and `pg_restore` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual startup binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`; hosted backup commands may use `PSQL_BIN`, `PG_DUMP_BIN`, and `PG_RESTORE_BIN` for external database operators.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
@@ -944,9 +943,6 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `KOED_HARDWARE_ACCELERATION`: persisted local inference preference used by Koed Desktop. `auto` enables compatible local acceleration and `cpu` disables it. Service-specific `KOED_EMBEDDING_ACCELERATION` or `PRIVACY_RUNTIME_PROVIDER` environment values remain Operator overrides and make the Desktop control read-only.
 - `KOED_EMBEDDING_DEVICE`: optional exact llama-server device identifier, such as `CUDA0`. The device must match the requested backend.
 - `KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS`: seconds of accelerator inactivity before llama-server unloads the embedding model from memory. Defaults to `300`; `0` keeps it resident. CPU execution does not use this policy.
-- `KOED_RERANKER_ACCELERATION`: independent reranker acceleration policy. Defaults to `cpu` to avoid unexpected VRAM contention with embedding work.
-- `KOED_RERANKER_DEVICE`: optional exact llama-server device identifier for the reranker.
-- `KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS`: independent accelerated reranker idle-unload delay. Defaults to `300`; `0` keeps it resident.
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
@@ -994,7 +990,6 @@ install --kind privacy --json`: verify or install the pinned local Privacy
   every supported AI Client. One complete source record may exceed the target
   up to the source-record ceiling. Default `1048576`; valid range
   `1024`–`4194304`.
-- `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
 - `MEMORY_RAG_RAW_FALLBACK_ENABLED`: set `false` to disable raw fallback retrieval.
@@ -1010,8 +1005,7 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_LCM_COMPACTION_MAX_EVENTS`: maximum eligible Memory Events admitted to one owner-scoped LCM compaction reconciliation batch. Default `1000`; maximum `10000`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
-- `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`. Docker Compose maps this root setting to each app's process-local `RERANKER_KEY`; direct app-local runs may set `RERANKER_KEY` explicitly, with the app-local value taking precedence.
-- `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
+- `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
 
 The CUDA Docker starter is an explicit override and requires a working NVIDIA
 Container Toolkit:
@@ -1041,7 +1035,7 @@ provenance manifest; ordinary CI and local setup do not compile CUDA.
 - `EMBEDDING_SERVICE_HEALTH_TIMEOUT_MS`: timeout for API/worker embedding service health probes used by status and access-check routes. Default `1000`.
 - `EMBEDDING_QUERY_INSTRUCTION_ENABLED`: whether semantic recall query embeddings use the Qwen-style `Instruct: ...\nQuery: ...` wrapper. Default `true` for Qwen3 embedding models. Set `false` to compare retrieval or benchmark behavior without query instructions. Stored Memory Event, Memory Node, message, and other source embeddings are not prefixed.
 - `EMBEDDING_QUERY_INSTRUCTION`: optional instruction text for semantic recall query embeddings. Leave blank to use the Koed default instruction for retrieving relevant Memory Events, conversation items, and summaries.
-- `EMBEDDING_LOG_LEVEL`: embedding service structured JSON log level. Default `info`; use `debug` for scheduler, chunking, batching, and reranker scoring details.
+- `EMBEDDING_LOG_LEVEL`: embedding service structured JSON log level. Default `info`; use `debug` for scheduler, chunking, and batching details.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
 - `EMBEDDING_REQUEST_TIMEOUT_MS`: maximum time the Worker allows an internal
   embedding request to run. Long LCM sources are submitted individually and
@@ -1054,20 +1048,12 @@ provenance manifest; ordinary CI and local setup do not compile CUDA.
   must use different bounded keys so their profiles coexist. Default `default`
   for a single local pool.
 - `EMBEDDING_MAX_TOKENS`: Koed adapter chunking limit and the hard cap for a single projected source item before forced split metadata is used. Default `4096`; values above `32768` are clamped by the embedding service and values above the configured llama context or batch envelope are reduced to that limit.
-- `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. The Worker divides a larger logical source into bounded transport segments without splitting Unicode characters, then restores one continuous source-level embedding chunk sequence from the responses. It is not a semantic chunking limit.
-- `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters the Worker sends, and the Embedding Service accepts, in one embedding or reranking request before model processing. It is not a semantic chunking limit.
+- `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding text before model processing. The Worker divides a larger logical source into bounded transport segments without splitting Unicode characters, then restores one continuous source-level embedding chunk sequence from the responses. It is not a semantic chunking limit.
+- `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters the Worker sends, and the Embedding Service accepts, in one embedding request before model processing. It is not a semantic chunking limit.
 - `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `8192`; values above `32768` are clamped by the embedding service. The default leaves headroom above the 4096-token embedding input limit without reserving an unused 32K accelerator context.
 - `EMBEDDING_LLAMA_N_BATCH`: llama-server logical execution batch capacity. This is a runtime throughput and capacity knob, not Koed's semantic chunk size; keep it large enough for `EMBEDDING_MAX_TOKENS` plus batching/headroom.
 - `EMBEDDING_LLAMA_N_UBATCH`: llama-server physical microbatch capacity. Current llama.cpp embedding servers reduce the effective logical batch to this value when it is lower than `EMBEDDING_LLAMA_N_BATCH`, so Koed uses the smaller capacity for chunking and batching. Default `512`.
 - `EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM`: token safety margin subtracted from `EMBEDDING_LLAMA_N_BATCH` when chunking and batching embedding texts. Default `8`; this avoids tokenizer boundary cases where a nominal 8192-token text becomes 8193 tokens at model execution time.
-- `EMBEDDING_RERANKER_BATCH_LIMIT`: reranker batch limit.
-- `EMBEDDING_RERANKER_CONTEXT_PER_SLOT`: reranker context budget per llama-server parallel slot. This is separate from embedding context because Qwen reranking scores query-document classifier prompts, not embedding chunks.
-- `EMBEDDING_RERANKER_LLAMA_N_CTX`: optional total reranker llama-server context override. Leave blank to derive it from `EMBEDDING_RERANKER_CONTEXT_PER_SLOT * EMBEDDING_RERANKER_PARALLEL`.
-- `EMBEDDING_RERANKER_LLAMA_N_THREADS`: optional reranker thread override. Leave blank to use the embedding service thread default.
-- `EMBEDDING_RERANKER_LLAMA_N_BATCH`: reranker logical batch size. It must cover the largest formatted query-document prompt you intend to score.
-- `EMBEDDING_RERANKER_LLAMA_N_UBATCH`: reranker physical microbatch size. Tune this for CPU performance and memory, but keep it large enough for the largest formatted query-document prompt; llama-server rejects oversized rerank pairs.
-- `EMBEDDING_RERANKER_PARALLEL`: reranker llama-server parallel slot count.
-- `EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED`: enables llama-server prompt caching for reranking. Default `true`; benchmark both modes explicitly because same-query rerank requests can reuse the shared instruction/query prefix.
 
 ## Transcript Watcher Values
 
