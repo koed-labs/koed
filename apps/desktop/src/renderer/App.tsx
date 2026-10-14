@@ -1138,6 +1138,7 @@ export function App({
           });
         }}
         statusStore={activeStatusStore}
+        teamCollaborationEnabled={teamCollaborationEnabled}
       />
     );
   }
@@ -1160,6 +1161,7 @@ export function App({
         onComplete={() => undefined}
         showTrustGuide={false}
         statusStore={activeStatusStore}
+        teamCollaborationEnabled={teamCollaborationEnabled}
       />
     );
   }

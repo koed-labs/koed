@@ -1205,6 +1205,17 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
+Team-enabled Desktop onboarding exposes the same consent-gated Privacy Filter
+installer used in Preferences before local services are ready. If Privacy Filter
+assets are missing, install them there before selecting **Set up Koed** or
+**Retry setup**. Installation requires its own explicit consent; opening onboarding
+never downloads these assets. Offline installation uses the signed archive,
+manifest, and signature files through the same verified installer bridge. Missing
+bridges and installation failures remain visible in onboarding, with retry
+controls; installation does not complete onboarding or bypass service and final
+verification. Start or retry setup explicitly after installation. Personal-only
+onboarding does not show or invoke the Privacy Filter installer.
+
 Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 
 `desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. New GitHub Releases upload these unsigned Desktop assets and checksums after packaged-native smoke passes. Signed/notarized release artifacts still require future Developer ID credential setup.
