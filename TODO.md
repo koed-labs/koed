@@ -103,3 +103,13 @@ children share lineage and must not count as independent corroboration.
   to distinguish an incomplete or corrupted transfer from an artifact identity
   change. Keep checksum enforcement; do not accept a mismatched artifact or
   change the pinned model merely to make installation succeed.
+
+## Project cutover integration checks (ticket 16)
+
+- Coordinate the signed source-profile transition for already-published PDS
+  checkpoint chains. Preserve old signed packages and existing logical Session
+  identities; prove continued capture and an offline receiver can establish the
+  new source-profile baseline without a legacy reader or automatic reassignment.
+- When integrating the Global branch, use a PDS replica's verified captured branch
+  observation for branch preference, alongside the local effective-assignment
+  check. Do not infer branch agreement merely from an imported automatic identity.

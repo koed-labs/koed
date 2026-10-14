@@ -84,7 +84,9 @@ Personal artifacts:
   project, embed, inspect, and recall Personal Memory locally.
 - V1 replicates closed Captured Sessions. Each Session has one origin
   deployment/device, and that origin is the sole writer for its content stream.
-- Other devices store read-only replicas of that source Session. Authenticated
+- Other devices store read-only source replicas. Owner repository assignments
+  remain editable under ADR 0057; verified source edits propagate only while the
+  local replica still follows its prior source assignment. Authenticated
   group-level lifecycle tombstones remain possible if the origin is lost.
 - Authenticated devices in the same Personal Device Group may reuse
   origin-signed compatible derived artifacts rather than repeat avoidable

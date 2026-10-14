@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. Ticket 10 is complete; the current M2 frontier is ticket 17 on a dependent branch. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 is complete and assessed. Continue M3 with tickets 11–13 on the Project integration branch; the Global preview remains separate. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -286,15 +286,24 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Derive the selected anchor's group-keyed token and carry assignment provenance through authenticated encrypted session and checkpoint transport.
-- [ ] Match in the verified group and key epoch while preserving separate local checkout identities.
-- [ ] Preserve effective assignments and historical-unresolved state across import, later checkpoints, replay, and continued source capture.
-- [ ] Keep device-local identities bound to the originating device and prevent same-path matches on another device.
-- [ ] Version affected wire semantics and update producers, consumers, and fixtures together without rewriting signed historical packages or adding legacy readers.
-- [ ] Demonstrate two-device capture, sync, Project recall, and owner inspection, including a session that remains unresolved after a later checkpoint.
-- [ ] Test authorization, key-epoch handling, duplicate delivery, and relay-visible privacy. Update the Personal Device Sync protocol and operational documentation.
+- [x] Derive the selected anchor's group-keyed token and carry assignment provenance through authenticated encrypted session and checkpoint transport.
+- [x] Match in the verified group and key epoch while preserving separate local checkout identities.
+- [x] Preserve effective assignments and historical-unresolved state across import, later checkpoints, replay, and continued source capture.
+- [x] Keep device-local identities bound to the originating device and prevent same-path matches on another device.
+- [x] Version affected wire semantics and update producers, consumers, and fixtures together without rewriting signed historical packages or adding legacy readers.
+- [x] Demonstrate two-device capture, sync, Project recall, and owner inspection, including a session that remains unresolved after a later checkpoint.
+- [x] Test authorization, key-epoch handling, duplicate delivery, and relay-visible privacy. Update the Personal Device Sync protocol and operational documentation.
+
+**Assessment:** Verified with signed encrypted package fixtures, API/Worker
+contract tests, and PostgreSQL publication/receiver tests representing separate
+source and receiving devices. Portable recall matches despite different checkout
+paths; historical and device-local cases remain excluded, and local overrides
+survive later source checkpoints. Epoch refresh retains private verification keys
+and origin certificates. This is an automated assessment, not a physical
+two-machine rehearsal. Ticket 16 still owns the coordinated transition for
+already-published checkpoint chains and offline baselines before release.
 
 ## 12: Associate Projects and sync anchor selection updates
 

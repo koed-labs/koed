@@ -466,7 +466,7 @@ describe("PDS secure runtime", () => {
       built.sourceManifestHash
     );
     expect(built.manifest).toMatchObject({
-      version: "2",
+      version: "3",
       profile: "cumulative_checkpoint",
       packageId: built.package.header.packageId,
       sourceClosureHash: built.sourceClosureHash

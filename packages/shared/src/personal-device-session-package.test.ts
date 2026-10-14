@@ -58,7 +58,7 @@ const sessionPackageVector = (
 const productionFixture = JSON.parse(
   readFileSync(
     new URL(
-      "../test-fixtures/personal-device-session-package-v1.json",
+      "../test-fixtures/personal-device-session-package-v2.json",
       import.meta.url
     ),
     "utf8"
@@ -547,6 +547,32 @@ describe("PDS origin-signed session package", () => {
         .update(canonicalizePdsJson([record]))
         .digest("base64url")
     ).toBe(sessionPackageVector.sourceClosureHash);
+  });
+
+  it("rejects the unchanged pre-assignment signed source fixture", () => {
+    const previous = JSON.parse(
+      readFileSync(
+        new URL(
+          "../test-fixtures/personal-device-session-package-v1.json",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    ) as typeof productionFixture;
+    expect(() =>
+      parsePdsSessionManifestJson(previous.originManifest)
+    ).toThrow();
+    const runtime = createPdsSessionPackageRuntimeContext({
+      ...previous.runtime,
+      now: new Date(previous.runtime.now)
+    });
+    expect(() =>
+      verifyAndDecryptPdsSessionPackage(previous.package, {
+        runtime,
+        recipientKemPrivateKey: previous.recipientKemPrivateKey,
+        now: new Date(previous.runtime.now)
+      })
+    ).toThrow();
   });
 
   it("verifies committed production wire fixture and rejects cryptographic drift", () => {

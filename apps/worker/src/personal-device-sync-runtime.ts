@@ -1,3 +1,8 @@
+import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+import {
+  verifyPdsRepositoryAssignmentWithKeyHistory,
+  type RepositoryAssignment
+} from "@koed/shared";
 import { createHash, type KeyObject } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -72,6 +77,7 @@ type RuntimeSecret = {
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
+  historicalProjectKeys?: Record<string, string>;
   groupSecrets: {
     currentEpoch: string;
     contentKey: string;
@@ -194,6 +200,9 @@ export const resolvePdsProviderRuntimeSecret = (
       !value.device ||
       !value.authority ||
       !value.groupSecrets ||
+      (value.historicalProjectKeys !== undefined &&
+        !pdsRepositoryKeyHistorySchema.safeParse(value.historicalProjectKeys)
+          .success) ||
       !Array.isArray(value.recipientCertificates) ||
       !(value.recipientCertificates as unknown[]).every(
         (entry) => typeof entry === "string"
@@ -1624,20 +1633,48 @@ const createPdsWorkerRuntimeFromSecret = (
         if (plaintextRecord.protocol !== PDS_PROTOCOL) {
           throw new TypeError("PdsCryptoPackageError");
         }
-        const manifest = verifyAndDecryptPdsSessionSourcePackage(
-          canonicalizePdsJson(pkg),
-          {
-            runtime: servingRuntime,
-            recipientKemPrivateKey: secret.device.kemPrivateSeed,
-            deletionFloors
+        const manifest = (() => {
+          try {
+            return verifyAndDecryptPdsSessionSourcePackage(
+              canonicalizePdsJson(pkg),
+              {
+                runtime: servingRuntime,
+                recipientKemPrivateKey: secret.device.kemPrivateSeed,
+                deletionFloors
+              }
+            );
+          } catch (error) {
+            throw new TypeError("PdsCryptoPackageError", { cause: error });
           }
-        );
+        })();
         if (
           manifest.packageId !== work.packageId ||
           pkg.header.sourceManifestHash !== work.sourceManifestHash
         ) {
           throw new Error("PdsCryptoIdentityError");
         }
+        const repositoryAssignment = (() => {
+          try {
+            return verifyPdsRepositoryAssignmentWithKeyHistory(
+              manifest.repositoryAssignment,
+              manifest.contentEpoch,
+              {
+                currentEpoch: secret.groupSecrets.currentEpoch,
+                projectKey: secret.groupSecrets.projectAliasKey,
+                historicalProjectKeys: secret.historicalProjectKeys
+              }
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.includes("key epoch is unavailable")
+            )
+              throw error;
+            throw new TypeError("PdsCryptoRepositoryAssignmentError", {
+              cause: error
+            });
+          }
+        })();
         const encryptedEnvelope =
           await input.envelopeEncryptionProvider.encrypt({
             plaintext: canonicalizePdsJson(pkg),
@@ -1683,7 +1720,8 @@ const createPdsWorkerRuntimeFromSecret = (
         if (isPdsSessionCheckpointManifest(manifest)) {
           const checkpointInput = pdsCheckpointMaterializationSource(
             secret.groupId,
-            manifest
+            manifest,
+            repositoryAssignment
           );
           const result = await input.repository.materializePdsSessionCheckpoint(
             {
@@ -1728,7 +1766,8 @@ const createPdsWorkerRuntimeFromSecret = (
           input.repository,
           secret.userId,
           secret.groupId,
-          manifest
+          manifest,
+          repositoryAssignment
         );
         downloaded.set(work.inboxId, {
           pkg,
@@ -1849,12 +1888,15 @@ export const materializePdsSession = async (
   repository: MemorySourceRepository,
   userId: string,
   groupId: string,
-  manifest: PdsSessionManifest
+  manifest: PdsSessionManifest,
+  repositoryAssignment: RepositoryAssignment
 ): Promise<{ id: string; itemIds: string[] }> => {
   const identity = manifest.sourceFingerprint ?? manifest.sourceClosureHash;
   const session = await repository.createCapturedSession(
     { userId },
     {
+      replicatedRepositoryAssignment: repositoryAssignment,
+      cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
       // Signed logical and provider identities converge across Personal devices.
       idempotencyKey: `pds-session:${groupId}:${identity}`,
       logicalSessionId: manifest.closedSession.logicalSessionId,
@@ -1866,6 +1908,7 @@ export const materializePdsSession = async (
       captureMethod: "transcript",
       metadata: {
         pds: {
+          repositoryAssignment: manifest.repositoryAssignment,
           groupId,
           originDeploymentId: manifest.originDeploymentId,
           sourceSequence: manifest.sourceSequence
@@ -1962,7 +2005,8 @@ export const materializePdsSession = async (
 /** Converts only authenticated checkpoint records; the DB receiver owns atomic append. */
 export const pdsCheckpointMaterializationSource = (
   groupId: string,
-  manifest: PdsSessionCheckpointManifest
+  manifest: PdsSessionCheckpointManifest,
+  repositoryAssignment: RepositoryAssignment
 ): {
   sourceSession: PdsCheckpointSessionInput;
   sourceItems: PdsCheckpointConversationItem[];
@@ -1971,6 +2015,9 @@ export const pdsCheckpointMaterializationSource = (
   const source = manifest.sourceSession;
   return {
     sourceSession: {
+      replicatedRepositoryAssignment: repositoryAssignment,
+      cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
+      pdsRepositoryAssignment: manifest.repositoryAssignment,
       logicalSessionId: source.logicalSessionId,
       externalSessionId: source.externalSessionId,
       ...(source.forkedFromExternalThreadId

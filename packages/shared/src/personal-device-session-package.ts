@@ -1,4 +1,8 @@
 import {
+  pdsRepositoryAssignmentSchema,
+  type PdsRepositoryAssignment
+} from "./personal-repository-assignment.js";
+import {
   createCipheriv,
   createDecipheriv,
   createHash,
@@ -32,7 +36,8 @@ import {
 } from "./personal-device-sync-jcs.js";
 
 export const PDS_SESSION_PACKAGE_VERSION = "1" as const;
-export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "2" as const;
+export const PDS_SESSION_MANIFEST_VERSION = "2" as const;
+export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "3" as const;
 export const PDS_SESSION_CHECKPOINT_PROFILE = "cumulative_checkpoint" as const;
 export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES = 512 * 1024;
@@ -100,6 +105,8 @@ export interface PdsProjectAliasManifest {
 }
 
 export interface PdsSessionManifest {
+  version: typeof PDS_SESSION_MANIFEST_VERSION;
+  repositoryAssignment: PdsRepositoryAssignment;
   protocol: typeof PDS_PROTOCOL;
   packageId: string;
   originDeploymentId: string;
@@ -127,6 +134,7 @@ export interface PdsSessionManifest {
 
 /** Explicit V2 profile for signed, cumulative prefixes of a live source Session. */
 export interface PdsSessionCheckpointManifest {
+  repositoryAssignment: PdsRepositoryAssignment;
   protocol: typeof PDS_PROTOCOL;
   version: typeof PDS_SESSION_CHECKPOINT_MANIFEST_VERSION;
   profile: typeof PDS_SESSION_CHECKPOINT_PROFILE;
@@ -277,6 +285,7 @@ export interface CreatePdsSessionManifestInput {
   tombstoneFloorKey: string | Buffer;
   originSigningPrivateKey: KeyObject;
   projectAliasManifest?: PdsProjectAliasManifest;
+  repositoryAssignment?: PdsRepositoryAssignment;
 }
 
 export interface CreatePdsSessionCheckpointManifestInput {
@@ -296,6 +305,7 @@ export interface CreatePdsSessionCheckpointManifestInput {
   tombstoneFloorKey: string | Buffer;
   originSigningPrivateKey: KeyObject;
   projectAliasManifest?: PdsProjectAliasManifest;
+  repositoryAssignment?: PdsRepositoryAssignment;
 }
 
 export interface CreatePdsSessionPackageInput {
@@ -1108,6 +1118,7 @@ const unsignedSourceManifest = (
     input.sourceNativeSessionId
   );
   const manifest = {
+    version: PDS_SESSION_MANIFEST_VERSION,
     protocol: PDS_PROTOCOL,
     packageId: "",
     originDeploymentId: input.originDeploymentId,
@@ -1125,6 +1136,18 @@ const unsignedSourceManifest = (
     ),
     sourceClosureHash: sourceClosureHash(closure.records),
     contentEpoch: input.contentEpoch,
+    repositoryAssignment: pdsRepositoryAssignmentSchema.parse(
+      input.repositoryAssignment ?? {
+        version: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      }
+    ),
     ...(input.projectAliasManifest
       ? { projectAliasManifest: input.projectAliasManifest }
       : {}),
@@ -1265,6 +1288,18 @@ export const createPdsSessionCheckpointManifest = (
     ),
     sourceClosureHash: sourceClosureHash(closure.records),
     contentEpoch: input.contentEpoch,
+    repositoryAssignment: pdsRepositoryAssignmentSchema.parse(
+      input.repositoryAssignment ?? {
+        version: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      }
+    ),
     ...(input.projectAliasManifest
       ? { projectAliasManifest: input.projectAliasManifest }
       : {}),
@@ -1355,6 +1390,8 @@ const validateRawRecord = (
 };
 
 const sourceManifestFields = [
+  "version",
+  "repositoryAssignment",
   "protocol",
   "packageId",
   "originDeploymentId",
@@ -1385,10 +1422,19 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
   );
   if (
     manifest.protocol !== PDS_PROTOCOL ||
+    manifest.version !== PDS_SESSION_MANIFEST_VERSION ||
     manifest.sourceType !== "captured_session"
   ) {
     throw new TypeError("PDS source manifest protocol is invalid");
   }
+  const repositoryAssignment = pdsRepositoryAssignmentSchema.parse(
+    manifest.repositoryAssignment
+  );
+  if (
+    repositoryAssignment.selectedAnchor &&
+    repositoryAssignment.selectedAnchor.epoch !== manifest.contentEpoch
+  )
+    throw new TypeError("PDS repository epoch does not bind source manifest");
   for (const field of ["originDeploymentId", "originDeviceId"])
     requireRelayId(manifest[field], field);
   requireHash(manifest.originAuthorityHead, "origin authority head");
@@ -1477,10 +1523,10 @@ export const validatePdsSessionManifest = (
   const manifest = own(value, "source manifest");
   if (
     Object.hasOwn(manifest, "profile") ||
-    Object.hasOwn(manifest, "version")
+    manifest.version !== PDS_SESSION_MANIFEST_VERSION
   ) {
     throw new TypeError(
-      "PDS V1 session manifest does not support this profile"
+      "PDS closed session manifest does not support this profile"
     );
   }
   validateManifestIdentity(manifest);
@@ -1490,6 +1536,7 @@ export const validatePdsSessionManifest = (
 };
 
 const checkpointManifestFields = [
+  "repositoryAssignment",
   "protocol",
   "version",
   "profile",
@@ -1543,6 +1590,14 @@ export const validatePdsSessionCheckpointManifest = (
   ) {
     throw new TypeError("PDS checkpoint source profile is invalid");
   }
+  const repositoryAssignment = pdsRepositoryAssignmentSchema.parse(
+    manifest.repositoryAssignment
+  );
+  if (
+    repositoryAssignment.selectedAnchor &&
+    repositoryAssignment.selectedAnchor.epoch !== manifest.contentEpoch
+  )
+    throw new TypeError("PDS repository epoch does not bind source manifest");
   for (const field of ["originDeploymentId", "originDeviceId"])
     requireRelayId(manifest[field], field);
   requireHash(manifest.originAuthorityHead, "origin authority head");
@@ -1668,7 +1723,10 @@ export const validatePdsSessionSourceManifest = (
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as JsonRecord;
-    if (Object.hasOwn(record, "profile") || Object.hasOwn(record, "version")) {
+    if (
+      Object.hasOwn(record, "profile") ||
+      record.version !== PDS_SESSION_MANIFEST_VERSION
+    ) {
       throw new TypeError("PDS source manifest profile is unsupported");
     }
   }

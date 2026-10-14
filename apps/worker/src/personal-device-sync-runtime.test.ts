@@ -759,6 +759,17 @@ describe("PDS session materialization", () => {
       sourceTimestamp: "2026-07-15T00:00:00.000Z"
     });
     const manifest = {
+      version: "2",
+      repositoryAssignment: {
+        version: "1",
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      },
       originDeploymentId: "deployment-origin",
       originDeviceId: "device-origin",
       sourceSequence: "3",
@@ -790,7 +801,14 @@ describe("PDS session materialization", () => {
       repository,
       "user",
       "personal-device-group",
-      manifest
+      manifest,
+      {
+        state: "historical_unresolved",
+        version: 1,
+        automatic: null,
+        override: null,
+        effective: null
+      }
     );
 
     expect(createCapturedSession).toHaveBeenCalledWith(
@@ -827,7 +845,24 @@ describe("PDS session materialization", () => {
 
 describe("PDS checkpoint source materialization", () => {
   it("preserves Pi and signed title with stable source item identity across later checkpoints", () => {
+    const assignment = {
+      state: "historical_unresolved" as const,
+      version: 1,
+      automatic: null,
+      override: null,
+      effective: null
+    };
     const manifest = {
+      repositoryAssignment: {
+        version: "1",
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      },
       sourceFingerprint: "fingerprint",
       originDeviceId: "studio",
       originDeploymentId: "origin",
@@ -861,12 +896,17 @@ describe("PDS checkpoint source materialization", () => {
     };
     const first = pdsCheckpointMaterializationSource(
       "group",
-      manifest as never
+      manifest as never,
+      assignment
     );
-    const later = pdsCheckpointMaterializationSource("group", {
-      ...manifest,
-      sourceSequence: "9"
-    } as never);
+    const later = pdsCheckpointMaterializationSource(
+      "group",
+      {
+        ...manifest,
+        sourceSequence: "9"
+      } as never,
+      assignment
+    );
     expect(first.sourceSession).toMatchObject({
       sourceRuntime: "pi",
       sourceKind: "pi",

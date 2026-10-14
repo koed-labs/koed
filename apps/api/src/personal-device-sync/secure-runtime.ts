@@ -1,3 +1,5 @@
+import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+import { createPdsRepositoryAssignment } from "@koed/shared";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
@@ -43,6 +45,7 @@ type PdsRuntimeSecret = {
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
+  historicalProjectKeys?: Record<string, string>;
   groupSecrets: {
     currentEpoch: string;
     contentKey: string;
@@ -110,6 +113,9 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
         "tombstoneFloorKey",
         "projectAliasKey"
       ].every((key) => strictString(groupSecrets[key])) ||
+      (parsed.historicalProjectKeys !== undefined &&
+        !pdsRepositoryKeyHistorySchema.safeParse(parsed.historicalProjectKeys)
+          .success) ||
       !Array.isArray(parsed.recipientCertificates) ||
       !parsed.recipientCertificates.every(strictString) ||
       (parsed.historicalOriginCertificates !== undefined &&
@@ -328,6 +334,21 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
     originDeviceId: secret.device.id,
     buildClosedSessionPackage(input) {
       const manifest = createPdsSessionManifest({
+        repositoryAssignment: createPdsRepositoryAssignment(
+          input.source.repositoryAssignment ?? {
+            state: "historical_unresolved",
+            version: 1,
+            automatic: null,
+            override: null,
+            effective: null
+          },
+          secret.groupSecrets.currentEpoch,
+          secret.groupSecrets.projectAliasKey,
+          {
+            capturedCwd: input.source.capturedCwd,
+            branchObservation: input.source.branchObservation
+          }
+        ),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,
@@ -393,6 +414,21 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         sourceCreatedAt: input.source.sourceCreatedAt
       };
       const manifest = createPdsSessionCheckpointManifest({
+        repositoryAssignment: createPdsRepositoryAssignment(
+          input.source.repositoryAssignment ?? {
+            state: "historical_unresolved",
+            version: 1,
+            automatic: null,
+            override: null,
+            effective: null
+          },
+          secret.groupSecrets.currentEpoch,
+          secret.groupSecrets.projectAliasKey,
+          {
+            capturedCwd: input.source.capturedCwd,
+            branchObservation: input.source.branchObservation
+          }
+        ),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,

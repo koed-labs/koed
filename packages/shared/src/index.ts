@@ -996,6 +996,7 @@ export type {
 } from "./personal-device-sync-relay-client.js";
 export {
   PDS_SESSION_PACKAGE_VERSION,
+  PDS_SESSION_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_PROFILE,
   PDS_SESSION_PACKAGE_MAX_BYTES,
@@ -1833,3 +1834,13 @@ export {
 } from "./repository-recall.js";
 
 export * from "./repository-review.js";
+
+export {
+  createPdsRepositoryAssignment,
+  verifyPdsRepositoryAssignment,
+  verifyPdsRepositoryAssignmentWithKeyHistory,
+  pdsRepositoryAssignmentSchema,
+  pdsRepositoryKeyHistorySchema,
+  pdsSelectedRepositoryToken
+} from "./personal-repository-assignment.js";
+export type { PdsRepositoryAssignment } from "./personal-repository-assignment.js";

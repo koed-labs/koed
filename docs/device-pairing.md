@@ -165,3 +165,26 @@ enabled. Pairing does not import historical sessions. The checkpoint manifest is
 versioned separately from the existing permanent closed-session manifest, whose
 immutability remains enforced. See [ADR-0045](adr/0045-incremental-personal-session-checkpoints.md)
 for ordering, compatibility, and the initial cumulative-package size trade-off.
+
+## Repository context across paired devices
+
+The Project integration branch carries the Captured Session's recorded assignment
+inside the signed, encrypted sync package. The receiving device verifies the one
+selected anchor using the Personal Device Group's Project key for that source
+epoch. A clone can recall the same portable repository memory even when its path,
+checkout identifier, and profile differ. Extra remotes and matching directory paths
+do not establish equality. Device-local and non-Git identities remain bound to the
+originating profile.
+
+A source-side move reaches an unchanged replica at the next eligible completed-turn
+checkpoint. A local User assignment takes precedence over later source snapshots.
+Unresolved history stays unresolved until an explicit User assignment; pairing and
+continued capture do not repair it. Captured paths and branch observations remain
+available for owner inspection separately from the effective assignment.
+
+Pairing does not associate Project configuration. Independently equal selected
+anchors can match for recall without sharing anchor-selection settings. Explicit
+Project association and selection controls are covered by tickets 12 and 13.
+The new source profiles require the coordinated ticket 16 cutover on every paired
+device. Prior signed packages remain unchanged; there is no legacy source reader
+or automatic historical backfill.
