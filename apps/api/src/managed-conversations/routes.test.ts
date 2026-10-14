@@ -3657,6 +3657,8 @@ describe("managed Conversation routes", () => {
     const requestId = randomUUID();
     const acceptedCommandId = randomUUID();
     const projectId = "lp_agent_project";
+    const prReviewId = randomUUID();
+    let prReviewRevision = 7;
     let teamRequestState: "awaiting_owner" | "accepted" | "unavailable" | null =
       null;
     const searchMemoryNodes = vi.fn(async () => ({
@@ -3712,7 +3714,17 @@ describe("managed Conversation routes", () => {
           aiClientInstanceId: "codex.default",
           model: "gpt-test",
           reasoningEffort: "low",
-          permissionMode: "supervised"
+          permissionMode: "supervised",
+          executionGeneration: 1,
+          runnerDeviceId: "device",
+          runnerDeploymentId: "deployment"
+        }),
+        getPullRequestReviewForExecution: async () => ({
+          id: prReviewId,
+          revision: prReviewRevision,
+          agentId,
+          agentVersion: 3,
+          workMode: "review"
         }),
         getPersonalAgentIdentity: async () => ({
           contractVersion: 1,
@@ -3921,6 +3933,41 @@ describe("managed Conversation routes", () => {
     });
     expect(unavailableReview.statusCode).toBe(409);
     expect(enqueue).toHaveBeenCalledTimes(5);
+    teamRequestState = null;
+    const reviewPrompt = {
+      executionGeneration: 1,
+      idempotencyKey: "review-latest",
+      clientUserMessageId: randomUUID(),
+      prompt: "Review latest",
+      agentId,
+      expectedAgentVersion: 3,
+      pullRequestReviewId: prReviewId,
+      expectedPullRequestReviewRevision: 7
+    };
+    const latest = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: reviewPrompt
+    });
+    expect(latest.statusCode, latest.body).toBe(202);
+    expect(enqueue.mock.calls.at(-1)?.[1]).toMatchObject({
+      pullRequestReviewId: prReviewId,
+      expectedPullRequestReviewRevision: 7
+    });
+    prReviewRevision = 8;
+    const stale = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: reviewPrompt
+    });
+    expect(stale.statusCode).toBe(409);
+    const forged = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: { ...reviewPrompt, pullRequestReviewRevision: 8 }
+    });
+    expect(forged.statusCode).toBe(400);
+    expect(enqueue).toHaveBeenCalledTimes(6);
     await app.close();
   });
 

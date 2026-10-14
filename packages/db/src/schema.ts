@@ -10208,6 +10208,16 @@ export const pullRequestReviewDrafts = pgTable(
       () => personalAgentExecutionJobs.id,
       { onDelete: "set null" }
     ),
+    sourceExecutionId: uuid("source_execution_id"),
+    sourceCommandId: uuid("source_command_id"),
+    sourceAgentVersion: integer("source_agent_version"),
+    sourceProvider: text("source_provider"),
+    sourceAiClientInstanceId: text("source_ai_client_instance_id"),
+    sourceModel: text("source_model"),
+    sourceProviderCliVersion: text("source_provider_cli_version"),
+    sourceReviewRevision: integer("source_review_revision"),
+    sourceLeaseTokenDigest: text("source_lease_token_digest"),
+    sourceResultDigest: text("source_result_digest"),
     executionGeneration: integer("execution_generation"),
     accountId: text("account_id").notNull(),
     baseSha: text("base_sha").notNull(),
@@ -10232,6 +10242,14 @@ export const pullRequestReviewDrafts = pgTable(
       table.reviewId,
       table.agentJobId
     ),
+    uniqueIndex("pull_request_review_drafts_native_command_unique")
+      .on(table.reviewId, table.sourceCommandId)
+      .where(sql`${table.sourceCommandId} is not null`),
+    index("pull_request_review_drafts_native_execution_idx").on(
+      table.ownerUserId,
+      table.sourceExecutionId,
+      table.sourceCommandId
+    ),
     check(
       "pull_request_review_drafts_revision_check",
       sql`${table.revision} > 0`
@@ -10243,6 +10261,28 @@ export const pullRequestReviewDrafts = pgTable(
     check(
       "pull_request_review_drafts_sha_check",
       sql`${table.baseSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.headSha} ~ '^[0-9a-fA-F]{40,64}$'`
+    ),
+    check(
+      "pull_request_review_drafts_native_provenance_check",
+      sql`(${table.sourceCommandId} is null
+        and ${table.sourceExecutionId} is null
+        and ${table.sourceAgentVersion} is null
+        and ${table.sourceProvider} is null
+        and ${table.sourceAiClientInstanceId} is null
+        and ${table.sourceModel} is null
+        and ${table.sourceProviderCliVersion} is null
+        and ${table.sourceReviewRevision} is null
+        and ${table.sourceLeaseTokenDigest} is null
+        and ${table.sourceResultDigest} is null)
+        or (${table.sourceCommandId} is not null
+          and ${table.sourceExecutionId} is not null
+          and ${table.sourceAgentVersion} is not null and ${table.sourceAgentVersion} > 0
+          and ${table.sourceProvider} is not null and ${table.sourceProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+          and ${table.sourceAiClientInstanceId} is not null and ${table.sourceAiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+          and ${table.sourceModel} is not null and length(trim(${table.sourceModel})) between 1 and 512
+          and ${table.sourceReviewRevision} is not null and ${table.sourceReviewRevision} > 0
+          and ${table.sourceLeaseTokenDigest} is not null and ${table.sourceLeaseTokenDigest} ~ '^[0-9a-f]{64}$'
+          and ${table.sourceResultDigest} is not null and ${table.sourceResultDigest} ~ '^[0-9a-f]{64}$')`
     )
   ]
 );
@@ -10303,6 +10343,9 @@ export const pullRequestOperations = pgTable(
     requestId: text("request_id").notNull(),
     requestDigest: text("request_digest").notNull(),
     kind: text("kind").notNull(),
+    inboxAccountId: text("inbox_account_id"),
+    inboxConnectionGeneration: integer("inbox_connection_generation"),
+    isGlobalInbox: boolean("is_global_inbox"),
     state: text("state").notNull().default("pending"),
     encryptedPayload: jsonb("encrypted_payload")
       .$type<EncryptedPayloadEnvelope>()
@@ -10338,6 +10381,30 @@ export const pullRequestOperations = pgTable(
       table.updatedAt.desc(),
       table.id.desc()
     ),
+    index("pull_request_operations_global_inbox_completed_idx")
+      .on(
+        table.ownerUserId,
+        table.targetDeviceId,
+        table.targetDeploymentId,
+        table.inboxAccountId,
+        table.inboxConnectionGeneration,
+        table.updatedAt.desc(),
+        table.id.desc()
+      )
+      .where(
+        sql`${table.kind} = 'inbox' and ${table.isGlobalInbox} = true and ${table.state} = 'completed'`
+      ),
+    uniqueIndex("pull_request_operations_global_inbox_active_unique")
+      .on(
+        table.ownerUserId,
+        table.targetDeviceId,
+        table.targetDeploymentId,
+        table.inboxAccountId,
+        table.inboxConnectionGeneration
+      )
+      .where(
+        sql`${table.kind} = 'inbox' and ${table.isGlobalInbox} = true and ${table.state} in ('pending','claimed')`
+      ),
     check(
       "pull_request_operations_kind_check",
       sql`${table.kind} in ('connection_status','accounts','connect','browser_sign_in','disconnect','repositories','inbox','pull_request_details','prepare_checkout','publish_review','reconcile_review','prepare_push','push','reconcile_push')`
@@ -10349,6 +10416,16 @@ export const pullRequestOperations = pgTable(
     check(
       "pull_request_operations_revision_check",
       sql`${table.revision} > 0 and ${table.attempt} >= 0`
+    ),
+    check(
+      "pull_request_operations_inbox_scope_check",
+      sql`(${table.kind} = 'inbox' and (
+          (${table.inboxAccountId} is null and ${table.inboxConnectionGeneration} is null and ${table.isGlobalInbox} is null)
+          or (${table.inboxAccountId} is not null and ${table.inboxConnectionGeneration} is not null and ${table.inboxConnectionGeneration} > 0 and ${table.isGlobalInbox} is not null)
+        )) or (${table.kind} <> 'inbox'
+          and ${table.inboxAccountId} is null
+          and ${table.inboxConnectionGeneration} is null
+          and ${table.isGlobalInbox} is null)`
     ),
     check(
       "pull_request_operations_lease_check",

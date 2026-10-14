@@ -163,6 +163,15 @@ const makeApp = (
     getFrozenPullRequestReview: vi.fn(async () => frozen),
     getLatestFrozenPullRequestReview: vi.fn(async () => frozen),
     getPullRequestOperation: vi.fn(async () => null),
+    getPullRequestInboxSnapshot: vi.fn(async () => ({
+      operation: null,
+      pendingOperation: null
+    })),
+    markPullRequestReviewCompleted: vi.fn(async () => ({
+      id: randomUUID(),
+      body: "Review",
+      findings: []
+    })),
     listDeviceCredentials: vi.fn(async () => [deviceCredential]),
     enqueuePullRequestOperation: enqueued,
     executeActionGrant
@@ -259,6 +268,105 @@ afterEach(async () => {
 });
 
 describe("pull request route authorization", () => {
+  it("uses only the authenticated runner identity for automatic metadata discovery", async () => {
+    const { app, enqueued } = makeApp("team_self_hosted");
+    const input = {
+      requestId: "inbox-auto-scope-bucket",
+      account: { id: "42", login: "octo" },
+      connectionGeneration: 4
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/pull-requests/runner/inbox-refresh",
+      payload: input
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(enqueued).toHaveBeenCalledWith(
+      { userId: remoteOwner },
+      expect.objectContaining({
+        targetDeviceId: device,
+        targetDeploymentId: deployment,
+        reviewId: null,
+        payload: {
+          kind: "inbox",
+          account: input.account,
+          connectionGeneration: 4,
+          repository: null,
+          cursor: null
+        }
+      })
+    );
+    const forged = await app.inject({
+      method: "POST",
+      url: "/v1/pull-requests/runner/inbox-refresh",
+      payload: {
+        ...input,
+        targetDeviceId: randomUUID(),
+        payload: { kind: "push" }
+      }
+    });
+    expect(forged.statusCode).not.toBe(200);
+    expect(enqueued).toHaveBeenCalledTimes(1);
+  });
+  it("reads the owner and connection scoped durable inbox snapshot", async () => {
+    const { app, repo } = makeApp("team_self_hosted");
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/pull-requests/inbox-snapshot?targetDeviceId=${device}&targetDeploymentId=${deployment}&accountId=42&connectionGeneration=4`
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(repo.getPullRequestInboxSnapshot).toHaveBeenCalledWith(
+      { userId: remoteOwner },
+      {
+        targetDeviceId: device,
+        targetDeploymentId: deployment,
+        accountId: "42",
+        connectionGeneration: 4
+      }
+    );
+  });
+  it("accepts lease-fenced native review completion without an Agent Job and rejects stale completion", async () => {
+    const { app, repo } = makeApp("team_self_hosted");
+    const input = {
+      executionId: review.executionId,
+      executionGeneration: 1,
+      commandId: randomUUID(),
+      leaseToken: randomUUID(),
+      expectedReviewRevision: 7,
+      baseSha: sha("a"),
+      headSha: sha("b"),
+      body: "Review",
+      findings: []
+    };
+    const url = `/v1/pull-requests/runner/reviews/${reviewId}/complete`;
+    const response = await app.inject({ method: "POST", url, payload: input });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(repo.markPullRequestReviewCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId: remoteOwner,
+        runnerDeviceId: device,
+        runnerDeploymentId: deployment,
+        reviewId,
+        expectedReviewRevision: 7,
+        result: { event: "COMMENT", body: "Review", findings: [] }
+      })
+    );
+    repo.markPullRequestReviewCompleted.mockResolvedValueOnce(null as any);
+    const stale = await app.inject({ method: "POST", url, payload: input });
+    expect(stale.statusCode).toBe(409);
+    const invalid = await app.inject({
+      method: "POST",
+      url,
+      payload: {
+        ...input,
+        expectedReviewRevision: undefined,
+        agentJobId: randomUUID()
+      }
+    });
+    expect(invalid.statusCode).not.toBe(200);
+    expect(repo.markPullRequestReviewCompleted).toHaveBeenCalledTimes(2);
+  });
+
   it("returns the owner-scoped latest frozen review for reload recovery", async () => {
     const { app, calls } = makeApp("developer");
     const response = await app.inject({

@@ -9,6 +9,7 @@ import {
   pullRequestRepositorySchema,
   pullRequestReviewDraftSchema,
   pullRequestReviewSchema,
+  personalAgentExecutionContextSchema,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type PullRequestAccount,
@@ -42,6 +43,8 @@ const parsePageCursor = (value: string | null | undefined) => {
 const exactTimestampSql = `to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const digestLeaseToken = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
 const conflict = (message: string, code = "PULL_REQUEST_CONFLICT") =>
   Object.assign(new Error(message), { code, statusCode: 409 });
 const invalid = (message: string) =>
@@ -92,6 +95,9 @@ interface OperationRow {
   request_id: string;
   request_digest: string;
   kind: PullRequestOperationPayload["kind"];
+  inbox_account_id?: string | null;
+  inbox_connection_generation?: number | null;
+  is_global_inbox?: boolean | null;
   state: PullRequestOperationRecord["state"];
   encrypted_payload: Envelope;
   encrypted_result: Envelope | null;
@@ -258,6 +264,18 @@ export interface PullRequestRepository {
     operations: PullRequestOperationRecord[];
     nextCursor: string | null;
   }>;
+  getPullRequestInboxSnapshot(
+    actor: ActorContext,
+    input: {
+      targetDeviceId: string;
+      targetDeploymentId: string;
+      accountId: string;
+      connectionGeneration: number;
+    }
+  ): Promise<{
+    operation: PullRequestOperationRecord | null;
+    pendingOperation: PullRequestOperationRecord | null;
+  }>;
   cancelPullRequestOperation(
     actor: ActorContext,
     input: { operationId: string; expectedRevision: number }
@@ -307,11 +325,11 @@ export interface PullRequestRepository {
     executionGeneration: number;
     commandId: string;
     leaseToken: string;
-    agentJobId: string;
+    expectedReviewRevision: number;
     baseSha: string;
     headSha: string;
     result: {
-      event: Exclude<PullRequestReviewDraft["event"], null>;
+      event: "COMMENT";
       body: string;
       findings: PullRequestReviewDraft["findings"];
     };
@@ -380,6 +398,124 @@ const mapOperation = async (
     updatedAt: row.updated_at.toISOString(),
     completedAt: row.completed_at?.toISOString() ?? null
   });
+
+const isGlobalInboxPayload = (
+  payload: PullRequestOperationPayload
+): payload is Extract<PullRequestOperationPayload, { kind: "inbox" }> =>
+  payload.kind === "inbox" &&
+  payload.repository === null &&
+  payload.cursor === null;
+
+const matchesGlobalInboxScope = async (
+  row: Pick<
+    OperationRow,
+    | "target_device_id"
+    | "target_deployment_id"
+    | "kind"
+    | "inbox_account_id"
+    | "inbox_connection_generation"
+    | "is_global_inbox"
+    | "encrypted_payload"
+  >,
+  provider: EnvelopeEncryptionProvider,
+  scope: {
+    targetDeviceId: string;
+    targetDeploymentId: string;
+    accountId: string;
+    connectionGeneration: number;
+  }
+): Promise<boolean> => {
+  if (
+    row.target_device_id !== scope.targetDeviceId ||
+    row.target_deployment_id !== scope.targetDeploymentId ||
+    row.kind !== "inbox"
+  )
+    return false;
+  if (
+    row.inbox_account_id != null &&
+    (row.inbox_account_id !== scope.accountId ||
+      row.inbox_connection_generation !== scope.connectionGeneration ||
+      row.is_global_inbox !== true)
+  )
+    return false;
+  const payload = pullRequestOperationPayloadSchema.safeParse(
+    await decryptJson(provider, row.encrypted_payload)
+  );
+  return Boolean(
+    payload.success &&
+    isGlobalInboxPayload(payload.data) &&
+    payload.data.account.id === scope.accountId &&
+    payload.data.connectionGeneration === scope.connectionGeneration
+  );
+};
+
+const findGlobalInboxOperation = async (
+  client: QueryClient,
+  ownerUserId: string,
+  provider: EnvelopeEncryptionProvider,
+  scope: {
+    targetDeviceId: string;
+    targetDeploymentId: string;
+    accountId: string;
+    connectionGeneration: number;
+  },
+  states: readonly string[]
+): Promise<OperationRow | null> => {
+  type Candidate = Pick<
+    OperationRow,
+    | "id"
+    | "target_device_id"
+    | "target_deployment_id"
+    | "kind"
+    | "inbox_account_id"
+    | "inbox_connection_generation"
+    | "is_global_inbox"
+    | "encrypted_payload"
+    | "updated_at"
+  >;
+  const exact = await client.query<Candidate>(
+    `select id,target_device_id,target_deployment_id,kind,inbox_account_id,
+            inbox_connection_generation,is_global_inbox,encrypted_payload,updated_at
+       from pull_request_operations
+      where owner_user_id=$1 and target_device_id=$2 and target_deployment_id=$3
+        and kind='inbox' and state=any($6::text[])
+        and inbox_account_id=$4 and inbox_connection_generation=$5
+        and is_global_inbox=true
+      order by updated_at desc,id desc limit 1`,
+    [
+      ownerUserId,
+      scope.targetDeviceId,
+      scope.targetDeploymentId,
+      scope.accountId,
+      scope.connectionGeneration,
+      states
+    ]
+  );
+  const legacy = await client.query<Candidate>(
+    `select id,target_device_id,target_deployment_id,kind,inbox_account_id,
+            inbox_connection_generation,is_global_inbox,encrypted_payload,updated_at
+       from pull_request_operations
+      where owner_user_id=$1 and target_device_id=$2 and target_deployment_id=$3
+        and kind='inbox' and state=any($4::text[])
+        and inbox_account_id is null and inbox_connection_generation is null
+        and is_global_inbox is null
+      order by updated_at desc,id desc limit 500`,
+    [ownerUserId, scope.targetDeviceId, scope.targetDeploymentId, states]
+  );
+  const candidates = [...exact.rows, ...legacy.rows].sort((a, b) => {
+    const updatedDifference = b.updated_at.getTime() - a.updated_at.getTime();
+    return updatedDifference || b.id.localeCompare(a.id);
+  });
+  for (const candidate of candidates) {
+    if (!(await matchesGlobalInboxScope(candidate, provider, scope))) continue;
+    const selected = await client.query<OperationRow>(
+      "select * from pull_request_operations where id=$1 and owner_user_id=$2",
+      [candidate.id, ownerUserId]
+    );
+    if (selected.rows[0]) return selected.rows[0];
+  }
+  return null;
+};
 
 export const createPullRequestRepository = (
   pool: pg.Pool,
@@ -1133,6 +1269,40 @@ export const createPullRequestRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const globalInbox = isGlobalInboxPayload(payload);
+        const inboxScope =
+          payload.kind === "inbox"
+            ? {
+                targetDeviceId: input.targetDeviceId,
+                targetDeploymentId: input.targetDeploymentId,
+                accountId: payload.account.id,
+                connectionGeneration: payload.connectionGeneration
+              }
+            : null;
+        if (globalInbox && inboxScope) {
+          const advisoryKey = [
+            actor.userId,
+            inboxScope.targetDeviceId,
+            inboxScope.targetDeploymentId,
+            inboxScope.accountId,
+            inboxScope.connectionGeneration
+          ].join(":");
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1,0))",
+            [advisoryKey]
+          );
+          const active = await findGlobalInboxOperation(
+            client,
+            actor.userId,
+            provider(),
+            inboxScope,
+            ["pending", "claimed"]
+          );
+          if (active) {
+            await client.query("commit");
+            return mapOperation(active, provider());
+          }
+        }
         if (payload.kind === "publish_review") {
           const frozen = await client.query<{ state: string; digest: string }>(
             "select state,digest from pull_request_review_freezes where id=$1 and review_id=$2 and owner_user_id=$3 for update",
@@ -1155,8 +1325,12 @@ export const createPullRequestRepository = (
           "payload",
           payload
         );
+        const inboxMetadata =
+          payload.kind === "inbox"
+            ? [payload.account.id, payload.connectionGeneration, globalInbox]
+            : [null, null, null];
         const inserted = await client.query<OperationRow>(
-          "insert into pull_request_operations(id,owner_user_id,review_id,target_device_id,target_deployment_id,request_id,request_digest,kind,encrypted_payload) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) on conflict(owner_user_id,request_id) do nothing returning *",
+          "insert into pull_request_operations(id,owner_user_id,review_id,target_device_id,target_deployment_id,request_id,request_digest,kind,inbox_account_id,inbox_connection_generation,is_global_inbox,encrypted_payload) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) on conflict do nothing returning *",
           [
             id,
             actor.userId,
@@ -1166,6 +1340,7 @@ export const createPullRequestRepository = (
             input.requestId,
             requestDigest,
             payload.kind,
+            ...inboxMetadata,
             JSON.stringify(encrypted)
           ]
         );
@@ -1176,11 +1351,22 @@ export const createPullRequestRepository = (
             [actor.userId, input.requestId]
           );
           row = old.rows[0];
-          if (!row || row.request_digest !== requestDigest)
+          if (row && row.request_digest !== requestDigest)
             throw conflict(
               "Operation request id was reused",
               "IDEMPOTENCY_CONFLICT"
             );
+          if (!row && globalInbox && inboxScope) {
+            row =
+              (await findGlobalInboxOperation(
+                client,
+                actor.userId,
+                provider(),
+                inboxScope,
+                ["pending", "claimed"]
+              )) ?? undefined;
+          }
+          if (!row) throw conflict("Unable to enqueue the inbox operation");
         }
         await client.query("commit");
         return mapOperation(row, provider());
@@ -1233,6 +1419,32 @@ export const createPullRequestRepository = (
             ? last.cursor_timestamp + "." + last.id
             : null
       };
+    },
+    async getPullRequestInboxSnapshot(actor, input) {
+      if (
+        !UUID.test(input.targetDeviceId) ||
+        !UUID.test(input.targetDeploymentId) ||
+        !input.accountId.trim() ||
+        input.accountId.length > 200 ||
+        !Number.isSafeInteger(input.connectionGeneration) ||
+        input.connectionGeneration < 1
+      )
+        throw invalid("Inbox snapshot scope is invalid");
+      const scope = input;
+      const [completed, pending] = await Promise.all([
+        findGlobalInboxOperation(pool, actor.userId, provider(), scope, [
+          "completed"
+        ]),
+        findGlobalInboxOperation(pool, actor.userId, provider(), scope, [
+          "pending",
+          "claimed"
+        ])
+      ]);
+      const [operation, pendingOperation] = await Promise.all([
+        completed ? mapOperation(completed, provider()) : null,
+        pending ? mapOperation(pending, provider()) : null
+      ]);
+      return { operation, pendingOperation };
     },
     async cancelPullRequestOperation(actor, input) {
       const result = await pool.query<OperationRow>(
@@ -1689,9 +1901,147 @@ export const createPullRequestRepository = (
       }
     },
     async markPullRequestReviewCompleted(input) {
+      if (
+        !Number.isSafeInteger(input.expectedReviewRevision) ||
+        input.expectedReviewRevision < 1
+      )
+        return null;
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const normalizedResult = {
+          event: input.result.event,
+          body: input.result.body,
+          findings: input.result.findings.map((finding) => ({
+            path: finding.path,
+            line: finding.line,
+            side: finding.side,
+            body: finding.body
+          }))
+        };
+        pullRequestReviewDraftSchema.parse({
+          reviewId: input.reviewId,
+          revision: 1,
+          origin: "agent",
+          executionGeneration: input.executionGeneration,
+          accountId: "validated-after-command-lookup",
+          baseSha: input.baseSha,
+          headSha: input.headSha,
+          ...normalizedResult,
+          updatedAt: new Date().toISOString()
+        });
+        const resultDigest = hash(normalizedResult);
+        const proofResult = await client.query<
+          ReviewRow & {
+            current_review_revision: number;
+            command_kind: string;
+            command_state: string;
+            command_lease_token: string | null;
+            command_lease_expires_at: Date | null;
+            command_encrypted_payload: Envelope | null;
+            execution_state: string;
+            execution_provider: string;
+            execution_ai_client_instance_id: string;
+            execution_model: string;
+            execution_provider_cli_version: string | null;
+          }
+        >(
+          `select review.*,review.revision as current_review_revision,
+                  command.command_kind,command.state as command_state,
+                  command.lease_token as command_lease_token,
+                  command.lease_expires_at as command_lease_expires_at,
+                  command.encrypted_payload as command_encrypted_payload,
+                  execution.state as execution_state,
+                  execution.provider as execution_provider,
+                  execution.ai_client_instance_id as execution_ai_client_instance_id,
+                  execution.model as execution_model,
+                  execution.provider_cli_version as execution_provider_cli_version
+             from pull_request_reviews review
+             join managed_conversation_executions execution
+               on execution.id=review.execution_id
+              and execution.owner_user_id=review.owner_user_id
+             join managed_conversation_commands command
+               on command.id=$9
+              and command.execution_id=execution.id
+              and command.owner_user_id=execution.owner_user_id
+            where review.id=$1 and review.owner_user_id=$2
+              and review.execution_id=$3
+              and review.target_deployment_id=$4
+              and review.target_device_id=$5
+              and review.expected_base_sha=$6
+              and review.expected_head_sha=$7
+              and review.work_mode='review'
+              and execution.execution_generation=$8
+              and execution.runner_deployment_id=$4
+              and execution.runner_device_id=$5
+              and command.execution_generation=$8
+              and command.command_kind='prompt'
+            for update of review,execution,command`,
+          [
+            input.reviewId,
+            input.ownerUserId,
+            input.executionId,
+            input.runnerDeploymentId,
+            input.runnerDeviceId,
+            input.baseSha,
+            input.headSha,
+            input.executionGeneration,
+            input.commandId
+          ]
+        );
+        const proof = proofResult.rows[0];
+        if (!proof?.command_encrypted_payload) {
+          await client.query("rollback");
+          return null;
+        }
+        const commandPayload = await decryptJson<Record<string, unknown>>(
+          provider(),
+          proof.command_encrypted_payload
+        );
+        const agentContext = personalAgentExecutionContextSchema.safeParse(
+          commandPayload.personalAgentContext
+        );
+        const personalAgent = commandPayload.personalAgent;
+        if (
+          commandPayload.pullRequestReviewId !== input.reviewId ||
+          commandPayload.pullRequestReviewRevision !==
+            input.expectedReviewRevision ||
+          !agentContext.success ||
+          !personalAgent ||
+          typeof personalAgent !== "object" ||
+          Array.isArray(personalAgent) ||
+          !(
+            "agentId" in personalAgent &&
+            "agentVersion" in personalAgent &&
+            "identityVersionId" in personalAgent &&
+            "jobId" in personalAgent
+          ) ||
+          personalAgent.jobId !== null ||
+          personalAgent.agentId !== proof.agent_id ||
+          personalAgent.agentVersion !== proof.agent_version ||
+          personalAgent.agentVersion !== agentContext.data.identity.version ||
+          personalAgent.identityVersionId !==
+            agentContext.data.identity.identityVersionId ||
+          agentContext.data.identity.agentId !== proof.agent_id
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const identityVersion = await client.query<{ id: string }>(
+          `select id from personal_agent_identity_versions
+            where owner_user_id=$1 and agent_id=$2 and version=$3 and id=$4`,
+          [
+            input.ownerUserId,
+            proof.agent_id,
+            agentContext.data.identity.version,
+            agentContext.data.identity.identityVersionId
+          ]
+        );
+        if (!identityVersion.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+
         const prior = await client.query<{
           review_id: string;
           revision: number;
@@ -1701,24 +2051,72 @@ export const createPullRequestRepository = (
           head_sha: string;
           encrypted_payload: Envelope;
           updated_at: Date;
+          source_execution_id: string;
+          source_agent_version: number;
+          source_provider: string;
+          source_ai_client_instance_id: string;
+          source_model: string;
+          source_provider_cli_version: string | null;
+          source_review_revision: number;
+          source_lease_token_digest: string;
+          source_result_digest: string;
         }>(
-          "select d.review_id,d.revision,d.execution_generation,d.account_id,d.base_sha,d.head_sha,d.encrypted_payload,d.updated_at from pull_request_review_drafts d join pull_request_reviews r on r.id=d.review_id and r.owner_user_id=d.owner_user_id where r.id=$1 and r.owner_user_id=$2 and r.execution_id=$3 and r.target_deployment_id=$4 and r.target_device_id=$5 and d.agent_job_id=$6",
-          [
-            input.reviewId,
-            input.ownerUserId,
-            input.executionId,
-            input.runnerDeploymentId,
-            input.runnerDeviceId,
-            input.agentJobId
-          ]
+          `select d.review_id,d.revision,d.execution_generation,d.account_id,
+                  d.base_sha,d.head_sha,d.encrypted_payload,d.updated_at,
+                  d.source_execution_id,d.source_agent_version,d.source_provider,
+                  d.source_ai_client_instance_id,d.source_model,
+                  d.source_provider_cli_version,d.source_review_revision,
+                  d.source_lease_token_digest,d.source_result_digest
+             from pull_request_review_drafts d
+            where d.review_id=$1 and d.owner_user_id=$2
+              and d.source_command_id=$3`,
+          [input.reviewId, input.ownerUserId, input.commandId]
         );
         if (prior.rows[0]) {
           const saved = prior.rows[0];
+          const liveCommandLease =
+            (proof.execution_state === "running" ||
+              proof.execution_state === "reconciling") &&
+            proof.command_state === "dispatching" &&
+            proof.command_lease_token === input.leaseToken &&
+            proof.command_lease_expires_at !== null &&
+            proof.command_lease_expires_at.getTime() > Date.now();
+          const acknowledgedTerminalReplay =
+            proof.command_state === "completed" &&
+            saved.source_lease_token_digest ===
+              digestLeaseToken(input.leaseToken);
+          if (
+            (!liveCommandLease && !acknowledgedTerminalReplay) ||
+            proof.current_review_revision !==
+              input.expectedReviewRevision + 1 ||
+            proof.draft_revision !== saved.revision ||
+            proof.status !== "draft" ||
+            proof.reviewed_base_sha !== input.baseSha ||
+            proof.reviewed_head_sha !== input.headSha ||
+            proof.reviewed_execution_generation !== input.executionGeneration ||
+            saved.source_execution_id !== input.executionId ||
+            saved.source_agent_version !== agentContext.data.identity.version ||
+            saved.source_provider !== proof.execution_provider ||
+            saved.source_ai_client_instance_id !==
+              proof.execution_ai_client_instance_id ||
+            saved.source_model !== proof.execution_model ||
+            saved.source_provider_cli_version !==
+              proof.execution_provider_cli_version ||
+            saved.source_review_revision !== input.expectedReviewRevision ||
+            saved.source_result_digest !== resultDigest
+          ) {
+            await client.query("rollback");
+            return null;
+          }
           const content = await decryptJson<{
             event: PullRequestReviewDraft["event"];
             body: string;
             findings: PullRequestReviewDraft["findings"];
           }>(provider(), saved.encrypted_payload);
+          if (hash(content) !== resultDigest) {
+            await client.query("rollback");
+            return null;
+          }
           await client.query("commit");
           return pullRequestReviewDraftSchema.parse({
             reviewId: saved.review_id,
@@ -1732,32 +2130,23 @@ export const createPullRequestRepository = (
             updatedAt: saved.updated_at.toISOString()
           });
         }
-        const valid = await client.query<ReviewRow>(
-          "select review.* from pull_request_reviews review join managed_conversation_executions execution on execution.id=review.execution_id and execution.owner_user_id=review.owner_user_id join managed_conversation_commands command on command.execution_id=execution.id and command.owner_user_id=execution.owner_user_id where review.id=$1 and review.owner_user_id=$2 and review.execution_id=$3 and review.target_deployment_id=$4 and review.target_device_id=$5 and review.expected_base_sha=$6 and review.expected_head_sha=$7 and review.work_mode='review' and execution.execution_generation=$8 and execution.runner_deployment_id=$4 and execution.runner_device_id=$5 and execution.state in ('running','reconciling') and command.id=$9 and command.execution_generation=$8 and command.state='dispatching' and command.lease_token=$10 and command.lease_expires_at>now() and exists(select 1 from personal_agent_execution_jobs job join personal_agent_identity_versions version on version.agent_id=job.agent_id and version.owner_user_id=job.owner_user_id and version.version=job.agent_version where job.id=$11 and job.owner_user_id=review.owner_user_id and job.conversation_id=review.execution_id and job.agent_id=review.agent_id and job.command_id=command.id and job.state='succeeded') for update of review",
-          [
-            input.reviewId,
-            input.ownerUserId,
-            input.executionId,
-            input.runnerDeploymentId,
-            input.runnerDeviceId,
-            input.baseSha,
-            input.headSha,
-            input.executionGeneration,
-            input.commandId,
-            input.leaseToken,
-            input.agentJobId
-          ]
-        );
-        const review = valid.rows[0];
-        if (!review) {
+        if (
+          proof.current_review_revision !== input.expectedReviewRevision ||
+          (proof.execution_state !== "running" &&
+            proof.execution_state !== "reconciling") ||
+          proof.command_state !== "dispatching" ||
+          proof.command_lease_token !== input.leaseToken ||
+          !proof.command_lease_expires_at ||
+          proof.command_lease_expires_at.getTime() <= Date.now()
+        ) {
           await client.query("rollback");
           return null;
         }
         const selection = await decryptJson<{ account: PullRequestAccount }>(
           provider(),
-          review.encrypted_selection
+          proof.encrypted_selection
         );
-        const revision = review.draft_revision + 1;
+        const revision = proof.draft_revision + 1;
         const id = randomUUID();
         const encrypted = await encryptJson(
           provider(),
@@ -1765,51 +2154,72 @@ export const createPullRequestRepository = (
           "pull_request_review_drafts",
           id,
           "payload",
-          {
-            event: input.result.event,
-            body: input.result.body,
-            findings: input.result.findings
-          }
+          normalizedResult
         );
         const inserted = await client.query<{ updated_at: Date }>(
-          "insert into pull_request_review_drafts(id,review_id,owner_user_id,revision,origin,agent_job_id,execution_generation,account_id,base_sha,head_sha,encrypted_payload) values($1,$2,$3,$4,'agent',$5,$6,$7,$8,$9,$10::jsonb) returning updated_at",
+          `insert into pull_request_review_drafts(
+             id,review_id,owner_user_id,revision,origin,execution_generation,
+             source_execution_id,source_command_id,source_agent_version,
+             source_provider,source_ai_client_instance_id,source_model,
+             source_provider_cli_version,source_review_revision,
+             source_lease_token_digest,source_result_digest,account_id,
+             base_sha,head_sha,encrypted_payload
+           ) values(
+             $1,$2,$3,$4,'agent',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb
+           ) returning updated_at`,
           [
             id,
-            review.id,
+            proof.id,
             input.ownerUserId,
             revision,
-            input.agentJobId,
             input.executionGeneration,
+            input.executionId,
+            input.commandId,
+            agentContext.data.identity.version,
+            proof.execution_provider,
+            proof.execution_ai_client_instance_id,
+            proof.execution_model,
+            proof.execution_provider_cli_version,
+            input.expectedReviewRevision,
+            digestLeaseToken(input.leaseToken),
+            resultDigest,
             selection.account.id,
             input.baseSha,
             input.headSha,
             JSON.stringify(encrypted)
           ]
         );
-        await client.query(
-          "update pull_request_reviews review set agent_version=(select job.agent_version from personal_agent_execution_jobs job where job.id=$7 and job.owner_user_id=review.owner_user_id and job.agent_id=review.agent_id),draft_revision=$3,reviewed_base_sha=$4,reviewed_head_sha=$5,reviewed_execution_generation=$6,status='draft',revision=revision+1,updated_at=now() where review.id=$1 and review.owner_user_id=$2",
+        const completed = await client.query(
+          `update pull_request_reviews review
+              set agent_version=$7,draft_revision=$3,reviewed_base_sha=$4,
+                  reviewed_head_sha=$5,reviewed_execution_generation=$6,
+                  status='draft',revision=revision+1,updated_at=now()
+            where review.id=$1 and review.owner_user_id=$2 and review.revision=$8`,
           [
-            review.id,
+            proof.id,
             input.ownerUserId,
             revision,
             input.baseSha,
             input.headSha,
             input.executionGeneration,
-            input.agentJobId
+            agentContext.data.identity.version,
+            input.expectedReviewRevision
           ]
         );
+        if (!completed.rowCount) {
+          await client.query("rollback");
+          return null;
+        }
         await client.query("commit");
         return pullRequestReviewDraftSchema.parse({
-          reviewId: review.id,
+          reviewId: proof.id,
           revision,
           origin: "agent",
           executionGeneration: input.executionGeneration,
           accountId: selection.account.id,
           baseSha: input.baseSha,
           headSha: input.headSha,
-          event: input.result.event,
-          body: input.result.body,
-          findings: input.result.findings,
+          ...normalizedResult,
           updatedAt: inserted.rows[0]!.updated_at.toISOString()
         });
       } catch (error) {

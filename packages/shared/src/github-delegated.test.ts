@@ -112,6 +112,106 @@ describe("delegated GitHub CLI", () => {
     ).toBe(true);
   });
 
+  it("bounds global inbox requests and reports partial search coverage", async () => {
+    const calls: Array<{ args: string[]; options: Record<string, unknown> }> =
+      [];
+    const cli = createGithubDelegatedCli({
+      timeoutMs: 60_000,
+      execFile: async (_file, args, options) => {
+        calls.push({ args, options });
+        if (args[0] === "api" && args[3] === "user")
+          return { stdout: JSON.stringify({ id: 42, login: "alice" }) };
+        if (args[0] === "api" && args[3]?.startsWith("search/issues?"))
+          return {
+            stdout: JSON.stringify({
+              total_count: 0,
+              incomplete_results: args[3].includes("author%3A%40me"),
+              items: []
+            })
+          };
+        throw new Error("unexpected GitHub call");
+      }
+    });
+
+    const result = await cli.readInbox({ expectedAccountLogin: "alice" });
+    expect(result).toMatchObject({
+      items: [],
+      hasMore: false,
+      truncated: true,
+      page: 1,
+      pagesRead: 1
+    });
+    const searches = calls.filter((call) =>
+      call.args[3]?.startsWith("search/issues?")
+    );
+    expect(searches).toHaveLength(2);
+    expect(searches.every((call) => call.options.timeout === 3_000)).toBe(true);
+    expect(
+      searches.every((call) => call.options.maxBuffer === 1024 * 1024)
+    ).toBe(true);
+    expect(
+      searches.every((call) => call.args[3]?.includes("per_page=30&page=1"))
+    ).toBe(true);
+    expect(calls.every((call) => Number(call.options.timeout) <= 3_000)).toBe(
+      true
+    );
+    expect(
+      calls
+        .filter((call) => call.args[3] === "user")
+        .every((call) => call.options.maxBuffer === 8 * 1024)
+    ).toBe(true);
+  });
+
+  it("returns both disjoint inbox searches before advancing to the next page", async () => {
+    const cli = createGithubDelegatedCli({
+      execFile: async (_file, args) => {
+        if (args[0] === "api" && args[3] === "user")
+          return { stdout: JSON.stringify({ id: 42, login: "alice" }) };
+        if (args[0] === "api" && args[3]?.startsWith("search/issues?")) {
+          const requested = args[3].includes("review-requested%3A%40me");
+          const page = Number(/[?&]page=(\d+)/.exec(args[3])?.[1] ?? 1);
+          const first = (page - 1) * 30 + 1;
+          const last = Math.min(page * 30, 35);
+          const prefix = requested ? "requested" : "authored";
+          const items = Array.from(
+            { length: Math.max(0, last - first + 1) },
+            (_unused, offset) => {
+              const number = first + offset;
+              return {
+                repository_url: `https://api.github.com/repos/${prefix}/r${number}`,
+                number,
+                title: `${prefix} ${number}`,
+                user: { login: requested ? "octocat" : "alice" },
+                updated_at: "2026-10-01T00:00:00Z",
+                html_url: `https://github.com/${prefix}/r${number}/pull/${number}`
+              };
+            }
+          );
+          return {
+            stdout: JSON.stringify({
+              total_count: 35,
+              incomplete_results: false,
+              items
+            })
+          };
+        }
+        throw new Error("unexpected GitHub call");
+      }
+    });
+
+    const firstPage = await cli.readInbox({ expectedAccountLogin: "alice" });
+    const secondPage = await cli.readInbox({
+      expectedAccountLogin: "alice",
+      page: 2
+    });
+    expect(firstPage.items).toHaveLength(60);
+    expect(firstPage.hasMore).toBe(true);
+    expect(secondPage.items).toHaveLength(10);
+    expect(
+      secondPage.items.map((item) => item.number).sort((a, b) => a - b)
+    ).toEqual([31, 31, 32, 32, 33, 33, 34, 34, 35, 35]);
+  });
+
   it("sends an exact bounded review as JSON stdin and never places review text in argv", async () => {
     const calls: Array<{ args: string[]; options: Record<string, unknown> }> =
       [];

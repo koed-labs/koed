@@ -52,7 +52,12 @@ import {
   gitWorkingTreeEditState,
   diffExecutionCheckpointsForCheckout,
   createManagedConversationRuntimeSessionSingleflight,
-  startManagedConversationRuntimeSession
+  startManagedConversationRuntimeSession,
+  managedPullRequestReviewCompletionForOutput,
+  completeManagedPullRequestReviewForOutput,
+  isTerminalManagedPullRequestReviewCaptureError,
+  managedPullRequestReviewCaptureFailureDisposition,
+  managedPullRequestTurnPrompt
 } from "./managed-conversation-service.js";
 import { ManagedConversationRuntimeRegistry } from "./managed-conversation-provider-runtime.js";
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
@@ -61,6 +66,315 @@ import {
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("native Pull Request review result capture", () => {
+  const ownerUserId = randomUUID();
+  const executionId = randomUUID();
+  const reviewId = randomUUID();
+  const agentId = randomUUID();
+  const identityVersionId = randomUUID();
+  const commandId = randomUUID();
+  const leaseToken = randomUUID();
+  const baseSha = "a".repeat(40);
+  const headSha = "b".repeat(40);
+  const review = {
+    id: reviewId,
+    ownerUserId,
+    agentId,
+    agentVersion: 3,
+    executionId,
+    expectedBaseSha: baseSha,
+    expectedHeadSha: headSha,
+    workMode: "review",
+    repository: { fullName: "acme/project" },
+    pullRequestNumber: 17
+  } as never;
+  const execution = {
+    id: executionId,
+    ownerUserId,
+    executionGeneration: 4
+  } as ManagedConversationExecutionRecord;
+  const command = (payload: Record<string, unknown> = {}) =>
+    ({
+      id: commandId,
+      ownerUserId,
+      executionId,
+      executionGeneration: 4,
+      commandKind: "prompt",
+      leaseToken,
+      execution,
+      payload: {
+        personalAgent: { jobId: null, agentId, agentVersion: 3 },
+        personalAgentContext: {
+          schemaVersion: 1,
+          identity: {
+            agentId,
+            version: 3,
+            identityVersionId,
+            name: "Review Agent"
+          },
+          project: { projectId: null, name: null }
+        },
+        ...payload
+      }
+    }) as never;
+  const output = (body: string) => ({
+    text: `Review summary.\n\n\`\`\`json\n${JSON.stringify({
+      koedReview: {
+        body,
+        findings: [
+          {
+            path: "src/change.ts",
+            line: 12,
+            side: "RIGHT",
+            body: "This branch misses the new case."
+          }
+        ]
+      }
+    })}\n\`\`\``,
+    truncated: false
+  });
+  const diff =
+    "diff --git a/src/change.ts b/src/change.ts\n--- a/src/change.ts\n+++ b/src/change.ts\n@@ -12 +12 @@\n-old\n+new";
+
+  it("captures an exact, structured native response with command and review provenance", () => {
+    expect(
+      managedPullRequestReviewCompletionForOutput({
+        command: command({
+          pullRequestReviewId: reviewId,
+          pullRequestReviewRevision: 8
+        }),
+        review,
+        output: output("A concise public summary."),
+        diff
+      })
+    ).toEqual({
+      ownerUserId,
+      reviewId,
+      executionId,
+      executionGeneration: 4,
+      commandId,
+      leaseToken,
+      expectedReviewRevision: 8,
+      baseSha,
+      headSha,
+      result: {
+        event: "COMMENT",
+        body: "A concise public summary.",
+        findings: [
+          {
+            path: "src/change.ts",
+            line: 12,
+            side: "RIGHT",
+            body: "This branch misses the new case."
+          }
+        ]
+      }
+    });
+  });
+
+  it("does not complete plain replies, truncated output, or unmarked PR chat follow-ups", () => {
+    const marked = command({
+      pullRequestReviewId: reviewId,
+      pullRequestReviewRevision: 8
+    });
+    expect(
+      managedPullRequestReviewCompletionForOutput({
+        command: marked,
+        review,
+        output: {
+          text: "Thanks, I will explain the summary.",
+          truncated: false
+        },
+        diff
+      })
+    ).toBeNull();
+    expect(
+      managedPullRequestReviewCompletionForOutput({
+        command: marked,
+        review,
+        output: { ...output("A summary."), truncated: true },
+        diff
+      })
+    ).toBeNull();
+    expect(
+      managedPullRequestReviewCompletionForOutput({
+        command: command(),
+        review,
+        output: output("A summary."),
+        diff
+      })
+    ).toBeNull();
+  });
+
+  it("derives a deterministic review proof from the same checkpoint output", () => {
+    const acceptedCommand = command({
+      pullRequestReviewId: reviewId,
+      pullRequestReviewRevision: 8
+    });
+    const exactOutput = output("A concise public summary.");
+    const first = managedPullRequestReviewCompletionForOutput({
+      command: acceptedCommand,
+      review,
+      output: exactOutput,
+      diff
+    });
+    const recovered = managedPullRequestReviewCompletionForOutput({
+      command: acceptedCommand,
+      review,
+      output: exactOutput,
+      diff
+    });
+    expect(recovered).toEqual(first);
+    expect(first?.commandId).toBe(commandId);
+    expect(first?.executionGeneration).toBe(4);
+  });
+
+  it("retries capture with the same command proof after a temporary authority error", async () => {
+    const acceptedCommand = command({
+      pullRequestReviewId: reviewId,
+      pullRequestReviewRevision: 8
+    });
+    const exactOutput = output("A concise public summary.");
+    const calls: unknown[] = [];
+    let failFirstCapture = true;
+    const markReviewed = async (proof: unknown) => {
+      calls.push(proof);
+      if (failFirstCapture) {
+        failFirstCapture = false;
+        throw new Error("temporary authority failure");
+      }
+    };
+    const recoveredInput = {
+      command: acceptedCommand,
+      review,
+      output: exactOutput,
+      diff,
+      markReviewed
+    };
+
+    await expect(
+      completeManagedPullRequestReviewForOutput(recoveredInput)
+    ).rejects.toThrow("temporary authority failure");
+    await expect(
+      completeManagedPullRequestReviewForOutput(recoveredInput)
+    ).resolves.toBe(true);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[0]).toMatchObject({
+      commandId,
+      leaseToken,
+      expectedReviewRevision: 8
+    });
+  });
+
+  it("fails an explicit review prompt when its final response is not structured", async () => {
+    const markReviewed = vi.fn(async () => {});
+    await expect(
+      completeManagedPullRequestReviewForOutput({
+        command: command({
+          pullRequestReviewId: reviewId,
+          pullRequestReviewRevision: 8
+        }),
+        review,
+        output: { text: "Here is a plain chat reply.", truncated: false },
+        diff,
+        markReviewed
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationPullRequestReviewOutputInvalidError"
+    });
+    expect(markReviewed).not.toHaveBeenCalled();
+  });
+
+  it("classifies invalid, unavailable, and stale review captures as terminal while leaving transient authority failures retryable", async () => {
+    const markedCommand = command({
+      pullRequestReviewId: reviewId,
+      pullRequestReviewRevision: 8
+    });
+    const markReviewed = vi.fn().mockRejectedValueOnce(
+      Object.assign(new Error("review revision changed"), {
+        statusCode: 409
+      })
+    );
+
+    await expect(
+      completeManagedPullRequestReviewForOutput({
+        command: markedCommand,
+        review,
+        output: output("A concise public summary."),
+        diff,
+        markReviewed
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationPullRequestReviewStaleError"
+    });
+
+    expect(
+      isTerminalManagedPullRequestReviewCaptureError(
+        Object.assign(new Error("temporary authority failure"), {
+          statusCode: 503
+        })
+      )
+    ).toBe(false);
+    expect(
+      managedPullRequestReviewCaptureFailureDisposition(
+        Object.assign(new Error("temporary authority failure"), {
+          statusCode: 503
+        })
+      )
+    ).toBeNull();
+    for (const name of [
+      "ManagedConversationPullRequestReviewUnavailableError",
+      "ManagedConversationPullRequestReviewOutputInvalidError",
+      "ManagedConversationPullRequestReviewStaleError"
+    ]) {
+      expect(
+        isTerminalManagedPullRequestReviewCaptureError(
+          Object.assign(new Error(name), { name })
+        )
+      ).toBe(true);
+      expect(
+        managedPullRequestReviewCaptureFailureDisposition(
+          Object.assign(new Error(name), { name })
+        )
+      ).toEqual({
+        commandState: "failed",
+        preserveProviderOutput: true
+      });
+    }
+  });
+
+  it("asks for the structured review envelope only on an explicitly marked review prompt", () => {
+    const ordinaryFollowUp = managedPullRequestTurnPrompt({
+      command: command(),
+      review,
+      diff,
+      prompt: "What changed in this function?"
+    });
+    expect(ordinaryFollowUp).toContain("ordinary conversation");
+    expect(ordinaryFollowUp).toContain(
+      "Answer the user's current message naturally"
+    );
+    expect(ordinaryFollowUp).not.toContain('{"koedReview":');
+    expect(ordinaryFollowUp).toContain("Review only: do not edit files");
+    expect(ordinaryFollowUp).toContain("Never post a GitHub comment/review");
+
+    const explicitReview = managedPullRequestTurnPrompt({
+      command: command({
+        pullRequestReviewId: reviewId,
+        pullRequestReviewRevision: 8
+      }),
+      review,
+      diff,
+      prompt: "Review the latest changes."
+    });
+    expect(explicitReview).toContain("This is an explicit review request");
+    expect(explicitReview).toContain('{"koedReview":');
+    expect(explicitReview).toContain("Never post a GitHub comment/review");
+  });
+});
 
 describe("managed Conversation Team owner-review turn policy", () => {
   const ownerUserId = randomUUID();

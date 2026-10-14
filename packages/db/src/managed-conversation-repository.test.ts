@@ -120,6 +120,7 @@ describe("managed Conversation clean stopped continuation", () => {
       projectId?: string | null;
       binding?: Record<string, unknown> | null;
       unsettled?: boolean;
+      pullRequestReview?: { id: string; revision: number };
       teamRequestBindings?: Array<{
         status: string;
         managed_execution_id: string | null;
@@ -205,6 +206,15 @@ describe("managed Conversation clean stopped continuation", () => {
       }
       if (sql.includes("from team_agent_requests")) {
         return { rows: options.teamRequestBindings ?? [] };
+      }
+      if (sql.includes("from pull_request_reviews")) {
+        const review = options.pullRequestReview;
+        return {
+          rows:
+            review && params[1] === review.id && params[7] === review.revision
+              ? [{ revision: review.revision }]
+              : []
+        };
       }
       if (sql.includes("from managed_conversation_runtime_bindings")) {
         return { rows: binding ? [binding] : [] };
@@ -367,6 +377,88 @@ describe("managed Conversation clean stopped continuation", () => {
         (sql as string).includes("execution_generation = $3")
       )
     ).toBe(true);
+  });
+
+  it("persists an authorized native PR review marker and rejects an outdated review revision", async () => {
+    const reviewId = "99999999-9999-4999-8999-999999999999";
+    const reviewRevision = 8;
+    const agentId = "22222222-2222-4222-8222-222222222222";
+    const identityVersionId = "55555555-5555-4555-8555-555555555555";
+    const input = {
+      ...promptInput,
+      idempotencyKey: "explicit-pr-review-prompt",
+      agentId,
+      expectedAgentVersion: 4,
+      personalAgentContext: {
+        schemaVersion: 1 as const,
+        identity: {
+          agentId,
+          version: 4,
+          identityVersionId,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: null
+        },
+        project: {
+          projectId: "lp_0123456789abcdef0123456789abcdef",
+          name: "Orchard"
+        }
+      },
+      pullRequestReviewId: reviewId,
+      expectedPullRequestReviewRevision: reviewRevision
+    };
+    const { repository, query, commands } = repositoryFor({
+      pullRequestReview: { id: reviewId, revision: reviewRevision }
+    });
+
+    const queued = await repository.enqueueManagedConversationPrompt(
+      { userId: ownerUserId },
+      input
+    );
+
+    const persistedPayload = JSON.parse(
+      await decryptEnvelopeToUtf8(
+        createLocalTestKeyEnvelopeEncryptionProvider(
+          Buffer.alloc(32, 9).toString("base64")
+        ),
+        commands[0]!.encrypted_payload as EncryptedPayloadEnvelope
+      )
+    ) as Record<string, unknown>;
+    expect(persistedPayload).toMatchObject({
+      pullRequestReviewId: reviewId,
+      pullRequestReviewRevision: reviewRevision
+    });
+    expect(queued.payload).not.toHaveProperty("pullRequestReviewId");
+    const authorization = query.mock.calls.find(([sql]) =>
+      (sql as string).includes("from pull_request_reviews")
+    );
+    expect(authorization?.[0]).toContain("revision = $8");
+    expect(authorization?.[0]).toContain("for share");
+    expect(authorization?.[1]).toEqual([
+      ownerUserId,
+      reviewId,
+      executionId,
+      agentId,
+      4,
+      "88888888-8888-4888-8888-888888888888",
+      "77777777-7777-4777-8777-777777777777",
+      reviewRevision
+    ]);
+
+    const stale = repositoryFor({
+      pullRequestReview: { id: reviewId, revision: reviewRevision + 1 }
+    });
+    await expect(
+      stale.repository.enqueueManagedConversationPrompt(
+        { userId: ownerUserId },
+        { ...input, idempotencyKey: "stale-pr-review-prompt" }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(
+      stale.query.mock.calls.some(([sql]) =>
+        (sql as string).includes("insert into managed_conversation_commands")
+      )
+    ).toBe(false);
   });
 
   it.each([
@@ -1081,22 +1173,39 @@ describe("managed Conversation start prompt dispatch", () => {
   const provider = createLocalTestKeyEnvelopeEncryptionProvider(
     Buffer.alloc(32, 7).toString("base64")
   );
+  const reviewMarker = {
+    id: "77777777-7777-4777-8777-777777777777",
+    revision: 6
+  };
 
   it.each([
     {
       label: "legacy Job",
       jobId: personalAgent.jobId,
-      privateTeamAgentReview: false
+      privateTeamAgentReview: false,
+      marker: null
     },
-    { label: "native Agent", jobId: null, privateTeamAgentReview: false },
+    {
+      label: "native Agent",
+      jobId: null,
+      privateTeamAgentReview: false,
+      marker: null
+    },
     {
       label: "pre-acceptance review Agent",
       jobId: null,
-      privateTeamAgentReview: true
+      privateTeamAgentReview: true,
+      marker: null
+    },
+    {
+      label: "native Pull Request review Agent",
+      jobId: null,
+      privateTeamAgentReview: false,
+      marker: reviewMarker
     }
   ])(
     "materializes one child prompt for a $label start and publishes only native work",
-    async ({ jobId, privateTeamAgentReview }) => {
+    async ({ jobId, privateTeamAgentReview, marker }) => {
       nativePublicSquare.register.mockClear();
       const startAgent = { ...personalAgent, jobId };
       const projectId = "lp_0123456789abcdef0123456789abcdef";
@@ -1116,6 +1225,12 @@ describe("managed Conversation start prompt dispatch", () => {
           personalMemoryContext,
           personalAgent: startAgent,
           personalAgentContext: startContext,
+          ...(marker
+            ? {
+                pullRequestReviewId: marker.id,
+                pullRequestReviewRevision: marker.revision
+              }
+            : {}),
           ...(privateTeamAgentReview ? { privateTeamAgentReview: true } : {})
         }),
         scope: {
@@ -1178,9 +1293,16 @@ describe("managed Conversation start prompt dispatch", () => {
                 state: "running",
                 model: "claude-current",
                 reasoning_effort: "high",
-                permission_mode: "auto_edit"
+                permission_mode: "auto_edit",
+                runner_device_id: "device-id",
+                runner_deployment_id: "deployment-id"
               }
             ]
+          };
+        }
+        if (sql.includes("from pull_request_reviews")) {
+          return {
+            rows: marker ? [{ revision: marker.revision }] : []
           };
         }
         if (sql.includes("coalesce(max(sequence)"))
@@ -1253,6 +1375,14 @@ describe("managed Conversation start prompt dispatch", () => {
           project: { projectId, name: "Orchard" }
         }
       });
+      if (marker) {
+        expect(childPayload).toMatchObject({
+          pullRequestReviewId: marker.id,
+          pullRequestReviewRevision: marker.revision
+        });
+      } else {
+        expect(childPayload).not.toHaveProperty("pullRequestReviewId");
+      }
       expect(childPayload).not.toHaveProperty("personalMemoryContext");
       expect(JSON.stringify(childPayload)).not.toContain("private-node-id");
       expect(JSON.stringify(childPayload)).not.toContain(

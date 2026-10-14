@@ -32,7 +32,10 @@ const FIELD_MAX_LENGTH = 1_024;
 const BODY_MAX_LENGTH = 65_536;
 const PAGE_SIZE = 30;
 const MAX_PAGE = 1_000;
-const MAX_INBOX_PAGES = 4;
+const MAX_INBOX_PAGES = 1;
+const INBOX_READ_COMMAND_TIMEOUT_MS = 3_000;
+const INBOX_SEARCH_MAX_BYTES = 1024 * 1024;
+const INBOX_IDENTITY_MAX_BYTES = 8 * 1024;
 const MAX_REVIEW_COMMENTS = 100;
 const MAX_COMMENT_BODY_LENGTH = 20_480;
 const MAX_AGGREGATE_TEXT_LENGTH = 96 * 1024;
@@ -496,14 +499,18 @@ export const createGithubDelegatedCli = ({
     });
   };
 
-  const readIdentity = async (expectedAccountLogin?: string) => {
+  const readIdentity = async (
+    expectedAccountLogin?: string,
+    commandTimeoutMs = timeoutMs,
+    maxResponseBytes = AUTH_MAX_OUTPUT_BYTES
+  ) => {
     if (expectedAccountLogin !== undefined && !validLogin(expectedAccountLogin))
       throw githubError("github_invalid_account");
     const stdout = await run(
       ["api", "--hostname", HOST, "user", "--jq", "{id:.id,login:.login}"],
-      { maxBytes: AUTH_MAX_OUTPUT_BYTES }
+      { maxBytes: maxResponseBytes, timeout: commandTimeoutMs }
     );
-    const identity = parseObject(stdout, AUTH_MAX_OUTPUT_BYTES) as {
+    const identity = parseObject(stdout, maxResponseBytes) as {
       id?: unknown;
       login?: unknown;
     };
@@ -525,17 +532,45 @@ export const createGithubDelegatedCli = ({
     return { id: String(identity.id), login: identity.login };
   };
 
-  const assertIdentity = async (expectedAccountLogin: unknown) => {
+  const assertIdentity = async (
+    expectedAccountLogin: unknown,
+    commandTimeoutMs = timeoutMs,
+    maxResponseBytes = AUTH_MAX_OUTPUT_BYTES
+  ) => {
     if (!validLogin(expectedAccountLogin))
       throw githubError("github_invalid_account");
-    return (await readIdentity(expectedAccountLogin)).login;
+    return (
+      await readIdentity(
+        expectedAccountLogin,
+        commandTimeoutMs,
+        maxResponseBytes
+      )
+    ).login;
   };
 
-  const readApi = async (path: string, expectedAccountLogin: unknown) => {
-    await assertIdentity(expectedAccountLogin);
-    const stdout = await run(["api", "--hostname", HOST, path]);
-    const payload = parseObject(stdout, maxOutputBytes);
-    await assertIdentity(expectedAccountLogin);
+  const readApi = async (
+    path: string,
+    expectedAccountLogin: unknown,
+    commandTimeoutMs = timeoutMs,
+    maxResponseBytes = maxOutputBytes,
+    jq?: string,
+    identityMaxResponseBytes = AUTH_MAX_OUTPUT_BYTES
+  ) => {
+    await assertIdentity(
+      expectedAccountLogin,
+      commandTimeoutMs,
+      identityMaxResponseBytes
+    );
+    const stdout = await run(
+      ["api", "--hostname", HOST, path, ...(jq ? ["--jq", jq] : [])],
+      { timeout: commandTimeoutMs, maxBytes: maxResponseBytes }
+    );
+    const payload = parseObject(stdout, maxResponseBytes);
+    await assertIdentity(
+      expectedAccountLogin,
+      commandTimeoutMs,
+      identityMaxResponseBytes
+    );
     return payload;
   };
 
@@ -628,16 +663,26 @@ export const createGithubDelegatedCli = ({
 
   const readRepository = async ({
     expectedAccountLogin,
-    repo
+    repo,
+    commandTimeoutMs,
+    maxResponseBytes,
+    identityMaxResponseBytes
   }: {
     expectedAccountLogin: string;
     repo: string;
+    commandTimeoutMs?: number;
+    maxResponseBytes?: number;
+    identityMaxResponseBytes?: number;
   }) => {
     const parsed = validRepository(repo);
     if (!parsed) throw githubError("github_invalid_repository");
     const payload = (await readApi(
       `repos/${parsed.owner}/${parsed.name}`,
-      expectedAccountLogin
+      expectedAccountLogin,
+      commandTimeoutMs,
+      maxResponseBytes ?? maxOutputBytes,
+      undefined,
+      identityMaxResponseBytes ?? AUTH_MAX_OUTPUT_BYTES
     )) as Record<string, unknown>;
     const fullName = validRepository(payload?.full_name);
     if (
@@ -883,14 +928,24 @@ export const createGithubDelegatedCli = ({
     for (let offset = 0; offset < maxPages; offset += 1) {
       const currentPage = startPage + offset;
       if (currentPage > MAX_PAGE) throw githubError("github_invalid_page");
+      const inboxProjection =
+        "{total_count, incomplete_results, items: [.items[] | {repository_url, number, title, user, updated_at, html_url}]}";
       const [requestedPayload, authoredPayload] = await Promise.all([
         readApi(
           `search/issues?q=is%3Apr+is%3Aopen+review-requested%3A%40me&per_page=${PAGE_SIZE}&page=${currentPage}`,
-          expectedAccountLogin
+          expectedAccountLogin,
+          INBOX_READ_COMMAND_TIMEOUT_MS,
+          INBOX_SEARCH_MAX_BYTES,
+          inboxProjection,
+          INBOX_IDENTITY_MAX_BYTES
         ),
         readApi(
           `search/issues?q=is%3Apr+is%3Aopen+author%3A%40me&per_page=${PAGE_SIZE}&page=${currentPage}`,
-          expectedAccountLogin
+          expectedAccountLogin,
+          INBOX_READ_COMMAND_TIMEOUT_MS,
+          INBOX_SEARCH_MAX_BYTES,
+          inboxProjection,
+          INBOX_IDENTITY_MAX_BYTES
         )
       ]);
       const mapSearchResult = (
@@ -931,16 +986,13 @@ export const createGithubDelegatedCli = ({
         else byKey.set(key, item);
       }
     }
-    const items = [...byKey.values()].slice(0, PAGE_SIZE * maxPages);
-    const truncated =
-      requestedHasMore ||
-      authoredHasMore ||
-      requestedIncomplete ||
-      authoredIncomplete ||
-      byKey.size > items.length;
+    const items = [...byKey.values()].slice(0, 2 * PAGE_SIZE * maxPages);
+    const hasMore =
+      requestedHasMore || authoredHasMore || byKey.size > items.length;
+    const truncated = hasMore || requestedIncomplete || authoredIncomplete;
     return {
       items,
-      hasMore: truncated,
+      hasMore,
       truncated,
       page: startPage,
       pagesRead: maxPages,

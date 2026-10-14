@@ -1,6 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  decryptEnvelopeToUtf8,
+  type EncryptedPayloadEnvelope
+} from "@koed/shared";
 import { afterAll, describe, expect, it } from "vitest";
 import { runDbMigrations } from "./migrate.js";
 import { createMemorySourceRepository } from "./repository.js";
@@ -162,6 +166,166 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
         }
       })
     ).not.toBeNull();
+    const inboxScope = {
+      targetDeviceId: deviceId,
+      targetDeploymentId: deploymentId,
+      accountId: "42",
+      connectionGeneration: 3
+    };
+    const activeInbox = await repository.enqueuePullRequestOperation(actor, {
+      requestId: randomUUID(),
+      targetDeviceId: deviceId,
+      targetDeploymentId: deploymentId,
+      payload: {
+        kind: "inbox",
+        account: { id: "42", login: "reviewer" },
+        connectionGeneration: 3,
+        repository: null,
+        cursor: null
+      }
+    });
+    const joinedInbox = await repository.enqueuePullRequestOperation(actor, {
+      requestId: randomUUID(),
+      targetDeviceId: deviceId,
+      targetDeploymentId: deploymentId,
+      payload: {
+        kind: "inbox",
+        account: { id: "42", login: "reviewer" },
+        connectionGeneration: 3,
+        repository: null,
+        cursor: null
+      }
+    });
+    expect(joinedInbox.id).toBe(activeInbox.id);
+    expect(
+      (await repository.getPullRequestInboxSnapshot(actor, inboxScope))
+        .pendingOperation?.id
+    ).toBe(activeInbox.id);
+    await repository.cancelPullRequestOperation(actor, {
+      operationId: activeInbox.id,
+      expectedRevision: activeInbox.revision
+    });
+    const completedInbox = await repository.enqueuePullRequestOperation(actor, {
+      requestId: randomUUID(),
+      targetDeviceId: deviceId,
+      targetDeploymentId: deploymentId,
+      payload: {
+        kind: "inbox",
+        account: { id: "42", login: "reviewer" },
+        connectionGeneration: 3,
+        repository: null,
+        cursor: null
+      }
+    });
+    const inboxClaim = (
+      await repository.claimPullRequestOperations({
+        ownerUserId: ownerId,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        runnerId: "inbox-integration-runner",
+        limit: 1,
+        leaseMs: 60_000
+      })
+    )[0]!;
+    expect(inboxClaim.operation.id).toBe(completedInbox.id);
+    await repository.completePullRequestOperation({
+      operationId: completedInbox.id,
+      ownerUserId: ownerId,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      runnerId: "inbox-integration-runner",
+      leaseToken: inboxClaim.leaseToken,
+      result: { items: [], nextCursor: null }
+    });
+    const failedInbox = await repository.enqueuePullRequestOperation(actor, {
+      requestId: randomUUID(),
+      targetDeviceId: deviceId,
+      targetDeploymentId: deploymentId,
+      payload: {
+        kind: "inbox",
+        account: { id: "42", login: "reviewer" },
+        connectionGeneration: 3,
+        repository: null,
+        cursor: null
+      }
+    });
+    const failedInboxClaim = (
+      await repository.claimPullRequestOperations({
+        ownerUserId: ownerId,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        runnerId: "inbox-integration-runner",
+        limit: 1,
+        leaseMs: 60_000
+      })
+    )[0]!;
+    expect(failedInboxClaim.operation.id).toBe(failedInbox.id);
+    await repository.failPullRequestOperation({
+      operationId: failedInbox.id,
+      ownerUserId: ownerId,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      runnerId: "inbox-integration-runner",
+      leaseToken: failedInboxClaim.leaseToken,
+      state: "failed",
+      errorCode: "inbox_failed"
+    });
+    const inboxSnapshot = await repository.getPullRequestInboxSnapshot(
+      actor,
+      inboxScope
+    );
+    expect(inboxSnapshot.operation?.id).toBe(completedInbox.id);
+    expect(inboxSnapshot.pendingOperation).toBeNull();
+    const legacyInboxId = randomUUID();
+    const legacyInboxPayload = {
+      kind: "inbox" as const,
+      account: { id: "legacy-42", login: "legacy-reviewer" },
+      connectionGeneration: 3,
+      repository: null,
+      cursor: null
+    };
+    const legacyInboxEnvelope = await provider.encrypt({
+      plaintext: JSON.stringify(legacyInboxPayload),
+      scope: {
+        tenantId: ownerId,
+        objectClass: "pull_request_authority"
+      },
+      provenance: {
+        rowFamily: "pull_request_authority",
+        sourceTable: "pull_request_operations",
+        sourceColumn: "payload",
+        sourceId: legacyInboxId
+      },
+      ciphertextLocation: "pull_request_operations.payload",
+      aad: {
+        ownerUserId: ownerId,
+        sourceTable: "pull_request_operations",
+        sourceId: legacyInboxId,
+        sourceColumn: "payload"
+      }
+    });
+    await pool.query(
+      `insert into pull_request_operations(
+         id,owner_user_id,target_device_id,target_deployment_id,request_id,
+         request_digest,kind,state,encrypted_payload,completed_at
+       ) values($1,$2,$3,$4,$5,$6,'inbox','completed',$7::jsonb,now())`,
+      [
+        legacyInboxId,
+        ownerId,
+        deviceId,
+        deploymentId,
+        randomUUID(),
+        createHash("sha256")
+          .update(JSON.stringify(legacyInboxPayload))
+          .digest("hex"),
+        JSON.stringify(legacyInboxEnvelope)
+      ]
+    );
+    const legacyInboxSnapshot = await repository.getPullRequestInboxSnapshot(
+      actor,
+      { ...inboxScope, accountId: "legacy-42" }
+    );
+    expect(legacyInboxSnapshot.operation?.id).toBe(legacyInboxId);
     const plaintext = await pool.query<{
       encrypted_payload: object;
       encrypted_result: object;
@@ -323,6 +487,52 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
           runnerDeploymentId: deploymentId,
           runnerDeviceId: targetDeviceId,
           idempotencyKey: randomUUID(),
+          initialPrompt:
+            "Review the selected pull request and report findings.",
+          initialPromptClientUserMessageId: randomUUID(),
+          initialAgentId: input.agentId,
+          initialExpectedAgentVersion:
+            input.agentId === agent.agent.id
+              ? agent.agent.currentVersion
+              : input.agentId === alternateAgent.agent.id
+                ? alternateAgent.agent.currentVersion
+                : foreignAgent.agent.currentVersion,
+          initialPersonalAgentContext: {
+            schemaVersion: 1,
+            identity: {
+              agentId: input.agentId,
+              version:
+                input.agentId === agent.agent.id
+                  ? agent.agent.currentVersion
+                  : input.agentId === alternateAgent.agent.id
+                    ? alternateAgent.agent.currentVersion
+                    : foreignAgent.agent.currentVersion,
+              identityVersionId: (
+                await pool.query<{ id: string }>(
+                  "select id from personal_agent_identity_versions where owner_user_id=$1 and agent_id=$2 and version=$3",
+                  [
+                    input.agentId === foreignAgent.agent.id
+                      ? otherOwnerId
+                      : ownerId,
+                    input.agentId,
+                    input.agentId === agent.agent.id
+                      ? agent.agent.currentVersion
+                      : input.agentId === alternateAgent.agent.id
+                        ? alternateAgent.agent.currentVersion
+                        : foreignAgent.agent.currentVersion
+                  ]
+                )
+              ).rows[0]!.id,
+              name:
+                input.agentId === agent.agent.id
+                  ? agent.agent.name
+                  : input.agentId === alternateAgent.agent.id
+                    ? alternateAgent.agent.name
+                    : foreignAgent.agent.name,
+              role: null
+            },
+            project: { projectId, name: null }
+          },
           initialPullRequestReviewId: input.reviewId,
           bindInitialPullRequestReviewWithClient: async (
             client,
@@ -376,6 +586,26 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
       runnerDeploymentId: deploymentId,
       runnerDeviceId: deviceId,
       idempotencyKey: randomUUID(),
+      initialPrompt: "Review the selected pull request and report findings.",
+      initialPromptClientUserMessageId: randomUUID(),
+      initialAgentId: agent.agent.id,
+      initialExpectedAgentVersion: agent.agent.currentVersion,
+      initialPersonalAgentContext: {
+        schemaVersion: 1,
+        identity: {
+          agentId: agent.agent.id,
+          version: agent.agent.currentVersion,
+          identityVersionId: (
+            await pool.query<{ id: string }>(
+              "select id from personal_agent_identity_versions where owner_user_id=$1 and agent_id=$2 and version=$3",
+              [ownerId, agent.agent.id, agent.agent.currentVersion]
+            )
+          ).rows[0]!.id,
+          name: agent.agent.name,
+          role: null
+        },
+        project: { projectId: null, name: null }
+      },
       initialPullRequestReviewId: created.id,
       bindInitialPullRequestReviewWithClient: async (client, executionId) => {
         const bound = await repository.bindPullRequestReviewExecutionWithClient(
@@ -393,22 +623,10 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
         if (!bound) throw new Error("PR execution binding failed");
       }
     });
-    await repository.addPersonalAgentParticipant(actor, {
-      conversationId: managedStart.execution.id,
-      agentId: agent.agent.id,
-      makeActive: true
-    });
-    const job = await repository.createPersonalAgentExecutionJob(actor, {
-      conversationId: managedStart.execution.id,
-      commandId: managedStart.command.id,
-      attribution: {
-        kind: "agent",
-        agentId: agent.agent.id,
-        agentVersion: agent.agent.currentVersion
-      },
-      projectId: null
-    });
-    const leaseToken = randomUUID();
+    const boundReview = (await repository.getPullRequestReview(actor, {
+      reviewId: created.id
+    }))!;
+    const startLeaseToken = randomUUID();
     await pool.query(
       "update managed_conversation_executions set state='running',runner_id=$2,runner_lease_expires_at=now()+interval '5 minutes',logical_session_id=$3,provider_thread_id=$4,started_at=now() where id=$1 and owner_user_id=$5",
       [
@@ -421,39 +639,47 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
     );
     await pool.query(
       "update managed_conversation_commands set state='dispatching',lease_token=$2,lease_expires_at=now()+interval '5 minutes',dispatching_at=now() where id=$1 and owner_user_id=$3",
-      [managedStart.command.id, leaseToken, ownerId]
+      [managedStart.command.id, startLeaseToken, ownerId]
     );
-    const attempt = await repository.createPersonalAgentExecutionAttempt(
-      actor,
-      {
-        jobId: job.id,
+    expect(
+      await repository.completeManagedConversationCommand({
         commandId: managedStart.command.id,
-        attemptNumber: 1,
-        attribution: {
-          kind: "agent",
-          agentId: agent.agent.id,
-          agentVersion: agent.agent.currentVersion
-        },
-        provider: "codex",
-        model: "test-model",
-        aiClientInstanceId: "codex.default",
-        reasoningEffort: null,
-        permissionMode: "supervised",
-        managedExecutionId: managedStart.execution.id,
-        managedExecutionGeneration: managedStart.execution.executionGeneration,
-        status: "running",
-        outcome: null,
-        startedAt: new Date().toISOString(),
-        completedAt: null
-      }
+        leaseToken: startLeaseToken,
+        result: { started: true }
+      })
+    ).toBe(true);
+    const initialPromptRow = await pool.query<{
+      id: string;
+      encrypted_payload: EncryptedPayloadEnvelope;
+    }>(
+      `select id,encrypted_payload from managed_conversation_commands
+        where id=(select (result->>'initialPromptCommandId')::uuid
+                    from managed_conversation_commands where id=$1)
+          and owner_user_id=$2 and execution_id=$3 and command_kind='prompt'`,
+      [managedStart.command.id, ownerId, managedStart.execution.id]
     );
-    await repository.completePersonalAgentExecutionAttempt({
-      actor,
-      jobId: job.id,
-      attemptId: attempt.id,
-      outcome: "succeeded",
-      eventId: randomUUID()
+    expect(initialPromptRow.rows).toHaveLength(1);
+    const promptCommandId = initialPromptRow.rows[0]!.id;
+    const promptPayload = JSON.parse(
+      await decryptEnvelopeToUtf8(
+        provider,
+        initialPromptRow.rows[0]!.encrypted_payload
+      )
+    ) as Record<string, unknown>;
+    expect(promptPayload).toMatchObject({
+      pullRequestReviewId: created.id,
+      pullRequestReviewRevision: boundReview.revision,
+      personalAgent: {
+        jobId: null,
+        agentId: agent.agent.id,
+        agentVersion: agent.agent.currentVersion
+      }
     });
+    const leaseToken = randomUUID();
+    await pool.query(
+      "update managed_conversation_commands set state='dispatching',lease_token=$2,lease_expires_at=now()+interval '5 minutes',dispatching_at=now() where id=$1 and owner_user_id=$3",
+      [promptCommandId, leaseToken, ownerId]
+    );
 
     const findings = [
       {
@@ -470,9 +696,9 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
       reviewId: created.id,
       executionId: managedStart.execution.id,
       executionGeneration: managedStart.execution.executionGeneration,
-      commandId: managedStart.command.id,
+      commandId: promptCommandId,
       leaseToken,
-      agentJobId: job.id,
+      expectedReviewRevision: boundReview.revision,
       baseSha: created.expectedBaseSha,
       headSha: created.expectedHeadSha,
       result: {
@@ -483,21 +709,97 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
     };
     await pool.query(
       "update managed_conversation_commands set lease_expires_at=now()-interval '1 second' where id=$1 and owner_user_id=$2",
-      [managedStart.command.id, ownerId]
+      [promptCommandId, ownerId]
     );
     expect(
       await repository.markPullRequestReviewCompleted(proofInput)
     ).toBeNull();
     await pool.query(
       "update managed_conversation_commands set lease_expires_at=now()+interval '5 minutes' where id=$1 and owner_user_id=$2",
-      [managedStart.command.id, ownerId]
+      [promptCommandId, ownerId]
+    );
+    const mismatchedMarker = await provider.encrypt({
+      plaintext: JSON.stringify({
+        ...promptPayload,
+        pullRequestReviewRevision: boundReview.revision + 1
+      }),
+      scope: {
+        tenantId: ownerId,
+        objectClass: "managed_conversation_prompt"
+      },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: promptCommandId
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: {
+        ownerUserId: ownerId,
+        executionId: managedStart.execution.id,
+        commandId: promptCommandId
+      }
+    });
+    await pool.query(
+      "update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1 and owner_user_id=$3",
+      [promptCommandId, JSON.stringify(mismatchedMarker), ownerId]
     );
     expect(
-      await repository.markPullRequestReviewCompleted({
-        ...proofInput,
-        agentJobId: randomUUID()
-      })
+      await repository.markPullRequestReviewCompleted(proofInput)
     ).toBeNull();
+    const restoredMarker = await provider.encrypt({
+      plaintext: JSON.stringify(promptPayload),
+      scope: {
+        tenantId: ownerId,
+        objectClass: "managed_conversation_prompt"
+      },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: promptCommandId
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: {
+        ownerUserId: ownerId,
+        executionId: managedStart.execution.id,
+        commandId: promptCommandId
+      }
+    });
+    await pool.query(
+      "update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1 and owner_user_id=$3",
+      [promptCommandId, JSON.stringify(restoredMarker), ownerId]
+    );
+    const mismatchedAgentVersion = await provider.encrypt({
+      plaintext: JSON.stringify({
+        ...promptPayload,
+        personalAgent: {
+          ...(promptPayload.personalAgent as Record<string, unknown>),
+          agentVersion: agent.agent.currentVersion + 1
+        }
+      }),
+      scope: {
+        tenantId: ownerId,
+        objectClass: "managed_conversation_prompt"
+      },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: promptCommandId
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: {
+        ownerUserId: ownerId,
+        executionId: managedStart.execution.id,
+        commandId: promptCommandId
+      }
+    });
+    await pool.query(
+      "update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1 and owner_user_id=$3",
+      [promptCommandId, JSON.stringify(mismatchedAgentVersion), ownerId]
+    );
+    expect(
+      await repository.markPullRequestReviewCompleted(proofInput)
+    ).toBeNull();
+    await pool.query(
+      "update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1 and owner_user_id=$3",
+      [promptCommandId, JSON.stringify(restoredMarker), ownerId]
+    );
     expect(
       await repository.markPullRequestReviewCompleted({
         ...proofInput,
@@ -530,10 +832,78 @@ describe.skipIf(!baseUrl)("Pull request authority (PostgreSQL)", () => {
       body: "Agent review draft",
       findings
     });
-    const storedDraft = await pool.query<{ encrypted_payload: object }>(
-      "select encrypted_payload from pull_request_review_drafts where review_id=$1 and owner_user_id=$2 and revision=1",
+    const recoveryLeaseToken = randomUUID();
+    const recoveredProofInput = {
+      ...proofInput,
+      leaseToken: recoveryLeaseToken
+    };
+    await pool.query(
+      "update managed_conversation_commands set lease_token=$2,lease_expires_at=now()+interval '5 minutes' where id=$1 and owner_user_id=$3",
+      [promptCommandId, recoveryLeaseToken, ownerId]
+    );
+    expect(
+      await repository.markPullRequestReviewCompleted(recoveredProofInput)
+    ).toEqual(agentDraft);
+    expect(
+      await repository.markPullRequestReviewCompleted({
+        ...recoveredProofInput,
+        result: {
+          ...recoveredProofInput.result,
+          body: "Different private result"
+        }
+      })
+    ).toBeNull();
+    expect(
+      await repository.markPullRequestReviewCompleted(proofInput)
+    ).toBeNull();
+    const storedDraft = await pool.query<{
+      encrypted_payload: object;
+      source_execution_id: string;
+      source_command_id: string;
+      source_agent_version: number;
+      source_provider: string;
+      source_ai_client_instance_id: string;
+      source_model: string;
+      source_review_revision: number;
+      source_lease_token_digest: string;
+      source_result_digest: string;
+    }>(
+      `select encrypted_payload,source_execution_id,source_command_id,
+              source_agent_version,source_provider,source_ai_client_instance_id,
+              source_model,source_review_revision,source_lease_token_digest,
+              source_result_digest
+         from pull_request_review_drafts
+        where review_id=$1 and owner_user_id=$2 and revision=1`,
       [created.id, ownerId]
     );
+    expect(storedDraft.rows[0]).toMatchObject({
+      source_execution_id: managedStart.execution.id,
+      source_command_id: promptCommandId,
+      source_agent_version: agent.agent.currentVersion,
+      source_provider: "codex",
+      source_ai_client_instance_id: "codex.default",
+      source_model: "test-model",
+      source_review_revision: boundReview.revision,
+      source_lease_token_digest: createHash("sha256")
+        .update(leaseToken)
+        .digest("hex"),
+      source_result_digest: createHash("sha256")
+        .update(
+          JSON.stringify({
+            event: "COMMENT",
+            body: "Agent review draft",
+            findings: [
+              {
+                path: "src/widget.ts",
+                line: 17,
+                side: "RIGHT",
+                body: "Agent inline finding"
+              }
+            ]
+          })
+        )
+        .digest("hex")
+    });
     expect(JSON.stringify(storedDraft.rows[0])).not.toContain(
       "Agent review draft"
     );

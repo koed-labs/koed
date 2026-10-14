@@ -14,7 +14,14 @@ import {
   assertPullRequestPublicationScope,
   validatePullRequestInlineFindings
 } from "./pull-request-publication.js";
+import { createPullRequestInboxScheduler } from "./pull-request-inbox-scheduler.js";
 export interface PullRequestRunnerAuthority {
+  getOwnerUserId(): Promise<string>;
+  requestInboxRefresh(input: {
+    requestId: string;
+    account: { id: string; login: string };
+    connectionGeneration: number;
+  }): Promise<PullRequestOperationRecord>;
   claim(input: {
     runnerId: string;
     limit: number;
@@ -41,19 +48,41 @@ export interface PullRequestRunnerAuthority {
   ): Promise<PullRequestFrozenReview>;
   getOperation(id: string): Promise<PullRequestOperationRecord>;
   markReviewed(input: {
-    ownerUserId: string;
-    agentJobId: string;
     reviewId: string;
     executionId: string;
     executionGeneration: number;
     commandId: string;
     leaseToken: string;
+    expectedReviewRevision: number;
     baseSha: string;
     headSha: string;
-    body?: string;
-    findings?: PullRequestFinding[];
+    result: {
+      event: "COMMENT";
+      body: string;
+      findings: PullRequestFinding[];
+    };
   }): Promise<void>;
 }
+const PULL_REQUEST_INBOX_COMMAND_TIMEOUT_MS = 3_000;
+const PULL_REQUEST_INBOX_REPOSITORY_BATCH = 8;
+const PULL_REQUEST_INBOX_REPOSITORY_MAX_BYTES = 64 * 1024;
+const PULL_REQUEST_INBOX_IDENTITY_MAX_BYTES = 8 * 1024;
+const parseGlobalInboxCursor = (cursor: string | null) => {
+  if (cursor === null) return { page: 1, repositoryOffset: 0 };
+  const repoBatch = /^inbox:(\d+):(\d+)$/.exec(cursor);
+  const page = repoBatch ? Number(repoBatch[1]) : Number(cursor);
+  const repositoryOffset = repoBatch ? Number(repoBatch[2]) : 0;
+  if (
+    !Number.isSafeInteger(page) ||
+    page < 1 ||
+    page > 1_000 ||
+    !Number.isSafeInteger(repositoryOffset) ||
+    repositoryOffset < 0 ||
+    repositoryOffset > 60
+  )
+    throw new Error("PullRequestInboxCursorInvalid");
+  return { page, repositoryOffset };
+};
 const observedPullRequest = (value: Record<string, unknown>) => {
   const { baseSha, headSha, state, author, merged } = value;
   if (
@@ -114,7 +143,8 @@ export const createPullRequestRunner = (options: {
     expected?: {
       account: { id: string; login: string };
       connectionGeneration: number;
-    }
+    },
+    identityTimeoutMs?: number
   ) => {
     const connection = await connections.read(operation.ownerUserId);
     if (!connection.account) throw new Error("PullRequestConnectionRequired");
@@ -126,11 +156,51 @@ export const createPullRequestRunner = (options: {
         expected.connectionGeneration !== connection.generation)
     )
       throw new Error("PullRequestConnectionChanged");
-    const identity = await driver.readIdentity(connection.account.login);
+    const identity =
+      identityTimeoutMs === undefined
+        ? await driver.readIdentity(connection.account.login)
+        : await driver.readIdentity(
+            connection.account.login,
+            identityTimeoutMs
+          );
     if (String(identity.id) !== connection.account.id)
       throw new Error("PullRequestConnectionChanged");
     return connection;
   };
+  const assertConnectionCurrent = async (
+    ownerUserId: string,
+    expected: {
+      account: { id: string; login: string };
+      connectionGeneration: number;
+    }
+  ) => {
+    const current = await connections.read(ownerUserId);
+    if (
+      !current.account ||
+      current.generation !== expected.connectionGeneration ||
+      current.account.id !== expected.account.id ||
+      current.account.login.toLowerCase() !==
+        expected.account.login.toLowerCase()
+    )
+      throw new Error("PullRequestConnectionChanged");
+  };
+  const inboxScheduler = createPullRequestInboxScheduler({
+    targetDeviceId: options.deviceId,
+    targetDeploymentId: options.deploymentId,
+    account: async () => {
+      const ownerUserId = await options.authority.getOwnerUserId();
+      const connection = await connections.read(ownerUserId);
+      return {
+        account: connection.account,
+        connectionGeneration: connection.generation
+      };
+    },
+    requestRefresh: (input) => options.authority.requestInboxRefresh(input),
+    onError: (error) =>
+      options.onError?.(
+        error instanceof Error ? error.name : "PullRequestInboxRefreshError"
+      )
+  });
   const verifyReview = async (
     operation: PullRequestOperationRecord,
     id: string,
@@ -251,6 +321,7 @@ export const createPullRequestRunner = (options: {
         id: String(identity.id),
         login: identity.login
       });
+      void inboxScheduler.trigger("reconnect").catch(() => undefined);
       return {
         state: "connected",
         account: connection.account,
@@ -260,6 +331,7 @@ export const createPullRequestRunner = (options: {
     if (payload.kind === "disconnect") {
       await selected(operation, payload);
       const connection = await connections.select(operation.ownerUserId, null);
+      void inboxScheduler.trigger("reconnect").catch(() => undefined);
       return {
         state: "disconnected",
         account: null,
@@ -271,16 +343,31 @@ export const createPullRequestRunner = (options: {
       payload.kind === "inbox" ||
       payload.kind === "pull_request_details"
     ) {
-      const connection = await selected(operation, payload),
+      const connection = await selected(
+          operation,
+          payload,
+          payload.kind === "inbox"
+            ? PULL_REQUEST_INBOX_COMMAND_TIMEOUT_MS
+            : undefined
+        ),
         login = connection.account!.login;
+      const globalInboxCursor =
+        payload.kind === "inbox" && !payload.repository
+          ? parseGlobalInboxCursor(payload.cursor)
+          : null;
       const page = Number(
-        payload.kind === "pull_request_details" ? 1 : (payload.cursor ?? 1)
+        payload.kind === "pull_request_details"
+          ? 1
+          : (globalInboxCursor?.page ?? payload.cursor ?? 1)
       );
-      if (payload.kind === "repositories")
-        return await driver.readRepositories({
+      if (payload.kind === "repositories") {
+        const result = await driver.readRepositories({
           expectedAccountLogin: login,
           page
         });
+        await assertConnectionCurrent(operation.ownerUserId, payload);
+        return result;
+      }
       if (payload.kind === "inbox") {
         if (payload.repository) {
           const verified = await driver.readRepository({
@@ -294,6 +381,7 @@ export const createPullRequestRunner = (options: {
             repo: payload.repository.fullName,
             page
           });
+          await assertConnectionCurrent(operation.ownerUserId, payload);
           return {
             items: result.pullRequests.map((item) => ({
               ...item,
@@ -317,26 +405,64 @@ export const createPullRequestRunner = (options: {
         }
         const result = await driver.readInbox({
           expectedAccountLogin: login,
-          page
+          page,
+          maxPages: 1
         });
-        const repositories: Awaited<
-          ReturnType<typeof driver.readRepository>
-        >[] = [];
-        const names = [...new Set(result.items.map((item) => item.repository))];
-        for (let offset = 0; offset < names.length; offset += 4)
-          repositories.push(
-            ...(await Promise.all(
-              names
-                .slice(offset, offset + 4)
-                .map((repo) =>
-                  driver.readRepository({ expectedAccountLogin: login, repo })
-                )
-            ))
-          );
+        await assertConnectionCurrent(operation.ownerUserId, payload);
+        const repositoryNames = [
+          ...new Set(result.items.map((item) => item.repository))
+        ];
+        const repositoryOffset = globalInboxCursor!.repositoryOffset;
+        if (repositoryOffset > repositoryNames.length)
+          throw new Error("PullRequestInboxCursorInvalid");
+        const repositoryBatchNames = repositoryNames.slice(
+          repositoryOffset,
+          repositoryOffset + PULL_REQUEST_INBOX_REPOSITORY_BATCH
+        );
+        const verifiedRepositoryResults = await Promise.allSettled(
+          repositoryBatchNames.map((repo) =>
+            driver.readRepository({
+              expectedAccountLogin: login,
+              repo,
+              commandTimeoutMs: PULL_REQUEST_INBOX_COMMAND_TIMEOUT_MS,
+              maxResponseBytes: PULL_REQUEST_INBOX_REPOSITORY_MAX_BYTES,
+              identityMaxResponseBytes: PULL_REQUEST_INBOX_IDENTITY_MAX_BYTES
+            })
+          )
+        );
+        const repositories = verifiedRepositoryResults.flatMap((entry) =>
+          entry.status === "fulfilled" ? [entry.value] : []
+        );
+        const failedRepository = verifiedRepositoryResults.find(
+          (entry) => entry.status === "rejected"
+        );
+        if (failedRepository?.status === "rejected")
+          throw failedRepository.reason;
+        const verifiedNames = new Set(
+          repositories.map((repository) => repository.fullName.toLowerCase())
+        );
+        const items = result.items.filter((item) =>
+          verifiedNames.has(item.repository.toLowerCase())
+        );
+        const nextRepositoryOffset =
+          repositoryOffset + repositoryBatchNames.length;
+        const repositoriesTruncated =
+          nextRepositoryOffset < repositoryNames.length;
+        const truncated = result.truncated || repositoriesTruncated;
+        const nextCursor = repositoriesTruncated
+          ? `inbox:${page}:${nextRepositoryOffset}`
+          : result.hasMore && page < 1_000
+            ? String(page + 1)
+            : null;
+        await assertConnectionCurrent(operation.ownerUserId, payload);
         return {
           ...result,
+          items,
           repositories,
-          nextCursor: result.hasMore ? String(page + 1) : null
+          repositoriesTruncated,
+          truncated,
+          hasMore: nextCursor !== null,
+          nextCursor
         };
       }
       const repository = await driver.readRepository({
@@ -359,6 +485,7 @@ export const createPullRequestRunner = (options: {
         repository: repository.fullName,
         koedHome: options.koedHome
       });
+      await assertConnectionCurrent(operation.ownerUserId, payload);
       return {
         ...detail,
         repository: {
@@ -781,10 +908,14 @@ export const createPullRequestRunner = (options: {
     getReviewForExecution: options.authority.getReviewForExecution,
     markReviewed: options.authority.markReviewed,
     start() {
-      if (!timer && !inFlight) schedule();
+      if (!timer && !inFlight) {
+        inboxScheduler.start();
+        schedule();
+      }
     },
     async stop() {
       stopped = true;
+      inboxScheduler.stop();
       if (timer) clearTimeout(timer);
       timer = null;
       await inFlight;

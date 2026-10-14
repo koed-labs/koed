@@ -21,12 +21,14 @@ it("accepts explicit findings only at inspected diff coordinates", () => {
     }) +
     "\n```";
   expect(pullRequestReviewOutput(text, diff)).toEqual({
+    structuredReview: true,
     body: "Check this change.",
     findings: [
       { path: "src/code.ts", line: 10, side: "RIGHT", body: "Valid location." }
     ]
   });
   expect(pullRequestReviewOutput("ordinary prose", diff)).toEqual({
+    structuredReview: false,
     body: "ordinary prose",
     findings: []
   });

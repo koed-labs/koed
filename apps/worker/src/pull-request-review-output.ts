@@ -10,6 +10,7 @@ export const pullRequestReviewOutput = (text: string, diff: string) => {
   if (!output) {
     const body = stripPersonalMemoryAttributionFooter(text, { mode: "final" });
     return {
+      structuredReview: false,
       body:
         body.length <= 65_536
           ? body
@@ -46,6 +47,7 @@ export const pullRequestReviewOutput = (text: string, diff: string) => {
       }
     });
   return {
+    structuredReview: true,
     body: stripPersonalMemoryAttributionFooter(output.body, { mode: "final" }),
     findings
   };

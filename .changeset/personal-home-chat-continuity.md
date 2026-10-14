@@ -41,3 +41,5 @@ Share local and hosted Personal recipient validation for model, reasoning, permi
 Restore owner-approved Agent execution from Team channel requests through the existing native conversation and command lifecycle. Keep private review, durable request status, owner-only controls and explicit question/result sharing, while preserving legacy request history. Draft native request summaries from the exact accepted command rather than unrelated private follow-ups.
 
 Project native Agent activity into Public Square without creating another Job lifecycle. Preserve legacy history, owner-reviewed briefs for each Team, private conversation boundaries and honest queued, waiting, offline and uncertain states.
+
+Complete Pull Request reviews through native conversation commands and editable drafts, preserving exact revision, runner and GitHub account checks. Discover new Pull Requests every five minutes through shared, bounded metadata reads, with manual refresh and visible partial coverage. Keep follow-up chat separate from explicit review refreshes and retain confirmation before GitHub publication.

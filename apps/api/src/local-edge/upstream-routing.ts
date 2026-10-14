@@ -789,6 +789,21 @@ export const assertUpstreamOperationPathAllowed = (
         parsed.searchParams.size === 0
       )
         return;
+      if (pathname === "/v1/pull-requests/inbox-snapshot" && method === "GET") {
+        if (
+          [...parsed.searchParams.keys()].some(
+            (key) =>
+              ![
+                "targetDeviceId",
+                "targetDeploymentId",
+                "accountId",
+                "connectionGeneration"
+              ].includes(key)
+          )
+        )
+          deny();
+        return;
+      }
       const list =
         pathname === "/v1/pull-requests" ||
         pathname === "/v1/pull-requests/operations";
@@ -833,6 +848,7 @@ export const assertUpstreamOperationPathAllowed = (
         ) ||
           matches(`^/v1/pull-requests/operations/${id}/cancel$`) ||
           pathname === "/v1/pull-requests/runner/operations/claim" ||
+          pathname === "/v1/pull-requests/runner/inbox-refresh" ||
           matches(
             `^/v1/pull-requests/runner/operations/${id}/(?:heartbeat|complete|fail)$`
           ) ||

@@ -46,6 +46,15 @@ export class PullRequestsFixture {
     [];
   private readonly operations = new Map<string, Record<string, unknown>>();
   private nextOperation = 1;
+  private partialInbox = false;
+  usePartialInbox() {
+    this.partialInbox = true;
+    for (const [id, operation] of this.operations) {
+      const payload = operation.payload as Record<string, unknown>;
+      if (payload.kind === "inbox" && payload.repository === null)
+        this.operations.delete(id);
+    }
+  }
   private otherRunnerFirst = false;
   putOtherRunnerFirst() {
     this.otherRunnerFirst = true;
@@ -109,6 +118,44 @@ export class PullRequestsFixture {
       url.pathname.replace(/^\/(?:v1|studio-api)\/pull-requests/, "") || "/";
     const body = request.postDataJSON() as Record<string, unknown> | null;
     this.requests.push({ method: request.method(), path, body });
+    if (path === "/inbox-snapshot" && request.method() === "GET") {
+      const payload = {
+        kind: "inbox",
+        account,
+        connectionGeneration: 4,
+        repository: null,
+        cursor: null
+      };
+      // The runner creates this metadata snapshot independently of Studio windows.
+      const inboxOperations = [...this.operations.values()].filter(
+        (operation) => {
+          const request = operation.payload as Record<string, unknown>;
+          return (
+            request.kind === "inbox" &&
+            request.repository === null &&
+            request.cursor === null
+          );
+        }
+      );
+      const operation = this.connected
+        ? (inboxOperations.findLast(
+            (operation) => operation.state === "completed"
+          ) ??
+          this.operation(
+            "00000000-0000-4000-8000-999999999999",
+            payload,
+            this.result(payload),
+            "completed"
+          ))
+        : null;
+      const pendingOperation =
+        inboxOperations.findLast(
+          (operation) =>
+            operation.state === "pending" || operation.state === "claimed"
+        ) ?? null;
+      await route.fulfill({ json: { operation, pendingOperation } });
+      return;
+    }
     if (path === "/operations" && request.method() === "POST") {
       const payload = (body?.payload ?? {}) as Record<string, unknown>;
       const id = `00000000-0000-4000-8000-${String(this.nextOperation++).padStart(12, "0")}`;
@@ -610,7 +657,20 @@ export class PullRequestsFixture {
               origin: "authored"
             }
           ],
-          hasMore: false,
+          hasMore:
+            this.partialInbox &&
+            payload.repository === null &&
+            payload.cursor === null,
+          nextCursor:
+            this.partialInbox &&
+            payload.repository === null &&
+            payload.cursor === null
+              ? "inbox:1:8"
+              : null,
+          truncated:
+            this.partialInbox &&
+            payload.repository === null &&
+            payload.cursor === null,
           teamRequestsIncluded: false,
           limitations: []
         };

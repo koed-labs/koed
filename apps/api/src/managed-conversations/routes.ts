@@ -387,6 +387,8 @@ const promptSchema = z
     prompt: z.string().trim().min(1).max(256_000),
     agentId: z.uuid().optional(),
     expectedAgentVersion: z.number().int().positive().optional(),
+    pullRequestReviewId: z.uuid().optional(),
+    expectedPullRequestReviewRevision: z.number().int().positive().optional(),
     purpose: z.literal("team_summary_draft").optional(),
     teamSummary: z
       .object({
@@ -418,6 +420,19 @@ const promptSchema = z
       .optional()
   })
   .strict()
+  .refine(
+    (input) =>
+      (input.pullRequestReviewId === undefined) ===
+        (input.expectedPullRequestReviewRevision === undefined) &&
+      (!input.pullRequestReviewId ||
+        (Boolean(input.agentId) &&
+          input.purpose === undefined &&
+          input.settingsChange === undefined)),
+    {
+      message:
+        "A review refresh requires its selected Agent and review revision"
+    }
+  )
   .refine(
     (input) =>
       input.selectedResourceHostedInstanceId === undefined ||
@@ -3762,6 +3777,33 @@ export const registerManagedConversationRoutes = (
           { statusCode: 409 }
         );
       }
+      if (input.pullRequestReviewId) {
+        const review = await repository.getPullRequestReviewForExecution(
+          { userId: user.id },
+          {
+            executionId,
+            ownerUserId: user.id,
+            runnerDeviceId: execution.runnerDeviceId,
+            runnerDeploymentId: execution.runnerDeploymentId
+          }
+        );
+        if (
+          !review ||
+          review.id !== input.pullRequestReviewId ||
+          review.revision !== input.expectedPullRequestReviewRevision ||
+          review.agentId !== input.agentId ||
+          review.agentVersion !== agentContext?.expectedAgentVersion ||
+          review.workMode !== "review" ||
+          execution.executionGeneration !== input.executionGeneration
+        ) {
+          throw Object.assign(
+            new Error(
+              "The selected Pull Request review changed. Refresh before reviewing again."
+            ),
+            { statusCode: 409 }
+          );
+        }
+      }
       const terminalContexts = (input.terminalContextReferences ?? []).map(
         (contextReference) =>
           context.managedConversations.terminalRuntime.resolveContext({
@@ -3826,6 +3868,13 @@ export const registerManagedConversationRoutes = (
             ? {
                 serverPurpose: input.purpose,
                 teamSummary: input.teamSummary!
+              }
+            : {}),
+          ...(input.pullRequestReviewId
+            ? {
+                pullRequestReviewId: input.pullRequestReviewId,
+                expectedPullRequestReviewRevision:
+                  input.expectedPullRequestReviewRevision
               }
             : {}),
           fileMentionCommandIds: input.fileMentionCommandIds,

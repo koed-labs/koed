@@ -556,6 +556,9 @@ export interface ManagedConversationRepository {
       agentId?: string;
       expectedAgentVersion?: number;
       personalAgentContext?: PersonalAgentExecutionContext;
+      /** Server-authorized native PR review prompt for this exact review. */
+      pullRequestReviewId?: string;
+      expectedPullRequestReviewRevision?: number;
       serverPurpose?: "team_summary_draft";
       teamSummary?: { teamId: string; requestId: string; jobId?: string };
       fileMentionCommandIds?: string[];
@@ -672,7 +675,7 @@ export interface ManagedConversationRepository {
       executionId: string;
       executionGeneration: number;
       providerTurnId?: string;
-      /** Keep encrypted partial text when a prompt's outcome is uncertain. */
+      /** Keep encrypted provider output available after prompt capture fails. */
       preserveTransientOutput?: boolean;
     }
   ): Promise<number>;
@@ -1781,6 +1784,8 @@ export const createManagedConversationRepository = (
     personalAgentContext?: PersonalAgentExecutionContext;
     personalAgentChatContextText?: string | null;
     privateTeamAgentReview?: boolean;
+    pullRequestReviewId?: string;
+    pullRequestReviewRevision?: number;
     serverPurpose?: "team_summary_draft";
     teamSummary?: { teamId: string; requestId: string; jobId?: string };
   }) =>
@@ -1813,6 +1818,12 @@ export const createManagedConversationRepository = (
           : {}),
         ...(input.privateTeamAgentReview
           ? { privateTeamAgentReview: true }
+          : {}),
+        ...(input.pullRequestReviewId
+          ? {
+              pullRequestReviewId: input.pullRequestReviewId,
+              pullRequestReviewRevision: input.pullRequestReviewRevision
+            }
           : {}),
         ...(input.serverPurpose === "team_summary_draft"
           ? {
@@ -3195,7 +3206,11 @@ export const createManagedConversationRepository = (
           (!input.initialPrompt?.trim() ||
             !input.initialPromptClientUserMessageId)) ||
         (input.initialPullRequestReviewId !== undefined &&
-          !input.bindInitialPullRequestReviewWithClient) ||
+          (!input.bindInitialPullRequestReviewWithClient ||
+            input.initialAgentId === undefined ||
+            input.initialExpectedAgentVersion === undefined ||
+            input.initialPersonalAgentContext === undefined ||
+            !input.initialPrompt?.trim())) ||
         (input.initialTeamAgentRequest !== undefined &&
           !input.bindInitialTeamAgentRequestWithClient) ||
         (input.initialPromptClientUserMessageId !== undefined &&
@@ -3616,11 +3631,39 @@ export const createManagedConversationRepository = (
             };
           }
         }
+        let initialPullRequestReviewRevision: number | undefined;
         if (input.initialPullRequestReviewId) {
           await input.bindInitialPullRequestReviewWithClient!(
             client,
             executionId
           );
+          const boundReview = await client.query<{ revision: number }>(
+            `select revision
+               from pull_request_reviews
+              where owner_user_id = $1
+                and id = $2
+                and execution_id = $3
+                and agent_id = $4
+                and agent_version = $5
+                and target_device_id = $6
+                and target_deployment_id = $7
+                and work_mode = 'review'
+                and status = 'active'
+              for share`,
+            [
+              actor.userId,
+              input.initialPullRequestReviewId,
+              executionId,
+              input.initialAgentId,
+              input.initialExpectedAgentVersion,
+              input.runnerDeviceId,
+              input.runnerDeploymentId
+            ]
+          );
+          initialPullRequestReviewRevision = boundReview.rows[0]?.revision;
+          if (!initialPullRequestReviewRevision) {
+            throw statusError("Pull Request review prompt is unavailable", 409);
+          }
         }
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
@@ -3641,6 +3684,12 @@ export const createManagedConversationRepository = (
                 : {}),
               ...(input.initialTeamAgentRequest
                 ? { privateTeamAgentReview: true }
+                : {}),
+              ...(input.initialPullRequestReviewId
+                ? {
+                    pullRequestReviewId: input.initialPullRequestReviewId,
+                    pullRequestReviewRevision: initialPullRequestReviewRevision
+                  }
                 : {}),
               settings: {
                 model: input.model,
@@ -4247,6 +4296,15 @@ export const createManagedConversationRepository = (
           (input.expectedAgentVersion === undefined) ||
         (input.agentId === undefined) !==
           (input.personalAgentContext === undefined) ||
+        (input.pullRequestReviewId !== undefined &&
+          (!UUID_PATTERN.test(input.pullRequestReviewId) ||
+            !input.agentId ||
+            !input.personalAgentContext)) ||
+        (input.pullRequestReviewId === undefined) !==
+          (input.expectedPullRequestReviewRevision === undefined) ||
+        (input.expectedPullRequestReviewRevision !== undefined &&
+          (!Number.isSafeInteger(input.expectedPullRequestReviewRevision) ||
+            input.expectedPullRequestReviewRevision < 1)) ||
         (input.serverPurpose === undefined) !==
           (input.teamSummary === undefined) ||
         (input.serverPurpose === "team_summary_draft" &&
@@ -4374,6 +4432,38 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Managed Conversation is not writable", 409);
         }
+        let pullRequestReviewRevision: number | undefined;
+        if (input.pullRequestReviewId) {
+          const authorizedReview = await client.query<{ revision: number }>(
+            `select revision
+               from pull_request_reviews
+              where owner_user_id = $1
+                and id = $2
+                and execution_id = $3
+                and agent_id = $4
+                and agent_version = $5
+                and target_device_id = $6
+                and target_deployment_id = $7
+                and work_mode = 'review'
+                and status in ('active', 'stale', 'failed')
+                and revision = $8
+              for share`,
+            [
+              actor.userId,
+              input.pullRequestReviewId,
+              input.executionId,
+              input.agentId,
+              input.expectedAgentVersion,
+              current.runner_device_id,
+              current.runner_deployment_id,
+              input.expectedPullRequestReviewRevision
+            ]
+          );
+          if (!authorizedReview.rows[0]) {
+            throw statusError("Pull Request review prompt is unavailable", 409);
+          }
+          pullRequestReviewRevision = authorizedReview.rows[0].revision;
+        }
         const allowArchivedResume = true;
         await assertNoPendingManagedConversationProjectMove(
           client,
@@ -4451,6 +4541,13 @@ export const createManagedConversationRepository = (
               ? {
                   serverPurpose: input.serverPurpose,
                   teamSummary: input.teamSummary
+                }
+              : {}),
+            ...(input.pullRequestReviewId
+              ? {
+                  pullRequestReviewId: input.pullRequestReviewId,
+                  expectedPullRequestReviewRevision:
+                    input.expectedPullRequestReviewRevision
                 }
               : {}),
             ...(input.agentId
@@ -4809,6 +4906,12 @@ export const createManagedConversationRepository = (
           settings,
           ...(personalAgent ? { personalAgent } : {}),
           ...(personalAgentContext ? { personalAgentContext } : {}),
+          ...(input.pullRequestReviewId
+            ? {
+                pullRequestReviewId: input.pullRequestReviewId,
+                pullRequestReviewRevision
+              }
+            : {}),
           ...(input.personalAgentChatContextText
             ? {
                 personalAgentChatContextText: input.personalAgentChatContextText
@@ -7146,9 +7249,12 @@ export const createManagedConversationRepository = (
                   | "auto_edit"
                   | "auto"
                   | "full_access";
+                runner_device_id: string;
+                runner_deployment_id: string;
               }>(
                 `select execution_generation, state, model,
-                        reasoning_effort, permission_mode
+                        reasoning_effort, permission_mode,
+                        runner_device_id, runner_deployment_id
                    from managed_conversation_executions
                   where owner_user_id = $1 and id = $2
                   for update`,
@@ -7213,6 +7319,61 @@ export const createManagedConversationRepository = (
                     409
                   );
                 }
+                const pullRequestReviewId = startPayload?.pullRequestReviewId;
+                const pullRequestReviewRevision =
+                  startPayload?.pullRequestReviewRevision;
+                const hasPullRequestReviewMarker =
+                  pullRequestReviewId !== undefined ||
+                  pullRequestReviewRevision !== undefined;
+                if (hasPullRequestReviewMarker) {
+                  if (
+                    typeof pullRequestReviewId !== "string" ||
+                    !UUID_PATTERN.test(pullRequestReviewId) ||
+                    typeof pullRequestReviewRevision !== "number" ||
+                    !Number.isSafeInteger(pullRequestReviewRevision) ||
+                    pullRequestReviewRevision < 1 ||
+                    !startAgent ||
+                    !startAgentContext
+                  ) {
+                    throw statusError(
+                      "Pull Request review start context is invalid",
+                      409
+                    );
+                  }
+                  const currentReview = await client.query<{
+                    revision: number;
+                  }>(
+                    `select revision
+                       from pull_request_reviews
+                      where owner_user_id = $1
+                        and id = $2
+                        and execution_id = $3
+                        and agent_id = $4
+                        and agent_version = $5
+                        and target_device_id = $6
+                        and target_deployment_id = $7
+                        and work_mode = 'review'
+                        and status = 'active'
+                        and revision = $8
+                      for share`,
+                    [
+                      row.owner_user_id,
+                      pullRequestReviewId,
+                      row.execution_id,
+                      startAgent.agentId,
+                      startAgent.agentVersion,
+                      current.runner_device_id,
+                      current.runner_deployment_id,
+                      pullRequestReviewRevision
+                    ]
+                  );
+                  if (!currentReview.rows[0]) {
+                    throw statusError(
+                      "Pull Request review changed before its prompt was queued",
+                      409
+                    );
+                  }
+                }
                 const settings: ManagedConversationSettings = {
                   model: current.model,
                   reasoningEffort: current.reasoning_effort,
@@ -7232,6 +7393,13 @@ export const createManagedConversationRepository = (
                       ? { selectedResourceHostedInstanceId }
                       : {}),
                     fileMentionCommandIds: [],
+                    ...(hasPullRequestReviewMarker
+                      ? {
+                          pullRequestReviewId,
+                          expectedPullRequestReviewRevision:
+                            pullRequestReviewRevision
+                        }
+                      : {}),
                     ...(startAgent
                       ? {
                           agentId: startAgent.agentId,
@@ -7261,6 +7429,12 @@ export const createManagedConversationRepository = (
                     : {}),
                   ...(startAgentContext
                     ? { personalAgentContext: startAgentContext }
+                    : {}),
+                  ...(hasPullRequestReviewMarker
+                    ? {
+                        pullRequestReviewId,
+                        pullRequestReviewRevision
+                      }
                     : {}),
                   ...(typeof startPayload?.personalAgentChatContextText ===
                   "string"

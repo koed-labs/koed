@@ -1,4 +1,4 @@
-> Current direction, 2026-10-14: [Orys source study](studio-orys-implementation-study.md) and [current integration status](studio-ui-integration-plan.md) supersede legacy Agent Job requirements below. Ticket 16 remains open for native review completion and lightweight five-minute inbox discovery. Earlier completion evidence describes its historical scope.
+> Current direction, 2026-10-14: [Orys source study](studio-orys-implementation-study.md) and [current integration status](studio-ui-integration-plan.md) supersede legacy Agent Job requirements below. Ticket 16 is implementing native review completion and lightweight five-minute inbox discovery. Live acceptance remains open. Earlier completion evidence describes its historical scope.
 
 # Current PR implementation scope (2026-10-02)
 
@@ -11,13 +11,13 @@ This section supersedes conflicting scope assumptions in the historical plan bel
   when needed. Keep credentials on the selected authorized computer.
 - Browse a combined authored/requested-review inbox with separate filters and
   authorized repository selection, including bounded details, code, checks and discussions.
-- Assign PR work to owned Agents through existing managed Conversations and Jobs.
+- Assign PR work to owned Agents through existing native managed Conversations and commands.
   Preserve private chat and encrypted history across revisions, restarts and devices.
-  Multiple Agents can review independently with separate Jobs and review drafts.
+  Multiple Agents can review independently with separate Conversations and review drafts.
 - Offer verified matching Project context; a Project is not required. Review exact
   base/head revisions in an isolated checkout, preserving the user's Project files.
-- Team Project review Jobs follow existing Public Square sharing rules. Personal
-  Jobs remain private and appear in Home and Agents activity.
+- Team Project reviews follow existing Public Square sharing rules. Personal
+  reviews remain private. Home and Agents activity rewiring belongs to Ticket 19.
 - Review is read-only by default. Explicit fix requests use existing permissions.
   Normal branch pushes require inspecting and confirming exact changes. No merge
   or non-fast-forward push feature is included.
@@ -34,6 +34,35 @@ This section supersedes conflicting scope assumptions in the historical plan bel
 Pipeline editors, extra notification designs and other Orys UI additions are not
 requirements of this implementation. Existing Agent/tool wiring remains authoritative.
 The API enforces permission and publication checks independently of disabled controls.
+
+## Native review and discovery wiring (Ticket 16)
+
+A native review prompt carries a server-authorized review ID and revision.
+The initial launch and the explicit Review latest action create this marker.
+Ordinary follow-up chat keeps its private Conversation and does not replace the editable review draft.
+The connected AI Client uses the supported Memory flow. Koed does not add a separate Agent Job or synthesis service.
+
+The worker accepts a structured review only after retaining the provider result and checkpoint.
+Draft storage verifies the exact command, live execution lease, Agent version, runner, review revision and base/head commits.
+The encrypted draft records native command provenance. Replaying the same result can acknowledge an existing draft under a valid replacement lease.
+A changed draft, result, account scope or review revision cannot reuse that acknowledgement.
+Missing, incomplete or invalid review output does not create a ready draft.
+
+The authorized runner registers discovery at startup and in five-minute cycles.
+Windows read the saved inbox snapshot. Manual refresh joins matching work already pending on that runner.
+The existing operation queue stores successful results and enforces one active global inbox refresh per owner, computer, GitHub account and connection generation.
+Transient failures retain the last successful authorized snapshot. Account, runner and connection changes invalidate results for the old selection.
+Discovery reads metadata. It does not clone repositories, start Agent reviews or publish to GitHub.
+Each attempt reads one authored search page and one requested-review search page, with up to 30 items each.
+It verifies metadata for at most eight repositories. Continuation cursors reach the remaining repositories before advancing the search page.
+The command caps total about 2.73 MiB across at most 31 GitHub API requests and 21 seconds of command time, plus process overhead.
+Studio reads pending snapshots every two seconds and idle snapshots every minute while visible. These reads do not request another GitHub refresh.
+The global search does not enumerate Team review requests. Studio shows that coverage limit and keeps explicit repository browsing available.
+Details, diffs, review execution and publication remain separate user actions.
+
+Migration 0081 adds native draft provenance and inbox scope indexes.
+It retains legacy drafts and encrypted results. Snapshot lookup fetches the result only for the selected matching operation.
+GitHub credentials stay on the authorized computer. Hosted discovery resolves the authenticated upstream User instead of assuming its ID matches the local User.
 
 ## Historical reference plan
 

@@ -1245,6 +1245,44 @@ describe("Team message upstream route grants", () => {
 });
 
 describe("Pull Request authority route allowlist", () => {
+  it("allows only the typed discovery and snapshot routes", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/runner/inbox-refresh"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/pull-requests/inbox-snapshot?accountId=42&connectionGeneration=1&targetDeviceId=one&targetDeploymentId=two"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/pull-requests/inbox-snapshot?token=secret"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/inbox-snapshot"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/runner/inbox-refresh?operation=push"
+      )
+    ).toThrow();
+  });
+
   const id = "11111111-1111-4111-8111-111111111111";
   it("admits only bounded typed PR routes under managed execution", () => {
     expect(() =>

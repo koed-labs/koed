@@ -92,12 +92,15 @@ test("GitHub PR inbox connects explicitly, separates authored and requested work
   await page.setViewportSize({ width: 1280, height: 900 });
 
   expect(
+    api.requests.some((request) => request.path === "/inbox-snapshot")
+  ).toBeTruthy();
+  expect(
     api.requests.some(
       (request) =>
         (request.body as { payload?: { kind?: string } })?.payload?.kind ===
         "inbox"
     )
-  ).toBeTruthy();
+  ).toBeFalsy();
   expect(
     api.requests.some(
       (request) =>
@@ -105,6 +108,46 @@ test("GitHub PR inbox connects explicitly, separates authored and requested work
         "pull_request_details"
     )
   ).toBeTruthy();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (request) =>
+            (request.body as { payload?: { kind?: string } })?.payload?.kind ===
+            "inbox"
+        ).length
+    )
+    .toBe(1);
+  expect(
+    api.requests.some(
+      (request) => request.path === "managed/" && request.method === "POST"
+    )
+  ).toBeFalsy();
+  api.usePartialInbox();
+  await page
+    .getByRole("combobox", { name: "Select repository", exact: true })
+    .click();
+  await page.getByRole("option", { name: "koed/studio" }).click();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "All repositories", exact: true })
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Load more pull requests", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      api.requests.some((request) => {
+        const payload = (
+          request.body as {
+            payload?: { cursor?: string; repository?: unknown };
+          }
+        )?.payload;
+        return payload?.cursor === "inbox:1:8" && payload.repository === null;
+      })
+    )
+    .toBeTruthy();
 });
 
 test("an existing authorized GitHub CLI account connects without browser sign-in", async ({

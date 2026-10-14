@@ -59,10 +59,13 @@ import { HostedManagedChats } from "../hosted/HostedManagedChats";
 import { RepositoryPicker } from "./RepositoryPicker";
 import {
   boundPullRequestListWidth,
+  mergePartialPullRequestInbox,
   matchesPullRequestFilter,
+  shouldApplyPullRequestInboxSnapshot,
   MAX_LIST_WIDTH,
   MIN_LIST_WIDTH,
-  type PullRequestFilter
+  type PullRequestFilter,
+  type PullRequestInboxSnapshotVersion
 } from "./PullRequestsView.helpers";
 import {
   getSessionStorage,
@@ -384,8 +387,10 @@ function sanitizeMessage(value: unknown, fallback: string) {
 }
 
 function mergePullRequests(current: PullRequest[], next: PullRequest[]) {
-  const merged = new Map(current.map((item) => [item.number, item]));
-  for (const item of next) merged.set(item.number, item);
+  const key = (item: PullRequest) =>
+    `${item.repositoryFullName ?? ""}#${item.number}`;
+  const merged = new Map(current.map((item) => [key(item), item]));
+  for (const item of next) merged.set(key(item), item);
   return [...merged.values()];
 }
 
@@ -1235,12 +1240,20 @@ export function PullRequestsView({
     mode === "demo" ? DEMO_PULL_REQUESTS[DEMO_REPOSITORIES[0].fullName] : []
   );
   const [pullRequestsMore, setPullRequestsMore] = useState(false);
+  const [pullRequestsPartial, setPullRequestsPartial] = useState(false);
+  const [inboxRefreshPending, setInboxRefreshPending] = useState(false);
+  const [inboxLastUpdatedAt, setInboxLastUpdatedAt] = useState<string | null>(
+    null
+  );
   const [pullRequestPage, setPullRequestPage] = useState(1);
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
   const [selectedRepositoryFullName, setSelectedRepositoryFullName] = useState<
     string | null
   >(null);
   const [inboxCursor, setInboxCursor] = useState<string | null>(null);
+  const [inboxCursorMode, setInboxCursorMode] = useState<
+    "global" | "repository" | null
+  >(null);
   const [selectedDetail, setSelectedDetail] = useState<PullRequest | null>(
     null
   );
@@ -1279,11 +1292,17 @@ export function PullRequestsView({
   const [statusLoadedRevision, setStatusLoadedRevision] = useState(0);
   const statusLoadingRef = useRef(false);
   const sequenceRef = useRef(0);
+  const connectionScopeRequestSequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const sourceControlRunnersRef = useRef(sourceControlRunners);
+  const reviewRunnerIdRef = useRef(reviewRunnerId);
   useEffect(() => {
     sourceControlRunnersRef.current = sourceControlRunners;
   }, [sourceControlRunners]);
+  useEffect(() => {
+    reviewRunnerIdRef.current = reviewRunnerId;
+    connectionScopeRequestSequenceRef.current += 1;
+  }, [reviewRunnerId]);
 
   useEffect(() => {
     if (mode === "demo") return;
@@ -1328,6 +1347,16 @@ export function PullRequestsView({
   }, [mode]);
   const statusRef = useRef<GitHubStatus | null>(status);
   const loadedRepositoryRef = useRef<string | null>(null);
+  const inboxScopeRef = useRef<string | null>(null);
+  const appliedInboxSnapshotRef = useRef<{
+    scope: string;
+    version: PullRequestInboxSnapshotVersion;
+  } | null>(null);
+  const snapshotReadSequenceRef = useRef(0);
+  const snapshotControllerRef = useRef<AbortController | null>(null);
+  const snapshotReadInFlightRef = useRef(false);
+  const connectionStatusRefreshRef = useRef<Promise<boolean> | null>(null);
+  const resumeObservationInFlightRef = useRef(false);
   const detailSequenceRef = useRef(0);
   const detailControllerRef = useRef<AbortController | null>(null);
   const repositorySelectionIntentRef = useRef(false);
@@ -1366,6 +1395,8 @@ export function PullRequestsView({
     if (mode === "demo") return;
     statusLoadingRef.current = true;
     const sequence = ++sequenceRef.current;
+    snapshotControllerRef.current?.abort();
+    snapshotReadSequenceRef.current += 1;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -1447,15 +1478,24 @@ export function PullRequestsView({
       const previousStatus = statusRef.current;
       const identityChanged =
         previousStatus?.accountId !== nextStatus.accountId ||
-        previousStatus?.login !== nextStatus.login;
+        previousStatus?.login !== nextStatus.login ||
+        previousStatus?.connectionGeneration !==
+          nextStatus.connectionGeneration;
       const accessLost =
         nextStatus.state !== "connected" ||
         !nextStatus.capabilities.readPullRequests;
       if (identityChanged || accessLost) {
         repositorySelectionIntentRef.current = false;
+        inboxScopeRef.current = null;
+        appliedInboxSnapshotRef.current = null;
         setRepositories([]);
         setRepository(null);
         setPullRequests([]);
+        setPullRequestsMore(false);
+        setPullRequestsPartial(false);
+        setInboxCursor(null);
+        setInboxCursorMode(null);
+        setInboxLastUpdatedAt(null);
         setSelectedNumber(null);
         setSelectedDetail(null);
         resetChatState();
@@ -1532,6 +1572,7 @@ export function PullRequestsView({
           );
         homeReviewOpenedRef.current = true;
         repositorySelectionIntentRef.current = true;
+        setInboxCursorMode("repository");
         loadedRepositoryRef.current = linkedRepository.fullName;
         setRepository(linkedRepository);
         setSelectedRepositoryFullName(linkedRepository.fullName);
@@ -1618,8 +1659,9 @@ export function PullRequestsView({
   }, [demoPreferenceResolved, mode, repository, status]);
 
   const loadPullRequests = useCallback(
-    async (nextRepository: Repository | null) => {
+    async (nextRepository: Repository | null, backgroundSnapshot = false) => {
       if (mode === "demo") {
+        if (backgroundSnapshot) return;
         setPullRequests(
           nextRepository
             ? (DEMO_PULL_REQUESTS[nextRepository.fullName] ?? [])
@@ -1629,43 +1671,171 @@ export function PullRequestsView({
         setPullRequestsMore(false);
         return;
       }
-      const sequence = ++sequenceRef.current;
-      controllerRef.current?.abort();
+      if (backgroundSnapshot && snapshotReadInFlightRef.current) return;
+      const sequence = backgroundSnapshot
+        ? ++snapshotReadSequenceRef.current
+        : ++sequenceRef.current;
+      if (backgroundSnapshot) {
+        snapshotReadInFlightRef.current = true;
+        snapshotControllerRef.current?.abort();
+      } else {
+        snapshotControllerRef.current?.abort();
+        snapshotReadSequenceRef.current += 1;
+        controllerRef.current?.abort();
+      }
       const controller = new AbortController();
-      controllerRef.current = controller;
-      setLoading(true);
-      setLoadingMore(false);
-      setError(null);
-      setPullRequestPage(1);
-      if (loadedRepositoryRef.current !== (nextRepository?.fullName ?? "*")) {
-        setPullRequests([]);
+      if (backgroundSnapshot) snapshotControllerRef.current = controller;
+      else controllerRef.current = controller;
+      const isCurrent = () =>
+        backgroundSnapshot
+          ? sequence === snapshotReadSequenceRef.current
+          : sequence === sequenceRef.current;
+      if (!backgroundSnapshot) {
+        setLoading(true);
+        setLoadingMore(false);
+        setError(null);
+      }
+      if (
+        !backgroundSnapshot &&
+        loadedRepositoryRef.current !== (nextRepository?.fullName ?? "*")
+      ) {
         setSelectedNumber(null);
         setSelectedRepositoryFullName(null);
         setSelectedDetail(null);
       }
-      loadedRepositoryRef.current = nextRepository?.fullName ?? "*";
+      if (!backgroundSnapshot)
+        loadedRepositoryRef.current = nextRepository?.fullName ?? "*";
       try {
         if (!status?.accountId || !status.login || !status.connectionGeneration)
           throw new Error("Reconnect GitHub before loading the inbox.");
-        const operation = await pullRequestsClient.runOperation(
+        const target = targetForRunner(reviewRunnerId);
+        if (!target) throw new Error("Select an authorized computer first.");
+        const scope = JSON.stringify([
+          target.deviceId,
+          target.deploymentId,
+          status.accountId,
+          status.login.toLocaleLowerCase("en-US"),
+          status.connectionGeneration
+        ]);
+        if (inboxScopeRef.current !== scope) {
+          const replacingAuthorizedScope = inboxScopeRef.current !== null;
+          inboxScopeRef.current = scope;
+          appliedInboxSnapshotRef.current = null;
+          if (replacingAuthorizedScope) {
+            setPullRequests([]);
+            setPullRequestPage(1);
+            setPullRequestsMore(false);
+            setPullRequestsPartial(false);
+            setInboxCursor(null);
+            setInboxCursorMode(null);
+            setInboxLastUpdatedAt(null);
+            setSelectedNumber(null);
+            setSelectedRepositoryFullName(null);
+            setSelectedDetail(null);
+          }
+        }
+        const explicitRepositorySelection =
+          !backgroundSnapshot &&
+          nextRepository !== null &&
+          repositorySelectionIntentRef.current;
+        repositorySelectionIntentRef.current = false;
+        if (explicitRepositorySelection && nextRepository) {
+          snapshotControllerRef.current?.abort();
+          snapshotReadSequenceRef.current += 1;
+          const operation = await pullRequestsClient.runOperation(
+            {
+              kind: "inbox",
+              account: { id: status.accountId, login: status.login },
+              connectionGeneration: status.connectionGeneration,
+              repository: {
+                id: nextRepository.id,
+                owner: nextRepository.fullName.split("/")[0] ?? "",
+                name: nextRepository.fullName.split("/")[1] ?? "",
+                fullName: nextRepository.fullName
+              },
+              cursor: null
+            },
+            { signal: controller.signal, target }
+          );
+          if (!isCurrent()) return;
+          const result = pullRequestOperationData(operation);
+          const inboxItems = Array.isArray(result.items)
+            ? result.items
+            : Array.isArray(result.pullRequests)
+              ? result.pullRequests
+              : [];
+          const nextPulls = inboxItems
+            .map(parseInboxItem)
+            .filter((value): value is PullRequest => Boolean(value));
+          setPullRequests((current) =>
+            mergePullRequests(
+              current.filter(
+                (item) => item.repositoryFullName !== nextRepository.fullName
+              ),
+              nextPulls
+            )
+          );
+          setStale(false);
+          setInboxRefreshPending(false);
+          setPullRequestsPartial(
+            result.truncated === true || result.hasMore === true
+          );
+          setInboxLastUpdatedAt(operation.completedAt);
+          setPullRequestPage(1);
+          setInboxCursorMode("repository");
+          setInboxCursor(
+            result.hasMore === true
+              ? typeof result.nextCursor === "string"
+                ? result.nextCursor
+                : "2"
+              : null
+          );
+          setPullRequestsMore(result.hasMore === true);
+          return;
+        }
+        const snapshot = await pullRequestsClient.getInboxSnapshot(
           {
-            kind: "inbox",
-            account: { id: status.accountId, login: status.login },
+            accountId: status.accountId,
             connectionGeneration: status.connectionGeneration,
-            repository: nextRepository
-              ? {
-                  id: nextRepository.id,
-                  owner: nextRepository.fullName.split("/")[0] ?? "",
-                  name: nextRepository.fullName.split("/")[1] ?? "",
-                  fullName: nextRepository.fullName
-                }
-              : null,
-            cursor: null
+            target
           },
-          { signal: controller.signal, target: targetForRunner(reviewRunnerId) }
+          controller.signal
         );
-        if (sequence !== sequenceRef.current) return;
+        if (!isCurrent()) return;
+        setInboxRefreshPending(
+          snapshot.pendingOperation !== null || snapshot.operation === null
+        );
+        const operation = snapshot.operation;
+        if (!operation) {
+          if (inboxCursorMode !== "repository") setInboxCursorMode("global");
+          return;
+        }
+        if (
+          operation.state !== "completed" ||
+          operation.payload.kind !== "inbox" ||
+          operation.payload.repository !== null ||
+          operation.payload.account.id !== status.accountId ||
+          operation.payload.connectionGeneration !==
+            status.connectionGeneration ||
+          operation.targetDeviceId !== target.deviceId ||
+          operation.targetDeploymentId !== target.deploymentId
+        )
+          throw new Error(
+            "The inbox snapshot does not match the selected connection."
+          );
         const result = pullRequestOperationData(operation);
+        const version: PullRequestInboxSnapshotVersion = {
+          operationId: operation.id,
+          revision: operation.revision,
+          completedAt: operation.completedAt
+        };
+        const previousVersion =
+          appliedInboxSnapshotRef.current?.scope === scope
+            ? appliedInboxSnapshotRef.current.version
+            : null;
+        if (!shouldApplyPullRequestInboxSnapshot(previousVersion, version))
+          return;
+        appliedInboxSnapshotRef.current = { scope, version };
         if (Array.isArray(result.repositories)) {
           const verifiedRepositories = result.repositories
             .map(parseRepository)
@@ -1687,9 +1857,19 @@ export function PullRequestsView({
         const nextPulls = inboxItems
           .map(parseInboxItem)
           .filter((value): value is PullRequest => Boolean(value));
+        const partial =
+          result.truncated === true ||
+          result.hasMore === true ||
+          result.repositoriesTruncated === true ||
+          result.teamRequestsIncluded === false;
         setStale(false);
-        setPullRequests(nextPulls);
+        setPullRequests((current) =>
+          partial ? mergePartialPullRequestInbox(current, nextPulls) : nextPulls
+        );
         setPullRequestPage(1);
+        setPullRequestsPartial(partial);
+        setInboxLastUpdatedAt(operation.completedAt);
+        setInboxCursorMode("global");
         setInboxCursor(
           result.hasMore === true
             ? typeof result.nextCursor === "string"
@@ -1700,7 +1880,7 @@ export function PullRequestsView({
         setPullRequestsMore(result.hasMore === true);
       } catch (reason) {
         if (
-          sequence !== sequenceRef.current ||
+          !isCurrent() ||
           (reason as { name?: string })?.name === "AbortError"
         )
           return;
@@ -1712,43 +1892,134 @@ export function PullRequestsView({
           )
         );
       } finally {
-        if (sequence === sequenceRef.current) {
+        if (backgroundSnapshot) {
+          snapshotReadInFlightRef.current = false;
+          if (sequence === snapshotReadSequenceRef.current) {
+            snapshotControllerRef.current = null;
+          }
+        } else if (sequence === sequenceRef.current) {
           setLoading(false);
           controllerRef.current = null;
         }
       }
     },
-    [mode, status, reviewRunnerId, targetForRunner]
+    [mode, status, reviewRunnerId, targetForRunner, inboxCursorMode]
   );
 
-  // Repository changes are synchronized with the live gateway.
-  useEffect(() => {
-    if (statusLoadingRef.current) return;
-    if (
-      status?.state === "connected" ||
-      repository ||
-      loadedRepositoryRef.current
-    ) {
-      void loadPullRequests(repository);
-    }
-  }, [loadPullRequests, repository, status?.state, statusLoadedRevision]);
+  const refreshConnectionScope = useCallback(() => {
+    if (connectionStatusRefreshRef.current)
+      return connectionStatusRefreshRef.current;
+    const task = (async () => {
+      if (mode !== "live" || statusLoadingRef.current) return true;
+      const selectedRunnerId = reviewRunnerIdRef.current;
+      const requestSequence = ++connectionScopeRequestSequenceRef.current;
+      const target = targetForRunner(selectedRunnerId);
+      if (!target) return true;
+      try {
+        const operation = await pullRequestsClient.runOperation(
+          { kind: "connection_status" },
+          { target }
+        );
+        const currentTarget = targetForRunner(reviewRunnerIdRef.current);
+        if (
+          requestSequence !== connectionScopeRequestSequenceRef.current ||
+          reviewRunnerIdRef.current !== selectedRunnerId ||
+          currentTarget?.deviceId !== target.deviceId ||
+          currentTarget?.deploymentId !== target.deploymentId
+        )
+          return true;
+        const value = pullRequestOperationData(operation);
+        const account = isRecord(value.account) ? value.account : null;
+        const nextStatus = parseStatus({
+          state:
+            value.state === "reauthorization_required" ? "error" : value.state,
+          accountId: account?.id,
+          login: account?.login ?? null,
+          connectionGeneration: value.connectionGeneration,
+          message:
+            value.state === "reauthorization_required"
+              ? "Reconnect GitHub in Plugins."
+              : null,
+          capabilities: value.capabilities ?? {
+            readPullRequests: value.state === "connected",
+            publishReviews: value.state === "connected"
+          }
+        });
+        if (!nextStatus) return true;
+        const previous = statusRef.current;
+        const scopeChanged =
+          previous?.accountId !== nextStatus.accountId ||
+          previous?.login !== nextStatus.login ||
+          previous?.connectionGeneration !== nextStatus.connectionGeneration ||
+          previous?.state !== nextStatus.state ||
+          previous?.capabilities.readPullRequests !==
+            nextStatus.capabilities.readPullRequests;
+        if (scopeChanged) {
+          void loadStatusAndRepositories();
+          return true;
+        }
+        statusRef.current = nextStatus;
+        setStatus(nextStatus);
+        return false;
+      } catch {
+        // Keep the last authorized cards and skip this observation on a
+        // transient status failure.
+        return true;
+      }
+    })();
+    const tracked = task.finally(() => {
+      if (connectionStatusRefreshRef.current === tracked)
+        connectionStatusRefreshRef.current = null;
+    });
+    connectionStatusRefreshRef.current = tracked;
+    return tracked;
+  }, [loadStatusAndRepositories, mode, targetForRunner]);
 
-  const loadMorePullRequests = async () => {
-    if (
-      mode === "demo" ||
-      !pullRequestsMore ||
-      loadingMore ||
-      !status?.accountId ||
-      !status.login ||
-      !status.connectionGeneration ||
-      !inboxCursor
-    )
+  const refreshPullRequests = useCallback(async () => {
+    if (mode === "demo") return;
+    if (!status?.accountId || !status.login || !status.connectionGeneration) {
+      setError("Reconnect GitHub before refreshing the inbox.");
       return;
-    const nextPage = pullRequestPage + 1;
+    }
+    const target = targetForRunner(reviewRunnerId);
+    if (!target) {
+      setError("Select an authorized computer before refreshing the inbox.");
+      return;
+    }
     const sequence = ++sequenceRef.current;
+    snapshotControllerRef.current?.abort();
+    snapshotReadSequenceRef.current += 1;
+    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setLoadingMore(true);
+    setLoading(true);
+    setLoadingMore(false);
+    setInboxRefreshPending(true);
+    setError(null);
+    setPullRequestPage(1);
+    const scope = JSON.stringify([
+      target.deviceId,
+      target.deploymentId,
+      status.accountId,
+      status.login.toLocaleLowerCase("en-US"),
+      status.connectionGeneration
+    ]);
+    if (inboxScopeRef.current !== scope) {
+      const replacingAuthorizedScope = inboxScopeRef.current !== null;
+      inboxScopeRef.current = scope;
+      appliedInboxSnapshotRef.current = null;
+      if (replacingAuthorizedScope) {
+        setPullRequests([]);
+        setPullRequestsMore(false);
+        setPullRequestsPartial(false);
+        setInboxCursor(null);
+        setInboxCursorMode(null);
+        setInboxLastUpdatedAt(null);
+        setSelectedNumber(null);
+        setSelectedRepositoryFullName(null);
+        setSelectedDetail(null);
+      }
+    }
     try {
       const operation = await pullRequestsClient.runOperation(
         {
@@ -1763,6 +2034,189 @@ export function PullRequestsView({
                 fullName: repository.fullName
               }
             : null,
+          cursor: null
+        },
+        { signal: controller.signal, target }
+      );
+      if (sequence !== sequenceRef.current) return;
+      const result = pullRequestOperationData(operation);
+      if (Array.isArray(result.repositories)) {
+        const verifiedRepositories = result.repositories
+          .map(parseRepository)
+          .filter((value): value is Repository => Boolean(value));
+        setRepositories((current) => {
+          const merged = new Map(current.map((item) => [item.fullName, item]));
+          for (const item of verifiedRepositories)
+            merged.set(item.fullName, item);
+          return [...merged.values()];
+        });
+      }
+      const inboxItems = Array.isArray(result.items)
+        ? result.items
+        : Array.isArray(result.pullRequests)
+          ? result.pullRequests
+          : [];
+      const nextPulls = inboxItems
+        .map(parseInboxItem)
+        .filter((value): value is PullRequest => Boolean(value));
+      const partial =
+        result.truncated === true ||
+        result.hasMore === true ||
+        result.repositoriesTruncated === true ||
+        result.teamRequestsIncluded === false;
+      setPullRequests((current) =>
+        partial
+          ? mergePartialPullRequestInbox(current, nextPulls)
+          : repository
+            ? mergePullRequests(
+                current.filter(
+                  (item) => item.repositoryFullName !== repository.fullName
+                ),
+                nextPulls
+              )
+            : nextPulls
+      );
+      setStale(false);
+      setPullRequestsPartial(partial);
+      setPullRequestPage(1);
+      setInboxLastUpdatedAt(operation.completedAt);
+      setInboxCursorMode(repository ? "repository" : "global");
+      if (!repository)
+        appliedInboxSnapshotRef.current = {
+          scope,
+          version: {
+            operationId: operation.id,
+            revision: operation.revision,
+            completedAt: operation.completedAt
+          }
+        };
+      setInboxCursor(
+        result.hasMore === true
+          ? typeof result.nextCursor === "string"
+            ? result.nextCursor
+            : "2"
+          : null
+      );
+      setPullRequestsMore(result.hasMore === true);
+    } catch (reason) {
+      if (
+        sequence !== sequenceRef.current ||
+        (reason as { name?: string })?.name === "AbortError"
+      )
+        return;
+      setStale(true);
+      setError(
+        sanitizeMessage(
+          reason instanceof Error ? reason.message : null,
+          "Pull requests are unavailable."
+        )
+      );
+    } finally {
+      if (sequence === sequenceRef.current) {
+        setLoading(false);
+        setInboxRefreshPending(false);
+        controllerRef.current = null;
+      }
+    }
+  }, [mode, status, repository, reviewRunnerId, targetForRunner]);
+
+  // Repository changes are synchronized with the live gateway.
+  useEffect(() => {
+    if (statusLoadingRef.current) return;
+    if (
+      status?.state === "connected" ||
+      repository ||
+      loadedRepositoryRef.current
+    ) {
+      void loadPullRequests(repository);
+    }
+  }, [loadPullRequests, repository, status?.state, statusLoadedRevision]);
+
+  useEffect(() => {
+    if (mode !== "live") return;
+    let active = true;
+    const observeSnapshot = () => {
+      if (
+        !active ||
+        document.visibilityState === "hidden" ||
+        status?.state !== "connected" ||
+        inboxCursorMode === "repository"
+      )
+        return;
+      void loadPullRequests(repository, true);
+    };
+    const resume = async () => {
+      if (
+        !active ||
+        document.visibilityState === "hidden" ||
+        resumeObservationInFlightRef.current
+      )
+        return;
+      resumeObservationInFlightRef.current = true;
+      try {
+        if (!(await refreshConnectionScope())) observeSnapshot();
+      } finally {
+        resumeObservationInFlightRef.current = false;
+      }
+    };
+    const timer =
+      status?.state === "connected" && inboxCursorMode !== "repository"
+        ? window.setInterval(
+            observeSnapshot,
+            inboxRefreshPending ? 2_000 : 60_000
+          )
+        : null;
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      active = false;
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [
+    inboxCursorMode,
+    inboxRefreshPending,
+    loadPullRequests,
+    mode,
+    refreshConnectionScope,
+    repository,
+    status?.state
+  ]);
+
+  const loadMorePullRequests = async () => {
+    if (
+      mode === "demo" ||
+      !pullRequestsMore ||
+      loadingMore ||
+      !status?.accountId ||
+      !status.login ||
+      !status.connectionGeneration ||
+      !inboxCursor
+    )
+      return;
+    const nextPage = pullRequestPage + 1;
+    const sequence = ++sequenceRef.current;
+    snapshotControllerRef.current?.abort();
+    snapshotReadSequenceRef.current += 1;
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setLoadingMore(true);
+    try {
+      const operation = await pullRequestsClient.runOperation(
+        {
+          kind: "inbox",
+          account: { id: status.accountId, login: status.login },
+          connectionGeneration: status.connectionGeneration,
+          repository:
+            inboxCursorMode === "repository" && repository
+              ? {
+                  id: repository.id,
+                  owner: repository.fullName.split("/")[0] ?? "",
+                  name: repository.fullName.split("/")[1] ?? "",
+                  fullName: repository.fullName
+                }
+              : null,
           cursor: inboxCursor
         },
         { signal: controller.signal, target: targetForRunner(reviewRunnerId) }
@@ -1799,6 +2253,14 @@ export function PullRequestsView({
           : null
       );
       setPullRequestsMore(result.hasMore === true);
+      setInboxCursorMode(inboxCursorMode ?? "global");
+      setPullRequestsPartial(
+        result.truncated === true ||
+          result.hasMore === true ||
+          result.repositoriesTruncated === true ||
+          result.teamRequestsIncluded === false
+      );
+      setInboxLastUpdatedAt(operation.completedAt);
     } catch (reason) {
       if (
         sequence === sequenceRef.current &&
@@ -1813,7 +2275,10 @@ export function PullRequestsView({
         );
       }
     } finally {
-      if (sequence === sequenceRef.current) setLoadingMore(false);
+      if (sequence === sequenceRef.current) {
+        setLoadingMore(false);
+        controllerRef.current = null;
+      }
     }
   };
 
@@ -2119,6 +2584,7 @@ export function PullRequestsView({
         tab === "all" || (tab === "authored" ? authored : reviewing);
       const filterMatches = matchesPullRequestFilter(item, filter);
       return (
+        (!repository || item.repositoryFullName === repository.fullName) &&
         tabMatches &&
         filterMatches &&
         (!query ||
@@ -2127,7 +2593,7 @@ export function PullRequestsView({
             .includes(query))
       );
     });
-  }, [filter, pullRequests, search, status?.login, tab]);
+  }, [filter, pullRequests, repository, search, status?.login, tab]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -3191,6 +3657,8 @@ export function PullRequestsView({
         idempotencyKey: crypto.randomUUID(),
         clientUserMessageId: crypto.randomUUID(),
         agentId: updated.agentId,
+        pullRequestReviewId: updated.id,
+        expectedPullRequestReviewRevision: updated.revision,
         expectedAgentVersion:
           chatAgents.find((agent) => agent.id === updated.agentId)
             ?.currentVersion ?? updated.agentVersion
@@ -3356,6 +3824,7 @@ export function PullRequestsView({
                         type="button"
                         onClick={() => {
                           repositorySelectionIntentRef.current = true;
+                          setInboxCursorMode("global");
                           setRepository(null);
                         }}
                         className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-hover"
@@ -3369,6 +3838,9 @@ export function PullRequestsView({
                       disabled={loading || repositories.length === 0}
                       onSelect={(nextRepository) => {
                         repositorySelectionIntentRef.current = true;
+                        setInboxCursorMode(
+                          nextRepository ? "repository" : "global"
+                        );
                         setRepository(nextRepository);
                       }}
                     />
@@ -3385,6 +3857,17 @@ export function PullRequestsView({
                         className="w-full rounded-lg border border-border bg-surface py-2 pl-10 pr-4 text-sm text-foreground outline-none placeholder:text-faint focus:border-border-strong focus:ring-1 focus:ring-accent"
                       />
                     </div>
+                    {mode === "live" && (
+                      <button
+                        type="button"
+                        onClick={() => void refreshPullRequests()}
+                        disabled={loading}
+                        title="Refresh the selected computer’s GitHub inbox"
+                        className="shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium text-muted transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+                      >
+                        {loading ? "Refreshing…" : "Refresh"}
+                      </button>
+                    )}
                     <div ref={filterRef} className="relative shrink-0">
                       <button
                         type="button"
@@ -3451,9 +3934,22 @@ export function PullRequestsView({
                     <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
                       {repository?.fullName ?? "All authorized repositories"}
                     </p>
-                    <span className="text-xs text-subtle">
-                      {filteredPullRequests.length} loaded
-                    </span>
+                    <div className="flex items-center gap-2 text-xs text-subtle">
+                      {pullRequestsPartial && (
+                        <span title="Global discovery covers authored and direct review requests. Browse a repository to check team review requests; the global inbox may also have more results or incomplete search coverage.">
+                          Partial results
+                        </span>
+                      )}
+                      {inboxRefreshPending && mode === "live" && (
+                        <span>Computer refreshing</span>
+                      )}
+                      {inboxLastUpdatedAt && mode === "live" && (
+                        <time dateTime={inboxLastUpdatedAt}>
+                          Updated {formatUpdatedAt(inboxLastUpdatedAt)}
+                        </time>
+                      )}
+                      <span>{filteredPullRequests.length} loaded</span>
+                    </div>
                   </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -3467,10 +3963,14 @@ export function PullRequestsView({
                     <div className="rounded-xl border border-border bg-surface/40 px-6 py-16 text-center">
                       <GitPullRequest className="mx-auto mb-3 h-6 w-6 text-faint" />
                       <p className="text-sm font-medium text-foreground-secondary">
-                        No pull requests
+                        {inboxRefreshPending && mode === "live"
+                          ? "The first inbox refresh is running"
+                          : "No pull requests"}
                       </p>
                       <p className="mt-1 text-xs text-subtle">
-                        Try another tab, repository, or search.
+                        {inboxRefreshPending && mode === "live"
+                          ? "The selected computer will save the result here when it finishes."
+                          : "Try another tab, repository, or search."}
                       </p>
                     </div>
                   )}

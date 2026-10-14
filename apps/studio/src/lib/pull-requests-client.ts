@@ -505,6 +505,38 @@ export function createPullRequestsClient({
       );
       return pullRequestOperationPageSchema.parse(value);
     },
+    async getInboxSnapshot(
+      input: {
+        accountId: string;
+        connectionGeneration: number;
+        target: { deviceId: string; deploymentId: string };
+      },
+      signal?: AbortSignal
+    ): Promise<{
+      operation: PullRequestOperationRecord | null;
+      pendingOperation: PullRequestOperationRecord | null;
+    }> {
+      const query = new URLSearchParams({
+        accountId: input.accountId,
+        connectionGeneration: String(input.connectionGeneration),
+        targetDeviceId: input.target.deviceId,
+        targetDeploymentId: input.target.deploymentId
+      });
+      const value = await request(`/inbox-snapshot?${query.toString()}`, {
+        signal
+      });
+      if (!isRecord(value))
+        throw new PullRequestsHttpError(
+          "The pull request inbox snapshot is invalid."
+        );
+      const operation =
+        value.operation === null ? null : operationFrom(value.operation);
+      const pendingOperation =
+        value.pendingOperation === null
+          ? null
+          : operationFrom(value.pendingOperation);
+      return { operation, pendingOperation };
+    },
     async createReview(
       input: {
         requestId: string;

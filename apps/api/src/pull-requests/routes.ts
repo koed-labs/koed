@@ -546,6 +546,59 @@ export const registerPullRequestRoutes = (
       }
     );
   });
+  app.get("/v1/pull-requests/inbox-snapshot", async (request) => {
+    const user = await authenticate(request);
+    const query = z
+      .object({
+        targetDeviceId: z.uuid(),
+        targetDeploymentId: z.uuid(),
+        accountId: z.string().trim().min(1).max(200),
+        connectionGeneration: z.coerce.number().int().positive()
+      })
+      .strict()
+      .parse(request.query);
+    const remote = await proxy(
+      request,
+      "GET",
+      `/v1/pull-requests/inbox-snapshot?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`
+    );
+    return (
+      remote ?? repo().getPullRequestInboxSnapshot({ userId: user.id }, query)
+    );
+  });
+  app.post("/v1/pull-requests/runner/inbox-refresh", async (request) => {
+    const auth = await runner(request);
+    const input = z
+      .object({
+        requestId: createOperationSchema.shape.requestId,
+        account: z
+          .object({
+            id: z.string().trim().min(1).max(200),
+            login: z.string().trim().min(1).max(200)
+          })
+          .strict(),
+        connectionGeneration: z.number().int().positive()
+      })
+      .strict()
+      .parse(request.body);
+    const operation = await repo().enqueuePullRequestOperation(
+      { userId: auth.userId },
+      {
+        requestId: input.requestId,
+        targetDeviceId: auth.deviceId,
+        targetDeploymentId: auth.deploymentId,
+        payload: {
+          kind: "inbox",
+          account: input.account,
+          connectionGeneration: input.connectionGeneration,
+          repository: null,
+          cursor: null
+        },
+        reviewId: null
+      }
+    );
+    return { operation };
+  });
   app.get("/v1/pull-requests/operations", async (request) => {
     const user = await authenticate(request);
     const query = listQuerySchema.parse(request.query);
@@ -1142,10 +1195,10 @@ export const registerPullRequestRoutes = (
           executionGeneration: z.number().int().positive(),
           commandId: z.uuid(),
           leaseToken: z.uuid(),
-          agentJobId: z.uuid(),
-          baseSha: z.string(),
-          headSha: z.string(),
-          body: z.string().optional(),
+          expectedReviewRevision: z.number().int().positive(),
+          baseSha: saveDraftSchema.shape.baseSha,
+          headSha: saveDraftSchema.shape.headSha,
+          body: saveDraftSchema.shape.body.optional(),
           findings: pullRequestReviewDraftSchema.shape.findings.optional()
         })
         .strict()
@@ -1162,6 +1215,11 @@ export const registerPullRequestRoutes = (
           findings: input.findings ?? []
         }
       });
+      if (!draft)
+        throw Object.assign(
+          new Error("Review completion is stale or unavailable"),
+          { statusCode: 409 }
+        );
       return { draft };
     }
   );

@@ -1567,6 +1567,8 @@ export async function queueHostedConversationPrompt(
     clientUserMessageId: string;
     agentId?: string;
     expectedAgentVersion?: number;
+    pullRequestReviewId?: string;
+    expectedPullRequestReviewRevision?: number;
   },
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
@@ -1588,6 +1590,13 @@ export async function queueHostedConversationPrompt(
         idempotencyKey: ids.idempotencyKey,
         clientUserMessageId: ids.clientUserMessageId,
         prompt,
+        ...(ids.pullRequestReviewId
+          ? {
+              pullRequestReviewId: ids.pullRequestReviewId,
+              expectedPullRequestReviewRevision:
+                ids.expectedPullRequestReviewRevision
+            }
+          : {}),
         ...(options.resumeFromStopped ? { resumeFromStopped: true } : {}),
         ...(ids.agentId
           ? {

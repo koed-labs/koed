@@ -115,6 +115,40 @@ test("review recovery can query the selected repository and PR instead of the la
   assert.match(calls[0] ?? "", /number=10/);
 });
 
+test("inbox snapshot reads the exact account and authorized computer scope", async () => {
+  const calls: string[] = [];
+  const completed = {
+    ...operation("completed"),
+    payload: {
+      kind: "inbox" as const,
+      account: { id: "42", login: "alice" },
+      connectionGeneration: 3,
+      repository: null,
+      cursor: null
+    }
+  };
+  const client = createPullRequestsClient({
+    hosted: true,
+    fetcher: async (input) => {
+      calls.push(String(input));
+      return Response.json({ operation: completed, pendingOperation: null });
+    }
+  });
+
+  const snapshot = await client.getInboxSnapshot({
+    accountId: "42",
+    connectionGeneration: 3,
+    target: { deviceId: "device-a", deploymentId: "deployment-a" }
+  });
+
+  assert.equal(snapshot.operation?.id, ids.operation);
+  assert.equal(snapshot.pendingOperation, null);
+  assert.match(calls[0] ?? "", /accountId=42/);
+  assert.match(calls[0] ?? "", /connectionGeneration=3/);
+  assert.match(calls[0] ?? "", /targetDeviceId=device-a/);
+  assert.match(calls[0] ?? "", /targetDeploymentId=deployment-a/);
+});
+
 test("a missing frozen review restores as null", async () => {
   const client = createPullRequestsClient({
     hosted: true,

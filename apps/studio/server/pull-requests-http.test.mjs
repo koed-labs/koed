@@ -120,3 +120,15 @@ test("frozen publication previews can recover by owner read only", async () => {
     405
   );
 });
+
+test("durable inbox snapshots use only typed read scope and never expose runner routes", async () => {
+  const path = `/studio-api/pull-requests/inbox-snapshot?targetDeviceId=${id}&targetDeploymentId=${id}&accountId=42&connectionGeneration=4`;
+  assert.equal((await invoke(path)).response.status, 200);
+  assert.equal((await invoke(path, "POST")).response.status, 405);
+  assert.equal((await invoke(path + "&token=secret")).response.status, 400);
+  assert.equal(
+    (await invoke("/studio-api/pull-requests/runner/inbox-refresh", "POST"))
+      .response.status,
+    404
+  );
+});

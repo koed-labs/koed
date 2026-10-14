@@ -31,9 +31,37 @@ const fixture = async () => {
       repositories: [],
       hasMore: false,
       page: 1
+    })),
+    readInbox: vi.fn(async () => ({
+      items: [
+        {
+          repository: "alice/repo",
+          number: 7,
+          title: "Example",
+          author: "octocat",
+          updatedAt: "2026-10-01T00:00:00Z",
+          url: "https://github.com/alice/repo/pull/7",
+          origin: "requested_review" as const
+        }
+      ],
+      hasMore: true,
+      truncated: true,
+      page: 1,
+      pagesRead: 1
+    })),
+    readRepository: vi.fn(async ({ repo }: { repo: string }) => ({
+      id: repo,
+      fullName: repo,
+      private: false
     }))
   };
   const authority = {
+    getOwnerUserId: vi.fn(async () => "11111111-1111-4111-8111-111111111111"),
+    requestInboxRefresh: vi.fn(
+      async ({ requestId }: { requestId: string }) => ({
+        id: requestId
+      })
+    ),
     claim: vi.fn(async () => []),
     heartbeat: vi.fn(async () => true),
     complete: vi.fn(async () => {}),
@@ -125,6 +153,166 @@ it("does not silently adopt an installed GitHub account; connection requires exp
   );
   expect(github.readIdentity).toHaveBeenCalledWith("alice");
   expect(github.readRepositories).toHaveBeenCalledOnce();
+});
+it("keeps automatic global inbox reads to one search page and bounded repository verification", async () => {
+  const { runner, github, operation } = await fixture();
+  await runner.execute(operation({ kind: "connect", login: "alice" }));
+  const result = await runner.execute(
+    operation({
+      kind: "inbox",
+      account: { id: "42", login: "alice" },
+      connectionGeneration: 2,
+      repository: null,
+      cursor: null
+    })
+  );
+
+  expect(github.readInbox).toHaveBeenCalledWith({
+    expectedAccountLogin: "alice",
+    page: 1,
+    maxPages: 1
+  });
+  expect(github.readRepository).toHaveBeenCalledTimes(1);
+  expect(github.readRepository).toHaveBeenCalledWith({
+    expectedAccountLogin: "alice",
+    repo: "alice/repo",
+    commandTimeoutMs: 3_000,
+    maxResponseBytes: 64 * 1024,
+    identityMaxResponseBytes: 8 * 1024
+  });
+  expect(result).toMatchObject({
+    items: [{ repository: "alice/repo" }],
+    repositories: [{ fullName: "alice/repo" }],
+    truncated: true
+  });
+});
+
+it("keeps inbox repositories beyond the first verification batch reachable", async () => {
+  const { runner, github, operation } = await fixture();
+  await runner.execute(operation({ kind: "connect", login: "alice" }));
+  const items = Array.from({ length: 10 }, (_unused, index) => {
+    const repository = `org/repo-${index + 1}`;
+    return {
+      repository,
+      number: index + 1,
+      title: `PR ${index + 1}`,
+      author: "alice",
+      updatedAt: "2026-10-01T00:00:00Z",
+      url: `https://github.com/${repository}/pull/${index + 1}`,
+      origin: "authored" as const
+    };
+  });
+  github.readInbox.mockImplementation(async () => ({
+    items,
+    hasMore: false,
+    truncated: false,
+    page: 1,
+    pagesRead: 1
+  }));
+
+  const first = await runner.execute(
+    operation({
+      kind: "inbox",
+      account: { id: "42", login: "alice" },
+      connectionGeneration: 2,
+      repository: null,
+      cursor: null
+    })
+  );
+  expect(first).toMatchObject({
+    items: items.slice(0, 8),
+    repositoriesTruncated: true,
+    hasMore: true,
+    nextCursor: "inbox:1:8"
+  });
+  expect(github.readRepository).toHaveBeenCalledTimes(8);
+
+  const second = await runner.execute(
+    operation({
+      kind: "inbox",
+      account: { id: "42", login: "alice" },
+      connectionGeneration: 2,
+      repository: null,
+      cursor: "inbox:1:8"
+    })
+  );
+  expect(second).toMatchObject({
+    items: items.slice(8),
+    repositories: items.slice(8).map((item) => ({ fullName: item.repository })),
+    repositoriesTruncated: false,
+    hasMore: false,
+    nextCursor: null
+  });
+  expect(github.readRepository).toHaveBeenCalledTimes(10);
+  expect(github.readInbox).toHaveBeenLastCalledWith({
+    expectedAccountLogin: "alice",
+    page: 1,
+    maxPages: 1
+  });
+});
+
+it("keeps capped incomplete search coverage from exposing page 1001", async () => {
+  const { runner, github, operation } = await fixture();
+  await runner.execute(operation({ kind: "connect", login: "alice" }));
+  github.readInbox.mockImplementationOnce(async () => ({
+    items: [
+      {
+        repository: "alice/repo",
+        number: 7,
+        title: "Example",
+        author: "octocat",
+        updatedAt: "2026-10-01T00:00:00Z",
+        url: "https://github.com/alice/repo/pull/7",
+        origin: "requested_review"
+      }
+    ],
+    hasMore: true,
+    truncated: true,
+    page: 1_000,
+    pagesRead: 1
+  }));
+
+  const result = await runner.execute(
+    operation({
+      kind: "inbox",
+      account: { id: "42", login: "alice" },
+      connectionGeneration: 2,
+      repository: null,
+      cursor: "1000"
+    })
+  );
+  expect(result).toMatchObject({
+    truncated: true,
+    hasMore: false,
+    nextCursor: null
+  });
+});
+
+it("discards an inbox read when the selected account generation changes mid-read", async () => {
+  const { runner, github, operation, connectionStore } = await fixture();
+  await runner.execute(operation({ kind: "connect", login: "alice" }));
+  github.readInbox.mockImplementationOnce(async () => {
+    await connectionStore.select("11111111-1111-4111-8111-111111111111", null);
+    return {
+      items: [],
+      hasMore: false,
+      truncated: false,
+      page: 1,
+      pagesRead: 1
+    };
+  });
+
+  await expect(
+    runner.execute(
+      operation({
+        kind: "inbox",
+        account: { id: "42", login: "alice" },
+        connectionGeneration: 2,
+        repository: null,
+        cursor: null
+      })
+    )
+  ).rejects.toThrow("PullRequestConnectionChanged");
 });
 it("rejects stale grants, other computer scopes and revoked connections before any read", async () => {
   const { runner, github, operation } = await fixture();

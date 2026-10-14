@@ -6,7 +6,7 @@ const uuid =
 const prefix = "/studio-api/pull-requests";
 const maximumBytes = 1024 * 1024;
 function routeMethods(suffix) {
-  if (suffix === "/runners") return ["GET"];
+  if (suffix === "/runners" || suffix === "/inbox-snapshot") return ["GET"];
   if (
     suffix === "/action-grants" ||
     new RegExp(`^/action-grants/${uuid}$`).test(suffix)
@@ -55,15 +55,24 @@ export async function handlePullRequests({
   if (
     [...url.searchParams.keys()].some(
       (key) =>
-        ![
-          "repository",
-          "number",
-          "agentId",
-          "limit",
-          "before",
-          "cursor",
-          "executionId"
-        ].includes(key)
+        !(
+          suffix === "/inbox-snapshot"
+            ? [
+                "targetDeviceId",
+                "targetDeploymentId",
+                "accountId",
+                "connectionGeneration"
+              ]
+            : [
+                "repository",
+                "number",
+                "agentId",
+                "limit",
+                "before",
+                "cursor",
+                "executionId"
+              ]
+        ).includes(key)
     )
   ) {
     send(400, { error: "invalid_query" });

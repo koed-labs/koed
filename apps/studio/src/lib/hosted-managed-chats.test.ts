@@ -1992,3 +1992,40 @@ test("shared managed chat uses native proxy and CSRF on Desktop, hosted authorit
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+test("marks only an explicit PR review refresh with its expected revision", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fetcher: typeof fetch = async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return json({ command: { id: commandId, state: "queued" } }, 202);
+  };
+  await queueHostedConversationPrompt(
+    execution,
+    "Review latest",
+    {
+      idempotencyKey: "review-again",
+      clientUserMessageId: "client-id",
+      agentId: "agent",
+      expectedAgentVersion: 2,
+      pullRequestReviewId: "review",
+      expectedPullRequestReviewRevision: 7
+    },
+    undefined,
+    fetcher
+  );
+  await queueHostedConversationPrompt(
+    execution,
+    "Explain that finding",
+    {
+      idempotencyKey: "follow-up",
+      clientUserMessageId: "client-id",
+      agentId: "agent",
+      expectedAgentVersion: 2
+    },
+    undefined,
+    fetcher
+  );
+  assert.equal(bodies[0].pullRequestReviewId, "review");
+  assert.equal(bodies[0].expectedPullRequestReviewRevision, 7);
+  assert.equal("pullRequestReviewId" in bodies[1], false);
+});

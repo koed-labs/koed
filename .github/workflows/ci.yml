@@ -177,6 +177,11 @@ jobs:
           PUBLIC_SQUARE_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm --filter @koed/db exec vitest run tests/public-square-repository.test.ts tests/native-public-square-repository.test.ts
 
+      - name: Validate native Pull Request authority and discovery
+        env:
+          PULL_REQUEST_AUTHORITY_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+        run: pnpm --filter @koed/db exec vitest run src/pull-request-repository.integration.test.ts
+
       - name: Test
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
