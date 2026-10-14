@@ -1,0 +1,1 @@
+ALTER TABLE "personal_agent_chat_roots" ADD COLUMN "target_deployment_id" uuid NOT NULL;

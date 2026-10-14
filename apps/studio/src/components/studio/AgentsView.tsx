@@ -27,7 +27,6 @@ import {
   type PersonalAgentDraftScope,
   uniqueAgentCloneName
 } from "@/lib/personal-agents-client";
-import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import {
   activityForRequestedAgents,
   mergePersonalAgentJobPage,
@@ -75,7 +74,7 @@ function toDefinition(agent: PersonalAgent): AgentDefinition {
     ownerId: agent.ownerId,
     name: agent.name,
     role: agent.role,
-    identity: agent.soul,
+    identity: "",
     createdAt: agent.createdAt,
     ...(agent.avatar ? { avatar: agent.avatar } : {})
   };
@@ -119,7 +118,6 @@ export function AgentsView({
   onPlugins
 }: AgentsViewProps) {
   const [agents, setAgents] = useState<PersonalAgent[]>([]);
-  const [capabilities, setCapabilities] = useState<AgentModelCapability[]>([]);
   const [draftScope, setDraftScope] = useState<PersonalAgentDraftScope | null>(
     null
   );
@@ -137,7 +135,6 @@ export function AgentsView({
     "loading"
   );
   const [error, setError] = useState<string | null>(null);
-  const [capabilityError, setCapabilityError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [retireError, setRetireError] = useState<string | null>(null);
   const [retiring, setRetiring] = useState(false);
@@ -221,13 +218,11 @@ export function AgentsView({
       setLoadState("loading");
       setError(null);
       try {
-        const [agentsResult, capabilitiesResult, scopeResult] =
-          await Promise.allSettled([
-            api.list(signal),
-            api.capabilities(signal),
-            api.draftScope?.(signal) ??
-              Promise.reject(new Error("Draft scope is unavailable."))
-          ]);
+        const [agentsResult, scopeResult] = await Promise.allSettled([
+          api.list(signal),
+          api.draftScope?.(signal) ??
+            Promise.reject(new Error("Draft scope is unavailable."))
+        ]);
         if (signal.aborted) return;
         if (agentsResult.status === "rejected") throw agentsResult.reason;
         const previousScope = draftScopeRef.current;
@@ -257,17 +252,6 @@ export function AgentsView({
         }
         draftScopeRef.current = nextScope;
         setDraftScope(nextScope);
-        if (capabilitiesResult.status === "fulfilled") {
-          setCapabilities(capabilitiesResult.value);
-          setCapabilityError(null);
-        } else {
-          setCapabilities([]);
-          setCapabilityError(
-            capabilitiesResult.reason instanceof Error
-              ? capabilitiesResult.reason.message
-              : "Model capabilities are unavailable."
-          );
-        }
         setLoadState("ready");
         setSelectedId((current) =>
           current && agentsResult.value.some((agent) => agent.id === current)
@@ -907,13 +891,6 @@ export function AgentsView({
               </button>
             </div>
 
-            {capabilityError && (
-              <p className="mt-4 text-xs text-warning">
-                Model capabilities are unavailable. Existing agents remain
-                readable, and you can still save a profile without a default
-                model. Choose an available model before starting a Job.
-              </p>
-            )}
             {lifecycleError && (
               <p role="alert" className="mt-4 text-xs text-danger">
                 {lifecycleError}
@@ -1258,18 +1235,6 @@ export function AgentsView({
                 ? agentEditorInitialValues(modal.agent)
                 : modal.initialValues
             }
-            draftIdentity={
-              draftScope
-                ? {
-                    scope: draftScope,
-                    target:
-                      modal.type === "create"
-                        ? modal.draftTarget
-                        : `edit:${modal.agent.id}`
-                  }
-                : undefined
-            }
-            capabilities={capabilities}
             onSubmit={saveAgent}
           />
         )}

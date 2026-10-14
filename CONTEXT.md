@@ -9,6 +9,12 @@ on infrastructure controlled by the operator.
 An external AI tool that produces conversations and may call Koed for capture or recall.
 _Avoid_: MCP server, model provider, assistant
 
+**Agent**:
+A User-owned identity with a name, optional job title and appearance. It identifies
+a participant and its work across Conversations. A job title is descriptive; it
+does not add working instructions, select a model, or grant permissions.
+_Avoid_: AI Client, model, independent execution engine
+
 **Answer Synthesis**:
 Producing a response from recalled memory evidence.
 _Avoid_: Recall, search, evidence retrieval
@@ -61,7 +67,9 @@ resumable.
 _Avoid_: Session closure, fork, historical import
 
 **Conversation**:
-An AI-client interaction thread whose activity may be captured.
+A User's interaction thread with one or more AI Clients or Agents, whose activity
+may be captured. A shared Conversation can contain replies from distinct Agents
+without combining their native AI-client source records.
 _Avoid_: Thread, chat, transcript
 
 **Conversation Item Presentation**:

@@ -149,315 +149,39 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
-  it("accepts only a phase signal bound to the current assigned prompt command", async () => {
-    const leaseToken = randomUUID();
-    const attemptId = randomUUID();
-    const recordPhase = vi.fn(async () => undefined);
-    const fixture = await buildServer({
-      repository: {
-        getManagedConversationCommand: vi.fn(async () => ({
-          id: ids.command,
-          executionId: ids.execution,
-          commandKind: "prompt",
-          state: "dispatching",
-          executionGeneration: 4,
-          leaseToken
-        })),
-        getManagedConversationExecution: vi.fn(async () => ({
-          id: ids.execution,
-          executionGeneration: 4,
-          state: "running",
-          runnerId: "phase-runner",
-          runnerDeviceId: ids.device,
-          runnerDeploymentId: ids.deployment
-        })),
-        recordPersonalAgentPhaseForManagedCommand: recordPhase
-      }
-    });
+  it("retires Agent Job mutation and phase endpoints without repository writes", async () => {
+    const mutations = {
+      recordPersonalAgentIntentForManagedCommand: vi.fn(),
+      recordPersonalAgentTurnStatusForManagedCommand: vi.fn(),
+      recordPersonalAgentPhaseForManagedCommand: vi.fn(),
+      createPersonalAgentExecutionAttempt: vi.fn(),
+      recordPersonalAgentBuildProgressEvent: vi.fn(),
+      recordPersonalAgentTurnOutput: vi.fn(),
+      completePersonalAgentExecutionAttempt: vi.fn()
+    };
+    const fixture = await buildServer({ repository: mutations });
+    const urls = [
+      `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-intent`,
+      `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-turn-status`,
+      `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-phase`,
+      `/v1/managed-conversation-runner/personal-agent/jobs/${ids.command}/attempts`,
+      `/v1/managed-conversation-runner/personal-agent/jobs/${ids.command}/build-progress`,
+      `/v1/managed-conversation-runner/personal-agent/jobs/${ids.command}/attempts/${ids.command}/output`,
+      `/v1/managed-conversation-runner/personal-agent/jobs/${ids.command}/attempts/${ids.command}/complete`
+    ];
     try {
-      const response = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-phase`,
-        headers: runnerHeaders,
-        payload: {
-          leaseToken,
-          executionId: ids.execution,
-          executionGeneration: 4,
-          runnerId: "phase-runner",
-          providerTurnId: "codex-provider-turn-12",
-          attemptId,
-          phase: "checking"
-        }
-      });
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ phase: "checking" });
-      expect(recordPhase).toHaveBeenCalledWith(
-        { userId: ids.user },
-        {
-          commandId: ids.command,
-          executionId: ids.execution,
-          executionGeneration: 4,
-          leaseToken,
-          runnerId: "phase-runner",
-          deviceId: ids.device,
-          deploymentId: ids.deployment,
-          providerTurnId: "codex-provider-turn-12",
-          attemptId,
-          phase: "checking"
-        }
-      );
-
-      const staleCommand = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-phase`,
-        headers: runnerHeaders,
-        payload: {
-          leaseToken: randomUUID(),
-          executionId: ids.execution,
-          executionGeneration: 4,
-          runnerId: "phase-runner",
-          providerTurnId: "codex-provider-turn-12",
-          attemptId,
-          phase: "working"
-        }
-      });
-      expect(staleCommand.statusCode).toBe(409);
-      expect(recordPhase).toHaveBeenCalledTimes(1);
-    } finally {
-      await fixture.app.close();
-    }
-  });
-
-  it("keeps Personal Agent job attempts owner and assigned-execution scoped", async () => {
-    const jobId = randomUUID();
-    const agentId = randomUUID();
-    const job = { id: jobId, conversationId: ids.execution };
-    const createAttempt = vi.fn(async (_actor, input) => ({
-      id: randomUUID(),
-      ...input
-    }));
-    const fixture = await buildServer({
-      repository: {
-        getPersonalAgentExecutionJob: vi.fn(async (actor, requestedJobId) => {
-          expect(actor).toEqual({ userId: ids.user });
-          expect(requestedJobId).toBe(jobId);
-          return job;
-        }),
-        getManagedConversationExecution: vi.fn(async () => ({
-          id: ids.execution,
-          executionGeneration: 4,
-          runnerDeviceId: ids.device,
-          runnerDeploymentId: ids.deployment
-        })),
-        createPersonalAgentExecutionAttempt: createAttempt
+      for (const url of urls) {
+        const response = await fixture.app.inject({
+          method: "POST",
+          url,
+          headers: runnerHeaders,
+          payload: {}
+        });
+        expect(response.statusCode).toBe(410);
       }
-    });
-    try {
-      const response = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts`,
-        headers: runnerHeaders,
-        payload: {
-          attemptNumber: 1,
-          attribution: { kind: "agent", agentId, agentVersion: 2 },
-          provider: "codex",
-          model: "model",
-          aiClientInstanceId: "codex.default",
-          reasoningEffort: null,
-          permissionMode: "supervised",
-          managedExecutionId: ids.execution,
-          managedExecutionGeneration: 4,
-          status: "running",
-          outcome: null,
-          startedAt: new Date().toISOString(),
-          completedAt: null
-        }
-      });
-      expect(response.statusCode).toBe(200);
-      expect(createAttempt).toHaveBeenCalledOnce();
-      expect(createAttempt.mock.calls[0]?.[0]).toEqual({ userId: ids.user });
-      expect(createAttempt.mock.calls[0]?.[1]).toMatchObject({ jobId });
-    } finally {
-      await fixture.app.close();
-    }
-
-    const deniedCreateAttempt = vi.fn(async () => ({ id: randomUUID() }));
-    const denied = await buildServer({
-      repository: {
-        getPersonalAgentExecutionJob: vi.fn(async () => job),
-        getManagedConversationExecution: vi.fn(async () => ({
-          id: ids.execution,
-          executionGeneration: 4,
-          runnerDeviceId: ids.otherDevice,
-          runnerDeploymentId: ids.deployment
-        })),
-        createPersonalAgentExecutionAttempt: deniedCreateAttempt
+      for (const mutation of Object.values(mutations)) {
+        expect(mutation).not.toHaveBeenCalled();
       }
-    });
-    try {
-      const response = await denied.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts`,
-        headers: runnerHeaders,
-        payload: {
-          attemptNumber: 1,
-          attribution: { kind: "agent", agentId, agentVersion: 2 },
-          provider: "codex",
-          model: "model",
-          aiClientInstanceId: "codex.default",
-          reasoningEffort: null,
-          permissionMode: "supervised",
-          managedExecutionId: ids.execution,
-          managedExecutionGeneration: 4,
-          status: "running",
-          outcome: null,
-          startedAt: new Date().toISOString(),
-          completedAt: null
-        }
-      });
-      expect(response.statusCode).toBe(403);
-      expect(deniedCreateAttempt).not.toHaveBeenCalled();
-    } finally {
-      await denied.app.close();
-    }
-  });
-
-  it("accepts Build progress only for the current owner-assigned execution generation", async () => {
-    const jobId = randomUUID();
-    const attemptId = randomUUID();
-    const recordProgress = vi.fn(async () => undefined);
-    const fixture = await buildServer({
-      repository: {
-        getPersonalAgentExecutionJob: vi.fn(async (actor, requestedJobId) => {
-          expect(actor).toEqual({ userId: ids.user });
-          expect(requestedJobId).toBe(jobId);
-          return {
-            id: jobId,
-            conversationId: ids.execution,
-            lastAttemptId: attemptId
-          };
-        }),
-        listPersonalAgentExecutionAttempts: vi.fn(async () => ({
-          attempts: [
-            {
-              id: attemptId,
-              status: "running",
-              managedExecutionId: ids.execution,
-              managedExecutionGeneration: 4
-            }
-          ]
-        })),
-        getManagedConversationExecution: vi.fn(async () => ({
-          id: ids.execution,
-          executionGeneration: 4,
-          runnerDeviceId: ids.device,
-          runnerDeploymentId: ids.deployment
-        })),
-        recordPersonalAgentBuildProgressEvent: recordProgress
-      }
-    });
-    try {
-      const event = {
-        id: "build:job-started",
-        jobId,
-        attemptId,
-        executionId: ids.execution,
-        executionGeneration: 4,
-        at: new Date().toISOString(),
-        kind: "started",
-        story: { title: "Build started" }
-      };
-      const response = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
-        headers: runnerHeaders,
-        payload: event
-      });
-      expect(response.statusCode).toBe(200);
-      expect(recordProgress).toHaveBeenCalledWith({ userId: ids.user }, event);
-
-      const withoutAttempt = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
-        headers: runnerHeaders,
-        payload: {
-          ...event,
-          id: "build:missing-attempt",
-          attemptId: undefined
-        }
-      });
-      expect(withoutAttempt.statusCode).toBe(400);
-      expect(recordProgress).toHaveBeenCalledOnce();
-
-      const stale = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
-        headers: runnerHeaders,
-        payload: { ...event, id: "build:stale", executionGeneration: 3 }
-      });
-      expect(stale.statusCode).toBe(409);
-      expect(recordProgress).toHaveBeenCalledOnce();
-    } finally {
-      await fixture.app.close();
-    }
-  });
-
-  it("rejects Personal Agent output and completion from a stale attempt", async () => {
-    const jobId = randomUUID();
-    const currentAttemptId = randomUUID();
-    const staleAttemptId = randomUUID();
-    const recordOutput = vi.fn(async () => ({ id: jobId }));
-    const completeAttempt = vi.fn(async () => ({ replayed: false }));
-    const fixture = await buildServer({
-      repository: {
-        getPersonalAgentExecutionJob: vi.fn(async () => ({
-          id: jobId,
-          conversationId: ids.execution,
-          lastAttemptId: currentAttemptId
-        })),
-        getManagedConversationExecution: vi.fn(async () => ({
-          id: ids.execution,
-          executionGeneration: 3,
-          runnerDeviceId: ids.device,
-          runnerDeploymentId: ids.deployment
-        })),
-        listPersonalAgentExecutionAttempts: vi.fn(async () => ({
-          attempts: [
-            {
-              id: staleAttemptId,
-              status: "running",
-              managedExecutionId: ids.execution,
-              managedExecutionGeneration: 2
-            }
-          ],
-          hasMore: false,
-          nextCursor: null
-        })),
-        recordPersonalAgentTurnOutput: recordOutput,
-        completePersonalAgentExecutionAttempt: completeAttempt
-      }
-    });
-    try {
-      const output = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts/${staleAttemptId}/output`,
-        headers: runnerHeaders,
-        payload: {
-          outputText: "old output",
-          outputReference: { runtimeItemIds: [randomUUID()] }
-        }
-      });
-      const completion = await fixture.app.inject({
-        method: "POST",
-        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts/${staleAttemptId}/complete`,
-        headers: runnerHeaders,
-        payload: { outcome: "succeeded" }
-      });
-
-      expect(output.statusCode).toBe(409);
-      expect(completion.statusCode).toBe(409);
-      expect(recordOutput).not.toHaveBeenCalled();
-      expect(completeAttempt).not.toHaveBeenCalled();
     } finally {
       await fixture.app.close();
     }

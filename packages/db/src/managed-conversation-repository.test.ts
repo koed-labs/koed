@@ -602,152 +602,44 @@ describe("managed Conversation prompt cancellation", () => {
   });
 });
 
-describe("managed Agent signal command fencing", () => {
-  it("rejects a stale callback after the same runner reclaimed the command", async () => {
-    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
-    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
-    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
-    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
-    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
-    const currentLeaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
-    const staleLeaseToken = "e3717fb4-7bb3-4793-a449-43f1ab7a2cb5";
-    const runnerId = "runner-one";
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes("from managed_conversation_commands")) {
-        return {
-          rows: [
-            {
-              id: commandId,
-              execution_id: executionId,
-              command_kind: "prompt",
-              state: "dispatching",
-              execution_generation: 3,
-              lease_token: currentLeaseToken,
-              lease_expires_at: new Date(Date.now() + 60_000)
-            }
-          ]
-        };
-      }
-      if (sql.includes("from managed_conversation_executions")) {
-        return {
-          rows: [
-            {
-              id: executionId,
-              owner_user_id: ownerUserId,
-              execution_generation: 3,
-              state: "running",
-              runner_id: runnerId,
-              runner_device_id: deviceId,
-              runner_deployment_id: deploymentId
-            }
-          ]
-        };
-      }
-      return { rows: [] };
-    });
+describe("retired managed Agent Job execution protocol", () => {
+  it("rejects legacy Job signals and Team assignment mutation without opening a transaction", async () => {
+    const connect = vi.fn();
     const repository = createManagedConversationRepository(
-      {
-        connect: vi.fn(async () => ({ query, release: vi.fn() }))
-      } as unknown as pg.Pool,
+      { connect } as unknown as pg.Pool,
       {}
     );
 
     await expect(
       repository.recordPersonalAgentIntentForManagedCommand(
-        { userId: ownerUserId },
-        {
-          commandId,
-          executionId,
-          executionGeneration: 3,
-          leaseToken: staleLeaseToken,
-          runnerId,
-          deviceId,
-          deploymentId,
-          providerTurnId: "codex-turn-from-old-claim",
-          intent: { kind: "assign", goal: "Modify a file" }
-        }
+        { userId: "owner" },
+        {} as never
       )
-    ).rejects.toMatchObject({ statusCode: 409 });
-    expect(query).toHaveBeenCalledWith("rollback");
-  });
-
-  it("rejects a phase signal when its unchanged command token has expired", async () => {
-    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
-    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
-    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
-    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
-    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
-    const leaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
-    const runnerId = "runner-one";
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes("from managed_conversation_commands")) {
-        return {
-          rows: [
-            {
-              id: commandId,
-              execution_id: executionId,
-              command_kind: "prompt",
-              state: "dispatching",
-              execution_generation: 3,
-              lease_token: leaseToken,
-              lease_expires_at: new Date(Date.now() - 1)
-            }
-          ]
-        };
-      }
-      if (sql.includes("from managed_conversation_executions")) {
-        return {
-          rows: [
-            {
-              id: executionId,
-              owner_user_id: ownerUserId,
-              execution_generation: 3,
-              state: "running",
-              runner_id: runnerId,
-              runner_device_id: deviceId,
-              runner_deployment_id: deploymentId,
-              runner_lease_expires_at: new Date(Date.now() + 60_000)
-            }
-          ]
-        };
-      }
-      return { rows: [] };
-    });
-    const repository = createManagedConversationRepository(
-      {
-        connect: vi.fn(async () => ({ query, release: vi.fn() }))
-      } as unknown as pg.Pool,
-      {}
-    );
-
+    ).rejects.toMatchObject({ statusCode: 410 });
+    await expect(
+      repository.recordPersonalAgentTurnStatusForManagedCommand(
+        { userId: "owner" },
+        {} as never
+      )
+    ).rejects.toMatchObject({ statusCode: 410 });
     await expect(
       repository.recordPersonalAgentPhaseForManagedCommand(
-        { userId: ownerUserId },
-        {
-          commandId,
-          executionId,
-          executionGeneration: 3,
-          leaseToken,
-          runnerId,
-          deviceId,
-          deploymentId,
-          providerTurnId: "codex-current-provider-turn",
-          attemptId: "67479cab-82d3-42ed-b026-2f0364874dc1",
-          phase: "checking"
-        }
+        { userId: "owner" },
+        {} as never
       )
-    ).rejects.toMatchObject({ statusCode: 409 });
-    expect(query).toHaveBeenCalledWith("rollback");
-    expect(
-      query.mock.calls.some(([sql]) =>
-        (sql as string).includes("personal_agent_execution_attempts")
+    ).rejects.toMatchObject({ statusCode: 410 });
+    await expect(
+      repository.createManagedConversationAcceptedAgentAssignmentWithClient(
+        {} as pg.PoolClient,
+        {} as never
       )
-    ).toBe(false);
+    ).rejects.toMatchObject({ statusCode: 410 });
+    expect(connect).not.toHaveBeenCalled();
   });
 });
 
 describe("managed Conversation initial Agent start", () => {
-  it("keeps private planning unassigned in the encrypted start command and replay", async () => {
+  it("keeps the Team review fence while storing only presentation context", async () => {
     const ownerUserId = "11111111-1111-4111-8111-111111111111";
     const agentId = "22222222-2222-4222-8222-222222222222";
     const identityVersionId = "33333333-3333-4333-8333-333333333333";
@@ -759,14 +651,6 @@ describe("managed Conversation initial Agent start", () => {
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 9).toString("base64")
     );
-    const memoryContext = {
-      schemaVersion: 1,
-      status: "skipped",
-      attributionNonce: "55555555-5555-4555-8555-555555555555",
-      searchDomain: "global",
-      projectId,
-      evidence: []
-    };
     const agentContext = {
       schemaVersion: 1,
       identity: {
@@ -774,11 +658,9 @@ describe("managed Conversation initial Agent start", () => {
         version: 4,
         identityVersionId,
         name: "Mira",
-        role: "Reviewer",
-        soulInstructions: "Be precise."
+        role: "Reviewer"
       },
-      project: { projectId, name: "Shared project" },
-      memory: { searchDomain: "global", evidence: [] }
+      project: { projectId, name: "Shared project" }
     };
     const executionRow = {
       id: "66666666-6666-4666-8666-666666666666",
@@ -932,7 +814,6 @@ describe("managed Conversation initial Agent start", () => {
       idempotencyKey: "agent-start-replay-key",
       initialPrompt: "Ship the small fix.",
       initialPromptClientUserMessageId: clientMessageId,
-      initialPersonalMemoryContext: memoryContext,
       initialAgentId: agentId,
       initialExpectedAgentVersion: 4,
       initialPersonalAgentContext: agentContext,
@@ -965,15 +846,21 @@ describe("managed Conversation initial Agent start", () => {
     ) as Record<string, unknown>;
     expect(decodedStartPayload).toMatchObject({
       prompt: "Ship the small fix.",
-      continueWithoutMemory: true,
       personalAgent: {
         jobId: null,
         agentId,
         agentVersion: 4,
         identityVersionId
       },
-      personalAgentContext: { ...agentContext, pendingTeamRequestId: requestId }
+      personalAgentContext: agentContext
     });
+    expect(decodedStartPayload).not.toHaveProperty("continueWithoutMemory");
+    expect(decodedStartPayload.personalAgentContext).not.toHaveProperty(
+      "pendingTeamRequestId"
+    );
+    expect(decodedStartPayload.personalAgentContext).not.toHaveProperty(
+      "memory"
+    );
     expect(jobInsertCalls).toHaveLength(0);
     expect(bindReview).toHaveBeenCalledTimes(1);
     expect(
@@ -994,7 +881,6 @@ describe("managed Conversation initial Agent start", () => {
         idempotencyKey: "native-team-review-start",
         initialPrompt: undefined,
         initialPromptClientUserMessageId: undefined,
-        initialPersonalMemoryContext: undefined,
         initialAgentId: undefined,
         initialExpectedAgentVersion: undefined,
         initialPersonalAgentContext: undefined
@@ -1015,161 +901,21 @@ describe("managed Conversation initial Agent start", () => {
   });
 });
 
-describe("managed Agent Job Public Square publication", () => {
-  it("publishes a new Job in the same transaction through current authorized project links", async () => {
-    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
-    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
-    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
-    const agentId = "44444444-4444-4444-8444-444444444444";
-    const identityVersionId = "55555555-5555-4555-8555-555555555555";
-    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
-    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
-    const leaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
-    const runnerId = "runner-one";
-    const projectId = "project:registered-here";
-    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
-      Buffer.alloc(32, 37).toString("base64")
-    );
-    const payload = {
-      prompt: "Review this pull request.",
-      personalAgent: {
-        jobId: null,
-        agentId,
-        agentVersion: 1,
-        identityVersionId
-      },
-      personalAgentContext: {
-        schemaVersion: 1,
-        identity: {
-          agentId,
-          version: 1,
-          identityVersionId,
-          name: "Reviewer",
-          role: "Review pull requests",
-          soulInstructions: "Find concrete risks."
-        },
-        project: { projectId, name: "Project" },
-        activeJob: null,
-        pendingTeamRequestId: null,
-        memory: { searchDomain: "project", evidence: [] }
-      }
-    };
-    const encryptedPayload = await provider.encrypt({
-      plaintext: JSON.stringify(payload),
-      scope: {
-        tenantId: ownerUserId,
-        objectClass: "managed_conversation_prompt"
-      },
-      provenance: {
-        rowFamily: "managed_conversation_commands",
-        sourceId: commandId
-      },
-      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
-      aad: { ownerUserId, executionId, commandId }
-    });
-    const now = new Date();
-    const commandRow = {
-      id: commandId,
-      owner_user_id: ownerUserId,
-      execution_id: executionId,
-      command_kind: "prompt",
-      state: "dispatching",
-      execution_generation: 3,
-      lease_token: leaseToken,
-      lease_expires_at: new Date(Date.now() + 60_000),
-      encrypted_payload: encryptedPayload
-    };
-    const executionRow = {
-      id: executionId,
-      owner_user_id: ownerUserId,
-      project_id: projectId,
-      execution_generation: 3,
-      state: "running",
-      runner_id: runnerId,
-      runner_device_id: deviceId,
-      runner_deployment_id: deploymentId
-    };
-    const outboxRow = {
-      id: "99999999-9999-4999-8999-999999999999",
-      cursor: "1",
-      protocol_version: 1,
-      family: "managed_conversation_changed",
-      scope: "personal",
-      personal_owner_user_id: ownerUserId,
-      team_id: null,
-      team_workspace_id: null,
-      thread_id: null,
-      message_id: null,
-      share_grant_id: null,
-      logical_memory_id: null,
-      resource_type: "managed_conversation_execution",
-      resource_id: executionId,
-      actor_principal_id: ownerUserId,
-      mutation_id: "managed-agent-intent-test",
-      occurred_at: now
-    };
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes("from managed_conversation_commands")) {
-        return { rows: [commandRow] };
-      }
-      if (sql.includes("from managed_conversation_executions")) {
-        return { rows: [executionRow] };
-      }
-      if (sql.includes("insert into collaboration_outbox")) {
-        return { rows: [outboxRow] };
-      }
-      return { rows: [] };
-    });
-    const client = { query, release: vi.fn() };
+describe("retired Job publication", () => {
+  it("does not publish a Job when the legacy intent endpoint is called", async () => {
+    const connect = vi.fn();
     const repository = createManagedConversationRepository(
-      { connect: vi.fn(async () => client) } as unknown as pg.Pool,
-      { envelopeEncryptionProvider: provider }
+      { connect } as unknown as pg.Pool,
+      {}
     );
 
-    await repository.recordPersonalAgentIntentForManagedCommand(
-      { userId: ownerUserId },
-      {
-        commandId,
-        executionId,
-        executionGeneration: 3,
-        leaseToken,
-        runnerId,
-        deviceId,
-        deploymentId,
-        providerTurnId: "codex-current-provider-turn",
-        intent: { kind: "assign", goal: "Review the pull request" }
-      }
-    );
-
-    const jobInsertIndex = query.mock.calls.findIndex(([sql]) =>
-      sql.includes("insert into personal_agent_execution_jobs")
-    );
-    const publicationIndex = query.mock.calls.findIndex(([sql]) =>
-      sql.includes("insert into personal_agent_team_job_publications")
-    );
-    const eventIndex = query.mock.calls.findIndex(([sql]) =>
-      sql.includes("insert into personal_agent_execution_job_events")
-    );
-    expect(jobInsertIndex).toBeGreaterThan(-1);
-    expect(publicationIndex).toBeGreaterThan(jobInsertIndex);
-    expect(eventIndex).toBeGreaterThan(publicationIndex);
-    const publicationSql = query.mock.calls[publicationIndex]?.[0] as string;
-    expect(publicationSql).toContain("c.actor_user_id = j.owner_user_id");
-    expect(publicationSql).toContain("c.local_project_id = j.project_id");
-    expect(publicationSql).toContain("sp.unshared_at is null");
-    expect(publicationSql).toContain("t.lifecycle = 'active'");
-    expect(publicationSql).toContain("tm.status = 'enabled'");
-    expect(publicationSql).toContain(
-      "on conflict (connection_id, job_id) do nothing"
-    );
-    expect(publicationSql).not.toMatch(/encrypted_payload|command_id|prompt/i);
-    const insertedJobId = query.mock.calls[jobInsertIndex]?.[1]?.[0];
-    expect(query.mock.calls[publicationIndex]?.[1]).toEqual([
-      insertedJobId,
-      ownerUserId
-    ]);
-    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(true);
-    expect(query.mock.calls.some(([sql]) => sql === "rollback")).toBe(false);
+    await expect(
+      repository.recordPersonalAgentIntentForManagedCommand(
+        { userId: "owner" },
+        {} as never
+      )
+    ).rejects.toMatchObject({ statusCode: 410 });
+    expect(connect).not.toHaveBeenCalled();
   });
 });
 
@@ -1210,16 +956,22 @@ describe("managed Conversation start prompt dispatch", () => {
       identityVersionId: personalAgent.identityVersionId,
       name: "Mira",
       role: "Reviewer",
-      soulInstructions: "Be precise."
+      soulInstructions: "Legacy instructions are ignored."
     },
     project: { projectId: null, name: null },
-    memory: { searchDomain: "global", evidence: personalMemoryContext.evidence }
+    activeJob: { jobId: personalAgent.jobId, state: "running" },
+    pendingTeamRequestId: "66666666-6666-4666-8666-666666666666",
+    memory: {
+      searchDomain: "global",
+      evidence: personalMemoryContext.evidence
+    },
+    memoryContext: personalMemoryContext
   };
   const provider = createLocalTestKeyEnvelopeEncryptionProvider(
     Buffer.alloc(32, 7).toString("base64")
   );
 
-  it("queues one encrypted child prompt and binds the existing Job to it", async () => {
+  it("resumes a legacy start as a presentation-only prompt without updating its Job", async () => {
     const encryptedPayload = await provider.encrypt({
       plaintext: JSON.stringify({
         prompt: "  Say hello  ",
@@ -1246,7 +998,6 @@ describe("managed Conversation start prompt dispatch", () => {
     });
     let completed = false;
     let childInsertParams: unknown[] | undefined;
-    let personalAgentJobBindingParams: unknown[] | undefined;
     const outboxRow = {
       id: "outbox-id",
       cursor: "1",
@@ -1305,10 +1056,6 @@ describe("managed Conversation start prompt dispatch", () => {
         childInsertParams = params;
         return { rows: [{ id: "child-command-id" }] };
       }
-      if (sql.includes("update personal_agent_execution_jobs")) {
-        personalAgentJobBindingParams = params;
-        return { rowCount: 1, rows: [] };
-      }
       if (sql.includes("insert into collaboration_outbox")) {
         return { rows: [outboxRow] };
       }
@@ -1345,15 +1092,6 @@ describe("managed Conversation start prompt dispatch", () => {
     expect(childInsertParams?.[4]).toBe(4);
     expect(childInsertParams?.[6]).toBe(clientUserMessageId);
     expect(childInsertParams?.[7]).toBe(2);
-    expect(personalAgentJobBindingParams).toEqual([
-      ownerUserId,
-      personalAgent.jobId,
-      "child-command-id",
-      startCommandId,
-      executionId,
-      personalAgent.agentId,
-      personalAgent.agentVersion
-    ]);
     const childPayload = JSON.parse(
       await decryptEnvelopeToUtf8(
         provider,
@@ -1368,16 +1106,33 @@ describe("managed Conversation start prompt dispatch", () => {
         reasoningEffort: "high",
         permissionMode: "auto_edit"
       },
-      personalMemoryContext,
-      personalAgent: { ...personalAgent, replayed: false },
-      personalAgentContext
+      personalAgent: { ...personalAgent, jobId: null, replayed: false },
+      personalAgentContext: {
+        schemaVersion: 1,
+        identity: {
+          agentId: personalAgent.agentId,
+          version: personalAgent.agentVersion,
+          identityVersionId: personalAgent.identityVersionId,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: null
+        },
+        project: { projectId: null, name: null }
+      }
     });
-    expect(JSON.stringify(childPayload)).toContain("private-node-id");
+    expect(childPayload).not.toHaveProperty("personalMemoryContext");
+    expect(JSON.stringify(childPayload)).not.toContain("private-node-id");
+    expect(JSON.stringify(childPayload)).not.toContain(
+      "Legacy instructions are ignored"
+    );
+    expect(JSON.stringify(childPayload)).not.toContain("pendingTeamRequestId");
     expect(
-      query.mock.calls.filter(([sql]) =>
-        sql.includes("insert into personal_agent_execution_jobs")
+      query.mock.calls.some(([sql]) =>
+        /(?:insert\s+into|update|delete\s+from)\s+personal_agent_execution_(?:jobs|job_events|attempts)/iu.test(
+          sql as string
+        )
       )
-    ).toHaveLength(0);
+    ).toBe(false);
   });
 
   it("does not dispatch the prompt when a pending start was canceled", async () => {

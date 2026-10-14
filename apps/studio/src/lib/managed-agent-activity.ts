@@ -91,7 +91,11 @@ export function managedConversationActivity(
 ): BuildActivity {
   if (payload.executionGeneration !== runtime.execution.executionGeneration)
     return { source: "live", state: "unknown", events: [] };
-  const activity = managedAgentActivity(payload);
+  const activity: BuildActivity = {
+    source: "live",
+    state: "unknown",
+    events: []
+  };
   const command = runtime.latestCommand;
   if (!command) return activity;
   const state: BuildActivityState =
@@ -223,9 +227,7 @@ export function managedConversationActivity(
     ],
     ...(Number.isFinite(at) ? { updatedAt: at } : {})
   };
-  return activity.events.length
-    ? { ...activity, recentExchanges: direct.events }
-    : direct;
+  return direct;
 }
 
 function replySummary(reply: unknown): string {

@@ -189,7 +189,7 @@ it("keeps the last five exchanges, in order, and survives a reload", () => {
   );
   expect(managedConversationActivity(payload, runtime)).toEqual(first);
 });
-it("keeps conversation history available alongside named Agent activity", () => {
+it("shows native conversation history without importing legacy Job progress", () => {
   const activity = managedConversationActivity(
     {
       executionGeneration: 1,
@@ -201,7 +201,8 @@ it("keeps conversation history available alongside named Agent activity", () => 
     },
     directRuntime
   );
-  expect(activity.recentExchanges?.at(-1)?.story?.title).toBe(
+  expect(activity.events.at(-1)?.story?.title).toBe(
     "Agent reports: Created the page"
   );
+  expect(activity.events.some((event) => event.id === "job")).toBe(false);
 });

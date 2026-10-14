@@ -16,7 +16,6 @@ import {
   personalAgentTerminalAttemptCount,
   personalAgentExecutionContextSchema,
   personalAgentIntentSignalSchema,
-  personalAgentTurnStatusSchema,
   retirePersonalAgent,
   setPersonalAgentActiveRespondent
 } from "./personal-agent-contract.js";
@@ -159,8 +158,8 @@ describe("Personal Agent domain contract", () => {
     ).toBe(false);
   });
 
-  it("requires Workspace attribution for Team evidence in Agent context", () => {
-    const context = {
+  it("keeps only presentation identity and Project data in execution context", () => {
+    const context = personalAgentExecutionContextSchema.parse({
       schemaVersion: 1,
       identity: {
         agentId: ids.agent,
@@ -168,42 +167,54 @@ describe("Personal Agent domain contract", () => {
         identityVersionId: ids.version,
         name: "Planner",
         role: "Planning assistant",
+        avatarReference: "preset:planner",
         soulInstructions: "Be precise."
       },
       project: { projectId: null, name: null },
+      activeJob: { jobId: ids.job, state: "running", goal: "Legacy goal" },
+      pendingTeamRequestId: ids.conversation,
       memory: {
         searchDomain: "global",
-        evidence: [
-          {
-            nodeId: "team-item",
-            summaryText: "A Team-shared fact.",
-            visibility: "team",
-            citation: { nodeId: "team-item", visibility: "team" }
-          }
-        ]
+        evidence: []
       }
-    };
+    });
 
-    expect(personalAgentExecutionContextSchema.safeParse(context).success).toBe(
-      false
-    );
-    expect(
-      personalAgentExecutionContextSchema.safeParse({
-        ...context,
-        memory: {
-          ...context.memory,
-          evidence: [
-            {
-              ...context.memory.evidence[0],
-              teamWorkspaceId: ids.execution
-            }
-          ]
-        }
-      }).success
-    ).toBe(true);
+    expect(context).toEqual({
+      schemaVersion: 1,
+      identity: {
+        agentId: ids.agent,
+        version: 1,
+        identityVersionId: ids.version,
+        name: "Planner",
+        role: "Planning assistant",
+        avatarReference: "preset:planner"
+      },
+      project: { projectId: null, name: null }
+    });
   });
 
-  it("represents a waiting Job and restricts provider turn outcomes", () => {
+  it("defaults missing legacy Agent instructions to an empty compatibility value", () => {
+    const version = parsePersonalAgentIdentityVersion({
+      contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+      id: ids.version,
+      agentId: ids.agent,
+      ownerUserId: ids.owner,
+      version: 1,
+      name: "Planner",
+      role: "Planning assistant",
+      avatarReference: "preset:planner",
+      defaultProvider: null,
+      defaultModel: null,
+      defaultReasoningEffort: null,
+      instructionSource: "generated",
+      createdByUserId: ids.owner,
+      createdAt: timestamps.created
+    });
+
+    expect(version.soulInstructions).toBe("");
+  });
+
+  it("accepts old command contexts while dropping execution instructions and Job state", () => {
     const context = personalAgentExecutionContextSchema.parse({
       schemaVersion: 1,
       identity: {
@@ -220,12 +231,10 @@ describe("Personal Agent domain contract", () => {
       memory: { searchDomain: "global", evidence: [] }
     });
 
-    expect(context.activeJob?.state).toBe("waiting");
-    expect(context.pendingTeamRequestId).toBe(ids.conversation);
-    expect(personalAgentTurnStatusSchema.parse("awaiting_owner")).toBe(
-      "awaiting_owner"
-    );
-    expect(() => personalAgentTurnStatusSchema.parse("failed")).toThrow();
+    expect(context.identity).not.toHaveProperty("soulInstructions");
+    expect(context).not.toHaveProperty("activeJob");
+    expect(context).not.toHaveProperty("pendingTeamRequestId");
+    expect(context).not.toHaveProperty("memory");
   });
 
   it("allows an unset paired provider and model without inventing defaults", () => {

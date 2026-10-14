@@ -38,8 +38,6 @@ import {
   managedConversationProviderHistoryAvailable,
   managedConversationCodexHistoryProof,
   managedConversationRebasedPrefixMatches,
-  managedPersonalAgentTurnDeclaredComplete,
-  managedPersonalAgentSignalThreadMatchesCurrentCommand,
   managedConversationOriginSourceGeneration,
   managedConversationCodexRebaseSourceMatches,
   managedConversationCodexRebaseRequired,
@@ -258,59 +256,6 @@ describe("managed Conversation provider history recovery", () => {
         }
       )
     ).toBe(true);
-  });
-});
-
-describe("managed Personal Agent turn status recovery", () => {
-  it("uses a persisted completion only for the successful provider turn it names", () => {
-    const payload = {
-      personalAgentTurnStatus: "complete",
-      personalAgentTurnStatusProviderTurnId: "codex-turn-2"
-    };
-    expect(
-      managedPersonalAgentTurnDeclaredComplete(
-        payload,
-        undefined,
-        "codex-turn-2"
-      )
-    ).toBe(true);
-    expect(
-      managedPersonalAgentTurnDeclaredComplete(
-        payload,
-        undefined,
-        "codex-turn-3"
-      )
-    ).toBe(false);
-    expect(
-      managedPersonalAgentTurnDeclaredComplete(
-        { ...payload, personalAgentTurnStatus: "awaiting_owner" },
-        undefined,
-        "codex-turn-2"
-      )
-    ).toBe(false);
-    expect(
-      managedPersonalAgentTurnDeclaredComplete(payload, "complete", undefined)
-    ).toBe(true);
-  });
-
-  it("fences provider signals against the claimed command, not a stale session snapshot", () => {
-    const capturedAtSessionStart = { providerThreadId: null };
-    const activeCommand = {
-      execution: { providerThreadId: "current-thread" }
-    } as never;
-    expect(capturedAtSessionStart.providerThreadId).toBeNull();
-    expect(
-      managedPersonalAgentSignalThreadMatchesCurrentCommand(
-        activeCommand,
-        "current-thread"
-      )
-    ).toBe(true);
-    expect(
-      managedPersonalAgentSignalThreadMatchesCurrentCommand(
-        activeCommand,
-        "stale-thread"
-      )
-    ).toBe(false);
   });
 });
 
@@ -1508,6 +1453,7 @@ const terminalExecutionFixture = (input: {
     runnerId: null,
     runnerLeaseExpiresAt: null,
     logicalSessionId: null,
+    personalAgentChatWorkspaceId: null,
     providerThreadId: null,
     providerCliVersion: null,
     sourceGenerationId: null,
@@ -1922,6 +1868,7 @@ describe("deferred Managed Conversation runner starts", () => {
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
+    const chatWorkspaceId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
     const execution = {
@@ -1932,6 +1879,7 @@ describe("deferred Managed Conversation runner starts", () => {
         deviceId
       }),
       projectId: null,
+      personalAgentChatWorkspaceId: chatWorkspaceId,
       contextKind: "independent" as const
     };
     const koedHome = resolve(root, "koed-home");
@@ -1954,7 +1902,7 @@ describe("deferred Managed Conversation runner starts", () => {
         await realpath(koedHome),
         "managed-conversations",
         "independent",
-        executionId
+        chatWorkspaceId
       );
       expect(
         harness.repository.upsertManagedConversationRuntimeBinding
@@ -2277,13 +2225,7 @@ describe("deferred Managed Conversation runner starts", () => {
     }
   ])(
     "rechecks $unavailable immediately before starting a queued execution",
-    async ({
-      unavailable,
-      instancesAvailable,
-      projectPath,
-      bindingPath,
-      errorCode
-    }) => {
+    async ({ instancesAvailable, projectPath, bindingPath, errorCode }) => {
       const root = await mkdtemp(resolve(tmpdir(), "koed-start-recheck-"));
       const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
       const currentProjectPath = resolve(root, "current-project");
@@ -2954,7 +2896,9 @@ describe("Managed Conversation service lifecycle", () => {
           )
         ).toBe(terminalStatus === "interrupted" ? 2 : 1);
         expect(runTurn).toHaveBeenCalledWith(
-          "Continue from the hosted chat.",
+          expect.stringContaining(
+            "Current user message:\n\nContinue from the hosted chat."
+          ),
           expect.any(Number),
           `koed-user-message:${clientUserMessageId}`,
           expect.objectContaining({
@@ -2982,7 +2926,9 @@ describe("Managed Conversation service lifecycle", () => {
             }
           );
           expect(runTurn).toHaveBeenLastCalledWith(
-            "Follow up after the interrupted turn.",
+            expect.stringContaining(
+              "Current user message:\n\nFollow up after the interrupted turn."
+            ),
             expect.any(Number),
             `koed-user-message:${followUpMessageId}`,
             expect.objectContaining({
@@ -3021,7 +2967,7 @@ describe("Managed Conversation service lifecycle", () => {
     }
   );
 
-  it("evicts and closes a session cached before a later recovery error", async () => {
+  it("recovers a cached session without reading legacy Agent Job history", async () => {
     vi.useFakeTimers();
     const root = await mkdtemp(resolve(tmpdir(), "koed-late-recovery-error-"));
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
@@ -3077,7 +3023,10 @@ describe("Managed Conversation service lifecycle", () => {
       transcriptPath,
       managedHome
     };
-    let recoveryLookupCount = 0;
+    const listPersonalAgentExecutionJobs = vi.fn(async () => ({
+      jobs: [],
+      nextCursor: null
+    }));
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => [
         execution
@@ -3099,18 +3048,7 @@ describe("Managed Conversation service lifecycle", () => {
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => []),
       getManagedConversationCommand: vi.fn(async () => null),
-      listPersonalAgentExecutionJobs: vi.fn(async () => {
-        recoveryLookupCount += 1;
-        if (recoveryLookupCount === 1) {
-          throw Object.assign(
-            new TypeError("transient recovery lookup error"),
-            {
-              name: "TypeError"
-            }
-          );
-        }
-        return { jobs: [], nextCursor: null };
-      }),
+      listPersonalAgentExecutionJobs,
       cancelManagedConversationRuntimeItems: vi.fn(async () => 0)
     };
     const start = vi
@@ -3160,26 +3098,14 @@ describe("Managed Conversation service lifecycle", () => {
     });
     try {
       await service.processOnce();
-      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+      expect(close).not.toHaveBeenCalled();
       expect(start).toHaveBeenCalledOnce();
+      expect(listPersonalAgentExecutionJobs).not.toHaveBeenCalled();
       expect(
         repository.releaseManagedConversationRunner
-      ).toHaveBeenCalledOnce();
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: {
-            name: "worker.managed_conversation.runtime_recovery_deferred",
-            category: "managed_conversation"
-          },
-          error_name: "ManagedConversationFailure"
-        }),
-        expect.any(String)
-      );
-
-      await vi.advanceTimersByTimeAsync(500);
-      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
-      expect(close).toHaveBeenCalledOnce();
-      expect(recoveryLookupCount).toBeGreaterThanOrEqual(2);
+      ).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
     } finally {
       await service.stop();
       start.mockRestore();
@@ -3354,6 +3280,7 @@ describe("Managed Conversation service lifecycle", () => {
       })),
       setManagedConversationExecutionState: vi.fn(async () => true),
       getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+      getAwaitingOwnerRequestForExecution: vi.fn(async () => null),
       listManagedConversationExecutionCheckpoints: vi.fn(
         async () => checkpoints
       ),

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {
   handlePersonalAgents,
+  handlePersonalConversations,
   handlePersonalAgentRoleTemplates,
   handleTeamAgentRequests
 } from "./personal-agents-http.mjs";
@@ -426,6 +427,7 @@ test("uses paired local access for each route family and never falls back after 
       "personal-agent-role-templates",
       "/studio-api/personal-agent-role-templates"
     ],
+    ["personal-conversations", "/studio-api/personal-conversations"],
     ["managed-conversations", "/studio-api/managed-conversations"]
   ];
   for (const [routeFamily, pathname] of cases) {
@@ -472,6 +474,113 @@ test("uses paired local access for each route family and never falls back after 
       assert.equal(result.status, 503, routeFamily);
       assert.equal(JSON.stringify(result).includes("must-not-be-sent"), false);
     }
+  }
+});
+
+test("personal conversation gateway forwards bounded reads and requires CSRF for sends and batch controls", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const messageId = "22222222-2222-4222-8222-222222222222";
+  const base = "http://localhost/studio-api/personal-conversations";
+  const invoke = async ({
+    path,
+    method = "GET",
+    body = null,
+    validCsrf = () => true,
+    fetchImpl
+  }) => {
+    const request = Readable.from(
+      body === null ? [] : [Buffer.from(JSON.stringify(body))]
+    );
+    request.method = method;
+    request.headers = {
+      ...(body === null ? {} : { "content-type": "application/json" }),
+      "x-studio-csrf": "token"
+    };
+    let result;
+    await handlePersonalConversations({
+      request,
+      url: new URL(`${base}${path}`),
+      validCsrf,
+      resolveToken: async () => "secret",
+      apiBase: "http://127.0.0.1:43300",
+      fetchImpl,
+      send: (status, payload) => {
+        result = { status, payload };
+      }
+    });
+    return result;
+  };
+
+  const read = await invoke({
+    path: `/${id}?beforeSequence=125&limit=40`,
+    fetchImpl: async (url, init) => {
+      assert.equal(
+        url.href,
+        `http://127.0.0.1:43300/v1/personal-conversations/${id}?beforeSequence=125&limit=40`
+      );
+      assert.equal(init.method, "GET");
+      return Response.json({ conversation: {}, timelinePage: {} });
+    }
+  });
+  assert.equal(read.status, 200);
+
+  const send = await invoke({
+    path: `/${id}/messages`,
+    method: "POST",
+    body: { requestId: messageId, text: "hello" },
+    fetchImpl: async (url, init) => {
+      assert.equal(url.pathname, `/v1/personal-conversations/${id}/messages`);
+      assert.equal(init.headers.authorization, "Bearer secret");
+      assert.equal(
+        init.body,
+        JSON.stringify({ requestId: messageId, text: "hello" })
+      );
+      return Response.json(
+        { conversation: {}, message: {}, deliveries: [] },
+        { status: 202 }
+      );
+    }
+  });
+  assert.equal(send.status, 202);
+
+  const cancel = await invoke({
+    path: `/${id}/messages/${messageId}/cancel`,
+    method: "POST",
+    body: { requestId: messageId },
+    fetchImpl: async (url) => {
+      assert.equal(
+        url.pathname,
+        `/v1/personal-conversations/${id}/messages/${messageId}/cancel`
+      );
+      return Response.json({
+        conversation: {},
+        messageId,
+        canceledDeliveryIds: []
+      });
+    }
+  });
+  assert.equal(cancel.status, 200);
+
+  const denied = await invoke({
+    path: `/${id}/messages`,
+    method: "POST",
+    body: { requestId: messageId },
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("CSRF must be checked before the backend")
+  });
+  assert.equal(denied.status, 403);
+
+  for (const path of [
+    `/${id}?limit=101`,
+    `/${id}?unknown=1`,
+    "/not-a-uuid",
+    `/${id}/messages/${messageId}/delete`
+  ]) {
+    const result = await invoke({
+      path,
+      fetchImpl: () => assert.fail(`must reject invalid route ${path}`)
+    });
+    assert.notEqual(result.status, 200, path);
   }
 });
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { resolvePersonalChatRecipients } from "@/lib/personal-conversation-launch";
 import { conversationTitleFromPrompt } from "@koed/shared/conversation-title";
 import type { HomeExecution } from "@/lib/studio-contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,12 +26,7 @@ import {
 } from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
-import {
-  activityWithBuildProgress,
-  buildProgressJobState,
-  parseBuildProgressPage,
-  unavailableBuildProgress
-} from "@/lib/build-progress-client";
+
 import {
   cancelLocalProjectMove,
   deleteLocalRetainedManagedWorktree,
@@ -54,6 +50,20 @@ import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
 import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
+import type {
+  PersonalAgentChatConversation,
+  PersonalAgentChatLaunchSnapshot,
+  PersonalAgentChatSubmit
+} from "@koed/shared/personal-agent-chat-contract";
+import {
+  cancelPersonalConversationMessage,
+  continuePersonalConversationMessage,
+  readPersonalConversation,
+  renamePersonalConversation,
+  submitPersonalConversationMessage
+} from "@/lib/personal-conversations-client";
+import { PersonalConversationError } from "@/lib/personal-conversations-client";
+import type { ChatComposerRestoreSelection } from "../ChatComposer";
 
 const EMPTY_REGISTERED_PROJECTS: Array<{ id: string; name: string }> = [];
 const RECEIPT_WAIT_EXPIRED = Symbol("receipt-wait-expired");
@@ -81,6 +91,7 @@ import {
   shouldKeepProjectMoveNoticeIntent
 } from "@/lib/project-move-preference";
 import type { BuildActivity } from "@/lib/studio-build-activity";
+import { conversationDiffEvent } from "@/lib/conversation-build-diff";
 import {
   acceptRuntimeSnapshot,
   ManagedChatError,
@@ -93,7 +104,6 @@ import {
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
-  loadManagedBuildProgress,
   record,
   resolveLaunchSelection,
   shouldNavigateToExecutionAfterSendFailure,
@@ -169,8 +179,105 @@ const delay = (ms: number, signal: AbortSignal) =>
     signal.addEventListener("abort", abort, { once: true });
   });
 
+function mapPersonalConversationMessages(
+  conversation: PersonalAgentChatConversation,
+  agents: readonly PersonalAgent[]
+): NewChatRuntimeMessage[] {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  return conversation.messages.map((message) => {
+    const agent = message.authorAgentId
+      ? byId.get(message.authorAgentId)
+      : undefined;
+    const authorName = message.authorName ?? message.provider ?? "AI Client";
+    return {
+      id: message.id,
+      role:
+        message.kind === "user" ? ("user" as const) : ("assistant" as const),
+      content:
+        (message.kind === "agent_reply"
+          ? stripPersonalMemoryAttributionFooter(message.text, {
+              mode: "final"
+            })
+          : message.text) + (message.truncated ? "\n[Output truncated]" : ""),
+      createdAt: Date.parse(message.createdAt),
+      sequence: message.sequence,
+      author:
+        message.kind === "agent_reply"
+          ? {
+              agentId:
+                message.authorAgentId ??
+                `provider:${message.provider ?? "generic"}`,
+              name: authorName,
+              avatar: agent?.avatar ? parseAvatar(agent.avatar) : undefined
+            }
+          : null
+    };
+  });
+}
+
+function mergePersonalMessages(
+  current: readonly NewChatRuntimeMessage[],
+  incoming: readonly NewChatRuntimeMessage[]
+): NewChatRuntimeMessage[] {
+  const messages = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) messages.set(message.id, message);
+  return [...messages.values()].sort(
+    (left, right) =>
+      (left.sequence ?? 0) - (right.sequence ?? 0) ||
+      left.createdAt - right.createdAt ||
+      left.id.localeCompare(right.id)
+  );
+}
+
+function persistedPersonalAgentSelections(
+  conversation: PersonalAgentChatConversation
+): Record<string, ChatComposerRestoreSelection> {
+  return Object.fromEntries(
+    conversation.participants.flatMap((participant) => {
+      const launch = participant.launch;
+      const permissionMode =
+        launch.permissionMode === "supervised"
+          ? "ask"
+          : launch.permissionMode === "full_access"
+            ? "full"
+            : null;
+      if (!permissionMode) return [];
+      return [
+        [
+          participant.agentId,
+          {
+            key: `${conversation.conversationId}:${participant.agentId}:${participant.agentVersion}`,
+            provider: launch.provider,
+            model: launch.model,
+            effort: launch.reasoningEffort,
+            permissionMode,
+            instanceId: launch.aiClientInstanceId
+          }
+        ]
+      ];
+    })
+  );
+}
+
+function personalRestoreSelection(
+  conversation: PersonalAgentChatConversation,
+  agentId: string | null
+): ChatComposerRestoreSelection | undefined {
+  if (!agentId) return undefined;
+  return persistedPersonalAgentSelections(conversation)[agentId];
+}
+
+async function personalSendFingerprint(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
 export function LiveAgentChat({
   executionId: initialExecutionId,
+  personalConversationId: initialPersonalConversationId,
   teamRequestId,
   teamRequestTeamId,
   teamRequestExpectedRequestVersion,
@@ -190,6 +297,7 @@ export function LiveAgentChat({
   onSidebarMoveTargetHandled
 }: {
   executionId?: string;
+  personalConversationId?: string;
   teamRequestId?: string;
   teamRequestTeamId?: string;
   teamRequestExpectedRequestVersion?: number;
@@ -239,6 +347,39 @@ export function LiveAgentChat({
   const [activeAgentId, setActiveAgentId] = useState<string | null>(
     initialSelection?.agentId ?? null
   );
+  const [personalConversationId, setPersonalConversationId] = useState<
+    string | null
+  >(
+    initialPersonalConversationId &&
+      validExecutionId(initialPersonalConversationId)
+      ? initialPersonalConversationId
+      : null
+  );
+  const personalConversationIdRef = useRef<string | null>(
+    initialPersonalConversationId &&
+      validExecutionId(initialPersonalConversationId)
+      ? initialPersonalConversationId
+      : null
+  );
+  const [personalConversation, setPersonalConversation] =
+    useState<PersonalAgentChatConversation | null>(null);
+  const [personalTimelineHasMore, setPersonalTimelineHasMore] = useState(false);
+  const [personalConversationBlocked, setPersonalConversationBlocked] =
+    useState(false);
+  const [personalRetryAvailable, setPersonalRetryAvailable] = useState(false);
+  const [personalConversationLoading, setPersonalConversationLoading] =
+    useState(Boolean(initialPersonalConversationId));
+  const personalConversationRef = useRef<PersonalAgentChatConversation | null>(
+    null
+  );
+  const personalReadSequence = useRef(0);
+  const personalRequestIdentity = useRef<{
+    fingerprint: string;
+    conversationId: string;
+    requestId: string;
+    messageId: string;
+    startId: string;
+  } | null>(null);
   const [executionId, setExecutionId] = useState<string | null>(
     initialExecutionId && validExecutionId(initialExecutionId)
       ? initialExecutionId
@@ -250,19 +391,16 @@ export function LiveAgentChat({
   }, [executionId]);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [activity, setActivity] = useState<BuildActivity | null>(null);
-  const [selectedBuildJobId, setSelectedBuildJobId] = useState<string | null>(
-    null
-  );
-  const selectedBuildJobIdRef = useRef<string | null>(null);
-  const buildSelectionSequenceRef = useRef(0);
+  const [personalDeliveryActivity, setPersonalDeliveryActivity] =
+    useState<BuildActivity | null>(null);
+  const [personalDiffLoadingId, setPersonalDiffLoadingId] = useState<
+    string | null
+  >(null);
   const [jobMarkers, setJobMarkers] = useState<
     ReturnType<typeof managedAgentJobMarkers>
   >([]);
   const [messages, setMessages] = useState<NewChatRuntimeMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [memoryRecallFailure, setMemoryRecallFailure] = useState<string | null>(
-    null
-  );
   const [status, setStatus] = useState("Connecting to the local runtime");
   const [historyNotice, setHistoryNotice] = useState("");
   const [latestProjectMove, setLatestProjectMove] =
@@ -356,6 +494,9 @@ export function LiveAgentChat({
     store.write({
       schemaVersion: 1,
       draft,
+      ...(current?.personalConversationId
+        ? { personalConversationId: current.personalConversationId }
+        : {}),
       ...(current?.pendingOperation
         ? { pendingOperation: current.pendingOperation }
         : {})
@@ -400,13 +541,43 @@ export function LiveAgentChat({
           setFeedbackOwner(identity);
           recoveryStore.current = createLocalManagedChatRecoveryStore({
             ...identity,
-            executionId: initialExecutionId ?? null
+            executionId:
+              initialPersonalConversationId ?? initialExecutionId ?? null
           });
           if (recoveryStore.current.hydrate) {
             await recoveryStore.current.hydrate();
             if (controller.signal.aborted) return;
           }
           const recoveryRecord = recoveryStore.current?.read();
+          if (
+            recoveryRecord?.personalConversationId &&
+            recoveryRecord.pendingOperation
+          ) {
+            personalRequestIdentity.current = {
+              fingerprint:
+                recoveryRecord.pendingOperation.requestFingerprint ?? "",
+              conversationId: recoveryRecord.personalConversationId,
+              requestId: recoveryRecord.pendingOperation.promptIdempotencyKey,
+              messageId: recoveryRecord.pendingOperation.clientUserMessageId,
+              startId: recoveryRecord.pendingOperation.startIdempotencyKey
+            };
+            setPersonalRetryAvailable(
+              Boolean(recoveryRecord.pendingOperation.personalSubmit)
+            );
+            if (recoveryRecord.pendingOperation.personalSubmit)
+              setRecoveredDraft(recoveryRecord.pendingOperation.prompt);
+          }
+          if (
+            !initialPersonalConversationId &&
+            recoveryRecord?.personalConversationId
+          ) {
+            personalConversationIdRef.current =
+              recoveryRecord.personalConversationId;
+            setPersonalConversationId(recoveryRecord.personalConversationId);
+            router.replace(
+              `/?chat=1&conversation=${encodeURIComponent(recoveryRecord.personalConversationId)}`
+            );
+          }
           const editedDuringLoad = latestDraft.current !== initialDraft;
           const draft = editedDuringLoad
             ? latestDraft.current
@@ -429,7 +600,11 @@ export function LiveAgentChat({
             });
           }
           setRecoveredDraft(draft || null);
-          if (recoveryRecord?.pendingOperation) {
+          if (
+            recoveryRecord?.pendingOperation &&
+            !recoveryRecord.personalConversationId &&
+            !initialPersonalConversationId
+          ) {
             recoveringPreviousSend = true;
             setRecoveryBlocked(true);
             setStatus("Checking the previous send status…");
@@ -617,11 +792,14 @@ export function LiveAgentChat({
   }, [
     initialDraft,
     initialSubmission,
+    initialPersonalConversationId,
     initialExecutionId,
     router,
     settleRecoveredSend,
     teamRequestId,
-    teamRequestTeamId
+    teamRequestTeamId,
+    teamRequestExpectedRequestVersion,
+    teamRequestExpectedReviewVersion
   ]);
 
   const refresh = useCallback(
@@ -648,31 +826,6 @@ export function LiveAgentChat({
       if (state.executionGeneration !== snapshot.execution.executionGeneration)
         return snapshot;
       const baseActivity = managedConversationActivity(state, snapshot);
-      const rawJobs = Array.isArray(state.jobs)
-        ? state.jobs.filter(record).slice(0, 20)
-        : [];
-      const jobs = rawJobs.flatMap((job) =>
-        typeof job.id === "string" && typeof job.title === "string"
-          ? [
-              {
-                id: job.id,
-                title: job.title,
-                state: buildProgressJobState(job.observedState ?? job.state),
-                createdAt:
-                  typeof job.createdAt === "string" ? job.createdAt : undefined
-              }
-            ]
-          : []
-      );
-      const preferredJobId =
-        selectedBuildJobIdRef.current &&
-        jobs.some((job) => job.id === selectedBuildJobIdRef.current)
-          ? selectedBuildJobIdRef.current
-          : (jobs.find((job) => job.state === "running")?.id ??
-            jobs[0]?.id ??
-            null);
-      selectedBuildJobIdRef.current = preferredJobId;
-      setSelectedBuildJobId(preferredJobId);
       const projectName =
         registeredProjects.find(
           (project) => project.id === snapshot.execution.projectId
@@ -681,8 +834,6 @@ export function LiveAgentChat({
       let conversationActivity: BuildActivity = {
         ...baseActivity,
         project: { name: projectName },
-        jobs,
-        ...(preferredJobId ? { selectedJobId: preferredJobId } : {}),
         availability: snapshot.execution.projectId
           ? "unavailable"
           : "no_project"
@@ -707,39 +858,6 @@ export function LiveAgentChat({
           setActivity(enriched);
         }
       }
-      if (preferredJobId) {
-        try {
-          const progressPayload = await loadManagedBuildProgress(
-            id,
-            preferredJobId,
-            signal
-          );
-          if (signal.aborted || sequence !== refreshSequence.current)
-            return snapshot;
-          const page = parseBuildProgressPage(progressPayload);
-          if (selectedBuildJobIdRef.current === preferredJobId) {
-            if (page) {
-              setActivity(
-                activityWithBuildProgress({
-                  current: conversationActivity,
-                  page,
-                  jobs,
-                  projectName
-                })
-              );
-            } else {
-              setActivity(unavailableBuildProgress(baseActivity));
-            }
-          }
-        } catch {
-          if (
-            !signal.aborted &&
-            sequence === refreshSequence.current &&
-            selectedBuildJobIdRef.current === preferredJobId
-          )
-            setActivity(unavailableBuildProgress(baseActivity));
-        }
-      }
       const selectedAgentName =
         agents.find((agent) => agent.id === state.activeAgentId)?.name ?? null;
       setJobMarkers(
@@ -756,12 +874,17 @@ export function LiveAgentChat({
         state.hasMore === true ? "Showing recent conversation history" : ""
       );
       if (
+        !personalConversationId &&
         !selectionDirty.current &&
         (typeof state.activeAgentId === "string" ||
           state.activeAgentId === null)
       )
         setActiveAgentId(state.activeAgentId);
-      if (restoredExecution.current !== id && !selectionDirty.current) {
+      if (
+        !personalConversationId &&
+        restoredExecution.current !== id &&
+        !selectionDirty.current
+      ) {
         restoredExecution.current = id;
         const current = snapshot.execution;
         if (
@@ -840,7 +963,7 @@ export function LiveAgentChat({
             ];
           }
         );
-        setMessages(retained);
+        if (!personalConversationIdRef.current) setMessages(retained);
         hasUncertainPartial =
           snapshot.latestCommand?.commandKind === "prompt" &&
           snapshot.latestCommand.state === "indeterminate" &&
@@ -918,12 +1041,158 @@ export function LiveAgentChat({
     },
     [
       agents,
-      initialExecutionId,
+      personalConversationId,
       registeredProjects,
       settleRecoveredSend,
       loadConversationBuildDiff
     ]
   );
+
+  const acceptPersonalConversationRead = useCallback(
+    (
+      response: Awaited<ReturnType<typeof readPersonalConversation>>,
+      mode: "tail" | "older" = "tail"
+    ) => {
+      const conversation = response.conversation;
+      if (conversation.conversationId !== personalConversationId) return;
+      personalConversationRef.current = conversation;
+      setPersonalConversation(conversation);
+      setPersonalTimelineHasMore(response.timelinePage.hasMore);
+      const incoming = mapPersonalConversationMessages(conversation, agents);
+      setMessages((current) => mergePersonalMessages(current, incoming));
+      if (conversation.activeExecutionId !== executionId)
+        setExecutionId(conversation.activeExecutionId);
+      const pendingIdentity = personalRequestIdentity.current;
+      const requestWasAdmitted = Boolean(
+        mode === "tail" &&
+        pendingIdentity &&
+        conversation.messages.some(
+          (message) => message.requestId === pendingIdentity.requestId
+        )
+      );
+      if (requestWasAdmitted && pendingIdentity) {
+        personalRequestIdentity.current = null;
+        setPersonalRetryAvailable(false);
+        const recovery = recoveryStore.current?.read();
+        if (recovery?.pendingOperation) {
+          recoveryStore.current?.write({
+            schemaVersion: 1,
+            personalConversationId: conversation.conversationId,
+            draft: recovery.draft
+          });
+        }
+      }
+      const uncertain =
+        conversation.status === "uncertain" ||
+        conversation.deliveries.some(
+          (delivery) => delivery.status === "uncertain"
+        );
+      const pendingUnconfirmed = Boolean(
+        mode === "tail" && pendingIdentity && !requestWasAdmitted
+      );
+      if (pendingUnconfirmed) setPersonalRetryAvailable(true);
+      setPersonalConversationBlocked(uncertain || pendingUnconfirmed);
+      const busy = conversation.deliveries.some((delivery) =>
+        ["queued", "starting", "running"].includes(delivery.status)
+      );
+      if (!operationRef.current) setSending(busy);
+      if (!selectionDirty.current) {
+        setActiveAgentId(conversation.activeAgentId);
+        const restored = personalRestoreSelection(
+          conversation,
+          conversation.activeAgentId
+        );
+        if (restored) setRestoreSelection(restored);
+      }
+      if (mode === "tail") setPersonalConversationLoading(false);
+      if (mode === "tail")
+        setError((current) =>
+          current?.startsWith("This chat could not be loaded") ? null : current
+        );
+      if (uncertain) {
+        setStatus("Delivery outcome uncertain");
+      } else if (busy) {
+        const active = conversation.deliveries.find((delivery) =>
+          ["starting", "running"].includes(delivery.status)
+        );
+        setStatus(
+          active ? `Working · ${active.agentName ?? "AI Client"}` : "Queued"
+        );
+      } else if (mode === "tail") {
+        setStatus("");
+      }
+    },
+    [agents, executionId, personalConversationId]
+  );
+
+  const refreshPersonalConversation = useCallback(
+    async (id: string, signal: AbortSignal) => {
+      const sequence = ++personalReadSequence.current;
+      const response = await readPersonalConversation(id, {
+        limit: 100,
+        signal
+      });
+      if (signal.aborted || sequence !== personalReadSequence.current)
+        return response;
+      acceptPersonalConversationRead(response);
+      return response;
+    },
+    [acceptPersonalConversationRead]
+  );
+
+  const loadOlderPersonalMessages = useCallback(async () => {
+    const id = personalConversationId;
+    const root = personalConversationRef.current;
+    const oldestSequence = root?.messages[0]?.sequence;
+    const signal = lifecycle.current?.signal;
+    if (!id || !root || !oldestSequence || !signal || signal.aborted) return;
+    try {
+      const response = await readPersonalConversation(id, {
+        beforeSequence: oldestSequence,
+        limit: 100,
+        signal
+      });
+      if (!signal.aborted) acceptPersonalConversationRead(response, "older");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not load older messages."
+      );
+    }
+  }, [acceptPersonalConversationRead, personalConversationId]);
+
+  useEffect(() => {
+    if (!personalConversationId || !loaded) return;
+    const controller = lifecycle.current;
+    if (!controller || controller.signal.aborted) return;
+    let canceled = false;
+    const poll = async () => {
+      try {
+        await refreshPersonalConversation(
+          personalConversationId,
+          controller.signal
+        );
+      } catch (cause) {
+        if (!canceled && !controller.signal.aborted) {
+          setPersonalConversationLoading(false);
+          if (!personalConversationRef.current)
+            setError(
+              cause instanceof Error
+                ? `This chat could not be loaded: ${cause.message}`
+                : "This chat could not be loaded."
+            );
+        }
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 4_000);
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+      personalReadSequence.current += 1;
+    };
+  }, [loaded, personalConversationId, refreshPersonalConversation]);
 
   const refreshRetainedWorkspaces = useCallback(
     async (id: string, signal?: AbortSignal) => {
@@ -1181,10 +1450,275 @@ export function LiveAgentChat({
     }
   };
 
+  const acceptSubmittedPersonalTurn = (
+    submitted: Awaited<ReturnType<typeof submitPersonalConversationMessage>>,
+    text: string,
+    recipients: readonly PersonalAgentChatLaunchSnapshot[],
+    signal: AbortSignal
+  ) => {
+    const root = submitted.conversation;
+    personalConversationRef.current = root;
+    setPersonalConversation(root);
+    setPersonalConversationLoading(false);
+    setMessages((current) =>
+      mergePersonalMessages(
+        current,
+        mapPersonalConversationMessages(root, agents)
+      )
+    );
+    setPersonalTimelineHasMore(root.messages.length >= 100);
+    setExecutionId(root.activeExecutionId);
+    setActiveAgentId(root.activeAgentId);
+    selectionDirty.current = false;
+    setPersonalConversationBlocked(
+      root.status === "uncertain" ||
+        root.deliveries.some((delivery) => delivery.status === "uncertain")
+    );
+    setPersonalRetryAvailable(false);
+    setSending(
+      root.deliveries.some((delivery) =>
+        ["queued", "starting", "running"].includes(delivery.status)
+      )
+    );
+    personalRequestIdentity.current = null;
+    recoveryStore.current?.write({
+      schemaVersion: 1,
+      personalConversationId: root.conversationId,
+      draft: latestDraft.current !== text ? latestDraft.current : ""
+    });
+    pending.current = null;
+    setRecoveredDraft(null);
+    setError(null);
+    setStatus("Agent batch accepted");
+    onConversationStarted?.({
+      id: root.conversationId,
+      sessionId: null,
+      projectId: root.projectId,
+      title: root.title ?? conversationTitleFromPrompt(text),
+      provider: root.activeProvider ?? recipients[0]!.provider,
+      state: root.status,
+      updatedAt: root.updatedAt,
+      error: null,
+      personalConversationId: root.conversationId,
+      sourceExecutionIds: root.sourceExecutionIds,
+      childExecutionIds: root.childExecutionIds,
+      capturedSessionIds: root.capturedSessionIds,
+      activeAgentId: root.activeAgentId,
+      latestAgentName:
+        root.deliveries.find((delivery) => delivery.agentName)?.agentName ??
+        null
+    });
+    void refreshPersonalConversation(root.conversationId, signal).catch(() => {
+      setStatus("Batch accepted · reconnecting to progress");
+    });
+    return { commandId: submitted.deliveries[0]?.commandId ?? undefined };
+  };
+
+  const submitPersonalTurn = async (
+    text: string,
+    selection: ChatComposerSelection,
+    launchOptions: LaunchInstance[],
+    signal: AbortSignal
+  ) => {
+    if (personalConversationBlocked)
+      throw new Error(
+        "This chat has an uncertain delivery. Refresh and reconcile it before sending another message."
+      );
+    setPersonalDeliveryActivity(null);
+    if (!personalConversationId) {
+      const sourceRuntime = runtimeRef.current;
+      const sourceCommand = sourceRuntime?.latestCommand;
+      if (
+        sourceRuntime?.hasIndeterminatePrompt ||
+        (sourceCommand?.commandKind === "prompt" &&
+          !terminalCommands.has(sourceCommand.state))
+      )
+        throw new Error(
+          "This existing chat has a prompt that is still running or uncertain. Wait for it to finish or reconcile it before adding Personal Agent routing."
+        );
+    }
+    const sourceExecutionId =
+      personalConversationId === null ? executionId : null;
+    const contextProjectId =
+      personalConversation?.projectId ??
+      runtimeRef.current?.execution.projectId ??
+      projectId ??
+      null;
+    const contextKind: PersonalAgentChatSubmit["context"]["contextKind"] =
+      contextProjectId ? "project" : "independent";
+    const recipients = resolvePersonalChatRecipients(
+      selection,
+      launchOptions,
+      agents
+    );
+    const conversationId =
+      personalConversationId ??
+      personalRequestIdentity.current?.conversationId ??
+      recoveryStore.current?.read()?.personalConversationId ??
+      crypto.randomUUID();
+    const body = {
+      text,
+      sourceExecutionId,
+      context: {
+        projectId: contextProjectId,
+        contextKind,
+        targetDeviceId: recipients[0]!.targetDeviceId
+      },
+      recipients
+    };
+    const fingerprint = await personalSendFingerprint({
+      conversationId,
+      ...body
+    });
+    const prior = recoveryStore.current?.read();
+    const priorOperation = prior?.pendingOperation;
+    const existingIdentity = personalRequestIdentity.current;
+    let identity =
+      existingIdentity?.conversationId === conversationId &&
+      existingIdentity.fingerprint === fingerprint
+        ? existingIdentity
+        : priorOperation &&
+            prior?.personalConversationId === conversationId &&
+            priorOperation.requestFingerprint === fingerprint
+          ? {
+              conversationId,
+              fingerprint,
+              requestId: priorOperation.promptIdempotencyKey,
+              messageId: priorOperation.clientUserMessageId,
+              startId: priorOperation.startIdempotencyKey
+            }
+          : null;
+    if (
+      priorOperation &&
+      prior?.personalConversationId === conversationId &&
+      !identity &&
+      (priorOperation.state === "pending" ||
+        priorOperation.state === "reconciling")
+    )
+      throw new Error(
+        "Studio retained a different batch request for this chat. Restore its original text and Agent settings, or refresh the chat to reconcile it first."
+      );
+    if (!identity) {
+      identity = {
+        conversationId,
+        fingerprint,
+        requestId: crypto.randomUUID(),
+        messageId: crypto.randomUUID(),
+        startId: crypto.randomUUID()
+      };
+    }
+    personalRequestIdentity.current = identity;
+    personalConversationIdRef.current = conversationId;
+    const request: PersonalAgentChatSubmit = {
+      requestId: identity.requestId,
+      text,
+      ...(sourceExecutionId ? { sourceExecutionId } : {}),
+      context: body.context,
+      recipients
+    };
+    const targetRecoveryStore = activeRecoveryStore(conversationId);
+    if (!targetRecoveryStore)
+      throw new Error("Studio could not establish recovery for this chat.");
+    await targetRecoveryStore.hydrate?.();
+    recoveryStore.current = targetRecoveryStore;
+    const pendingOperation = {
+      kind: sourceExecutionId ? ("prompt" as const) : ("start" as const),
+      startIdempotencyKey: identity.startId,
+      promptIdempotencyKey: identity.requestId,
+      clientUserMessageId: identity.messageId,
+      prompt: text,
+      requestFingerprint: fingerprint,
+      personalSubmit: request,
+      state: "pending" as const
+    };
+    const nextRecoveryRecord = {
+      schemaVersion: 1,
+      personalConversationId: conversationId,
+      draft: latestDraft.current !== text ? latestDraft.current : text,
+      pendingOperation
+    } as const;
+    try {
+      if (targetRecoveryStore.writeDurably)
+        targetRecoveryStore.writeDurably(nextRecoveryRecord);
+      else targetRecoveryStore.write(nextRecoveryRecord);
+      await targetRecoveryStore.flush?.();
+    } catch {
+      throw new Error(
+        "Studio could not save this batch identity on the device. Nothing was sent; try again."
+      );
+    }
+    setPersonalRetryAvailable(false);
+    const submitted = await submitPersonalConversationMessage(
+      conversationId,
+      request,
+      signal
+    );
+    const accepted = acceptSubmittedPersonalTurn(
+      submitted,
+      text,
+      recipients,
+      signal
+    );
+    setPersonalConversationId(conversationId);
+    if (personalConversationId !== conversationId)
+      router.replace(
+        `/?chat=1&conversation=${encodeURIComponent(conversationId)}`
+      );
+    return accepted;
+  };
+
+  const retryPersonalSubmission = async () => {
+    const recovery = recoveryStore.current?.read();
+    const operation = recovery?.pendingOperation;
+    const request = operation?.personalSubmit;
+    const rootId = recovery?.personalConversationId;
+    const signal = lifecycle.current?.signal;
+    if (!operation || !request || !rootId || !signal || signal.aborted) return;
+    personalRequestIdentity.current = {
+      fingerprint: operation.requestFingerprint ?? "",
+      conversationId: rootId,
+      requestId: request.requestId,
+      messageId: operation.clientUserMessageId,
+      startId: operation.startIdempotencyKey
+    };
+    personalConversationIdRef.current = rootId;
+    setPersonalConversationId(rootId);
+    router.replace(`/?chat=1&conversation=${encodeURIComponent(rootId)}`);
+    setPersonalRetryAvailable(false);
+    setSending(true);
+    setError(null);
+    setStatus("Retrying the saved send with the same request ID…");
+    try {
+      const submitted = await submitPersonalConversationMessage(
+        rootId,
+        request,
+        signal
+      );
+      return acceptSubmittedPersonalTurn(
+        submitted,
+        request.text,
+        request.recipients,
+        signal
+      );
+    } catch (cause) {
+      if (!signal.aborted) {
+        setPersonalRetryAvailable(true);
+        setPersonalConversationBlocked(true);
+        setSending(false);
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "The saved send could not be confirmed. Retry it or refresh to reconcile."
+        );
+        setStatus("Saved send needs reconciliation");
+      }
+      return undefined;
+    }
+  };
+
   const send = async (
     text: string,
     selection: ChatComposerSelection,
-    continueWithoutMemory?: true,
     purpose?: {
       purpose: "team_summary_draft";
       teamSummary: { teamId: string; requestId: string; jobId: string };
@@ -1202,7 +1736,6 @@ export function LiveAgentChat({
     operationRef.current = true;
     setSending(true);
     setError(null);
-    setMemoryRecallFailure(null);
     const startedNewExecution = !executionId;
     let navigableExecutionId: string | null = executionId;
     try {
@@ -1210,7 +1743,7 @@ export function LiveAgentChat({
         (agent) =>
           agent.id === selection.agentId && agent.lifecycle === "active"
       );
-      if (selection.agentId && !selected)
+      if (!selection.recipients?.length && selection.agentId && !selected)
         throw new Error(
           "The selected Agent is unavailable. Choose an active Agent with @ or clear the selection."
         );
@@ -1218,6 +1751,13 @@ export function LiveAgentChat({
         await managedRequest("/launch-options", undefined, signal)
       );
       setInstances(latestOptions);
+      if (
+        !teamRequestId &&
+        (personalConversationId || selection.recipients?.length)
+      ) {
+        await submitPersonalTurn(text, selection, latestOptions, signal);
+        return;
+      }
       const settings = resolveLaunchSelection(selection, latestOptions);
       const recoveryRecord = recoveryStore.current?.read() ?? null;
       const recovered = recoveryRecord?.pendingOperation;
@@ -1566,7 +2106,6 @@ export function LiveAgentChat({
               }
             : {}),
           ...(shouldResume ? { resumeFromStopped: true } : {}),
-          ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
           ...(selection.selectedResourceIds?.length
             ? { selectedResourceIds: selection.selectedResourceIds }
             : {}),
@@ -1637,7 +2176,26 @@ export function LiveAgentChat({
             schemaVersion: 1,
             draft: latestDraft.current !== text ? latestDraft.current : text
           });
-          setMemoryRecallFailure(message);
+          setError(message);
+        } else if (
+          existing?.pendingOperation &&
+          cause instanceof PersonalConversationError &&
+          cause.status !== undefined &&
+          cause.status >= 400 &&
+          cause.status < 500 &&
+          cause.status !== 409
+        ) {
+          recoveryStore.current?.write({
+            schemaVersion: 1,
+            personalConversationId:
+              existing.personalConversationId ??
+              personalConversationId ??
+              undefined,
+            draft: latestDraft.current !== text ? latestDraft.current : text
+          });
+          personalRequestIdentity.current = null;
+          setPersonalConversationBlocked(false);
+          setPersonalRetryAvailable(false);
         } else if (existing?.pendingOperation) {
           recoveryStore.current?.write({
             ...existing,
@@ -1646,6 +2204,18 @@ export function LiveAgentChat({
               state: "reconciling"
             }
           });
+          if (personalRequestIdentity.current) {
+            setPersonalConversationBlocked(true);
+            setPersonalRetryAvailable(
+              Boolean(existing.pendingOperation.personalSubmit)
+            );
+            const rootId = personalRequestIdentity.current.conversationId;
+            personalConversationIdRef.current = rootId;
+            setPersonalConversationId(rootId);
+            router.replace(
+              `/?chat=1&conversation=${encodeURIComponent(rootId)}`
+            );
+          }
         }
         setError(message);
         setStatus("");
@@ -1732,6 +2302,170 @@ export function LiveAgentChat({
           ? cause.message
           : "Cancellation was not confirmed."
       );
+    }
+  };
+  const stopPersonalBatch = async () => {
+    const root = personalConversationRef.current;
+    const rootId = personalConversationId;
+    if (!root || !rootId) return;
+    const latestUserMessage = [...root.messages]
+      .reverse()
+      .find((message) => message.kind === "user");
+    if (!latestUserMessage) return;
+    const activeExecutionId = root.activeExecutionId;
+    try {
+      const canceled = await cancelPersonalConversationMessage(
+        rootId,
+        latestUserMessage.id,
+        crypto.randomUUID(),
+        lifecycle.current?.signal
+      );
+      acceptPersonalConversationRead({
+        conversation: canceled.conversation,
+        timelinePage: { hasMore: personalTimelineHasMore, nextCursor: null }
+      });
+      const activeChild = runtimeRef.current;
+      if (
+        activeChild &&
+        activeChild.execution.id === activeExecutionId &&
+        managedConversationControls(activeChild.latestCommand).canInterrupt
+      ) {
+        await managedRequest(`/${activeChild.execution.id}/interrupt`, {
+          executionGeneration: activeChild.execution.executionGeneration,
+          idempotencyKey: crypto.randomUUID()
+        });
+      }
+      setStatus("This batch was stopped.");
+      setSending(false);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? `Batch stop was not confirmed: ${cause.message}`
+          : "Batch stop was not confirmed. Refresh its status before sending again."
+      );
+    }
+  };
+  const renamePersonalConversationTitle = async (title: string | null) => {
+    const rootId = personalConversationId;
+    if (!rootId) throw new Error("This chat does not have a saved root yet.");
+    const response = await renamePersonalConversation(
+      rootId,
+      title,
+      crypto.randomUUID(),
+      lifecycle.current?.signal
+    );
+    acceptPersonalConversationRead(response);
+    const root = response.conversation;
+    onConversationStarted?.({
+      id: root.conversationId,
+      sessionId: null,
+      projectId: root.projectId,
+      title: root.title ?? "New chat",
+      provider: root.activeProvider ?? "personal-conversation",
+      state: root.status,
+      updatedAt: root.updatedAt,
+      error: null,
+      personalConversationId: root.conversationId,
+      sourceExecutionIds: root.sourceExecutionIds,
+      childExecutionIds: root.childExecutionIds,
+      capturedSessionIds: root.capturedSessionIds,
+      activeAgentId: root.activeAgentId,
+      latestAgentName:
+        root.deliveries.find((delivery) => delivery.agentName)?.agentName ??
+        null
+    });
+  };
+  const continuePersonalDelivery = async (
+    messageId: string,
+    deliveryId: string
+  ) => {
+    if (!personalConversationId) return;
+    try {
+      const result = await continuePersonalConversationMessage(
+        personalConversationId,
+        messageId,
+        crypto.randomUUID(),
+        deliveryId,
+        lifecycle.current?.signal
+      );
+      acceptPersonalConversationRead({
+        conversation: result.conversation,
+        timelinePage: { hasMore: personalTimelineHasMore, nextCursor: null }
+      });
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The failed Agent could not be skipped. Refresh the batch status."
+      );
+    }
+  };
+  const showPersonalDeliveryDiff = async (deliveryId: string) => {
+    const delivery = personalConversationRef.current?.deliveries.find(
+      (candidate) => candidate.id === deliveryId
+    );
+    const executionId = delivery?.executionId;
+    const commandId = delivery?.commandId;
+    if (!delivery?.diffAvailable || !executionId || !commandId) return;
+    const signal = lifecycle.current?.signal;
+    if (!signal || signal.aborted) return;
+    setPersonalDiffLoadingId(deliveryId);
+    setError(null);
+    try {
+      const runtime = parseRuntime(
+        await managedRequest(`/${executionId}/runtime`, undefined, signal)
+      );
+      const diffRuntime: RuntimeSnapshot = {
+        ...runtime,
+        latestCommand: {
+          id: commandId,
+          state: "completed",
+          commandKind: "prompt",
+          lastErrorCode: null
+        }
+      };
+      const payload = await managedRequest(
+        `/${executionId}/diff?scope=turn&commandId=${encodeURIComponent(commandId)}`,
+        undefined,
+        signal
+      );
+      const event = conversationDiffEvent(payload, diffRuntime);
+      const diffActivity: BuildActivity = {
+        source: "live",
+        state: "completed",
+        project: {
+          name:
+            registeredProjects.find(
+              (project) => project.id === runtime.execution.projectId
+            )?.name ??
+            (runtime.execution.projectId ? "Project" : "Standalone chat")
+        },
+        events:
+          event === null
+            ? [
+                {
+                  id: `turn-diff-unavailable:${delivery.id}`,
+                  kind: "message",
+                  technical: {
+                    status:
+                      "No saved file diff is available for this Agent response. File and line counts are unknown."
+                  }
+                }
+              ]
+            : [event],
+        ...(event ? { recentTurnChanges: event } : {}),
+        availability: event ? "available" : "unavailable"
+      };
+      setPersonalDeliveryActivity(diffActivity);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The saved Agent changes could not be loaded."
+      );
+    } finally {
+      setPersonalDiffLoadingId(null);
     }
   };
   const cancelPendingPrompt = async () => {
@@ -1844,9 +2578,15 @@ export function LiveAgentChat({
   };
   const requests = pendingChatRequests(runtime);
   const displayedMessages = useMemo(
-    () => managedMessagesWithTransientOutput(executionId, runtime, messages),
-    [executionId, messages, runtime]
+    () =>
+      personalConversationId
+        ? messages
+        : managedMessagesWithTransientOutput(executionId, runtime, messages),
+    [executionId, messages, personalConversationId, runtime]
   );
+  const restoreAgentSelections = personalConversation
+    ? persistedPersonalAgentSelections(personalConversation)
+    : undefined;
   const currentExecution = runtime?.execution ?? null;
   useEffect(() => {
     const attempt = teamSummaryAttempt.current;
@@ -1921,7 +2661,6 @@ export function LiveAgentChat({
             currentExecution.permissionMode === "supervised" ? "ask" : "full",
           instanceId: currentExecution.aiClientInstanceId
         },
-        undefined,
         {
           purpose: "team_summary_draft",
           teamSummary: {
@@ -2075,7 +2814,8 @@ export function LiveAgentChat({
     },
     [router, teamRequestId, teamRequestTeamId]
   );
-  const currentProjectId = currentExecution?.projectId ?? null;
+  const currentProjectId =
+    currentExecution?.projectId ?? personalConversation?.projectId ?? null;
   const currentProjectName = registeredProjects.find(
     (project) => project.id === currentProjectId
   )?.name;
@@ -2343,7 +3083,14 @@ export function LiveAgentChat({
       ) : null}
       <div className="min-h-0 flex-1">
         <NewChatView
-          conversationTitle={executionId ? conversationTitle : undefined}
+          conversationTitle={
+            personalConversation?.title ??
+            (personalConversationId
+              ? "Personal chat"
+              : executionId
+                ? conversationTitle
+                : undefined)
+          }
           conversationProjectName={
             currentExecution && currentProjectId
               ? (currentProjectName ?? "Project")
@@ -2378,6 +3125,7 @@ export function LiveAgentChat({
               disabled={
                 sending ||
                 recoveryBlocked ||
+                Boolean(personalConversationId) ||
                 Boolean(teamRequestId) ||
                 Boolean(
                   executionId && (!currentExecution || moveUnavailableReason)
@@ -2388,14 +3136,16 @@ export function LiveAgentChat({
                   ? "This chat uses the project attached to its Team request."
                   : recoveryBlocked
                     ? "Resolve the pending chat recovery before changing folders."
-                    : sending
-                      ? "Wait for the message to finish before changing folders."
-                      : executionId && !currentExecution
-                        ? "Wait for this chat to load before changing folders."
-                        : moveUnavailableReason
+                    : personalConversationId
+                      ? "This chat keeps its verified Project context."
+                      : sending
+                        ? "Wait for the message to finish before changing folders."
+                        : executionId && !currentExecution
+                          ? "Wait for this chat to load before changing folders."
+                          : moveUnavailableReason
               }
               noFolderUnavailableReason={
-                executionId
+                executionId || personalConversationId
                   ? "No folder is available when starting a new chat. Existing chats change folders through a reviewed Project Move."
                   : null
               }
@@ -2405,6 +3155,7 @@ export function LiveAgentChat({
                   operationRef.current ||
                   sending ||
                   recoveryBlocked ||
+                  personalConversationId ||
                   teamRequestId
                 )
                   return;
@@ -2427,46 +3178,7 @@ export function LiveAgentChat({
               }}
             />
           }
-          activity={activity}
-          onBuildJobSelect={(jobId) => {
-            selectedBuildJobIdRef.current = jobId;
-            const selectionSequence = ++buildSelectionSequenceRef.current;
-            setSelectedBuildJobId(jobId);
-            const signal = lifecycle.current?.signal;
-            if (!executionId || !signal || signal.aborted) return;
-            void loadManagedBuildProgress(executionId, jobId, signal)
-              .then((payload) => {
-                if (
-                  signal.aborted ||
-                  selectionSequence !== buildSelectionSequenceRef.current ||
-                  selectedBuildJobIdRef.current !== jobId
-                )
-                  return;
-                const page = parseBuildProgressPage(payload);
-                if (!page) return;
-                setActivity((current) =>
-                  current
-                    ? activityWithBuildProgress({
-                        current,
-                        page,
-                        jobs: current.jobs,
-                        projectName: current.project?.name
-                      })
-                    : current
-                );
-              })
-              .catch(() => {
-                if (
-                  signal.aborted ||
-                  selectionSequence !== buildSelectionSequenceRef.current ||
-                  selectedBuildJobIdRef.current !== jobId
-                )
-                  return;
-                setActivity((current) =>
-                  current ? unavailableBuildProgress(current) : current
-                );
-              });
-          }}
+          activity={personalDeliveryActivity ?? activity}
           onBuildAttention={(runtimeItemId) => {
             document
               .getElementById(`runtime-item-${runtimeItemId}`)
@@ -2481,7 +3193,8 @@ export function LiveAgentChat({
           }}
           agents={agents}
           activeAgentId={activeAgentId}
-          conversationScopeKey={`${feedbackOwner?.backendId ?? "unknown-backend"}:${feedbackOwner?.ownerId ?? "unknown-owner"}:${teamRequestId ?? "personal"}:${executionId ?? "new"}`}
+          conversationScopeKey={`${feedbackOwner?.backendId ?? "unknown-backend"}:${feedbackOwner?.ownerId ?? "unknown-owner"}:${teamRequestId ?? "personal"}:${personalConversationId ?? executionId ?? "new"}`}
+          allowMultipleAgentMentions={!teamRequestId}
           onActiveAgentChange={chooseAgent}
           onAgentMention={chooseAgent}
           modelOptions={instances.flatMap((instance) => instance.models)}
@@ -2489,6 +3202,9 @@ export function LiveAgentChat({
             enabled:
               loaded &&
               instances.length > 0 &&
+              !personalConversationLoading &&
+              !personalConversationBlocked &&
+              !personalRetryAvailable &&
               (!teamRequestId ||
                 Boolean(executionId) ||
                 teamRequestReviewSaved) &&
@@ -2502,7 +3218,6 @@ export function LiveAgentChat({
               (entry) => entry.state === "completed"
             ),
             error,
-            memoryRecallFailure,
             feedbackAccess:
               executionId && feedbackOwner
                 ? {
@@ -2524,22 +3239,90 @@ export function LiveAgentChat({
                   }
                 : undefined,
             status: [status, historyNotice].filter(Boolean).join(" · "),
-            onSend: async (text, selection, continueWithoutMemory) => {
-              await send(text, selection, continueWithoutMemory);
+            personalConversation:
+              personalConversation || personalRetryAvailable
+                ? {
+                    status:
+                      personalConversation?.status ??
+                      "Previous send needs confirmation",
+                    retryAvailable: personalRetryAvailable,
+                    deliveries:
+                      personalConversation?.deliveries.map((delivery) => ({
+                        id: delivery.id,
+                        ordinal: delivery.ordinal,
+                        name: delivery.agentName ?? "AI Client",
+                        status: delivery.status,
+                        progress:
+                          delivery.progress?.summary ??
+                          delivery.progress?.stage ??
+                          null,
+                        error: delivery.errorCode,
+                        contextSummary: delivery.contextTransfer
+                          ? `Transferred ${delivery.contextTransfer.transferredMessages} messages${delivery.contextTransfer.omittedMessages ? ` · ${delivery.contextTransfer.omittedMessages} omitted` : ""}`
+                          : null,
+                        canContinue: delivery.canContinue,
+                        diffAvailable: Boolean(
+                          delivery.diffAvailable &&
+                          delivery.executionId &&
+                          delivery.commandId
+                        ),
+                        diffLoading: personalDiffLoadingId === delivery.id,
+                        messageId: delivery.messageId
+                      })) ?? [],
+                    hasOlderMessages: personalTimelineHasMore,
+                    uncertain:
+                      !personalRetryAvailable &&
+                      (personalConversation?.status === "uncertain" ||
+                        personalConversation?.deliveries.some(
+                          (delivery) => delivery.status === "uncertain"
+                        ) === true),
+                    onStopBatch: personalConversation?.deliveries.some(
+                      (delivery) =>
+                        ["queued", "starting", "running"].includes(
+                          delivery.status
+                        )
+                    )
+                      ? () => void stopPersonalBatch()
+                      : undefined,
+                    onRetry: personalRetryAvailable
+                      ? () => void retryPersonalSubmission()
+                      : undefined,
+                    onShowDiff: (deliveryId: string) =>
+                      void showPersonalDeliveryDiff(deliveryId),
+                    onContinueDelivery: (
+                      messageId: string,
+                      deliveryId: string
+                    ) => void continuePersonalDelivery(messageId, deliveryId),
+                    onLoadOlder: personalTimelineHasMore
+                      ? () => void loadOlderPersonalMessages()
+                      : undefined
+                  }
+                : undefined,
+            onRenameConversation: personalConversationId
+              ? renamePersonalConversationTitle
+              : undefined,
+            onSend: async (text, selection) => {
+              await send(text, selection);
             },
             onSelectTeamQuestion: teamRequestId
               ? (text: string) => setTeamQuestionDraft(text.slice(0, 2_000))
               : undefined,
-            onInterrupt: () => void interrupt(),
-            canInterrupt,
-            canCancelPendingPrompt,
-            onCancelPendingPrompt: canCancelPendingPrompt
-              ? () => void cancelPendingPrompt()
-              : undefined,
-            onEndSession: currentExecution
-              ? () => void endSession()
-              : undefined,
+            onInterrupt: () =>
+              void (personalConversationId ? stopPersonalBatch() : interrupt()),
+            canInterrupt: personalConversationId ? false : canInterrupt,
+            canCancelPendingPrompt: personalConversationId
+              ? false
+              : canCancelPendingPrompt,
+            onCancelPendingPrompt:
+              !personalConversationId && canCancelPendingPrompt
+                ? () => void cancelPendingPrompt()
+                : undefined,
+            onEndSession:
+              currentExecution && !personalConversationId
+                ? () => void endSession()
+                : undefined,
             restoreSelection,
+            restoreAgentSelections,
             pendingRequests: requests,
             onRespond: respond
           }}

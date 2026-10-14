@@ -29,7 +29,6 @@ import {
   type WorkspaceSnapshot
 } from "@/lib/workspace";
 import {
-  generateAgentIdentity,
   chatChannel,
   resolveAgents,
   sameDmMembers,
@@ -889,15 +888,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (!name) {
         throw new Error("Agent name is required");
       }
-      if (!role) {
-        throw new Error("Agent role is required");
-      }
       const definition: AgentDefinition = {
         id: createId("agentdef"),
         ownerId: CURRENT_USER_ID,
         name,
         role,
-        identity: generateAgentIdentity({ name, role }),
+        // This legacy workspace shape still has an identity field. New
+        // profiles leave it empty; old saved values remain untouched on edit.
+        identity: "",
         createdAt: Date.now(),
         ...(input.avatar ? { avatar: input.avatar } : {})
       };
@@ -980,9 +978,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     ]
   );
 
-  // Edit an existing agent's reusable identity. Regenerates its soul.md
-  // identity block from the new fields; per-project engagements (and their
-  // live context briefs) are unaffected since those are derived separately.
+  // Edit an existing Agent's reusable name, optional job title, and appearance.
+  // Legacy identity data is retained on existing local definitions.
   const updateAgentDefinition = useCallback(
     (
       definitionId: string,
@@ -992,9 +989,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       const role = input.role.trim();
       if (!name) {
         throw new Error("Agent name is required");
-      }
-      if (!role) {
-        throw new Error("Agent role is required");
       }
       let updated: AgentDefinition | null = null;
       updateWorkspace((current) => {
@@ -1008,7 +1002,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           ...existing,
           name,
           role,
-          identity: generateAgentIdentity({ name, role }),
           ...(input.avatar ? { avatar: input.avatar } : {})
         };
         return {

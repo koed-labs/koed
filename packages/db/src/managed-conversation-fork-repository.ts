@@ -223,6 +223,7 @@ type ExecutionRow = {
   runner_id: string | null;
   runner_lease_expires_at: Date | null;
   logical_session_id: string | null;
+  personal_agent_chat_workspace_id: string | null;
   provider_thread_id: string | null;
   provider_cli_version: string | null;
   source_generation_id: string | null;
@@ -251,7 +252,7 @@ const EXECUTION_COLUMNS = `
   id, owner_user_id, project_id, provider, ai_client_instance_id, model,
   reasoning_effort, permission_mode, runner_kind, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
-  runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
+  runner_id, runner_lease_expires_at, logical_session_id, personal_agent_chat_workspace_id, provider_thread_id,
   provider_cli_version, source_generation_id, last_error_code,
   created_at, updated_at, started_at, quiesced_at, stopped_at
 `;
@@ -334,6 +335,7 @@ const mapExecution = (
   runnerId: row.runner_id,
   runnerLeaseExpiresAt: row.runner_lease_expires_at?.toISOString() ?? null,
   logicalSessionId: row.logical_session_id,
+  personalAgentChatWorkspaceId: row.personal_agent_chat_workspace_id ?? null,
   providerThreadId: row.provider_thread_id,
   providerCliVersion: row.provider_cli_version,
   sourceGenerationId: row.source_generation_id,

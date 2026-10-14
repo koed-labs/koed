@@ -53,6 +53,48 @@ const execution = {
 };
 
 describe("managed agent chat boundary", () => {
+  it("carries the authenticated local runner to each instance and model", () => {
+    const deviceId = "11111111-1111-4111-8111-111111111111";
+    const parsed = parseLaunchInstances({
+      runners: [
+        {
+          kind: "local_device",
+          deviceId,
+          deploymentId: "22222222-2222-4222-8222-222222222222"
+        }
+      ],
+      instances: [{ ...instances[0], ready: true }]
+    });
+    expect(parsed[0]?.runnerDeviceId).toBe(deviceId);
+    expect(parsed[0]?.models[0]?.targetDeviceId).toBe(deviceId);
+  });
+  it("keeps explicit hosted instance devices and does not guess among runners", () => {
+    const runner = {
+      kind: "local_device",
+      deviceId: "local-device",
+      deploymentId: "deployment"
+    };
+    const explicit = parseLaunchInstances({
+      runners: [runner],
+      instances: [
+        { ...instances[0], ready: true, runnerDeviceId: "hosted-device" }
+      ]
+    });
+    expect(explicit[0]?.runnerDeviceId).toBe("hosted-device");
+    for (const runners of [
+      [],
+      [runner, { ...runner, deviceId: "another-device" }],
+      [{ ...runner, kind: "cloud" }],
+      [{ ...runner, deploymentId: undefined }]
+    ]) {
+      const parsed = parseLaunchInstances({
+        runners,
+        instances: [{ ...instances[0], ready: true }]
+      });
+      expect(parsed[0]?.runnerDeviceId).toBeUndefined();
+      expect(parsed[0]?.models[0]?.targetDeviceId).toBeUndefined();
+    }
+  });
   it("loads and updates feedback through the exact local answer route", async () => {
     const requests: Array<{ path: string; method: string; body?: string }> = [];
     vi.stubGlobal(

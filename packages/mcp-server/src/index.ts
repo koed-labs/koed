@@ -17,22 +17,6 @@ import {
   type HeartbeatMemoryAnswerTaskInput,
   type MemoryAnswerTask
 } from "@koed/shared";
-export {
-  PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
-  PERSONAL_AGENT_INTENT_TOOL_NAME,
-  parsePersonalAgentIntentToolInput,
-  personalAgentIntentToolInputSchema,
-  PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
-  PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
-  parsePersonalAgentTurnStatusToolInput,
-  personalAgentTurnStatusToolInputSchema
-} from "./personal-agent-intent-tool.js";
-export {
-  PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
-  PERSONAL_AGENT_PHASE_TOOL_NAME,
-  parsePersonalAgentPhaseToolInput,
-  personalAgentPhaseToolInputSchema
-} from "./personal-agent-phase-tool.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
   aiClientInstanceRegistryPath,
@@ -135,10 +119,9 @@ export {
   resolveClaudeManagedConversationSource
 } from "./claude-managed-conversation.js";
 export {
-  formatPersonalMemoryManagedPrompt,
+  formatManagedConversationPrompt,
   formatPersonalAgentManagedPrompt,
-  managedPromptPersonalAgentContext,
-  managedPromptPersonalMemoryContext
+  managedPromptPersonalAgentContext
 } from "./personal-agent-managed-prompt.js";
 export {
   discoverClaudeHistoricalTranscriptSignals,

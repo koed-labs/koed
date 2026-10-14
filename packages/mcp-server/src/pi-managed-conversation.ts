@@ -4,15 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
-import type {
-  PersonalAgentIntentSignal,
-  PersonalAgentPhase
-} from "@koed/shared";
-import {
-  parsePersonalAgentIntentToolInput,
-  parsePersonalAgentTurnStatusToolInput
-} from "./personal-agent-intent-tool.js";
-import { parsePersonalAgentPhaseToolInput } from "./personal-agent-phase-tool.js";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
 import { piSessionIdentity } from "./pi-transcript-watcher.js";
 import { piRpcEnvironment, resolvePiExecutable } from "./pi-rpc-runner.js";
@@ -38,17 +29,6 @@ export interface PiManagedConversationConfig {
     title: string;
   }) => void;
   onResumeIdentity?: (identity: PiManagedConversationIdentity) => Promise<void>;
-  personalAgentIntentHandler?: (signal: PersonalAgentIntentSignal) => Promise<{
-    jobId: string;
-    attemptId: string;
-    title: string;
-    state: "queued" | "running";
-    continuation: boolean;
-  }>;
-  personalAgentTurnStatusHandler?: (
-    status: "complete" | "awaiting_owner"
-  ) => Promise<void>;
-  personalAgentPhaseHandler?: (phase: PersonalAgentPhase) => Promise<void>;
   onUiRequest: (
     request: Record<string, unknown>,
     signal: AbortSignal
@@ -96,7 +76,6 @@ export class PiManagedConversationSession {
         text: string;
         canceled: boolean;
         providerFailed: boolean;
-        acceptsTools: boolean;
         turnId: string;
       }
     | undefined;
@@ -252,12 +231,7 @@ export class PiManagedConversationSession {
           sessionId: this.config.sessionId,
           resumeSessionPath: this.resumeSessionPath,
           forkSourcePath: forkSource,
-          reasoningEffort: this.config.reasoningEffort,
-          agentIntentTool: Boolean(this.config.personalAgentIntentHandler),
-          agentTurnStatusTool: Boolean(
-            this.config.personalAgentTurnStatusHandler
-          ),
-          agentPhaseTool: Boolean(this.config.personalAgentPhaseHandler)
+          reasoningEffort: this.config.reasoningEffort
         })
       ]
     );
@@ -391,7 +365,6 @@ export class PiManagedConversationSession {
         text: "",
         canceled: false,
         providerFailed: false,
-        acceptsTools: true,
         turnId: randomUUID()
       };
       this.active = active;
@@ -427,7 +400,6 @@ export class PiManagedConversationSession {
   async cancel(): Promise<void> {
     if (!this.active) return;
     this.active.canceled = true;
-    this.active.acceptsTools = false;
     await this.request({ type: "abort" });
   }
 
@@ -526,7 +498,6 @@ export class PiManagedConversationSession {
         this.active.providerFailed = true;
       }
     } else if (event.type === "agent_settled") {
-      if (this.active) this.active.acceptsTools = false;
       if (this.active?.canceled)
         this.active.reject(new Error("Pi managed turn canceled."));
       else if (this.active?.providerFailed)
@@ -537,7 +508,6 @@ export class PiManagedConversationSession {
       typeof event.id === "string"
     ) {
       const id = event.id;
-      if (this.handleAgentToolRequest(event, id)) return;
       void this.config
         .onUiRequest(event, this.lifetime.signal)
         .then((response) => {
@@ -547,93 +517,6 @@ export class PiManagedConversationSession {
           this.write({ type: "extension_ui_response", id, cancelled: true })
         );
     }
-  }
-
-  private handleAgentToolRequest(
-    event: Record<string, unknown>,
-    id: string
-  ): boolean {
-    if (event.method !== "input" || typeof event.title !== "string")
-      return false;
-    let carrier: Record<string, unknown>;
-    try {
-      carrier = object(JSON.parse(event.title));
-    } catch {
-      return false;
-    }
-    if (
-      carrier.kind !== "koed_agent_intent" &&
-      carrier.kind !== "koed_agent_turn_status" &&
-      carrier.kind !== "koed_job_phase"
-    )
-      return false;
-    const active = this.active;
-    void (async () => {
-      if (
-        !active?.acceptsTools ||
-        active.canceled ||
-        this.closing ||
-        this.failure
-      )
-        throw new Error("Inactive Pi Agent turn");
-      let result: Record<string, unknown>;
-      if (carrier.kind === "koed_agent_intent") {
-        if (
-          Object.keys(carrier).some(
-            (key) => !["kind", "signal"].includes(key)
-          ) ||
-          !this.config.personalAgentIntentHandler
-        )
-          throw new Error("Invalid Pi Agent intent carrier");
-        const signal = parsePersonalAgentIntentToolInput(carrier.signal);
-        result = {
-          recorded: true,
-          ...(await this.config.personalAgentIntentHandler(signal))
-        };
-      } else if (carrier.kind === "koed_agent_turn_status") {
-        if (
-          Object.keys(carrier).some(
-            (key) => !["kind", "status"].includes(key)
-          ) ||
-          !this.config.personalAgentTurnStatusHandler
-        )
-          throw new Error("Invalid Pi Agent outcome carrier");
-        const status = parsePersonalAgentTurnStatusToolInput({
-          status: carrier.status
-        });
-        await this.config.personalAgentTurnStatusHandler(status);
-        result = { recorded: true, status };
-      } else {
-        if (
-          Object.keys(carrier).some(
-            (key) => !["kind", "phase"].includes(key)
-          ) ||
-          !this.config.personalAgentPhaseHandler
-        )
-          throw new Error("Invalid Pi Agent phase carrier");
-        const phase = parsePersonalAgentPhaseToolInput({
-          phase: carrier.phase
-        });
-        await this.config.personalAgentPhaseHandler(phase);
-        result = { recorded: true, phase };
-      }
-      if (
-        this.active !== active ||
-        !active.acceptsTools ||
-        active.canceled ||
-        this.closing ||
-        this.failure
-      )
-        throw new Error("Inactive Pi Agent turn");
-      this.write({
-        type: "extension_ui_response",
-        id,
-        value: JSON.stringify(result)
-      });
-    })().catch(() =>
-      this.write({ type: "extension_ui_response", id, cancelled: true })
-    );
-    return true;
   }
 
   private fail(error: Error): void {

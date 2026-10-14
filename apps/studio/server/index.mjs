@@ -25,6 +25,7 @@ import {
   handleClientResources,
   handleHomeFeed,
   handlePersonalAgents,
+  handlePersonalConversations,
   handleManagedConversations,
   handlePersonalAgentRoleTemplates,
   handlePublicSquare,
@@ -1939,6 +1940,7 @@ export const createStudioServer = ({
           ...localApiOptions,
           routeFamily: "personal-removals"
         })) ||
+        (await handlePersonalConversations(localApiOptions)) ||
         (await handleTeamAgentRequests(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||
         (await handlePersonalAgentRoleTemplates(localApiOptions)) ||

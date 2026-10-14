@@ -15,10 +15,16 @@ import type {
 import {
   fetchBoundedJsonObject,
   upstreamApiUrl,
-  type BuildProgressEvent,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
+import type {
+  PersonalAgentChatBatchCancellation,
+  PersonalAgentChatChildCancellation,
+  PersonalAgentChatChildResult,
+  PersonalAgentChatPrepareRequest,
+  PersonalAgentChatRunnerAuthority
+} from "./personal-agent-chat-dispatcher.js";
 
 const requestTimeoutMs = 60_000;
 const ordinaryResponseBytes = 4 * 1024 * 1024;
@@ -111,6 +117,11 @@ export type ManagedConversationAuthorityRepository = Pick<
   }>;
 };
 
+export type ManagedConversationAuthorityClient =
+  ManagedConversationAuthorityRepository & {
+    personalAgentChatRunner: PersonalAgentChatRunnerAuthority;
+  };
+
 class ManagedConversationAuthorityError extends Error {
   readonly transient: boolean;
   readonly code: string | null;
@@ -175,7 +186,7 @@ export const createManagedConversationAuthorityClient = (options: {
   authorization: string;
   envelopeEncryptionProvider: EnvelopeEncryptionProvider;
   fetch?: typeof fetch;
-}): ManagedConversationAuthorityRepository => {
+}): ManagedConversationAuthorityClient => {
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const request = async (
     method: "GET" | "POST",
@@ -229,7 +240,143 @@ export const createManagedConversationAuthorityClient = (options: {
       input.operationKind === "handoff" ? "handoffs" : "forks"
     }/${encodeURIComponent(input.operationId)}/workspace-snapshots`;
 
+  const personalAgentChatRunner: PersonalAgentChatRunnerAuthority = {
+    async claimDelivery(input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/personal-agent-chats/claim",
+        { runnerId: input.runnerId, leaseMs: input.leaseMs }
+      );
+      return nullableRecord(
+        payload.delivery,
+        "Personal Agent chat delivery"
+      ) as never;
+    },
+
+    async renewDeliveryClaim(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/renew`,
+        { claimToken: input.claimToken, leaseMs: input.leaseMs }
+      );
+      return boolean(payload.renewed, "Personal Agent chat delivery lease");
+    },
+
+    async prepareChild(input: PersonalAgentChatPrepareRequest) {
+      const {
+        actor: _actor,
+        deliveryId,
+        targetDeviceId: _deviceId,
+        targetDeploymentId: _deploymentId,
+        ...body
+      } = input;
+      // Runner identity is resolved by the authenticated authority endpoint.
+      void _actor;
+      void _deviceId;
+      void _deploymentId;
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(deliveryId)}/prepare`,
+        body
+      );
+      return {
+        execution: object(
+          payload.execution,
+          "Personal Agent chat execution"
+        ) as never,
+        command: object(
+          payload.command,
+          "Personal Agent chat start command"
+        ) as never
+      };
+    },
+
+    async getChildResult(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/result`,
+        { claimToken: input.claimToken, conversationId: input.conversationId }
+      );
+      return nullableRecord<PersonalAgentChatChildResult>(
+        payload.result,
+        "Personal Agent chat child result"
+      );
+    },
+
+    async cancelChild(input: PersonalAgentChatChildCancellation) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/cancel-child`,
+        {
+          claimToken: input.claimToken,
+          conversationId: input.conversationId,
+          executionId: input.executionId,
+          promptCommandId: input.promptCommandId,
+          ...(input.startCommandId
+            ? { startCommandId: input.startCommandId }
+            : {}),
+          executionGeneration: input.executionGeneration
+        }
+      );
+      return object(
+        payload.cancellation,
+        "Personal Agent chat child cancellation"
+      );
+    },
+
+    async cancelBatch(input: PersonalAgentChatBatchCancellation) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/cancel`,
+        {
+          claimToken: input.claimToken,
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          requestId: input.requestId
+        }
+      );
+      return nullableRecord(
+        payload.cancellation,
+        "Personal Agent chat batch cancellation"
+      );
+    },
+
+    async completeDelivery(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/complete`,
+        {
+          claimToken: input.claimToken,
+          executionId: input.executionId,
+          commandId: input.commandId,
+          jobId: input.jobId,
+          reply: input.reply,
+          truncated: input.truncated,
+          contextTransfer: input.contextTransfer
+        }
+      );
+      return boolean(
+        payload.completed,
+        "Personal Agent chat delivery completion"
+      );
+    },
+
+    async failDelivery(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${encodeURIComponent(input.deliveryId)}/fail`,
+        {
+          claimToken: input.claimToken,
+          certainty: input.certainty,
+          errorCode: input.errorCode
+        }
+      );
+      return boolean(payload.failed, "Personal Agent chat delivery failure");
+    }
+  };
+
   return {
+    personalAgentChatRunner,
     async getPersonalAgentExecutionJob(_actor, jobId) {
       const payload = await request(
         "GET",

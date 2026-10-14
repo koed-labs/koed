@@ -3645,36 +3645,14 @@ describe("managed Conversation routes", () => {
     expect(queuedPrompt).not.toContain(contextReference);
   });
 
-  it("binds an agent prompt to its owner version and global Personal plus Team evidence", async () => {
+  it("binds an agent prompt to owner metadata and Project context without eager Memory recall", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const agentId = randomUUID();
     const identityVersionId = randomUUID();
-    const jobId = randomUUID();
     const projectId = "lp_agent_project";
     const searchMemoryNodes = vi.fn(async () => ({
-      results: [
-        {
-          nodeId: "memory-node-1",
-          sourceType: "memory_node",
-          sourceId: "memory-source-1",
-          summaryText: "Earlier Project decision.",
-          citation: {
-            nodeId: "memory-node-1",
-            sourceType: "memory_node",
-            sourceId: "memory-source-1",
-            visibility: "personal" as const
-          },
-          visibility: "personal" as const,
-          sourceTime: "2026-09-01T00:00:00.000Z"
-        },
-        {
-          nodeId: "shared-node-1",
-          summaryText: "Not authorized for this agent.",
-          citation: { nodeId: "shared-node-1", visibility: "team" as const },
-          visibility: "team" as const
-        }
-      ],
+      results: [],
       metadata: {}
     }));
     const enqueue = vi.fn(async (_actor, input) => ({
@@ -3685,7 +3663,7 @@ describe("managed Conversation routes", () => {
       clientUserMessageId: input.clientUserMessageId,
       createdAt: "2026-09-08T00:00:00Z",
       personalAgent: {
-        jobId,
+        jobId: null,
         agentId,
         agentVersion: 3,
         identityVersionId,
@@ -3728,27 +3706,23 @@ describe("managed Conversation routes", () => {
           reasoningEffort: "low",
           permissionMode: "supervised"
         }),
-        getPersonalAgent: async () => ({
-          agent: {
-            contractVersion: 1,
-            id: agentId,
-            ownerUserId: userId,
-            name: "Mira",
-            role: "Reviewer",
-            avatarReference: null,
-            lifecycle: "active",
-            defaultProvider: "codex",
-            defaultModel: "gpt-test",
-            defaultReasoningEffort: "low",
-            currentVersion: 3,
-            createdAt: "2026-01-01T00:00:00.000Z",
-            updatedAt: "2026-02-01T00:00:00.000Z",
-            retiredAt: null
-          },
-          soulInstructions: "Be precise.",
-          history: {}
+        getPersonalAgentIdentity: async () => ({
+          contractVersion: 1,
+          id: agentId,
+          ownerUserId: userId,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: null,
+          lifecycle: "active",
+          defaultProvider: "codex",
+          defaultModel: "gpt-test",
+          defaultReasoningEffort: "low",
+          currentVersion: 3,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-02-01T00:00:00.000Z",
+          retiredAt: null
         }),
-        getPersonalAgentVersion: async () => ({
+        getPersonalAgentPresentationVersion: async () => ({
           contractVersion: 1,
           id: identityVersionId,
           agentId,
@@ -3760,7 +3734,7 @@ describe("managed Conversation routes", () => {
           defaultProvider: "codex",
           defaultModel: "gpt-test",
           defaultReasoningEffort: "low",
-          soulInstructions: "Be precise.",
+          soulInstructions: "",
           instructionSource: "custom",
           createdByUserId: userId,
           createdAt: "2026-01-01T00:00:00.000Z"
@@ -3796,14 +3770,13 @@ describe("managed Conversation routes", () => {
     expect(response.statusCode).toBe(202);
     const payload = response.json();
     expect(payload.command.personalAgent).toEqual({
-      jobId,
+      jobId: null,
       agentId,
       agentVersion: 3,
       identityVersionId,
       replayed: false
     });
     expect(JSON.stringify(payload)).not.toContain("Be precise.");
-    expect(JSON.stringify(payload)).not.toContain("Earlier Project decision.");
     expect(enqueue).toHaveBeenCalledWith(
       { userId },
       expect.objectContaining({
@@ -3811,49 +3784,25 @@ describe("managed Conversation routes", () => {
         expectedAgentVersion: 3,
         personalAgentContext: expect.objectContaining({
           identity: expect.objectContaining({ identityVersionId, version: 3 }),
-          project: { projectId, name: "Koed" },
-          memory: {
-            searchDomain: "global",
-            evidence: [
-              expect.objectContaining({
-                nodeId: "memory-node-1",
-                summaryText: "Earlier Project decision."
-              })
-            ]
-          }
+          project: { projectId, name: "Koed" }
         })
       })
     );
-    expect(searchMemoryNodes).toHaveBeenCalledWith(
-      { userId },
-      expect.objectContaining({
-        scope: "personal",
-        searchDomain: "global"
-      })
-    );
-    searchMemoryNodes.mockRejectedValueOnce(
-      new Error("temporary Memory retrieval failure")
-    );
-    const paused = await app.inject({
+    expect(searchMemoryNodes).not.toHaveBeenCalled();
+    const secondPrompt = await app.inject({
       method: "POST",
       url: `/v1/managed-conversations/${executionId}/prompts`,
       payload: {
         executionGeneration: 1,
         idempotencyKey: "personal-agent-turn-retry",
         clientUserMessageId: randomUUID(),
-        prompt: "Retry after Memory becomes available.",
+        prompt: "Ask about an earlier decision.",
         agentId
       }
     });
-    expect(paused.statusCode).toBe(503);
-    expect(paused.json()).toEqual({
-      error: {
-        code: "MEMORY_RECALL_UNAVAILABLE",
-        message:
-          "Memory could not be checked. Retry or continue without Memory."
-      }
-    });
-    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(secondPrompt.statusCode).toBe(202);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(searchMemoryNodes).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -4829,7 +4778,7 @@ describe("managed Conversation routes", () => {
     }
   );
 
-  it("accepts a projectless hosted Agent Job and fails before start on recall or version errors", async () => {
+  it("starts a projectless hosted Agent chat from presentation metadata without eager Memory retrieval", async () => {
     const userId = randomUUID();
     const deviceId = randomUUID();
     const deploymentId = randomUUID();
@@ -4955,30 +4904,29 @@ describe("managed Conversation routes", () => {
           }
         ],
         listLcmGraphThreads: listProjects,
-        getPersonalAgent: async (_actor: unknown, requestedAgentId: string) =>
+        getPersonalAgentIdentity: async (
+          _actor: unknown,
+          requestedAgentId: string
+        ) =>
           requestedAgentId === agentId
             ? {
-                agent: {
-                  contractVersion: 1,
-                  id: agentId,
-                  ownerUserId: userId,
-                  name: "Mira",
-                  role: "Reviewer",
-                  avatarReference: null,
-                  lifecycle: "active",
-                  defaultProvider: "codex",
-                  defaultModel: "gpt-test",
-                  defaultReasoningEffort: "low",
-                  currentVersion: 4,
-                  createdAt: "2026-01-01T00:00:00.000Z",
-                  updatedAt: "2026-02-01T00:00:00.000Z",
-                  retiredAt: null
-                },
-                soulInstructions: "Be precise.",
-                history: {}
+                contractVersion: 1,
+                id: agentId,
+                ownerUserId: userId,
+                name: "Mira",
+                role: "Reviewer",
+                avatarReference: null,
+                lifecycle: "active",
+                defaultProvider: "codex",
+                defaultModel: "gpt-test",
+                defaultReasoningEffort: "low",
+                currentVersion: 4,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-02-01T00:00:00.000Z",
+                retiredAt: null
               }
             : null,
-        getPersonalAgentVersion: async () => ({
+        getPersonalAgentPresentationVersion: async () => ({
           contractVersion: 1,
           id: identityVersionId,
           agentId,
@@ -4990,7 +4938,7 @@ describe("managed Conversation routes", () => {
           defaultProvider: "codex",
           defaultModel: "gpt-test",
           defaultReasoningEffort: "low",
-          soulInstructions: "Be precise.",
+          soulInstructions: "",
           instructionSource: "custom",
           createdByUserId: userId,
           createdAt: "2026-01-01T00:00:00.000Z"
@@ -5066,10 +5014,7 @@ describe("managed Conversation routes", () => {
           idempotencyKey: "hosted-agent-owner-denial"
         }
       });
-      searchMemoryNodes.mockRejectedValueOnce(
-        new Error("temporary Memory retrieval failure")
-      );
-      const recallUnavailable = await app.inject({
+      const secondAgentChat = await app.inject({
         method: "POST",
         url: "/v1/managed-conversations",
         payload: {
@@ -5081,8 +5026,8 @@ describe("managed Conversation routes", () => {
           initialPromptClientUserMessageId: randomUUID(),
           agentId,
           expectedAgentVersion: 4,
-          initialPrompt: "Wait for Memory before starting.",
-          idempotencyKey: "hosted-agent-memory-unavailable"
+          initialPrompt: "Ask about an earlier decision.",
+          idempotencyKey: "hosted-agent-no-eager-memory"
         }
       });
       const invalidProjectless = await app.inject({
@@ -5123,14 +5068,9 @@ describe("managed Conversation routes", () => {
           initialAgentId: agentId,
           initialExpectedAgentVersion: 4,
           initialPersonalAgentContext: expect.objectContaining({
-            identity: expect.objectContaining({ agentId, version: 4 })
-          }),
-          initialPersonalMemoryContext: expect.objectContaining({
             schemaVersion: 1,
-            status: "available",
-            attributionNonce: expect.any(String),
-            searchDomain: "global",
-            projectId: null
+            identity: expect.objectContaining({ agentId, version: 4 }),
+            project: { projectId: null, name: null }
           })
         })
       );
@@ -5138,16 +5078,10 @@ describe("managed Conversation routes", () => {
       expect(upsert).not.toHaveBeenCalled();
       expect(staleVersion.statusCode).toBe(409);
       expect(anotherOwnersAgent.statusCode).toBe(404);
-      expect(recallUnavailable.statusCode).toBe(503);
-      expect(recallUnavailable.json()).toEqual({
-        error: {
-          code: "MEMORY_RECALL_UNAVAILABLE",
-          message:
-            "Memory could not be checked. Retry or continue without Memory."
-        }
-      });
+      expect(secondAgentChat.statusCode).toBe(202);
+      expect(searchMemoryNodes).not.toHaveBeenCalled();
       expect(invalidProjectless.statusCode).toBe(400);
-      expect(start).toHaveBeenCalledTimes(2);
+      expect(start).toHaveBeenCalledTimes(3);
     } finally {
       await app.close();
     }

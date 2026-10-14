@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Archive, Award, Copy, Pencil, Sparkles, X } from "lucide-react";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
@@ -60,7 +60,6 @@ export function AgentDetailPanel({
   lifecycleError: string | null;
   teamAvailability?: ReactNode;
 }) {
-  const [soulOpen, setSoulOpen] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const completedJobs = agent.jobs.filter((job) => job.state === "succeeded");
   const runningNow = agent.stats
@@ -71,12 +70,6 @@ export function AgentDetailPanel({
     : agent.projects.length;
   const jobsLogged = agent.stats ? agent.stats.jobsLogged : agent.jobs.length;
   const jobHistoryComplete = !agent.jobsHasMore;
-  const personalDefaults = [
-    agent.defaultProvider && agent.defaultModel
-      ? `${agent.defaultProvider} · ${agent.defaultModel}`
-      : null,
-    agent.defaultReasoningEffort
-  ].filter((value): value is string => Boolean(value));
   const canSummarizeRelationship =
     !loading &&
     agent.activityLoaded &&
@@ -132,14 +125,11 @@ export function AgentDetailPanel({
                 </span>
               )}
             </div>
-            <p className="truncate text-sm text-subtle">{agent.role}</p>
-            <p className="mt-0.5 truncate text-[11px] text-faint">
-              Created {relativeTime(agent.createdAt)}
+            <p className="truncate text-sm text-subtle">
+              {agent.role || "No job title"}
             </p>
             <p className="mt-0.5 truncate text-[11px] text-faint">
-              {personalDefaults.length > 0
-                ? `Personal defaults · ${personalDefaults.join(" · ")}`
-                : "No personal model defaults"}
+              Created {relativeTime(agent.createdAt)}
             </p>
           </div>
         </div>
@@ -477,28 +467,6 @@ export function AgentDetailPanel({
         </>
       )}
       {teamAvailability}
-      <div className="mt-6 px-5 pb-5">
-        <button
-          type="button"
-          aria-expanded={soulOpen}
-          aria-controls="agent-soul-preview"
-          className="flex w-full items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-subtle hover:text-foreground-secondary"
-          onClick={() => setSoulOpen((open) => !open)}
-        >
-          soul.md · identity
-          <span className="text-foreground-secondary">
-            {soulOpen ? "Hide" : "Show"}
-          </span>
-        </button>
-        {soulOpen && (
-          <pre
-            id="agent-soul-preview"
-            className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-[11px] leading-relaxed text-muted"
-          >
-            {agent.soul || "No soul instructions were returned by the service."}
-          </pre>
-        )}
-      </div>
     </aside>
   );
 }
@@ -536,7 +504,7 @@ function JobCard({
         </p>
       )}
       <p className="mt-2 text-[11px] text-subtle">
-        {jobStatusLabel(job.state)} · Actual model: {settingLabel(job.model)} ·{" "}
+        {jobStatusLabel(job.state)} · Model: {settingLabel(job.model)} ·{" "}
         {settingLabel(job.effort)}
         {job.provider && ` · ${job.provider}`}
       </p>

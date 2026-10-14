@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
 import { afterAll, describe, expect, it } from "vitest";
+import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import { runDbMigrations } from "./migrate.js";
 import { createPersonalAgentRepository } from "./personal-agent-repository.js";
 
@@ -359,6 +360,269 @@ describe.skipIf(!baseUrl)(
       expect(cappedProjectActivity[0]?.projectSummary?.projects).toHaveLength(
         5
       );
+
+      const insertNativeDelivery = async (input: {
+        deliveryId: string;
+        status: "completed" | "running";
+        createdAt: string;
+        prompt: string;
+        jobId?: string | null;
+      }) => {
+        const conversationId = randomUUID();
+        const turnId = randomUUID();
+        const messageId = randomUUID();
+        const requestId = randomUUID();
+        await pool.query(
+          `insert into personal_agent_conversations
+             (conversation_id, owner_user_id, active_agent_id)
+           values ($1, $2, $3)`,
+          [conversationId, ownerId, agent.agent.id]
+        );
+        await pool.query(
+          `insert into personal_agent_chat_roots
+             (conversation_id, owner_user_id, project_id, context_kind,
+              target_device_id, target_deployment_id, workspace_id, title)
+           values ($1, $2, null, 'independent', 'activity-device',
+                   $3, $4, 'Native activity conversation')`,
+          [conversationId, ownerId, randomUUID(), randomUUID()]
+        );
+        await pool.query(
+          `insert into personal_agent_chat_turns
+             (id, conversation_id, owner_user_id, request_id, request_digest,
+              user_message_id, ordinal, status)
+           values ($1, $2, $3, $4, $5, $6, 1, 'completed')`,
+          [
+            turnId,
+            conversationId,
+            ownerId,
+            requestId,
+            "c".repeat(64),
+            messageId
+          ]
+        );
+        await pool.query(
+          `insert into personal_agent_chat_messages
+             (id, conversation_id, owner_user_id, turn_id, sequence, kind,
+              state, created_at)
+           values ($1, $2, $3, $4, 1, 'user', 'completed', $5)`,
+          [messageId, conversationId, ownerId, turnId, input.createdAt]
+        );
+        const client = await pool.connect();
+        try {
+          await upsertEncryptedFieldPayloadWithClient(
+            client,
+            ownerActor,
+            provider,
+            {
+              sourceTable: "personal_agent_chat_messages",
+              sourceId: messageId,
+              sourceColumn: "body",
+              plaintext: input.prompt,
+              plaintextContentType: "text/plain",
+              rowFamily: "personal_agent_chat_message",
+              aad: { conversationId, messageId }
+            }
+          );
+        } finally {
+          client.release();
+        }
+        const launch = {
+          kind: "agent",
+          agentId: agent.agent.id,
+          agentVersion: 1,
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          targetDeviceId: "activity-device",
+          model: "gpt-test",
+          reasoningEffort: null,
+          permissionMode: "supervised",
+          selectedResourceIds: []
+        };
+        await pool.query(
+          `insert into personal_agent_chat_deliveries
+             (id, conversation_id, owner_user_id, turn_id, message_id,
+              recipient_kind, agent_id, agent_version, agent_name, ordinal,
+              launch_snapshot, job_id, status, started_at, completed_at,
+              created_at, updated_at)
+           values ($1, $2, $3, $4, $5, 'agent', $6, 1, 'Activity Agent', 0,
+                   $7::jsonb, $8, $9, $10, $11, $10, $12)`,
+          [
+            input.deliveryId,
+            conversationId,
+            ownerId,
+            turnId,
+            messageId,
+            agent.agent.id,
+            JSON.stringify(launch),
+            input.jobId ?? null,
+            input.status,
+            input.createdAt,
+            input.status === "completed" ? input.createdAt : null,
+            input.createdAt
+          ]
+        );
+        return { conversationId, deliveryId: input.deliveryId };
+      };
+
+      const nativeDeliveryId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+      const linkedDeliveryId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+      const staleDeliveryId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+      const nativeConversation = await insertNativeDelivery({
+        deliveryId: nativeDeliveryId,
+        status: "completed",
+        createdAt: "2026-10-04T10:00:00.000Z",
+        prompt: "Review the encrypted native conversation history"
+      });
+      await insertNativeDelivery({
+        deliveryId: linkedDeliveryId,
+        status: "completed",
+        createdAt: "2026-10-02T10:00:00.000Z",
+        prompt: "This delivery is already represented by a Job",
+        jobId: secondId
+      });
+      await insertNativeDelivery({
+        deliveryId: staleDeliveryId,
+        status: "running",
+        createdAt: "2026-10-03T10:00:00.000Z",
+        prompt: "This persisted delivery has no current execution lease"
+      });
+
+      const nativeFirstPage = await repository.listPersonalAgentHistoryJobs(
+        ownerActor,
+        { agentId: agent.agent.id, limit: 2 }
+      );
+      expect(nativeFirstPage.jobs[0]).toMatchObject({
+        id: nativeDeliveryId,
+        conversationId: nativeConversation.conversationId,
+        title: "Review the encrypted native conversation history",
+        goal: "Review the encrypted native conversation history",
+        state: "succeeded",
+        attribution: {
+          kind: "agent",
+          agentId: agent.agent.id,
+          agentVersion: 1
+        },
+        executionSettings: {
+          provider: "codex",
+          model: "gpt-test",
+          aiClientInstanceId: "codex.default",
+          reasoningEffort: null,
+          permissionMode: "supervised"
+        },
+        attempts: [],
+        latestAttempt: null
+      });
+      expect(
+        nativeFirstPage.jobs.some((job) => job.id === linkedDeliveryId)
+      ).toBe(false);
+      const nativePages = [nativeFirstPage];
+      let nextCursor = nativeFirstPage.nextCursor;
+      while (nextCursor) {
+        const page = await repository.listPersonalAgentHistoryJobs(ownerActor, {
+          agentId: agent.agent.id,
+          limit: 2,
+          before: nextCursor
+        });
+        nativePages.push(page);
+        nextCursor = page.nextCursor;
+      }
+      const combinedIds = nativePages.flatMap((page) =>
+        page.jobs.map((job) => job.id)
+      );
+      expect(combinedIds.filter((id) => id === nativeDeliveryId)).toHaveLength(
+        1
+      );
+      expect(combinedIds).toContain(firstId);
+      expect(combinedIds).toContain(secondId);
+      expect(combinedIds).not.toContain(linkedDeliveryId);
+      expect(
+        (
+          await repository.listPersonalAgentHistoryJobs(
+            { userId: otherOwnerId },
+            { agentId: agent.agent.id, limit: 20 }
+          )
+        ).jobs
+      ).toEqual([]);
+
+      const jobCountBeforeRead = await pool.query<{ count: string }>(
+        `select count(*)::text as count from personal_agent_execution_jobs
+          where owner_user_id = $1 and agent_id = $2`,
+        [ownerId, agent.agent.id]
+      );
+      const nativeDetail = await repository.getPersonalAgent(
+        ownerActor,
+        agent.agent.id
+      );
+      expect(nativeDetail?.history.jobs.map((job) => job.id)).toContain(
+        nativeDeliveryId
+      );
+      expect(nativeDetail?.history.stats.totalJobs).toBe(11);
+      expect(nativeDetail?.history.stats.jobs_succeeded).toBe(1);
+      expect(nativeDetail?.soulInstructions).toBe("");
+      const jobCountAfterRead = await pool.query<{ count: string }>(
+        `select count(*)::text as count from personal_agent_execution_jobs
+          where owner_user_id = $1 and agent_id = $2`,
+        [ownerId, agent.agent.id]
+      );
+      expect(jobCountAfterRead.rows[0]?.count).toBe(
+        jobCountBeforeRead.rows[0]?.count
+      );
+      const activityWithNativeStaleDelivery =
+        await repository.getPersonalAgentActivity(ownerActor, {
+          agentIds: [agent.agent.id]
+        });
+      expect(activityWithNativeStaleDelivery[0]).toMatchObject({
+        status: "unknown",
+        freshness: "stale",
+        // Nine legacy running attempt rows are persisted by the fixtures above,
+        // and this stale native delivery contributes one more persisted item.
+        persistedRunningAttempts: 10,
+        runningAttempts: 0
+      });
+
+      const legacyVersion = await repository.getPersonalAgentVersion(
+        ownerActor,
+        {
+          agentId: agent.agent.id,
+          version: 1
+        }
+      );
+      expect(legacyVersion?.soulInstructions).toBe(
+        "Keep this encrypted and never load it for activity."
+      );
+      const metadataOnlyAgent = await repository.createPersonalAgent(
+        ownerActor,
+        {
+          requestId: randomUUID(),
+          name: "Appearance Only Agent",
+          role: "",
+          soulInstructions: "",
+          instructionSource: "generated",
+          defaultProvider: null,
+          defaultModel: null
+        }
+      );
+      expect(metadataOnlyAgent.soulInstructions).toBe("");
+      const metadataOnlyVersion = await repository.getPersonalAgentVersion(
+        ownerActor,
+        {
+          agentId: metadataOnlyAgent.agent.id,
+          version: 1
+        }
+      );
+      expect(metadataOnlyVersion).toMatchObject({
+        soulInstructions: "",
+        role: ""
+      });
+      const metadataSoulPayload = await pool.query<{ count: string }>(
+        `select count(*)::text as count from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'personal_agent_identity_versions'
+            and source_id = $2 and source_column = 'soul_instructions'
+            and invalidated_at is null`,
+        [ownerId, metadataOnlyVersion?.id]
+      );
+      expect(metadataSoulPayload.rows[0]?.count).toBe("0");
     });
   }
 );

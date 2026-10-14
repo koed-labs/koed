@@ -1,3 +1,5 @@
+> Current direction — 2026-10-14: [tickets 24–30](studio-ui-integration-plan.md) supersede the instruction-bearing Agent, role-template, extra Job lifecycle and eager recall designs described below. Agents now retain name, optional free-text job title and Pixelkin appearance; execution settings belong to chats. Existing encrypted history is retained. New Agent writes do not store soul text or template associations. The role-template endpoint is retired (410). The remaining document is historical implementation context, not current acceptance criteria.
+
 # Studio Personal Agents implementation plan
 
 ## Purpose and scope
@@ -46,25 +48,31 @@ app, redesign navigation, or introduce another agent harness in this slice.
   ambiguous. Unknown or retired agents must not silently fall back to another
   respondent. Quoted mentions and agent output must not trigger new executions.
 - Support multiple participant records from the outset. Adding another agent
-  does not remove the first. Initially only the explicitly addressed or active
-  agent responds; automatic delegation and agent-to-agent loops are out of scope.
+  does not remove the first. The October 7 multi-Agent extension addresses
+  several Agents in one message, executing them sequentially in mention order,
+  with separate sessions even when they use the same AI Client. Agents from
+  different AI Clients participate in the same conversation. Automatic
+  delegation and agent-to-agent loops remain out of scope. See the
+  [multi-Agent conversation contract](studio-multi-agent-conversations.md).
 - Collaborative chat surfaces have not yet been implemented. Their eventual
   design may include workspace/project rooms, channels, direct or group
   conversations and Agent workrooms. Each is in scope for `@Agent`, subject to
   explicit identity ownership, audience, memory authorization and execution
   rules; this plan does not claim that those surfaces or Team Agents exist yet.
-- The composer can override the identity's model and effort for a conversation.
+- The composer can override the identity's model and effort for its participation
+  in a conversation. Different participants retain separate overrides.
   Models, effort and execution permissions must match runtime capabilities.
-- Invoking or explicitly switching to an agent resets the chat's selected model
-  and reasoning effort to that agent's preferred defaults. For example, if New
+- First invoking an Agent in a conversation selects that Agent's preferred model
+  and reasoning effort. Returning to a participant restores its conversation
+  overrides if present. For example, if New
   Chat currently shows GPT-6 Luna / High and Bob prefers GPT-6 Astra / Medium,
   resolving `@Bob` makes Bob active and updates the composer to GPT-6 Astra /
   Medium before sending. These names are illustrative, not guaranteed runtime
   capabilities. The visible settings and submitted execution settings must agree.
 - A manual model/effort override made after selecting Bob applies to subsequent
-  messages with Bob without changing his saved defaults. Ordinary follow-up
-  messages preserve that override; explicitly invoking an agent again reapplies
-  that agent's defaults. Switching does not alter an already-running turn.
+  messages with Bob without changing his saved defaults. Follow-up messages and
+  returning to Bob preserve that participant's override; another Agent's settings
+  do not replace it. Switching does not alter an already-running turn.
 - If the preferred model or effort is unavailable or disallowed by the chat's
   execution adapter, do not silently substitute an engine or display a setting
   the runtime will ignore. Show the incompatibility and require an explicit

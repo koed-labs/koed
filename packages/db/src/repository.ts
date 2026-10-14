@@ -62,6 +62,7 @@ import { createMemoryQuestionRepository } from "./memory-question-repository.js"
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import { createRecallFeedbackRepository } from "./recall-feedback-repository.js";
 import { createPersonalAgentRepository } from "./personal-agent-repository.js";
+import { createPersonalAgentChatRepository } from "./personal-agent-chat-repository.js";
 import { createPublicSquareRepository } from "./public-square-repository.js";
 import { createTeamAgentRequestsRepository } from "./team-agent-requests-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
@@ -3965,6 +3966,11 @@ export const createMemorySourceRepository = (
   const personalAgentRepository = createPersonalAgentRepository(pool, {
     envelopeEncryptionProvider: options.envelopeEncryptionProvider
   });
+  const personalAgentChatRepository = createPersonalAgentChatRepository(pool, {
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+    getPersonalAgentTurnOutput: (actor, input) =>
+      personalAgentRepository.getPersonalAgentTurnOutput(actor, input)
+  });
   const requireEnvelopeEncryptionProvider = (): EnvelopeEncryptionProvider => {
     if (!options.envelopeEncryptionProvider) {
       throw new Error(
@@ -4130,7 +4136,9 @@ export const createMemorySourceRepository = (
     }),
     ...createConversationPresentationRepository(pool),
     ...createManagedConversationRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      getPersonalAgentTurnOutput: (actor, input) =>
+        personalAgentRepository.getPersonalAgentTurnOutput(actor, input)
     }),
     ...createManagedTerminalRepository(pool),
     ...createDevelopmentWorkspaceSnapshotRepository(pool),
@@ -4184,6 +4192,7 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...personalAgentRepository,
+    ...personalAgentChatRepository,
     ...createWorkflowTokenUsageRepository(pool),
 
     health: () => checkDatabase(pool),

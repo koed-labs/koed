@@ -992,12 +992,14 @@ export function StudioSidebar({
                                     <button
                                       type="button"
                                       draggable={
+                                        !chat.personalConversationId &&
                                         chat.provider === "codex" &&
                                         chat.state.toLowerCase() === "running"
                                       }
                                       onDragStart={(event) => {
                                         if (
                                           chat.provider !== "codex" ||
+                                          chat.personalConversationId ||
                                           chat.state.toLowerCase() !== "running"
                                         )
                                           return;
@@ -1019,7 +1021,8 @@ export function StudioSidebar({
                                         {chat.title}
                                       </span>
                                     </button>
-                                    {onRemovePersonalItem ? (
+                                    {onRemovePersonalItem &&
+                                    !chat.personalConversationId ? (
                                       <PersonalRemovalControl
                                         kind="conversation"
                                         name={chat.title}
@@ -1071,12 +1074,14 @@ export function StudioSidebar({
                                   type="button"
                                   draggable={
                                     isManagedExecution(chat) &&
+                                    !chat.personalConversationId &&
                                     chat.provider === "codex" &&
                                     chat.state.toLowerCase() === "running"
                                   }
                                   onDragStart={(event) => {
                                     if (
                                       !isManagedExecution(chat) ||
+                                      chat.personalConversationId ||
                                       chat.provider !== "codex" ||
                                       chat.state.toLowerCase() !== "running"
                                     )
@@ -1096,7 +1101,11 @@ export function StudioSidebar({
                                   <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
                                   <span className="truncate">{chat.title}</span>
                                 </button>
-                                {onRemovePersonalItem ? (
+                                {onRemovePersonalItem &&
+                                !(
+                                  isManagedExecution(chat) &&
+                                  chat.personalConversationId
+                                ) ? (
                                   <PersonalRemovalControl
                                     kind="conversation"
                                     name={chat.title}

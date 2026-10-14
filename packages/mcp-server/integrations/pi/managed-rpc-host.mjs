@@ -7,13 +7,6 @@ import { fileURLToPath, pathToFileURL, URL } from "node:url";
 // binding tools and project discovery to the receiving execution checkout.
 async function main() {
   const config = JSON.parse(process.argv[2]);
-  process.env.KOED_MANAGED_AGENT_INTENT_TOOL = config.agentIntentTool
-    ? "1"
-    : "0";
-  process.env.KOED_MANAGED_AGENT_TURN_STATUS_TOOL = config.agentTurnStatusTool
-    ? "1"
-    : "0";
-  process.env.KOED_MANAGED_AGENT_PHASE_TOOL = config.agentPhaseTool ? "1" : "0";
   const sdk = await import(pathToFileURL(config.sdkEntry).href);
   const cwd = fs.realpathSync(config.cwd);
   const agentDir = sdk.getAgentDir();
@@ -48,16 +41,7 @@ async function main() {
         noExtensions: true,
         additionalExtensionPaths: [
           fileURLToPath(new URL("./extensions/koed.mjs", import.meta.url)),
-          fileURLToPath(new URL("./managed-permissions.mjs", import.meta.url)),
-          ...(config.agentIntentTool ||
-          config.agentTurnStatusTool ||
-          config.agentPhaseTool
-            ? [
-                fileURLToPath(
-                  new URL("./managed-agent-tools.mjs", import.meta.url)
-                )
-              ]
-            : [])
+          fileURLToPath(new URL("./managed-permissions.mjs", import.meta.url))
         ]
       }
     });

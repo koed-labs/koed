@@ -27,10 +27,20 @@ import {
   personalAgentRoleTemplateSchema
 } from "@koed/shared";
 import {
+  decryptAuthorizedEncryptedFieldPayloadsWithClient,
+  encryptedFieldReferenceKey,
   decryptAuthorizedEncryptedFieldPayloadWithClient,
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
 import { loadConversationPresentationPolicySnapshot } from "./conversation-presentation-policy.js";
+import {
+  decodePersonalAgentHistoryCursor,
+  encodePersonalAgentHistoryCursor,
+  mapPersonalAgentNativeHistoryRow,
+  personalAgentNativeDeliveryState,
+  type PersonalAgentHistorySource,
+  type PersonalAgentNativeHistoryRow
+} from "./personal-agent-native-history.js";
 import type { ActorContext } from "./types.js";
 
 const SOUL_MARKER = "[koed encrypted personal agent soul]";
@@ -39,6 +49,8 @@ const SOUL_SOURCE_COLUMN = "soul_instructions" as const;
 const OUTPUT_SOURCE_TABLE = "personal_agent_execution_jobs" as const;
 const OUTPUT_SOURCE_COLUMN = "assistant_output" as const;
 const BUILD_PROGRESS_SOURCE_COLUMN = "build_progress" as const;
+const PERSONAL_AGENT_CHAT_MESSAGE_SOURCE =
+  "personal_agent_chat_messages" as const;
 
 // Job goals live in encrypted command payloads. Keep their short display
 // titles out of the plaintext job row as well.
@@ -260,6 +272,14 @@ export interface PersonalAgentRepository {
     actor: ActorContext,
     input: { agentId: string; limit?: number; before?: string }
   ): Promise<PersonalAgentHistoryJobPage>;
+  getPersonalAgentIdentity(
+    actor: ActorContext,
+    agentId: string
+  ): Promise<PersonalAgentIdentity | null>;
+  getPersonalAgentPresentationVersion(
+    actor: ActorContext,
+    input: { agentId: string; version: number }
+  ): Promise<PersonalAgentIdentityVersion | null>;
   getPersonalAgentVersion(
     actor: ActorContext,
     input: { agentId: string; version: number }
@@ -436,6 +456,51 @@ type JobRow = {
   created_at: Date;
   created_at_cursor?: string;
   updated_at: Date;
+};
+
+type PersonalAgentHistoryUnionRow = JobRow & {
+  source_kind: PersonalAgentHistorySource;
+  root_title: string | null;
+  agent_name: string | null;
+  delivery_status: PersonalAgentNativeHistoryRow["status"] | null;
+  execution_id: string | null;
+  message_id: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  provider: string | null;
+  model: string | null;
+  ai_client_instance_id: string | null;
+  reasoning_effort: string | null;
+  permission_mode: AiClientPermissionMode | null;
+};
+
+type NativeActivityRow = {
+  agent_id: string;
+  persisted_count: string;
+  verified_count: string;
+  observed_at: Date;
+  id: string | null;
+  owner_user_id: string | null;
+  conversation_id: string | null;
+  message_id: string | null;
+  command_id: string | null;
+  root_title: string | null;
+  project_id: string | null;
+  agent_version: number | null;
+  agent_name: string | null;
+  delivery_status: PersonalAgentNativeHistoryRow["status"] | null;
+  execution_id: string | null;
+  created_at: Date | null;
+  created_at_cursor: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  updated_at: Date | null;
+  project_name: string | null;
+  provider: string | null;
+  model: string | null;
+  ai_client_instance_id: string | null;
+  reasoning_effort: string | null;
+  permission_mode: AiClientPermissionMode | null;
 };
 
 type AttemptRow = {
@@ -625,8 +690,11 @@ export const createPersonalAgentRepository = (
         sourceColumn: SOUL_SOURCE_COLUMN
       }
     );
-    if (!result || typeof result.plaintext !== "string") {
-      throw new Error("Encrypted Personal Agent soul is missing or invalid");
+    // Metadata-only identity versions have no instruction payload. Historical
+    // encrypted payloads remain readable for explicit legacy history access.
+    if (!result) return "";
+    if (typeof result.plaintext !== "string") {
+      throw new Error("Encrypted Personal Agent soul is invalid");
     }
     return result.plaintext;
   };
@@ -685,6 +753,8 @@ export const createPersonalAgentRepository = (
     versionId: string,
     soulInstructions: string
   ): Promise<void> => {
+    // New appearance-only Agents do not need an encrypted instruction row.
+    if (!soulInstructions) return;
     await upsertEncryptedFieldPayloadWithClient(
       client,
       actor,
@@ -1061,6 +1131,180 @@ export const createPersonalAgentRepository = (
     );
   };
 
+  const authorizedNativeDeliveryGoals = async (
+    actor: ActorContext,
+    deliveries: PersonalAgentNativeHistoryRow[]
+  ): Promise<Map<string, string>> => {
+    if (deliveries.length === 0) return new Map();
+    const messagePayloads =
+      await decryptAuthorizedEncryptedFieldPayloadsWithClient(
+        pool,
+        actor,
+        requireProvider(),
+        deliveries.map((delivery) => ({
+          sourceTable: PERSONAL_AGENT_CHAT_MESSAGE_SOURCE,
+          sourceId: delivery.message_id,
+          sourceColumn: "body"
+        }))
+      );
+    const commandIds = deliveries
+      .map((delivery) => delivery.command_id)
+      .filter((id): id is string => Boolean(id));
+    const commands = commandIds.length
+      ? await pool.query<{
+          id: string;
+          execution_id: string;
+          encrypted_payload: EncryptedPayloadEnvelope | null;
+        }>(
+          `select id, execution_id, encrypted_payload
+             from managed_conversation_commands
+            where owner_user_id = $1 and id = any($2::uuid[])
+              and command_kind in ('start', 'prompt')`,
+          [actor.userId, commandIds]
+        )
+      : {
+          rows: [] as {
+            id: string;
+            execution_id: string;
+            encrypted_payload: EncryptedPayloadEnvelope | null;
+          }[]
+        };
+    const commandsById = new Map(commands.rows.map((row) => [row.id, row]));
+    const goals = await Promise.all(
+      deliveries.map(async (delivery) => {
+        const command = delivery.command_id
+          ? commandsById.get(delivery.command_id)
+          : undefined;
+        let prompt: string | null = null;
+        if (
+          command?.encrypted_payload &&
+          delivery.execution_id &&
+          command.execution_id === delivery.execution_id
+        ) {
+          try {
+            const plaintext = await decryptEnvelopeToUtf8(
+              requireProvider(),
+              command.encrypted_payload
+            );
+            const payload: unknown = JSON.parse(plaintext);
+            if (
+              payload &&
+              typeof payload === "object" &&
+              !Array.isArray(payload)
+            ) {
+              const candidate = (payload as Record<string, unknown>).prompt;
+              if (typeof candidate === "string") prompt = candidate;
+            }
+          } catch {
+            // Keep the encrypted Personal conversation message as the safe
+            // owner-authorized fallback when a legacy command is unreadable.
+          }
+        }
+        if (prompt === null) {
+          const payload = messagePayloads.get(
+            encryptedFieldReferenceKey({
+              sourceTable: PERSONAL_AGENT_CHAT_MESSAGE_SOURCE,
+              sourceId: delivery.message_id,
+              sourceColumn: "body"
+            })
+          )?.plaintext;
+          if (typeof payload === "string") prompt = payload;
+        }
+        return prompt === null
+          ? null
+          : {
+              deliveryId: delivery.id,
+              goal: originalJobGoal(prompt)
+            };
+      })
+    );
+    return new Map(
+      goals
+        .filter((value): value is { deliveryId: string; goal: string } =>
+          Boolean(value)
+        )
+        .map((value) => [value.deliveryId, value.goal])
+    );
+  };
+
+  const loadNativeActivityRows = async (
+    actor: ActorContext,
+    agentIds: string[]
+  ): Promise<NativeActivityRow[]> => {
+    if (agentIds.length === 0) return [];
+    const result = await pool.query<NativeActivityRow>(
+      `with requested_agents as (
+         select id from personal_agent_identities
+          where owner_user_id = $1 and id = any($2::uuid[])
+       ), candidates as (
+         select d.id, d.owner_user_id, d.conversation_id, d.message_id,
+                d.command_id, r.title as root_title, r.project_id,
+                d.agent_id, d.agent_version, d.agent_name, d.status as delivery_status,
+                nullif(d.launch_snapshot->>'provider', '') as provider,
+                nullif(d.launch_snapshot->>'model', '') as model,
+                nullif(d.launch_snapshot->>'aiClientInstanceId', '') as ai_client_instance_id,
+                nullif(d.launch_snapshot->>'reasoningEffort', '') as reasoning_effort,
+                nullif(d.launch_snapshot->>'permissionMode', '') as permission_mode,
+                d.execution_id, d.created_at, d.created_at::text as created_at_cursor,
+                d.started_at, d.completed_at, d.updated_at,
+                coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+                (d.claim_until > clock_timestamp()
+                 and c.state = 'dispatching'
+                 and c.command_kind = 'prompt'
+                 and c.execution_generation = e.execution_generation
+                 and e.state = 'running'
+                 and e.runner_lease_expires_at > clock_timestamp()) as is_verified
+           from personal_agent_chat_deliveries d
+           join personal_agent_chat_roots r
+             on r.conversation_id = d.conversation_id
+            and r.owner_user_id = d.owner_user_id
+           left join managed_conversation_commands c
+             on c.id = d.command_id and c.owner_user_id = d.owner_user_id
+            and c.execution_id = d.execution_id
+           left join managed_conversation_executions e
+             on e.id = d.execution_id and e.owner_user_id = d.owner_user_id
+           left join sessions s
+             on s.owner_user_id = e.owner_user_id
+            and s.logical_session_id = e.logical_session_id
+            and coalesce(s.project_override_id, s.automatic_project_id) = r.project_id
+          where d.owner_user_id = $1 and d.agent_id in (select id from requested_agents)
+            and d.recipient_kind = 'agent' and d.status = 'running'
+            and not exists (
+              select 1 from personal_agent_execution_jobs linked
+               where linked.id = d.job_id
+                 and linked.owner_user_id = d.owner_user_id
+            )
+       ), stats as (
+         select agent_id, count(*)::text as persisted_count,
+                count(*) filter (where is_verified)::text as verified_count
+           from candidates group by agent_id
+       ), ranked as (
+         select *, row_number() over (
+             partition by agent_id order by updated_at desc, id desc
+           ) as agent_rank,
+           row_number() over (order by updated_at desc, agent_id, id desc) as batch_rank
+           from candidates where is_verified
+       )
+       select i.id as agent_id,
+              coalesce(s.persisted_count, '0') as persisted_count,
+              coalesce(s.verified_count, '0') as verified_count,
+              clock_timestamp() as observed_at,
+              r.id, r.owner_user_id, r.conversation_id, r.message_id,
+              r.command_id, r.root_title, r.project_id, r.agent_version,
+              r.agent_name, r.delivery_status, r.execution_id, r.created_at,
+              r.created_at_cursor, r.started_at, r.completed_at, r.updated_at,
+              r.project_name, r.provider, r.model, r.ai_client_instance_id,
+              r.reasoning_effort, r.permission_mode
+         from requested_agents i
+         left join stats s on s.agent_id = i.id
+         left join ranked r
+           on r.agent_id = i.id and r.agent_rank <= 5 and r.batch_rank <= 100
+        order by i.id, r.agent_rank`,
+      [actor.userId, agentIds]
+    );
+    return result.rows;
+  };
+
   const withAuthorizedJobTitles = async (
     actor: ActorContext,
     jobs: PersonalAgentExecutionJob[]
@@ -1202,52 +1446,82 @@ export const createPersonalAgentRepository = (
     }>(
       `with requested_project_agents as (
          select id from personal_agent_identities
-         where owner_user_id = $1 and id = any($2::uuid[])
-       ), project_counts as (
-         select i.id as agent_id, count(distinct j.project_id)::text as project_count
-         from requested_project_agents i
-         left join personal_agent_execution_jobs j
-           on j.owner_user_id = $1 and j.agent_id = i.id
-         group by i.id
-       ), named_projects as (
+          where owner_user_id = $1 and id = any($2::uuid[])
+       ), project_rows as (
          select j.agent_id, j.project_id,
                 coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
                 case when bool_or(j.state = 'running') then 'active' else 'history' end as status,
                 max(j.created_at) as started_at
-         from requested_project_agents i
-         join personal_agent_execution_jobs j
-           on j.owner_user_id = $1 and j.agent_id = i.id
-          and j.project_id is not null
-         join managed_conversation_executions e
-           on e.id = j.conversation_id and e.owner_user_id = $1
-         left join sessions s
-           on s.owner_user_id = e.owner_user_id
-          and s.logical_session_id = e.logical_session_id
-          and coalesce(s.project_override_id, s.automatic_project_id) = j.project_id
-         group by j.agent_id, j.project_id
-         having coalesce(max(s.project_override_name), max(s.automatic_project_name)) is not null
+           from requested_project_agents i
+           join personal_agent_execution_jobs j
+             on j.owner_user_id = $1 and j.agent_id = i.id
+            and j.project_id is not null
+           join managed_conversation_executions e
+             on e.id = j.conversation_id and e.owner_user_id = $1
+           left join sessions s
+             on s.owner_user_id = e.owner_user_id
+            and s.logical_session_id = e.logical_session_id
+            and coalesce(s.project_override_id, s.automatic_project_id) = j.project_id
+          group by j.agent_id, j.project_id
+         union all
+         select d.agent_id, r.project_id,
+                coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
+                case when bool_or(d.status in ('queued', 'starting', 'running')) then 'active' else 'history' end as status,
+                max(d.created_at) as started_at
+           from requested_project_agents i
+           join personal_agent_chat_deliveries d
+             on d.owner_user_id = $1 and d.agent_id = i.id
+            and d.recipient_kind = 'agent'
+           join personal_agent_chat_roots r
+             on r.conversation_id = d.conversation_id and r.owner_user_id = d.owner_user_id
+            and r.project_id is not null
+           left join managed_conversation_executions e
+             on e.id = d.execution_id and e.owner_user_id = d.owner_user_id
+           left join sessions s
+             on s.owner_user_id = e.owner_user_id
+            and s.logical_session_id = e.logical_session_id
+            and coalesce(s.project_override_id, s.automatic_project_id) = r.project_id
+          where not exists (
+            select 1 from personal_agent_execution_jobs linked
+             where linked.id = d.job_id
+               and linked.owner_user_id = d.owner_user_id
+          )
+          group by d.agent_id, r.project_id
+       ), projects as (
+         select agent_id, project_id, max(name) as name,
+                case when bool_or(status = 'active') then 'active' else 'history' end as status,
+                max(started_at) as started_at
+           from project_rows group by agent_id, project_id
+       ), project_counts as (
+         select i.id as agent_id, count(p.project_id)::text as project_count
+           from requested_project_agents i
+           left join projects p on p.agent_id = i.id
+          group by i.id
+       ), named_projects as (
+         select * from projects where name is not null
        ), named_counts as (
          select agent_id, count(*)::text as named_project_count
-         from named_projects group by agent_id
+           from named_projects group by agent_id
        ), ranked_projects as (
          select *, row_number() over (
              partition by agent_id order by started_at desc, project_id
            ) as agent_rank,
            row_number() over (order by started_at desc, agent_id, project_id) as batch_rank
-         from named_projects
+           from named_projects
        )
        select i.id as agent_id,
               coalesce(pc.project_count, '0') as project_count,
               coalesce(nc.named_project_count, '0') as named_project_count,
               p.project_id, p.name as project_name, p.status, p.started_at
-       from requested_project_agents i
-       left join project_counts pc on pc.agent_id = i.id
-       left join named_counts nc on nc.agent_id = i.id
-       left join ranked_projects p
-         on p.agent_id = i.id and p.agent_rank <= 5 and p.batch_rank <= 100
-       order by i.id, p.agent_rank`,
+         from requested_project_agents i
+         left join project_counts pc on pc.agent_id = i.id
+         left join named_counts nc on nc.agent_id = i.id
+         left join ranked_projects p
+           on p.agent_id = i.id and p.agent_rank <= 5 and p.batch_rank <= 100
+        order by i.id, p.agent_rank`,
       [actor.userId, agentIds]
     );
+    const nativeActivityRows = await loadNativeActivityRows(actor, agentIds);
     const projectsByAgent = new Map<
       string,
       {
@@ -1283,6 +1557,74 @@ export const createPersonalAgentRepository = (
       const rows = rowsByAgent.get(row.agent_id) ?? [];
       rows.push(row);
       rowsByAgent.set(row.agent_id, rows);
+    }
+    const nativeActivityDeliveries: PersonalAgentNativeHistoryRow[] =
+      nativeActivityRows.flatMap((row) =>
+        row.id &&
+        row.owner_user_id &&
+        row.conversation_id &&
+        row.message_id &&
+        row.delivery_status &&
+        row.created_at &&
+        row.created_at_cursor &&
+        row.updated_at &&
+        row.agent_version !== null
+          ? [
+              {
+                id: row.id,
+                owner_user_id: row.owner_user_id,
+                conversation_id: row.conversation_id,
+                message_id: row.message_id,
+                command_id: row.command_id,
+                root_title: row.root_title,
+                project_id: row.project_id,
+                agent_id: row.agent_id,
+                agent_version: row.agent_version,
+                agent_name: row.agent_name,
+                status: row.delivery_status,
+                execution_id: row.execution_id,
+                created_at: row.created_at,
+                created_at_cursor: row.created_at_cursor,
+                started_at: row.started_at,
+                completed_at: row.completed_at,
+                updated_at: row.updated_at,
+                provider: row.provider,
+                model: row.model,
+                ai_client_instance_id: row.ai_client_instance_id,
+                reasoning_effort: row.reasoning_effort,
+                permission_mode: row.permission_mode
+              }
+            ]
+          : []
+      );
+    const nativeGoals = await authorizedNativeDeliveryGoals(
+      actor,
+      nativeActivityDeliveries
+    );
+    const nativeActivityJobsByAgent = new Map<
+      string,
+      PersonalAgentActivityJob[]
+    >();
+    for (const delivery of nativeActivityDeliveries) {
+      const projected = mapPersonalAgentNativeHistoryRow(delivery, {
+        goal: nativeGoals.get(delivery.id) ?? null
+      });
+      const sourceRow = nativeActivityRows.find(
+        (row) => row.id === delivery.id
+      );
+      const activityJobs =
+        nativeActivityJobsByAgent.get(delivery.agent_id) ?? [];
+      activityJobs.push({
+        id: projected.id,
+        conversationId: projected.conversationId,
+        projectId: projected.projectId,
+        projectName: sourceRow?.project_name?.slice(0, 128) ?? null,
+        title: projected.title,
+        goal: projected.goal ? excerpt(projected.goal, 240) : null,
+        state: projected.state,
+        updatedAt: projected.updatedAt
+      });
+      nativeActivityJobsByAgent.set(delivery.agent_id, activityJobs);
     }
     const jobs = result.rows.flatMap((row) =>
       row.id &&
@@ -1360,9 +1702,24 @@ export const createPersonalAgentRepository = (
           projectSummary: null
         };
       }
-      const persistedRunningAttempts = Number(row.persisted_count);
-      const runningAttempts = Number(row.verified_attempt_count);
-      const activeJobsCount = Number(row.active_job_count);
+      const nativeActivity = nativeActivityRows.find(
+        (nativeRow) => nativeRow.agent_id === agentId
+      );
+      const persistedRunningAttempts =
+        Number(row.persisted_count) +
+        Number(nativeActivity?.persisted_count ?? 0);
+      const runningAttempts =
+        Number(row.verified_attempt_count) +
+        Number(nativeActivity?.verified_count ?? 0);
+      const activeJobsCount =
+        Number(row.active_job_count) +
+        Number(nativeActivity?.verified_count ?? 0);
+      const activeJobs = [
+        ...(activeJobsByAgent.get(agentId) ?? []),
+        ...(nativeActivityJobsByAgent.get(agentId) ?? [])
+      ]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 5);
       return {
         agentId,
         status:
@@ -1381,10 +1738,9 @@ export const createPersonalAgentRepository = (
         observedAt: iso(row.observed_at),
         runningAttempts,
         persistedRunningAttempts,
-        activeJobs: activeJobsByAgent.get(agentId) ?? [],
+        activeJobs,
         activeJobsCount,
-        activeJobsTruncated:
-          activeJobsCount > (activeJobsByAgent.get(agentId)?.length ?? 0),
+        activeJobsTruncated: activeJobsCount > activeJobs.length,
         projectSummary: projectsByAgent.has(agentId)
           ? {
               projects: projectsByAgent.get(agentId)!.projects,
@@ -1412,11 +1768,10 @@ export const createPersonalAgentRepository = (
     );
     if (!versionRow)
       throw new Error("Current Personal Agent version is missing");
-    const jobs = await listPersonalAgentExecutionJobs(actor, {
+    const jobs = await listPersonalAgentHistoryJobs(actor, {
       agentId,
       limit: 50
     });
-    const goals = await authorizedJobGoals(actor, jobs.jobs);
     const hydrateHistoryJobs = async (
       sourceJobs: PersonalAgentExecutionJob[],
       jobGoals: Map<string, string>
@@ -1448,36 +1803,59 @@ export const createPersonalAgentRepository = (
           };
         })
       );
-    const historyJobs = await hydrateHistoryJobs(jobs.jobs, goals);
-    const [jobStats, attemptStats, verifiedRunning, projectCount, projects] =
-      await Promise.all([
-        pool.query<{
-          state: PersonalAgentExecutionJob["state"];
-          count: string;
-        }>(
-          `select state, count(*)::text as count
+    const historyJobs = jobs.jobs;
+    const [
+      jobStats,
+      nativeJobStats,
+      attemptStats,
+      verifiedRunning,
+      nativeActivityRows,
+      projectCount,
+      projects
+    ] = await Promise.all([
+      pool.query<{
+        state: PersonalAgentExecutionJob["state"];
+        count: string;
+      }>(
+        `select state, count(*)::text as count
          from personal_agent_execution_jobs
          where owner_user_id = $1 and agent_id = $2
          group by state`,
-          [actor.userId, agentId]
-        ),
-        pool.query<{
-          status: PersonalAgentExecutionAttempt["status"];
-          count: string;
-        }>(
-          `select status, count(*)::text as count
+        [actor.userId, agentId]
+      ),
+      pool.query<{
+        status: PersonalAgentNativeHistoryRow["status"];
+        count: string;
+      }>(
+        `select d.status, count(*)::text as count
+             from personal_agent_chat_deliveries d
+            where d.owner_user_id = $1 and d.agent_id = $2
+              and d.recipient_kind = 'agent'
+              and not exists (
+                select 1 from personal_agent_execution_jobs linked
+                 where linked.id = d.job_id
+                   and linked.owner_user_id = d.owner_user_id
+              )
+            group by d.status`,
+        [actor.userId, agentId]
+      ),
+      pool.query<{
+        status: PersonalAgentExecutionAttempt["status"];
+        count: string;
+      }>(
+        `select status, count(*)::text as count
          from personal_agent_execution_attempts
          where owner_user_id = $1 and agent_id = $2
          group by status`,
-          [actor.userId, agentId]
-        ),
-        pool.query<{
-          persisted_count: string;
-          verified_count: string;
-          observed_at: Date;
-          verified_job_ids: string[] | null;
-        }>(
-          `select count(distinct a.id) filter (
+        [actor.userId, agentId]
+      ),
+      pool.query<{
+        persisted_count: string;
+        verified_count: string;
+        observed_at: Date;
+        verified_job_ids: string[] | null;
+      }>(
+        `select count(distinct a.id) filter (
                   where a.status = 'running'
                 )::text as persisted_count,
                 count(distinct a.id) filter (
@@ -1507,51 +1885,92 @@ export const createPersonalAgentRepository = (
          left join managed_conversation_executions e
            on e.id = c.execution_id and e.owner_user_id = c.owner_user_id
          where a.owner_user_id = $1 and a.agent_id = $2`,
-          [actor.userId, agentId]
-        ),
-        pool.query<{ count: string }>(
-          `select count(distinct project_id)::text as count
-         from personal_agent_execution_jobs
-         where owner_user_id = $1 and agent_id = $2 and project_id is not null`,
-          [actor.userId, agentId]
-        ),
-        pool.query<{
-          id: string;
-          name: string;
-          status: string;
-          started_at: Date;
-        }>(
-          `with agent_projects as (
-           select distinct project_id
-           from personal_agent_execution_jobs
-           where owner_user_id = $1 and agent_id = $2 and project_id is not null
-         )
-         select p.project_id as id,
-                coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
-                case when bool_or(j.state = 'running') then 'active' else 'history' end as status,
-                max(j.created_at) as started_at
-         from agent_projects p
-         join personal_agent_execution_jobs j
-           on j.owner_user_id = $1 and j.agent_id = $2 and j.project_id = p.project_id
-         join managed_conversation_executions e
-           on e.id = j.conversation_id and e.owner_user_id = j.owner_user_id
-         left join sessions s
-           on s.owner_user_id = e.owner_user_id
-          and s.logical_session_id = e.logical_session_id
-          and coalesce(s.project_override_id, s.automatic_project_id) = p.project_id
-         group by p.project_id
-         having coalesce(max(s.project_override_name), max(s.automatic_project_name)) is not null
-         order by max(j.created_at) desc, p.project_id`,
-          [actor.userId, agentId]
-        )
-      ]);
-    const persistedRunning = Number(
-      verifiedRunning.rows[0]?.persisted_count ?? 0
-    );
-    const verifiedRunningNow = Number(
-      verifiedRunning.rows[0]?.verified_count ?? 0
-    );
-    const runningObservedAt = verifiedRunning.rows[0]?.observed_at ?? null;
+        [actor.userId, agentId]
+      ),
+      loadNativeActivityRows(actor, [agentId]),
+      pool.query<{ count: string }>(
+        `select count(distinct project_id)::text as count from (
+             select project_id from personal_agent_execution_jobs
+              where owner_user_id = $1 and agent_id = $2 and project_id is not null
+             union all
+             select r.project_id
+               from personal_agent_chat_deliveries d
+               join personal_agent_chat_roots r
+                 on r.conversation_id = d.conversation_id
+                and r.owner_user_id = d.owner_user_id
+              where d.owner_user_id = $1 and d.agent_id = $2
+                and d.recipient_kind = 'agent' and r.project_id is not null
+                and not exists (
+                  select 1 from personal_agent_execution_jobs linked
+                   where linked.id = d.job_id
+                     and linked.owner_user_id = d.owner_user_id
+                )
+           ) project_ids`,
+        [actor.userId, agentId]
+      ),
+      pool.query<{
+        id: string;
+        name: string;
+        status: string;
+        started_at: Date;
+      }>(
+        `with project_rows as (
+             select j.project_id,
+                    coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
+                    case when bool_or(j.state = 'running') then 'active' else 'history' end as status,
+                    max(j.created_at) as started_at
+               from personal_agent_execution_jobs j
+               join managed_conversation_executions e
+                 on e.id = j.conversation_id and e.owner_user_id = j.owner_user_id
+               left join sessions s
+                 on s.owner_user_id = e.owner_user_id
+                and s.logical_session_id = e.logical_session_id
+                and coalesce(s.project_override_id, s.automatic_project_id) = j.project_id
+              where j.owner_user_id = $1 and j.agent_id = $2 and j.project_id is not null
+              group by j.project_id
+             union all
+             select r.project_id,
+                    coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
+                    case when bool_or(d.status in ('queued', 'starting', 'running')) then 'active' else 'history' end as status,
+                    max(d.created_at) as started_at
+               from personal_agent_chat_deliveries d
+               join personal_agent_chat_roots r
+                 on r.conversation_id = d.conversation_id and r.owner_user_id = d.owner_user_id
+               left join managed_conversation_executions e
+                 on e.id = d.execution_id and e.owner_user_id = d.owner_user_id
+               left join sessions s
+                 on s.owner_user_id = e.owner_user_id
+                and s.logical_session_id = e.logical_session_id
+                and coalesce(s.project_override_id, s.automatic_project_id) = r.project_id
+              where d.owner_user_id = $1 and d.agent_id = $2
+                and d.recipient_kind = 'agent' and r.project_id is not null
+                and not exists (
+                  select 1 from personal_agent_execution_jobs linked
+                   where linked.id = d.job_id
+                     and linked.owner_user_id = d.owner_user_id
+                )
+              group by r.project_id
+           )
+           select project_id as id, max(name) as name,
+                  case when bool_or(status = 'active') then 'active' else 'history' end as status,
+                  max(started_at) as started_at
+             from project_rows
+            group by project_id
+           having max(name) is not null
+            order by max(started_at) desc, project_id`,
+        [actor.userId, agentId]
+      )
+    ]);
+    const persistedRunning =
+      Number(verifiedRunning.rows[0]?.persisted_count ?? 0) +
+      Number(nativeActivityRows[0]?.persisted_count ?? 0);
+    const verifiedRunningNow =
+      Number(verifiedRunning.rows[0]?.verified_count ?? 0) +
+      Number(nativeActivityRows[0]?.verified_count ?? 0);
+    const runningObservedAt =
+      verifiedRunning.rows[0]?.observed_at ??
+      nativeActivityRows[0]?.observed_at ??
+      null;
     const verifiedJobIds = verifiedRunning.rows[0]?.verified_job_ids ?? [];
     const historyJobIds = new Set(historyJobs.map((job) => job.id));
     const missingRunningJobIds = verifiedJobIds.filter(
@@ -1584,15 +2003,69 @@ export const createPersonalAgentRepository = (
     const runningJobsById = new Map(
       [...historyJobs, ...hydratedExtraRunningJobs].map((job) => [job.id, job])
     );
-    const runningNow = verifiedJobIds.flatMap((jobId) => {
+    const legacyRunningNow = verifiedJobIds.flatMap((jobId) => {
       const job = runningJobsById.get(jobId);
       return job ? [job] : [];
     });
+    const nativeActivityDeliveries: PersonalAgentNativeHistoryRow[] =
+      nativeActivityRows.flatMap((row) =>
+        row.id &&
+        row.owner_user_id &&
+        row.conversation_id &&
+        row.message_id &&
+        row.delivery_status &&
+        row.created_at &&
+        row.created_at_cursor &&
+        row.updated_at &&
+        row.agent_version !== null
+          ? [
+              {
+                id: row.id,
+                owner_user_id: row.owner_user_id,
+                conversation_id: row.conversation_id,
+                message_id: row.message_id,
+                command_id: row.command_id,
+                root_title: row.root_title,
+                project_id: row.project_id,
+                agent_id: row.agent_id,
+                agent_version: row.agent_version,
+                agent_name: row.agent_name,
+                status: row.delivery_status,
+                execution_id: row.execution_id,
+                created_at: row.created_at,
+                created_at_cursor: row.created_at_cursor,
+                started_at: row.started_at,
+                completed_at: row.completed_at,
+                updated_at: row.updated_at,
+                provider: row.provider,
+                model: row.model,
+                ai_client_instance_id: row.ai_client_instance_id,
+                reasoning_effort: row.reasoning_effort,
+                permission_mode: row.permission_mode
+              }
+            ]
+          : []
+      );
+    const nativeGoals = await authorizedNativeDeliveryGoals(
+      actor,
+      nativeActivityDeliveries
+    );
+    const nativeRunningNow = nativeActivityDeliveries.map((delivery) =>
+      mapPersonalAgentNativeHistoryRow(delivery, {
+        goal: nativeGoals.get(delivery.id) ?? null
+      })
+    );
+    const runningNow = [...legacyRunningNow, ...nativeRunningNow].sort(
+      (left, right) => right.updatedAt.localeCompare(left.updatedAt)
+    );
+    const nativeJobCount = nativeJobStats.rows.reduce(
+      (total, row) => total + Number(row.count),
+      0
+    );
     const stats: Record<string, number | boolean | null> = {
-      totalJobs: jobStats.rows.reduce(
-        (total, row) => total + Number(row.count),
-        0
-      ),
+      totalJobs:
+        jobStats.rows.reduce((total, row) => total + Number(row.count), 0) +
+        nativeJobCount,
       totalAttempts: attemptStats.rows.reduce(
         (total, row) => total + Number(row.count),
         0
@@ -1609,12 +2082,17 @@ export const createPersonalAgentRepository = (
     };
     for (const row of jobStats.rows)
       stats[`jobs_${row.state}`] = Number(row.count);
+    for (const row of nativeJobStats.rows) {
+      const state = personalAgentNativeDeliveryState(row.status);
+      const key = `jobs_${state}`;
+      stats[key] = Number(stats[key] ?? 0) + Number(row.count);
+    }
     for (const row of attemptStats.rows) {
       stats[`attempts_${row.status}`] = Number(row.count);
     }
     return {
       agent: mapIdentity(identityRow),
-      soulInstructions: await decryptSoul(pool, actor, versionRow.id),
+      soulInstructions: "",
       history: {
         stats,
         jobs: historyJobs,
@@ -1740,7 +2218,7 @@ export const createPersonalAgentRepository = (
        values ($1, $2) on conflict (conversation_id) do nothing`,
         [input.conversationId, actor.userId]
       );
-      const state = await client.query<{ version: number }>(
+      await client.query<{ version: number }>(
         `select version from personal_agent_conversations
        where conversation_id = $1 and owner_user_id = $2 for update`,
         [input.conversationId, actor.userId]
@@ -1930,7 +2408,7 @@ export const createPersonalAgentRepository = (
       if (!identityRow)
         throw new Error("Personal Agent insert returned no row");
       await reserveName(client, actor.userId, identityRow.id, input.name);
-      const versionRow = await insertVersion(client, actor, {
+      await insertVersion(client, actor, {
         agentId: identityRow.id,
         ownerUserId: actor.userId,
         version: 1,
@@ -1957,6 +2435,23 @@ export const createPersonalAgentRepository = (
     agentId: string
   ): Promise<PersonalAgentDetail | null> =>
     loadPersonalAgentDetail(actor, agentId);
+
+  // Runtime selection needs identity metadata, never work-history hydration.
+  const getPersonalAgentIdentity = async (
+    actor: ActorContext,
+    agentId: string
+  ): Promise<PersonalAgentIdentity | null> => {
+    const row = await selectIdentity(pool, actor, agentId);
+    return row ? mapIdentity(row) : null;
+  };
+
+  const getPersonalAgentPresentationVersion = async (
+    actor: ActorContext,
+    input: { agentId: string; version: number }
+  ): Promise<PersonalAgentIdentityVersion | null> => {
+    const row = await selectVersion(pool, actor, input.agentId, input.version);
+    return row ? mapVersion(row, "") : null;
+  };
 
   const listPersonalAgents = async (
     actor: ActorContext,
@@ -2223,14 +2718,8 @@ export const createPersonalAgentRepository = (
         instructionSource: input.soulInstructions
           ? "custom"
           : currentVersion.instruction_source,
-        sourceTemplateId:
-          input.sourceTemplateId !== undefined
-            ? input.sourceTemplateId
-            : (currentVersion.source_template_id ?? null),
-        sourceTemplateVersion:
-          input.sourceTemplateVersion !== undefined
-            ? input.sourceTemplateVersion
-            : (currentVersion.source_template_version ?? null),
+        sourceTemplateId: null,
+        sourceTemplateVersion: null,
         requestId: input.requestId,
         requestFingerprint: updateFingerprint,
         defaultProvider: nextProvider,
@@ -3241,43 +3730,156 @@ export const createPersonalAgentRepository = (
     actor: ActorContext,
     input: { agentId: string; limit?: number; before?: string }
   ): Promise<PersonalAgentHistoryJobPage> => {
-    const page = await listPersonalAgentExecutionJobs(actor, {
-      agentId: input.agentId,
-      limit: input.limit,
-      before: input.before
-    });
-    if (page.jobs.length === 0) {
-      return { jobs: [], hasMore: page.hasMore, nextCursor: page.nextCursor };
-    }
-    const jobIds = page.jobs.map((job) => job.id);
-    const goals = await authorizedJobGoals(actor, page.jobs);
-    const versions = page.jobs.flatMap((job) =>
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const cursor = input.before
+      ? decodePersonalAgentHistoryCursor(input.before)
+      : null;
+    const result = await pool.query<PersonalAgentHistoryUnionRow>(
+      `with history as (
+         select 'job'::text as source_kind,
+                j.id, j.owner_user_id, j.conversation_id, j.command_id, j.title,
+                j.project_id, j.output_reference, j.version, j.last_observed_at,
+                j.attribution_kind, j.agent_id, j.agent_version, j.state,
+                j.attempts_started, j.attempts_succeeded, j.attempts_failed,
+                j.attempts_canceled, j.attempts_interrupted, j.last_attempt_id,
+                j.created_at, j.created_at::text as created_at_cursor, j.updated_at,
+                null::text as root_title, null::text as agent_name,
+                null::text as delivery_status,
+                null::uuid as execution_id, null::uuid as message_id,
+                null::timestamptz as started_at,
+                null::timestamptz as completed_at,
+                null::text as provider, null::text as model,
+                null::text as ai_client_instance_id,
+                null::text as reasoning_effort, null::text as permission_mode
+           from personal_agent_execution_jobs j
+          where j.owner_user_id = $1 and j.agent_id = $2
+         union all
+         select 'delivery'::text as source_kind,
+                d.id, d.owner_user_id, d.conversation_id, d.command_id,
+                coalesce(nullif(r.title, ''), 'Agent task') as title,
+                r.project_id, null::jsonb as output_reference, 1 as version,
+                d.updated_at as last_observed_at, 'agent'::text as attribution_kind,
+                d.agent_id, d.agent_version,
+                case d.status
+                  when 'queued' then 'queued'
+                  when 'starting' then 'queued'
+                  when 'running' then 'running'
+                  when 'completed' then 'succeeded'
+                  when 'failed' then 'failed'
+                  when 'canceled' then 'canceled'
+                  when 'skipped' then 'canceled'
+                  else 'waiting'
+                end as state,
+                0 as attempts_started, 0 as attempts_succeeded,
+                0 as attempts_failed, 0 as attempts_canceled,
+                0 as attempts_interrupted, null::uuid as last_attempt_id,
+                d.created_at, d.created_at::text as created_at_cursor, d.updated_at,
+                r.title as root_title, d.agent_name,
+                d.status as delivery_status,
+                d.execution_id, d.message_id, d.started_at, d.completed_at,
+                nullif(d.launch_snapshot->>'provider', '') as provider,
+                nullif(d.launch_snapshot->>'model', '') as model,
+                nullif(d.launch_snapshot->>'aiClientInstanceId', '') as ai_client_instance_id,
+                nullif(d.launch_snapshot->>'reasoningEffort', '') as reasoning_effort,
+                nullif(d.launch_snapshot->>'permissionMode', '') as permission_mode
+           from personal_agent_chat_deliveries d
+           join personal_agent_chat_roots r
+             on r.conversation_id = d.conversation_id
+            and r.owner_user_id = d.owner_user_id
+          where d.owner_user_id = $1 and d.agent_id = $2
+            and d.recipient_kind = 'agent'
+            and not exists (
+              select 1 from personal_agent_execution_jobs linked
+               where linked.id = d.job_id
+                 and linked.owner_user_id = d.owner_user_id
+            )
+       )
+       select * from history
+        where ($3::timestamptz is null or
+               (created_at, id, source_kind) < ($3, $4::uuid, $5::text))
+        order by created_at desc, id desc, source_kind desc
+        limit $6`,
+      [
+        actor.userId,
+        input.agentId,
+        cursor?.createdAt ?? null,
+        cursor?.id ?? null,
+        cursor?.source ?? null,
+        limit + 1
+      ]
+    );
+    const rows = result.rows.slice(0, limit);
+    const legacyRows = rows.filter((row) => row.source_kind === "job");
+    const nativeRows = rows.filter((row) => row.source_kind === "delivery");
+    const legacyJobs = legacyRows.map(mapJob);
+    const nativeDeliveries: PersonalAgentNativeHistoryRow[] = nativeRows.map(
+      (row) => ({
+        id: row.id,
+        owner_user_id: row.owner_user_id,
+        conversation_id: row.conversation_id,
+        message_id: row.message_id!,
+        command_id: row.command_id,
+        root_title: row.root_title,
+        project_id: row.project_id,
+        agent_id: row.agent_id!,
+        agent_version: row.agent_version!,
+        agent_name: row.agent_name,
+        status: row.delivery_status!,
+        execution_id: row.execution_id,
+        created_at: row.created_at,
+        created_at_cursor: row.created_at_cursor!,
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        updated_at: row.updated_at,
+        provider: row.provider,
+        model: row.model,
+        ai_client_instance_id: row.ai_client_instance_id,
+        reasoning_effort: row.reasoning_effort,
+        permission_mode: row.permission_mode
+      })
+    );
+    const [legacyGoals, nativeGoals] = await Promise.all([
+      authorizedJobGoals(actor, legacyJobs),
+      authorizedNativeDeliveryGoals(actor, nativeDeliveries)
+    ]);
+    const titledLegacyJobs = legacyJobs.map((job) => ({
+      ...job,
+      title: legacyGoals.has(job.id)
+        ? titleFromJobGoal(legacyGoals.get(job.id)!)
+        : "Agent task"
+    }));
+    const jobIds = titledLegacyJobs.map((job) => job.id);
+    const versions = titledLegacyJobs.flatMap((job) =>
       job.attribution.kind === "agent" ? [job.attribution.agentVersion] : []
     );
     const [attemptRows, identityRows] = await Promise.all([
-      pool.query<AttemptRow & { history_rank: number }>(
-        `with ranked_attempts as (
-           select id, owner_user_id, job_id, command_id, attempt_number,
-                  attribution_kind, agent_id, agent_version, provider, model,
-                  ai_client_instance_id, reasoning_effort, permission_mode,
-                  managed_execution_id, managed_execution_generation, status,
-                  outcome, started_at, phase, phase_observed_at, completed_at,
-                  row_number() over (
-                    partition by job_id order by started_at desc, id desc
-                  ) as history_rank
-           from personal_agent_execution_attempts
-           where owner_user_id = $1 and job_id = any($2::uuid[])
-         )
-         select id, owner_user_id, job_id, command_id, attempt_number,
-                attribution_kind, agent_id, agent_version, provider, model,
-                ai_client_instance_id, reasoning_effort, permission_mode,
-                managed_execution_id, managed_execution_generation, status,
-                outcome, started_at, phase, phase_observed_at, completed_at,
-                history_rank
-         from ranked_attempts where history_rank <= 100
-         order by job_id, started_at desc, id desc`,
-        [actor.userId, jobIds]
-      ),
+      jobIds.length
+        ? pool.query<AttemptRow & { history_rank: number }>(
+            `with ranked_attempts as (
+               select id, owner_user_id, job_id, command_id, attempt_number,
+                      attribution_kind, agent_id, agent_version, provider, model,
+                      ai_client_instance_id, reasoning_effort, permission_mode,
+                      managed_execution_id, managed_execution_generation, status,
+                      outcome, started_at, phase, phase_observed_at, completed_at,
+                      row_number() over (
+                        partition by job_id order by started_at desc, id desc
+                      ) as history_rank
+               from personal_agent_execution_attempts
+               where owner_user_id = $1 and job_id = any($2::uuid[])
+             )
+             select id, owner_user_id, job_id, command_id, attempt_number,
+                    attribution_kind, agent_id, agent_version, provider, model,
+                    ai_client_instance_id, reasoning_effort, permission_mode,
+                    managed_execution_id, managed_execution_generation, status,
+                    outcome, started_at, phase, phase_observed_at, completed_at,
+                    history_rank
+             from ranked_attempts where history_rank <= 100
+             order by job_id, started_at desc, id desc`,
+            [actor.userId, jobIds]
+          )
+        : Promise.resolve({
+            rows: [] as (AttemptRow & { history_rank: number })[]
+          }),
       versions.length
         ? pool.query<{ version: number; name: string }>(
             `select version, name from personal_agent_identity_versions
@@ -3296,23 +3898,41 @@ export const createPersonalAgentRepository = (
     const namesByVersion = new Map(
       identityRows.rows.map((row) => [row.version, row.name])
     );
+    const legacyHistory = titledLegacyJobs.map((job) => {
+      const attempts = attemptsByJob.get(job.id) ?? [];
+      return {
+        ...job,
+        goal: legacyGoals.get(job.id) ?? null,
+        agentName:
+          job.attribution.kind === "agent"
+            ? (namesByVersion.get(job.attribution.agentVersion) ?? null)
+            : null,
+        attempts,
+        latestAttempt: attempts[0] ?? null
+      };
+    });
+    const nativeHistory = nativeDeliveries.map((delivery) =>
+      mapPersonalAgentNativeHistoryRow(delivery, {
+        goal: nativeGoals.get(delivery.id) ?? null
+      })
+    );
+    const jobsById = new Map(
+      [...legacyHistory, ...nativeHistory].map((job) => [job.id, job])
+    );
     return {
-      jobs: page.jobs.map((job) => {
-        const goal = goals.get(job.id) ?? null;
-        const attempts = attemptsByJob.get(job.id) ?? [];
-        return {
-          ...job,
-          goal,
-          agentName:
-            job.attribution.kind === "agent"
-              ? (namesByVersion.get(job.attribution.agentVersion) ?? null)
-              : null,
-          attempts,
-          latestAttempt: attempts[0] ?? null
-        };
+      jobs: rows.flatMap((row) => {
+        const job = jobsById.get(row.id);
+        return job ? [job] : [];
       }),
-      hasMore: page.hasMore,
-      nextCursor: page.nextCursor
+      hasMore: result.rows.length > limit,
+      nextCursor:
+        result.rows.length > limit
+          ? encodePersonalAgentHistoryCursor({
+              createdAt: rows.at(-1)!.created_at_cursor!,
+              id: rows.at(-1)!.id,
+              source: rows.at(-1)!.source_kind
+            })
+          : null
     };
   };
 
@@ -3389,6 +4009,8 @@ export const createPersonalAgentRepository = (
     getPersonalAgent,
     listPersonalAgents,
     getPersonalAgentVersion,
+    getPersonalAgentIdentity,
+    getPersonalAgentPresentationVersion,
     createPersonalAgentVersion,
     updatePersonalAgent,
     retirePersonalAgent,

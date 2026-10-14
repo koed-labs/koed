@@ -64,9 +64,9 @@ const publicAgent = (agent: PersonalAgentIdentity) => {
     role: parsed.role,
     avatarReference: parsed.avatarReference,
     lifecycle: parsed.lifecycle,
-    defaultProvider: parsed.defaultProvider,
-    defaultModel: parsed.defaultModel,
-    defaultReasoningEffort: parsed.defaultReasoningEffort,
+    defaultProvider: null,
+    defaultModel: null,
+    defaultReasoningEffort: null,
     currentVersion: parsed.currentVersion,
     createdAt: parsed.createdAt,
     updatedAt: parsed.updatedAt,
@@ -327,30 +327,14 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       await authenticatePersonalAgent(request);
       personalAgentListQuerySchema.parse(request.query);
-      const proxied = await proxyPersonalAgent(
-        "GET",
-        "/v1/personal-agent-role-templates"
+      throw Object.assign(
+        new Error(
+          "Agent job titles are free text. Role templates are no longer supported."
+        ),
+        { statusCode: 410, code: "PERSONAL_AGENT_ROLE_TEMPLATES_RETIRED" }
       );
-      if (proxied) return proxied.payload;
-      return {
-        templates:
-          await routeRepository(
-            requireRepository()
-          ).listPersonalAgentRoleTemplates()
-      };
     }
   );
-
-  const assertPublishedTemplate = async (
-    templateId: string | null,
-    version: number | null
-  ) => {
-    if (templateId === null && version === null) return;
-    const template = await routeRepository(
-      requireRepository()
-    ).getPersonalAgentRoleTemplate(templateId!, version!);
-    if (!template) throw notFound("Personal Agent role template not found");
-  };
 
   app.get(
     "/v1/personal-agents/capabilities",
@@ -515,21 +499,8 @@ export const registerPersonalAgentRoutes = (
         requireRepository()
       ).getPersonalAgent({ userId: user.id }, agentId);
       if (!detail) throw notFound("Personal Agent not found");
-      const identityVersion = await routeRepository(
-        requireRepository()
-      ).getPersonalAgentVersion(
-        { userId: user.id },
-        {
-          agentId,
-          version: detail.agent.currentVersion
-        }
-      );
-      if (!identityVersion) throw notFound("Personal Agent version not found");
       return {
         agent: publicAgent(detail.agent),
-        soulInstructions: detail.soulInstructions,
-        sourceTemplateId: identityVersion.sourceTemplateId,
-        sourceTemplateVersion: identityVersion.sourceTemplateVersion,
         stats: detail.history.stats,
         jobs: detail.history.jobs,
         runningNow: detail.history.runningNow ?? [],
@@ -552,21 +523,21 @@ export const registerPersonalAgentRoutes = (
         input
       );
       if (proxied) return proxied.payload;
-      await assertPublishedTemplate(
-        input.sourceTemplateId,
-        input.sourceTemplateVersion
-      );
       const detail = await routeRepository(requireRepository())
         .createPersonalAgent(
           { userId: user.id },
-          { ...input, instructionSource: "custom" }
+          {
+            ...input,
+            soulInstructions: "",
+            instructionSource: "custom",
+            defaultProvider: null,
+            defaultModel: null,
+            defaultReasoningEffort: null
+          }
         )
         .catch(handleWriteConflict);
       return {
-        agent: publicAgent(detail.agent),
-        soulInstructions: detail.soulInstructions,
-        sourceTemplateId: input.sourceTemplateId,
-        sourceTemplateVersion: input.sourceTemplateVersion
+        agent: publicAgent(detail.agent)
       };
     }
   );
@@ -584,63 +555,22 @@ export const registerPersonalAgentRoutes = (
         input
       );
       if (proxied) return proxied.payload;
-      if (input.sourceTemplateId !== undefined) {
-        await assertPublishedTemplate(
-          input.sourceTemplateId,
-          input.sourceTemplateVersion!
-        );
-      }
-      const hasDefaultInput =
-        input.defaultProvider !== undefined ||
-        input.defaultModel !== undefined ||
-        input.defaultReasoningEffort !== undefined;
-      if (hasDefaultInput) {
-        const current = await routeRepository(
-          requireRepository()
-        ).getPersonalAgent({ userId: user.id }, agentId);
-        if (!current) throw notFound("Personal Agent not found");
-        const resultingProvider =
-          input.defaultProvider !== undefined
-            ? input.defaultProvider
-            : current.agent.defaultProvider;
-        const resultingModel =
-          input.defaultModel !== undefined
-            ? input.defaultModel
-            : current.agent.defaultModel;
-        const resultingEffort =
-          input.defaultReasoningEffort !== undefined
-            ? input.defaultReasoningEffort
-            : current.agent.defaultReasoningEffort;
-        if ((resultingProvider === null) !== (resultingModel === null)) {
-          throw badRequest(
-            "Default provider and model must both be set or both be cleared"
-          );
-        }
-        if (resultingProvider === null && resultingEffort !== null) {
-          throw badRequest(
-            "Default reasoning effort must be cleared when provider and model are cleared"
-          );
-        }
-      }
       const detail = await routeRepository(requireRepository())
-        .updatePersonalAgent({ userId: user.id }, { agentId, ...input })
+        .updatePersonalAgent(
+          { userId: user.id },
+          {
+            agentId,
+            ...input,
+            soulInstructions: "",
+            defaultProvider: null,
+            defaultModel: null,
+            defaultReasoningEffort: null
+          }
+        )
         .catch(handleWriteConflict);
       if (!detail) throw notFound("Personal Agent not found");
-      const identityVersion = await routeRepository(
-        requireRepository()
-      ).getPersonalAgentVersion(
-        { userId: user.id },
-        {
-          agentId,
-          version: detail.agent.currentVersion
-        }
-      );
-      if (!identityVersion) throw notFound("Personal Agent version not found");
       return {
-        agent: publicAgent(detail.agent),
-        soulInstructions: detail.soulInstructions,
-        sourceTemplateId: identityVersion.sourceTemplateId,
-        sourceTemplateVersion: identityVersion.sourceTemplateVersion
+        agent: publicAgent(detail.agent)
       };
     }
   );

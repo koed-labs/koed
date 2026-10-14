@@ -215,7 +215,7 @@ export const personalAgentIdentityVersionSchema = z
     defaultReasoningEffort: nonEmptyOrNullText(
       PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
     ),
-    soulInstructions: requiredText(PERSONAL_AGENT_SOUL_MAX_LENGTH),
+    soulInstructions: optionalText(PERSONAL_AGENT_SOUL_MAX_LENGTH).default(""),
     instructionSource: personalAgentInstructionSourceSchema,
     sourceTemplateId: z
       .string()
@@ -270,7 +270,7 @@ export type PersonalAgentIdentityVersion = z.infer<
   typeof personalAgentIdentityVersionSchema
 >;
 
-export const personalAgentExecutionContextSchema = z
+const legacyPersonalAgentExecutionContextInputSchema = z
   .object({
     schemaVersion: z.literal(1),
     identity: z
@@ -279,8 +279,18 @@ export const personalAgentExecutionContextSchema = z
         version: z.number().int().positive(),
         identityVersionId: z.uuid(),
         name: requiredText(PERSONAL_AGENT_NAME_MAX_LENGTH),
-        role: optionalText(PERSONAL_AGENT_ROLE_MAX_LENGTH),
-        soulInstructions: requiredText(PERSONAL_AGENT_SOUL_MAX_LENGTH)
+        role: optionalText(PERSONAL_AGENT_ROLE_MAX_LENGTH)
+          .nullable()
+          .optional(),
+        avatarReference: optionalText(
+          PERSONAL_AGENT_AVATAR_REFERENCE_MAX_LENGTH
+        )
+          .nullable()
+          .optional(),
+        // Accepted only to read already queued commands. It is discarded below.
+        soulInstructions: optionalText(
+          PERSONAL_AGENT_SOUL_MAX_LENGTH
+        ).optional()
       })
       .strict(),
     project: z
@@ -289,61 +299,28 @@ export const personalAgentExecutionContextSchema = z
         name: optionalText(256).nullable()
       })
       .strict(),
-    activeJob: z
-      .object({
-        jobId: z.uuid(),
-        state: z.enum(["queued", "running", "waiting"]),
-        goal: requiredText(1_000)
-      })
-      .strict()
-      .nullable()
-      .default(null),
-    /** Server-derived binding for an owner-private pending Team request. */
-    pendingTeamRequestId: z.uuid().nullable().default(null),
-    memory: z
-      .object({
-        searchDomain: z.enum(["project", "global"]),
-        evidence: z
-          .array(
-            z
-              .object({
-                nodeId: z.string().trim().min(1).max(512),
-                sourceType: z
-                  .enum([
-                    "memory_node",
-                    "memory_event",
-                    "message",
-                    "curated_memory"
-                  ])
-                  .optional(),
-                sourceId: z.string().trim().min(1).max(512).optional(),
-                summaryText: z.string().max(8_000),
-                visibility: z.enum(["personal", "team"]).default("personal"),
-                teamWorkspaceId: z.uuid().optional(),
-                citation: z.record(z.string(), z.unknown()),
-                sourceTime: z.string().max(64).optional()
-              })
-              .strict()
-          )
-          .max(5)
-      })
-      .strict()
+    // These fields exist only in legacy stored command payloads. Never expose
+    // them to the current execution prompt or turn behavior.
+    activeJob: z.unknown().optional(),
+    pendingTeamRequestId: z.unknown().optional(),
+    memory: z.unknown().optional(),
+    memoryContext: z.unknown().optional()
   })
-  .strict()
-  .superRefine((context, issueContext) => {
-    for (const [index, evidence] of context.memory.evidence.entries()) {
-      if (
-        evidence.visibility === "team" &&
-        evidence.teamWorkspaceId === undefined
-      ) {
-        issueContext.addIssue({
-          code: "custom",
-          path: ["memory", "evidence", index, "teamWorkspaceId"],
-          message: "Team evidence requires its authorized Workspace"
-        });
-      }
-    }
-  });
+  .strict();
+
+export const personalAgentExecutionContextSchema =
+  legacyPersonalAgentExecutionContextInputSchema.transform((context) => ({
+    schemaVersion: context.schemaVersion,
+    identity: {
+      agentId: context.identity.agentId,
+      version: context.identity.version,
+      identityVersionId: context.identity.identityVersionId,
+      name: context.identity.name,
+      role: context.identity.role ?? null,
+      avatarReference: context.identity.avatarReference ?? null
+    },
+    project: context.project
+  }));
 
 export type PersonalAgentExecutionContext = z.infer<
   typeof personalAgentExecutionContextSchema
@@ -656,12 +633,32 @@ export type PersonalAgentExecutionAttempt = z.infer<
   typeof personalAgentExecutionAttemptSchema
 >;
 
+/** Immutable launch selections captured for a native Agent delivery. */
+export const personalAgentExecutionSettingsSchema = z
+  .object({
+    provider: provider,
+    model: requiredText(PERSONAL_AGENT_MODEL_MAX_LENGTH).nullable(),
+    aiClientInstanceId: aiClientInstance.nullable(),
+    reasoningEffort: nonEmptyOrNullText(
+      PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
+    ),
+    permissionMode: z.enum(aiClientPermissionModes).nullable()
+  })
+  .strict();
+
+export type PersonalAgentExecutionSettings = z.infer<
+  typeof personalAgentExecutionSettingsSchema
+>;
+
 export const personalAgentHistoryJobSchema = personalAgentExecutionJobSchema
   .extend({
     goal: optionalText(256_000).nullable(),
     agentName: optionalText(PERSONAL_AGENT_NAME_MAX_LENGTH).nullable(),
     attempts: z.array(personalAgentExecutionAttemptSchema).max(100),
-    latestAttempt: personalAgentExecutionAttemptSchema.nullable()
+    latestAttempt: personalAgentExecutionAttemptSchema.nullable(),
+    executionSettings: personalAgentExecutionSettingsSchema
+      .nullable()
+      .optional()
   })
   .strict();
 

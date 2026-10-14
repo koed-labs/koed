@@ -3,6 +3,16 @@ const uuid =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const detail = new RegExp(`^/(${uuid})(/(?:retire|restore))?$`);
 const history = new RegExp(`^/(${uuid})/jobs$`);
+const personalConversationDetail = new RegExp(`^/(${uuid})$`, "i");
+const personalConversationMessages = new RegExp(`^/(${uuid})/messages$`, "i");
+const personalConversationCancel = new RegExp(
+  `^/(${uuid})/messages/(${uuid})/cancel$`,
+  "i"
+);
+const personalConversationContinue = new RegExp(
+  `^/(${uuid})/messages/(${uuid})/continue$`,
+  "i"
+);
 const maximum = 256 * 1024;
 
 function validPersonalAgentActivityQuery(searchParams) {
@@ -27,6 +37,21 @@ function validPersonalAgentHistoryQuery(searchParams) {
     cursors.length <= 1 &&
     (!limits.length || /^(?:[1-9]|1[0-9]|20)$/.test(limits[0])) &&
     (!cursors.length || /^[A-Za-z0-9_-]{1,256}$/.test(cursors[0]))
+  );
+}
+
+function validPersonalConversationReadQuery(searchParams) {
+  const keys = [...searchParams.keys()];
+  if (
+    keys.length !== new Set(keys).size ||
+    keys.some((key) => key !== "beforeSequence" && key !== "limit")
+  )
+    return false;
+  const beforeSequence = searchParams.get("beforeSequence");
+  const limit = searchParams.get("limit");
+  return (
+    (beforeSequence === null || /^(?:0|[1-9][0-9]*)$/.test(beforeSequence)) &&
+    (limit === null || (/^[1-9][0-9]*$/.test(limit) && Number(limit) <= 100))
   );
 }
 
@@ -78,13 +103,15 @@ export async function handlePersonalAgents({
             ? "/studio-api/public-square"
             : routeFamily === "managed-conversations"
               ? "/studio-api/managed-conversations"
-              : routeFamily === "team-agent-requests"
-                ? "/studio-api/collaboration"
-                : routeFamily === "personal-agent-role-templates"
-                  ? "/studio-api/personal-agent-role-templates"
-                  : routeFamily === "personal-removals"
-                    ? "/studio-api/personal-removals"
-                    : prefix;
+              : routeFamily === "personal-conversations"
+                ? "/studio-api/personal-conversations"
+                : routeFamily === "team-agent-requests"
+                  ? "/studio-api/collaboration"
+                  : routeFamily === "personal-agent-role-templates"
+                    ? "/studio-api/personal-agent-role-templates"
+                    : routeFamily === "personal-removals"
+                      ? "/studio-api/personal-removals"
+                      : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -128,19 +155,30 @@ export async function handlePersonalAgents({
                   ? suffix === ""
                     ? ["GET", "PUT"]
                     : []
-                  : routeFamily === "managed-conversations"
-                    ? managedMethods(suffix)
-                    : suffix === ""
-                      ? ["GET", "POST"]
-                      : activityRoute || historyMatch
-                        ? ["GET"]
-                        : suffix === "/capabilities"
+                  : routeFamily === "personal-conversations"
+                    ? suffix === ""
+                      ? ["GET"]
+                      : personalConversationMessages.test(suffix)
+                        ? ["POST"]
+                        : personalConversationCancel.test(suffix) ||
+                            personalConversationContinue.test(suffix)
+                          ? ["POST"]
+                          : personalConversationDetail.test(suffix)
+                            ? ["GET", "PATCH"]
+                            : []
+                    : routeFamily === "managed-conversations"
+                      ? managedMethods(suffix)
+                      : suffix === ""
+                        ? ["GET", "POST"]
+                        : activityRoute || historyMatch
                           ? ["GET"]
-                          : match
-                            ? match[2]
-                              ? ["POST"]
-                              : ["GET", "PATCH"]
-                            : [];
+                          : suffix === "/capabilities"
+                            ? ["GET"]
+                            : match
+                              ? match[2]
+                                ? ["POST"]
+                                : ["GET", "PATCH"]
+                              : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -165,6 +203,12 @@ export async function handlePersonalAgents({
     routeFamily === "public-square" && squareRoute?.list === true;
   const homeList =
     routeFamily === "home" && suffix === "" && request.method === "GET";
+  const personalConversationCollection =
+    routeFamily === "personal-conversations" && suffix === "";
+  const personalConversationRead =
+    routeFamily === "personal-conversations" &&
+    personalConversationDetail.test(suffix) &&
+    request.method === "GET";
   const personalRemovalsRoute =
     routeFamily === "personal-removals" && suffix === "";
   if (
@@ -177,6 +221,7 @@ export async function handlePersonalAgents({
     !activityRoute &&
     !historyMatch &&
     !homeList &&
+    !personalConversationRead &&
     !personalRemovalsRoute
   ) {
     send(400, { error: "query_not_allowed" });
@@ -192,6 +237,20 @@ export async function handlePersonalAgents({
   }
   if (homeList && !validHomeFeedQuery(url.searchParams)) {
     send(400, { error: "invalid_home_query" });
+    return true;
+  }
+  if (
+    personalConversationCollection &&
+    (url.search || request.method !== "GET")
+  ) {
+    send(400, { error: "invalid_personal_conversation_query" });
+    return true;
+  }
+  if (
+    personalConversationRead &&
+    !validPersonalConversationReadQuery(url.searchParams)
+  ) {
+    send(400, { error: "invalid_personal_conversation_query" });
     return true;
   }
   if (
@@ -312,7 +371,7 @@ export async function handlePersonalAgents({
                 ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
                 : squareRoute
                   ? `${squareRoute.path}${squareList ? url.search : ""}`
-                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || turnDiffRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
+                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || turnDiffRoute || activityRoute || historyMatch || homeList || personalConversationRead ? url.search : ""}`,
         base
       ),
       {
@@ -572,6 +631,13 @@ export function handleManagedConversations(options) {
   return handlePersonalAgents({
     ...options,
     routeFamily: "managed-conversations"
+  });
+}
+
+export function handlePersonalConversations(options) {
+  return handlePersonalAgents({
+    ...options,
+    routeFamily: "personal-conversations"
   });
 }
 

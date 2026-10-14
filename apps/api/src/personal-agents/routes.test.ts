@@ -180,7 +180,6 @@ const buildFixture = async (
       defaultProvider: "codex",
       defaultModel: "gpt-test",
       defaultReasoningEffort: "high",
-      soulInstructions: "Plan carefully.",
       instructionSource: "custom" as const,
       sourceTemplateId: null,
       sourceTemplateVersion: null,
@@ -259,71 +258,38 @@ const buildFixture = async (
 };
 
 describe("Personal Agent API", () => {
-  it("lists published role templates through authenticated catalogue reads", async () => {
+  it("retires role-template lookup without querying stored templates", async () => {
     const fixture = await buildFixture();
-    vi.mocked(
-      fixture.repository.listPersonalAgentRoleTemplates
-    ).mockResolvedValue([
-      {
-        id: "code-reviewer",
-        version: 1,
-        title: "Code Reviewer",
-        role: "Code reviewer",
-        soulInstructions: "Reviewed instructions",
-        contentSha256: "a".repeat(64)
-      }
-    ]);
     const response = await fixture.app.inject({
       method: "GET",
       url: "/v1/personal-agent-role-templates"
     });
+    expect(response.statusCode).toBe(410);
+    expect(
+      fixture.repository.listPersonalAgentRoleTemplates
+    ).not.toHaveBeenCalled();
     await fixture.app.close();
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().templates[0]).toMatchObject({
-      id: "code-reviewer",
-      version: 1
-    });
   });
 
-  it("requires an exact published template version when creating from a template", async () => {
+  it("rejects instruction and template associations on appearance-only Agents", async () => {
     const fixture = await buildFixture();
-    vi.mocked(
+    for (const extra of [
+      { soulInstructions: "Do work" },
+      { sourceTemplateId: "code-reviewer", sourceTemplateVersion: 1 },
+      { defaultProvider: "codex", defaultModel: "gpt-test" }
+    ]) {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/personal-agents",
+        payload: { requestId: randomUUID(), name: "Alice", ...extra }
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(fixture.repository.createPersonalAgent).not.toHaveBeenCalled();
+    expect(
       fixture.repository.getPersonalAgentRoleTemplate
-    ).mockResolvedValue({
-      id: "code-reviewer",
-      version: 1,
-      title: "Code Reviewer",
-      role: "Code reviewer",
-      soulInstructions: "Original template content",
-      contentSha256: "a".repeat(64)
-    });
-    const response = await fixture.app.inject({
-      method: "POST",
-      url: "/v1/personal-agents",
-      payload: {
-        requestId: randomUUID(),
-        name: "Review",
-        role: "Code reviewer",
-        soulInstructions: "Edited independent copy",
-        defaultProvider: "codex",
-        defaultModel: "gpt-test",
-        defaultReasoningEffort: "high",
-        sourceTemplateId: "code-reviewer",
-        sourceTemplateVersion: 1
-      }
-    });
+    ).not.toHaveBeenCalled();
     await fixture.app.close();
-
-    expect(response.statusCode).toBe(200);
-    expect(fixture.repository.createPersonalAgent).toHaveBeenCalledWith(
-      { userId: ownerId },
-      expect.objectContaining({
-        soulInstructions: "Edited independent copy",
-        sourceTemplateId: "code-reviewer",
-        sourceTemplateVersion: 1
-      })
-    );
   });
 
   it("lists only the authenticated owner's public identities", async () => {
@@ -340,7 +306,7 @@ describe("Personal Agent API", () => {
         expect.objectContaining({
           id: agentId,
           name: "Planner",
-          defaultProvider: "codex"
+          defaultProvider: null
         })
       ]
     });
@@ -413,11 +379,7 @@ describe("Personal Agent API", () => {
       payload: {
         requestId: randomUUID(),
         name: "Planner",
-        role: "Planning assistant",
-        soulInstructions: "Plan carefully.",
-        defaultProvider: "codex",
-        defaultModel: "gpt-test",
-        defaultReasoningEffort: null
+        role: "Planning assistant"
       }
     });
     await fixture.app.close();
@@ -440,10 +402,7 @@ describe("Personal Agent API", () => {
       url: "/v1/personal-agents",
       payload: {
         requestId: randomUUID(),
-        name: "Planner",
-        soulInstructions: "Plan carefully.",
-        defaultProvider: null,
-        defaultModel: null
+        name: "Planner"
       }
     });
     await fixture.app.close();
@@ -455,32 +414,31 @@ describe("Personal Agent API", () => {
     });
   });
 
-  it("stores an unavailable saved default as account-owned profile data", async () => {
+  it("creates appearance metadata without requiring a role or an available AI Client", async () => {
     const fixture = await buildFixture();
     const response = await fixture.app.inject({
       method: "POST",
       url: "/v1/personal-agents",
       payload: {
         requestId: randomUUID(),
-        name: "Planner",
-        role: "Planning assistant",
-        avatarReference: null,
-        soulInstructions: "Plan carefully.",
-        defaultProvider: "codex",
-        defaultModel: "missing-model",
-        defaultReasoningEffort: null
+        name: "Alice",
+        avatarReference: "pixelkin:alice"
       }
     });
-    await fixture.app.close();
-
     expect(response.statusCode).toBe(200);
     expect(fixture.repository.createPersonalAgent).toHaveBeenCalledWith(
       { userId: ownerId },
       expect.objectContaining({
-        defaultProvider: "codex",
-        defaultModel: "missing-model"
+        name: "Alice",
+        role: "",
+        soulInstructions: "",
+        defaultProvider: null,
+        defaultModel: null
       })
     );
+    expect(fixture.repository.listAiClientInstances).not.toHaveBeenCalled();
+    expect(response.json()).not.toHaveProperty("soulInstructions");
+    await fixture.app.close();
   });
 
   it("creates a Personal Agent with no saved provider or model", async () => {
@@ -490,8 +448,7 @@ describe("Personal Agent API", () => {
       url: "/v1/personal-agents",
       payload: {
         requestId: randomUUID(),
-        name: "Planner",
-        soulInstructions: "Plan carefully."
+        name: "Planner"
       }
     });
     await fixture.app.close();
@@ -512,7 +469,6 @@ describe("Personal Agent API", () => {
       payload: {
         requestId: randomUUID(),
         name: "Planner",
-        soulInstructions: "Plan carefully.",
         defaultProvider: null,
         defaultModel: null,
         defaultReasoningEffort: "high"
@@ -524,37 +480,27 @@ describe("Personal Agent API", () => {
     expect(fixture.repository.createPersonalAgent).not.toHaveBeenCalled();
   });
 
-  it("requires a concrete role and soul when creating an agent", async () => {
+  it("allows clearing a free-text job title without a template lookup", async () => {
     const fixture = await buildFixture();
     const response = await fixture.app.inject({
-      method: "POST",
-      url: "/v1/personal-agents",
-      payload: {
-        requestId: randomUUID(),
-        name: "Planner",
-        role: null,
-        defaultProvider: "codex",
-        defaultModel: "gpt-test",
-        defaultReasoningEffort: null
-      }
+      method: "PATCH",
+      url: `/v1/personal-agents/${agentId}`,
+      payload: { requestId: randomUUID(), expectedVersion: 1, role: "" }
     });
-    const missingSoul = await fixture.app.inject({
-      method: "POST",
-      url: "/v1/personal-agents",
-      payload: {
-        requestId: randomUUID(),
-        name: "Planner",
-        role: "Planning assistant",
-        defaultProvider: "codex",
-        defaultModel: "gpt-test",
-        defaultReasoningEffort: null
-      }
-    });
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.updatePersonalAgent).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({
+        role: "",
+        soulInstructions: "",
+        defaultProvider: null,
+        defaultModel: null
+      })
+    );
+    expect(
+      fixture.repository.getPersonalAgentRoleTemplate
+    ).not.toHaveBeenCalled();
     await fixture.app.close();
-
-    expect(response.statusCode).toBe(400);
-    expect(missingSoul.statusCode).toBe(400);
-    expect(fixture.repository.createPersonalAgent).not.toHaveBeenCalled();
   });
 
   it("allows metadata edits when unchanged defaults are temporarily offline", async () => {
@@ -569,10 +515,7 @@ describe("Personal Agent API", () => {
       payload: {
         requestId: randomUUID(),
         expectedVersion: 1,
-        name: "Renamed Planner",
-        defaultProvider: "codex",
-        defaultModel: "gpt-test",
-        defaultReasoningEffort: "high"
+        name: "Renamed Planner"
       }
     });
     await fixture.app.close();
@@ -584,13 +527,13 @@ describe("Personal Agent API", () => {
       expect.objectContaining({
         agentId,
         expectedVersion: 1,
-        defaultProvider: "codex",
-        defaultModel: "gpt-test"
+        defaultProvider: null,
+        defaultModel: null
       })
     );
   });
 
-  it("clears both provider and model defaults together", async () => {
+  it("rejects profile model settings on edit", async () => {
     const fixture = await buildFixture();
     const response = await fixture.app.inject({
       method: "PATCH",
@@ -603,13 +546,9 @@ describe("Personal Agent API", () => {
         defaultReasoningEffort: null
       }
     });
+    expect(response.statusCode).toBe(400);
+    expect(fixture.repository.updatePersonalAgent).not.toHaveBeenCalled();
     await fixture.app.close();
-
-    expect(response.statusCode).toBe(200);
-    expect(fixture.repository.updatePersonalAgent).toHaveBeenCalledWith(
-      { userId: ownerId },
-      expect.objectContaining({ defaultProvider: null, defaultModel: null })
-    );
   });
 
   it("requires effort to be cleared when provider and model defaults are cleared", async () => {
@@ -677,7 +616,6 @@ describe("Personal Agent API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       agent: { id: agentId },
-      soulInstructions: "Plan carefully.",
       stats: { projects: 0, runningNow: 0, jobsLogged: 0 },
       jobs: [],
       runningNow: [],
@@ -942,13 +880,7 @@ describe("Personal Agent API", () => {
       requestId: randomUUID(),
       name: "Hosted Planner",
       role: "",
-      avatarReference: null,
-      soulInstructions: "Plan carefully.",
-      defaultProvider: null,
-      defaultModel: null,
-      defaultReasoningEffort: null,
-      sourceTemplateId: "code-reviewer",
-      sourceTemplateVersion: 1
+      avatarReference: null
     };
     const updateBody = {
       requestId: randomUUID(),
@@ -960,7 +892,6 @@ describe("Personal Agent API", () => {
       expectedVersion: 1
     };
     const requests = [
-      { method: "GET", url: "/v1/personal-agent-role-templates" },
       { method: "GET", url: "/v1/personal-agents/capabilities" },
       { method: "GET", url: "/v1/personal-agents" },
       { method: "GET", url: `/v1/personal-agents/${agentId}` },
@@ -1005,12 +936,6 @@ describe("Personal Agent API", () => {
           body: init?.body ? JSON.parse(String(init.body)) : undefined
         }))
       ).toEqual([
-        {
-          method: "GET",
-          pathname: "/koed/v1/personal-agent-role-templates",
-          authorization: "Koed-Device fixture:secret",
-          body: undefined
-        },
         {
           method: "GET",
           pathname: "/koed/v1/personal-agents/capabilities",

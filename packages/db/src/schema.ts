@@ -3059,6 +3059,8 @@ export const encryptedFieldPayloads = pgTable(
         'personal_notes',
         'personal_note_revisions',
         'personal_agent_identity_versions',
+        'personal_agent_chat_messages',
+        'personal_agent_chat_deliveries',
         'personal_agent_execution_jobs',
         'personal_agent_team_job_publications',
         'team_agent_offers',
@@ -4018,6 +4020,7 @@ export const managedConversationExecutions = pgTable(
     runnerLastSeenAt: timestamp("runner_last_seen_at", { withTimezone: true }),
     logicalSessionId: uuid("logical_session_id"),
     providerThreadId: text("provider_thread_id"),
+    personalAgentChatWorkspaceId: uuid("personal_agent_chat_workspace_id"),
     providerCliVersion: text("provider_cli_version"),
     sourceGenerationId: uuid("source_generation_id"),
     lastErrorCode: text("last_error_code"),
@@ -4446,14 +4449,6 @@ export const personalAgentConversations = pgTable(
       table.ownerUserId
     ),
     foreignKey({
-      columns: [table.conversationId, table.ownerUserId],
-      foreignColumns: [
-        managedConversationExecutions.id,
-        managedConversationExecutions.ownerUserId
-      ],
-      name: "personal_agent_conversations_owner_execution_fk"
-    }).onDelete("cascade"),
-    foreignKey({
       columns: [table.activeAgentId, table.ownerUserId],
       foreignColumns: [
         personalAgentIdentities.id,
@@ -4464,6 +4459,430 @@ export const personalAgentConversations = pgTable(
     check(
       "personal_agent_conversations_version_check",
       sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const personalAgentChatRoots = pgTable(
+  "personal_agent_chat_roots",
+  {
+    conversationId: uuid("conversation_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: text("project_id"),
+    contextKind: text("context_kind").notNull(),
+    targetDeviceId: text("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    workspaceId: uuid("workspace_id").notNull(),
+    title: text("title"),
+    sourceExecutionIds: jsonb("source_execution_ids")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    status: text("status").notNull().default("idle"),
+    nextSequence: integer("next_sequence").notNull().default(1),
+    nextTurnOrdinal: integer("next_turn_ordinal").notNull().default(1),
+    activeDeliveryId: uuid("active_delivery_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_chat_roots_owner_id_unique").on(
+      table.conversationId,
+      table.ownerUserId
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentConversations.conversationId,
+        personalAgentConversations.ownerUserId
+      ],
+      name: "personal_agent_chat_roots_conversation_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id],
+      name: "personal_agent_chat_roots_owner_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_chat_roots_context_check",
+      sql`(${table.contextKind} = 'project' and ${table.projectId} is not null)
+        or (${table.contextKind} = 'independent' and ${table.projectId} is null)`
+    ),
+    check(
+      "personal_agent_chat_roots_status_check",
+      sql`${table.status} in ('idle', 'queued', 'running', 'blocked', 'uncertain', 'failed', 'canceled')`
+    ),
+    check(
+      "personal_agent_chat_roots_counters_check",
+      sql`${table.nextSequence} > 0 and ${table.nextTurnOrdinal} > 0`
+    ),
+    index("personal_agent_chat_roots_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc()
+    )
+  ]
+);
+
+export const personalAgentChatSourceClaims = pgTable(
+  "personal_agent_chat_source_claims",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sourceExecutionId: uuid("source_execution_id").notNull(),
+    conversationId: uuid("conversation_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.sourceExecutionId],
+      name: "personal_agent_chat_source_claims_pk"
+    }),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_source_claims_root_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.sourceExecutionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "personal_agent_chat_source_claims_execution_fk"
+    }).onDelete("cascade"),
+    unique("personal_agent_chat_source_claims_source_root_unique").on(
+      table.sourceExecutionId,
+      table.conversationId
+    )
+  ]
+);
+
+export const personalAgentChatControlRequests = pgTable(
+  "personal_agent_chat_control_requests",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    requestId: uuid("request_id").notNull(),
+    conversationId: uuid("conversation_id").notNull(),
+    operation: text("operation").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    result: jsonb("result").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.requestId],
+      name: "personal_agent_chat_control_requests_pk"
+    }),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_control_requests_root_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_chat_control_requests_operation_check",
+      sql`${table.operation} in ('cancel', 'continue')`
+    ),
+    check(
+      "personal_agent_chat_control_requests_digest_check",
+      sql`${table.requestDigest} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const personalAgentChatParticipants = pgTable(
+  "personal_agent_chat_participants",
+  {
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    launchSnapshot: jsonb("launch_snapshot").notNull(),
+    executionId: uuid("execution_id"),
+    lastContextCursor: integer("last_context_cursor").notNull().default(0),
+    status: text("status").notNull().default("queued"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.conversationId, table.agentId],
+      name: "personal_agent_chat_participants_pk"
+    }),
+    unique("personal_agent_chat_participants_ordinal_unique").on(
+      table.conversationId,
+      table.ordinal
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_participants_root_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_chat_participants_agent_fk"
+    }).onDelete("restrict"),
+    check(
+      "personal_agent_chat_participants_counters_check",
+      sql`${table.agentVersion} > 0 and ${table.ordinal} >= 0 and ${table.lastContextCursor} >= 0`
+    )
+  ]
+);
+
+export const personalAgentChatGenericParticipants = pgTable(
+  "personal_agent_chat_generic_participants",
+  {
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    participantKey: text("participant_key").notNull(),
+    provider: text("provider").notNull(),
+    aiClientInstanceId: text("ai_client_instance_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    launchSnapshot: jsonb("launch_snapshot").notNull(),
+    executionId: uuid("execution_id"),
+    lastContextCursor: integer("last_context_cursor").notNull().default(0),
+    status: text("status").notNull().default("queued"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.conversationId, table.participantKey],
+      name: "personal_agent_chat_generic_participants_pk"
+    }),
+    unique("personal_agent_chat_generic_participants_ordinal_unique").on(
+      table.conversationId,
+      table.ordinal
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_generic_participants_root_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_chat_generic_participants_key_check",
+      sql`${table.participantKey} ~ '^[0-9a-f]{64}$' and ${table.ordinal} >= 0
+        and ${table.lastContextCursor} >= 0`
+    )
+  ]
+);
+
+export const personalAgentChatTurns = pgTable(
+  "personal_agent_chat_turns",
+  {
+    id: id(),
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    userMessageId: uuid("user_message_id"),
+    ordinal: integer("ordinal").notNull(),
+    status: text("status").notNull().default("queued"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_chat_turns_owner_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    unique("personal_agent_chat_turns_root_ordinal_unique").on(
+      table.conversationId,
+      table.ordinal
+    ),
+    unique("personal_agent_chat_turns_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_turns_root_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_chat_turns_digest_check",
+      sql`${table.requestDigest} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "personal_agent_chat_turns_status_check",
+      sql`${table.status} in ('queued', 'running', 'completed', 'failed', 'uncertain', 'canceled', 'blocked')`
+    )
+  ]
+);
+
+export const personalAgentChatMessages = pgTable(
+  "personal_agent_chat_messages",
+  {
+    id: id(),
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    turnId: uuid("turn_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    kind: text("kind").notNull(),
+    authorAgentId: uuid("author_agent_id"),
+    authorAgentVersion: integer("author_agent_version"),
+    authorName: text("author_name"),
+    provider: text("provider"),
+    aiClientInstanceId: text("ai_client_instance_id"),
+    executionId: uuid("execution_id"),
+    sourceExecutionId: uuid("source_execution_id"),
+    sourceCommandId: uuid("source_command_id"),
+    jobId: uuid("job_id"),
+    truncated: boolean("truncated").notNull().default(false),
+    state: text("state").notNull().default("pending"),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_agent_chat_messages_root_sequence_unique").on(
+      table.conversationId,
+      table.sequence
+    ),
+    unique("personal_agent_chat_messages_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_messages_root_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.turnId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatTurns.id,
+        personalAgentChatTurns.ownerUserId
+      ],
+      name: "personal_agent_chat_messages_turn_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_chat_messages_kind_check",
+      sql`${table.kind} in ('user', 'agent_reply')`
+    ),
+    check(
+      "personal_agent_chat_messages_state_check",
+      sql`${table.state} in ('pending', 'completed', 'failed', 'uncertain', 'canceled')`
+    ),
+    check(
+      "personal_agent_chat_messages_author_check",
+      sql`(${table.kind} = 'user' and ${table.authorAgentId} is null and ${table.authorAgentVersion} is null) or (${table.kind} = 'agent_reply' and ((${table.authorAgentId} is null and ${table.authorAgentVersion} is null) or (${table.authorAgentId} is not null and ${table.authorAgentVersion} > 0)))`
+    ),
+    index("personal_agent_chat_messages_root_created_idx").on(
+      table.conversationId,
+      table.sequence.desc()
+    )
+  ]
+);
+
+export const personalAgentChatDeliveries = pgTable(
+  "personal_agent_chat_deliveries",
+  {
+    id: id(),
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    turnId: uuid("turn_id").notNull(),
+    messageId: uuid("message_id").notNull(),
+    recipientKind: text("recipient_kind").notNull(),
+    agentId: uuid("agent_id"),
+    agentVersion: integer("agent_version"),
+    agentName: text("agent_name"),
+    ordinal: integer("ordinal").notNull(),
+    launchSnapshot: jsonb("launch_snapshot").notNull(),
+    executionId: uuid("execution_id"),
+    commandId: uuid("command_id"),
+    jobId: uuid("job_id"),
+    status: text("status").notNull().default("queued"),
+    errorCode: text("error_code"),
+    progress: jsonb("progress")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    contextTransfer: jsonb("context_transfer"),
+    cancelRequested: boolean("cancel_requested").notNull().default(false),
+    diffAvailable: boolean("diff_available").notNull().default(false),
+    claimOwner: text("claim_owner"),
+    claimToken: text("claim_token"),
+    claimUntil: timestamp("claim_until", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_chat_deliveries_turn_ordinal_unique").on(
+      table.turnId,
+      table.ordinal
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatRoots.conversationId,
+        personalAgentChatRoots.ownerUserId
+      ],
+      name: "personal_agent_chat_deliveries_root_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.turnId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatTurns.id,
+        personalAgentChatTurns.ownerUserId
+      ],
+      name: "personal_agent_chat_deliveries_turn_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.messageId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentChatMessages.id,
+        personalAgentChatMessages.ownerUserId
+      ],
+      name: "personal_agent_chat_deliveries_message_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_chat_deliveries_agent_fk"
+    }).onDelete("restrict"),
+    check(
+      "personal_agent_chat_deliveries_recipient_check",
+      sql`(${table.recipientKind} = 'generic' and ${table.agentId} is null and ${table.agentVersion} is null) or (${table.recipientKind} = 'agent' and ${table.agentId} is not null and ${table.agentVersion} > 0)`
+    ),
+    check(
+      "personal_agent_chat_deliveries_status_check",
+      sql`${table.status} in ('queued', 'starting', 'running', 'completed', 'failed', 'uncertain', 'blocked', 'canceled', 'skipped')`
+    ),
+    check(
+      "personal_agent_chat_deliveries_ordinal_check",
+      sql`${table.ordinal} >= 0`
+    ),
+    index("personal_agent_chat_deliveries_queue_idx").on(
+      table.status,
+      table.createdAt
+    ),
+    index("personal_agent_chat_deliveries_root_idx").on(
+      table.conversationId,
+      table.createdAt
     )
   ]
 );
@@ -5039,6 +5458,7 @@ export const managedConversationCommands = pgTable(
     targetDeviceId: uuid("target_device_id"),
     requestDigest: text("request_digest").notNull(),
     clientUserMessageId: uuid("client_user_message_id"),
+    personalAgentChatDeliveryId: uuid("personal_agent_chat_delivery_id"),
     executionGeneration: integer("execution_generation").notNull(),
     allowArchivedResume: boolean("allow_archived_resume")
       .notNull()

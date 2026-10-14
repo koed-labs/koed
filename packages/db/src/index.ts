@@ -361,6 +361,12 @@ export {
   type PersonalAgentRepository
 } from "./personal-agent-repository.js";
 export {
+  createPersonalAgentChatRepository,
+  type ClaimedPersonalAgentChatDelivery,
+  type PersonalAgentChatRepository,
+  type PersonalAgentChatSubmitInput
+} from "./personal-agent-chat-repository.js";
+export {
   createPullRequestRepository,
   type PullRequestRepository,
   type PullRequestOperationClaim,

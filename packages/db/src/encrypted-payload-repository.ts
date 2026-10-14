@@ -26,6 +26,8 @@ export type EncryptedFieldSourceTable =
   | "collaboration_threads"
   | "memory_replica_revisions"
   | "personal_agent_identity_versions"
+  | "personal_agent_chat_messages"
+  | "personal_agent_chat_deliveries"
   | "personal_agent_execution_jobs"
   | "personal_agent_team_job_publications"
   | "managed_conversation_recall_feedback"

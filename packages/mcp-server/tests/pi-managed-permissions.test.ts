@@ -81,23 +81,4 @@ describe("managed Pi tool permissions", () => {
     f.select.mockResolvedValue("Allow");
     expect(await f.call("edit")).toBeUndefined();
   });
-  it("does not ask for user approval for provider-native Agent signals", async () => {
-    const f = fixture("supervised", true);
-    expect(await f.call("koed_agent_intent")).toBeUndefined();
-    expect(await f.call("koed_agent_turn_status")).toBeUndefined();
-    expect(f.select).not.toHaveBeenCalled();
-    expect(await f.call("bash")).toMatchObject({ block: true });
-    expect(f.select).toHaveBeenCalledOnce();
-    expect(f.select).toHaveBeenCalledWith(
-      expect.stringContaining('"kind":"koed_tool_gate"'),
-      ["Allow", "Deny", "Use configured permissions"],
-      expect.anything()
-    );
-  });
-});
-
-it("permits authenticated Agent phase signals without asking for filesystem permission", async () => {
-  const f = fixture("supervised", true);
-  expect(await f.call("koed_job_phase")).toBeUndefined();
-  expect(f.select).not.toHaveBeenCalled();
 });

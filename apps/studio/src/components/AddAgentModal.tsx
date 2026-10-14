@@ -113,7 +113,9 @@ export function AddAgentModal({
                 <p className="truncate text-sm font-medium text-foreground">
                   {selected.name}
                 </p>
-                <p className="truncate text-xs text-subtle">{selected.role}</p>
+                <p className="truncate text-xs text-subtle">
+                  {selected.role || "No job title"}
+                </p>
               </div>
             </div>
             <p className="text-xs text-subtle">

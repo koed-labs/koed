@@ -392,6 +392,18 @@ export function parseExecution(value: unknown): AgentExecution {
 export function parseLaunchInstances(
   payload: Record<string, unknown>
 ): LaunchInstance[] {
+  // Local launch options bind all instances to one authenticated runner.
+  // Hosted options carry a device per instance and must never infer one.
+  const runners = Array.isArray(payload.runners) ? payload.runners : [];
+  const runner = runners.length === 1 && record(runners[0]) ? runners[0] : null;
+  const localDeviceId =
+    runner?.kind === "local_device" &&
+    typeof runner.deviceId === "string" &&
+    runner.deviceId.trim() &&
+    typeof runner.deploymentId === "string" &&
+    runner.deploymentId.trim()
+      ? runner.deviceId
+      : undefined;
   return (Array.isArray(payload.instances) ? payload.instances : []).flatMap(
     (item) => {
       if (
@@ -401,6 +413,10 @@ export function parseLaunchInstances(
         typeof item.driverId !== "string"
       )
         return [];
+      const runnerDeviceId =
+        typeof item.runnerDeviceId === "string"
+          ? item.runnerDeviceId
+          : localDeviceId;
       const capabilities = record(item.capabilities) ? item.capabilities : {};
       const permissionModes = (
         Array.isArray(capabilities.permissionModes)
@@ -424,6 +440,7 @@ export function parseLaunchInstances(
             ...(typeof item.hostedInstanceId === "string"
               ? { hostedInstanceId: item.hostedInstanceId }
               : {}),
+            ...(runnerDeviceId ? { targetDeviceId: runnerDeviceId } : {}),
             ...(typeof item.sourceDeviceLabel === "string"
               ? { computerLabel: item.sourceDeviceLabel }
               : {}),
@@ -447,6 +464,7 @@ export function parseLaunchInstances(
           ...(typeof item.hostedInstanceId === "string"
             ? { hostedInstanceId: item.hostedInstanceId }
             : {}),
+          ...(runnerDeviceId ? { runnerDeviceId } : {}),
           ...(item.sourceDeviceLabel === null ||
           typeof item.sourceDeviceLabel === "string"
             ? { sourceDeviceLabel: item.sourceDeviceLabel }

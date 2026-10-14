@@ -966,6 +966,7 @@ describe("local edge upstream routing", () => {
   it("admits command-scoped Agent signals only as managed runner POSTs", () => {
     for (const suffix of [
       "personal-agent-intent",
+      "personal-agent-phase",
       "personal-agent-turn-status"
     ]) {
       const path = `/v1/managed-conversation-runner/commands/11111111-1111-4111-8111-111111111111/${suffix}`;

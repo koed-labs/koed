@@ -11,11 +11,11 @@ const agent: PersonalAgent = {
   ownerId: "22222222-2222-4222-8222-222222222222",
   name: "Bob",
   role: "reviewer",
-  soul: "Custom soul",
+  soul: "",
   lifecycle: "active",
-  defaultProvider: "codex",
-  defaultModel: "gpt-5.6",
-  defaultReasoningEffort: "high",
+  defaultProvider: null,
+  defaultModel: null,
+  defaultReasoningEffort: null,
   currentVersion: 3,
   createdAt: 1_700_000_000_000,
   updatedAt: 1_700_000_000_000,
@@ -36,18 +36,7 @@ const agent: PersonalAgent = {
 const values = {
   name: "Bob",
   role: "reviewer",
-  soul: "Custom soul",
-  preferredModel: "codex:gpt-5.6",
-  preferredEffort: "high",
-  sourceTemplateId: null,
-  sourceTemplateVersion: null,
   avatar: { seed: 7, spec: { seed: 7 }, image: "data:image/png;base64,bob" }
-};
-
-const optionalDefaults = {
-  ...values,
-  preferredModel: null,
-  preferredEffort: null
 };
 
 afterEach(() => {
@@ -81,7 +70,38 @@ describe("personal agents HTTP adapter", () => {
     expect(result.runningJobsVerified).toBe(false);
   });
 
-  it("writes explicit defaults, bounded avatar JSON, request ID, and version", async () => {
+  it("shows native launch settings without fabricating attempts", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        agent,
+        jobs: [
+          {
+            id: "native-delivery",
+            title: "Review changes",
+            state: "queued",
+            createdAt: 1,
+            attempts: [],
+            latestAttempt: null,
+            executionSettings: {
+              provider: "claude",
+              model: "review-model",
+              reasoningEffort: "high"
+            }
+          }
+        ]
+      })
+    );
+    const result = await personalAgentsHttpAdapter.get(agent.id);
+    expect(result.jobs[0]).toMatchObject({
+      provider: "claude",
+      model: "review-model",
+      effort: "high",
+      startedAt: null,
+      attempts: []
+    });
+  });
+
+  it("writes only profile fields, bounded avatar JSON, request ID, and version", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input, init) => {
@@ -92,16 +112,16 @@ describe("personal agents HTTP adapter", () => {
         expect(init?.method).toBe("PATCH");
         expect(new Headers(init?.headers).get("x-studio-csrf")).toBe("csrf");
         const body = JSON.parse(String(init?.body));
-        expect(body).toMatchObject({
+        expect(body).toEqual({
           name: "Bob",
           role: "reviewer",
-          soulInstructions: "Custom soul",
-          defaultProvider: "codex",
-          defaultModel: "gpt-5.6",
-          defaultReasoningEffort: "high",
-          expectedVersion: 3
+          avatarReference: JSON.stringify({
+            seed: values.avatar.seed,
+            spec: values.avatar.spec
+          }),
+          expectedVersion: 3,
+          requestId: "retry-safe-request"
         });
-        expect(body.requestId).toBe("retry-safe-request");
         expect(JSON.parse(body.avatarReference)).toEqual({
           seed: values.avatar.seed,
           spec: values.avatar.spec
@@ -119,7 +139,7 @@ describe("personal agents HTTP adapter", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         agent,
-        soulInstructions: agent.soul,
+        soulInstructions: "Legacy instructions must be ignored",
         stats: {
           totalJobs: 2,
           totalAttempts: 3,
@@ -199,15 +219,7 @@ describe("personal agents HTTP adapter", () => {
     });
   });
 
-  it("rejects malformed model selections before a write", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    await expect(
-      personalAgentsHttpAdapter.create({ ...values, preferredModel: "broken" })
-    ).rejects.toThrow("Choose a supported model");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("writes optional model defaults as null and allows saved unavailable defaults", async () => {
+  it("allows an empty optional job title and ignores legacy profile data", async () => {
     const bodies: unknown[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (String(input).endsWith("/studio-api/github/session")) {
@@ -217,21 +229,38 @@ describe("personal agents HTTP adapter", () => {
       return Response.json({ agent });
     });
 
-    await personalAgentsHttpAdapter.create(optionalDefaults);
-    await personalAgentsHttpAdapter.create({
-      ...values,
-      preferredModel: "offline:retired-model",
-      preferredEffort: "high"
-    });
-    expect(bodies[0]).toMatchObject({
+    await personalAgentsHttpAdapter.create({ ...values, role: "" });
+    expect(bodies[0]).toMatchObject({ role: "" });
+    expect(bodies[0]).not.toHaveProperty("soulInstructions");
+    expect(bodies[0]).not.toHaveProperty("defaultProvider");
+    expect(bodies[0]).not.toHaveProperty("defaultModel");
+    expect(bodies[0]).not.toHaveProperty("defaultReasoningEffort");
+    expect(bodies[0]).not.toHaveProperty("sourceTemplateId");
+  });
+
+  it("does not reactivate legacy instructions, defaults, or template provenance", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        agent: {
+          ...agent,
+          soulInstructions: "Old private instructions",
+          defaultProvider: "codex",
+          defaultModel: "old-model",
+          defaultReasoningEffort: "high"
+        },
+        sourceTemplateId: "old-template",
+        sourceTemplateVersion: 2
+      })
+    );
+
+    const result = await personalAgentsHttpAdapter.get(agent.id);
+    expect(result).toMatchObject({
+      soul: "",
       defaultProvider: null,
       defaultModel: null,
-      defaultReasoningEffort: null
-    });
-    expect(bodies[1]).toMatchObject({
-      defaultProvider: "offline",
-      defaultModel: "retired-model",
-      defaultReasoningEffort: "high"
+      defaultReasoningEffort: null,
+      sourceTemplateId: null,
+      sourceTemplateVersion: null
     });
   });
 

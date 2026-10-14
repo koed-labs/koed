@@ -33,6 +33,9 @@ import { homeProjects, type HomeProject } from "@/lib/studio-home";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
 import { personalAgentsHttpAdapter } from "@/lib/personal-agents-client";
 import { useVerifiedPersonalScope } from "@/components/studio/useVerifiedPersonalScope";
+import { listPersonalConversations } from "@/lib/personal-conversations-client";
+import { personalConversationForExecution } from "@/lib/personal-conversation-routing";
+import type { PersonalAgentChatConversationSummary } from "@koed/shared/personal-agent-chat-contract";
 
 function LiveHome({
   onPlugins,
@@ -40,6 +43,7 @@ function LiveHome({
   initialChatOpen,
   initialProjectRequest,
   executionId,
+  personalConversationId: initialPersonalConversationId,
   requestedProjectId,
   requestedAgentId,
   requestedSettings,
@@ -54,6 +58,7 @@ function LiveHome({
   initialChatOpen: boolean;
   initialProjectRequest: boolean;
   executionId?: string;
+  personalConversationId?: string;
   requestedProjectId?: string;
   requestedAgentId?: string;
   requestedSettings?: Partial<ChatComposerSelection>;
@@ -94,17 +99,39 @@ function LiveHome({
       ? (agentSelectionResult.error ?? null)
       : null;
   const [resumeId, setResumeId] = useState(executionId);
-  const [selectedExecutionId, setSelectedExecutionId] = useState(executionId);
+  const [resumePersonalConversationId, setResumePersonalConversationId] =
+    useState(initialPersonalConversationId);
+  const [selectedExecutionId, setSelectedExecutionId] = useState(
+    executionId ?? initialPersonalConversationId
+  );
   useEffect(() => {
     // Route recovery can arrive without the first-send callback.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (executionId) setSelectedExecutionId(executionId);
+    if (executionId) {
+      // This effect mirrors an external URL selection into sidebar state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedExecutionId(executionId);
+    }
   }, [executionId]);
+  useEffect(() => {
+    // Durable root routes stay selected independently of the active child.
+    if (initialPersonalConversationId) {
+      // This effect mirrors an external URL selection into sidebar state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedExecutionId(initialPersonalConversationId);
+      setResumePersonalConversationId(initialPersonalConversationId);
+    }
+  }, [initialPersonalConversationId]);
   const [projects, setProjects] = useState<HomeProject[]>([]);
   const [homeScopeKey, setHomeScopeKey] = useState<string | null>(null);
   const [managedConversations, setManagedConversations] = useState<
     HomeExecution[]
   >([]);
+  const [personalConversationSummaries, setPersonalConversationSummaries] =
+    useState<PersonalAgentChatConversationSummary[]>([]);
+  const [
+    personalConversationSummariesLoaded,
+    setPersonalConversationSummariesLoaded
+  ] = useState(false);
   const [managedProviderSources, setManagedProviderSources] = useState<
     Record<string, string[]>
   >({});
@@ -175,9 +202,9 @@ function LiveHome({
         setInitialChatSelection({
           agentId: agent.id,
           expectedAgentVersion: agent.currentVersion,
-          provider: agent.defaultProvider,
-          model: agent.defaultModel ?? "",
-          effort: agent.defaultReasoningEffort ?? "",
+          provider: null,
+          model: "",
+          effort: "",
           permissionMode: "full",
           ...requestedSettings
         });
@@ -264,6 +291,47 @@ function LiveHome({
 
   useEffect(() => {
     const controller = new AbortController();
+    listPersonalConversations(controller.signal)
+      .then((summaries) => {
+        if (!controller.signal.aborted) {
+          setPersonalConversationSummaries(summaries);
+          setPersonalConversationSummariesLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setPersonalConversationSummaries([]);
+          setPersonalConversationSummariesLoaded(true);
+        }
+      });
+    return () => controller.abort();
+  }, [homeRefreshRevision]);
+
+  const executionRoot = personalConversationForExecution(
+    personalConversationSummaries,
+    executionId
+  );
+  const resolvingExecutionRoot = Boolean(
+    executionId &&
+    !initialPersonalConversationId &&
+    !teamRequestId &&
+    !personalConversationSummariesLoaded
+  );
+  useEffect(() => {
+    if (!executionId || !executionRoot || teamRequestId) return;
+    // Resolve legacy child/source links to the durable root URL and selection.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setResumeId(undefined);
+    setResumePersonalConversationId(executionRoot.conversationId);
+    setSelectedExecutionId(executionRoot.conversationId);
+    setSelectedProject(executionRoot.projectId);
+    router.replace(
+      `/?chat=1&conversation=${encodeURIComponent(executionRoot.conversationId)}`
+    );
+  }, [executionId, executionRoot, router, teamRequestId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
     // Clear protected sidebar data before verifying a replacement scope.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHomeScopeKey(null);
@@ -319,30 +387,120 @@ function LiveHome({
             typeof (item as HomeRecent).projectName === "string"
           )
         );
-        setManagedConversations((current) =>
-          executions.map((item) => {
+        const hiddenExecutionIds = new Set(
+          personalConversationSummaries.flatMap((conversation) => [
+            ...conversation.sourceExecutionIds,
+            ...conversation.childExecutionIds
+          ])
+        );
+        const hiddenCapturedIds = new Set(
+          personalConversationSummaries.flatMap(
+            (conversation) => conversation.capturedSessionIds
+          )
+        );
+        const visibleExecutions = executions.filter(
+          (item) => !hiddenExecutionIds.has(item.id)
+        );
+        const visibleRecents = recents.filter(
+          (item) =>
+            !hiddenCapturedIds.has(item.id) &&
+            !hiddenCapturedIds.has(item.sessionId)
+        );
+        setManagedConversations((current) => [
+          ...visibleExecutions.map((item) => {
             const previous = current.find(
               (candidate) => candidate.id === item.id
             );
             return item.title === "Untitled conversation" && previous
               ? { ...item, title: previous.title }
               : item;
+          }),
+          ...personalConversationSummaries.map((conversation) => {
+            const previous = current.find(
+              (candidate) =>
+                candidate.personalConversationId === conversation.conversationId
+            );
+            const state = [
+              "queued",
+              "running",
+              "blocked",
+              "uncertain"
+            ].includes(conversation.status)
+              ? "running"
+              : conversation.status === "failed"
+                ? "failed"
+                : "stopped";
+            return {
+              id: conversation.conversationId,
+              personalConversationId: conversation.conversationId,
+              sourceExecutionIds: conversation.sourceExecutionIds,
+              childExecutionIds: conversation.childExecutionIds,
+              capturedSessionIds: conversation.capturedSessionIds,
+              activeAgentId: conversation.activeAgentId,
+              latestAgentName: conversation.latestAgentName,
+              sessionId: null,
+              projectId: conversation.projectId,
+              title:
+                conversation.title ??
+                previous?.title ??
+                (conversation.latestAgentName
+                  ? `Chat with ${conversation.latestAgentName}`
+                  : "New chat"),
+              provider: conversation.activeProvider ?? "personal-conversation",
+              state,
+              updatedAt: conversation.updatedAt,
+              error: null,
+              activity:
+                conversation.status === "uncertain"
+                  ? "uncertain"
+                  : conversation.status === "blocked"
+                    ? "pending"
+                    : state === "running"
+                      ? "running"
+                      : "idle"
+            } satisfies HomeExecution;
+          })
+        ]);
+        setManagedProviderSources(
+          managedProviderSourceIdsByExecution({
+            recents: visibleRecents,
+            executions: visibleExecutions
           })
         );
-        setManagedProviderSources(
-          managedProviderSourceIdsByExecution({ recents, executions })
-        );
         const verifiedProjects = homeProjects(
-          recents,
-          executions,
+          visibleRecents,
+          [
+            ...visibleExecutions,
+            ...personalConversationSummaries.map((conversation) => ({
+              id: conversation.conversationId,
+              sessionId: null,
+              projectId: conversation.projectId,
+              title: conversation.title ?? "New chat",
+              provider: conversation.activeProvider ?? "personal-conversation",
+              state: conversation.status,
+              updatedAt: conversation.updatedAt,
+              error: null
+            }))
+          ],
           registeredProjects
         );
         setProjects(verifiedProjects);
 
-        const candidate = executionId
-          ? (executions.find((item) => item.id === executionId)?.projectId ??
-            null)
-          : (requestedProjectId ?? null);
+        const rootForRoute = personalConversationForExecution(
+          personalConversationSummaries,
+          executionId
+        );
+        const candidate = rootForRoute
+          ? rootForRoute.projectId
+          : executionId
+            ? (executions.find((item) => item.id === executionId)?.projectId ??
+              null)
+            : initialPersonalConversationId
+              ? (personalConversationSummaries.find(
+                  (item) =>
+                    item.conversationId === initialPersonalConversationId
+                )?.projectId ?? null)
+              : (requestedProjectId ?? null);
         setSelectedProject(
           candidate &&
             (verifiedProjects.some((project) => project.id === candidate) ||
@@ -363,7 +521,9 @@ function LiveHome({
     return () => controller.abort();
   }, [
     executionId,
+    initialPersonalConversationId,
     homeRefreshRevision,
+    personalConversationSummaries,
     registeredProjects,
     requestedProjectId
   ]);
@@ -374,6 +534,7 @@ function LiveHome({
     selection?: ChatComposerSelection
   ) => {
     setResumeId(undefined);
+    setResumePersonalConversationId(undefined);
     setSelectedExecutionId(undefined);
     setInitialChatDraft(prompt);
     setInitialChatSelection(selection);
@@ -396,15 +557,27 @@ function LiveHome({
     router.replace(`/?chat=1${project}`);
   };
   const resumeChat = (id: string) => {
-    setResumeId(id);
-    setSelectedExecutionId(id);
+    const root = managedConversations.find(
+      (item) => item.personalConversationId === id
+    );
+    const rootId =
+      root?.personalConversationId ??
+      personalConversationForExecution(personalConversationSummaries, id)
+        ?.conversationId;
+    setResumeId(rootId ? undefined : id);
+    setResumePersonalConversationId(rootId);
+    setSelectedExecutionId(rootId ?? id);
     setSelectedProject(null);
     setInitialChatDraft("");
     setInitialChatSelection(undefined);
     setInitialSubmission(undefined);
     setChatKey((value) => value + 1);
     setChatOpen(true);
-    router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
+    router.replace(
+      rootId
+        ? `/?chat=1&conversation=${encodeURIComponent(rootId)}`
+        : `/?chat=1&execution=${encodeURIComponent(id)}`
+    );
   };
   const openHomeItem = (item: HomeItem) => {
     if (item.destination.kind === "execution")
@@ -418,7 +591,13 @@ function LiveHome({
     executionId: string,
     destinationProjectId: string
   ) => {
-    if (!/^lp_[0-9a-f]{32}$/iu.test(destinationProjectId)) return;
+    if (
+      !/^lp_[0-9a-f]{32}$/iu.test(destinationProjectId) ||
+      managedConversations.some(
+        (conversation) => conversation.personalConversationId === executionId
+      )
+    )
+      return;
     setPendingSidebarMove({
       executionId,
       destinationProjectId,
@@ -492,6 +671,7 @@ function LiveHome({
           onPullRequests={onPullRequests}
           homeFeed={homeFeed}
           onOpenHomeItem={openHomeItem}
+          personalConversationSummaries={personalConversationSummaries}
         />
         {projectModal}
       </>
@@ -516,7 +696,7 @@ function LiveHome({
           collapsed={collapsed}
           selectedProject={selectedProject}
           onProjectSelect={(projectId) => {
-            if (resumeId || executionId) return;
+            if (resumeId || executionId || resumePersonalConversationId) return;
             const nextProject = projectIds.has(projectId) ? projectId : null;
             setSelectedProject(nextProject);
             const query = nextProject
@@ -556,7 +736,11 @@ function LiveHome({
             </div>
           ) : null}
           <div className="min-h-0 flex-1">
-            {requestedAgentId && agentSelectionState === "loading" ? (
+            {resolvingExecutionRoot ? (
+              <div className="flex h-full items-center justify-center text-sm text-subtle">
+                Opening conversation…
+              </div>
+            ) : requestedAgentId && agentSelectionState === "loading" ? (
               <div className="flex h-full items-center justify-center text-sm text-subtle">
                 Loading the selected Agent…
               </div>
@@ -585,7 +769,7 @@ function LiveHome({
             ) : (
               <>
                 <LiveAgentChat
-                  key={chatKey}
+                  key={`${chatKey}:${executionRoot?.conversationId ?? resumePersonalConversationId ?? resumeId ?? "new"}`}
                   conversationTitle={
                     managedConversations.find(
                       (item) => item.id === selectedExecutionId
@@ -599,11 +783,24 @@ function LiveHome({
                       conversation,
                       ...current.filter((item) => item.id !== conversation.id)
                     ]);
+                    if (conversation.personalConversationId) {
+                      setResumeId(undefined);
+                      setResumePersonalConversationId(
+                        conversation.personalConversationId
+                      );
+                      void listPersonalConversations()
+                        .then(setPersonalConversationSummaries)
+                        .catch(() => undefined);
+                    }
                   }}
                   initialSubmission={initialSubmission}
                   claimInitialSubmission={claimInitialSubmission}
                   initialSelection={initialChatSelection}
-                  executionId={resumeId}
+                  executionId={executionRoot ? undefined : resumeId}
+                  personalConversationId={
+                    executionRoot?.conversationId ??
+                    resumePersonalConversationId
+                  }
                   teamRequestId={teamRequestId}
                   teamRequestTeamId={teamRequestTeamId}
                   teamRequestExpectedRequestVersion={
@@ -665,6 +862,7 @@ function HomeMode() {
       initialChatOpen={chat}
       initialProjectRequest={initialProjectRequest}
       executionId={searchParams.get("execution") ?? undefined}
+      personalConversationId={searchParams.get("conversation") ?? undefined}
       requestedProjectId={searchParams.get("project") ?? undefined}
       requestedAgentId={searchParams.get("agent") ?? undefined}
       requestedSettings={requestedSettings}

@@ -119,11 +119,15 @@ export type PersonalAgent = Readonly<{
   ownerId: string;
   name: string;
   role: string;
+  /** @deprecated Compatibility field; parsing always returns an empty string. */
   soul: string;
   avatar?: AgentAvatar;
   lifecycle: PersonalAgentLifecycle;
+  /** @deprecated Agent profiles no longer provide execution defaults. */
   defaultProvider: string | null;
+  /** @deprecated Agent profiles no longer provide execution defaults. */
   defaultModel: string | null;
+  /** @deprecated Agent profiles no longer provide execution defaults. */
   defaultReasoningEffort: string | null;
   currentVersion: number;
   createdAt: number;
@@ -146,7 +150,9 @@ export type PersonalAgent = Readonly<{
   jobsHistoryGapAfterId?: string | null;
   activityLoaded: boolean;
   activitySummary?: PersonalAgentActivity;
+  /** @deprecated Role template provenance is no longer used by profile UI. */
   sourceTemplateId: string | null;
+  /** @deprecated Role template provenance is no longer used by profile UI. */
   sourceTemplateVersion: number | null;
 }>;
 
@@ -324,6 +330,9 @@ function parseJob(value: unknown): PersonalAgentJob {
   if (!isRecord(value))
     throw new Error("The agent service returned an invalid job.");
   const attribution = isRecord(value.attribution) ? value.attribution : {};
+  const executionSettings = isRecord(value.executionSettings)
+    ? value.executionSettings
+    : {};
   const attemptsValue = arrayValue(value.attempts);
   const attempts = attemptsValue ? attemptsValue.map(parseAttempt) : [];
   const latestAttemptValue = isRecord(value.latestAttempt)
@@ -350,11 +359,22 @@ function parseJob(value: unknown): PersonalAgentJob {
     projectName: text(value.projectName),
     state: requiredText(value.state ?? value.status, "job state"),
     provider: text(
-      value.provider ?? value.actualProvider ?? latestAttempt?.provider
+      value.provider ??
+        value.actualProvider ??
+        latestAttempt?.provider ??
+        executionSettings.provider
     ),
-    model: text(value.model ?? value.actualModel ?? latestAttempt?.model),
+    model: text(
+      value.model ??
+        value.actualModel ??
+        latestAttempt?.model ??
+        executionSettings.model
+    ),
     effort: text(
-      value.effort ?? value.reasoningEffort ?? latestAttempt?.effort
+      value.effort ??
+        value.reasoningEffort ??
+        latestAttempt?.effort ??
+        executionSettings.reasoningEffort
     ),
     createdAt: timestamp(value.createdAt, "job createdAt"),
     startedAt: nullableTimestamp(value.startedAt),
@@ -511,13 +531,6 @@ function parseAgent(
 ): PersonalAgent {
   if (!isRecord(value))
     throw new Error("The agent service returned an invalid agent.");
-  const soul =
-    text(
-      value.soulInstructions ??
-        value.soul ??
-        value.identity ??
-        activity.soulInstructions
-    ) ?? "";
   const projectsValue = arrayValue(activity.projects ?? value.projects);
   const jobsValue = arrayValue(activity.jobs ?? value.jobs ?? value.jobHistory);
   const runningValue =
@@ -560,19 +573,16 @@ function parseAgent(
     ownerId: text(value.ownerUserId ?? value.ownerId) ?? "",
     name: requiredText(value.name, "agent name"),
     role: text(value.role) ?? "",
-    soul,
+    // These fields only exist for compatibility with older response shapes.
+    // New profile UI and writes deliberately ignore all three.
+    soul: "",
     avatar: parseAvatar(value.avatar ?? value.avatarReference),
     lifecycle: value.lifecycle === "retired" ? "retired" : "active",
-    defaultProvider: text(value.defaultProvider ?? value.provider),
-    defaultModel: text(value.defaultModel ?? value.preferredModel),
-    defaultReasoningEffort: text(
-      value.defaultReasoningEffort ?? value.preferredEffort
-    ),
-    sourceTemplateId: text(activity.sourceTemplateId),
-    sourceTemplateVersion:
-      typeof activity.sourceTemplateVersion === "number"
-        ? activity.sourceTemplateVersion
-        : null,
+    defaultProvider: null,
+    defaultModel: null,
+    defaultReasoningEffort: null,
+    sourceTemplateId: null,
+    sourceTemplateVersion: null,
     currentVersion:
       typeof value.currentVersion === "number" ? value.currentVersion : 0,
     createdAt: timestamp(value.createdAt, "agent createdAt"),
@@ -659,21 +669,6 @@ function parseCapabilities(value: unknown): AgentModelCapability[] {
   });
 }
 
-function splitModelOption(value: string | null): {
-  provider: string | null;
-  model: string | null;
-} {
-  if (!value) return { provider: null, model: null };
-  const separator = value?.indexOf(":") ?? -1;
-  if (!value || separator <= 0 || separator === value.length - 1) {
-    throw new Error("Choose a supported model before saving the agent.");
-  }
-  return {
-    provider: value.slice(0, separator),
-    model: value.slice(separator + 1)
-  };
-}
-
 export function personalAgentRequestId(): string {
   return typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
@@ -744,22 +739,10 @@ function editorPayload(
   expectedVersion?: number,
   writeRequestId?: string
 ) {
-  const model = splitModelOption(values.preferredModel);
   return {
-    name: values.name,
-    role: values.role,
-    soulInstructions: values.soul,
+    name: values.name.trim(),
+    role: values.role.trim(),
     avatarReference: serializeAvatar(values.avatar),
-    defaultProvider: model.provider,
-    defaultModel: model.model,
-    defaultReasoningEffort: values.preferredEffort,
-    ...(values.sourceTemplateId !== null &&
-    values.sourceTemplateVersion !== null
-      ? {
-          sourceTemplateId: values.sourceTemplateId,
-          sourceTemplateVersion: values.sourceTemplateVersion
-        }
-      : {}),
     ...(expectedVersion === undefined ? {} : { expectedVersion }),
     requestId: writeRequestId ?? personalAgentRequestId()
   };
@@ -908,25 +891,12 @@ export const personalAgentsHttpAdapter: PersonalAgentsApi = Object.freeze({
 export function agentEditorInitialValues(agent: PersonalAgent): {
   name: string;
   role: string;
-  soul: string;
   avatar?: AgentAvatar;
-  preferredModel: string | null;
-  preferredEffort: string | null;
-  sourceTemplateId: string | null;
-  sourceTemplateVersion: number | null;
 } {
   return {
     name: agent.name,
     role: agent.role,
-    soul: agent.soul,
-    avatar: agent.avatar,
-    preferredModel:
-      agent.defaultProvider && agent.defaultModel
-        ? `${agent.defaultProvider}:${agent.defaultModel}`
-        : null,
-    preferredEffort: agent.defaultReasoningEffort,
-    sourceTemplateId: agent.sourceTemplateId,
-    sourceTemplateVersion: agent.sourceTemplateVersion
+    avatar: agent.avatar
   };
 }
 

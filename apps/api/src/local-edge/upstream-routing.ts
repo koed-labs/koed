@@ -388,6 +388,39 @@ export const assertUpstreamOperationPathAllowed = (
 
   const agentRequestId =
     "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+  const personalConversationPath = `/v1/personal-conversations/${agentRequestId}`;
+  if (
+    (method === "GET" &&
+      (pathname === "/v1/personal-conversations" ||
+        new RegExp(`^${personalConversationPath}$`, "i").test(pathname)) &&
+      [...parsed.searchParams.keys()].every((key) =>
+        ["limit", "before", "beforeSequence"].includes(key)
+      ) &&
+      parsed.searchParams.getAll("limit").length <= 1 &&
+      parsed.searchParams.getAll("before").length <= 1 &&
+      parsed.searchParams.getAll("beforeSequence").length <= 1 &&
+      (parsed.searchParams.get("limit") === null ||
+        /^(?:[1-9]|[1-9][0-9]|100)$/.test(parsed.searchParams.get("limit")!)) &&
+      (parsed.searchParams.get("before") === null ||
+        /^\d{4}-\d{2}-\d{2}T/.test(parsed.searchParams.get("before")!)) &&
+      (parsed.searchParams.get("beforeSequence") === null ||
+        /^[1-9][0-9]*$/.test(parsed.searchParams.get("beforeSequence")!))) ||
+    (method === "POST" &&
+      (new RegExp(`^${personalConversationPath}/messages$`, "i").test(
+        pathname
+      ) ||
+        new RegExp(
+          `^${personalConversationPath}/messages/${agentRequestId}/cancel$`,
+          "i"
+        ).test(pathname) ||
+        new RegExp(`^${personalConversationPath}/continue$`, "i").test(
+          pathname
+        ))) ||
+    (method === "PATCH" &&
+      new RegExp(`^${personalConversationPath}$`, "i").test(pathname))
+  ) {
+    return;
+  }
   const agentTeam = `/v1/collaboration/teams/${agentRequestId}`;
   const chatTeam = `/v1/collaboration/teams/${agentRequestId}`;
   const chatThread = `${chatTeam}/threads/${agentRequestId}`;
@@ -809,14 +842,14 @@ export const assertUpstreamOperationPathAllowed = (
       deny();
     }
     if (
-      /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/personal-agent-(?:intent|turn-status)$/.test(
+      /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/personal-agent-(?:intent|phase|turn-status)$/.test(
         pathname
       )
     ) {
       if (
         method === "POST" &&
         parsed.searchParams.size === 0 &&
-        /^\/v1\/managed-conversation-runner\/commands\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/personal-agent-(?:intent|turn-status)$/i.test(
+        /^\/v1\/managed-conversation-runner\/commands\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/personal-agent-(?:intent|phase|turn-status)$/i.test(
           pathname
         )
       )

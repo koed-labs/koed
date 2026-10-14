@@ -1,3 +1,5 @@
+> Current direction — 2026-10-14: [tickets 24–30](studio-ui-integration-plan.md) supersede the instruction-bearing Agent, role-template, extra Job lifecycle and eager recall designs described below. Agents now retain name, optional free-text job title and Pixelkin appearance; execution settings belong to chats. Existing encrypted history is retained. New Agent writes do not store soul text or template associations. The role-template endpoint is retired (410). The remaining document is historical implementation context, not current acceptance criteria.
+
 # Personal Agent Role Templates
 
 ## Purpose

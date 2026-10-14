@@ -217,8 +217,9 @@ function AgentWorkshop({ agentId }: { agentId: string }) {
             <div className="min-w-0">
               <p className="text-sm text-foreground-secondary">{agent.name}</p>
               <p className="mt-1 text-xs text-subtle">
-                {agent.role} · {owner?.name ?? "Unknown"} ·{" "}
-                {statusLabel(agent.status)} · {agent.model} · {agent.effort}
+                {agent.role ? `${agent.role} · ` : ""}
+                {owner?.name ?? "Unknown"} · {statusLabel(agent.status)} ·{" "}
+                {agent.model} · {agent.effort}
               </p>
             </div>
           </div>
@@ -303,12 +304,6 @@ function AgentWorkshop({ agentId }: { agentId: string }) {
           </div>
         </div>
         <aside className="no-drag">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-subtle">
-            soul.md · identity
-          </p>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-3 text-[11px] leading-relaxed text-muted">
-            {agent.identity}
-          </pre>
           <div className="mb-2 mt-4 flex items-center gap-1.5">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
               This project

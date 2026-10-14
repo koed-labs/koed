@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -17,6 +18,7 @@ import {
   canonicalAgentMentionToken,
   matchMentionCandidates,
   mentionQueryAtCursor,
+  resolvedAgentMentionIds,
   unresolvedAgentMentions
 } from "@/lib/agent-mentions";
 import {
@@ -92,15 +94,20 @@ export type ChatMentionAgent = Readonly<{
   role: string;
   avatar?: { image?: string; spec?: Record<string, unknown> };
   lifecycle: "active" | "retired";
-  defaultProvider: string | null;
-  defaultModel: string | null;
-  defaultReasoningEffort: string | null;
+  /** @deprecated Agent profiles no longer provide chat execution defaults. */
+  defaultProvider?: string | null;
+  /** @deprecated Agent profiles no longer provide chat execution defaults. */
+  defaultModel?: string | null;
+  /** @deprecated Agent profiles no longer provide chat execution defaults. */
+  defaultReasoningEffort?: string | null;
   /** Team requests route to the owner's private execution; requester runtime controls do not apply. */
   teamRequestOnly?: boolean;
 }>;
 
 export type ChatComposerSelection = Readonly<{
   agentId: string | null;
+  /** Ordered Personal Agent deliveries resolved from the current draft. */
+  recipients?: readonly ChatComposerAgentSelection[];
   mentionUserIds?: string[];
   expectedAgentVersion?: number;
   provider: string | null;
@@ -109,7 +116,22 @@ export type ChatComposerSelection = Readonly<{
   permissionMode: AccessMode;
   instanceId?: string;
   hostedInstanceId?: string;
+  targetDeviceId?: string;
   selectedResourceIds?: string[];
+}>;
+
+export type ChatComposerAgentSelection = Readonly<{
+  agentId: string;
+  expectedAgentVersion?: number;
+  provider: string | null;
+  model: string;
+  effort: string;
+  permissionMode: AccessMode;
+  instanceId?: string;
+  hostedInstanceId?: string;
+  targetDeviceId?: string;
+  selectedResourceIds?: readonly string[];
+  selectedResourceHostedInstanceId?: string;
 }>;
 
 export type ChatComposerRestoreSelection = Readonly<{
@@ -119,6 +141,13 @@ export type ChatComposerRestoreSelection = Readonly<{
   provider: string;
   model: string;
   effort: string | null;
+  permissionMode: AccessMode;
+}>;
+
+type AgentComposerSettings = Readonly<{
+  model: string;
+  effortIndex: number | null;
+  unavailableEffort: string | null;
   permissionMode: AccessMode;
 }>;
 
@@ -154,10 +183,8 @@ type ChatComposerProps = {
   onChange?: (value: string) => void;
   onSend?: (
     text: string,
-    selection: ChatComposerSelection,
-    continueWithoutMemory?: true
+    selection: ChatComposerSelection
   ) => void | false | Promise<void | false>;
-  memoryRecallFailure?: string | null;
   sendEnabled?: boolean;
   sendDisabledReason?: string;
   showExecutionControls?: boolean;
@@ -166,6 +193,7 @@ type ChatComposerProps = {
   environmentSwitchDisabled?: boolean;
   executionPreset?: ChatComposerExecutionPreset;
   agents?: readonly ChatMentionAgent[];
+  allowMultipleAgentMentions?: boolean;
   teamMembers?: readonly { id: string; name: string }[];
   initialMentionUserIds?: readonly string[];
   onMentionUserIdsChange?: (userIds: string[]) => void;
@@ -177,11 +205,16 @@ type ChatComposerProps = {
   clientResourceScope?: NativeSkillScope;
   onSelectedResourceIdsChange?: (resourceIds: string[]) => void;
   restoreSelection?: ChatComposerRestoreSelection;
+  /** Persisted per-chat launch settings hydrated from a Personal conversation. */
+  persistedAgentSelections?: Readonly<
+    Record<string, ChatComposerRestoreSelection>
+  >;
   initialPermissionMode?: AccessMode;
   preferRememberedDefaults?: boolean;
   initialModel?: string;
   initialEffort?: string;
   showFormattingToolbar?: boolean;
+  /** Legacy prop accepted during transition; no bypass action is rendered. */
   showContinueWithoutMemory?: boolean;
   showSendButton?: boolean;
   allowEnterNewline?: boolean;
@@ -202,7 +235,6 @@ export function ChatComposer({
   value,
   onChange,
   onSend,
-  memoryRecallFailure,
   sendEnabled = true,
   sendDisabledReason,
   showExecutionControls = true,
@@ -211,6 +243,7 @@ export function ChatComposer({
   environmentSwitchDisabled = true,
   executionPreset,
   agents = [],
+  allowMultipleAgentMentions = false,
   teamMembers = [],
   initialMentionUserIds = [],
   onMentionUserIdsChange,
@@ -222,12 +255,12 @@ export function ChatComposer({
   clientResourceScope,
   onSelectedResourceIdsChange,
   restoreSelection,
+  persistedAgentSelections,
   initialPermissionMode = "full",
   initialModel,
   preferRememberedDefaults = false,
   initialEffort,
   showFormattingToolbar = false,
-  showContinueWithoutMemory = true,
   showSendButton = true,
   allowEnterNewline = false,
   required = false,
@@ -240,30 +273,28 @@ export function ChatComposer({
   const [internalActiveAgentId, setInternalActiveAgentId] = useState<
     string | null
   >(null);
+  const [genericDefaultRespondent, setGenericDefaultRespondent] =
+    useState(false);
+  const [settingsAgentId, setSettingsAgentId] = useState<string | null>(
+    controlledActiveAgentId ?? internalActiveAgentId
+  );
   const activeAgentId =
     controlledActiveAgentId === undefined
       ? internalActiveAgentId
       : controlledActiveAgentId;
   const changeActiveAgent = (id: string | null) => {
+    if (allowMultipleAgentMentions) {
+      setGenericDefaultRespondent(id === null);
+      setSettingsAgentId(id);
+    }
     if (controlledActiveAgentId === undefined) setInternalActiveAgentId(id);
     onActiveAgentChange?.(id);
   };
-  const initialAgent = agents.find((agent) => agent.id === activeAgentId);
-  const initialAgentCapability = initialAgent
-    ? modelOptions.find(
-        (option) =>
-          option.provider === initialAgent.defaultProvider &&
-          option.id === initialAgent.defaultModel
-      )
-    : undefined;
   const [internalDraft, setInternalDraft] = useState("");
   const [model, setModel] = useState<string>(
     restoreSelection
       ? `${restoreSelection.provider}:${restoreSelection.model}${restoreSelection.hostedInstanceId || restoreSelection.instanceId ? `:${restoreSelection.hostedInstanceId ?? restoreSelection.instanceId}` : ""}`
-      : (initialModel ??
-          (initialAgent?.defaultProvider && initialAgent.defaultModel
-            ? `${initialAgent.defaultProvider}:${initialAgent.defaultModel}`
-            : (initialAgent?.defaultModel ?? DEFAULT_MODEL)))
+      : (initialModel ?? DEFAULT_MODEL)
   );
   const [effortIndex, setEffortIndex] = useState<number | null>(() => {
     if (restoreSelection) {
@@ -276,29 +307,23 @@ export function ChatComposer({
       const index = effortIndexFor(initialEffort);
       return index >= 0 ? index : null;
     }
-    if (initialAgent) {
-      if (!initialAgent.defaultReasoningEffort) return null;
-      const index = effortIndexFor(initialAgent.defaultReasoningEffort);
-      return index >= 0 ? index : null;
-    }
     return DEFAULT_EFFORT_INDEX;
   });
   const [unavailableEffort, setUnavailableEffort] = useState<string | null>(
     () => {
       const restored = restoreSelection?.effort;
       if (restored && effortIndexFor(restored) < 0) return restored;
-      const preferred = initialEffort ?? initialAgent?.defaultReasoningEffort;
+      const preferred = initialEffort;
       return preferred && effortIndexFor(preferred) < 0 ? preferred : null;
     }
   );
   const modelSettingsTouched = useRef(false);
   useEffect(() => {
-    // Explicit handoffs, resumed Conversations and selected Agents take priority.
+    // Explicit handoffs and resumed Conversation settings take priority.
     if (
       restoreSelection ||
       (!preferRememberedDefaults &&
-        (initialModel !== undefined || initialEffort !== undefined)) ||
-      initialAgent
+        (initialModel !== undefined || initialEffort !== undefined))
     )
       return;
     let cancelled = false;
@@ -312,19 +337,13 @@ export function ChatComposer({
     return () => {
       cancelled = true;
     };
-  }, [
-    restoreSelection,
-    initialModel,
-    initialEffort,
-    initialAgent,
-    preferRememberedDefaults
-  ]);
-  const [confirmedAgentModelFor, setConfirmedAgentModelFor] = useState<
-    string | null
-  >(initialModel && initialAgent ? initialAgent.id : null);
+  }, [restoreSelection, initialModel, initialEffort, preferRememberedDefaults]);
   const [accessMode, setAccessMode] = useState<AccessMode>(
     restoreSelection?.permissionMode ?? initialPermissionMode
   );
+  const [agentSettingsById, setAgentSettingsById] = useState<
+    Record<string, AgentComposerSettings>
+  >({});
   const [environment, setEnvironment] = useState<EnvironmentMode>("local");
   const [openMenu, setOpenMenu] = useState<null | "model" | "access" | "emoji">(
     null
@@ -413,28 +432,8 @@ export function ChatComposer({
     ...restoredMentionIds,
     ...localResolvedMentionIds
   };
-  const [unsupportedDefaultEffortFor, setUnsupportedDefaultEffortFor] =
-    useState<string | null>(() => {
-      if (
-        restoreSelection ||
-        initialEffort !== undefined ||
-        !initialAgent?.defaultReasoningEffort
-      )
-        return null;
-      const index = effortIndexFor(initialAgent.defaultReasoningEffort);
-      return index < 0 ||
-        (modelOptions.length > 0 &&
-          !initialAgentCapability?.supportedReasoningEfforts.some(
-            (effort) => effortIndexFor(effort) === index
-          ))
-        ? initialAgent.id
-        : null;
-    });
-
   const draft = value ?? internalDraft;
   const draftVersionRef = useRef(0);
-  const selectedAgent =
-    agents.find((agent) => agent.id === activeAgentId) ?? null;
   const mentionCandidates: Array<ChatMentionAgent & { teamMember?: boolean }> =
     [
       ...agents,
@@ -444,22 +443,41 @@ export function ChatComposer({
         mentionToken: canonicalAgentMentionToken(member.name, member.id),
         role: "Team member",
         lifecycle: "active" as const,
-        defaultProvider: null,
-        defaultModel: null,
-        defaultReasoningEffort: null,
         teamMember: true
       }))
     ];
+  const explicitlyMentionedAgentIds = allowMultipleAgentMentions
+    ? resolvedAgentMentionIds(
+        draft,
+        mentionCandidates.filter((candidate) => !candidate.teamMember),
+        resolvedMentionIds
+      )
+    : [];
+  const selectedAgentId =
+    allowMultipleAgentMentions && explicitlyMentionedAgentIds.length > 0
+      ? settingsAgentId && explicitlyMentionedAgentIds.includes(settingsAgentId)
+        ? settingsAgentId
+        : explicitlyMentionedAgentIds[explicitlyMentionedAgentIds.length - 1]
+      : activeAgentId;
+  const selectedAgent =
+    agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const mentionMatches = mentionQuery
     ? matchMentionCandidates(mentionQuery.query, mentionCandidates)
     : [];
   const mentionIssues = unresolvedAgentMentions(
     draft,
     mentionCandidates
-  ).filter(
-    (issue) =>
-      !resolvedMentionIds[issue.name.toLocaleLowerCase().replace(/\s+/g, "_")]
-  );
+  ).filter((issue) => {
+    const resolvedId =
+      resolvedMentionIds[issue.name.toLocaleLowerCase().replace(/\s+/g, "_")];
+    return (
+      !resolvedId ||
+      !mentionCandidates.some(
+        (candidate) =>
+          candidate.id === resolvedId && candidate.lifecycle === "active"
+      )
+    );
+  });
   const channelAgentMode =
     switchToExecutionControlsOnMention && selectedAgent !== null;
   const executionControlsVisible =
@@ -506,15 +524,18 @@ export function ChatComposer({
   const effectiveEffortLabel = executionPreset
     ? (executionPreset.effort ?? "Not set")
     : effortLabel;
-  const capabilityKey = (option: AgentModelCapability) => {
-    const base = `${option.provider}:${option.id}`;
-    const duplicates = modelOptions.filter(
-      (item) => item.provider === option.provider && item.id === option.id
-    );
-    return duplicates.length > 1
-      ? `${base}:${option.hostedInstanceId ?? option.instanceId ?? "unscoped"}`
-      : base;
-  };
+  const capabilityKey = useCallback(
+    (option: AgentModelCapability) => {
+      const base = `${option.provider}:${option.id}`;
+      const duplicates = modelOptions.filter(
+        (item) => item.provider === option.provider && item.id === option.id
+      );
+      return duplicates.length > 1
+        ? `${base}:${option.hostedInstanceId ?? option.instanceId ?? "unscoped"}`
+        : base;
+    },
+    [modelOptions]
+  );
   const selectedCandidates = modelOptions.filter(
     (option) =>
       capabilityKey(option) === model ||
@@ -541,6 +562,243 @@ export function ChatComposer({
   const skillScopeKey = JSON.stringify(resourceScope);
   const skillSelection =
     selectedSkills?.key === skillScopeKey ? selectedSkills.skills : [];
+  const recipientAgentIds = allowMultipleAgentMentions
+    ? explicitlyMentionedAgentIds.length
+      ? explicitlyMentionedAgentIds
+      : !genericDefaultRespondent &&
+          activeAgentId &&
+          agents.some((agent) => agent.id === activeAgentId)
+        ? [activeAgentId]
+        : []
+    : [];
+  const modelCapabilityFor = useCallback(
+    (modelKey: string) => {
+      const matching = modelOptions.filter(
+        (option) =>
+          capabilityKey(option) === modelKey ||
+          `${option.provider}:${option.id}` === modelKey ||
+          [option.hostedInstanceId, option.instanceId].some(
+            (instanceId) =>
+              Boolean(instanceId) &&
+              `${option.provider}:${option.id}:${instanceId}` === modelKey
+          )
+      );
+      return matching.length === 1 ? matching[0] : undefined;
+    },
+    [capabilityKey, modelOptions]
+  );
+  const settingsForAgent = useCallback(
+    (agentId: string): AgentComposerSettings => {
+      if (
+        agentId ===
+        (allowMultipleAgentMentions ? settingsAgentId : activeAgentId)
+      )
+        return {
+          model,
+          effortIndex,
+          unavailableEffort,
+          permissionMode: accessMode
+        };
+      const saved = agentSettingsById[agentId];
+      if (saved) return saved;
+      const persisted = persistedAgentSelections?.[agentId];
+      if (persisted) {
+        const index =
+          persisted.effort === null ? -1 : effortIndexFor(persisted.effort);
+        return {
+          model: `${persisted.provider}:${persisted.model}${persisted.hostedInstanceId || persisted.instanceId ? `:${persisted.hostedInstanceId ?? persisted.instanceId}` : ""}`,
+          effortIndex: index >= 0 ? index : null,
+          unavailableEffort:
+            persisted.effort && index < 0 ? persisted.effort : null,
+          permissionMode: persisted.permissionMode
+        };
+      }
+      const agent = agents.find((candidate) => candidate.id === agentId);
+      if (!agent)
+        return {
+          model: "",
+          effortIndex: null,
+          unavailableEffort: null,
+          permissionMode: initialPermissionMode
+        };
+      return {
+        model,
+        effortIndex,
+        unavailableEffort,
+        permissionMode: accessMode
+      };
+    },
+    [
+      accessMode,
+      activeAgentId,
+      agentSettingsById,
+      agents,
+      allowMultipleAgentMentions,
+      effortIndex,
+      model,
+      initialPermissionMode,
+      persistedAgentSelections,
+      settingsAgentId,
+      unavailableEffort
+    ]
+  );
+  const recipientConfigurationIssues = allowMultipleAgentMentions
+    ? recipientAgentIds.flatMap((agentId) => {
+        const agent = agents.find((candidate) => candidate.id === agentId);
+        if (!agent || agent.lifecycle !== "active")
+          return [`${agent?.name ?? "An Agent"} is unavailable.`];
+        if (agent.teamRequestOnly)
+          return [`${agent.name} cannot run in a Personal chat.`];
+        const settings = settingsForAgent(agentId);
+        const capability = modelCapabilityFor(settings.model);
+        if (!settings.model || !capability)
+          return [`Choose an available AI Client and model for ${agent.name}.`];
+        if (
+          settings.unavailableEffort ||
+          (settings.effortIndex !== null &&
+            !capability.supportedReasoningEfforts.some(
+              (effort) => effortIndexFor(effort) === settings.effortIndex
+            ))
+        )
+          return [`Choose a supported reasoning effort for ${agent.name}.`];
+        return [];
+      })
+    : [];
+  const recipientSelections: ChatComposerAgentSelection[] =
+    allowMultipleAgentMentions
+      ? recipientAgentIds.flatMap((agentId) => {
+          const agent = agents.find((candidate) => candidate.id === agentId);
+          if (!agent || agent.lifecycle !== "active") return [];
+          const settings = settingsForAgent(agentId);
+          const capability = modelCapabilityFor(settings.model);
+          if (!capability) return [];
+          return [
+            {
+              agentId,
+              ...(agent.currentVersion !== undefined
+                ? { expectedAgentVersion: agent.currentVersion }
+                : {}),
+              provider: capability.provider,
+              model: capability.id,
+              effort:
+                settings.effortIndex === null
+                  ? ""
+                  : (capability.supportedReasoningEfforts.find(
+                      (effort) =>
+                        effortIndexFor(effort) === settings.effortIndex
+                    ) ?? EFFORT_LEVELS[settings.effortIndex]),
+              permissionMode: settings.permissionMode,
+              ...(capability.instanceId
+                ? { instanceId: capability.instanceId }
+                : {}),
+              ...(capability.hostedInstanceId
+                ? { hostedInstanceId: capability.hostedInstanceId }
+                : {}),
+              ...(capability.targetDeviceId
+                ? { targetDeviceId: capability.targetDeviceId }
+                : {}),
+              ...(agentId === activeAgentId && skillSelection.length
+                ? {
+                    selectedResourceIds: skillSelection.map(
+                      (skill) => skill.resourceId
+                    ),
+                    ...(capability.hostedInstanceId
+                      ? {
+                          selectedResourceHostedInstanceId:
+                            capability.hostedInstanceId
+                        }
+                      : {})
+                  }
+                : {})
+            }
+          ];
+        })
+      : [];
+  useEffect(() => {
+    // Keep the visible controls aligned with the recipient parsed from the current draft.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!allowMultipleAgentMentions || selectedAgentId === settingsAgentId)
+      return;
+    if (!selectedAgentId) {
+      setSettingsAgentId(null);
+      return;
+    }
+    const agent = agents.find((candidate) => candidate.id === selectedAgentId);
+    if (!agent || agent.teamRequestOnly) return;
+    const target = settingsForAgent(selectedAgentId);
+    const capability = modelCapabilityFor(target.model);
+    const unsupportedPreferredEffort = Boolean(
+      target.effortIndex !== null &&
+      capability &&
+      !capability.supportedReasoningEfforts.some(
+        (effort) => effortIndexFor(effort) === target.effortIndex
+      )
+    );
+    setSettingsAgentId(selectedAgentId);
+    setModel(target.model);
+    setEffortIndex(unsupportedPreferredEffort ? null : target.effortIndex);
+    setUnavailableEffort(
+      unsupportedPreferredEffort
+        ? (target.unavailableEffort ??
+            (target.effortIndex === null
+              ? null
+              : EFFORT_LEVELS[target.effortIndex]))
+        : target.unavailableEffort
+    );
+    setAccessMode(target.permissionMode);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [
+    accessMode,
+    activeAgentId,
+    agentSettingsById,
+    agents,
+    allowMultipleAgentMentions,
+    initialPermissionMode,
+    model,
+    modelOptions,
+    modelCapabilityFor,
+    persistedAgentSelections,
+    selectedAgentId,
+    settingsAgentId,
+    unavailableEffort,
+    effortIndex,
+    settingsForAgent
+  ]);
+  useEffect(() => {
+    if (
+      !selectedAgent ||
+      selectedAgent.teamRequestOnly ||
+      (allowMultipleAgentMentions && selectedAgent.id !== settingsAgentId)
+    )
+      return;
+    const next = {
+      model,
+      effortIndex,
+      unavailableEffort,
+      permissionMode: accessMode
+    };
+    // Cache controlled values so switching recipients restores their settings.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAgentSettingsById((current) => {
+      const previous = current[selectedAgent.id];
+      if (
+        previous?.model === next.model &&
+        previous.effortIndex === next.effortIndex &&
+        previous.unavailableEffort === next.unavailableEffort &&
+        previous.permissionMode === next.permissionMode
+      )
+        return current;
+      return { ...current, [selectedAgent.id]: next };
+    });
+  }, [
+    accessMode,
+    allowMultipleAgentMentions,
+    effortIndex,
+    model,
+    selectedAgent,
+    settingsAgentId,
+    unavailableEffort
+  ]);
   useEffect(() => {
     onSelectedResourceIdsChange?.(
       selectedSkills?.key === skillScopeKey
@@ -592,12 +850,6 @@ export function ChatComposer({
     modelOptions.length > 0 &&
     !selectedCapability
   );
-  const agentNeedsExplicitModelSelection = Boolean(
-    !selectedAgent?.teamRequestOnly &&
-    selectedAgent &&
-    (!selectedAgent.defaultProvider || !selectedAgent.defaultModel) &&
-    confirmedAgentModelFor !== selectedAgent.id
-  );
   const supportedEffortIndex = (value: string) => effortIndexFor(value);
   const supportedEffortIndices = new Set(
     (selectedCapability?.supportedReasoningEfforts ?? [])
@@ -609,16 +861,15 @@ export function ChatComposer({
     selectedAgent &&
     selectedCapability &&
     modelOptions.length > 0 &&
-    (unsupportedDefaultEffortFor === selectedAgent.id ||
-      unavailableEffort !== null ||
+    (unavailableEffort !== null ||
       (effortIndex !== null && !supportedEffortIndices.has(effortIndex)))
   );
   const canSend =
     sendEnabled &&
     draft.trim().length > 0 &&
     mentionIssues.length === 0 &&
+    recipientConfigurationIssues.length === 0 &&
     !modelIncompatible &&
-    !agentNeedsExplicitModelSelection &&
     !effortIncompatible;
 
   const setDraft = (nextValue: string) => {
@@ -685,12 +936,15 @@ export function ChatComposer({
     });
   };
 
-  const submitDraft = async (continueWithoutMemory = false) => {
+  const submitDraft = async () => {
     const trimmed = draft.trim();
     if (!trimmed || !canSend) return;
     modelSettingsTouched.current = true;
     const selection: ChatComposerSelection = Object.freeze({
       agentId: activeAgentId,
+      ...(allowMultipleAgentMentions
+        ? { recipients: recipientSelections }
+        : {}),
       mentionUserIds: Array.from(
         new Set(
           Array.from(
@@ -723,15 +977,14 @@ export function ChatComposer({
       ...(selectedCapability?.hostedInstanceId
         ? { hostedInstanceId: selectedCapability.hostedInstanceId }
         : {}),
+      ...(selectedCapability?.targetDeviceId
+        ? { targetDeviceId: selectedCapability.targetDeviceId }
+        : {}),
       instanceId: selectedCapability?.instanceId
     });
     const submittedDraftVersion = draftVersionRef.current;
     try {
-      const accepted = await onSend?.(
-        trimmed,
-        selection,
-        continueWithoutMemory ? true : undefined
-      );
+      const accepted = await onSend?.(trimmed, selection);
       // A deferred send (for example, choosing a recipient) retains the draft.
       if (accepted === false) return;
       if (executionControlsVisible && selection.provider && onSend) {
@@ -752,41 +1005,53 @@ export function ChatComposer({
   };
 
   const resetModelAndEffort = () => {
-    if (selectedAgent) {
-      setUnavailableEffort(null);
-      if (selectedAgent.defaultProvider && selectedAgent.defaultModel) {
-        setModel(
-          `${selectedAgent.defaultProvider}:${selectedAgent.defaultModel}`
-        );
-      } else if (selectedAgent.defaultModel) {
-        setModel(selectedAgent.defaultModel);
-      }
-      const index = selectedAgent.defaultReasoningEffort
-        ? effortIndexFor(selectedAgent.defaultReasoningEffort)
-        : null;
-      setEffortIndex(index !== null && index >= 0 ? index : null);
-      const targetCapability = modelOptions.find(
-        (option) =>
-          option.provider === selectedAgent.defaultProvider &&
-          option.id === selectedAgent.defaultModel
-      );
-      setUnsupportedDefaultEffortFor(
-        selectedAgent.defaultReasoningEffort &&
-          (index === null ||
-            index < 0 ||
-            (modelOptions.length > 0 &&
-              !targetCapability?.supportedReasoningEfforts.some(
-                (effort) => effortIndexFor(effort) === index
-              )))
-          ? selectedAgent.id
-          : null
-      );
-    } else {
-      setModel(DEFAULT_MODEL);
-      setEffortIndex(DEFAULT_EFFORT_INDEX);
-      setUnavailableEffort(null);
-      setUnsupportedDefaultEffortFor(null);
+    setModel(DEFAULT_MODEL);
+    setEffortIndex(DEFAULT_EFFORT_INDEX);
+    setUnavailableEffort(null);
+    setIsModelListOpen(false);
+  };
+
+  const focusAgentSettings = (agentId: string) => {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent || agent.lifecycle !== "active" || agent.teamRequestOnly) return;
+    const previousSettingsAgentId = allowMultipleAgentMentions
+      ? settingsAgentId
+      : activeAgentId;
+    if (previousSettingsAgentId) {
+      setAgentSettingsById((current) => ({
+        ...current,
+        [previousSettingsAgentId]: {
+          model,
+          effortIndex,
+          unavailableEffort,
+          permissionMode: accessMode
+        }
+      }));
     }
+    const saved = agentSettingsById[agentId];
+    const target = saved ?? settingsForAgent(agentId);
+    const capability = modelCapabilityFor(target.model);
+    const preferredEffortIndex = target.effortIndex;
+    const unsupportedPreferredEffort = Boolean(
+      preferredEffortIndex !== null &&
+      capability &&
+      !capability.supportedReasoningEfforts.some(
+        (effort) => effortIndexFor(effort) === preferredEffortIndex
+      )
+    );
+    if (allowMultipleAgentMentions) setSettingsAgentId(agentId);
+    else changeActiveAgent(agentId);
+    setModel(target.model);
+    setEffortIndex(unsupportedPreferredEffort ? null : preferredEffortIndex);
+    setUnavailableEffort(
+      unsupportedPreferredEffort
+        ? (target.unavailableEffort ??
+            (preferredEffortIndex === null
+              ? null
+              : EFFORT_LEVELS[preferredEffortIndex]))
+        : target.unavailableEffort
+    );
+    setAccessMode(target.permissionMode);
     setIsModelListOpen(false);
   };
 
@@ -800,8 +1065,8 @@ export function ChatComposer({
     setDraft(nextDraft);
     setMentionQuery(null);
     if (!agent.teamMember) {
-      onAgentMention?.(agent.id);
-      changeActiveAgent(agent.id);
+      if (!allowMultipleAgentMentions) onAgentMention?.(agent.id);
+      focusAgentSettings(agent.id);
     }
     const nextResolved = {
       ...resolvedMentionIds,
@@ -820,35 +1085,7 @@ export function ChatComposer({
     if (agent.teamMember) {
       return;
     }
-    if (agent.defaultProvider && agent.defaultModel) {
-      modelSettingsTouched.current = true;
-      setModel(`${agent.defaultProvider}:${agent.defaultModel}`);
-    } else if (agent.defaultModel) {
-      setModel(agent.defaultModel);
-    }
-    if (agent.defaultReasoningEffort) {
-      const index = effortIndexFor(agent.defaultReasoningEffort);
-      setEffortIndex(index >= 0 ? index : null);
-      setUnavailableEffort(index >= 0 ? null : agent.defaultReasoningEffort);
-      const targetCapability = modelOptions.find(
-        (option) =>
-          option.provider === agent.defaultProvider &&
-          option.id === agent.defaultModel
-      );
-      setUnsupportedDefaultEffortFor(
-        index < 0 ||
-          (modelOptions.length > 0 &&
-            !targetCapability?.supportedReasoningEfforts.some(
-              (effort) => effortIndexFor(effort) === index
-            ))
-          ? agent.id
-          : null
-      );
-    } else {
-      setEffortIndex(null);
-      setUnavailableEffort(null);
-      setUnsupportedDefaultEffortFor(null);
-    }
+    modelSettingsTouched.current = true;
     textareaRef.current?.focus();
   };
 
@@ -965,7 +1202,11 @@ export function ChatComposer({
               size="sm"
             />
             <span className="min-w-0 truncate">{selectedAgent.name}</span>
-            <span className="text-subtle">Active respondent</span>
+            <span className="text-subtle">
+              {allowMultipleAgentMentions
+                ? "Settings for this Agent"
+                : "Active respondent"}
+            </span>
             {channelAgentMode && (
               <button
                 type="button"
@@ -983,6 +1224,71 @@ export function ChatComposer({
             )}
           </div>
         )}
+        {allowMultipleAgentMentions && recipientAgentIds.length > 0 && (
+          <div
+            className="mb-2 flex flex-wrap items-center gap-1.5 border-b border-border px-2 pb-2 text-xs"
+            aria-label="Agent recipients in execution order"
+          >
+            <span className="mr-1 text-subtle">Responding in order</span>
+            {recipientAgentIds.map((agentId, index) => {
+              const agent = agents.find(
+                (candidate) => candidate.id === agentId
+              );
+              if (!agent) return null;
+              return (
+                <button
+                  key={agentId}
+                  type="button"
+                  aria-pressed={selectedAgent?.id === agentId}
+                  aria-label={`Edit settings for ${agent.name}, recipient ${index + 1}`}
+                  title={`Recipient ${index + 1}: ${agent.name}`}
+                  onClick={() => focusAgentSettings(agentId)}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${selectedAgent?.id === agentId ? "border-accent bg-accent/10 text-foreground" : "border-border text-foreground-secondary hover:bg-surface-hover"}`}
+                >
+                  <span className="text-subtle">{index + 1}.</span>
+                  <AgentAvatarView
+                    image={agent.avatar?.image}
+                    spec={agent.avatar?.spec}
+                    name={agent.name}
+                    size="sm"
+                  />
+                  <span className="max-w-28 truncate">{agent.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {allowMultipleAgentMentions &&
+        explicitlyMentionedAgentIds.length === 0 ? (
+          <div className="mb-2 flex items-center justify-between border-b border-border px-2 pb-2 text-xs">
+            <span className="text-subtle">
+              {genericDefaultRespondent
+                ? "Generic AI Client will respond"
+                : activeAgentId
+                  ? `Selected respondent · ${selectedAgent?.name ?? "Agent"}`
+                  : "No Agent selected · Generic AI Client will respond"}
+            </span>
+            {genericDefaultRespondent ? (
+              activeAgentId ? (
+                <button
+                  type="button"
+                  onClick={() => changeActiveAgent(activeAgentId)}
+                  className="text-foreground-secondary hover:text-foreground"
+                >
+                  Use Agent
+                </button>
+              ) : null
+            ) : (
+              <button
+                type="button"
+                onClick={() => changeActiveAgent(null)}
+                className="text-foreground-secondary hover:text-foreground"
+              >
+                Use generic AI Client
+              </button>
+            )}
+          </div>
+        ) : null}
         {skillSelection.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1 px-2">
             {skillSelection.map((skill) => (
@@ -1098,7 +1404,7 @@ export function ChatComposer({
               event.preventDefault();
               if (interruptActive) {
                 if (!interruptDisabled) onInterrupt?.();
-              } else submitDraft();
+              } else void submitDraft();
             }
           }}
         />
@@ -1282,13 +1588,15 @@ export function ChatComposer({
                   : `No available agent named ${mentionIssues[0].name}.`}
           </p>
         )}
-        {(modelIncompatible || agentNeedsExplicitModelSelection) && (
+        {recipientConfigurationIssues.length > 0 && (
           <p className="px-2 pb-2 text-xs text-warning" role="status">
-            {!selectedAgent
-              ? "Choose an available model and AI Client for this chat. If several computers offer this model, select its exact Client."
-              : selectedAgent.defaultProvider && selectedAgent.defaultModel
-                ? "The active Agent’s default model is unavailable. Choose an available model for this Job from the model control. The Agent profile defaults will stay unchanged."
-                : "This Agent has no default model. Choose an available model for this Job from the model control. The Agent profile will stay unchanged."}
+            {recipientConfigurationIssues[0]}
+          </p>
+        )}
+        {modelIncompatible && (
+          <p className="px-2 pb-2 text-xs text-warning" role="status">
+            Choose an available model and AI Client for this Job. If several
+            computers offer this model, select its exact Client.
           </p>
         )}
         {effortIncompatible && (
@@ -1479,7 +1787,6 @@ export function ChatComposer({
                           modelSettingsTouched.current = true;
                           setEffortIndex(index);
                           setUnavailableEffort(null);
-                          setUnsupportedDefaultEffortFor(null);
                           setOpenMenu(null);
                           setIsModelListOpen(false);
                         }}
@@ -1515,9 +1822,6 @@ export function ChatComposer({
                                 if (disabled) return;
                                 modelSettingsTouched.current = true;
                                 setModel(option.id);
-                                setConfirmedAgentModelFor(
-                                  selectedAgent?.id ?? null
-                                );
                                 setIsModelListOpen(false);
                                 setOpenMenu(null);
                               }}
@@ -1571,33 +1875,6 @@ export function ChatComposer({
       {footer && (
         <div className="mt-2 text-center text-[10px] text-faint">{footer}</div>
       )}
-      {memoryRecallFailure ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2">
-          <p role="status" className="text-xs text-foreground-secondary">
-            {memoryRecallFailure}
-          </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={!draft.trim() || !canSend}
-              onClick={() => void submitDraft()}
-              className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-foreground disabled:opacity-40"
-            >
-              Retry
-            </button>
-            {showContinueWithoutMemory ? (
-              <button
-                type="button"
-                disabled={!draft.trim() || !canSend}
-                onClick={() => void submitDraft(true)}
-                className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
-              >
-                Continue without Memory
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

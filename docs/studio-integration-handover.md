@@ -1,3 +1,5 @@
+> Superseded scope notice — 2026-10-14: use [the revised integration plan](studio-ui-integration-plan.md) and local tickets 24–30. The delivery boundary and conflicting Agent/Job/Memory rules below are historical.
+
 # Studio integration handover
 
 ## Delivery boundary

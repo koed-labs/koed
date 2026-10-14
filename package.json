@@ -61,6 +61,7 @@
     "env:sync": "node scripts/sync-app-env-examples.mjs",
     "env:sync:check": "node scripts/sync-app-env-examples.mjs --check",
     "smoke:lcm": "node scripts/lcm-smoke-test.mjs",
+    "smoke:multi-agent-chats": "pnpm --filter @koed/db build && node scripts/multi-agent-chat-smoke.mjs",
     "smoke:personal-joined": "node scripts/personal-joined-smoke.mjs",
     "smoke:pds-replication": "node scripts/personal-device-replication-smoke.mjs",
     "team-fixture:reset": "node scripts/team-saas-fixture.mjs reset",

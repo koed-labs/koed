@@ -10,6 +10,7 @@ import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { parseLaunchInstances } from "@/lib/managed-agent-chat";
 import { readHomeJson } from "@/lib/home-json";
 import { useVisibleRefresh } from "@/lib/use-visible-refresh";
+import { rootPersonalConversationOngoingItems } from "@/lib/personal-conversation-routing";
 import type {
   HomeExecution,
   HomeRecent,
@@ -26,6 +27,7 @@ import {
 import { HomeProjectPicker } from "./HomeProjectPicker";
 import type { HomeItem } from "@koed/shared/home";
 import type { HomeFeedController } from "@/lib/use-home-feed";
+import type { PersonalAgentChatConversationSummary } from "@koed/shared/personal-agent-chat-contract";
 import { StudioSidebar } from "./StudioSidebar";
 import { usePersonalRemovals } from "./usePersonalRemovals";
 import { useVerifiedPersonalScope } from "./useVerifiedPersonalScope";
@@ -158,7 +160,8 @@ export function PersonalHome({
   onPlugins,
   onPullRequests,
   homeFeed,
-  onOpenHomeItem
+  onOpenHomeItem,
+  personalConversationSummaries = []
 }: {
   canCreateLocalProject: boolean;
   registeredProjects?: readonly HomeProject[];
@@ -179,6 +182,7 @@ export function PersonalHome({
   onPullRequests?: () => void;
   homeFeed: HomeFeedController;
   onOpenHomeItem: (item: HomeItem) => void;
+  personalConversationSummaries?: readonly PersonalAgentChatConversationSummary[];
 }) {
   const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -513,6 +517,68 @@ export function PersonalHome({
       runnerControllerRef.current = null;
     };
   }, [load, loadLocalRunnerAvailability]);
+  const personalRootRows: HomeExecution[] = personalConversationSummaries.map(
+    (conversation) => {
+      const running = ["queued", "running", "blocked", "uncertain"].includes(
+        conversation.status
+      );
+      return {
+        id: conversation.conversationId,
+        personalConversationId: conversation.conversationId,
+        sourceExecutionIds: conversation.sourceExecutionIds,
+        childExecutionIds: conversation.childExecutionIds,
+        capturedSessionIds: conversation.capturedSessionIds,
+        activeAgentId: conversation.activeAgentId,
+        latestAgentName: conversation.latestAgentName,
+        sessionId: null,
+        projectId: conversation.projectId,
+        title:
+          conversation.title ??
+          (conversation.latestAgentName
+            ? `Chat with ${conversation.latestAgentName}`
+            : "New chat"),
+        provider: conversation.activeProvider ?? "personal-conversation",
+        state: running
+          ? "running"
+          : conversation.status === "failed"
+            ? "failed"
+            : "stopped",
+        updatedAt: conversation.updatedAt,
+        error: null,
+        activity:
+          conversation.status === "uncertain"
+            ? "uncertain"
+            : conversation.status === "blocked"
+              ? "pending"
+              : running
+                ? "running"
+                : "idle"
+      };
+    }
+  );
+  const homeFeedSnapshot = rootPersonalConversationOngoingItems(
+    homeFeed.snapshot,
+    personalConversationSummaries
+  );
+  const hiddenExecutionIds = useMemo(
+    () =>
+      new Set(
+        personalConversationSummaries.flatMap((conversation) => [
+          ...conversation.sourceExecutionIds,
+          ...conversation.childExecutionIds
+        ])
+      ),
+    [personalConversationSummaries]
+  );
+  const hiddenCapturedSessionIds = useMemo(
+    () =>
+      new Set(
+        personalConversationSummaries.flatMap(
+          (conversation) => conversation.capturedSessionIds
+        )
+      ),
+    [personalConversationSummaries]
+  );
   const allRecents = filterHomeCollections(
     {
       executions: [],
@@ -520,10 +586,21 @@ export function PersonalHome({
       recents: usable && snapshot?.coverage.recents ? snapshot.recents : []
     },
     null
-  ).recents;
+  ).recents.filter(
+    (recent) =>
+      !hiddenCapturedSessionIds.has(recent.id) &&
+      !hiddenCapturedSessionIds.has(recent.sessionId)
+  );
   const coveredExecutions = useMemo(
-    () => (usable && snapshot?.coverage.executions ? snapshot.executions : []),
-    [usable, snapshot]
+    () => [
+      ...(usable && snapshot?.coverage.executions
+        ? snapshot.executions.filter(
+            (execution) => !hiddenExecutionIds.has(execution.id)
+          )
+        : []),
+      ...personalRootRows
+    ],
+    [hiddenExecutionIds, personalRootRows, snapshot, usable]
   );
   const providerSourceIdsByExecution = useMemo(() => {
     return managedProviderSourceIdsByExecution({
@@ -968,6 +1045,7 @@ export function PersonalHome({
                     }
                     environmentSwitchDisabled
                     agents={homeAgents}
+                    allowMultipleAgentMentions
                     activeAgentId={homeAgentId}
                     onActiveAgentChange={(id) =>
                       setAgentSelection({ scope: homeScopeKey ?? "", id })
@@ -1071,7 +1149,7 @@ export function PersonalHome({
             <HomeAttentionView
               showRefresh={false}
               state={homeFeed.state}
-              snapshot={homeFeed.snapshot}
+              snapshot={homeFeedSnapshot}
               refreshing={homeFeed.refreshing}
               mutationError={homeFeed.mutationError}
               pendingItemIds={homeFeed.pendingItemIds}

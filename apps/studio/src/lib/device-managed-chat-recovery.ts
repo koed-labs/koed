@@ -1,3 +1,8 @@
+import {
+  personalAgentChatSubmitSchema,
+  type PersonalAgentChatSubmit
+} from "@koed/shared/personal-agent-chat-contract";
+
 /**
  * Device-local recovery for Studio managed chats. The record is never sent to
  * a managed-conversation API; callers must first resolve the current owner.
@@ -15,6 +20,8 @@ export type DeviceManagedChatPendingOperation = Readonly<{
   prompt: string;
   selectedResourceIds?: readonly string[];
   requestFingerprint?: string;
+  /** Exact ordered request body needed for an idempotent root-chat retry. */
+  personalSubmit?: PersonalAgentChatSubmit;
   state: "pending" | "reconciling" | "accepted" | "rejected";
   commandId?: string;
 }>;
@@ -22,6 +29,7 @@ export type DeviceManagedChatPendingOperation = Readonly<{
 export type DeviceManagedChatRecoveryRecord = Readonly<{
   schemaVersion: 1;
   draft: string;
+  personalConversationId?: string;
   pendingOperation?: DeviceManagedChatPendingOperation;
 }>;
 
@@ -270,12 +278,27 @@ export function parseRecoveryRecord(
     if (
       !isRecord(parsed) ||
       parsed.schemaVersion !== 1 ||
-      typeof parsed.draft !== "string"
+      typeof parsed.draft !== "string" ||
+      (parsed.personalConversationId !== undefined &&
+        (typeof parsed.personalConversationId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+            parsed.personalConversationId
+          )))
     )
       return null;
     const candidate = parsed.pendingOperation;
     if (candidate === undefined)
-      return { schemaVersion: 1, draft: parsed.draft };
+      return {
+        schemaVersion: 1,
+        draft: parsed.draft,
+        ...(typeof parsed.personalConversationId === "string"
+          ? { personalConversationId: parsed.personalConversationId }
+          : {})
+      };
+    const personalSubmit =
+      isRecord(candidate) && candidate.personalSubmit !== undefined
+        ? personalAgentChatSubmitSchema.safeParse(candidate.personalSubmit)
+        : null;
     if (
       !isRecord(candidate) ||
       (candidate.kind !== "start" && candidate.kind !== "prompt") ||
@@ -300,6 +323,7 @@ export function parseRecoveryRecord(
       (candidate.requestFingerprint !== undefined &&
         (typeof candidate.requestFingerprint !== "string" ||
           candidate.requestFingerprint.length > 8192)) ||
+      (candidate.personalSubmit !== undefined && !personalSubmit?.success) ||
       !["pending", "reconciling", "accepted", "rejected"].includes(
         String(candidate.state)
       ) ||
@@ -310,6 +334,9 @@ export function parseRecoveryRecord(
     return {
       schemaVersion: 1,
       draft: parsed.draft,
+      ...(typeof parsed.personalConversationId === "string"
+        ? { personalConversationId: parsed.personalConversationId }
+        : {}),
       pendingOperation: {
         kind: candidate.kind,
         startIdempotencyKey: candidate.startIdempotencyKey,
@@ -327,6 +354,9 @@ export function parseRecoveryRecord(
           : {}),
         ...(typeof candidate.requestFingerprint === "string"
           ? { requestFingerprint: candidate.requestFingerprint }
+          : {}),
+        ...(personalSubmit?.success
+          ? { personalSubmit: personalSubmit.data }
           : {}),
         state: candidate.state as DeviceManagedChatPendingOperation["state"],
         ...(typeof candidate.commandId === "string"

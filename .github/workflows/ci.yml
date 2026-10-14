@@ -162,6 +162,11 @@ jobs:
           PG_RESTORE_BIN: .github/scripts/pg-restore-service.sh
         run: pnpm db:migrate:acceptance
 
+      - name: Validate durable multi-Agent conversations
+        env:
+          KOED_MULTI_AGENT_SMOKE_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+        run: pnpm smoke:multi-agent-chats
+
       - name: Test
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed

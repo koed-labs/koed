@@ -1363,7 +1363,7 @@ test("resumes a stopped hosted chat through its existing prompt identity", async
   assert.deepEqual(sent[1], sent[0]);
 });
 
-test("sends the one-shot Continue without Memory flag only with the accepted prompt", async () => {
+test("sends hosted prompts without a profile-specific Memory bypass", async () => {
   const sent: Record<string, unknown>[] = [];
   await queueHostedConversationPrompt(
     execution,
@@ -1374,9 +1374,9 @@ test("sends the one-shot Continue without Memory flag only with the accepted pro
       sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return json({ command: { id: commandId, state: "queued" } }, 202);
     },
-    { continueWithoutMemory: true }
+    {}
   );
-  assert.equal(sent[0]?.continueWithoutMemory, true);
+  assert.equal(sent[0]?.continueWithoutMemory, undefined);
 });
 
 test("surfaces the bounded hosted recall pause code for Studio recovery actions", async () => {
@@ -1787,7 +1787,7 @@ test("starts an independent hosted Conversation with no Project", async () => {
   });
 });
 
-test("starts a hosted Agent Job with its owner version and clear goal", async () => {
+test("starts an attributed hosted conversation with its owner version and clear goal", async () => {
   let request: { url: string; init?: RequestInit } | undefined;
   await startHostedManagedConversation(
     {
@@ -1803,8 +1803,7 @@ test("starts a hosted Agent Job with its owner version and clear goal", async ()
       initialPrompt: "Review the billing implementation and report risks.",
       initialPromptClientUserMessageId: "33333333-3333-4333-8333-333333333333",
       agentId: "11111111-1111-4111-8111-111111111111",
-      expectedAgentVersion: 7,
-      continueWithoutMemory: true
+      expectedAgentVersion: 7
     },
     undefined,
     async (input, init) => {
@@ -1834,7 +1833,6 @@ test("starts a hosted Agent Job with its owner version and clear goal", async ()
     initialPromptClientUserMessageId: "33333333-3333-4333-8333-333333333333",
     agentId: "11111111-1111-4111-8111-111111111111",
     expectedAgentVersion: 7,
-    continueWithoutMemory: true,
     runnerKind: "local_device"
   });
 });

@@ -23,7 +23,6 @@ import {
   loadHostedManagedConversation,
   loadHostedManagedConversationAccess,
   loadHostedRecallFeedback,
-  loadHostedBuildProgress,
   loadHostedConversationDiff,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
@@ -50,7 +49,6 @@ import {
 } from "@/lib/hosted-managed-chats";
 import {
   canCancelManagedConversationPrompt,
-  record,
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
@@ -60,12 +58,7 @@ import {
 } from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
-import {
-  activityWithBuildProgress,
-  buildProgressJobState,
-  parseBuildProgressPage,
-  unavailableBuildProgress
-} from "@/lib/build-progress-client";
+
 import type { BuildActivity } from "@/lib/studio-build-activity";
 import {
   createDeviceManagedChatRecoveryStore,
@@ -75,7 +68,15 @@ import {
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
 import { ProjectMovePicker } from "@/components/ProjectMovePicker";
 import { PrepareTeamQuestionAction } from "@/components/PrepareTeamQuestionAction";
-import { ChatComposer } from "@/components/ChatComposer";
+import {
+  ChatComposer,
+  type ChatComposerSelection
+} from "@/components/ChatComposer";
+import {
+  HostedPersonalConversationChat,
+  hostedPersonalMentionAgent,
+  resolveHostedPersonalRecipients
+} from "./HostedPersonalConversationChat";
 import { BuildActivityPanel } from "@/components/BuildActivityPanel";
 import { AgentChatMessage, SharedChatUI } from "@/components/SharedChatUI";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
@@ -92,6 +93,15 @@ import {
   personalAgentsHttpAdapter,
   type PersonalAgent
 } from "@/lib/personal-agents-client";
+import {
+  listPersonalConversations,
+  submitPersonalConversationMessage
+} from "@/lib/personal-conversations-client";
+import type {
+  PersonalAgentChatConversationSummary,
+  PersonalAgentChatSubmit
+} from "@koed/shared/personal-agent-chat-contract";
+import { personalConversationForExecution } from "@/lib/personal-conversation-routing";
 import {
   dismissProjectMoveNotice,
   shouldKeepProjectMoveNoticeIntent
@@ -139,11 +149,22 @@ const stateLabel = (execution: HostedManagedExecution) => {
   return execution.state.replaceAll("_", " ");
 };
 
+async function personalRequestFingerprint(value: PersonalAgentChatSubmit) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(value))
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
 export function HostedManagedChats({
   onAuthorizationLost,
   initialNewConversation = false,
   initialAgentId,
   initialExecutionId,
+  initialPersonalConversationId,
   initialDraft = "",
   embeddedReview,
   onDraftChange,
@@ -156,6 +177,7 @@ export function HostedManagedChats({
   initialNewConversation?: boolean;
   initialAgentId?: string;
   initialExecutionId?: string;
+  initialPersonalConversationId?: string;
   initialDraft?: string;
   embeddedReview?: { reviewId: string; executionId: string; agentId: string };
   onDraftChange?: (draft: string) => void;
@@ -174,23 +196,42 @@ export function HostedManagedChats({
     []
   );
   const [executions, setExecutions] = useState<HostedManagedExecution[]>([]);
+  const [personalConversationSummaries, setPersonalConversationSummaries] =
+    useState<PersonalAgentChatConversationSummary[]>([]);
+  const [personalConversationListError, setPersonalConversationListError] =
+    useState<string | null>(null);
+  const [
+    personalConversationSummariesLoaded,
+    setPersonalConversationSummariesLoaded
+  ] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(
     initialExecutionId ?? null
   );
   useEffect(() => {
-    if (!selectedId) return;
+    if (
+      !selectedId ||
+      (!embeddedReview &&
+        !teamRequestId &&
+        initialExecutionId &&
+        !personalConversationSummariesLoaded)
+    )
+      return;
     return registerStudioNotificationViewedChat({
       kind: "agent",
       executionId: selectedId
     });
-  }, [selectedId]);
+  }, [
+    embeddedReview,
+    initialExecutionId,
+    personalConversationSummariesLoaded,
+    selectedId,
+    teamRequestId
+  ]);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [buildActivity, setBuildActivity] = useState<BuildActivity | null>(
     null
   );
-  const [selectedBuildJobId, setSelectedBuildJobId] = useState<string | null>(
-    null
-  );
+
   const [messages, setMessages] = useState<HostedConversationMessage[]>([]);
   const [jobMarkers, setJobMarkers] = useState<ManagedAgentJobMarker[]>([]);
   const [jobMarkersExecutionId, setJobMarkersExecutionId] = useState<
@@ -244,12 +285,10 @@ export function HostedManagedChats({
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [launchOptions, setLaunchOptions] =
     useState<HostedLaunchOptions | null>(null);
+  const [personalAgents, setPersonalAgents] = useState<PersonalAgent[]>([]);
   const [launchAgent, setLaunchAgent] = useState<PersonalAgent | null>(null);
   const [launchAgentLoading, setLaunchAgentLoading] = useState(false);
   const [launchAgentError, setLaunchAgentError] = useState<string | null>(null);
-  const [confirmedAgentModelFor, setConfirmedAgentModelFor] = useState<
-    string | null
-  >(null);
   const [launchLoading, setLaunchLoading] = useState(false);
   const [launchProjectId, setLaunchProjectId] = useState("");
   const [launchDeviceId, setLaunchDeviceId] = useState("");
@@ -261,11 +300,6 @@ export function HostedManagedChats({
   const [initialSelectedResourceIds, setInitialSelectedResourceIds] = useState<
     string[]
   >([]);
-  const [memoryRecallFailure, setMemoryRecallFailure] = useState<{
-    kind: "start" | "prompt";
-    executionId?: string;
-    agentId: string | null;
-  } | null>(null);
   const [latestProjectMove, setLatestProjectMove] =
     useState<HostedProjectMove | null>(null);
   const [projectMoveLoaded, setProjectMoveLoaded] = useState(false);
@@ -415,6 +449,25 @@ export function HostedManagedChats({
   const refreshList = useCallback(
     async (signal?: AbortSignal) => {
       const values = await listHostedManagedConversations(signal);
+      let roots: PersonalAgentChatConversationSummary[] = [];
+      if (!embeddedReview && !teamRequestId) {
+        try {
+          roots = await listPersonalConversations(signal);
+          setPersonalConversationListError(null);
+        } catch (cause) {
+          if (!signal?.aborted) {
+            setPersonalConversationListError(
+              cause instanceof Error
+                ? cause.message
+                : "Personal conversations could not be loaded."
+            );
+          }
+        } finally {
+          if (!signal?.aborted) setPersonalConversationSummariesLoaded(true);
+        }
+      } else {
+        setPersonalConversationSummariesLoaded(true);
+      }
       if (
         embeddedReview &&
         !values.some((item) => item.id === embeddedReview.executionId)
@@ -433,15 +486,37 @@ export function HostedManagedChats({
         });
       }
       if (signal?.aborted) return;
-      setExecutions(values);
+      const rootExecutionIds = new Set(
+        roots.flatMap((root) => [
+          ...root.sourceExecutionIds,
+          ...root.childExecutionIds,
+          ...root.capturedSessionIds
+        ])
+      );
+      const visibleValues = values.filter(
+        (value) => !rootExecutionIds.has(value.id)
+      );
+      setPersonalConversationSummaries(roots);
+      setExecutions(visibleValues);
+      const linkedRoot = personalConversationForExecution(
+        roots,
+        initialExecutionId
+      );
+      if (linkedRoot && !embeddedReview && !teamRequestId) {
+        selectedIdRef.current = null;
+        setSelectedId(null);
+        router.replace(
+          `/?chat=1&conversation=${encodeURIComponent(linkedRoot.conversationId)}`
+        );
+        return;
+      }
       const current = selectedIdRef.current;
       const next = embeddedReview
         ? embeddedReview.executionId
-        : current && values.some((item) => item.id === current)
+        : current && visibleValues.some((item) => item.id === current)
           ? current
-          : (values[0]?.id ?? null);
+          : (visibleValues[0]?.id ?? null);
       if (next !== current) {
-        setMemoryRecallFailure(null);
         selectedIdRef.current = next;
         setSelectedId(next);
         recoveryOperationRef.current = null;
@@ -456,7 +531,13 @@ export function HostedManagedChats({
         setProjectMovePickerOpen(false);
       }
     },
-    [setScopedPendingRecoveryOperation, embeddedReview]
+    [
+      setScopedPendingRecoveryOperation,
+      embeddedReview,
+      initialExecutionId,
+      router,
+      teamRequestId
+    ]
   );
 
   const reconcilePromptOperation = useCallback(
@@ -1018,6 +1099,28 @@ export function HostedManagedChats({
   }, [handleError]);
 
   useEffect(() => {
+    if (embeddedReview || teamRequestId || !selectedId) {
+      return;
+    }
+    const controller = new AbortController();
+    void Promise.all([
+      personalAgentsHttpAdapter.list(controller.signal),
+      launchOptions ? Promise.resolve(launchOptions) : loadHostedLaunchOptions()
+    ])
+      .then(([agents, options]) => {
+        if (controller.signal.aborted) return;
+        setPersonalAgents(
+          agents.filter((agent) => agent.lifecycle === "active")
+        );
+        setLaunchOptions(options);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setPersonalAgents([]);
+      });
+    return () => controller.abort();
+  }, [embeddedReview, launchOptions, selectedId, teamRequestId]);
+
+  useEffect(() => {
     if (!recoveryScope || loading || initialPromptSeeded.current) return;
     const controller = new AbortController();
     const selectedExecutionAtStart = selectedIdRef.current;
@@ -1139,26 +1242,7 @@ export function HostedManagedChats({
       signal?: AbortSignal
     ) => {
       const sequence = ++buildActivitySequence.current;
-      const rawJobs = (state.jobs ?? []).filter(record).slice(0, 20);
-      const jobs = rawJobs.flatMap((job) =>
-        typeof job.id === "string" && typeof job.title === "string"
-          ? [
-              {
-                id: job.id,
-                title: job.title,
-                state: buildProgressJobState(job.observedState ?? job.state),
-                createdAt:
-                  typeof job.createdAt === "string" ? job.createdAt : undefined
-              }
-            ]
-          : []
-      );
-      const selectedJobId =
-        selectedBuildJobId && jobs.some((job) => job.id === selectedBuildJobId)
-          ? selectedBuildJobId
-          : (jobs.find((job) => job.state === "running")?.id ??
-            jobs[0]?.id ??
-            null);
+      if (runtimeSnapshot.execution.executionGeneration !== generation) return;
       const projectName =
         launchOptions?.projects.find((project) => project.id === projectId)
           ?.name ?? (projectId ? "Project" : "Managed runtime");
@@ -1166,12 +1250,9 @@ export function HostedManagedChats({
         state as unknown as Record<string, unknown>,
         runtimeSnapshot
       );
-      setSelectedBuildJobId(selectedJobId);
-      let conversationActivity: BuildActivity = {
+      const conversationActivity: BuildActivity = {
         ...base,
         project: { name: projectName },
-        jobs,
-        ...(selectedJobId ? { selectedJobId } : {}),
         availability: projectId ? "unavailable" : "no_project"
       };
       setBuildActivity(conversationActivity);
@@ -1195,49 +1276,22 @@ export function HostedManagedChats({
           sequence === buildActivitySequence.current &&
           selectedIdRef.current === executionId
         ) {
-          conversationActivity = enriched;
           setBuildActivity(enriched);
         }
-        if (!selectedJobId) return;
-      }
-      try {
-        const payload = await loadHostedBuildProgress(
-          executionId,
-          selectedJobId,
-          signal
-        );
-        if (signal?.aborted || selectedIdRef.current !== executionId) return;
-        const page = parseBuildProgressPage(payload);
-        if (
-          !page ||
-          page.events.some((event) => event.executionGeneration !== generation)
-        ) {
-          setBuildActivity(unavailableBuildProgress(base));
-          return;
-        }
-        setBuildActivity(
-          activityWithBuildProgress({
-            current: conversationActivity,
-            page,
-            jobs,
-            projectName
-          })
-        );
-      } catch {
-        if (!signal?.aborted && selectedIdRef.current === executionId)
-          setBuildActivity(unavailableBuildProgress(base));
       }
     },
-    [
-      launchOptions,
-      selectedBuildJobId,
-      recoveryScope,
-      loadConversationBuildDiff
-    ]
+    [launchOptions, recoveryScope, loadConversationBuildDiff]
   );
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (
+      !selectedId ||
+      (!embeddedReview &&
+        !teamRequestId &&
+        initialExecutionId &&
+        !personalConversationSummariesLoaded)
+    )
+      return;
     const controller = new AbortController();
     let timeout = 0;
     const poll = async () => {
@@ -1336,10 +1390,13 @@ export function HostedManagedChats({
     handleError,
     refreshProjectMove,
     selectedId,
+    embeddedReview,
+    initialExecutionId,
+    personalConversationSummariesLoaded,
     reconcileStartOperation,
     reconcilePromptOperation,
     launchOptions,
-    embeddedReview,
+    teamRequestId,
     refreshBuildActivity
   ]);
 
@@ -1348,6 +1405,25 @@ export function HostedManagedChats({
     [executions, selectedId]
   );
   const selectedRuntime = runtime?.execution.id === selectedId ? runtime : null;
+  const personalComposerModelOptions = useMemo(
+    () =>
+      (launchOptions?.instances ?? []).flatMap((instance) =>
+        instance.ready
+          ? instance.models.map((model) => ({
+              provider: instance.driverId,
+              id: model.id,
+              displayName: model.displayName,
+              instanceId: instance.instanceId,
+              ...(instance.hostedInstanceId
+                ? { hostedInstanceId: instance.hostedInstanceId }
+                : {}),
+              targetDeviceId: instance.runnerDeviceId,
+              supportedReasoningEfforts: model.supportedReasoningEfforts
+            }))
+          : []
+      ),
+    [launchOptions]
+  );
   const selectedRuntimeResourceInstance = (() => {
     if (!selectedRuntime) return undefined;
     const matches = (launchOptions?.instances ?? []).filter(
@@ -1397,7 +1473,6 @@ export function HostedManagedChats({
     setTeamSummaryState({ status: "drafting", text: "" });
     try {
       const result = await send(
-        false,
         {
           purpose: "team_summary_draft",
           teamSummary: {
@@ -1462,14 +1537,6 @@ export function HostedManagedChats({
     },
     [router, teamRequestId, teamRequestTeamId]
   );
-  const activeMemoryRecall =
-    memoryRecallFailure?.kind === "start"
-      ? newConversationOpen
-        ? memoryRecallFailure
-        : null
-      : memoryRecallFailure?.executionId === selectedId
-        ? memoryRecallFailure
-        : null;
   const recoveryGuard = hostedRecoveryGuardForSelection({
     selectedExecutionId: selectedId,
     pendingOperationExecutionId: pendingRecoveryOperation
@@ -1535,15 +1602,6 @@ export function HostedManagedChats({
       ? launchEffort === ""
       : launchModel.supportedReasoningEfforts.includes(launchEffort))
   );
-  const launchAgentDefaultAvailable = Boolean(
-    launchAgent?.defaultProvider &&
-    launchAgent.defaultModel &&
-    launchDeviceInstances.some(
-      (instance) =>
-        instance.driverId === launchAgent.defaultProvider &&
-        instance.models.some((model) => model.id === launchAgent.defaultModel)
-    )
-  );
   const launchCanStart = Boolean(
     recoveryScope &&
     (!teamRequestId || Boolean(selectedId) || teamRequestReviewSaved) &&
@@ -1557,10 +1615,7 @@ export function HostedManagedChats({
     launchPermission &&
     launchInstance.permissionModes.includes(launchPermission) &&
     (!initialAgentId ||
-      (launchAgent?.lifecycle === "active" &&
-        initialPrompt.trim().length > 0 &&
-        (launchAgentDefaultAvailable ||
-          confirmedAgentModelFor === launchAgent.id)))
+      (launchAgent?.lifecycle === "active" && initialPrompt.trim().length > 0))
   );
   const displayMessages = useMemo(() => {
     const withTransientOutput = hostedMessagesWithTransientOutput(
@@ -1737,8 +1792,98 @@ export function HostedManagedChats({
     }
   };
 
+  const sendPersonalAgentBatch = async (
+    text: string,
+    selection: ChatComposerSelection
+  ) => {
+    const prompt = text.trim();
+    if (!selected || !selectedRuntime || !recoveryScope || !prompt)
+      throw new Error("This managed Conversation is not ready to adopt.");
+    const latest = selectedRuntime.latestCommand;
+    if (
+      hostedPromptOutcomeIsUncertain(selectedRuntime) ||
+      (latest?.commandKind === "prompt" &&
+        ["queued", "blocked", "dispatching"].includes(latest.state))
+    )
+      throw new Error(
+        "Check the existing prompt status before adding this chat to a Personal Agent conversation."
+      );
+    const options = launchOptions ?? (await loadHostedLaunchOptions());
+    if (!launchOptions) setLaunchOptions(options);
+    const recipients = resolveHostedPersonalRecipients(
+      selection,
+      options,
+      personalAgents
+    );
+    const targetDeviceId = recipients[0]?.targetDeviceId;
+    if (!targetDeviceId)
+      throw new Error("The selected Agents have no verified Personal Device.");
+    if (
+      selectedRuntime.execution.runnerDeviceId &&
+      selectedRuntime.execution.runnerDeviceId !== targetDeviceId
+    )
+      throw new Error(
+        "The selected Agents must use the Personal Device that owns this chat."
+      );
+    const projectId = selectedRuntime.execution.projectId ?? null;
+    const request: PersonalAgentChatSubmit = {
+      requestId: crypto.randomUUID(),
+      text: prompt,
+      sourceExecutionId: selected.id,
+      context: {
+        projectId,
+        contextKind: projectId ? "project" : "independent",
+        targetDeviceId
+      },
+      recipients
+    };
+    const conversationId = crypto.randomUUID();
+    const operation: DeviceManagedChatPendingOperation = {
+      kind: "start",
+      startIdempotencyKey: crypto.randomUUID(),
+      promptIdempotencyKey: request.requestId,
+      clientUserMessageId: crypto.randomUUID(),
+      prompt,
+      requestFingerprint: await personalRequestFingerprint(request),
+      personalSubmit: request,
+      state: "pending"
+    };
+    const store = createDeviceManagedChatRecoveryStore({
+      ...recoveryScope,
+      executionId: conversationId
+    });
+    if (!store?.writeDurably)
+      throw new Error(
+        "This browser could not save a safe retry identity. Nothing was sent."
+      );
+    store.writeDurably({
+      schemaVersion: 1,
+      personalConversationId: conversationId,
+      draft: "",
+      pendingOperation: operation
+    });
+    setSending(true);
+    setError(null);
+    setStatus("Saving the Agent conversation…");
+    router.replace(
+      `/?chat=1&conversation=${encodeURIComponent(conversationId)}`
+    );
+    try {
+      await submitPersonalConversationMessage(conversationId, request);
+      setStatus("Agent batch accepted");
+    } catch (cause) {
+      setStatus("Saved send needs reconciliation");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The Agent batch could not be confirmed. Its retry identity is saved."
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
   const send = async (
-    continueWithoutMemory = false,
     purpose?: {
       purpose: "team_summary_draft";
       teamSummary: { teamId: string; requestId: string; jobId: string };
@@ -1760,7 +1905,6 @@ export function HostedManagedChats({
       return;
     setSending(true);
     setError(null);
-    setMemoryRecallFailure(null);
     setStatus(null);
     let agentAttribution:
       | { agentId: string; expectedAgentVersion: number }
@@ -1779,10 +1923,6 @@ export function HostedManagedChats({
       }
       agentAttribution =
         hostedActiveAgentAttribution(ownerState.state) ?? undefined;
-      if (continueWithoutMemory && !agentAttribution)
-        throw new Error(
-          "Continue without Memory is available only for an active Agent Job."
-        );
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -1836,9 +1976,6 @@ export function HostedManagedChats({
           ...(operation.resumeFromStopped
             ? { resumeFromStopped: true as const }
             : {}),
-          ...(continueWithoutMemory
-            ? { continueWithoutMemory: true as const }
-            : {}),
           ...(purpose ?? {}),
           ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
           ...(selectedResourceIds.length && selectedResourceHostedInstanceId
@@ -1873,23 +2010,9 @@ export function HostedManagedChats({
       await reconcilePromptOperation(acceptedOperation, selected.id, store);
       return { commandId: command.commandId, userMessageId: messageId };
     } catch (cause) {
-      if (
-        cause instanceof HostedManagedChatError &&
-        cause.code === "MEMORY_RECALL_UNAVAILABLE"
-      ) {
-        recoveryOperationRef.current = null;
-        writeRecovery(store, prompt, null);
-        setMemoryRecallFailure({
-          kind: "prompt",
-          executionId: selected.id,
-          agentId: agentAttribution?.agentId ?? null
-        });
-        setError(cause.message);
-      } else {
-        const unresolved = { ...operation, state: "reconciling" as const };
-        setRecoveryOperation(unresolved, store, prompt);
-        await reconcilePromptOperation(unresolved, selected.id, store);
-      }
+      const unresolved = { ...operation, state: "reconciling" as const };
+      setRecoveryOperation(unresolved, store, prompt);
+      await reconcilePromptOperation(unresolved, selected.id, store);
       if (
         cause instanceof HostedManagedChatError &&
         [401, 403].includes(cause.status ?? 0)
@@ -2091,16 +2214,13 @@ export function HostedManagedChats({
     async (agentId?: string) => {
       setNewConversationOpen(true);
       setError(null);
-      setMemoryRecallFailure(null);
       setLaunchAgentError(null);
       let selectedAgent: PersonalAgent | null = null;
       if (!agentId) {
         setLaunchAgent(null);
-        setConfirmedAgentModelFor(null);
       }
       if (agentId) {
         setLaunchAgentLoading(true);
-        setConfirmedAgentModelFor(null);
         try {
           selectedAgent = await personalAgentsHttpAdapter.get(agentId);
           if (selectedAgent.lifecycle !== "active") {
@@ -2132,37 +2252,7 @@ export function HostedManagedChats({
           effort: launchEffort,
           permission: launchPermission
         };
-        let preferredSelection = currentSelection;
-        if (selectedAgent?.defaultProvider && selectedAgent.defaultModel) {
-          const matchingInstance = options.instances.find(
-            (instance) =>
-              instance.driverId === selectedAgent?.defaultProvider &&
-              instance.models.some(
-                (model) => model.id === selectedAgent?.defaultModel
-              )
-          );
-          const matchingModel = matchingInstance?.models.find(
-            (model) => model.id === selectedAgent?.defaultModel
-          );
-          if (matchingInstance && matchingModel) {
-            preferredSelection = {
-              ...currentSelection,
-              deviceId: matchingInstance.runnerDeviceId,
-              instanceId: matchingInstance.instanceId,
-              modelId: matchingModel.id,
-              effort:
-                selectedAgent.defaultReasoningEffort &&
-                matchingModel.supportedReasoningEfforts.includes(
-                  selectedAgent.defaultReasoningEffort
-                )
-                  ? selectedAgent.defaultReasoningEffort
-                  : (matchingModel.supportedReasoningEfforts[0] ?? ""),
-              permission:
-                matchingInstance.permissionModes[0] ??
-                currentSelection.permission
-            };
-          }
-        }
+        const preferredSelection = currentSelection;
         const selection = hostedLaunchSelectionForOptions(
           options,
           preferredSelection
@@ -2192,14 +2282,23 @@ export function HostedManagedChats({
   );
 
   useEffect(() => {
-    if (!initialNewConversation || initialNewConversationHandled.current)
+    if (
+      !initialNewConversation ||
+      (!teamRequestId && !embeddedReview) ||
+      initialNewConversationHandled.current
+    )
       return;
     initialNewConversationHandled.current = true;
     void openNewConversation(initialAgentId);
-  }, [initialAgentId, initialNewConversation, openNewConversation]);
+  }, [
+    embeddedReview,
+    initialAgentId,
+    initialNewConversation,
+    openNewConversation,
+    teamRequestId
+  ]);
 
   const createConversation = async (
-    continueWithoutMemory = false,
     selectedResourceIds = initialSelectedResourceIds,
     selectedResourceHostedInstanceId = launchInstance?.hostedInstanceId
   ) => {
@@ -2212,18 +2311,8 @@ export function HostedManagedChats({
       newStartRecoveryChecking
     )
       return;
-    if (
-      continueWithoutMemory &&
-      (!initialAgentId || launchAgent?.lifecycle !== "active")
-    ) {
-      setError(
-        "Continue without Memory is available only for an active Agent Job."
-      );
-      return;
-    }
     setSending(true);
     setError(null);
-    setMemoryRecallFailure(null);
     setStatus(null);
     const prompt = initialPrompt.trim();
     const store =
@@ -2305,9 +2394,6 @@ export function HostedManagedChats({
               initialPrompt: prompt,
               initialPromptClientUserMessageId: operation.clientUserMessageId
             }
-          : {}),
-        ...(continueWithoutMemory
-          ? { continueWithoutMemory: true as const }
           : {})
       });
       router.replace(
@@ -2366,24 +2452,6 @@ export function HostedManagedChats({
       );
       await reconcileStartOperation(acceptedOperation, store, true);
     } catch (cause) {
-      if (
-        cause instanceof HostedManagedChatError &&
-        cause.code === "MEMORY_RECALL_UNAVAILABLE"
-      ) {
-        newStartOperationRef.current = null;
-        setPendingNewStart(null);
-        writeRecovery(store, prompt, null);
-        setMemoryRecallFailure({
-          kind: "start",
-          agentId:
-            initialAgentId && launchAgent?.lifecycle === "active"
-              ? launchAgent.id
-              : null
-        });
-        setError(cause.message);
-        setSending(false);
-        return;
-      }
       if (cause instanceof HostedManagedChatError && cause.status === 403)
         setLaunchOptions(null);
       const unresolved = { ...operation, state: "reconciling" as const };
@@ -2455,6 +2523,24 @@ export function HostedManagedChats({
     }
   };
 
+  if (
+    !embeddedReview &&
+    !teamRequestId &&
+    (initialPersonalConversationId || initialNewConversation)
+  ) {
+    return (
+      <HostedPersonalConversationChat
+        key={
+          initialPersonalConversationId ?? `new:${initialAgentId ?? "generic"}`
+        }
+        conversationId={initialPersonalConversationId}
+        initialAgentId={initialAgentId}
+        initialDraft={initialDraft}
+        onBack={() => router.replace("/")}
+      />
+    );
+  }
+
   return (
     <>
       {teamRequestId && teamRequestTeamId ? (
@@ -2498,7 +2584,10 @@ export function HostedManagedChats({
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => void openNewConversation()}
+                onClick={() => {
+                  if (!teamRequestId) router.push("/?chat=1");
+                  else void openNewConversation();
+                }}
                 className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90"
               >
                 New Conversation
@@ -2518,6 +2607,52 @@ export function HostedManagedChats({
           </div>
         )}
 
+        {!embeddedReview &&
+          !teamRequestId &&
+          personalConversationSummaries.length > 0 && (
+            <nav
+              aria-label="Personal multi-Agent chats"
+              className="mt-4 space-y-1"
+            >
+              <p className="px-1 pb-1 text-[11px] font-medium text-muted">
+                Personal chats
+              </p>
+              {personalConversationSummaries.map((root) => (
+                <button
+                  key={root.conversationId}
+                  type="button"
+                  onClick={() =>
+                    router.push(
+                      `/?chat=1&conversation=${encodeURIComponent(root.conversationId)}`
+                    )
+                  }
+                  className="flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-surface-hover"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium text-foreground">
+                      {root.title?.trim() || "Personal conversation"}
+                    </span>
+                    <span className="mt-1 block truncate text-[11px] text-muted">
+                      {root.participantCount > 0
+                        ? `${root.participantCount} Agent${root.participantCount === 1 ? "" : "s"}`
+                        : "Generic AI Client"}
+                      {root.latestAgentName ? ` · ${root.latestAgentName}` : ""}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted">
+                    {new Date(root.updatedAt).toLocaleDateString()}
+                  </span>
+                </button>
+              ))}
+            </nav>
+          )}
+        {personalConversationListError && !teamRequestId && !embeddedReview ? (
+          <p role="status" className="mt-2 text-[11px] text-muted">
+            Personal chats could not be refreshed:{" "}
+            {personalConversationListError}
+          </p>
+        ) : null}
+
         {!embeddedReview && newConversationOpen && (
           <form
             className="mt-4 rounded-lg border border-border bg-background p-3"
@@ -2534,7 +2669,6 @@ export function HostedManagedChats({
                 type="button"
                 onClick={() => {
                   setNewConversationOpen(false);
-                  setMemoryRecallFailure(null);
                   setError(null);
                 }}
                 aria-label="Close New Conversation"
@@ -2560,15 +2694,6 @@ export function HostedManagedChats({
                       Start a private Agent conversation. Discuss the work
                       before it becomes an assigned Job.
                     </p>
-                    {!launchAgent.defaultProvider ||
-                    !launchAgent.defaultModel ||
-                    !launchAgentDefaultAvailable ? (
-                      <p className="mt-2 text-warning">
-                        {launchAgent.defaultProvider && launchAgent.defaultModel
-                          ? "This Agent’s default model is unavailable on the selected computer. Choose an available model and reasoning setting for this conversation; the profile defaults will stay unchanged."
-                          : "This Agent has no default model. Choose an available model and reasoning setting for this conversation; the profile will stay unchanged."}
-                      </p>
-                    ) : null}
                   </>
                 ) : null}
               </div>
@@ -2610,7 +2735,6 @@ export function HostedManagedChats({
                         onChange={(event) => {
                           const deviceId = event.target.value;
                           setLaunchDeviceId(deviceId);
-                          setConfirmedAgentModelFor(null);
                           const instance = hostedLaunchInstancesForDevice(
                             launchOptions,
                             deviceId
@@ -2649,7 +2773,6 @@ export function HostedManagedChats({
                           );
                           setLaunchInstanceId(instanceId ?? "");
                           setLaunchModelId(modelId ?? "");
-                          setConfirmedAgentModelFor(launchAgent?.id ?? null);
                           setLaunchEffort(
                             model?.supportedReasoningEfforts[0] ?? ""
                           );
@@ -2789,32 +2912,6 @@ export function HostedManagedChats({
                         ? "Start private conversation"
                         : "Start Conversation"}
                   </button>
-                  {activeMemoryRecall?.kind === "start" ? (
-                    <div
-                      className="mt-2 flex flex-wrap gap-2"
-                      role="group"
-                      aria-label="Memory recall actions"
-                    >
-                      <button
-                        type="button"
-                        disabled={sending}
-                        onClick={() => void createConversation()}
-                        className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
-                      >
-                        Retry
-                      </button>
-                      {activeMemoryRecall.agentId ? (
-                        <button
-                          type="button"
-                          disabled={sending}
-                          onClick={() => void createConversation(true)}
-                          className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
-                        >
-                          Continue without Memory
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
                 </>
               ) : (
                 <p className="text-xs text-muted">
@@ -2908,7 +3005,6 @@ export function HostedManagedChats({
                     key={execution.id}
                     type="button"
                     onClick={() => {
-                      setMemoryRecallFailure(null);
                       setError(null);
                       selectedIdRef.current = execution.id;
                       recoveryOperationRef.current = null;
@@ -2916,7 +3012,6 @@ export function HostedManagedChats({
                       setSelectedId(execution.id);
                       setRuntime(null);
                       setBuildActivity(null);
-                      setSelectedBuildJobId(null);
                       setMessages([]);
                       setPendingMessage(null);
                       setStatus(null);
@@ -3145,18 +3240,29 @@ export function HostedManagedChats({
                       }
                       value={draft}
                       onChange={updateDraft}
-                      onSend={async (
-                        _text,
-                        selection,
-                        continueWithoutMemory
-                      ) => {
-                        await send(
-                          continueWithoutMemory === true,
-                          undefined,
-                          undefined,
-                          selection.selectedResourceIds ?? [],
-                          selection.hostedInstanceId
-                        );
+                      agents={
+                        selectedId && !teamRequestId && !embeddedReview
+                          ? personalAgents.map(hostedPersonalMentionAgent)
+                          : []
+                      }
+                      allowMultipleAgentMentions={
+                        !teamRequestId && !embeddedReview
+                      }
+                      onSend={async (text, selection) => {
+                        if (
+                          !teamRequestId &&
+                          !embeddedReview &&
+                          selection.recipients?.length
+                        ) {
+                          await sendPersonalAgentBatch(text, selection);
+                        } else {
+                          await send(
+                            undefined,
+                            text,
+                            selection.selectedResourceIds ?? [],
+                            selection.hostedInstanceId
+                          );
+                        }
                       }}
                       clientResourceScope={{
                         projectId: selectedRuntime?.execution.projectId ?? null,
@@ -3170,9 +3276,13 @@ export function HostedManagedChats({
                           selectedRuntime?.execution.aiClientInstanceId,
                         provider: selectedRuntime?.execution.provider
                       }}
-                      modelOptions={launchOptions?.instances.flatMap(
-                        (instance) => instance.models
-                      )}
+                      modelOptions={
+                        !teamRequestId && !embeddedReview
+                          ? personalComposerModelOptions
+                          : launchOptions?.instances.flatMap(
+                              (instance) => instance.models
+                            )
+                      }
                       sendEnabled={canSend && !sending && !activePrompt}
                       sendDisabledReason={
                         error ??
@@ -3188,14 +3298,6 @@ export function HostedManagedChats({
                       onInterrupt={() => void control("interrupt")}
                       showExecutionControls={Boolean(selectedRuntime)}
                       showMetaBar={false}
-                      memoryRecallFailure={
-                        activeMemoryRecall?.kind === "prompt"
-                          ? "Memory could not be checked. Your draft is still here."
-                          : null
-                      }
-                      showContinueWithoutMemory={Boolean(
-                        activeMemoryRecall?.agentId
-                      )}
                       footer="Pending means Koed accepted the message. It does not show whether the device is online."
                     />
                   </div>
@@ -3513,39 +3615,6 @@ export function HostedManagedChats({
             </div>
             <BuildActivityPanel
               activity={selectedRuntime ? buildActivity : null}
-              onJobSelect={(jobId) => {
-                setSelectedBuildJobId(jobId);
-                if (!selectedRuntime || !buildActivity) return;
-                void loadHostedBuildProgress(
-                  selectedRuntime.execution.id,
-                  jobId
-                )
-                  .then((payload) => {
-                    const page = parseBuildProgressPage(payload);
-                    if (
-                      !page ||
-                      page.events.some(
-                        (event) =>
-                          event.executionGeneration !==
-                          selectedRuntime.execution.executionGeneration
-                      )
-                    ) {
-                      setBuildActivity(unavailableBuildProgress(buildActivity));
-                      return;
-                    }
-                    setBuildActivity(
-                      activityWithBuildProgress({
-                        current: buildActivity,
-                        page,
-                        jobs: buildActivity.jobs,
-                        projectName: selectedProjectName ?? undefined
-                      })
-                    );
-                  })
-                  .catch(() =>
-                    setBuildActivity(unavailableBuildProgress(buildActivity))
-                  );
-              }}
               onAttention={(runtimeItemId) => {
                 document
                   .getElementById(`runtime-item-${runtimeItemId}`)

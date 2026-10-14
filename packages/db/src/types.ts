@@ -36,6 +36,7 @@ import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { MemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import type { RecallFeedbackRepository } from "./recall-feedback-repository.js";
 import type { PersonalAgentRepository } from "./personal-agent-repository.js";
+import type { PersonalAgentChatRepository } from "./personal-agent-chat-repository.js";
 import type { PublicSquareRepository } from "./public-square-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
@@ -2023,6 +2024,7 @@ export interface MemorySourceRepository
     MemoryAnswerTaskRepository,
     RecallFeedbackRepository,
     PersonalAgentRepository,
+    PersonalAgentChatRepository,
     PullRequestRepository,
     AiClientResourceRepository,
     PublicSquareRepository,

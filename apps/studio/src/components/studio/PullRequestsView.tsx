@@ -1307,10 +1307,7 @@ export function PullRequestsView({
               avatar: agent.avatar
                 ? { image: agent.avatar.image, spec: agent.avatar.spec }
                 : undefined,
-              lifecycle: agent.lifecycle,
-              defaultProvider: agent.defaultProvider,
-              defaultModel: agent.defaultModel,
-              defaultReasoningEffort: agent.defaultReasoningEffort
+              lifecycle: agent.lifecycle
             }))
         );
         const codexCapabilities = capabilities.filter(

@@ -416,6 +416,7 @@ export {
   personalAgentConversationSchema,
   personalAgentExecutionAttemptSchema,
   personalAgentExecutionJobSchema,
+  personalAgentExecutionSettingsSchema,
   personalAgentHistoryJobSchema,
   personalAgentHistoryJobsResponseSchema,
   personalAgentIdentitySchema,
@@ -444,6 +445,7 @@ export type {
   PersonalAgentAttemptOutcome,
   PersonalAgentConversation,
   PersonalAgentExecutionAttempt,
+  PersonalAgentExecutionSettings,
   PersonalAgentExecutionContext,
   PersonalAgentHistoryJob,
   PersonalAgentActivityJob,
@@ -461,6 +463,53 @@ export type {
   PersonalAgentLifecycle,
   PersonalAgentParticipant
 } from "./personal-agent-contract.js";
+export {
+  personalAgentChatAgentLaunchSnapshotSchema,
+  personalAgentChatCancelSchema,
+  personalAgentChatCancelResponseSchema,
+  personalAgentChatContextTransferSchema,
+  personalAgentChatContinueSchema,
+  personalAgentChatConversationPageSchema,
+  personalAgentChatConversationSchema,
+  personalAgentChatConversationSummarySchema,
+  personalAgentChatContinueResponseSchema,
+  personalAgentChatDeliverySchema,
+  personalAgentChatDeliveryStatusSchema,
+  personalAgentChatGenericLaunchSnapshotSchema,
+  personalAgentChatLaunchSnapshotSchema,
+  personalAgentChatMessageSchema,
+  personalAgentChatParticipantSchema,
+  personalAgentChatReadResponseSchema,
+  personalAgentChatRenameSchema,
+  personalAgentChatStatusSchema,
+  personalAgentChatSubmitResponseSchema,
+  personalAgentChatSubmitSchema
+} from "./personal-agent-chat-contract.js";
+export type {
+  PersonalAgentChatContextTransfer,
+  PersonalAgentChatConversation,
+  PersonalAgentChatConversationSummary,
+  PersonalAgentChatConversationPage,
+  PersonalAgentChatDelivery,
+  PersonalAgentChatDeliveryStatus,
+  PersonalAgentChatLaunchSnapshot,
+  PersonalAgentChatMessage,
+  PersonalAgentChatParticipant,
+  PersonalAgentChatReadResponse,
+  PersonalAgentChatStatus,
+  PersonalAgentChatSubmit
+} from "./personal-agent-chat-contract.js";
+export {
+  buildMultiAgentPublicContext,
+  multiAgentContextCursorAfterDelivery
+} from "./multi-agent-context.js";
+export type {
+  MultiAgentContextDelivery,
+  MultiAgentContextMessage,
+  MultiAgentContextSourceMessage,
+  MultiAgentPublicContext,
+  MultiAgentPublicContextInput
+} from "./multi-agent-context.js";
 export {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
   MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,

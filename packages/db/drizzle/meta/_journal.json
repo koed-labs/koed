@@ -520,6 +520,41 @@
       "when": 1791120627247,
       "tag": "0073_faithful_mulholland_black",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1791381373452,
+      "tag": "0074_cuddly_daimon_hellstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1791381452212,
+      "tag": "0075_last_maximus",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1791382909724,
+      "tag": "0076_oval_stryfe",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1791383342366,
+      "tag": "0077_lazy_thena",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1791384932747,
+      "tag": "0078_mushy_wild_pack",
+      "breakpoints": true
     }
   ]
 }

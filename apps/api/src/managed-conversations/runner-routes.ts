@@ -2,17 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  aiClientPermissionModes,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   managedConversationFileOperationResultSchema,
-  personalAgentIntentSignalSchema,
-  personalAgentPhaseSchema,
-  buildProgressEventSchema,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
+import { registerPersonalAgentChatRunnerRoutes } from "./personal-agent-chat-runner-routes.js";
 import { resolveConversationSourceDownloadMaterial } from "../source-replication/download-material.js";
 import { sourceReplicationRecipientKeySchema } from "../source-replication/schemas.js";
 import {
@@ -38,41 +35,6 @@ const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
 const personalAgentJobParamsSchema = z.object({ jobId: uuid }).strict();
-const buildProgressParamsSchema = z.object({ jobId: uuid }).strict();
-const personalAgentIntentBodySchema = z
-  .object({
-    leaseToken: uuid,
-    executionId: uuid,
-    executionGeneration: z.number().int().safe().positive(),
-    runnerId: boundedRunnerId,
-    providerTurnId: z.string().trim().min(1).max(256),
-    intent: personalAgentIntentSignalSchema
-  })
-  .strict();
-const personalAgentTurnStatusBodySchema = z
-  .object({
-    leaseToken: uuid,
-    executionId: uuid,
-    executionGeneration: z.number().int().safe().positive(),
-    runnerId: boundedRunnerId,
-    providerTurnId: z.string().trim().min(1).max(256),
-    status: z.enum(["complete", "awaiting_owner"])
-  })
-  .strict();
-const personalAgentPhaseBodySchema = z
-  .object({
-    leaseToken: uuid,
-    executionId: uuid,
-    executionGeneration: z.number().int().safe().positive(),
-    runnerId: boundedRunnerId,
-    providerTurnId: z.string().trim().min(1).max(256),
-    attemptId: uuid,
-    phase: personalAgentPhaseSchema
-  })
-  .strict();
-const personalAgentAttemptParamsSchema = z
-  .object({ jobId: uuid, attemptId: uuid })
-  .strict();
 const personalAgentJobListQuerySchema = z
   .object({
     conversationId: uuid,
@@ -84,52 +46,6 @@ const personalAgentAttemptsQuerySchema = z
   .object({
     limit: z.coerce.number().int().safe().min(1).max(100).optional(),
     before: z.string().trim().min(1).max(512).optional()
-  })
-  .strict();
-const personalAgentAttributionSchema = z
-  .object({
-    kind: z.literal("agent"),
-    agentId: uuid,
-    agentVersion: z.number().int().safe().positive()
-  })
-  .strict();
-const createPersonalAgentAttemptSchema = z
-  .object({
-    commandId: uuid.nullable().default(null),
-    attemptNumber: z.number().int().safe().positive(),
-    attribution: personalAgentAttributionSchema,
-    provider: z.string().trim().min(1).max(120).nullable(),
-    model: z.string().trim().min(1).max(240).nullable(),
-    aiClientInstanceId: z.string().trim().min(1).max(240).nullable(),
-    reasoningEffort: z.string().trim().min(1).max(120).nullable(),
-    permissionMode: z.enum(aiClientPermissionModes).nullable(),
-    managedExecutionId: uuid.nullable(),
-    managedExecutionGeneration: z.number().int().safe().positive().nullable(),
-    status: z.literal("running"),
-    outcome: z.null(),
-    startedAt: z.iso.datetime(),
-    completedAt: z.null()
-  })
-  .strict();
-const recordPersonalAgentOutputSchema = z
-  .object({
-    outputText: z
-      .string()
-      .max(65_536)
-      .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
-    outputReference: z
-      .object({ runtimeItemIds: z.array(uuid).min(1).max(256) })
-      .strict(),
-    eventId: z.string().trim().min(1).max(240).optional(),
-    observedAt: z.iso.datetime().optional()
-  })
-  .strict();
-const completePersonalAgentAttemptSchema = z
-  .object({
-    outcome: z.enum(["succeeded", "failed", "canceled", "interrupted"]),
-    jobState: z.literal("waiting").optional(),
-    eventId: z.string().trim().min(1).max(240).optional(),
-    observedAt: z.iso.datetime().optional()
   })
   .strict();
 const checkpointQuerySchema = z
@@ -827,34 +743,6 @@ const requirePersonalAgentJobForRunner = async (
   return { repository, actor, job, execution };
 };
 
-const requireCurrentPersonalAgentAttemptForRunner = async (
-  context: ApiRouteContext,
-  auth: RunnerAuth,
-  jobId: string,
-  attemptId: string
-) => {
-  const result = await requirePersonalAgentJobForRunner(context, auth, jobId);
-  const attempts = await result.repository.listPersonalAgentExecutionAttempts(
-    result.actor,
-    { jobId, limit: 100 }
-  );
-  const attempt = attempts.attempts.find((entry) => entry.id === attemptId);
-  if (
-    !attempt ||
-    (attempt.status === "running" &&
-      (result.job.lastAttemptId !== attemptId ||
-        attempt.managedExecutionId !== result.execution.id ||
-        attempt.managedExecutionGeneration !==
-          result.execution.executionGeneration))
-  ) {
-    throw Object.assign(
-      new Error("Personal Agent attempt is not current for this execution"),
-      { statusCode: 409 }
-    );
-  }
-  return { ...result, attempt };
-};
-
 const requireCommandForRunner = async (
   context: ApiRouteContext,
   auth: RunnerAuth,
@@ -1158,6 +1046,7 @@ export const registerManagedConversationRunnerRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  registerPersonalAgentChatRunnerRoutes(app, context, authenticateRunner);
   // Runner control traffic must remain available when memory ingestion or
   // streaming runtime writes consume the general memory-write budget.
   const managedConversationWriteRateLimit =
@@ -1231,41 +1120,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/build-progress",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { jobId } = buildProgressParamsSchema.parse(request.params);
-      const event = buildProgressEventSchema.parse(request.body);
-      const { repository, actor, job, execution } =
-        await requirePersonalAgentJobForRunner(context, auth, jobId);
-      if (
-        event.jobId !== jobId ||
-        event.executionId !== execution.id ||
-        event.executionGeneration !== execution.executionGeneration ||
-        job.conversationId !== execution.id
-      ) {
-        throw Object.assign(new Error("Build progress execution is stale"), {
-          statusCode: 409
-        });
-      }
-      const attempts = await repository.listPersonalAgentExecutionAttempts(
-        actor,
-        { jobId, limit: 100 }
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      const attempt = attempts.attempts.find(
-        (entry) => entry.id === event.attemptId
-      );
-      if (
-        !attempt ||
-        attempt.status !== "running" ||
-        job.lastAttemptId !== attempt.id ||
-        attempt.managedExecutionId !== execution.id ||
-        attempt.managedExecutionGeneration !== execution.executionGeneration
-      ) {
-        throw Object.assign(new Error("Build progress attempt is stale"), {
-          statusCode: 409
-        });
-      }
-      await repository.recordPersonalAgentBuildProgressEvent(actor, event);
-      return { accepted: true };
     }
   );
 
@@ -1273,43 +1134,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { jobId } = personalAgentJobParamsSchema.parse(request.params);
-      const input = createPersonalAgentAttemptSchema.parse(request.body);
-      const { repository, actor, execution } =
-        await requirePersonalAgentJobForRunner(context, auth, jobId);
-      if (
-        input.managedExecutionId !== execution.id ||
-        input.managedExecutionGeneration !== execution.executionGeneration
-      ) {
-        throw Object.assign(
-          new Error("Personal Agent attempt execution identity conflicted"),
-          { statusCode: 409 }
-        );
-      }
-      if (input.commandId) {
-        const command = await repository.getManagedConversationCommand(
-          actor,
-          input.commandId
-        );
-        if (
-          !command ||
-          command.executionId !== execution.id ||
-          command.executionGeneration !== execution.executionGeneration ||
-          command.commandKind !== "prompt" ||
-          command.state !== "dispatching"
-        ) {
-          throw Object.assign(
-            new Error("Personal Agent attempt command is not current"),
-            { statusCode: 409 }
-          );
-        }
-      }
-      const attempt = await repository.createPersonalAgentExecutionAttempt(
-        actor,
-        { jobId, ...input }
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      return { attempt };
     }
   );
 
@@ -1317,25 +1148,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts/:attemptId/output",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { jobId, attemptId } = personalAgentAttemptParamsSchema.parse(
-        request.params
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      const input = recordPersonalAgentOutputSchema.parse(request.body);
-      const { repository, actor } =
-        await requireCurrentPersonalAgentAttemptForRunner(
-          context,
-          auth,
-          jobId,
-          attemptId
-        );
-      const job = await repository.recordPersonalAgentTurnOutput({
-        actor,
-        jobId,
-        attemptId,
-        ...input
-      });
-      return { job };
     }
   );
 
@@ -1343,24 +1162,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts/:attemptId/complete",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { jobId, attemptId } = personalAgentAttemptParamsSchema.parse(
-        request.params
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      const input = completePersonalAgentAttemptSchema.parse(request.body);
-      const { repository, actor } =
-        await requireCurrentPersonalAgentAttemptForRunner(
-          context,
-          auth,
-          jobId,
-          attemptId
-        );
-      return repository.completePersonalAgentExecutionAttempt({
-        actor,
-        jobId,
-        attemptId,
-        ...input
-      });
     }
   );
 
@@ -1368,49 +1176,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/commands/:commandId/personal-agent-intent",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { commandId } = commandParamsSchema.parse(request.params);
-      const input = personalAgentIntentBodySchema.parse(request.body);
-      const { command, execution } = await requireCommandForRunner(
-        context,
-        auth,
-        commandId
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      if (
-        command.commandKind !== "prompt" ||
-        command.state !== "dispatching" ||
-        command.executionId !== input.executionId ||
-        command.executionGeneration !== input.executionGeneration ||
-        command.leaseToken === null ||
-        command.leaseToken !== input.leaseToken ||
-        execution.runnerId !== input.runnerId ||
-        execution.state !== "running" ||
-        execution.executionGeneration !== input.executionGeneration
-      ) {
-        throw Object.assign(
-          new Error(
-            "Personal Agent intent is not bound to the current command"
-          ),
-          { statusCode: 409 }
-        );
-      }
-      const assignment = await context
-        .requireRepository()
-        .recordPersonalAgentIntentForManagedCommand(
-          { userId: auth.userId },
-          {
-            commandId,
-            executionId: execution.id,
-            executionGeneration: execution.executionGeneration,
-            leaseToken: input.leaseToken,
-            runnerId: input.runnerId,
-            deviceId: auth.deviceId,
-            deploymentId: auth.deploymentId,
-            providerTurnId: input.providerTurnId,
-            intent: input.intent
-          }
-        );
-      return { assignment };
     }
   );
 
@@ -1418,49 +1190,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/commands/:commandId/personal-agent-turn-status",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { commandId } = commandParamsSchema.parse(request.params);
-      const input = personalAgentTurnStatusBodySchema.parse(request.body);
-      const { command, execution } = await requireCommandForRunner(
-        context,
-        auth,
-        commandId
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      if (
-        command.commandKind !== "prompt" ||
-        command.state !== "dispatching" ||
-        command.executionId !== input.executionId ||
-        command.executionGeneration !== input.executionGeneration ||
-        command.leaseToken === null ||
-        command.leaseToken !== input.leaseToken ||
-        execution.runnerId !== input.runnerId ||
-        execution.state !== "running" ||
-        execution.executionGeneration !== input.executionGeneration
-      ) {
-        throw Object.assign(
-          new Error(
-            "Personal Agent turn status is not bound to the current command"
-          ),
-          { statusCode: 409 }
-        );
-      }
-      await context
-        .requireRepository()
-        .recordPersonalAgentTurnStatusForManagedCommand(
-          { userId: auth.userId },
-          {
-            commandId,
-            executionId: execution.id,
-            executionGeneration: execution.executionGeneration,
-            leaseToken: input.leaseToken,
-            runnerId: input.runnerId,
-            deviceId: auth.deviceId,
-            deploymentId: auth.deploymentId,
-            providerTurnId: input.providerTurnId,
-            status: input.status
-          }
-        );
-      return { status: input.status };
     }
   );
 
@@ -1468,50 +1204,13 @@ export const registerManagedConversationRunnerRoutes = (
     "/v1/managed-conversation-runner/commands/:commandId/personal-agent-phase",
     { preHandler: managedConversationWriteRateLimit },
     async (request) => {
-      const auth = await authenticateRunner(request, context);
-      const { commandId } = commandParamsSchema.parse(request.params);
-      const input = personalAgentPhaseBodySchema.parse(request.body);
-      const { command, execution } = await requireCommandForRunner(
-        context,
-        auth,
-        commandId
+      await authenticateRunner(request, context);
+      throw Object.assign(
+        new Error(
+          "Personal Agent Job execution signaling is no longer supported"
+        ),
+        { statusCode: 410 }
       );
-      if (
-        command.commandKind !== "prompt" ||
-        command.state !== "dispatching" ||
-        command.executionId !== input.executionId ||
-        command.executionGeneration !== input.executionGeneration ||
-        command.leaseToken === null ||
-        command.leaseToken !== input.leaseToken ||
-        execution.runnerId !== input.runnerId ||
-        execution.runnerDeviceId !== auth.deviceId ||
-        execution.runnerDeploymentId !== auth.deploymentId ||
-        execution.state !== "running" ||
-        execution.executionGeneration !== input.executionGeneration
-      ) {
-        throw Object.assign(
-          new Error("Personal Agent phase is not bound to the current command"),
-          { statusCode: 409 }
-        );
-      }
-      await context
-        .requireRepository()
-        .recordPersonalAgentPhaseForManagedCommand(
-          { userId: auth.userId },
-          {
-            commandId,
-            executionId: execution.id,
-            executionGeneration: execution.executionGeneration,
-            leaseToken: input.leaseToken,
-            runnerId: input.runnerId,
-            deviceId: auth.deviceId,
-            deploymentId: auth.deploymentId,
-            providerTurnId: input.providerTurnId,
-            attemptId: input.attemptId,
-            phase: input.phase
-          }
-        );
-      return { phase: input.phase };
     }
   );
 

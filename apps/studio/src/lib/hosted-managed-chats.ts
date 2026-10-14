@@ -1184,6 +1184,7 @@ export async function loadHostedLaunchOptions(
                     ...(typeof value.hostedInstanceId === "string"
                       ? { hostedInstanceId: value.hostedInstanceId }
                       : {}),
+                    targetDeviceId: value.runnerDeviceId as string,
                     computerLabel: runners.find(
                       (runner) => runner.deviceId === value.runnerDeviceId
                     )?.displayName,
@@ -1254,7 +1255,6 @@ export async function startHostedManagedConversation(
     initialPromptClientUserMessageId?: string;
     selectedResourceIds?: string[];
     selectedResourceHostedInstanceId?: string;
-    continueWithoutMemory?: true;
     agentId?: string;
     expectedAgentVersion?: number;
     pullRequestReviewId?: string;
@@ -1290,8 +1290,7 @@ export async function startHostedManagedConversation(
               agentId: input.agentId,
               expectedAgentVersion: input.expectedAgentVersion
             }
-          : {}),
-        ...(input.continueWithoutMemory ? { continueWithoutMemory: true } : {})
+          : {})
       },
       signal
     },
@@ -1573,7 +1572,6 @@ export async function queueHostedConversationPrompt(
   fetcher: typeof fetch = fetch,
   options: {
     resumeFromStopped?: true;
-    continueWithoutMemory?: true;
     purpose?: "team_summary_draft";
     teamSummary?: { teamId: string; requestId: string; jobId: string };
     selectedResourceIds?: string[];
@@ -1596,9 +1594,6 @@ export async function queueHostedConversationPrompt(
               agentId: ids.agentId,
               expectedAgentVersion: ids.expectedAgentVersion
             }
-          : {}),
-        ...(options.continueWithoutMemory
-          ? { continueWithoutMemory: true }
           : {}),
         ...(options.selectedResourceIds?.length
           ? { selectedResourceIds: options.selectedResourceIds }

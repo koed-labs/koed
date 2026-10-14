@@ -110,6 +110,10 @@
     "./conversation-title": {
       "types": "./dist/conversation-title.d.ts",
       "import": "./dist/conversation-title.js"
+    },
+    "./personal-agent-chat-contract": {
+      "types": "./dist/personal-agent-chat-contract.d.ts",
+      "import": "./dist/personal-agent-chat-contract.js"
     }
   },
   "files": [

@@ -4,11 +4,6 @@ import process from "node:process";
 const modes = new Set(["supervised", "auto_edit", "auto", "full_access"]);
 const reads = new Set(["read", "grep", "find", "ls"]);
 const edits = new Set(["write", "edit"]);
-const managedAgentSignals = new Set([
-  "koed_agent_intent",
-  "koed_agent_turn_status",
-  "koed_job_phase"
-]);
 
 // Loaded explicitly by the managed runner, not by normal Pi discovery.
 export default function managedPermissions(pi, environment = process.env) {
@@ -20,7 +15,6 @@ export default function managedPermissions(pi, environment = process.env) {
   pi.on("tool_call", async (event, context) => {
     if (context.signal?.aborted)
       return { block: true, reason: "Request canceled." };
-    if (managedAgentSignals.has(event.toolName)) return;
     const gated = environment.KOED_MANAGED_AGENT_TOOL_GATE === "1";
     if (gated) {
       if (!context.hasUI)

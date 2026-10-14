@@ -31,3 +31,9 @@ Show recent readable conversation notes in Advanced activity alongside technical
 Show subtle live Agent activity and public reasoning summaries, retaining completed activity collapsed beside each request.
 
 Show lines added in green and deleted in red in the compact Advanced activity card.
+
+Simplify Agents to a name, optional free-text job title and Pixelkin appearance. Remove soul instructions, title templates and profile-specific model defaults from new Agent edits. Keep model, reasoning and access choices in the conversation.
+
+Use native conversation execution and retained delivery records for new Agent work, history and progress. Retire the extra Agent assignment and phase-reporting protocol, remove eager Agent-specific Memory searches, and use the supported Memory flow for all AI chats. Preserve legacy history and sequential conversations with Agents from the same or different AI Clients.
+
+Share local and hosted Personal recipient validation for model, reasoning, permissions and verified device selection. Keep the progress panel with native command activity, readable conversation summaries and labeled file diffs.

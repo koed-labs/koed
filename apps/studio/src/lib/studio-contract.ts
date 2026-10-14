@@ -17,6 +17,13 @@ export type HomeExecution = {
     | "operation"
     | "operation-pending"
     | "unknown";
+  /** Present when this row is a durable Personal multi-Agent chat root. */
+  personalConversationId?: string;
+  sourceExecutionIds?: string[];
+  childExecutionIds?: string[];
+  capturedSessionIds?: string[];
+  activeAgentId?: string | null;
+  latestAgentName?: string | null;
 };
 
 export type HomeRequest = {

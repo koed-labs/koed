@@ -1,3 +1,7 @@
+# Current UI integration direction — 2026-10-14
+
+See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–28 replace the historical soul, role-template, Agent Job protocol and parallel-recall direction below. Ticket 29 plans recurring tasks for both Codex and Claude using OpenDots concepts. Ticket 30 tracks retained-UI and release acceptance. Historical completed entries below are evidence, not approval to preserve superseded behavior.
+
 # Implementation backlog
 
 ## Studio Personal Agents
@@ -9,6 +13,7 @@ Plan: [persistent identities, conversation participation and runtime context](do
 - Completed: reuse the original Agents design; add default model/effort and editable instructions.
 - Completed: role-template catalogue with Git-managed source, immutable database publication, Role autosuggest and explicit editable-copy selection. Activated locally on September 23; existing agents are not updated automatically.
 - Completed for Personal standalone New Chat: durable conversation participants, `@Agent` mentions, active respondent, actual model/effort defaults and attributable outputs.
+- Implemented: [multiple Agents in one Personal conversation](docs/studio-multi-agent-conversations.md), using the same or different AI Clients, sequential durable deliveries, separate native sessions, per-participant settings and bounded incremental public context. Automated checks cover restart/reopen, uncertain-delivery blocking, shared checkout identity and one Project/sidebar conversation. Manual follow-up: exercise live Codex and Claude Code replies in the updated desktop app.
 - Completed: live New Chat selects Project IDs from the authorized Home snapshot and passes the selected Project to managed execution. Still add a complete Project catalogue and Project-instruction context before calling Project chat complete.
 - Remaining: make the shared `@Agent` contract work in every chat mechanism. PR Chat needs a PR-specific, owner-authenticated Agent turn adapter that resolves immutable identity/version and authorized Personal Memory, binds verified repository/PR/base/head context, preserves its isolated read-only runner, and records author/model attribution. Do not route it through normal managed execution until that path can preserve read-only mode. Collaborative channels, rooms and direct/group chats need explicit User-versus-Team identity, audience and memory authorization before invocation is enabled.
 - Completion gate: use the chat-surface matrix in `docs/studio-personal-agents-plan.md`; no chat mechanism is complete from mention suggestions alone.

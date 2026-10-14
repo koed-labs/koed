@@ -7,7 +7,6 @@ import type {
 } from "@koed/db";
 import {
   parsePersonalMemoryAttributionFooter,
-  personalAgentExecutionContextSchema,
   personalMemoryTurnContextSchema,
   type PersonalMemoryTurnContext
 } from "@koed/shared";
@@ -83,12 +82,17 @@ const commandAssignedJobIds = (
   ) {
     ids.add((personalAgent as Record<string, unknown>).jobId as string);
   }
-  const executionContext = personalAgentExecutionContextSchema.safeParse(
-    payload.personalAgentContext
-  );
-  const activeJobId = executionContext.success
-    ? executionContext.data.activeJob?.jobId
-    : null;
+  const rawContext = payload.personalAgentContext;
+  const legacyActiveJob =
+    rawContext && typeof rawContext === "object"
+      ? (rawContext as Record<string, unknown>).activeJob
+      : null;
+  const activeJobId =
+    legacyActiveJob && typeof legacyActiveJob === "object"
+      ? typeof (legacyActiveJob as Record<string, unknown>).jobId === "string"
+        ? ((legacyActiveJob as Record<string, unknown>).jobId as string)
+        : null
+      : null;
   if (activeJobId) ids.add(activeJobId);
   return [...ids];
 };

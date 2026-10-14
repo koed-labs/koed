@@ -15,6 +15,113 @@ describe("Managed Conversation authority client", () => {
     session: "00000000-0000-4000-8000-000000000015"
   };
 
+  it("uses the runner authority routes for durable Personal Agent chat delivery", async () => {
+    const deliveryId = "00000000-0000-4000-8000-000000000071";
+    const conversationId = "00000000-0000-4000-8000-000000000072";
+    const claimToken = "00000000-0000-4000-8000-000000000073";
+    const executionId = "00000000-0000-4000-8000-000000000074";
+    const commandId = "00000000-0000-4000-8000-000000000075";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      const payload = path.endsWith("/claim")
+        ? { delivery: null }
+        : path.endsWith("/prepare")
+          ? { execution: { id: executionId }, command: { id: commandId } }
+          : path.endsWith("/complete")
+            ? { completed: true }
+            : { result: null };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const runner = client.personalAgentChatRunner;
+
+    await runner.claimDelivery({
+      ownerUserId: ids.session,
+      targetDeviceId: ids.source,
+      targetDeploymentId: ids.generation,
+      runnerId: "personal-chat:test",
+      leaseMs: 30_000
+    });
+    await runner.prepareChild({
+      actor: { userId: ids.session },
+      conversationId,
+      deliveryId,
+      claimToken,
+      targetDeviceId: ids.source,
+      targetDeploymentId: ids.generation,
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      reasoningEffort: null,
+      permissionMode: "supervised",
+      prompt: "A direct user prompt",
+      contextText: null,
+      contextTransfer: null,
+      clientUserMessageId: ids.session,
+      selectedResourceIds: [],
+      idempotencyKey: `personal-agent-chat-delivery:${deliveryId}`
+    });
+    await runner.getChildResult({
+      actor: { userId: ids.session },
+      conversationId,
+      deliveryId,
+      claimToken,
+      targetDeviceId: ids.source,
+      targetDeploymentId: ids.generation
+    });
+    await runner.completeDelivery({
+      ownerUserId: ids.session,
+      deliveryId,
+      claimToken,
+      executionId,
+      commandId,
+      jobId: null,
+      reply: "captured answer",
+      truncated: true,
+      contextTransfer: null
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(
+      fetch.mock.calls.map(([request]) => new URL(String(request)).pathname)
+    ).toEqual([
+      "/v1/managed-conversation-runner/personal-agent-chats/claim",
+      `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${deliveryId}/prepare`,
+      `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${deliveryId}/result`,
+      `/v1/managed-conversation-runner/personal-agent-chats/deliveries/${deliveryId}/complete`
+    ]);
+    const claimBody = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    const prepareBody = JSON.parse(String(fetch.mock.calls[1]?.[1]?.body));
+    const resultBody = JSON.parse(String(fetch.mock.calls[2]?.[1]?.body));
+    const completeBody = JSON.parse(String(fetch.mock.calls[3]?.[1]?.body));
+    expect(claimBody).toEqual({
+      runnerId: "personal-chat:test",
+      leaseMs: 30_000
+    });
+    expect(prepareBody).toMatchObject({
+      conversationId,
+      claimToken,
+      prompt: "A direct user prompt",
+      idempotencyKey: `personal-agent-chat-delivery:${deliveryId}`
+    });
+    expect(prepareBody).not.toHaveProperty("actor");
+    expect(prepareBody).not.toHaveProperty("targetDeviceId");
+    expect(prepareBody).not.toHaveProperty("targetDeploymentId");
+    expect(resultBody).toEqual({ claimToken, conversationId });
+    expect(completeBody).toMatchObject({
+      reply: "captured answer",
+      truncated: true
+    });
+  });
+
   it("keeps provider usage on the execution device while authority stays remote", async () => {
     const localOwnerUserId = ids.session;
     const recordWorkflowTokenUsage = vi.fn(async () => ({ id: "usage-1" }));

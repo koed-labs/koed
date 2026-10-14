@@ -58,7 +58,12 @@ export function HostedStudio({ view }: HostedStudioProps) {
   const initialNewConversation =
     view === "home" &&
     searchParams.get("chat") === "1" &&
-    !searchParams.get("execution");
+    !searchParams.get("execution") &&
+    !searchParams.get("conversation");
+  const initialPersonalConversationId =
+    view === "home" && !searchParams.get("teamRequest")
+      ? (searchParams.get("conversation") ?? undefined)
+      : undefined;
   const initialAgentId = initialNewConversation
     ? (searchParams.get("agent") ?? undefined)
     : undefined;
@@ -283,6 +288,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
                 initialNewConversation={initialNewConversation}
                 initialAgentId={initialAgentId}
                 initialExecutionId={initialExecutionId}
+                initialPersonalConversationId={initialPersonalConversationId}
                 initialDraft={initialRequestDraft}
                 teamRequestId={teamRequestId}
                 teamRequestTeamId={teamRequestTeamId}

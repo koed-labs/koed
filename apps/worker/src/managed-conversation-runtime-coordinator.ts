@@ -3,7 +3,7 @@ import { createPullRequestRunner } from "./pull-request-runner.js";
 import { createPullRequestPushDriver } from "./pull-request-push.js";
 import { createAiClientResourceRunnerAuthority } from "./ai-client-resource-authority-client.js";
 import { createAiClientResourceRunner } from "./ai-client-resource-runner.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
 
@@ -27,6 +27,10 @@ import {
   createManagedConversationService,
   type ManagedConversationService
 } from "./managed-conversation-service.js";
+import {
+  createLocalPersonalAgentChatRunnerAuthority,
+  createPersonalAgentChatDispatcher
+} from "./personal-agent-chat-dispatcher.js";
 
 type ServiceOptions = Parameters<typeof createManagedConversationService>[0];
 
@@ -428,14 +432,32 @@ export const createManagedConversationRuntimeCoordinator = (options: {
         : {}),
       logger: options.logger
     });
+    const personalAgentChatDispatcher = createPersonalAgentChatDispatcher({
+      authority:
+        authorityClient?.personalAgentChatRunner ??
+        createLocalPersonalAgentChatRunnerAuthority({
+          repository: options.localRepository,
+          ownerUserId: options.localOwnerUserId,
+          targetDeviceId: options.deviceId,
+          targetDeploymentId: options.deploymentId
+        }),
+      processManagedCommands: () => managedService.processOnce(),
+      ownerUserId: options.localOwnerUserId,
+      targetDeviceId: options.deviceId,
+      targetDeploymentId: options.deploymentId,
+      runnerId: `personal-agent-chat:${randomUUID()}`,
+      logger: options.logger
+    });
     return {
       ...managedService,
       start() {
         managedService.start();
         pullRequestRunner.start();
         aiClientResourceRunner.start();
+        personalAgentChatDispatcher.start();
       },
       async stop() {
+        await personalAgentChatDispatcher.stop();
         await aiClientResourceRunner.stop();
         await pullRequestRunner.stop();
         await managedService.stop();
