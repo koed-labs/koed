@@ -46,6 +46,8 @@ import {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
+  repositoryScopeId,
+  repositoryAssignmentSchema,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionPresentationDataSchema,
   type CollaborationRendererEvent,
@@ -779,6 +781,9 @@ const personalProjectsData = (
           projectName: thread.projectName,
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
+          ...(thread.repositoryAssignment
+            ? { repositoryAssignment: thread.repositoryAssignment }
+            : {}),
           presentation: thread.presentation,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
@@ -4238,15 +4243,41 @@ export const createKoedServerManager = ({
       { operation: "personal.sessions.assign_project" }
     >["input"]
   ) => {
-    const target =
+    const graphProjects =
+      input.action === "move" ? (await listPersonalProjects()).projects : [];
+    const local =
       input.action === "move"
-        ? (await listPersonalProjects()).projects.find(
-            (project) => project.id === input.targetProjectId
+        ? localProjectMetadataData(environment).projects.find(
+            (project) =>
+              project.localProjectId === input.targetProjectId ||
+              (project.repository &&
+                project.repository.kind !== "unresolved" &&
+                repositoryScopeId(project.repository) === input.targetProjectId)
           )
-        : null;
-    if (input.action === "move" && (!target || target.id === "unassigned")) {
+        : undefined;
+    const graph =
+      input.action === "move"
+        ? graphProjects.find((project) => project.id === input.targetProjectId)
+        : undefined;
+    const repositoryIdentity =
+      local?.repository ??
+      graph?.threads.find((thread) => thread.repositoryAssignment?.effective)
+        ?.repositoryAssignment?.effective;
+    const target = local
+      ? {
+          id:
+            input.action === "move"
+              ? input.targetProjectId
+              : local.localProjectId,
+          name: local.displayName,
+          path: local.path.projectRoot ?? local.path.cwd
+        }
+      : graph;
+    if (
+      input.action === "move" &&
+      (!target || target.id === "unassigned" || !repositoryIdentity)
+    )
       throw new PersonalMemoryBoundaryError("not_found", false);
-    }
     const payload = await authenticatedPersonalMemoryRequest(
       ({ apiOrigin }) => ({
         url: new URL(
@@ -4258,13 +4289,15 @@ export const createKoedServerManager = ({
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
             input.action === "reset"
-              ? { action: "reset" }
+              ? { action: "reset", expectedVersion: input.expectedVersion }
               : {
                   action: "move",
+                  expectedVersion: input.expectedVersion,
                   project: {
                     id: target!.id,
                     name: target!.name,
-                    path: target!.path
+                    path: target!.path,
+                    repositoryIdentity
                   }
                 }
           )
@@ -4281,8 +4314,14 @@ export const createKoedServerManager = ({
     if (session.project !== null && !project) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
+    const assignment = repositoryAssignmentSchema.parse(
+      session.repositoryAssignment
+    );
     return personalDesktopSessionProjectDataSchema.parse({
-      projectId: project?.id ?? null
+      projectId:
+        assignment.effective && assignment.effective.kind !== "unresolved"
+          ? repositoryScopeId(assignment.effective)
+          : null
     });
   };
 

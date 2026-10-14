@@ -35,6 +35,8 @@ The agent demonstrates one non-blocking submission and explicit result collectio
 requesting citations at submission. The User can inspect Desktop while recall
 runs; the agent retains the task ID and collects with `wait=true` when needed.
 No polling commands or completion notifications need to be managed by the User.
+**Preview status:** Implemented and rehearsed on the integration branch. The sample Cobalt decision uses the copper checklist with exactly seven checks to catch the amber-cache regression. Recall from the second worktree returned that decision with its source; Desktop showed both sessions together and retained both checkout paths.
+
 This is the first complete capture → recall → inspection loop. Claude Code, Pi,
 managed Conversations, historical imports, and sync are not needed for this preview.
 
@@ -89,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 09. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. The next implementation frontier is ticket 10. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -248,14 +250,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Group by effective identity while retaining checkout paths for navigation and source provenance.
-- [ ] Keep unresolved history visible and inspectable without placing it in an inferred repository group.
-- [ ] Persist a single-session reassignment as a User override and increment its assignment version.
-- [ ] An override without a portable identity suppresses the original portable identity. Resetting an override restores the recorded automatic state, including historical unresolved state.
-- [ ] Demonstrate that grouping, recall, and source inspection agree before reassignment, after reassignment, and after reset.
-- [ ] Cover concurrent assignment updates and ownership boundaries. Update Desktop and Project assignment documentation.
+- [x] Group by effective identity while retaining checkout paths for navigation and source provenance.
+- [x] Keep unresolved history visible and inspectable without placing it in an inferred repository group.
+- [x] Persist a single-session reassignment as a User override and increment its assignment version.
+- [x] An override without a portable identity suppresses the original portable identity. Resetting an override restores the recorded automatic state, including historical unresolved state.
+- [x] Demonstrate that grouping, recall, and source inspection agree before reassignment, after reassignment, and after reset.
+- [x] Cover concurrent assignment updates and ownership boundaries. Update Desktop and Project assignment documentation.
+
+**Validation:** Real PostgreSQL assignment/recall and API ownership/CAS tests pass. Desktop contract, manager, grouping, detail, and checkout-anchor tests pass. Workspace build, test typecheck, lint, formatting, and migration checks pass. M1 was rehearsed with native Codex capture from a nested checkout, a non-blocking Project Memory Answer with citations from a second worktree, explicit result collection with `wait=true`, and actual Desktop grouping/source inspection. The isolated preview reports healthy.
 
 ## 10: Review anchor changes and apply bounded bulk reassignment
 

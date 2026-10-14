@@ -392,12 +392,12 @@ importers:
 
   packages/mcp-server:
     dependencies:
-      '@koed-labs/server':
-        specifier: workspace:*
-        version: link:../koed-server
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.226
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
+      '@koed-labs/server':
+        specifier: workspace:*
+        version: link:../koed-server
       '@koed/core':
         specifier: workspace:*
         version: link:../core

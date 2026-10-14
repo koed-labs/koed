@@ -75,7 +75,8 @@ export interface CapturedSessionRepository {
   ): Promise<CapturedSessionRecord | null>;
   resetCapturedSessionProject(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    expectedAssignmentVersion?: number
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionsNeedingTitles(
     actor: ActorContext,
@@ -957,12 +958,24 @@ export const createCapturedSessionRepository = (
   },
 
   async moveCapturedSessionToProject(actor, sessionId, input) {
+    if (
+      !input.repositoryIdentity ||
+      !Number.isSafeInteger(input.expectedAssignmentVersion) ||
+      input.expectedAssignmentVersion! < 1
+    )
+      throw Object.assign(
+        new Error("Repository assignment and expected version are required"),
+        { statusCode: 400 }
+      );
+    const identity = repositoryIdentitySchema.parse(input.repositoryIdentity);
     const project = normalizedProjectReference(input);
     if (!project) return null;
     const result = await pool.query<CapturedSessionRow>(
       `
         update sessions
         set
+          repository_override_identity = $6::jsonb,
+          repository_assignment_version = repository_assignment_version + 1,
           project_override_id = $3,
           project_override_name = $4,
           project_override_path = $5,
@@ -974,18 +987,41 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and repository_assignment_version = $7
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId, project.id, project.name, project.path]
+      [
+        actor.userId,
+        sessionId,
+        project.id,
+        project.name,
+        project.path,
+        identity,
+        input.expectedAssignmentVersion
+      ]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async resetCapturedSessionProject(actor, sessionId) {
+  async resetCapturedSessionProject(
+    actor,
+    sessionId,
+    expectedAssignmentVersion
+  ) {
+    if (
+      !Number.isSafeInteger(expectedAssignmentVersion) ||
+      expectedAssignmentVersion! < 1
+    )
+      throw Object.assign(
+        new Error("Expected repository assignment version is required"),
+        { statusCode: 400 }
+      );
     const result = await pool.query<CapturedSessionRow>(
       `
         update sessions
         set
+          repository_override_identity = null,
+          repository_assignment_version = repository_assignment_version + 1,
           project_override_id = null,
           project_override_name = null,
           project_override_path = null,
@@ -997,9 +1033,10 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and repository_assignment_version = $3
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId]
+      [actor.userId, sessionId, expectedAssignmentVersion]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },

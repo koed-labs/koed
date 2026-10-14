@@ -68,6 +68,9 @@
       ],
       "@koed/worker/command-discovery-adapter-pi": [
         "apps/worker/src/command-discovery-adapter-pi.ts"
+      ],
+      "@koed/shared/repository-recall": [
+        "packages/shared/src/repository-recall.ts"
       ]
     },
     "resolveJsonModule": true,

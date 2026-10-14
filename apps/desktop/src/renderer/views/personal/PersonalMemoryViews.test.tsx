@@ -428,6 +428,11 @@ describe("PersonalMemoryWorkspace", () => {
         remotes: [{ display: "github.com/koed-labs/koed" }]
       }
     };
+    source.id = metadata.localProjectId;
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),
@@ -461,7 +466,7 @@ describe("PersonalMemoryWorkspace", () => {
     ).toBe("Active1");
     expect(container.textContent).toContain("koed-labs/koed");
     const overview = container.querySelector(
-      '[data-project-id="project-1"] .personal-project-overview'
+      `[data-project-id="${source.id}"] .personal-project-overview`
     );
     expect(overview?.getAttribute("aria-label")).toBe(
       "1 Captured Session · 1000 Memory Events"
@@ -471,7 +476,7 @@ describe("PersonalMemoryWorkspace", () => {
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
+        .querySelector<HTMLButtonElement>(`[data-project-id="${source.id}"]`)
         ?.click();
     });
     const heading = container.querySelector<HTMLElement>(
@@ -3049,6 +3054,11 @@ describe("PersonalMemoryWorkspace", () => {
         remotes: [{ display: "github.com/koed-labs/koed" }]
       }
     };
+    source.id = metadata.localProjectId;
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),
@@ -3078,7 +3088,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
 
     const rowRepo = container.querySelector(
-      '[data-project-id="project-1"] .personal-project-repo'
+      `[data-project-id="${source.id}"] .personal-project-repo`
     );
     expect(rowRepo?.classList.contains("personal-project-repo-static")).toBe(
       true
@@ -3091,7 +3101,7 @@ describe("PersonalMemoryWorkspace", () => {
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
+        .querySelector<HTMLButtonElement>(`[data-project-id="${source.id}"]`)
         ?.click();
     });
 
@@ -3164,6 +3174,11 @@ describe("PersonalMemoryWorkspace", () => {
         remotes: [{ display: "gitlab.example/koed-labs/koed" }]
       }
     };
+    source.id = metadata.localProjectId;
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),

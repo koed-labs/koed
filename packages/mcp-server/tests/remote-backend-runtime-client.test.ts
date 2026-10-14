@@ -1,3 +1,4 @@
+import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
 import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
@@ -136,10 +137,11 @@ describe("remote backend runtime client", () => {
     expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
     const accepted = client.acceptMemoryAnswerTask.mock.calls[0]![0];
     expect(accepted.origin).toBe("mcp");
-    expect(accepted.request.input.project_id).toBe(
+    const acceptedInput = memoryAnswerInputSchema.parse(accepted.request.input);
+    expect(acceptedInput.project_id).toBe(
       repositoryScopeId(repositoryContext("/provided/project"))
     );
-    expect(accepted.request.input.repository_context).toEqual(
+    expect(acceptedInput.repository_context).toEqual(
       repositoryContext("/provided/project")
     );
     expect(accepted.invocation_key).toBe("call-one");

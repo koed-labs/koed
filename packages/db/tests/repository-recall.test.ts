@@ -150,6 +150,15 @@ describe.skipIf(!databaseUrl)(
           })
         ).sources
       ).toEqual([]);
+      const grouped = await repo.listLcmGraphThreads(actor, {
+        projectId: scope
+      });
+      expect(grouped).toHaveLength(1);
+      expect(grouped[0]?.id).toBe(scope);
+      expect(
+        new Set(grouped[0]?.threads.map((thread) => thread.sessionId))
+      ).toEqual(new Set([first.session.id, clone.session.id]));
+      expect(grouped[0]?.threads[0]?.repositoryAssignment?.version).toBe(1);
       const proposal = await repo.createCuratedMemoryProposal(actor, {
         proposedClaim: "Cobalt release copper checklist",
         evidenceMemoryEventIds: [first.event.id, other.event.id]
@@ -240,12 +249,27 @@ describe.skipIf(!databaseUrl)(
         JSON.stringify(search.metadata)
       ).toBe(true);
       expect(JSON.stringify(search)).not.toContain(other.event.id);
-      await updateSessionRepositoryOverride(pool, {
-        ownerUserId: actor.userId,
-        sessionId: first.session.id,
-        expectedVersion: 1,
-        identity: b
-      });
+      const moved = await repo.moveCapturedSessionToProject(
+        actor,
+        first.session.id,
+        {
+          id: repositoryScopeId(b),
+          name: "Project B",
+          path: b.root,
+          repositoryIdentity: b,
+          expectedAssignmentVersion: 1
+        }
+      );
+      expect(moved?.repositoryAssignment?.effective).toEqual(b);
+      expect(
+        await repo.moveCapturedSessionToProject(actor, first.session.id, {
+          id: scope,
+          name: "Stale move",
+          path: a.root,
+          repositoryIdentity: a,
+          expectedAssignmentVersion: 1
+        })
+      ).toBeNull();
       expect(
         (await repo.listLcmGraphNodes(actor, { projectId: scope })).map(
           (node) => node.id
@@ -259,6 +283,40 @@ describe.skipIf(!databaseUrl)(
           })
         ).sources
       ).toEqual([]);
+      const reset = await repo.resetCapturedSessionProject(
+        actor,
+        first.session.id,
+        2
+      );
+      expect(reset?.repositoryAssignment?.effective).toEqual(a);
+      expect(
+        (
+          await repo.listLcmGraphThreads(actor, { projectId: scope })
+        )[0]?.threads.map((thread) => thread.sessionId)
+      ).toContain(first.session.id);
+      const outsider = await repo.createUser({
+        email: `scope-outsider-${randomUUID()}@example.test`
+      });
+      expect(
+        await repo.moveCapturedSessionToProject(
+          { userId: outsider.id },
+          first.session.id,
+          {
+            id: repositoryScopeId(b),
+            name: "Unauthorized",
+            path: b.root,
+            repositoryIdentity: b,
+            expectedAssignmentVersion: 3
+          }
+        )
+      ).toBeNull();
+      await repo.moveCapturedSessionToProject(actor, first.session.id, {
+        id: repositoryScopeId(b),
+        name: "Project B",
+        path: b.root,
+        repositoryIdentity: b,
+        expectedAssignmentVersion: 3
+      });
       await updateSessionRepositoryOverride(pool, {
         ownerUserId: actor.userId,
         sessionId: clone.session.id,

@@ -75,3 +75,81 @@ it("shows unresolved identity and sends checkout-bound edits and reset while sur
     container.remove();
   }
 });
+
+it("inspects and edits the selected checkout in a shared repository group", async () => {
+  const repository = {
+    kind: "portable_repository" as const,
+    key: "github.com/example/repo",
+    root: "/first",
+    branch: "main",
+    reason: "origin" as const,
+    checkoutId: "checkout_one",
+    originatingDeviceId: "device_one",
+    selectedRemote: "origin",
+    anchorDisplay: "example/repo"
+  };
+  const project: DesktopProject = {
+    id: "repository-group",
+    catalogued: true,
+    discoveredAt: null,
+    lastSeenAt: null,
+    branch: "main",
+    remoteDisplay: null,
+    isWorktree: false,
+    name: "Example",
+    path: "/first",
+    eventCount: 0,
+    threads: [],
+    localProjectId: "local_one",
+    repository,
+    checkouts: [
+      { localProjectId: "local_one", path: "/first", repository },
+      {
+        localProjectId: "local_two",
+        path: "/second",
+        repository: {
+          ...repository,
+          root: "/second",
+          branch: "feature",
+          checkoutId: "checkout_two",
+          selectedRemote: "upstream"
+        }
+      }
+    ]
+  };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const onSetAnchor = vi.fn().mockResolvedValue(undefined);
+  try {
+    await act(async () =>
+      root.render(
+        <RepositoryAnchorPanel project={project} onSetAnchor={onSetAnchor} />
+      )
+    );
+    const select = container.querySelector<HTMLSelectElement>(
+      '[aria-label="Repository checkout"]'
+    )!;
+    await act(async () => {
+      select.value = "local_two";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("feature");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[aria-label="Selected repository remote"]'
+      )!.value
+    ).toBe("upstream");
+    await act(async () =>
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    expect(onSetAnchor).toHaveBeenCalledWith({
+      localProjectId: "local_two",
+      expectedCheckoutId: "checkout_two",
+      remoteName: "upstream"
+    });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

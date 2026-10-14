@@ -14,6 +14,8 @@ import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   RemoteRequestTimeoutError,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  repositoryScopeId,
+  type RepositoryIdentity,
   createPdsApplicationSecretStore,
   storeDesktopLocalCredential
 } from "@koed/shared";
@@ -453,7 +455,7 @@ describe("Koed server desktop manager", () => {
     });
 
     const listProjectsRequest = {
-      contractVersion: 8,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.projects.list",
       input: {}
     } as const;
@@ -2479,6 +2481,48 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       resolve(koedHome, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "main_only_token" })
     );
+    const targetIdentity: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_project_two",
+      root: "/work/project-two",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_two",
+      originatingDeviceId: "pms_test",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/two"
+    };
+    const targetId = repositoryScopeId(targetIdentity);
+    const assignment = {
+      state: "historical_unresolved",
+      version: 2,
+      automatic: null,
+      override: targetIdentity,
+      effective: targetIdentity
+    };
+    writeFileSync(
+      resolve(koedHome, "config/projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        updatedAt: "2026-10-14T00:00:00.000Z",
+        deviceSaltId: "pms_test",
+        projects: [
+          {
+            schemaVersion: 1,
+            discoveredAt: "2026-10-14T00:00:00.000Z",
+            lastSeenAt: "2026-10-14T00:00:00.000Z",
+            localProjectId: "lp_two",
+            displayName: "Project Two",
+            path: {
+              cwd: "/work/project-two",
+              projectRoot: "/work/project-two"
+            },
+            packages: [],
+            repository: targetIdentity
+          }
+        ]
+      })
+    );
     const personalMemoryFetch = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -2486,7 +2530,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           JSON.stringify({
             projects: [
               {
-                id: "project-2",
+                id: targetId,
                 name: "Project Two",
                 path: "/work/project-two",
                 eventCount: 0,
@@ -2500,7 +2544,11 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            session: { project: { id: "project-2" }, apiToken: "must-strip" }
+            session: {
+              project: { id: targetId },
+              repositoryAssignment: assignment,
+              apiToken: "must-strip"
+            }
           })
         )
       );
@@ -2533,14 +2581,19 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const result = await manager.personalMemory({
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.sessions.assign_project",
-      input: { action: "move", sessionId, targetProjectId: "project-2" }
+      input: {
+        action: "move",
+        sessionId,
+        targetProjectId: targetId,
+        expectedVersion: 1
+      }
     });
 
     expect(result).toEqual({
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.sessions.assign_project",
       ok: true,
-      data: { projectId: "project-2" }
+      data: { projectId: targetId }
     });
     expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
       "http://localhost:4170/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false"
@@ -2552,10 +2605,12 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       JSON.parse(String(personalMemoryFetch.mock.calls[1]?.[1]?.body))
     ).toEqual({
       action: "move",
+      expectedVersion: 1,
       project: {
-        id: "project-2",
+        id: targetId,
         name: "Project Two",
-        path: "/work/project-two"
+        path: "/work/project-two",
+        repositoryIdentity: targetIdentity
       }
     });
     expect(JSON.stringify(result)).not.toMatch(

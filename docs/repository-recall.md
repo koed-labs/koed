@@ -72,3 +72,35 @@ cover explicit Project targeting and immutable request context. Durable task
 checks cover encrypted context across worker replacement, terminal persistence,
 and repeated owner collection. Semantic tests use deterministic embedding vectors;
 they validate boundaries, not model answer quality.
+
+## Desktop Groups and Single-Session Assignment
+
+Desktop groups Captured Sessions by the same effective identity that recall uses.
+Current catalogue entries with that identity join the group, even when their
+checkout paths differ. Each local checkout retains its opaque local Project id,
+root, and checkout/device provenance for navigation. Paths, extra remotes, and
+historical aliases never establish group membership. A stable originating
+checkout can remain a navigation target after its selected anchor changes,
+without moving its recorded sessions into the new group.
+
+Unresolved history remains visible in its own owner group. Catalogue metadata at
+the same path does not resolve or absorb it. The source inspector retains the
+recorded automatic assignment and original cwd/root separately from the effective
+User assignment. An override can be portable, device-local, non-Git, or explicitly
+unresolved. It replaces the automatic identity rather than adding a matching value.
+
+**Manage Captured Session** moves one session or resets its override. Each request
+includes the assignment version the User inspected. The API atomically compares
+that version and updates both the override and version. Stale owner requests
+return 409; missing or other-owner sessions return 404. Capture observations do
+not overwrite this state. Reset restores the original automatic identity, or
+unresolved history when no automatic identity was recorded.
+
+The Desktop Personal contract is version 9. Graph thread responses carry the
+assignment state and version through the API and main process so subsequent edits
+use fresh versions. Successful moves invalidate graph caches and reload the
+Project index. A move changes grouping and subsequent Project recall immediately;
+it does not change retained capture source bytes or existing Team snapshots.
+
+Renderer code imports the browser-safe `@koed/shared/repository-recall` entry point.
+The server entry point includes Node dependencies and must not enter the renderer bundle.

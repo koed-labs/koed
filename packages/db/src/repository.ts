@@ -384,6 +384,7 @@ const mapLcmGraphThreadRow = (row: {
   project_path: string | null;
   project_assignment_source: "detected" | "user_override" | null;
   captured_project_provenance: Record<string, unknown> | null;
+  repository_assignment?: import("@koed/shared").RepositoryAssignment;
   thread_id: string;
   thread_name: string;
   session_id: string | null;
@@ -425,6 +426,7 @@ const mapLcmGraphThreadRow = (row: {
     projectPath: row.project_path,
     projectAssignmentSource: row.project_assignment_source,
     capturedProjectProvenance: row.captured_project_provenance ?? {},
+    repositoryAssignment: row.repository_assignment,
     eventCount: Number(row.event_count),
     invalidatedCount: Number(row.invalidated_count),
     latestAt: row.latest_at.toISOString(),
@@ -6705,12 +6707,7 @@ export const createMemorySourceRepository = (
           mn.summary_structured_json, mn.summary_structured_schema_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
-          coalesce(
-            s.project_override_id,
-            s.automatic_project_id,
-            case when s.id is null then ev.payload ->> 'projectId' end,
-            'unassigned'
-          ) as project_id,
+          coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
           coalesce(
             s.project_override_name,
             s.automatic_project_name,
@@ -6742,7 +6739,8 @@ export const createMemorySourceRepository = (
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and (
             $4::text is null
-            or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
+            or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
           )
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
@@ -7019,12 +7017,7 @@ export const createMemorySourceRepository = (
             me.source_runtime,
             me.capture_method,
             s.model,
-            coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then me.payload ->> 'projectId' end,
-              'unassigned'
-            ) as project_id,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
             coalesce(
               s.project_override_name,
               s.automatic_project_name,
@@ -7063,6 +7056,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
@@ -7120,7 +7114,7 @@ export const createMemorySourceRepository = (
             msg.source_runtime,
             msg.capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
             coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
             coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.id::text as session_id,
@@ -7197,6 +7191,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
@@ -7276,7 +7271,7 @@ export const createMemorySourceRepository = (
             te.source_runtime,
             te.capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
             coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
             coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.id::text as session_id,
@@ -7337,6 +7332,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
@@ -7426,7 +7422,7 @@ export const createMemorySourceRepository = (
               else 'api'::capture_method
             end as capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
             coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
             coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.id::text as session_id,
@@ -7485,6 +7481,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $5)
@@ -7696,29 +7693,20 @@ export const createMemorySourceRepository = (
           select
             me.id::text as id,
             'event' as row_kind,
-            coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then me.payload ->> 'projectId' end,
-              'unassigned'
-            ) as project_id,
-            coalesce(
-              s.project_override_name,
-              s.automatic_project_name,
-              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-              'Unassigned'
-            ) as project_name,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null then 'Unresolved history' else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity) ->> 'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
             coalesce(
               s.project_override_path,
               s.automatic_project_path,
               case when s.id is null then me.payload #>> '{metadata,projectPath}' end
             ) as project_path,
             case
-              when s.project_override_id is not null then 'user_override'
-              when s.automatic_project_id is not null then 'detected'
+              when s.repository_override_identity is not null then 'user_override'
+              when s.repository_automatic_identity is not null then 'detected'
               else null
             end as project_assignment_source,
             coalesce(s.captured_project_provenance, '{}'::jsonb) as captured_project_provenance,
+            jsonb_build_object('state', coalesce(s.repository_assignment_state, 'historical_unresolved'), 'version', coalesce(s.repository_assignment_version, 1), 'automatic', s.repository_automatic_identity, 'override', s.repository_override_identity, 'effective', coalesce(s.repository_override_identity, s.repository_automatic_identity)) as repository_assignment,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
@@ -7766,6 +7754,7 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
@@ -7783,15 +7772,16 @@ export const createMemorySourceRepository = (
           select
             s.id::text as id,
             'session' as row_kind,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null then 'Unresolved history' else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity) ->> 'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
             coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             case
-              when s.project_override_id is not null then 'user_override'
-              when s.automatic_project_id is not null then 'detected'
+              when s.repository_override_identity is not null then 'user_override'
+              when s.repository_automatic_identity is not null then 'detected'
               else null
             end as project_assignment_source,
             s.captured_project_provenance as captured_project_provenance,
+            jsonb_build_object('state', coalesce(s.repository_assignment_state, 'historical_unresolved'), 'version', coalesce(s.repository_assignment_version, 1), 'automatic', s.repository_automatic_identity, 'override', s.repository_override_identity, 'effective', coalesce(s.repository_override_identity, s.repository_automatic_identity)) as repository_assignment,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
@@ -7829,6 +7819,7 @@ export const createMemorySourceRepository = (
             and s.metadata ->> 'threadName' <> s.id::text
             and (
               $4::text is null
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
               or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
@@ -7848,6 +7839,7 @@ export const createMemorySourceRepository = (
             (array_agg(project_path order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_path,
             (array_agg(project_assignment_source order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_assignment_source,
             (array_agg(captured_project_provenance order by order_at desc, source_sequence desc nulls last, id desc))[1] as captured_project_provenance,
+            (array_agg(repository_assignment order by order_at desc, source_sequence desc nulls last, id desc))[1] as repository_assignment,
             thread_id,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
@@ -7928,6 +7920,7 @@ export const createMemorySourceRepository = (
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
           capturedProjectProvenance: thread.capturedProjectProvenance,
+          repositoryAssignment: thread.repositoryAssignment,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
           latestAt: thread.latestAt,

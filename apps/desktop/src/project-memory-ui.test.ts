@@ -1,3 +1,4 @@
+import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it } from "vitest";
 import {
   assignmentTargetProjects,
@@ -107,7 +108,7 @@ describe("repoUrlFromRemoteDisplay", () => {
       path: { cwd: runtimePath, projectRoot: null }
     });
     const projects = mergeProjectSources([captured], [root, runtimeMetadata]);
-    expect(projects).toHaveLength(1);
+    expect(projects).toHaveLength(2);
     expect(projects[0]).toMatchObject({
       id: "lp_chats",
       name: "Chats",
@@ -123,7 +124,7 @@ describe("repoUrlFromRemoteDisplay", () => {
     "C:\\Users\\Operator\\koed",
     "\\\\server\\share\\koed"
   ])(
-    "merges legacy standalone runtime Projects into Chats under %s",
+    "keeps an unassociated runtime Project separate from Chats under %s",
     (home) => {
       const root = metadata({
         localProjectId: "lp_chats",
@@ -134,9 +135,9 @@ describe("repoUrlFromRemoteDisplay", () => {
       const path = `${home}/managed-conversations/independent/6749259b-8f10-4b53-92d8-66e7f87a8663`;
       const captured = graphProject({ id: "lp_runtime", path });
       const projects = mergeProjectSources([captured], [root]);
-      expect(projects).toHaveLength(1);
+      expect(projects).toHaveLength(2);
       expect(projects[0]?.threads).toEqual(captured.threads);
-      expect(projects[0]?.id).toBe("lp_chats");
+      expect(projects[0]?.id).toBe("lp_runtime");
     }
   );
 
@@ -195,85 +196,127 @@ describe("repositoryPresentationFromRemoteDisplay", () => {
 });
 
 describe("project memory UI view model", () => {
-  it("merges persisted identity metadata into captured Project activity", () => {
-    const [project] = mergeProjectSources([graphProject()], [metadata()]);
-
-    expect(project).toMatchObject({
-      id: "graph-koed",
-      name: "koed",
-      eventCount: 12,
-      localProjectId: "lp_koed",
-      branch: "codex/project-ui",
-      remoteDisplay: "github.com/koed-labs/koed",
-      catalogued: true
+  it("groups recorded repository identities across checkout paths and retains both local navigation targets", () => {
+    const identity: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_fixture",
+      root: "/checkout/one",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_one",
+      originatingDeviceId: "device_one",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/fixture"
+    };
+    const assignment = {
+      state: "recorded" as const,
+      version: 1,
+      automatic: identity,
+      override: null,
+      effective: identity
+    };
+    const first = graphProject({
+      threads: [
+        { ...graphProject().threads[0]!, repositoryAssignment: assignment }
+      ]
     });
-  });
-
-  it("consolidates captured Project identities that resolve to the same path", () => {
+    const secondIdentity = {
+      ...identity,
+      root: "/checkout/two",
+      checkoutId: "checkout_two"
+    };
+    const second = graphProject({
+      id: "another-group",
+      path: secondIdentity.root,
+      threads: [
+        {
+          ...graphProject().threads[0]!,
+          id: "second-thread",
+          sessionId: "second-session",
+          repositoryAssignment: {
+            ...assignment,
+            automatic: secondIdentity,
+            effective: secondIdentity
+          }
+        }
+      ]
+    });
     const projects = mergeProjectSources(
+      [first, second],
       [
-        graphProject({
-          id: "legacy-koed",
-          eventCount: 5,
-          threads: [
-            {
-              ...graphProject().threads[0]!,
-              id: "legacy-thread",
-              projectId: "legacy-koed",
-              eventCount: 5,
-              latestAt: "2026-07-09T10:00:00.000Z"
-            }
-          ]
+        metadata({
+          repository: identity,
+          path: { cwd: identity.root!, projectRoot: identity.root }
         }),
-        graphProject({
-          id: "lp_koed",
-          path: "/Users/jedd/agents/koed/",
-          eventCount: 7,
-          threads: [
-            {
-              ...graphProject().threads[0]!,
-              id: "current-thread",
-              projectId: "lp_koed",
-              eventCount: 7,
-              latestAt: "2026-07-10T10:00:00.000Z"
-            }
-          ]
+        metadata({
+          localProjectId: "lp_second",
+          repository: secondIdentity,
+          path: { cwd: secondIdentity.root, projectRoot: secondIdentity.root }
         })
-      ],
-      [metadata()]
+      ]
     );
-
     expect(projects).toHaveLength(1);
     expect(projects[0]).toMatchObject({
-      id: "lp_koed",
-      path: "/Users/jedd/agents/koed/",
-      eventCount: 12,
-      localProjectId: "lp_koed"
+      id: repositoryScopeId(identity),
+      eventCount: 24,
+      localProjectId: "lp_koed",
+      catalogued: true
     });
-    expect(projects[0]?.threads.map(({ id }) => id)).toEqual([
-      "current-thread",
-      "legacy-thread"
+    expect(projects[0]?.checkouts?.map((checkout) => checkout.path)).toEqual([
+      "/checkout/one",
+      "/checkout/two"
     ]);
-    expect(projects[0]?.threads.map(({ projectId }) => projectId)).toEqual([
-      "lp_koed",
-      "legacy-koed"
-    ]);
+    expect(projects[0]?.threads).toHaveLength(2);
   });
 
-  it("keeps different checkout paths as separate Projects", () => {
+  it("keeps unresolved history separate from current catalogue metadata at the same path", () => {
+    const identity: RepositoryIdentity = {
+      kind: "non_git_project",
+      key: "ng_fixture",
+      root: "/same/path",
+      branch: null,
+      reason: "non_git",
+      checkoutId: "checkout_current",
+      originatingDeviceId: "device_one",
+      selectedRemote: null,
+      anchorDisplay: null
+    };
+    const history = graphProject({
+      id: "unassigned",
+      path: identity.root,
+      threads: [
+        {
+          ...graphProject().threads[0]!,
+          repositoryAssignment: {
+            state: "historical_unresolved",
+            version: 1,
+            automatic: null,
+            override: null,
+            effective: null
+          }
+        }
+      ]
+    });
     const projects = mergeProjectSources(
+      [history],
       [
-        graphProject(),
-        graphProject({
-          id: "graph-koed-worktree",
-          path: "/Users/jedd/agents/koed-feature",
-          threads: []
+        metadata({
+          repository: identity,
+          path: { cwd: identity.root!, projectRoot: null }
         })
-      ],
-      [metadata()]
+      ]
     );
-
     expect(projects).toHaveLength(2);
+    expect(
+      projects.find((project) => project.id === "unassigned")
+    ).toMatchObject({
+      name: "Unresolved history",
+      catalogued: false,
+      eventCount: 12
+    });
+    expect(
+      projects.find((project) => project.id === repositoryScopeId(identity))
+    ).toMatchObject({ eventCount: 0, catalogued: true });
   });
 
   it("keeps catalogued Projects visible before they have captured sessions", () => {
@@ -382,8 +425,12 @@ describe("project memory UI view model", () => {
 
     expect(
       assignmentTargetProjects(projects).map((project) => project.id)
-    ).toEqual(["graph-koed"]);
-    expect(assignmentTargetProjects(projects, "graph-koed")).toEqual([]);
+    ).toEqual(["graph-koed", "lp_koed"]);
+    expect(
+      assignmentTargetProjects(projects, "graph-koed").map(
+        (project) => project.id
+      )
+    ).toEqual(["lp_koed"]);
   });
 
   it("preserves deliberate inactive-collapse clearing but reconciles missing Projects", () => {

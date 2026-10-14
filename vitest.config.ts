@@ -11,6 +11,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@koed/shared/repository-recall",
+        replacement: `${root}packages/shared/src/repository-recall.ts`
+      },
+      {
         find: "@koed/shared/collaboration-client-runtime",
         replacement: `${root}packages/shared/src/collaboration-client-runtime.ts`
       },

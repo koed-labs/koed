@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { RendererPlatform } from "../../services/platform.js";
 
@@ -9,21 +9,32 @@ export function RepositoryAnchorPanel({
   project: DesktopProject;
   onSetAnchor?: RendererPlatform["setRepositoryAnchor"];
 }) {
+  const [selectedCheckoutId, setSelectedCheckoutId] = useState(
+    project.localProjectId
+  );
+  const selectedCheckout =
+    project.checkouts?.find(
+      (checkout) => checkout.localProjectId === selectedCheckoutId
+    ) ?? project.checkouts?.[0];
+  const localProjectId =
+    selectedCheckout?.localProjectId ?? project.localProjectId;
   const [remote, setRemote] = useState(
     project.repository?.selectedRemote ?? ""
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const repository = project.repository;
+  const repository = selectedCheckout?.repository ?? project.repository;
+  useEffect(() => {
+    setRemote(repository?.selectedRemote ?? "");
+  }, [repository?.checkoutId, repository?.selectedRemote]);
   if (!repository) return null;
   const save = async (remoteName: string | null) => {
-    if (!onSetAnchor || !project.localProjectId || !repository.checkoutId)
-      return;
+    if (!onSetAnchor || !localProjectId || !repository.checkoutId) return;
     setBusy(true);
     setError("");
     try {
       await onSetAnchor({
-        localProjectId: project.localProjectId,
+        localProjectId,
         expectedCheckoutId: repository.checkoutId,
         remoteName
       });
@@ -43,6 +54,32 @@ export function RepositoryAnchorPanel({
         Repository anchor ·{" "}
         {repository.anchorDisplay ?? repository.kind.replaceAll("_", " ")}
       </summary>
+      {(project.checkouts?.length ?? 0) > 1 ? (
+        <label>
+          Checkout{" "}
+          <select
+            aria-label="Repository checkout"
+            value={localProjectId ?? ""}
+            onChange={(event) => {
+              setSelectedCheckoutId(event.target.value);
+              setRemote(
+                project.checkouts?.find(
+                  (checkout) => checkout.localProjectId === event.target.value
+                )?.repository?.selectedRemote ?? ""
+              );
+            }}
+          >
+            {project.checkouts!.map((checkout) => (
+              <option
+                key={checkout.localProjectId}
+                value={checkout.localProjectId}
+              >
+                {checkout.path}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <dl>
         <dt>Resolution</dt>
         <dd>{repository.reason.replaceAll("_", " ")}</dd>
@@ -55,7 +92,7 @@ export function RepositoryAnchorPanel({
         <dt>Originating device</dt>
         <dd>{repository.originatingDeviceId}</dd>
       </dl>
-      {onSetAnchor && repository.checkoutId && project.localProjectId ? (
+      {onSetAnchor && repository.checkoutId && localProjectId ? (
         <form
           onSubmit={(event) => {
             event.preventDefault();

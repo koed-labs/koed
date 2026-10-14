@@ -376,16 +376,29 @@ export const registerGraphRoutes = (
           ? await repo.moveCapturedSessionToProject(
               { userId: user.id },
               params.sessionId,
-              input.project
+              {
+                ...input.project,
+                expectedAssignmentVersion: input.expectedVersion
+              }
             )
           : await repo.resetCapturedSessionProject(
               { userId: user.id },
-              params.sessionId
+              params.sessionId,
+              input.expectedVersion
             );
       if (!session) {
-        return reply
-          .status(404)
-          .send({ error: "Captured session not found or not visible" });
+        const current = await repo.getCapturedSession(
+          { userId: user.id },
+          params.sessionId
+        );
+        return current
+          ? reply.status(409).send({
+              error:
+                "Repository assignment changed. Reload the session before moving it."
+            })
+          : reply
+              .status(404)
+              .send({ error: "Captured session not found or not visible" });
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };

@@ -1195,6 +1195,7 @@ export interface LcmGraphEvent {
 }
 
 export interface LcmGraphThread {
+  repositoryAssignment?: RepositoryAssignment;
   id: string;
   name: string;
   sessionId: string | null;
@@ -1293,6 +1294,8 @@ export interface LocalEmbeddingStatus {
 }
 
 export interface PersonalProjectReference {
+  repositoryIdentity?: import("@koed/shared").RepositoryIdentity;
+  expectedAssignmentVersion?: number;
   id: string;
   name: string;
   path: string | null;

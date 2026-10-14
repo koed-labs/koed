@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 8;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 9;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -229,6 +230,7 @@ export const personalDesktopProjectThreadSchema = z
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
     projectAssignmentSource: z.enum(["detected", "user_override"]).nullable(),
+    repositoryAssignment: repositoryAssignmentSchema.optional(),
     eventCount: z.number().int().safe().nonnegative(),
     invalidatedCount: z.number().int().safe().nonnegative(),
     latestAt: timestampSchema,
@@ -452,13 +454,15 @@ export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
       .object({
         action: z.literal("move"),
         sessionId: z.uuid(),
-        targetProjectId: identifierSchema
+        targetProjectId: identifierSchema,
+        expectedVersion: z.number().int().positive()
       })
       .strict(),
     z
       .object({
         action: z.literal("reset"),
-        sessionId: z.uuid()
+        sessionId: z.uuid(),
+        expectedVersion: z.number().int().positive()
       })
       .strict()
   ]

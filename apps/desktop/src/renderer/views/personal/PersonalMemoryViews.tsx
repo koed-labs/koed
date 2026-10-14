@@ -1096,6 +1096,22 @@ function ProjectDetail({
             project={project}
             onSetAnchor={onSetRepositoryAnchor}
           />
+          {(project.checkouts?.length ?? 0) > 1 ? (
+            <ul aria-label="Project checkouts">
+              {project.checkouts!.map((checkout) => (
+                <li key={checkout.localProjectId}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onRevealLocalProject?.(checkout.localProjectId)
+                    }
+                  >
+                    {checkout.path}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <ProjectOverview
             eventCount={project.eventCount}
             localProjectId={project.localProjectId}
@@ -3435,9 +3451,18 @@ function SessionAssignment({
         <DialogHeader>
           <DialogTitle>Manage Captured Session</DialogTitle>
           <DialogDescription>
-            Move this session to another Project.
+            Move this session to another Project. Reset restores its recorded
+            capture assignment, including unresolved history.
           </DialogDescription>
         </DialogHeader>
+        <p>
+          Recorded checkout:{" "}
+          {thread.repositoryAssignment?.automatic?.root ?? "Unresolved history"}
+        </p>
+        <p>
+          Effective repository:{" "}
+          {thread.repositoryAssignment?.effective?.key ?? "Unresolved"}
+        </p>
         <form
           aria-busy={busy}
           onSubmit={(event) => {
@@ -3449,7 +3474,8 @@ function SessionAssignment({
             void run({
               action: "move",
               sessionId: thread.sessionId!,
-              targetProjectId
+              targetProjectId,
+              expectedVersion: thread.repositoryAssignment?.version ?? 1
             });
           }}
         >
@@ -3483,7 +3509,8 @@ function SessionAssignment({
                 onClick={() =>
                   void run({
                     action: "reset",
-                    sessionId: thread.sessionId!
+                    sessionId: thread.sessionId!,
+                    expectedVersion: thread.repositoryAssignment?.version ?? 1
                   })
                 }
                 type="button"

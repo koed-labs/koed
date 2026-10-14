@@ -1,3 +1,4 @@
+import type { RepositoryIdentity } from "@koed/shared";
 import {
   createHash,
   createPrivateKey,
@@ -87,6 +88,21 @@ import type { BuildServerOptions } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
 
 let isolatedDefaultKoedHome: string | undefined;
+
+const fixtureRepositoryIdentity = (
+  name: string,
+  root: string | null
+): RepositoryIdentity => ({
+  kind: "portable_repository",
+  key: `gr_${name}`,
+  root,
+  branch: "main",
+  reason: "origin",
+  checkoutId: `checkout_${name}`,
+  originatingDeviceId: "fixture_device",
+  selectedRemote: "origin",
+  anchorDisplay: `example.test/team/${name}`
+});
 
 const testProtocolDeploymentId = "00000000-0000-4000-8000-000000000001";
 
@@ -3600,6 +3616,13 @@ const createFakeRepository = () => {
         ? capturedSessions.get(existingId)
         : undefined;
       const record: CapturedSessionRecord = {
+        repositoryAssignment: existing?.repositoryAssignment ?? {
+          state: "recorded",
+          version: 1,
+          automatic: input.repositoryIdentity ?? null,
+          override: null,
+          effective: input.repositoryIdentity ?? null
+        },
         id: existing?.id ?? id,
         logicalSessionId: existing?.logicalSessionId ?? randomUUID(),
         ownerUserId: actor.userId,
@@ -3714,6 +3737,16 @@ const createFakeRepository = () => {
       const updatedAt = new Date().toISOString();
       const nextSession: CapturedSessionRecord = {
         ...session,
+        repositoryAssignment: {
+          state: session.repositoryAssignment?.state ?? "historical_unresolved",
+          version: (session.repositoryAssignment?.version ?? 1) + 1,
+          automatic: session.repositoryAssignment?.automatic ?? null,
+          override: project.repositoryIdentity ?? null,
+          effective:
+            project.repositoryIdentity ??
+            session.repositoryAssignment?.automatic ??
+            null
+        },
         projectOverride: project,
         project,
         projectAssignmentSource: "user_override",
@@ -3732,6 +3765,13 @@ const createFakeRepository = () => {
         return null;
       const nextSession: CapturedSessionRecord = {
         ...session,
+        repositoryAssignment: {
+          state: session.repositoryAssignment?.state ?? "historical_unresolved",
+          version: (session.repositoryAssignment?.version ?? 1) + 1,
+          automatic: session.repositoryAssignment?.automatic ?? null,
+          override: null,
+          effective: session.repositoryAssignment?.automatic ?? null
+        },
         projectOverride: null,
         project: session.automaticProject,
         projectAssignmentSource: session.automaticProject ? "detected" : null,
@@ -15642,7 +15682,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(ownerCookie),
       payload: {
         action: "move",
-        project: { id: "project-b", name: "Project B", path: "/work/manual-b" }
+        expectedVersion: 1,
+        project: {
+          id: "project-b",
+          name: "Project B",
+          path: "/work/manual-b",
+          repositoryIdentity: fixtureRepositoryIdentity("b", "/work/manual-b")
+        }
       }
     });
     const redetected = await app.inject({
@@ -15679,7 +15725,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookieHeader(other)),
       payload: {
         action: "move",
-        project: { id: "project-a", name: "Project A", path: null }
+        expectedVersion: 2,
+        project: {
+          id: "project-a",
+          name: "Project A",
+          path: null,
+          repositoryIdentity: fixtureRepositoryIdentity("a", null)
+        }
       }
     });
     const rejectedTeamAuthority = await app.inject({
@@ -15688,7 +15740,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(ownerCookie),
       payload: {
         action: "move",
-        project: { id: "project-a", name: "Project A", path: null },
+        expectedVersion: 2,
+        project: {
+          id: "project-a",
+          name: "Project A",
+          path: null,
+          repositoryIdentity: fixtureRepositoryIdentity("a", null)
+        },
         teamWorkspaceId: randomUUID()
       }
     });
@@ -15696,7 +15754,7 @@ describe("account and access flows", () => {
       method: "PATCH",
       url: `/v1/memory/graph/sessions/${session.id}/project`,
       headers: browserSessionHeaders(ownerCookie),
-      payload: { action: "reset" }
+      payload: { action: "reset", expectedVersion: 2 }
     });
     const ambiguous = await app.inject({
       method: "POST",
