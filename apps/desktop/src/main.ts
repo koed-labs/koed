@@ -58,6 +58,10 @@ import { createMainWindowOptions } from "./window/window-manager.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { createDesktopCliInstallManager } from "./cli-install/manager.js";
 import {
+  loadCliInstallSettingsForDesktop,
+  writeCliInstallSettings
+} from "./cli-install/settings.js";
+import {
   registerCliInstallIpc,
   sendCliInstallProgress
 } from "./cli-install/ipc.js";
@@ -428,7 +432,16 @@ const bootstrap = async () => {
       signaturePath: files[2]!
     };
   };
+  const cliInstallSettingsFile = resolve(
+    app.getPath("userData"),
+    "cli-install.json"
+  );
   const cliInstallManager = createDesktopCliInstallManager({
+    ...loadCliInstallSettingsForDesktop(cliInstallSettingsFile, (error) =>
+      console.error(error)
+    ),
+    saveSettings: (settings) =>
+      writeCliInstallSettings(cliInstallSettingsFile, settings),
     ...(privacyInstallBridge
       ? {
           bridge: {
