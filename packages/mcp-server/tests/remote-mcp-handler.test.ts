@@ -8,6 +8,16 @@ import {
   type RemoteKoedMcpHandlerOptions
 } from "../src/remote-mcp-handler.js";
 import type { KoedMcpRuntimeClient } from "../src/mcp-server-factory.js";
+import type { MemoryAnswerTask } from "@koed/shared";
+
+const taskId = "aaaabbbb-1111-4111-8111-111111111111";
+const task = (status: MemoryAnswerTask["status"]): MemoryAnswerTask =>
+  ({
+    id: taskId,
+    status,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    result: status === "completed" ? { markdown: "Collected evidence." } : null
+  }) as MemoryAnswerTask;
 
 const handles: Array<{ close: () => Promise<void> }> = [];
 afterEach(async () => {
@@ -113,7 +123,11 @@ describe("authenticated remote MCP transport", () => {
       });
       const client = await connect("valid", version);
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["memory_answer"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual([
+        "memory_answer",
+        "memory_answer_result",
+        "memory_answer_cancel"
+      ]);
       const response = await client.callTool({
         name: "memory_answer",
         arguments: { query: "retained fact" }
@@ -128,6 +142,131 @@ describe("authenticated remote MCP transport", () => {
       );
       expect(executor.startMemoryAnswerTask).not.toHaveBeenCalled();
       expect(authenticate.mock.calls.length).toBeGreaterThanOrEqual(3);
+    }
+  );
+
+  it.each(["2026-07-28", "2025-11-25"] as const)(
+    "submits, collects and cancels durable recall over %s HTTP",
+    async (version) => {
+      const { connect, executor, authenticate } = setup();
+      executor.startMemoryAnswerTask.mockResolvedValue(task("accepted"));
+      executor.getMemoryAnswerTask
+        .mockResolvedValueOnce(task("running"))
+        .mockResolvedValueOnce(task("completed"))
+        .mockResolvedValueOnce(task("running"));
+      executor.cancelMemoryAnswerTask.mockResolvedValue(
+        task("cancel_requested")
+      );
+      const client = await connect("valid", version);
+      const receipt = await client.callTool({
+        name: "memory_answer",
+        arguments: {
+          query: "retained fact",
+          delivery_mode: "non_blocking"
+        }
+      });
+      expect(receipt.structuredContent).toMatchObject({
+        status: "pending",
+        task_id: taskId
+      });
+      const pending = await client.callTool({
+        name: "memory_answer_result",
+        arguments: { task_id: taskId }
+      });
+      expect(pending.structuredContent).toMatchObject({
+        status: "pending",
+        task_id: taskId
+      });
+      const completed = await client.callTool({
+        name: "memory_answer_result",
+        arguments: { task_id: taskId }
+      });
+      expect(JSON.stringify(completed.content)).toContain(
+        "Collected evidence."
+      );
+      const cancelled = await client.callTool({
+        name: "memory_answer_cancel",
+        arguments: { task_id: taskId }
+      });
+      expect(cancelled.structuredContent).toMatchObject({
+        status: "cancel_requested",
+        task_id: taskId
+      });
+      expect(executor.startMemoryAnswerTask).toHaveBeenCalledTimes(1);
+      expect(executor.getMemoryAnswerTask).toHaveBeenCalledTimes(3);
+      expect(executor.getMemoryAnswerTask).toHaveBeenCalledWith(
+        taskId,
+        expect.any(AbortSignal)
+      );
+      expect(executor.cancelMemoryAnswerTask).toHaveBeenCalledWith(
+        taskId,
+        expect.any(AbortSignal)
+      );
+      expect(executor.callTool).not.toHaveBeenCalled();
+      expect(authenticate.mock.calls.length).toBeGreaterThanOrEqual(5);
+    }
+  );
+
+  it.each(["2026-07-28", "2025-11-25"] as const)(
+    "revalidates collection and cancellation authorization over %s HTTP",
+    async (version) => {
+      const { connect, executor, authenticate } = setup();
+      const client = await connect("valid", version);
+      await client.listTools();
+      authenticate.mockResolvedValue(null);
+      for (const name of ["memory_answer_result", "memory_answer_cancel"]) {
+        await expect(
+          client.callTool({ name, arguments: { task_id: taskId } })
+        ).rejects.toThrow();
+      }
+      expect(executor.getMemoryAnswerTask).not.toHaveBeenCalled();
+      expect(executor.cancelMemoryAnswerTask).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["2026-07-28", "2025-11-25"] as const)(
+    "uses the current User runtime for arbitrary task IDs over %s HTTP",
+    async (version) => {
+      const first = runtime();
+      const second = runtime();
+      first.getMemoryAnswerTask.mockResolvedValue(task("completed"));
+      second.getMemoryAnswerTask.mockRejectedValue(
+        new Error("PRIVATE_OTHER_USER_TASK")
+      );
+      const { connect } = setup({
+        authenticate: async (request) => {
+          const isFirst =
+            request.headers.get("authorization") === "Bearer first";
+          return {
+            principal: {
+              userId: isFirst ? "first" : "second",
+              tokenId: "token"
+            },
+            runtimeClient: isFirst ? first : second
+          };
+        }
+      });
+      const firstClient = await connect("first", version);
+      const secondClient = await connect("second", version);
+      const ownerResult = await firstClient.callTool({
+        name: "memory_answer_result",
+        arguments: { task_id: taskId }
+      });
+      expect(JSON.stringify(ownerResult.content)).toContain(
+        "Collected evidence."
+      );
+      for (const name of ["memory_answer_result", "memory_answer_cancel"]) {
+        const denied = await secondClient.callTool({
+          name,
+          arguments: { task_id: taskId }
+        });
+        expect(denied.isError).toBe(true);
+        expect(JSON.stringify(denied)).not.toContain("Collected evidence.");
+        expect(JSON.stringify(denied)).not.toContain("PRIVATE_OTHER_USER_TASK");
+      }
+      expect(first.getMemoryAnswerTask).toHaveBeenCalledTimes(1);
+      expect(second.getMemoryAnswerTask).toHaveBeenCalledTimes(2);
+      expect(second.cancelMemoryAnswerTask).not.toHaveBeenCalled();
     }
   );
 

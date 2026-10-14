@@ -210,7 +210,9 @@ describe("API remote MCP bridge", () => {
       result: { tools: Array<{ name: string }> };
     }>();
     expect(payload.result.tools.map((tool) => tool.name)).toEqual([
-      "memory_answer"
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel"
     ]);
     expect(f.apiCalls).toHaveBeenCalledOnce();
     expect(f.resolvePrincipal).toHaveBeenCalledTimes(2);

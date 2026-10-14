@@ -7,25 +7,32 @@ MCP Server, and optional local Synthesis through Claude Code.
 
 Koed does not require Codex for the Claude integration. Codex and Claude Code
 use the same [durable Personal Memory Answer path](durable-memory-answer.md).
-Claude's Agent SDK still requires the matching tool result before model
-continuation, so the host waits while durable work continues without model
-polling. Both AI Clients may connect to the same local Koed deployment, but
-neither installation is
-used as a fallback for the other.
+Both AI Clients may connect to the same local Koed deployment, but neither
+installation is used as a fallback for the other.
 
-The MCP tool accepts the per-call `delivery_mode` preference. Omitted and
-`auto` retain the configured calling-integration behavior. All modes use the
-ordinary MCP result path in Claude Code; `non_blocking` cannot enable host
-backgrounding, and `blocking` cannot disable it. The adapter strips the argument
-before execution and records `mcp_result` as its internal route. This route
-does not assert foreground delivery when the host has backgrounding configured.
+The MCP tools expose explicit task collection. Omitted, `auto`, and `blocking`
+`delivery_mode` values return the completed Memory Answer through the ordinary
+MCP result path. Explicit `non_blocking` returns a pending task receipt promptly.
+Continue independent work, then call `memory_answer_result` with the receipt's
+`task_id` when the next action needs recalled memory. Its optional
+`wait_seconds` accepts an integer from 0 to 30; zero checks immediately, and a
+positive value waits up to that bounded interval. Pending is not an answer.
+Cancel unnecessary work with `memory_answer_cancel({task_id})`.
+
+Claude Code's optional native backgrounding of ordinary MCP calls is independent
+of this explicit non-blocking contract. A blocking Koed request still returns
+its completed result through that host-managed path; Koed's per-call mode does
+not enable or disable Claude's native backgrounding. Explicit non-blocking
+requests need result collection and do not depend on a Stop hook or automatic
+follow-up message. See [asynchronous Memory Answers](async-memory-answer.md)
+for the shared execution and collection contract.
 
 Choose blocking when the next planned action needs prior memory. Independent
-diagnostics may overlap a backgrounded call, but the agent must receive and
-apply its result before a memory-dependent decision. If independent work ends,
-yield for the host's notification rather than inventing an answer, polling,
-repeating recall, or claiming dependent work is complete. Failed delivery or
-uncertain acceptance leaves the prerequisite unresolved without resubmission.
+diagnostics may overlap a pending task, but the agent must collect and apply
+its result before a memory-dependent decision. Do not repeat the submission,
+use a tight polling loop, invent an answer, or claim dependent work is complete
+before collection. Failed execution or uncertain acceptance leaves that
+prerequisite unresolved.
 
 Desktop-managed Conversations require explicit `claude` driver and instance
 selection. API accepts only an enabled instance with a fresh healthy,

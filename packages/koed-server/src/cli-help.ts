@@ -58,7 +58,7 @@ Commands:
   remote remove <client> --consent --json Remove only the selected remote AI Client integration
   remote logout --consent --json Revoke remote authorization and clear local tokens
   setup core --json      Prepare Koed core services and local credential
-  setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration (deferred recall by default; blocking on Windows)
+  setup codex [--deferred-recall | --blocking-recall] --json     Configure Codex integration (legacy recall flags accepted; delivery selected per tool call)
     --without-memory-guidance  Do not install the recommended global guidance
     --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration

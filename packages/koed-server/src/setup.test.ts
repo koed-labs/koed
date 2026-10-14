@@ -267,7 +267,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("contributor check accepts repaired deferred and blocking configuration", () => {
+  it("contributor check accepts repaired configuration with legacy recall selections", () => {
     const root = realpathSync(tempDir());
     const codexHome = resolve(root, "codex");
     const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
@@ -322,7 +322,7 @@ describe("Codex setup wrapper", () => {
     }
   });
 
-  it("defaults to deferred recall and preserves a recorded blocking selection through packaged setup and repair", async () => {
+  it("installs task collection through packaged setup and repairs older owned configuration", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
     const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
@@ -386,11 +386,17 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     const configPath = resolve(codexHome, "config.toml");
     const installed = readFileSync(configPath, "utf8");
-    expect(installed).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
-    expect(installed).toContain("timeout = 305");
-    expect(installed).toContain("mcp__koed__memory_answer");
-    expect(installed).toContain("codex-memory-hook.js");
-    expect(installed).not.toContain("async = true");
+    for (const tool of [
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
+      "memory_workspaces"
+    ]) {
+      expect(installed).toContain(
+        `[mcp_servers.koed.tools.${tool}]\napproval_mode = "approve"`
+      );
+    }
+    expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(6);
     const base = {
       KOED_HOME: root,
       KOED_REPO_ROOT: root,
@@ -410,21 +416,24 @@ describe("Codex setup wrapper", () => {
     expect(repair().ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(installed);
     expect(repair("0").ok).toBe(true);
-    const blocking = readFileSync(configPath, "utf8");
-    expect(blocking).toContain('KOED_CODEX_STOP_DELIVERY = "0"');
-    expect(blocking).not.toContain("codex-memory-hook.js");
-    expect(repair().ok).toBe(true);
-    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
     writeFileSync(
       configPath,
-      blocking.replace(/^KOED_CODEX_STOP_DELIVERY = "0"\n/m, "")
+      'model = "user-model"\n\n# >>> koed\n[mcp_servers.koed.env]\nKOED_CODEX_STOP_DELIVERY = "1"\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "node codex-memory-hook.js"\ntimeout = 305\n# <<< koed\n'
     );
     expect(repair().ok).toBe(true);
-    expect(readFileSync(configPath, "utf8")).toBe(installed);
-    expect(repair("0").ok).toBe(true);
+    const upgraded = readFileSync(configPath, "utf8");
+    expect(upgraded).toContain('model = "user-model"');
+    expect(upgraded).toContain("[mcp_servers.koed.tools.memory_answer_result]");
+    const stopGroups = upgraded
+      .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
+      .filter((group) => group.startsWith("[[hooks.Stop]]"));
+    expect(stopGroups).toHaveLength(1);
+    expect(stopGroups[0]).toContain("capture-hook.js");
+    expect(stopGroups[0]).toContain("timeout = 30");
     rmSync(resolve(mcpCli, "../codex-memory-hook.js"));
-    expect(repair("1").ok).toBe(false);
-    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+    expect(repair("1").ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(upgraded);
 
     expect(order).not.toContain("bootstrap");
     expect(order.filter((entry) => entry === "runtime").length).toBeGreaterThan(
@@ -435,7 +444,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("defaults Windows to blocking recall while keeping explicit and recorded deferred selections", () => {
+  it("installs the same task collection and Capture Hooks on Windows", () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
     const configPath = resolve(codexHome, "config.toml");
@@ -485,12 +494,14 @@ describe("Codex setup wrapper", () => {
     Object.defineProperty(process, "platform", { value: "win32" });
     try {
       expect(repair().ok).toBe(true);
-      expect(readFileSync(configPath, "utf8")).toContain(
-        'KOED_CODEX_STOP_DELIVERY = "0"'
+      const installed = readFileSync(configPath, "utf8");
+      expect(installed).toContain(
+        "[mcp_servers.koed.tools.memory_answer_result]"
       );
+      expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(6);
       expect(repair("1").ok).toBe(true);
       const deferred = readFileSync(configPath, "utf8");
-      expect(deferred).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
+      expect(deferred).toBe(installed);
       expect(repair().ok).toBe(true);
       expect(readFileSync(configPath, "utf8")).toBe(deferred);
     } finally {

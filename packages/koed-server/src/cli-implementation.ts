@@ -628,6 +628,11 @@ export const runKoedServerCli = async (
         throw new Error(
           "Use only one of --deferred-recall or --blocking-recall."
         );
+      if (deferredRecall || blockingRecall) {
+        stderr.write(
+          "Legacy recall flags are deprecated; select delivery_mode on memory_answer instead.\n"
+        );
+      }
       const result = await setup({
         environment: {
           ...process.env,

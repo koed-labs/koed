@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
+import { splitMemoryAnswerDeliveryInput } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import {
-  resolveMemoryAnswerDelivery,
-  splitMemoryAnswerDeliveryInput,
-  type MemoryAnswerDeliveryDecision
-} from "../integrations/pi/memory-answer-delivery-policy.mjs";
-import {
-  CODEX_DELIVERY_NONCE,
-  CodexMemoryDelivery,
-  CodexMemoryReceiptStore,
-  canonicalCodexMemoryInput
-} from "./codex-memory-delivery.js";
-import { resolveKoedHome } from "./local-runtime-protocol.js";
-import { logger } from "./logger.js";
+  memoryAnswerTaskInputSchema,
+  memoryAnswerResultInputSchema,
+  memoryAnswerResultToolDescription,
+  memoryAnswerCancelToolDescription,
+  pendingMemoryAnswerTask,
+  collectMemoryAnswerTask,
+  presentMemoryAnswerTask,
+  validateMemoryAnswerTask
+} from "./mcp-memory-answer-tasks.js";
+export {
+  memoryAnswerTaskInputSchema,
+  memoryAnswerResultInputSchema,
+  memoryAnswerResultToolDescription,
+  memoryAnswerCancelToolDescription
+} from "./mcp-memory-answer-tasks.js";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -46,6 +50,7 @@ import type {
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerAdapterInputSchema,
+  memoryAnswerInputSchema,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -211,41 +216,6 @@ export const createKoedMcpServer = async (
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
-  const deferredEnabled = environment.KOED_CODEX_STOP_DELIVERY === "1";
-  // Missing readiness can fall back before acceptance. A supplied nonce still
-  // requires validation; unavailable storage is never permission to ignore it.
-  const reportDelivery = (decision: MemoryAnswerDeliveryDecision): void => {
-    logger.info(
-      { memoryAnswerDelivery: decision },
-      "Memory Answer delivery route"
-    );
-  };
-  let receiptStore: CodexMemoryReceiptStore | undefined;
-  if (deferredEnabled) {
-    try {
-      receiptStore = new CodexMemoryReceiptStore(resolveKoedHome(environment));
-    } catch (error) {
-      logger.warn(
-        { err: error },
-        "Codex deferred recall is unavailable; using blocking recall"
-      );
-    }
-  }
-  const deferred = receiptStore
-    ? new CodexMemoryDelivery(
-        receiptStore,
-        {
-          start: (input, caller, key, signal) =>
-            runtimeClient.startMemoryAnswerTask(input, caller, key, signal),
-          get: (id, signal) => runtimeClient.getMemoryAnswerTask(id, signal),
-          cancel: (id, signal) =>
-            runtimeClient.cancelMemoryAnswerTask(id, signal)
-        },
-        undefined,
-        environment.KOED_CODEX_MEMORY_TOOL ?? "mcp__koed__memory_answer",
-        reportDelivery
-      )
-    : undefined;
   let runtimeCapabilities: RuntimeToolCapabilities;
   let runtimeAvailable = true;
   let capabilitiesNeedRefresh = false;
@@ -284,14 +254,10 @@ export const createKoedMcpServer = async (
       {
         title: toolTitle(toolName),
         description: toolDescription(toolName),
-        inputSchema: (toolName === "memory_answer" && deferredEnabled
-          ? memoryAnswerAdapterInputSchema.safeExtend({
-              [CODEX_DELIVERY_NONCE]: z
-                .string()
-                .regex(/^[a-f0-9]{64}$/)
-                .optional()
-            })
-          : toolSchema(toolName)) as z.ZodObject
+        ...(toolName === "memory_answer"
+          ? { annotations: { readOnlyHint: true, destructiveHint: false } }
+          : {}),
+        inputSchema: toolSchema(toolName) as z.ZodObject
       },
       async (input, context) => {
         try {
@@ -317,40 +283,45 @@ export const createKoedMcpServer = async (
               );
             }
           }
-          let response: Record<string, unknown> | undefined;
-          if (toolName === "memory_answer" && deferred) {
-            response = await deferred.accept(
-              input as Record<string, unknown>,
-              caller,
-              context.mcpReq.signal,
-              context.mcpReq._meta
-            );
-          }
-          if (toolName === "memory_answer" && !deferred) {
-            const answerInput = input as Record<string, unknown>;
-            if (answerInput[CODEX_DELIVERY_NONCE] !== undefined)
-              throw new Error(
-                "Koed deferred Memory Answer receipt is unavailable or invalid"
+          const invocationKey = `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`;
+          const answerInput = input as Record<string, unknown>;
+          const delivery = splitMemoryAnswerDeliveryInput(answerInput);
+          if (
+            toolName === "memory_answer" &&
+            delivery.requestedMode === "non_blocking"
+          ) {
+            if (
+              answerInput.include_evidence === true ||
+              answerInput.response_detail === "with_citations" ||
+              answerInput.response_detail === "with_evidence"
+            ) {
+              return toolErrorResponse(
+                "Non-blocking Memory Answer supports compact answers only. Use delivery_mode=blocking for citations or evidence."
               );
-            reportDelivery(
-              resolveMemoryAnswerDelivery({
-                requestedMode:
-                  splitMemoryAnswerDeliveryInput(answerInput).requestedMode,
-                blockingRoute: "mcp_result",
-                unavailableReason: deferredEnabled
-                  ? "receipt_store_unavailable"
-                  : "integration_disabled"
-              })
-            );
+            }
+            try {
+              const task = await runtimeClient.startMemoryAnswerTask(
+                memoryAnswerInputSchema.parse(delivery.executionInput),
+                caller,
+                invocationKey,
+                context.mcpReq.signal
+              );
+              validateMemoryAnswerTask(task);
+              return jsonResponse({ ...pendingMemoryAnswerTask(task) });
+            } catch {
+              return toolErrorResponse(
+                "Memory Answer acceptance could not be confirmed; a task may already exist. Do not automatically resubmit. Check Koed availability and authorization."
+              );
+            }
           }
-          response ??= await runtimeClient.callTool(
+          const response = await runtimeClient.callTool(
             toolName,
             toolName === "memory_answer"
-              ? canonicalCodexMemoryInput(input as Record<string, unknown>)
+              ? memoryAnswerInputSchema.parse(delivery.executionInput)
               : (input as Record<string, unknown>),
             caller,
             context.mcpReq.signal,
-            `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`
+            invocationKey
           );
           runtimeAvailable = true;
           if (capabilitiesNeedRefresh) {
@@ -418,6 +389,109 @@ export const createKoedMcpServer = async (
     registeredTools.add(toolName);
   };
 
+  let taskToolsRegistered = false;
+  const registerMemoryAnswerTaskTools = (): void => {
+    if (taskToolsRegistered) return;
+    for (const name of [
+      "memory_answer_result",
+      "memory_answer_cancel"
+    ] as const) {
+      server.registerTool(
+        name,
+        {
+          title:
+            name === "memory_answer_result"
+              ? "Collect Memory Answer"
+              : "Cancel Memory Answer",
+          description:
+            name === "memory_answer_result"
+              ? memoryAnswerResultToolDescription
+              : memoryAnswerCancelToolDescription,
+          annotations: {
+            readOnlyHint: name === "memory_answer_result",
+            destructiveHint: false
+          },
+          inputSchema:
+            name === "memory_answer_result"
+              ? memoryAnswerResultInputSchema
+              : memoryAnswerTaskInputSchema
+        },
+        async (input, context) => {
+          try {
+            const collection =
+              name === "memory_answer_result"
+                ? memoryAnswerResultInputSchema.parse(input)
+                : memoryAnswerTaskInputSchema.parse(input);
+            const taskId = collection.task_id;
+            // The runtime authenticates this fresh read, including current Team
+            // membership. No connection-local cache authorizes disclosure.
+            let task =
+              name === "memory_answer_result"
+                ? await collectMemoryAnswerTask(
+                    {
+                      get: (id, signal) =>
+                        runtimeClient.getMemoryAnswerTask(id, signal)
+                    },
+                    taskId,
+                    {
+                      signal: context.mcpReq.signal,
+                      waitSeconds:
+                        "wait_seconds" in collection &&
+                        typeof collection.wait_seconds === "number"
+                          ? collection.wait_seconds
+                          : 0
+                    }
+                  )
+                : await runtimeClient.getMemoryAnswerTask(
+                    taskId,
+                    context.mcpReq.signal
+                  );
+            validateMemoryAnswerTask(task, taskId);
+            if (name === "memory_answer_cancel") {
+              task = await runtimeClient.cancelMemoryAnswerTask(
+                taskId,
+                context.mcpReq.signal
+              );
+              validateMemoryAnswerTask(task, taskId);
+              return jsonResponse({
+                status:
+                  task.status === "cancel_requested"
+                    ? "cancel_requested"
+                    : task.status === "accepted" || task.status === "running"
+                      ? "pending"
+                      : task.status === "completed" ||
+                          task.status === "cancelled"
+                        ? task.status
+                        : "failed",
+                task_id: task.id,
+                expires_at: task.expiresAt
+              });
+            }
+            const presentation = presentMemoryAnswerTask(task);
+            if (
+              presentation.status === "completed" &&
+              "text" in presentation &&
+              typeof presentation.text === "string"
+            ) {
+              return {
+                content: [{ type: "text" as const, text: presentation.text }]
+              };
+            }
+            return jsonResponse({ ...presentation });
+          } catch (error) {
+            return toolErrorResponse(
+              error instanceof Error &&
+                error.message === "Memory Answer task has expired."
+                ? error.message
+                : "Memory Answer task is unavailable or access is denied."
+            );
+          }
+        }
+      );
+    }
+    taskToolsRegistered = true;
+  };
+
   const registerExposedTools = (
     capabilities: RuntimeToolCapabilities
   ): void => {
@@ -425,6 +499,7 @@ export const createKoedMcpServer = async (
       if (!allTools.includes(name)) continue;
       if (!supportsRuntimeTool(capabilities, name)) continue;
       registerTool(name as LocalRuntimeToolName);
+      if (name === "memory_answer") registerMemoryAnswerTaskTools();
     }
   };
 

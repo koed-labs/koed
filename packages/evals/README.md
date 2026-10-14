@@ -1,5 +1,14 @@
 # Koed evaluations
 
+## Submit/collect Memory Answer
+
+The [async recall suite](src/async-recall/README.md) scores observable traces for
+blocking versus non-blocking selection, independent work after an immediate
+receipt, collection before dependent decisions, and excessive pending polling.
+`eval:async-recall` is a deterministic scorer smoke test, not model evidence.
+`eval:async-recall:live` runs native Codex against the production MCP factory and
+a synthetic delayed runtime; reports explicitly retain that limited provenance.
+
 ## Retrieval Arena
 
 The Retrieval Arena compares evidence retrieval and answer quality without changing production retrieval. It keeps three leaderboards separate:
