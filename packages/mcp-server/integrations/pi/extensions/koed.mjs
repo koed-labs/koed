@@ -281,10 +281,40 @@ export default function koedExtension(pi) {
               { cause: error }
             );
           }
+          const nonBlocking =
+            name === "memory_answer" && params.delivery_mode === "non_blocking";
+          const status = error?.statusCode;
+          // The runtime rejected the submission before creating a task, so a
+          // later retry is safe. Timeouts, transport and 5xx stay ambiguous.
+          if (
+            nonBlocking &&
+            Number.isInteger(status) &&
+            status >= 400 &&
+            status < 500 &&
+            status !== 408
+          ) {
+            throw Object.assign(
+              new Error(
+                status === 429
+                  ? `Koed Memory Answer queue is full; no task was created. Retry the submission${
+                      error.retryAfterMs !== undefined
+                        ? ` after ${error.retryAfterMs} ms`
+                        : " later"
+                    }.`
+                  : `Koed rejected the Memory Answer submission (HTTP ${status}); no task was created.`
+              ),
+              {
+                statusCode: status,
+                ...(error.retryAfterMs !== undefined
+                  ? { retryAfterMs: error.retryAfterMs }
+                  : {})
+              }
+            );
+          }
           // Runtime exception causes may contain private provider details.
           // eslint-disable-next-line preserve-caught-error
           throw new Error(
-            name === "memory_answer" && params.delivery_mode === "non_blocking"
+            nonBlocking
               ? "Koed Memory Answer submission could not be confirmed. Acceptance may be uncertain; do not resubmit this request."
               : "Koed unavailable; check the Local AI Runtime and retry"
           );

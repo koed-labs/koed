@@ -145,9 +145,12 @@ collection introduces no separate result store. Already disclosed tool text
 cannot be retracted if access is revoked later.
 
 Invocation identity deduplicates transport retries. A deliberately new question
-is a new invocation, even when its text resembles an earlier question. A failed
-acceptance response may leave execution uncertain; do not assume resubmission
-is safe. Collection never retries synthesis to manufacture a result.
+is a new invocation, even when its text resembles an earlier question. A
+timeout, transport failure or server error during acceptance may leave
+execution uncertain; do not assume resubmission is safe. A definitive client
+rejection, such as a full queue, creates no task: the response says so and, when
+available, includes `retryAfterMs` before a later retry. Collection never
+retries synthesis to manufacture a result.
 
 ## Validation
 

@@ -358,6 +358,54 @@ describe("Pi explicit Memory Answer tasks", () => {
     expect(error).not.toHaveProperty("cause");
   });
 
+  it("reports a queue-full rejection as definitive with its retry delay", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: "private queue detail",
+              retryAfterMs: 5000
+            }),
+            { status: 429 }
+          )
+      )
+    );
+    const { invoke } = await setup();
+    const error = await invoke("memory_answer", {
+      query: "answer",
+      delivery_mode: "non_blocking"
+    }).catch((cause: Error) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("no task was created");
+    expect(String(error)).toContain("after 5000 ms");
+    expect(String(error)).not.toContain("uncertain");
+    expect(String(error)).not.toContain("private");
+    expect(error).toMatchObject({ statusCode: 429, retryAfterMs: 5000 });
+    expect(error).not.toHaveProperty("cause");
+  });
+
+  it.each([408, 503])(
+    "keeps HTTP %i submission failures ambiguous",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify({ error: "private" }), { status })
+        )
+      );
+      const { invoke } = await setup();
+      const error = await invoke("memory_answer", {
+        query: "answer",
+        delivery_mode: "non_blocking"
+      }).catch((cause: Error) => cause);
+      expect(String(error)).toContain("Acceptance may be uncertain");
+      expect(String(error)).not.toContain("private");
+    }
+  );
+
   it("waits beyond 30 seconds for a delayed result without submitting another recall", async () => {
     let completed = false;
     const fetchMock = vi.fn(async (url: unknown) => {
