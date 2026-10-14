@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJsonStringify } from "./canonical-json.js";
+import {
+  teamRepositorySnapshotSchema,
+  type TeamRepositorySnapshot
+} from "./team-repository-snapshot.js";
 
 export const CAPTURED_SESSION_SYNC_FORMAT =
   "koed.captured-session-sync/v1" as const;
@@ -24,6 +28,11 @@ export const capturedSessionSyncUploadPackageManifestSchema = z
     format: z.literal(CAPTURED_SESSION_SYNC_FORMAT),
     formatVersion: z.literal(CAPTURED_SESSION_SYNC_FORMAT_VERSION),
     packageDigest: z.string().regex(/^[a-f0-9]{64}$/i),
+    repositorySnapshotHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .nullable()
+      .optional(),
     summaryRevisionHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/i)
@@ -144,6 +153,7 @@ export interface CapturedSessionSyncPackageV1 {
   policyDigest: string;
   summaryRevisionHash: string;
   session: {
+    repositorySnapshot?: TeamRepositorySnapshot;
     originSessionId: string;
     externalSessionId: string | null;
     sourceRuntime: string;
@@ -423,7 +433,10 @@ const validateCapturedSessionSyncPackageV1 = (
       "captureMethod",
       "capturedAt",
       "title",
-      "sourceAdapterVersion"
+      "sourceAdapterVersion",
+      ...(session?.repositorySnapshot === undefined
+        ? []
+        : ["repositorySnapshot"])
     ]) &&
     uuid(session?.originSessionId) &&
     nullableString(session?.externalSessionId, 500) &&
@@ -434,6 +447,9 @@ const validateCapturedSessionSyncPackageV1 = (
     timestamp(session.capturedAt) &&
     nullableString(session.title, 500) &&
     nullableString(session.sourceAdapterVersion, 120) &&
+    (session.repositorySnapshot === undefined ||
+      teamRepositorySnapshotSchema.safeParse(session.repositorySnapshot)
+        .success) &&
     Array.isArray(changes) &&
     Array.isArray(summaryNodes) &&
     changes.length <= CAPTURED_SESSION_SYNC_MAX_CHANGES &&

@@ -1,6 +1,6 @@
 import { repositoryRecallContextSchema, repositoryScopeId } from "@koed/shared";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
+import { requirePortableTeamRepositoryContext } from "@koed/shared";
 import type pg from "pg";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
@@ -444,10 +444,10 @@ export const createMemoryAnswerTaskRepository = (
         !Array.isArray(requestInput)
       ) {
         const snapshot = requestInput as Record<string, unknown>;
-        if (!input.teamWorkspaceId && snapshot.search_domain === "project") {
-          const context = repositoryRecallContextSchema.parse(
-            snapshot.repository_context
-          );
+        if (snapshot.search_domain === "project") {
+          const context = input.teamWorkspaceId
+            ? requirePortableTeamRepositoryContext(snapshot.repository_context)
+            : repositoryRecallContextSchema.parse(snapshot.repository_context);
           if (snapshot.project_id !== repositoryScopeId(context))
             throw new Error(
               "Project task target must match its pinned repository context"
@@ -806,29 +806,14 @@ export const createMemoryAnswerTaskRepository = (
           );
         }
         let expectedProject = snapshot.project_id;
-        if (
-          !current.team_workspace_id &&
-          snapshot.search_domain === "project"
-        ) {
+        if (snapshot.search_domain === "project") {
           expectedProject = repositoryScopeId(
-            repositoryRecallContextSchema.parse(snapshot.repository_context)
+            current.team_workspace_id
+              ? requirePortableTeamRepositoryContext(
+                  snapshot.repository_context
+                )
+              : repositoryRecallContextSchema.parse(snapshot.repository_context)
           );
-        }
-        if (
-          current.team_workspace_id &&
-          snapshot.search_domain === "project" &&
-          (typeof expectedProject !== "string" ||
-            (!path.isAbsolute(expectedProject) &&
-              !path.win32.isAbsolute(expectedProject)))
-        ) {
-          const caller = (request as Record<string, unknown>).caller;
-          const cwd =
-            caller && typeof caller === "object" && !Array.isArray(caller)
-              ? (caller as Record<string, unknown>).cwd
-              : undefined;
-          if (typeof cwd !== "string")
-            throw new Error("Memory Answer task project context is missing");
-          expectedProject = path.resolve(cwd);
         }
         if (
           (expectedProject ?? null) !== (input.finalQuestion.projectId ?? null)

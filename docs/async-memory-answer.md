@@ -133,6 +133,12 @@ enrollment, policy and persisted task authority are rechecked by the existing
 backend paths. An unavailable Team route must fail before accepting work; it
 must not silently search Personal Memory instead.
 
+For Team Project scope, admission requires a portable repository identity and
+stores it separately from the Workspace/backend selection. Clone paths do not
+establish Team repository equality. Search and expansion use the authorized
+Share Grant snapshot, while collection rechecks access before decrypting the
+answer, including when access was revoked after completion.
+
 The adapter currently preflights cancellation with an authorized task read.
 If Team access has been revoked, this can also prevent cancellation through the
 tool, even where the backend permits redacted owner cleanup. Existing backend

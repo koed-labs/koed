@@ -4,6 +4,7 @@ import {
 } from "./high-risk-action-grant-hash.js";
 import type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
+import type { TeamRepositorySnapshotReview } from "./team-repository-snapshot.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
@@ -236,6 +237,30 @@ export const sharedMemoryRevokeActionGrantBinding = (input: {
       teamWorkspaceId: input.teamWorkspaceId,
       expectedGrantVersion: input.expectedGrantVersion,
       reasonCode: input.reasonCode,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryRepositorySnapshotActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  shareGrantId: string;
+  expected: TeamRepositorySnapshotReview;
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.repository_snapshot_update.${input.teamWorkspaceId}`,
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "POST",
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/repository-snapshot`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      expected: input.expected,
       authority: authorityBody(input.referenceId)
     }
   });

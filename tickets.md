@@ -353,16 +353,43 @@ remains part of ticket 16.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Snapshot the effective portable identity and permitted Project label when creating a Share Grant representation.
-- [ ] Snapshot unresolved classification when no portable identity exists. Never export the original automatic identity through a non-portable override.
-- [ ] Use the snapshot for Team search, expansion, and graph paths without requiring the sharer's local session row to establish repository identity.
-- [ ] Resolve caller or explicit-target context to a portable identity before accepting a Project task. Return a Project-resolution error for device-local or unresolved targets without falling back to local path equality or Global scope.
-- [ ] Keep persisted repository context separate from the selected Workspace/backend, Team Membership, Share Grants, and source access. Collection cannot retarget the task to another Workspace or Personal Memory. Apply authorization and time bounds to every path, and fresh access checks to result collection.
-- [ ] Use only the selected portable fingerprint for Team matching and document the accepted repository-name guessing exposure.
-- [ ] Use the Team fixture to demonstrate member A sharing repo X, member B asking from another clone of X, exclusion of repo Y, and denial of private or revoked sources. Extend existing task authorization coverage to deny a completed Project answer when access is revoked before collection.
-- [ ] Update Team sharing, retrieval, and integration documentation.
+- [x] Snapshot the effective portable identity and permitted Project label when creating a Share Grant representation.
+- [x] Snapshot unresolved classification when no portable identity exists. Never export the original automatic identity through a non-portable override.
+- [x] Use the snapshot for Team search, expansion, and graph paths without requiring the sharer's local session row to establish repository identity.
+- [x] Resolve caller or explicit-target context to a portable identity before accepting a Project task. Return a Project-resolution error for device-local or unresolved targets without falling back to local path equality or Global scope.
+- [x] Keep persisted repository context separate from the selected Workspace/backend, Team Membership, Share Grants, and source access. Collection cannot retarget the task to another Workspace or Personal Memory. Apply authorization and time bounds to every path, and fresh access checks to result collection.
+- [x] Use only the selected portable fingerprint for Team matching and document the accepted repository-name guessing exposure.
+- [x] Use the Team fixture to demonstrate member A sharing repo X, member B asking from another clone of X, exclusion of repo Y, and denial of private or revoked sources. Extend existing task authorization coverage to deny a completed Project answer when access is revoked before collection.
+- [x] Update Team sharing, retrieval, and integration documentation.
+
+**Assessment so far:** The native PostgreSQL Team authority suite passes 15
+cases, including a completed Project answer denied before payload decryption
+after Share Grant revocation, snapshot changes invalidating frozen authority,
+and a receiving device using transferred source context instead of its local
+assignment. The isolated UTF-8 Team fixture has also completed normal semantic
+indexing: 10 items embedded, zero failures, and no pending items in the next
+batch. A disposable copy of that indexed fixture also passed same-fingerprint
+matching from two different clone paths, exclusion of another repository, stage
+scan and candidate expansion, revoked-source exclusion from search and expansion,
+and rejection of a raw local path as a Team Project target. Project labels and
+branch names now enter the representation's semantic privacy classification with
+immutable fingerprint reconstruction and original-source-revision disclosure.
+The focused API and contract suites pass 137 cases, the caller/sync contracts pass
+28 cases, and all 85 native Shared Memory repository cases pass. The real share
+workflow verifies that a grant initially exposes no raw label or branch, then
+publishes only sanitized metadata, and retains its snapshot after source context
+changes. Migration checks, DB build, API typecheck, and focused lint/format checks
+pass. M4 remains unfinished until ticket 15's explicit update action and ticket
+18's dependent Global preview are assessed.
+
+While preparing ticket 15, the raw label storage path was corrected: received
+labels and branches now use a Session/source-owner-bound owner-private envelope,
+while plaintext routing metadata contains only classification and fingerprint.
+Envelope-copy rejection, routing consistency, unresolved cleanup, and real
+sanitized label publication pass; all 85 native sharing cases still pass after
+the storage change.
 
 ## 15: Update Team Project snapshots only through explicit action
 
@@ -370,15 +397,37 @@ remains part of ticket 16.
 
 **Blocked by:** 09: Group Desktop Projects and reassign individual sessions; 14: Share and recall Team Memory by Project snapshot.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Demonstrate that personal moves, resets, anchor edits, and new captures do not mutate an existing Team Project snapshot.
-- [ ] New shares use the current effective assignment, while an existing share retains its recorded assignment.
-- [ ] Provide an authorized explicit share-update action that snapshots the current effective portable identity or unresolved classification.
-- [ ] Recheck current owner authority, Share Grant state, and relevant assignment/representation revisions before committing the update.
-- [ ] Never expose the previous automatic repository when the current override has no portable identity.
-- [ ] Use the Team fixture to test overrides before sharing, after sharing, snapshot updates, revoked grants, private sources, and expansion boundaries.
-- [ ] Document the difference between Personal reassignment and Team snapshot update.
+- [x] Demonstrate that personal moves, resets, anchor edits, and new captures do not mutate an existing Team Project snapshot.
+- [x] New shares use the current effective assignment, while an existing share retains its recorded assignment.
+- [x] Provide an authorized explicit share-update action that snapshots the current effective portable identity or unresolved classification.
+- [x] Recheck current owner authority, Share Grant state, and relevant assignment/representation revisions before committing the update.
+- [x] Never expose the previous automatic repository when the current override has no portable identity.
+- [x] Use the Team fixture to test overrides before sharing, after sharing, snapshot updates, revoked grants, private sources, and expansion boundaries.
+- [x] Document the difference between Personal reassignment and Team snapshot update.
+
+**Implementation progress:** Backend review and explicit update operations now
+pin Team/Workspace identity, grant and source revisions, representation version,
+assignment version, and source context. The native share workflow covers stale
+reviews, an explicit move, exact and divergent retries, non-owner denial, and
+revocation before replay. API tests reject Workspace retargeting before mutation,
+deny API Tokens, and preserve optimistic conflicts. Forty focused API/contract
+cases pass. Assignment-only delivery now encrypts context updates without moving
+the capture cursor, queues work on assignment edits, and schedules a follow-up
+when acknowledgement discovers newer context. The focused Worker/wire suites
+pass 34 cases, and all 86 native sharing cases pass with the new source outbox
+and in-flight acknowledgement regression. Desktop now exposes **Update Project**
+for active Captured Session shares. Its device bridge, native approval, Workspace
+binding, and snapshot persistence are covered by the Desktop/control suites:
+219 cases pass, including review-before-update and stale-approval denial.
+The final acceptance assessment also passed new-share/current-context and
+continued-capture stability, stale representation review denial, and an explicit
+unresolved update with no prior repository metadata. A disposable copy of the
+indexed deterministic fixture rehearsed Bob's authorized Electron Workspace
+update: the Personal move retained the Team snapshot, explicit update changed it,
+raw labels stayed absent, and non-owner/revoked access was denied. The complete
+source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 ## 16: Integrate and validate the Project recall cutover
 

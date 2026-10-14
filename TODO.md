@@ -106,6 +106,13 @@ children share lineage and must not count as independent corroboration.
 
 ## Project cutover integration checks (ticket 16)
 
+- Coordinate the directed Captured Session Sync snapshot extension across every
+  producer, consumer, admission schema, and fixture before activation. Make the
+  explicit unresolved/portable snapshot mandatory in the released profile and
+  version its wire semantics; remove the preparatory optional-field path.
+  Include the upload manifest's repository snapshot hash and remove preparatory
+  optional internal delta/ack fields when all producers and fixtures are aligned.
+
 - Coordinate the signed source-profile transition for already-published PDS
   checkpoint chains. Preserve old signed packages and existing logical Session
   identities; prove continued capture and an offline receiver can establish the

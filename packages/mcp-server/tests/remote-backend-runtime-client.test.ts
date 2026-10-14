@@ -108,7 +108,10 @@ describe("remote backend runtime client", () => {
         { query: "fact", project_id: "relative/project" },
         { cwd: "/server" }
       )
-    ).rejects.toThrow("absolute source Project path");
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
     expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
   });
   it("accepts and observes the existing Personal task contract with explicit Project context", async () => {
@@ -298,6 +301,55 @@ describe("remote backend runtime client", () => {
         { cwd: "" }
       )
     ).rejects.toThrow("Requested Team backend is unavailable");
+  });
+
+  it("pins portable Team Project context without changing its Workspace or backend", async () => {
+    const { client } = fixture();
+    const runtime = new RemoteBackendRuntimeClient({
+      client,
+      supportedTaskScopes: { personal: true, team: { backendId: "team" } }
+    });
+    const context = repositoryContext("/teammate/another-clone");
+    const input = {
+      query: "Project decision",
+      search_domain: "project",
+      team_workspace_id: id,
+      team_backend_id: "team",
+      repository_context: context
+    };
+    await runtime.startMemoryAnswerTask(input, {
+      cwd: "/teammate/another-clone/subdirectory"
+    });
+    expect(
+      client.acceptMemoryAnswerTask.mock.calls[0]![0].request.input
+    ).toMatchObject({
+      repository_context: context,
+      project_id: repositoryScopeId(context),
+      team_workspace_id: id
+    });
+    await expect(
+      runtime.startMemoryAnswerTask(
+        { ...input, team_backend_id: "other" },
+        { cwd: context.root! }
+      )
+    ).rejects.toThrow("Requested Team backend is unavailable");
+    await expect(
+      runtime.startMemoryAnswerTask(
+        {
+          ...input,
+          repository_context: {
+            ...context,
+            kind: "device_local_repository",
+            key: "dl_fixture"
+          }
+        },
+        { cwd: "/teammate/another-clone" }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
+    expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
   });
 
   it("fails closed for unavailable Team task capabilities and capability-gated intake", async () => {

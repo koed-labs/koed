@@ -17,7 +17,52 @@ based on where authority and atomicity live, not on the size of
 Small pure response/binding validators may still be extracted independently;
 that is ordinary code organization, not a new workflow owner.
 
+## Explicit Project snapshot update (integration branch)
+
+The source owner can review the active Share Grant's current received source
+context with `GET /v1/shared-memory/share-grants/:shareGrantId/repository-snapshot/review`.
+The review pins the Team, Workspace, grant version, source revision,
+representation version, assignment version, and a source-context digest.
+It exposes classification and fingerprint without raw label or branch values.
+
+`POST /v1/shared-memory/share-grants/:shareGrantId/repository-snapshot` applies
+that exact review with explicit browser or scoped device Action Grant authority.
+The transaction rechecks current ownership, Workspace share permission, source
+access, consent, privacy authority, and all reviewed versions. A stale review
+conflicts instead of silently choosing newer context. An exact mutation retry
+rechecks access and returns current grant state without applying another update;
+divergent reuse of a mutation ID conflicts.
+
+Updating to a different repository clears the previously disclosed label and
+branch. Updating the same fingerprint can retain its already permitted metadata.
+Old privacy work cannot repopulate metadata after an explicit snapshot update.
+The grant version changes, so previously frozen recall authority must be checked
+again. Source content, fidelity, consent, and Workspace selection are unchanged.
+Assignment edits queue source work even when no Memory Event or LCM Summary has
+changed. The Worker sends an encrypted context-only package with the same capture
+cursor and a new package sequence. The source records the context hash only after
+the target acknowledges readiness. If another edit happened while that package
+was in flight, acknowledgement queues a bounded follow-up for the current context.
+Receiving that context changes the owner-private replica, not an existing Team
+snapshot.
+
+In Desktop, open the Captured Session's sharing controls and choose **Update
+Project** for an active share. Desktop requests the latest received source
+review, then uses the existing native approval and device Action Grant flow.
+Approval rechecks that exact review before granting authority. The protected
+request applies it to the same share and refreshes the persisted grant afterward.
+A stale review shows the existing reload error; it is not automatically replaced
+with a new target. Personal Notes do not have this action.
+
 ## Concept boundaries
+
+On the Project integration branch, creation of a Share Grant records the
+effective portable repository fingerprint or an unresolved classification.
+Personal reassignment and later source captures do not retarget that snapshot.
+The encrypted source artifact holds the label and branch for privacy review;
+only sanitized values from the snapshot's original source revision can complete
+its disclosed metadata. A nonportable override suppresses the automatic
+repository entirely. See [Team Project snapshots](repository-recall.md#team-project-snapshots).
 
 - **Personal Memory** is owned by the source User. Source content and the
   owner-private replica do not become Team data merely because they can be

@@ -1064,6 +1064,12 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         "Shared Memory owner flow is not configured in this fixture"
       );
     }),
+    reviewSharedProjectSnapshot: vi.fn(async () => {
+      throw new Error("Snapshot review is not configured in this fixture");
+    }),
+    updateSharedProjectSnapshot: vi.fn(async () => {
+      throw new Error("Snapshot update is not configured in this fixture");
+    }),
     changeSharedMemoryFidelity: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
@@ -2446,6 +2452,98 @@ describe("CollaborationApp", () => {
       expect.objectContaining({ action: "revoke" })
     );
     expect(document.body.textContent).toContain("Revoked");
+  });
+
+  it("reviews the received Project before explicitly updating an existing share", async () => {
+    const snapshot = baseSnapshot();
+    const entry = snapshot.navigation.personal.memory[0]!;
+    if (!entry.logicalMemoryId)
+      throw new Error("Fixture must have a logical Memory identity");
+    const client = createClient(snapshot);
+    const grant: SharedMemoryGrant = {
+      source: {
+        kind: "captured_session",
+        sessionId: entry.id,
+        logicalMemoryId: entry.logicalMemoryId
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      id: uuid(701),
+      logicalGrantId: uuid(702),
+      logicalMemoryId: entry.logicalMemoryId,
+      ownerUserId: ids.remoteMark,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      consentId: uuid(703),
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
+      sourceRevision: 1,
+      grantVersion: 1,
+      lifecycle: "active",
+      createdAt: at,
+      updatedAt: at,
+      revokedAt: null,
+      companionThreadId: ids.discussion
+    };
+    const review = {
+      shareGrantId: grant.id,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.workspaceId,
+      grantVersion: 1,
+      sourceRevision: 1,
+      representationId: uuid(704),
+      representationVersion: 1,
+      assignmentVersion: 2,
+      sourceContextHash: "a".repeat(64),
+      currentSnapshot: {
+        version: 1 as const,
+        classification: "portable_repository" as const,
+        fingerprint: "gr_updated",
+        label: null,
+        branchObservation: null
+      }
+    };
+    vi.mocked(client.listOwnedSharedMemoryGrants).mockResolvedValue([grant]);
+    vi.mocked(client.reviewSharedProjectSnapshot).mockResolvedValue(review);
+    vi.mocked(client.updateSharedProjectSnapshot).mockResolvedValue({
+      ...grant,
+      grantVersion: 2,
+      repositorySnapshot: review.currentSnapshot
+    });
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          snapshot={snapshot}
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          modal={{ kind: "share_personal_memory", sessionId: entry.id }}
+          onModalChange={vi.fn()}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Update Project")
+    );
+    expect(client.updateSharedProjectSnapshot).not.toHaveBeenCalled();
+    await click(container, "Update Project");
+    await vi.waitFor(() =>
+      expect(client.updateSharedProjectSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamId: grant.teamId,
+          workspaceId: grant.workspaceId,
+          shareGrantId: grant.id,
+          expected: review
+        })
+      )
+    );
+    expect(client.reviewSharedProjectSnapshot).toHaveBeenCalledWith({
+      teamId: grant.teamId,
+      workspaceId: grant.workspaceId,
+      shareGrantId: grant.id
+    });
+    expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
   });
 
   it("closes Share revocation confirmation after approval while execution continues", async () => {

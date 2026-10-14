@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { allPrivacyLabelsPolicy } from "@koed/shared";
+import {
+  allPrivacyLabelsPolicy,
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  repositoryScopeId,
+  type RepositoryIdentity
+} from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runDbMigrations } from "../src/migrate.js";
 import { createPrivacyClassificationRepository } from "../src/privacy-classification-repository.js";
+import { createMemoryAnswerTaskRepository } from "../src/memory-answer-task-repository.js";
+import { snapshotOwnedTeamRepository } from "../src/team-repository-snapshot.js";
 import {
   assertMemoryAnswerTeamAuthorityWithClient,
   freezeMemoryAnswerTeamAuthorityWithClient,
@@ -36,7 +43,9 @@ describe.skipIf(!databaseUrl)(
     let fixtureWorkspaceId: string;
 
     beforeAll(async () => {
-      await admin.query(`create database ${name}`);
+      await admin.query(
+        `create database ${name} template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`
+      );
       const url = new URL(databaseUrl!);
       url.pathname = `/${name}`;
       isolatedDatabaseUrl = url.toString();
@@ -144,6 +153,10 @@ describe.skipIf(!databaseUrl)(
 
     it.each([
       [
+        "Project snapshot change",
+        `update team_memory_share_grants set repository_snapshot='{"version":1,"classification":"portable_repository","fingerprint":"gr_changed","label":null,"branchObservation":null}'::jsonb where id=$1`
+      ],
+      [
         "grant revocation",
         "update team_memory_share_grants set lifecycle='revoked',revoked_at=now(),grant_version=grant_version+1 where id=$1"
       ],
@@ -203,6 +216,178 @@ describe.skipIf(!databaseUrl)(
           MemoryAnswerTeamAuthorityError
         );
         expect(protectedWork).not.toHaveBeenCalled();
+      } finally {
+        await client.query("rollback");
+        client.release();
+      }
+    });
+
+    it("uses transferred source context rather than the receiver's local assignment or checkout", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const source = await client.query<{
+          owner_user_id: string;
+          logical_memory_id: string;
+          local_session_id: string;
+        }>(
+          `select m.owner_user_id,m.logical_memory_id,m.local_session_id
+           from local_captured_session_logical_memories m
+           join sessions s on s.id=m.local_session_id
+           where s.visibility='personal' and s.invalidated_at is null
+             and s.personal_deleted_at is null limit 1`
+        );
+        expect(source.rows).toHaveLength(1);
+        const row = source.rows[0]!;
+        const snapshot = {
+          version: 1,
+          classification: "portable_repository",
+          fingerprint: "gr_source_repository",
+          label: null,
+          branchObservation: null
+        };
+        const localOverride: RepositoryIdentity = {
+          kind: "device_local_repository",
+          key: "local_receiver_repository",
+          root: "/receiver/private-checkout",
+          branch: "receiver-branch",
+          reason: "local_fallback",
+          checkoutId: "receiver_checkout",
+          originatingDeviceId: "receiver_device",
+          selectedRemote: null,
+          anchorDisplay: null
+        };
+        await client.query(
+          `update sessions set metadata=metadata || $2::jsonb,
+            repository_override_identity=$3::jsonb,
+            repository_assignment_version=repository_assignment_version+1
+           where id=$1`,
+          [
+            row.local_session_id,
+            JSON.stringify({ syncReplica: true, repositorySnapshot: snapshot }),
+            JSON.stringify(localOverride)
+          ]
+        );
+        expect(
+          await snapshotOwnedTeamRepository(
+            client,
+            row.owner_user_id,
+            row.logical_memory_id
+          )
+        ).toEqual(snapshot);
+        expect(
+          await snapshotOwnedTeamRepository(
+            client,
+            userId,
+            row.logical_memory_id
+          )
+        ).toMatchObject({ classification: "unresolved", fingerprint: null });
+        await client.query(
+          "update sessions set metadata=metadata-'repositorySnapshot' where id=$1",
+          [row.local_session_id]
+        );
+        expect(
+          await snapshotOwnedTeamRepository(
+            client,
+            row.owner_user_id,
+            row.logical_memory_id
+          )
+        ).toMatchObject({ classification: "unresolved", fingerprint: null });
+      } finally {
+        await client.query("rollback");
+        client.release();
+      }
+    });
+
+    it("denies a completed Project answer before decrypting it when a Share Grant is revoked", async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 74).toString("base64url")
+      );
+      const tasks = createMemoryAnswerTaskRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const actor = { userId: fixtureUserId, allowTeam: true };
+      const context: RepositoryIdentity = {
+        kind: "portable_repository",
+        key: "gr_team_project_fixture",
+        root: "/teammate/another-clone",
+        branch: "main",
+        reason: "origin",
+        checkoutId: "teammate_clone",
+        originatingDeviceId: "teammate_device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/team/project"
+      };
+      const projectId = repositoryScopeId(context);
+      const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        teamWorkspaceId: fixtureWorkspaceId,
+        maxQueued: 4,
+        request: {
+          input: {
+            query: "What decision was shared for this Project?",
+            search_domain: "project",
+            project_id: projectId,
+            repository_context: context,
+            team_workspace_id: fixtureWorkspaceId
+          }
+        }
+      });
+      const claimed = await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "team-project-worker",
+        leaseMs: 60_000,
+        allowTeam: true,
+        scopeFilter: "team"
+      });
+      expect(claimed.task?.id).toBe(accepted.id);
+      await tasks.completeMemoryAnswerTask(actor, {
+        taskId: accepted.id,
+        leaseOwner: claimed.task!.leaseOwner,
+        fenceGeneration: claimed.task!.fenceGeneration,
+        finalQuestion: {
+          idempotencyKey: randomUUID(),
+          query: "What decision was shared for this Project?",
+          searchDomain: "project",
+          projectId,
+          teamWorkspaceId: fixtureWorkspaceId,
+          status: "answered",
+          answerMarkdown: "Protected Team answer"
+        },
+        result: { markdown: "Protected Team answer" }
+      });
+      expect(
+        (await tasks.getMemoryAnswerTask(actor, accepted.id))?.result
+      ).toMatchObject({ markdown: "Protected Team answer" });
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const authority = await freezeFixture(client);
+        await client.query("commit");
+        const grantId = authority.recallBoundary.shareGrantIds[0]!;
+        await pool.query(
+          "update team_memory_share_grants set lifecycle='revoked',revoked_at=now(),grant_version=grant_version+1 where id=$1",
+          [grantId]
+        );
+        const decrypt = vi.fn(() => {
+          throw new Error("Revoked answer must not be decrypted");
+        });
+        const collector = createMemoryAnswerTaskRepository(pool, {
+          envelopeEncryptionProvider: {
+            ...provider,
+            decrypt
+          }
+        });
+        try {
+          await expect(
+            collector.getMemoryAnswerTask(actor, accepted.id)
+          ).rejects.toMatchObject({ statusCode: 403 });
+          expect(decrypt).not.toHaveBeenCalled();
+        } finally {
+          await pool.query(
+            "update team_memory_share_grants set lifecycle='active',revoked_at=null,grant_version=grant_version+1 where id=$1",
+            [grantId]
+          );
+        }
       } finally {
         await client.query("rollback");
         client.release();

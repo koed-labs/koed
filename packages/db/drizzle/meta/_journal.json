@@ -379,6 +379,34 @@
       "when": 1792009365364,
       "tag": "0053_pds_project_selection_epochs",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1792012725717,
+      "tag": "0054_team_repository_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792014533673,
+      "tag": "0055_team_repository_disclosure_revision",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1792016268477,
+      "tag": "0056_team_repository_snapshot_mutations",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792017586308,
+      "tag": "0057_source_repository_snapshot_delivery",
+      "breakpoints": true
     }
   ]
 }

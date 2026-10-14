@@ -191,6 +191,43 @@ describe("Cross-Identity Sync protocol", () => {
     ).toBe(false);
   });
 
+  it("binds a selected-repository snapshot in the sync package without checkout provenance", () => {
+    const value = packageFixture();
+    const snapshot = {
+      version: 1 as const,
+      classification: "portable_repository" as const,
+      fingerprint: "gr_selected",
+      label: null,
+      branchObservation: null
+    };
+    const withSnapshot = {
+      ...value,
+      session: { ...value.session, repositorySnapshot: snapshot }
+    };
+    expect(isCapturedSessionSyncPackageV1(withSnapshot)).toBe(true);
+    expect(crossIdentitySyncPackageRequestHash(withSnapshot)).not.toBe(
+      crossIdentitySyncPackageRequestHash(value)
+    );
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        session: {
+          ...value.session,
+          repositorySnapshot: { ...snapshot, root: "/private/path" }
+        }
+      })
+    ).toBe(false);
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        session: {
+          ...value.session,
+          repositorySnapshot: { ...snapshot, classification: "unresolved" }
+        }
+      })
+    ).toBe(false);
+  });
+
   it("validates authoritative summary nodes and binds their canonical digest", () => {
     const value = packageFixture();
     const originalRequestHash = crossIdentitySyncPackageRequestHash(value);

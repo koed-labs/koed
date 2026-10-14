@@ -852,6 +852,7 @@ export {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
@@ -1846,3 +1847,4 @@ export {
 export type { PdsRepositoryAssignment } from "./personal-repository-assignment.js";
 
 export * from "./personal-project-selection.js";
+export * from "./team-repository-snapshot.js";

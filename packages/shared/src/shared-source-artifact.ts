@@ -3,6 +3,7 @@ import {
   crossIdentitySyncDigest
 } from "./cross-identity-sync.js";
 import type { SharedMemorySourceRef } from "./shared-memory-source.js";
+import type { TeamRepositorySnapshot } from "./team-repository-snapshot.js";
 
 export const SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const SHARED_SOURCE_PREVIEW_SCHEMA_VERSION = 1 as const;
@@ -78,6 +79,7 @@ export interface SharedSourceArtifactItemV1 {
   sourceLogicalMemoryId: string;
   sourceRevision: number;
   occurredAt: string | null;
+  repositorySnapshot?: TeamRepositorySnapshot;
   content: Record<string, unknown>;
 }
 

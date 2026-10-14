@@ -27,6 +27,7 @@ import type {
   ManagedConversationTargetReadinessEvidence,
   PrivacyLabelPolicy,
   PdsProjectSelectionRecord,
+  TeamRepositorySnapshot,
   RepositoryIdentity
 } from "@koed/shared";
 
@@ -7667,6 +7668,16 @@ export const teamMemoryShareGrants = pgTable(
   "team_memory_share_grants",
   {
     id: id(),
+    repositorySnapshotSourceRevision: bigint(
+      "repository_snapshot_source_revision",
+      { mode: "number" }
+    ),
+    repositorySnapshot: jsonb("repository_snapshot")
+      .$type<TeamRepositorySnapshot>()
+      .notNull()
+      .default(
+        sql`'{"version":1,"classification":"unresolved","fingerprint":null,"label":null,"branchObservation":null}'::jsonb`
+      ),
     logicalGrantId: uuid("logical_grant_id").notNull().defaultRandom(),
     logicalMemoryId: uuid("logical_memory_id").references(
       (): AnyPgColumn => logicalMemories.id,
@@ -8008,6 +8019,24 @@ export const teamConversationSourceGrants = pgTable(
       sql`${table.version} > 0 and length(trim(${table.creatorAuthority})) > 0`
     )
   ]
+);
+
+export const teamRepositorySnapshotMutations = pgTable(
+  "team_repository_snapshot_mutations",
+  {
+    mutationId: uuid("mutation_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references(() => teamMemoryShareGrants.id, { onDelete: "cascade" }),
+    requestHash: text("request_hash").notNull(),
+    resultGrantVersion: integer("result_grant_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  }
 );
 
 export const teamMemoryRepresentations = pgTable(
@@ -10856,6 +10885,7 @@ export const crossIdentitySyncRelationships = pgTable(
       .notNull()
       .default(0),
     sourceSummaryRevisionHash: text("source_summary_revision_hash"),
+    sourceRepositorySnapshotHash: text("source_repository_snapshot_hash"),
     targetSummaryRevisionHash: text("target_summary_revision_hash"),
     staleAfter: timestamp("stale_after", { withTimezone: true }),
     createdAt: now(),
