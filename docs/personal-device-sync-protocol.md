@@ -937,6 +937,11 @@ otherwise revoked-after-snapshot device remains required.
 
 ## 9. Project aliases
 
+The multi-alias matching and automatic association rules in this section are
+superseded by [ADR 0057](adr/0057-selected-repository-identity.md). The Project
+integration branch carries one selected anchor at cutover. Existing encrypted,
+group-keyed token and verified-device boundaries remain required.
+
 Project association is local grouping/search context only. It never grants Team
 access or chooses a Workspace. Raw aliases, paths, remotes, and canonical alias
 text never leave encrypted package boundary. Signed source manifest contains

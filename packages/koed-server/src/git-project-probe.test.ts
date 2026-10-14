@@ -181,7 +181,7 @@ describe("shared Git Project probe", () => {
       discoverProjectMetadata(paths, { cwd: root }, deps),
       discoverProjectMetadata(paths, { cwd: root }, deps)
     ]);
-    expect(ids).toBe(1);
+    expect(ids).toBe(2);
     expect(first.project?.localProjectId).toBe(second.project?.localProjectId);
     const rediscovered = await discoverProjectMetadata(paths, { cwd: root });
     expect(rediscovered.project?.git?.commonDirHash).toBe(

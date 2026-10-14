@@ -56,6 +56,7 @@ import {
 } from "@koed/shared";
 import {
   discoverProjectMetadata,
+  setProjectRepositoryAnchor,
   listProjectMetadata,
   loadRepoEnv,
   resolveKoedHome,
@@ -833,6 +834,7 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
       lastSeenAt: project.lastSeenAt,
       localProjectId: project.localProjectId,
       displayName: project.displayName,
+      ...(project.repository ? { repository: project.repository } : {}),
       contextKind:
         resolve(project.path.projectRoot ?? project.path.cwd) ===
         resolve(resolveKoedHome(environment), "projects", "Independent")
@@ -847,7 +849,10 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
             git: {
               branch: project.git.branch,
               isWorktree: project.git.isWorktree,
-              remotes: project.git.remotes.map(({ display }) => ({ display }))
+              remotes: project.git.remotes.map(({ name, display }) => ({
+                name,
+                display
+              }))
             }
           }
         : {})
@@ -5570,6 +5575,27 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
+      project_anchor_set: async (args) => {
+        const input = exactDesktopArgs(args, [
+          "localProjectId",
+          "expectedCheckoutId",
+          "remoteName"
+        ]);
+        if (
+          typeof input.localProjectId !== "string" ||
+          !/^lp_[0-9a-f]{32}$/.test(input.localProjectId) ||
+          typeof input.expectedCheckoutId !== "string" ||
+          !input.expectedCheckoutId.startsWith("checkout_") ||
+          (input.remoteName !== null && typeof input.remoteName !== "string")
+        )
+          throw new Error("Repository anchor input is invalid.");
+        return setProjectRepositoryAnchor(resolveKoedServerPaths(environment), {
+          localProjectId: input.localProjectId,
+          expectedCheckoutId: input.expectedCheckoutId,
+          remoteName: input.remoteName
+        });
+      },
+
       ensure_independent_project: async () => {
         const independentRoot = resolve(
           resolveKoedHome(environment),

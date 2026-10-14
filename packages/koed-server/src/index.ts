@@ -80,6 +80,7 @@ export {
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export {
   discoverProjectMetadata,
+  setProjectRepositoryAnchor,
   listProjectMetadata
 } from "./project-metadata.js";
 export { loadRepoEnv } from "./env-file.js";
@@ -180,3 +181,5 @@ export type {
   GitProjectProbeResult,
   GitProjectProbeDeps
 } from "./git-project-probe.js";
+
+export { resolveRepositoryIdentity } from "./repository-identity.js";

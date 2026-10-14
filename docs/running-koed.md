@@ -772,6 +772,31 @@ writes, Team repository access, and non-Git file authority are not part of this
 capability. See
 [ADR 0035](./adr/0035-runner-owned-rooted-file-authority.md).
 
+### Inspect and select a repository anchor
+
+On the Project integration branch, `project discover` and `project show` expose
+`repository`: identity kind and key, resolution reason, selected remote, root,
+branch observation, stable checkout id, and originating device provenance.
+Desktop shows the same information in a Project's **Repository anchor** panel.
+Select a remote there or choose **Use automatic selection** to remove the local
+selection. Invalid selections remain visibly unresolved.
+
+For headless editing, copy the local Project id and checkout id from discovery:
+
+```bash
+node packages/koed-server/dist/cli.js project anchor --local-project-id <id> --checkout-id <checkout-id> --remote upstream --json
+node packages/koed-server/dist/cli.js project anchor --local-project-id <id> --checkout-id <checkout-id> --reset --json
+```
+
+The local selection wins over an associated replicated selection, portable
+`upstream`, portable `origin`, and device-local fallback, in that order. Extra
+remotes and historical aliases are inspection metadata. They do not contribute
+additional repository identities. A reused checkout path receives new checkout
+provenance and cannot inherit the old selection. Local editing does not reassign
+recorded sessions, establish a Project association, or change Workspace access.
+The complete capture and recall behavior is released at the Project cutover;
+see [ADR 0057](adr/0057-selected-repository-identity.md).
+
 ## Managed terminals
 
 The assigned managed-execution runner owns bounded pseudoterminals in the exact

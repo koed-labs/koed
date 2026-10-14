@@ -1,3 +1,5 @@
+import { RepositoryAnchorPanel } from "./RepositoryAnchorPanel.js";
+import type { RendererPlatform } from "../../services/platform.js";
 import {
   localApiRetryDelay,
   LocalApiRateLimitError
@@ -155,6 +157,7 @@ export type PersonalMemoryWorkspaceProps = {
   onNavigate: (route: PersonalMemoryRoute) => void;
   openExternal?: (url: string) => Promise<void>;
   revealLocalProject?: (localProjectId: string) => Promise<void>;
+  setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -777,6 +780,7 @@ function ProjectDetail({
   onManagedConversationStarted,
   onOpenRepository,
   onRevealLocalProject,
+  onSetRepositoryAnchor,
   onRetry,
   onSelectSession,
   project
@@ -803,6 +807,7 @@ function ProjectDetail({
   ) => void;
   onOpenRepository?: (url: string) => void;
   onRevealLocalProject?: (localProjectId: string) => void;
+  onSetRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
@@ -1086,6 +1091,11 @@ function ProjectDetail({
           <h2 data-personal-route-focus="project" tabIndex={-1}>
             {project.name}
           </h2>
+          <RepositoryAnchorPanel
+            key={project.repository?.checkoutId ?? project.id}
+            project={project}
+            onSetAnchor={onSetRepositoryAnchor}
+          />
           <ProjectOverview
             eventCount={project.eventCount}
             localProjectId={project.localProjectId}
@@ -3741,6 +3751,7 @@ export function PersonalMemoryWorkspace({
   onShareToWorkspace,
   openExternal,
   revealLocalProject,
+  setRepositoryAnchor,
   projectWorkspaceSuggestions = [],
   ready = true,
   route,
@@ -4015,6 +4026,14 @@ export function PersonalMemoryWorkspace({
               }}
               onOpenRepository={onOpenRepository}
               onRevealLocalProject={onRevealLocalProject}
+              onSetRepositoryAnchor={
+                setRepositoryAnchor
+                  ? async (input) => {
+                      await setRepositoryAnchor(input);
+                      await store.loadProjects();
+                    }
+                  : undefined
+              }
               onRetry={() => void store.loadProjects()}
               onSelectSession={(sessionId) => {
                 if (!selectedProject) return;

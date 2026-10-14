@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
 export const PERSONAL_DESKTOP_CONTRACT_VERSION = 8;
@@ -269,6 +270,7 @@ export const personalDesktopConversationRecentListInputSchema = z
 
 const personalDesktopProjectMetadataRemoteSchema = z
   .object({
+    name: z.string().min(1).max(512).optional(),
     display: z.string().trim().min(1).max(512).nullable()
   })
   .strict();
@@ -281,6 +283,7 @@ export const personalDesktopProjectMetadataSchema = z
     localProjectId: identifierSchema,
     displayName: projectNameSchema,
     contextKind: z.enum(["project", "independent"]).optional(),
+    repository: repositoryIdentitySchema.optional(),
     path: z
       .object({
         cwd: localProjectPathSchema,

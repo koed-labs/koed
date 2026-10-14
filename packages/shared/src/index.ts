@@ -1813,3 +1813,9 @@ export {
   type TeamMemoryAnswerTaskCapability,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
+
+export { repositoryIdentitySchema } from "./repository-identity.js";
+export type {
+  RepositoryIdentity,
+  AssociatedRepositorySelection
+} from "./repository-identity.js";

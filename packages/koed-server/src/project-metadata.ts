@@ -5,7 +5,8 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  writeFileSync
+  writeFileSync,
+  statSync
 } from "node:fs";
 import path, { dirname, relative, resolve } from "node:path";
 import {
@@ -13,6 +14,7 @@ import {
   hmacProjectValue,
   mergeGitRemoteAliases,
   normalizeProjectDisplayName,
+  type AssociatedRepositorySelection,
   type NormalizedGitRemote,
   type ProjectMetadataV1,
   type ProjectPackageMetadata
@@ -22,6 +24,7 @@ import {
   probeGitProject,
   type GitProjectProbeResult
 } from "./git-project-probe.js";
+import { resolveRepositoryIdentity } from "./repository-identity.js";
 import type { KoedServerPaths } from "./paths.js";
 
 export interface ProjectMetadataStore {
@@ -29,6 +32,12 @@ export interface ProjectMetadataStore {
   updatedAt: string;
   deviceSaltId: string;
   projects: ProjectMetadataV1[];
+  checkouts: Array<{
+    id: string;
+    root: string;
+    marker: string;
+    selectedRemote?: string;
+  }>;
 }
 
 export interface ProjectMetadataResult {
@@ -50,6 +59,7 @@ export interface ProjectMetadataDeps {
   now?: () => Date;
   randomId?: () => string;
   probeGit?: typeof probeGitProject;
+  statSync?: typeof statSync;
 }
 
 const depsWithDefaults = (
@@ -60,6 +70,7 @@ const depsWithDefaults = (
   writeFileSync: deps.writeFileSync ?? writeFileSync,
   renameSync: deps.renameSync ?? renameSync,
   mkdirSync: deps.mkdirSync ?? mkdirSync,
+  statSync: deps.statSync ?? statSync,
   execFile: deps.execFile ?? nodeExecFile,
   now: deps.now ?? (() => new Date()),
   randomId: deps.randomId ?? randomUUID,
@@ -77,6 +88,7 @@ const defaultStore = (
   schemaVersion: 3,
   updatedAt: now,
   deviceSaltId: `pms_${deps.randomId()}`,
+  checkouts: [],
   projects: []
 });
 
@@ -99,6 +111,16 @@ const readStore = (
         typeof parsed.deviceSaltId === "string" && parsed.deviceSaltId.trim()
           ? parsed.deviceSaltId.trim()
           : `pms_${deps.randomId()}`,
+      checkouts: Array.isArray(parsed.checkouts)
+        ? parsed.checkouts.filter(
+            (entry) =>
+              typeof entry.id === "string" &&
+              typeof entry.root === "string" &&
+              typeof entry.marker === "string" &&
+              (entry.selectedRemote === undefined ||
+                typeof entry.selectedRemote === "string")
+          )
+        : [],
       projects: Array.isArray(parsed.projects)
         ? parsed.projects
             .filter(isProjectMetadata)
@@ -246,11 +268,15 @@ const discoverPackages = (
 
 export const discoverProjectMetadata = async (
   paths: KoedServerPaths,
-  input: { cwd: string; aiClientSource?: "codex" },
+  input: {
+    cwd: string;
+    aiClientSource?: "codex";
+    associatedSelection?: AssociatedRepositorySelection;
+  },
   depsInput: ProjectMetadataDeps = {}
 ): Promise<ProjectMetadataResult> => {
   const deps = depsWithDefaults(depsInput);
-  const store = readStore(paths, deps);
+  let store = readStore(paths, deps);
   // Persist the profile salt before yielding to Git, so simultaneous producers
   // do not invent independent local identities on first discovery.
   if (!deps.existsSync(paths.projectMetadataPath))
@@ -262,8 +288,46 @@ export const discoverProjectMetadata = async (
     cwd,
     deviceSalt: store.deviceSaltId
   });
+  // Merge against the current local configuration after asynchronous probing.
+  store = readStore(paths, deps);
   const gitRoot = observation.root;
   const remotes = observation.remotes;
+  const checkoutRoot = gitRoot ?? cwd;
+  let checkoutMarker: string | null = null;
+  try {
+    const stat = deps.statSync(observation.gitDir ?? checkoutRoot);
+    checkoutMarker = JSON.stringify([stat.dev, stat.ino, stat.birthtimeMs]);
+  } catch {
+    /* Missing checkout provenance stays unresolved. */
+  }
+  let checkout = store.checkouts.find(
+    (entry) => entry.root === checkoutRoot && entry.marker === checkoutMarker
+  );
+  if (!checkout && checkoutMarker) {
+    checkout = {
+      id: `checkout_${deps.randomId()}`,
+      root: checkoutRoot,
+      marker: checkoutMarker
+    };
+    store.checkouts.push(checkout);
+  }
+  const repository = resolveRepositoryIdentity({
+    observation,
+    cwd,
+    deviceSalt: store.deviceSaltId,
+    checkoutId: checkout?.id ?? null,
+    localSelection: checkout?.selectedRemote,
+    associatedSelection: input.associatedSelection,
+    commonDirMarker: (() => {
+      try {
+        const stat = deps.statSync(observation.commonDir!);
+        return JSON.stringify([stat.dev, stat.ino, stat.birthtimeMs]);
+      } catch {
+        return null;
+      }
+    })()
+  });
+
   const packages = discoverPackages(gitRoot, cwd, deps);
   const localProjectId = deriveLocalProjectId({
     salt: store.deviceSaltId,
@@ -271,7 +335,9 @@ export const discoverProjectMetadata = async (
     cwd
   });
   const previousProject = store.projects.find(
-    (entry) => entry.localProjectId === localProjectId
+    (entry) =>
+      entry.localProjectId === localProjectId &&
+      entry.repository?.checkoutId === repository.checkoutId
   );
   const remoteAliases = mergeGitRemoteAliases(
     previousProject?.git?.remoteAliases ?? [],
@@ -323,6 +389,7 @@ export const discoverProjectMetadata = async (
           }
         }
       : {}),
+    repository,
     packages,
     ...(input.aiClientSource
       ? {
@@ -428,4 +495,50 @@ export const forgetProjectMetadata = (
     message: "Project metadata forgotten.",
     project
   };
+};
+
+export const setProjectRepositoryAnchor = async (
+  paths: KoedServerPaths,
+  input: {
+    localProjectId: string;
+    expectedCheckoutId: string;
+    remoteName: string | null;
+  },
+  depsInput: ProjectMetadataDeps = {}
+): Promise<ProjectMetadataResult> => {
+  if (
+    input.remoteName !== null &&
+    (!input.remoteName.trim() ||
+      input.remoteName.length > 512 ||
+      /\s/.test(input.remoteName))
+  )
+    throw new Error("Repository remote name is invalid.");
+  const deps = depsWithDefaults(depsInput);
+  const original = readStore(paths, deps).projects.find(
+    (project) => project.localProjectId === input.localProjectId
+  );
+  if (!original) throw new Error("Project metadata not found.");
+  // Rediscover before editing so a reused path cannot inherit an old selection.
+  const discovery = await discoverProjectMetadata(
+    paths,
+    { cwd: original.path.projectRoot ?? original.path.cwd },
+    depsInput
+  );
+  if (discovery.project?.repository?.checkoutId !== input.expectedCheckoutId)
+    throw new Error(
+      "Checkout changed. Inspect the Project again before selecting an anchor."
+    );
+  const store = readStore(paths, deps);
+  const checkout = store.checkouts.find(
+    (entry) => entry.id === input.expectedCheckoutId
+  );
+  if (!checkout) throw new Error("Checkout provenance is unavailable.");
+  if (input.remoteName === null) delete checkout.selectedRemote;
+  else checkout.selectedRemote = input.remoteName;
+  writeStore(paths, store, deps);
+  return discoverProjectMetadata(
+    paths,
+    { cwd: original.path.projectRoot ?? original.path.cwd },
+    depsInput
+  );
 };

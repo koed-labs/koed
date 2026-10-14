@@ -1839,6 +1839,7 @@ export function App({
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}
             revealLocalProject={platform.revealLocalProject}
+            setRepositoryAnchor={platform.setRepositoryAnchor}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);

@@ -20,6 +20,11 @@ const discoveredProjectSchema = personalDesktopProjectMetadataSchema
   .strip();
 
 export type RendererPlatform = {
+  setRepositoryAnchor: (input: {
+    localProjectId: string;
+    expectedCheckoutId: string;
+    remoteName: string | null;
+  }) => Promise<void>;
   copyText: (value: string) => Promise<void>;
   openExternal: (value: string) => Promise<void>;
   ensureIndependentProject: () => Promise<DesktopProjectMetadata>;
@@ -28,6 +33,14 @@ export type RendererPlatform = {
 };
 
 export const createRendererPlatform = (): RendererPlatform => ({
+  setRepositoryAnchor: async (input) => {
+    const result = await window.koedDesktop?.invoke<{
+      ok?: boolean;
+      project?: unknown;
+    }>("project_anchor_set", input);
+    if (!result?.ok) throw new Error("Repository anchor could not be saved.");
+    discoveredProjectSchema.parse(result.project);
+  },
   copyText: async (value) => {
     const clipboard = window.koedDesktop?.clipboard;
     if (!clipboard) throw new Error("Clipboard unavailable.");

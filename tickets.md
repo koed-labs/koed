@@ -89,7 +89,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 01. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 03. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -132,15 +132,17 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 01: Share Git discovery without changing behavior.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Implement local explicit selection, associated replicated selection, portable upstream, portable origin, and device-local fallback in that order. Provide the typed input for replicated selections without inventing associations.
-- [ ] Normalize equivalent SSH and HTTPS addresses to one anchor. Remote names, extra remotes, and historical aliases never contribute additional matching values.
-- [ ] Return portable repository, device-local repository, non-Git Project, or unresolved identity with the root, branch observation, resolution reason, and provenance.
-- [ ] Expose anchor inspection and local editing through Project discovery and Desktop. Invalid explicit selections and conflicting URLs remain unresolved without fallback.
-- [ ] Use stable checkout identifiers with originating-device provenance. A path reused for another checkout must not inherit its identity or review history.
-- [ ] Test custom remote names, forks with and without the same anchor, duplicate URLs, non-Git Projects, and the A/B/C extra-remote counterexample.
-- [ ] Record the identity contract in an ADR and explicitly supersede conflicting alias-matching decisions while retaining Personal Device Sync privacy and Workspace authorization boundaries.
+- [x] Implement local explicit selection, associated replicated selection, portable upstream, portable origin, and device-local fallback in that order. Provide the typed input for replicated selections without inventing associations.
+- [x] Normalize equivalent SSH and HTTPS addresses to one anchor. Remote names, extra remotes, and historical aliases never contribute additional matching values.
+- [x] Return portable repository, device-local repository, non-Git Project, or unresolved identity with the root, branch observation, resolution reason, and provenance.
+- [x] Expose anchor inspection and local editing through Project discovery and Desktop. Invalid explicit selections and conflicting URLs remain unresolved without fallback.
+- [x] Use stable checkout identifiers with originating-device provenance. A path reused for another checkout must not inherit its identity or review history.
+- [x] Test custom remote names, forks with and without the same anchor, duplicate URLs, non-Git Projects, and the A/B/C extra-remote counterexample.
+- [x] Record the identity contract in an ADR and explicitly supersede conflicting alias-matching decisions while retaining Personal Device Sync privacy and Workspace authorization boundaries.
+
+**Validation:** Identity, shared Git, metadata, platform, Project grouping, and IPC suites: 66 tests passed. Desktop detail/contract suites: 60 tests passed. Anchor panel and focused manager tests: 4 passed. Full formatting and lint, Server build, Desktop typecheck, and ADR numbering passed. ADR 0057 records the selected-anchor contract.
 
 ## 03: Capture and inspect repository assignments for Codex sessions
 

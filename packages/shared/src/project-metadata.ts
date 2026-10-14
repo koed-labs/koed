@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import path from "node:path";
+import type { RepositoryIdentity } from "./repository-identity.js";
 
 export interface NormalizedGitRemote {
   name: string;
@@ -38,6 +39,7 @@ export interface ProjectMetadataV1 {
     isWorktree: boolean;
     worktreeHash: string | null;
   };
+  repository?: RepositoryIdentity;
   packages: ProjectPackageMetadata[];
   aiClient?: {
     cwdHash: string;
@@ -125,7 +127,7 @@ export const normalizeGitRemoteUrl = (
   name = "origin"
 ): NormalizedGitRemote => {
   const trimmed = value.trim();
-  const scpLike = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
+  const scpLike = trimmed.match(/^([^@:/\s]+)@([^:/\s]+):(.+)$/);
   if (scpLike) {
     return remoteFromPathParts(
       name,
@@ -140,12 +142,16 @@ export const normalizeGitRemoteUrl = (
     parsed.password = "";
     parsed.search = "";
     parsed.hash = "";
-    if (parsed.protocol === "file:") {
+    if (!["https:", "http:", "ssh:", "git:"].includes(parsed.protocol)) {
       return opaqueRemote(name, parsed.toString());
     }
     return remoteFromPathParts(
       name,
-      parsed.host,
+      parsed.protocol === "ssh:" && parsed.port === "22"
+        ? parsed.hostname
+        : parsed.protocol === "git:" && parsed.port === "9418"
+          ? parsed.hostname
+          : parsed.host,
       parsed.pathname,
       parsed.toString()
     );

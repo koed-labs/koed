@@ -1,3 +1,4 @@
+import type { RepositoryIdentity } from "@koed/shared";
 import { localPathDescendant, normalizedLocalPath } from "./local-path.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 
@@ -34,6 +35,7 @@ export type DesktopProjectMetadata = {
   lastSeenAt: string;
   localProjectId: string;
   displayName: string;
+  repository?: RepositoryIdentity;
   contextKind?: "project" | "independent";
   path: {
     cwd: string;
@@ -44,7 +46,7 @@ export type DesktopProjectMetadata = {
   git?: {
     branch: string | null;
     isWorktree: boolean;
-    remotes: Array<{ display: string | null }>;
+    remotes: Array<{ name?: string; display: string | null }>;
   };
 };
 
@@ -57,6 +59,8 @@ export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
   localProjectId: string | null;
   branch: string | null;
   remoteDisplay: string | null;
+  repository?: RepositoryIdentity;
+  repositoryRemotes?: Array<{ name?: string; display: string | null }>;
   isWorktree: boolean;
 };
 
@@ -172,8 +176,12 @@ const enrichProject = (
   lastSeenAt: metadata?.lastSeenAt ?? null,
   localProjectId: metadata?.localProjectId ?? null,
   branch: metadata?.git?.branch ?? null,
-  remoteDisplay:
-    metadata?.git?.remotes.find((remote) => remote.display)?.display ?? null,
+  repository: metadata?.repository,
+  repositoryRemotes: metadata?.git?.remotes,
+  remoteDisplay: metadata?.repository
+    ? metadata.repository.anchorDisplay
+    : (metadata?.git?.remotes.find((remote) => remote.display)?.display ??
+      null),
   isWorktree: metadata?.git?.isWorktree ?? false
 });
 

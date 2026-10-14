@@ -3124,3 +3124,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.personal-repository-anchor {
+  margin-block: 0.75rem;
+  max-width: 100%;
+  font-size: 0.8125rem;
+}
+.personal-repository-anchor summary {
+  cursor: pointer;
+}
+.personal-repository-anchor dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.375rem 0.75rem;
+}
+.personal-repository-anchor dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.personal-repository-anchor form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.personal-repository-anchor form p {
+  flex-basis: 100%;
+}

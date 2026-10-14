@@ -479,6 +479,11 @@ completeness, deletion, key rotation, and user expectations.
 
 ## Project Context Association
 
+The alias-overlap matching and automatic association rules below are superseded
+by [ADR 0057](0057-selected-repository-identity.md). Encryption, device authority,
+and Workspace authorization boundaries still apply. The Project integration
+branch replaces these rules at its complete cutover.
+
 Project contexts remain local metadata. Checkouts and worktrees retain distinct
 local ids for provenance.
 
