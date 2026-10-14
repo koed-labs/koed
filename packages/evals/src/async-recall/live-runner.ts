@@ -1,8 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  memoryAnswerToolDescriptionVersion,
+  memoryServerInstructionsVersion
+} from "@koed/mcp-server";
 import { asyncRecallCases } from "./cases.js";
 import { scoreRecallTrace, type RecallEvent } from "./benchmark.js";
 
@@ -25,11 +30,29 @@ if (
   delayMs < 1
 )
   throw new Error("--runs and --delay-ms must be positive integers");
-const caseId = option("--case", "");
+const caseIds = option("--case", "").split(",").filter(Boolean);
 const selected = asyncRecallCases.filter(
-  (entry) => !caseId || entry.id === caseId
+  (entry) => !caseIds.length || caseIds.includes(entry.id)
 );
-if (!selected.length) throw new Error("Unknown case");
+if (
+  !selected.length ||
+  caseIds.some((id) => !asyncRecallCases.some((entry) => entry.id === id))
+)
+  throw new Error("Unknown case");
+const agentsGuidancePath = option("--agents-guidance", "");
+const agentsGuidance = agentsGuidancePath
+  ? await readFile(agentsGuidancePath, "utf8")
+  : null;
+const globalAgents = await readFile(
+  path.join(
+    process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"),
+    "AGENTS.md"
+  ),
+  "utf8"
+).catch((error: NodeJS.ErrnoException) => {
+  if (error.code === "ENOENT") return "";
+  throw error;
+});
 const server = fileURLToPath(new URL("./fixture-mcp.js", import.meta.url));
 const results = [];
 
@@ -69,7 +92,12 @@ for (const fixture of selected) {
     try {
       const workspace = path.join(root, "workspace");
       await mkdir(workspace);
+      if (agentsGuidance !== null)
+        await writeFile(path.join(workspace, "AGENTS.md"), agentsGuidance, {
+          flag: "wx"
+        });
       const log = path.join(root, "events.jsonl");
+      const wireLog = path.join(root, "discovery.jsonl");
       const final = path.join(root, "final.txt");
       const config = [
         'approval_policy="never"',
@@ -79,7 +107,7 @@ for (const fixture of selected) {
         "mcp_servers.async_recall_eval.enabled=true",
         "mcp_servers.async_recall_eval.required=true",
         'mcp_servers.async_recall_eval.default_tools_approval_mode="approve"',
-        `mcp_servers.async_recall_eval.env={ASYNC_RECALL_CASE=${JSON.stringify(fixture.id)},ASYNC_RECALL_LOG=${JSON.stringify(log)},ASYNC_RECALL_DELAY_MS=${JSON.stringify(String(delayMs))}}`
+        `mcp_servers.async_recall_eval.env={ASYNC_RECALL_CASE=${JSON.stringify(fixture.id)},ASYNC_RECALL_LOG=${JSON.stringify(log)},ASYNC_RECALL_WIRE_LOG=${JSON.stringify(wireLog)},ASYNC_RECALL_DELAY_MS=${JSON.stringify(String(delayMs))}}`
       ].flatMap((value) => ["-c", value]);
       console.error(`Running ${fixture.id} ${runIndex + 1}/${runs}`);
       const result = await execute(
@@ -115,6 +143,10 @@ for (const fixture of selected) {
         exitCode: result.code,
         error: result.code === 0 ? null : result.stderr,
         events,
+        discoveryResponses: (await readFile(wireLog, "utf8").catch(() => ""))
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown),
         finalResponse: await readFile(final, "utf8").catch(() => "")
       });
     } finally {
@@ -134,6 +166,16 @@ const report = JSON.stringify(
     model,
     harnessVersion,
     reasoningEffort: effort,
+    instructionCondition: {
+      memoryServerInstructionsVersion,
+      memoryAnswerToolDescriptionVersion,
+      globalKoedGuidancePresent: /koed|memory_answer/i.test(globalAgents),
+      workspaceGuidance: agentsGuidance === null ? "none" : "provided",
+      workspaceGuidanceSha256:
+        agentsGuidance === null
+          ? null
+          : createHash("sha256").update(agentsGuidance).digest("hex")
+    },
     modeObservation:
       "effective_runtime_dispatch_not_raw_delivery_mode_argument",
     delayMs,

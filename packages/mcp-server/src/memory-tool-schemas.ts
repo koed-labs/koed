@@ -70,7 +70,7 @@ export const memoryAnswerAdapterInputSchema =
       .enum(MEMORY_ANSWER_DELIVERY_MODES)
       .optional()
       .describe(
-        "On MCP, omitted/auto/blocking waits for the answer. non_blocking returns a task_id promptly; do useful independent work, then collect with memory_answer_result when needed. Choose blocking if memory or confirmation of no relevant memory could change your next action."
+        "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
       )
   });
 

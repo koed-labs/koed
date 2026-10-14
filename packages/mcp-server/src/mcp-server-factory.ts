@@ -290,15 +290,6 @@ export const createKoedMcpServer = async (
             toolName === "memory_answer" &&
             delivery.requestedMode === "non_blocking"
           ) {
-            if (
-              answerInput.include_evidence === true ||
-              answerInput.response_detail === "with_citations" ||
-              answerInput.response_detail === "with_evidence"
-            ) {
-              return toolErrorResponse(
-                "Non-blocking Memory Answer supports compact answers only. Use delivery_mode=blocking for citations or evidence."
-              );
-            }
             try {
               const task = await runtimeClient.startMemoryAnswerTask(
                 memoryAnswerInputSchema.parse(delivery.executionInput),

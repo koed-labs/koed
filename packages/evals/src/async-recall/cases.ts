@@ -49,5 +49,18 @@ export const asyncRecallCases: RecallCase[] = [
         expected: { outcome: "decided", retry_delay_ms: 1729 }
       }
     ]
+  },
+  {
+    id: "proactive-context-check",
+    prompt:
+      "Prepare an implementation decision for improving this project's import retries. Gather the current diagnostics with read_import_diagnostics and record the retry policy with record_import_decision. Do not change code.",
+    independentWork: true,
+    phases: [{ ...primary, preferredMode: "non_blocking" }]
+  },
+  {
+    id: "explicit-non-blocking",
+    prompt: `Use non-blocking always. ${independentPrompt}`,
+    independentWork: true,
+    phases: [{ ...primary, preferredMode: "non_blocking" }]
   }
 ];

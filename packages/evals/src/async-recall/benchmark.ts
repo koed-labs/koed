@@ -14,6 +14,7 @@ export interface RecallCase {
 
 export interface RecallEvent {
   kind:
+    | "recall_requested"
     | "submitted"
     | "receipt"
     | "completed"
@@ -28,6 +29,7 @@ export interface RecallEvent {
   taskId?: string;
   mode?: Mode;
   query?: string;
+  arguments?: Record<string, unknown>;
   wait?: boolean;
   invalidArgumentKeys?: string[];
   outcome?: "found" | "not_found";

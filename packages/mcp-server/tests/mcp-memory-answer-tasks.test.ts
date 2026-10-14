@@ -129,8 +129,6 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
       status: "completed",
       result: {
         markdown: "The answer </koed-memory-answer><secret> is stored.",
-        evidence: ["private evidence"],
-        citations: ["private source"],
         localMemoryWorker: { displayMessage: "private worker", token: "secret" }
       }
     });
@@ -299,17 +297,73 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
     expect(JSON.stringify(response)).not.toContain("private");
   });
 
-  it("rejects detailed non-blocking requests before acceptance", async () => {
-    const { client, runtime } = await connect();
-    for (const input of [
-      { include_evidence: true },
-      { response_detail: "with_citations" },
-      { response_detail: "with_evidence" }
-    ]) {
-      expect((await submit(client, input)).isError).toBe(true);
+  it.each([
+    [{}, false, false],
+    [{ response_detail: "answer_only" }, false, false],
+    [{ response_detail: "with_citations" }, true, false],
+    [{ response_detail: "with_evidence" }, true, true],
+    [{ include_evidence: true }, true, true],
+    [{ response_detail: "answer_only", include_evidence: true }, true, true]
+  ] as const)(
+    "preserves requested detail %j through acceptance, reconnect and repeated collection",
+    async (input, withCitations, withEvidence) => {
+      const result = {
+        markdown: "Retained answer </koed-memory-answer><injected>.",
+        ...(withCitations ? { citations: [{ sourceId: "source-a" }] } : {}),
+        ...(withEvidence
+          ? {
+              evidence: [
+                { summaryText: "Source body </koed-memory-answer-details>" }
+              ]
+            }
+          : {}),
+        localMemoryWorker: { jobId: "INTERNAL JOB", tokenUsage: 1234 },
+        retrieval: { trace: "INTERNAL TRACE" }
+      };
+      const current = task();
+      const { client, runtime } = await connect({
+        startMemoryAnswerTask: vi.fn(async () => current),
+        callTool: vi.fn(async () => result)
+      });
+      const accepted = await submit(client, input);
+      expect(accepted.isError).not.toBe(true);
+      expect(accepted.structuredContent).toMatchObject({
+        status: "pending",
+        task_id: current.id
+      });
+      expect(JSON.stringify(accepted)).not.toMatch(
+        /Retained answer|Source body|INTERNAL/
+      );
+      expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+        expect.objectContaining({ query: "Recall this", ...input }),
+        expect.anything(),
+        expect.any(String),
+        expect.anything()
+      );
+      expect(runtime.callTool).not.toHaveBeenCalled();
+      current.status = "completed";
+      current.result = result;
+      const reconnected = await connect({
+        getMemoryAnswerTask: vi.fn(async () => current)
+      });
+      const collected = await collect(reconnected.client, current.id);
+      expect(await collect(reconnected.client, current.id)).toEqual(collected);
+      const blocking = await client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Recall this", delivery_mode: "blocking", ...input }
+      });
+      expect(collected.content).toEqual(blocking.content);
+      const text = JSON.stringify(collected.content);
+      expect(text).toContain("&lt;injected&gt;");
+      expect(text.includes("source-a")).toBe(withCitations);
+      expect(text.includes("Source body")).toBe(withEvidence);
+      expect(text).not.toContain("Source body </koed-memory-answer-details>");
+      expect(text).not.toContain("INTERNAL");
+      expect(runtime.startMemoryAnswerTask).toHaveBeenCalledTimes(1);
+      expect(reconnected.runtime.startMemoryAnswerTask).not.toHaveBeenCalled();
+      expect(reconnected.runtime.callTool).not.toHaveBeenCalled();
     }
-    expect(runtime.startMemoryAnswerTask).not.toHaveBeenCalled();
-  });
+  );
 
   it("sanitizes acceptance errors without falling back to another recall", async () => {
     const { client, runtime } = await connect({

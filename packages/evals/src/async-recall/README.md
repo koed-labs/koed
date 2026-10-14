@@ -1,8 +1,10 @@
 # Submit/collect Memory Answer evaluation
 
-Four hand-authored deterministic cases cover independent diagnostics, an
+Six hand-authored deterministic cases cover independent diagnostics, an
 immediately dependent decision, no relevant memory, and a follow-up changing
-from non-blocking to blocking recall. The synthetic MCP fixture returns an
+from non-blocking to blocking recall, plus proactive consultation of prior
+constraints without an explicit recall request and an explicit non-blocking
+User instruction control. The synthetic MCP fixture returns an
 immediate task receipt, completes after a configurable delay, and requires the
 AI Client to collect through `memory_answer_result` before a dependent action.
 It does not use Stop hooks, Code Mode, or MCP Tasks.
@@ -27,16 +29,47 @@ synthetic delayed Local AI Runtime client. Tool schemas, descriptions, receipts,
 collection, cancellation, and answer formatting are therefore production code;
 the recalled data and background execution are still synthetic. Ordinary
 negotiated MCP clients are supported without Code Mode.
-Mode events record effective production-factory dispatch, not the raw adapter
-argument: an omitted/default delivery mode that dispatches blocking is recorded
-as blocking. Use the existing tool-choice suite for raw argument selection.
+Submission events record effective production-factory dispatch: an omitted/auto
+delivery mode that dispatches blocking is recorded as blocking. Raw
+`recall_requested` events retain the original arguments, including omitted modes
+and requests rejected before acceptance.
+The mixed-mode fixture selects the next synthetic answer from recorded workflow
+progress, not query keywords. Follow-up data becomes the fixture response after
+the primary decision is recorded. This tests tool sequencing, not retrieval
+relevance or query understanding.
 
 Select one scenario with `--case independent-diagnostics`,
 `--case dependent-decision`, `--case no-relevant-memory`, or
-`--case followup-mixed-modes`. Reports preserve each observable event, decision,
+`--case followup-mixed-modes`, `--case proactive-context-check`, or
+`--case explicit-non-blocking`.
+Reports preserve each observable event, decision,
 exit code, and final response. Output files are create-only. Isolated temporary
 workspaces are removed on success or failure; credentials are neither copied
 nor written to reports. Model sampling and scheduling are not deterministic.
+
+`--ignore-user-config` does not itself establish that global `AGENTS.md`
+instructions were excluded. To assess MCP-only guidance, first opt out of Koed's
+managed global block with `koed setup codex --without-memory-guidance --json`
+for the tested profile. Confirm that no other global or ancestor instructions
+provide Koed guidance, use fresh conversations, and record that setup with the
+benchmark results. This preserves User-owned instructions; the benchmark does
+not remove or replace them.
+
+For a controlled instruction comparison, pass a comma-separated case list to
+`--case` and optionally `--agents-guidance /path/to/control.md`. The latter
+copies only that instruction text into each temporary workspace's `AGENTS.md`;
+it does not edit the User's global file or copy credentials. Reports include
+the prompt versions, presence of global Koed guidance, and a hash of the
+workspace control text. Use the same model, cases, delay and repetition count
+for both conditions. A workspace control tests the supplied wording at the
+AGENTS instruction level; it is not an exact replay of a historic app session.
+
+Raw `memory_answer` arguments are recorded as `recall_requested` events before
+adapter parsing or dispatch. Reports also retain the actual initialization and
+tool-list responses sent to the native client in `discoveryResponses`. This
+can distinguish a missing/auto mode from an explicit mode and verify what the
+server advertised. It does not prove what the native client included in its
+model prompt. This instrumentation is confined to the synthetic fixture.
 
 Hard violations include a missing recall/decision, wrong task attribution,
 using results before collection, incorrect recalled values, invented settings

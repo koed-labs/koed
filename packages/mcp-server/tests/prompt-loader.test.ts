@@ -118,7 +118,9 @@ describe("prompt loader", () => {
     });
 
     expect(prompt.overridden).toBe(false);
-    expect(prompt.body).toContain("substantive work in a new chat");
+    expect(prompt).toEqual(
+      loadPrompt("memory-answer-tool-description", { env: {} })
+    );
   });
 
   it("fails when KOED_PROMPT_DIR does not exist", async () => {

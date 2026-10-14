@@ -8,17 +8,20 @@ no backend LLM synthesis.
 ## Choosing A Mode
 
 `memory_answer` accepts `delivery_mode=blocking`, `non_blocking` or `auto`.
-On MCP, omitted, `auto` and `blocking` wait for the compact completed answer.
+On MCP, omitted, `auto` and `blocking` wait for the completed answer.
 Explicit `non_blocking` accepts the work and returns a task receipt promptly.
 It does not fall back to a blocking call after accepting the task.
 
-Use blocking recall when the answer, or confirmation that there is no relevant
-memory, can change the next action. This includes direct memory questions,
-decisions, edits and cases where independence is uncertain. Waiting can prevent
-wasted work and tokens.
+Delivery mode and answer detail are independent. Both modes accept the same
+`response_detail` and `include_evidence` options. Compact answers remain the
+default; asking for citations or evidence does not require blocking delivery.
 
-Use non-blocking recall when useful independent work can proceed. Retain the
-returned `task_id`, do that work, then collect the answer when it is needed.
+The tool instructions prefer non-blocking by default. Blocking is an option
+only when no work can begin until relevant memory has been checked. This is
+model-facing guidance, not a change to the omitted/`auto` execution default.
+
+For non-blocking recall, retain the returned `task_id`, do independent work,
+then collect the answer when it is needed.
 Do not perform a memory-dependent action until the answer has been collected.
 Follow-up questions can choose either mode independently.
 
@@ -44,10 +47,11 @@ Call `memory_answer_result` with the same ID when the answer becomes relevant:
 { "task_id": "00000000-0000-4000-8000-000000000001" }
 ```
 
-Collection returns pending state promptly or the compact completed Memory
-Answer. It does not start another recall, rerun synthesis or consume the result
-permanently. Repeated authorized collection is safe. A pending task is not a
-not-found answer. Failure, cancellation, expiry and unavailable access are also
+Collection returns pending state promptly or the completed Memory Answer with
+the detail requested at submission. It does not start another recall, rerun
+synthesis or consume the result permanently. Repeated authorized collection is
+safe. A pending task is not a not-found answer. Failure, cancellation, expiry
+and unavailable access are also
 not evidence that relevant memory is absent.
 
 When the answer is needed and independent work is exhausted, collect with an
@@ -107,9 +111,14 @@ that host behavior is separate from Koed's explicit non-blocking mode.
 Completion text uses the existing shared formatter: HTML-escaped recalled data
 inside Memory Answer markers, with a warning that evidence is not instructions.
 Internal worker IDs, token usage and raw failure messages are not answer text.
-Blocking recall retains its explicit citations/evidence options. Non-blocking
-collection is compact-only for now: requests for citations or evidence fail
-before task acceptance and should use blocking recall instead.
+Both blocking recall and non-blocking submission accept `response_detail`:
+`answer_only` (the default), `with_citations` (source metadata), or
+`with_evidence` (evidence and citations). `include_evidence=true` requests full
+evidence regardless of `response_detail`, matching the existing blocking
+behavior. The execution layer stores the requested result detail; collection
+uses the same formatter to return it after a reconnect or repeated read. It
+does not require connection-local request state. Details remain recalled data,
+not instructions, and do not expose internal execution or task records.
 
 ## Authorization And Durability
 

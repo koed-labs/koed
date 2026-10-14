@@ -138,7 +138,6 @@ describe("Pi explicit Memory Answer tasks", () => {
             task: task("completed", {
               result: {
                 markdown: "The retained answer.",
-                evidence: "private",
                 localMemoryWorker: { displayMessage: "private" }
               },
               lastErrorMessage: "private"
@@ -258,19 +257,88 @@ describe("Pi explicit Memory Answer tasks", () => {
     }
   );
 
-  it("requires blocking recall for details before submitting", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    const { invoke } = await setup();
-    await expect(
-      invoke("memory_answer", {
+  it.each([
+    [{}, false, false],
+    [{ response_detail: "answer_only" }, false, false],
+    [{ response_detail: "with_citations" }, true, false],
+    [{ response_detail: "with_evidence" }, true, true],
+    [{ include_evidence: true }, true, true],
+    [{ response_detail: "answer_only", include_evidence: true }, true, true]
+  ] as const)(
+    "matches blocking detail %j after collection from another session",
+    async (input, withCitations, withEvidence) => {
+      const result = {
+        markdown: "The retained answer.",
+        ...(withCitations ? { citations: [{ sourceId: "source-a" }] } : {}),
+        ...(withEvidence ? { evidence: [{ summaryText: "Source body" }] } : {}),
+        localMemoryWorker: { jobId: "INTERNAL JOB", tokenUsage: 1234 }
+      };
+      const fetchMock = vi.fn(
+        async (url: unknown) =>
+          new Response(
+            JSON.stringify(
+              String(url).includes("/v1/tools/")
+                ? result
+                : {
+                    task: task(
+                      String(url).includes(`/v1/tasks/${taskId}`)
+                        ? "completed"
+                        : "accepted",
+                      {
+                        result,
+                        lastErrorMessage: "INTERNAL FAILURE"
+                      }
+                    )
+                  }
+            )
+          )
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const { invoke } = await setup();
+      const receipt = await invoke("memory_answer", {
         query: "answer",
         delivery_mode: "non_blocking",
-        response_detail: "with_citations"
-      })
-    ).rejects.toThrow("Use blocking Memory Answer");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+        ...input
+      });
+      expect(receipt.details).toMatchObject({
+        status: "pending",
+        task_id: taskId
+      });
+      expect(JSON.stringify(receipt)).not.toMatch(
+        /retained answer|Source body|INTERNAL/
+      );
+      const submitInit = (
+        fetchMock.mock.calls[0] as unknown as [unknown, RequestInit]
+      )[1];
+      const submitted = JSON.parse(String(submitInit.body)) as {
+        input: Record<string, unknown>;
+      };
+      expect(submitted.input).toMatchObject(input);
+      const collected = await invoke(
+        "memory_answer_result",
+        { task_id: taskId },
+        "session-b"
+      );
+      expect(
+        await invoke("memory_answer_result", { task_id: taskId }, "session-c")
+      ).toEqual(collected);
+      const blocking = await invoke("memory_answer", {
+        query: "answer",
+        delivery_mode: "blocking",
+        ...input
+      });
+      expect(collected.content).toEqual(blocking.content);
+      const text = collected.content[0]!.text;
+      expect(text.includes("source-a")).toBe(withCitations);
+      expect(text.includes("Source body")).toBe(withEvidence);
+      expect(JSON.stringify(collected)).not.toContain("INTERNAL");
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith("/v1/tasks/memory-answer")
+        )
+      ).toHaveLength(1);
+    }
+  );
 
   it("sanitizes submission failures without leaking exception causes", async () => {
     vi.stubGlobal(

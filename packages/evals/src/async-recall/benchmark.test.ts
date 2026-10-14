@@ -170,6 +170,77 @@ describe("submit/collect recall traces", () => {
 });
 
 describe("delayed synthetic recall fixture", () => {
+  it.each([
+    [{}, false, false],
+    [{ response_detail: "with_citations" }, true, false],
+    [{ response_detail: "with_evidence" }, true, true],
+    [{ response_detail: "answer_only", include_evidence: true }, true, true]
+  ] as const)(
+    "matches answer detail %j across delivery modes",
+    async (detail, withCitations, withEvidence) => {
+      vi.useFakeTimers();
+      const host = new RecallFixture(independent, () => {});
+      try {
+        const blocking = host.submit("primary", "blocking", "Recall", detail);
+        const receipt = await host.submit(
+          "primary",
+          "non_blocking",
+          "Recall",
+          detail
+        );
+        await vi.advanceTimersByTimeAsync(5000);
+        const collected = host.snapshot(String(receipt.task_id)).result!;
+        expect(collected).toEqual(await blocking);
+        expect(collected.markdown).toBe(independent.phases[0]!.memory);
+        expect(collected.citations !== undefined).toBe(withCitations);
+        expect(collected.evidence !== undefined).toBe(withEvidence);
+      } finally {
+        host.close();
+      }
+    }
+  );
+
+  it.each([undefined, "auto", "blocking", "non_blocking"])(
+    "preserves raw requested mode %s before execution normalization",
+    (mode) => {
+      const events: RecallEvent[] = [];
+      const host = new RecallFixture(independent, (event) =>
+        events.push(event)
+      );
+      const args = {
+        query: "Recall retry policy",
+        ...(mode === undefined ? {} : { delivery_mode: mode })
+      };
+      host.recallRequested(args);
+      expect(events[0]).toMatchObject({
+        kind: "recall_requested",
+        arguments: args
+      });
+      expect(events[0]!.arguments).not.toBe(args);
+      host.close();
+    }
+  );
+
+  it("advances recall context only after the current decision is recorded", async () => {
+    vi.useFakeTimers();
+    const fixture = asyncRecallCases.find(
+      ({ id }) => id === "followup-mixed-modes"
+    )!;
+    const host = new RecallFixture(fixture, () => {});
+    expect(host.recallPhase()).toBe("primary");
+    await host.submit(
+      host.recallPhase(),
+      "non_blocking",
+      "Recall retry count; do not answer retry delay yet."
+    );
+    expect(host.recallPhase()).toBe("primary");
+    host.decide("primary", fixture.phases[0]!.expected);
+    expect(host.recallPhase()).toBe("followup");
+    host.decide("followup", fixture.phases[1]!.expected);
+    expect(host.recallPhase()).toBe("followup");
+    host.close();
+  });
+
   it("records immediate collection and waiting collection as distinct request modes", async () => {
     vi.useFakeTimers();
     const events: RecallEvent[] = [];

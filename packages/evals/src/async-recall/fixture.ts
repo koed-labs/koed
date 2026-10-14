@@ -6,6 +6,7 @@ interface Task {
   id: string;
   phase: Phase;
   memory: string | null;
+  result: Record<string, unknown>;
   state: "pending" | "completed" | "cancelled";
   timer: ReturnType<typeof setTimeout>;
   ready: Promise<void>;
@@ -15,6 +16,7 @@ interface Task {
 /** Synthetic delayed recall only; this is not the production task manager. */
 export class RecallFixture {
   private readonly tasks = new Map<string, Task>();
+  private readonly decidedPhases = new Set<Phase>();
   private readonly started = Date.now();
   constructor(
     private readonly fixture: RecallCase,
@@ -22,14 +24,26 @@ export class RecallFixture {
     private readonly delayMs = 5_000
   ) {}
 
+  recallPhase(): Phase {
+    return (
+      this.fixture.phases.find(({ phase }) => !this.decidedPhases.has(phase)) ??
+      this.fixture.phases[this.fixture.phases.length - 1]!
+    ).phase;
+  }
+
   private emit(event: Omit<RecallEvent, "atMs">): void {
     this.observe({ ...event, atMs: Date.now() - this.started });
+  }
+
+  recallRequested(args: Record<string, unknown>): void {
+    this.emit({ kind: "recall_requested", arguments: structuredClone(args) });
   }
 
   async submit(
     phase: Phase,
     mode: Mode,
-    query?: string
+    query?: string,
+    detail: { response_detail?: unknown; include_evidence?: unknown } = {}
   ): Promise<Record<string, unknown>> {
     const spec = this.fixture.phases.find((entry) => entry.phase === phase);
     if (!spec) throw new Error(`Unsupported phase: ${phase}`);
@@ -38,10 +52,32 @@ export class RecallFixture {
     const ready = new Promise<void>((done) => {
       resolve = done;
     });
+    const withEvidence =
+      detail.include_evidence === true ||
+      detail.response_detail === "with_evidence";
+    const withCitations =
+      withEvidence || detail.response_detail === "with_citations";
     const task: Task = {
       id,
       phase,
       memory: spec.memory,
+      result: {
+        markdown: spec.memory ?? "No relevant memory found.",
+        ...(withCitations
+          ? {
+              citations:
+                spec.memory === null ? [] : [{ sourceId: `fixture-${phase}` }]
+            }
+          : {}),
+        ...(withEvidence
+          ? {
+              evidence:
+                spec.memory === null
+                  ? []
+                  : [{ sourceId: `fixture-${phase}`, summaryText: spec.memory }]
+            }
+          : {})
+      },
       state: "pending",
       ready,
       resolve,
@@ -97,7 +133,7 @@ export class RecallFixture {
       taskId: id,
       outcome: task.memory === null ? "not_found" : "found"
     });
-    return { markdown: task.memory ?? "No relevant memory found." };
+    return structuredClone(task.result);
   }
 
   cancel(id: string): Record<string, unknown> {
@@ -134,10 +170,7 @@ export class RecallFixture {
       cancelledAt: task.state === "cancelled" ? now : null,
       lastErrorCode: null,
       lastErrorMessage: null,
-      result:
-        task.state === "completed"
-          ? { markdown: task.memory ?? "No relevant memory found." }
-          : null,
+      result: task.state === "completed" ? structuredClone(task.result) : null,
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -154,6 +187,7 @@ export class RecallFixture {
   }
 
   decide(phase: Phase, decision: Record<string, unknown>): void {
+    this.decidedPhases.add(phase);
     this.emit({ kind: "dependent_action", phase, decision });
   }
 

@@ -67,7 +67,11 @@ const answerParameters = Type.Object(
     query: Type.String({ minLength: 1, maxLength: 32000 }),
     delivery_mode: Type.Optional(
       Type.Union(
-        MEMORY_ANSWER_DELIVERY_MODES.map((value) => Type.Literal(value))
+        MEMORY_ANSWER_DELIVERY_MODES.map((value) => Type.Literal(value)),
+        {
+          description:
+            "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
+        }
       )
     ),
     retrieval_hints: Type.Optional(
@@ -183,16 +187,6 @@ export default function koedExtension(pi) {
       parameters,
       async execute(id, params, signal, _update, ctx) {
         if (
-          name === "memory_answer" &&
-          params.delivery_mode === "non_blocking" &&
-          (params.include_evidence === true ||
-            (params.response_detail !== undefined &&
-              params.response_detail !== "answer_only"))
-        )
-          throw new Error(
-            "Use blocking Memory Answer for citations or evidence"
-          );
-        if (
           name === "memory_answer_result" &&
           params.wait !== undefined &&
           typeof params.wait !== "boolean"
@@ -300,13 +294,13 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Recall Koed memory evidence for answer synthesis. Omitted, auto, and blocking delivery_mode return the result directly. Explicit non_blocking returns a pending task_id promptly; continue independent work and collect with memory_answer_result when the next action needs recalled memory. No automatic follow-up is delivered. Do not repeat the request, use a tight polling loop, invent prior constraints, or claim dependent work is complete before collection. Cancel unnecessary recall with memory_answer_cancel. Collection is compact only; use blocking recall for citations or evidence. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
+    "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory. Recall Koed memory evidence for answer synthesis. Keep task_id; continue independent work, then collect with memory_answer_result(wait=true) when needed. No automatic follow-up is delivered. Do not repeat a pending question, poll rapidly, invent prior constraints or claim dependent work is complete before collection. Cancel unnecessary recall with memory_answer_cancel. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team, use memory_workspaces, then pass team_workspace_id and team_backend_id. The open Desktop Workspace does not select scope.",
     answerParameters
   );
   register(
     "memory_answer_result",
     "Collect Memory Answer",
-    "Collect an accepted Memory Answer by task_id. Omitted or false wait returns promptly with pending or compact final answer text. When independent work is finished and recalled memory is needed, set wait=true to wait for this task within the call, subject to task expiry, cancellation, client timeout, or disconnection. Waiting does not start another recall. Do not repeat recall or use a tight polling loop.",
+    "Collect an accepted Memory Answer by task_id. Omitted or false wait returns promptly with pending or final answer text, including citations or evidence requested at submission; compact is the default. When independent work is finished and recalled memory is needed, set wait=true to wait for this task within the call, subject to task expiry, cancellation, client timeout, or disconnection. Waiting does not start another recall. Do not repeat recall or use a tight polling loop.",
     resultParameters
   );
   register(

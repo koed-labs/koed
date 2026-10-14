@@ -108,12 +108,13 @@ export const presentMemoryAnswerTask = (task) => {
   )
     return pendingMemoryAnswerTask(task);
   if (task.status === "completed") {
-    // The formatter projects only readable text when details are disabled.
+    // Execution already projects the result to the requested detail level.
+    // The shared formatter includes only supported answer fields, not task metadata.
     return {
       status: "completed",
       task_id: task.id,
       text: formatMemoryAnswerCompletion(task.result, "completed", {
-        includeDetails: false
+        includeDetails: true
       })
     };
   }
