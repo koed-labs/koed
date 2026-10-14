@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canonicalConversationItemKey } from "@koed/shared";
+import {
+  canonicalConversationItemKey,
+  normalizeGitRemoteUrl
+} from "@koed/shared";
 
 const filesystemRace = vi.hoisted(() => ({
   failReaddirPath: null as string | null,
@@ -605,198 +609,270 @@ describe("Claude transcript watcher", () => {
     ).resolves.toEqual([]);
   });
 
-  it("journals complete source bytes before projecting official SDK messages", async () => {
-    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
-    const userId = randomUUID();
-    const assistantId = randomUUID();
-    const toolResultId = randomUUID();
-    const finalAssistantId = randomUUID();
-    const timestamp = "2026-08-11T12:00:00.000Z";
-    fs.writeFileSync(
-      transcriptPath,
-      [
-        { uuid: userId, timestamp, type: "user" },
-        {
-          uuid: assistantId,
-          timestamp: "2026-08-11T12:00:01.000Z",
-          type: "assistant"
-        },
-        {
-          uuid: toolResultId,
-          timestamp: "2026-08-11T12:00:02.000Z",
-          type: "user"
-        },
-        {
-          uuid: finalAssistantId,
-          timestamp: "2026-08-11T12:00:03.000Z",
-          type: "assistant"
-        }
-      ]
-        .map((entry) => JSON.stringify(entry))
-        .join("\n") + "\n"
-    );
-    getSessionMessages.mockResolvedValue([
-      {
-        type: "user",
-        uuid: userId,
-        message: { content: [{ type: "text", text: "Question" }] }
-      },
-      {
-        type: "assistant",
-        uuid: assistantId,
-        message: {
-          content: [
-            { type: "text", text: "Answer" },
-            { type: "thinking", text: "Check the source first." },
-            { type: "tool_use", id: "tool-1", name: "Read", input: {} }
-          ]
-        }
-      },
-      {
-        type: "user",
-        uuid: toolResultId,
-        message: {
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-1",
-              content: "source contents"
-            }
-          ]
-        }
-      },
-      {
-        type: "assistant",
-        uuid: finalAssistantId,
-        message: { content: [{ type: "text", text: "Final answer" }] }
-      }
-    ]);
-
-    const operations: string[] = [];
-    const capturedSessionId = randomUUID();
-    let artifact: Record<string, unknown> | null = null;
-    let ensuredArtifact: Record<string, unknown> | null = null;
-    const createdItems: Array<Record<string, unknown>> = [];
-    const client = {
-      async lookupConversationSourceArtifact() {
-        throw new MemoryApiError("not found", { status: 404 });
-      },
-      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
-        operations.push("journal-created");
-        ensuredArtifact = input;
-        artifact = {
-          id: randomUUID(),
-          sessionId: capturedSessionId,
-          sourceGenerationId: randomUUID(),
-          sourceComponentId: input.sourceComponentId,
-          providerCursorOffset: input.journalStartOffset,
-          providerCursorLine: input.journalStartLine,
-          journalStartOffset: input.journalStartOffset
-        };
-        return { artifact };
-      },
-      async appendConversationSourceSegment(
-        _artifactId: string,
-        input: Record<string, unknown>
-      ) {
-        operations.push("journal-appended");
-        artifact = {
-          ...artifact,
-          providerCursorOffset: input.sourceEndOffset,
-          providerCursorLine: input.sourceEndLine
-        };
-        return { artifact };
-      },
-      async listConversationSourceSegments() {
-        throw new Error("existing source segments were not expected");
-      },
-      async createConversationItems(input: {
-        items: Record<string, unknown>[];
-      }) {
-        operations.push("items");
-        createdItems.push(...input.items);
-        return {
-          items: input.items.map((item) => ({ ...item, id: randomUUID() }))
-        };
-      },
-      async projectConversationItems() {
-        operations.push("project");
-        return {};
-      }
-    } as unknown as MemoryApiClient;
-    const state: {
-      version: 2;
-      activatedAt: string;
-      cursors: Record<string, { messageCount: number; updatedAt: string }>;
-    } = {
-      version: 2 as const,
-      activatedAt: "2026-08-11T11:59:59.000Z",
-      cursors: {}
-    };
-
-    await processClaudeTranscriptSignal(
-      client,
-      state,
-      {
-        sourceSessionId,
+  it.each([
+    "root",
+    "subdirectory",
+    "worktree-one",
+    "worktree-two",
+    "unavailable"
+  ])(
+    "journals complete source bytes and the shared assignment from %s before Projection",
+    async (checkout) => {
+      const { root, claudeHome, sourceSessionId, transcriptPath } = fixture();
+      const repo = path.join(root, "repository");
+      fs.mkdirSync(repo);
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+      git("init");
+      git(
+        "remote",
+        "add",
+        "origin",
+        "https://example.test/team/claude-capture.git"
+      );
+      git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Fixture"
+      );
+      fs.mkdirSync(path.join(repo, "subdirectory"));
+      const worktree = path.join(root, checkout);
+      if (checkout.startsWith("worktree"))
+        git("worktree", "add", "-b", checkout, worktree);
+      const cwd =
+        checkout === "root"
+          ? repo
+          : checkout === "subdirectory"
+            ? path.join(repo, checkout)
+            : worktree;
+      const userId = randomUUID();
+      const assistantId = randomUUID();
+      const toolResultId = randomUUID();
+      const finalAssistantId = randomUUID();
+      const timestamp = "2026-08-11T12:00:00.000Z";
+      fs.writeFileSync(
         transcriptPath,
-        cwd: "/tmp/project",
-        hookEventName: "Stop",
-        observedAt: "2026-08-11T12:00:02.000Z"
-      },
-      { CLAUDE_CONFIG_DIR: claudeHome }
-    );
+        [
+          { uuid: userId, timestamp, type: "user" },
+          {
+            uuid: assistantId,
+            timestamp: "2026-08-11T12:00:01.000Z",
+            type: "assistant"
+          },
+          {
+            uuid: toolResultId,
+            timestamp: "2026-08-11T12:00:02.000Z",
+            type: "user"
+          },
+          {
+            uuid: finalAssistantId,
+            timestamp: "2026-08-11T12:00:03.000Z",
+            type: "assistant"
+          }
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n"
+      );
+      getSessionMessages.mockResolvedValue([
+        {
+          type: "user",
+          uuid: userId,
+          message: { content: [{ type: "text", text: "Question" }] }
+        },
+        {
+          type: "assistant",
+          uuid: assistantId,
+          message: {
+            content: [
+              { type: "text", text: "Answer" },
+              { type: "thinking", text: "Check the source first." },
+              { type: "tool_use", id: "tool-1", name: "Read", input: {} }
+            ]
+          }
+        },
+        {
+          type: "user",
+          uuid: toolResultId,
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: "source contents"
+              }
+            ]
+          }
+        },
+        {
+          type: "assistant",
+          uuid: finalAssistantId,
+          message: { content: [{ type: "text", text: "Final answer" }] }
+        }
+      ]);
 
-    expect(operations.indexOf("journal-appended")).toBeLessThan(
-      operations.indexOf("items")
-    );
-    expect(ensuredArtifact).toMatchObject({
-      sourceKind: "claude-code",
-      sourceComponentId: "main",
-      sourceComponentRole: "primary",
-      parentSourceComponentId: null,
-      contentFraming: "jsonl",
-      artifactFormat: "claude_session_jsonl",
-      artifactFormatVersion: 1
-    });
-    expect(ensuredArtifact).not.toHaveProperty("sourceComponentSchemaVersion");
-    expect(createdItems).toHaveLength(7);
-    expect(new Set(createdItems.map((item) => item.sourceSequence)).size).toBe(
-      7
-    );
-    expect(createdItems.map((item) => item.sourceEventType)).toEqual([
-      "user_message",
-      "agent_message",
-      "agent_reasoning",
-      "tool_call",
-      "tool_result",
-      "agent_message",
-      "turn_completed"
-    ]);
-    expect(
-      new Set(createdItems.slice(0, -1).map((item) => item.externalTurnId))
-    ).toEqual(new Set([userId]));
-    expect(createdItems.slice(0, -1).map((item) => item.eventTime)).toEqual([
-      "2026-08-11T12:00:00.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:02.000Z",
-      "2026-08-11T12:00:03.000Z"
-    ]);
-    expect(createdItems[0]).toMatchObject({
-      canonicalStableItemId: `main:${userId}:0`,
-      observationComponent: "message",
-      canonicalItemKey: canonicalConversationItemKey({
-        provider: "claude-code",
-        externalThreadId: sourceSessionId,
-        externalTurnId: userId,
-        stableItemId: `main:${userId}:0`,
-        component: "message"
-      })
-    });
-    expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(4);
-  });
+      const operations: string[] = [];
+      const capturedSessionId = randomUUID();
+      let artifact: Record<string, unknown> | null = null;
+      let ensuredArtifact: Record<string, unknown> | null = null;
+      const createdItems: Array<Record<string, unknown>> = [];
+      const client = {
+        async lookupConversationSourceArtifact() {
+          throw new MemoryApiError("not found", { status: 404 });
+        },
+        async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+          operations.push("journal-created");
+          ensuredArtifact = input;
+          artifact = {
+            id: randomUUID(),
+            sessionId: capturedSessionId,
+            sourceGenerationId: randomUUID(),
+            sourceComponentId: input.sourceComponentId,
+            providerCursorOffset: input.journalStartOffset,
+            providerCursorLine: input.journalStartLine,
+            journalStartOffset: input.journalStartOffset
+          };
+          return { artifact };
+        },
+        async appendConversationSourceSegment(
+          _artifactId: string,
+          input: Record<string, unknown>
+        ) {
+          operations.push("journal-appended");
+          artifact = {
+            ...artifact,
+            providerCursorOffset: input.sourceEndOffset,
+            providerCursorLine: input.sourceEndLine
+          };
+          return { artifact };
+        },
+        async listConversationSourceSegments() {
+          throw new Error("existing source segments were not expected");
+        },
+        async createConversationItems(input: {
+          items: Record<string, unknown>[];
+        }) {
+          operations.push("items");
+          createdItems.push(...input.items);
+          return {
+            items: input.items.map((item) => ({ ...item, id: randomUUID() }))
+          };
+        },
+        async projectConversationItems() {
+          operations.push("project");
+          return {};
+        }
+      } as unknown as MemoryApiClient;
+      const state: {
+        version: 2;
+        activatedAt: string;
+        cursors: Record<string, { messageCount: number; updatedAt: string }>;
+      } = {
+        version: 2 as const,
+        activatedAt: "2026-08-11T11:59:59.000Z",
+        cursors: {}
+      };
+
+      await processClaudeTranscriptSignal(
+        client,
+        state,
+        {
+          sourceSessionId,
+          transcriptPath,
+          cwd,
+          hookEventName: "Stop",
+          observedAt: "2026-08-11T12:00:02.000Z"
+        },
+        { CLAUDE_CONFIG_DIR: claudeHome, KOED_HOME: path.join(root, "koed") }
+      );
+
+      expect(operations.indexOf("journal-appended")).toBeLessThan(
+        operations.indexOf("items")
+      );
+      expect(ensuredArtifact).toMatchObject({
+        sourceKind: "claude-code",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
+        artifactFormat: "claude_session_jsonl",
+        artifactFormatVersion: 1
+      });
+      expect(ensuredArtifact).toMatchObject({
+        sourceSession: { cwd, sourceRuntime: "claude-code" }
+      });
+      if (checkout === "unavailable") {
+        expect(ensuredArtifact).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              kind: "unresolved",
+              key: null,
+              reason: "probe_failed"
+            }
+          }
+        });
+      } else {
+        expect(ensuredArtifact).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              kind: "portable_repository",
+              key: normalizeGitRemoteUrl(
+                "https://example.test/team/claude-capture.git"
+              ).fingerprint,
+              root: fs.realpathSync(
+                checkout.startsWith("worktree") ? worktree : repo
+              )
+            }
+          }
+        });
+      }
+      expect(ensuredArtifact).not.toHaveProperty(
+        "sourceComponentSchemaVersion"
+      );
+      expect(createdItems).toHaveLength(7);
+      expect(
+        new Set(createdItems.map((item) => item.sourceSequence)).size
+      ).toBe(7);
+      expect(createdItems.map((item) => item.sourceEventType)).toEqual([
+        "user_message",
+        "agent_message",
+        "agent_reasoning",
+        "tool_call",
+        "tool_result",
+        "agent_message",
+        "turn_completed"
+      ]);
+      expect(
+        new Set(createdItems.slice(0, -1).map((item) => item.externalTurnId))
+      ).toEqual(new Set([userId]));
+      expect(createdItems.slice(0, -1).map((item) => item.eventTime)).toEqual([
+        "2026-08-11T12:00:00.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:02.000Z",
+        "2026-08-11T12:00:03.000Z"
+      ]);
+      expect(createdItems[0]).toMatchObject({
+        canonicalStableItemId: `main:${userId}:0`,
+        observationComponent: "message",
+        canonicalItemKey: canonicalConversationItemKey({
+          provider: "claude-code",
+          externalThreadId: sourceSessionId,
+          externalTurnId: userId,
+          stableItemId: `main:${userId}:0`,
+          component: "message"
+        })
+      });
+      expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(
+        4
+      );
+    }
+  );
 
   it("keeps assistant records in their user turn across incremental scans", async () => {
     const { claudeHome, sourceSessionId, transcriptPath } = fixture();

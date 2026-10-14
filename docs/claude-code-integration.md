@@ -405,3 +405,20 @@ disabled backgrounding, final statuses, dependency ordering, and waiter
 interruption were checked. This adds no interactive TUI or reopened-session
 guarantee. See [validation](async-memory-answer.md#validation) for what the
 protocol tests and evaluation suite establish.
+
+### Repository assignments
+
+For new live captures, the Transcript Watcher resolves the transcript's checkout
+through the same selected-anchor resolver as Codex. It passes the portable,
+device-local, non-Git, or unresolved observation with the Captured Session
+registration. The Supported Capture Hook supplies lifecycle signals to this
+same path. Repository roots, subdirectories, and worktrees with the same selected
+remote therefore use the same portable Project fingerprint while retaining their
+checkout paths. Unavailable Git metadata produces an unresolved observation.
+
+Duplicate signals, reordered observations, resumed Conversations, and new
+subagent artifacts use the shared recorded-assignment boundary. They cannot
+replace a User override or resolve a pre-cutover logical Session. A historical
+import does not infer source-time identity from the current checkout; the import
+coverage is handled separately. Desktop inspection shows the effective assignment
+recorded by the API rather than another caller-side identity policy.

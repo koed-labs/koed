@@ -1,3 +1,4 @@
+import type { RepositoryIdentity } from "@koed/shared";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
@@ -165,6 +166,7 @@ const completeSegment = (
 export const journalClaudeTranscript = async (input: {
   client: MemoryApiClient;
   signal: ClaudeTranscriptWatcherSignal;
+  repositoryIdentity?: RepositoryIdentity;
   transcriptPath: string;
   index: ClaudeTranscriptIndex;
   componentId: string;
@@ -200,6 +202,9 @@ export const journalClaudeTranscript = async (input: {
         sourceRuntime: "claude-code",
         captureMethod: "api",
         cwd: input.signal.cwd,
+        ...(input.repositoryIdentity
+          ? { repositoryIdentity: input.repositoryIdentity }
+          : {}),
         idempotencyKey: `claude-code-session:${input.signal.sourceSessionId}`,
         sourceHash: hash({
           provider: "claude-code",

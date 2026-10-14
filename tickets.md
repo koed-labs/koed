@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2 and M3 are complete and assessed. Continue M4 with tickets 14–15 on the Project integration branch, then preview 18 on the dependent Global branch; its release remains after ticket 16. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2, M3, and M4 are complete and assessed. Ticket 18 is checkpointed as f696f8cb on codex/repo-global-recall; its release remains after ticket 16. Continue 04–07 and 16 on the Project integration branch. Follow the milestone order above for priority rather than numeric ticket order.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -170,14 +170,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Pass the shared resolver result through Claude Code transcript capture, the Transcript Watcher, and relevant Supported Capture Hook paths to session inspection.
-- [ ] Use the shared effective-assignment and conflict behavior rather than implementing a separate identity policy.
-- [ ] Demonstrate capture from a repository root and subdirectory, and from two worktrees with the same selected anchor.
-- [ ] Duplicate and reordered capture cannot replace an assignment, User override, or historical-unresolved state.
-- [ ] Test a continued pre-cutover Conversation and unavailable Git metadata.
-- [ ] Update Claude Code integration and ingestion documentation for the new behavior.
+- [x] Pass the shared resolver result through Claude Code transcript capture, the Transcript Watcher, and relevant Supported Capture Hook paths to session inspection.
+- [x] Use the shared effective-assignment and conflict behavior rather than implementing a separate identity policy.
+- [x] Demonstrate capture from a repository root and subdirectory, and from two worktrees with the same selected anchor.
+- [x] Duplicate and reordered capture cannot replace an assignment, User override, or historical-unresolved state.
+- [x] Test a continued pre-cutover Conversation and unavailable Git metadata.
+- [x] Update Claude Code integration and ingestion documentation for the new behavior.
+
+**Validation:** Claude watcher tests exercise real Git roots, subdirectories, and two worktrees with the same selected remote, plus unavailable metadata producing an explicit unresolved observation. The watcher and Supported Capture Hook regression run passes 54 tests. The shared PostgreSQL assignment suite now runs for Codex, Claude Code, and Pi and passes 12 cases covering continued capture, conflicting and duplicate observations, User overrides, historical-unresolved state, reset, and owner boundaries. Production typechecking, full test typechecking, and targeted formatting/lint validate the change. Claude integration and ingestion documentation describe the shared boundary and source-time import limitations.
 
 ## 05: Capture Pi sessions with the same assignment rules
 

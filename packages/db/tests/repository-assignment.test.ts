@@ -23,9 +23,9 @@ const identity = (name: string, branch = "main"): RepositoryIdentity => ({
   anchorDisplay: `example.test/team/${name}`
 });
 
-describe.skipIf(!databaseUrl)(
-  "recorded repository assignments in PostgreSQL",
-  () => {
+describe.skipIf(!databaseUrl).each(["codex-cli", "claude-code", "pi"] as const)(
+  "%s recorded repository assignments in PostgreSQL",
+  (sourceRuntime) => {
     let pool: pg.Pool;
     beforeAll(async () => {
       pool = createDbPool({ connectionString: databaseUrl });
@@ -42,6 +42,7 @@ describe.skipIf(!databaseUrl)(
     it("records once and retains assignment, overrides, cwd and branch provenance across both upsert paths", async () => {
       const { repo, actor } = await fixture();
       const first = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: randomUUID(),
         cwd: "/checkout/a/subdirectory",
         repositoryIdentity: identity("a"),
@@ -54,6 +55,7 @@ describe.skipIf(!databaseUrl)(
         effective: identity("a")
       });
       const continued = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: first.externalSessionId!,
         repositoryIdentity: identity("b"),
         cwd: "/checkout/b"
@@ -70,6 +72,7 @@ describe.skipIf(!databaseUrl)(
       });
       expect(override?.effective?.key).toBe("gr_c");
       await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: first.externalSessionId!,
         repositoryIdentity: identity("b")
       });
@@ -93,10 +96,12 @@ describe.skipIf(!databaseUrl)(
       expect(reset?.effective).toEqual(identity("a"));
       const key = randomUUID();
       const idempotent = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         idempotencyKey: key,
         repositoryIdentity: identity("a")
       });
       const duplicate = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         idempotencyKey: key,
         repositoryIdentity: identity("b")
       });
@@ -110,6 +115,7 @@ describe.skipIf(!databaseUrl)(
       );
       expect(observations.rows.some((row) => row.is_conflict)).toBe(true);
       await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: first.externalSessionId!,
         repositoryIdentity: identity("a", "another-branch")
       });
@@ -121,6 +127,7 @@ describe.skipIf(!databaseUrl)(
     it("retains historical unresolved state through continued capture, reset, and re-ingestion", async () => {
       const { repo, actor } = await fixture();
       const original = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: randomUUID(),
         repositoryIdentity: identity("a")
       });
@@ -156,6 +163,7 @@ describe.skipIf(!databaseUrl)(
         [original.id]
       );
       const continued = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: original.externalSessionId!,
         repositoryIdentity: identity("a")
       });
@@ -185,6 +193,7 @@ describe.skipIf(!databaseUrl)(
         [original.id]
       );
       const reimport = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         externalSessionId: original.externalSessionId!,
         idempotencyKey: randomUUID(),
         logicalSessionId: randomUUID(),
@@ -198,6 +207,7 @@ describe.skipIf(!databaseUrl)(
     it("rejects other-owner writes and lets unresolved overrides suppress portable automatic identity", async () => {
       const { repo, actor } = await fixture();
       const session = await repo.createCapturedSession(actor, {
+        sourceRuntime,
         repositoryIdentity: identity("a")
       });
       const other = await fixture();
