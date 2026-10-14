@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export const RETRIEVAL_ARENA_SCHEMA_VERSION = "retrieval-arena-v2";
+export const RETRIEVAL_ARENA_SCHEMA_VERSION = "retrieval-arena-v3";
 
 export const arenaCostBasisSchema = z.enum([
   "local_no_cost",
