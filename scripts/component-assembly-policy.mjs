@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
 const hasClosureOwnedOptionalNativePackage = (closure) => {
   const addon = closure.find(
     ({ manifest }) => manifest.name === "msgpackr-extract"
@@ -340,6 +343,24 @@ const policies = {
   }
 };
 const dynamicRules = [
+  {
+    match: (packageName, file, edge) =>
+      packageName === "@koed-labs/server" &&
+      file === "dist/remote-mcp-client.js" &&
+      edge.loader === "import" &&
+      edge.argumentText === "pathToFileURL(entry).href",
+    policy: {
+      owner: "selected-mcp-runtime-contracts-path",
+      requiresClosure: (closure) =>
+        closure.some(
+          ({ manifest, packageRoot }) =>
+            manifest.name === "@koed/mcp-server" &&
+            existsSync(resolve(packageRoot, "dist/runtime-contracts.js"))
+        ),
+      missingClosure:
+        "MCP runtime-contracts entrypoint is absent from component closure"
+    }
+  },
   {
     match: (packageName, file, edge) =>
       packageName === "node-gyp-build-optional-packages" &&

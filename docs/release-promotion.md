@@ -16,7 +16,7 @@ Configure these values before expecting release promotion to pass:
 
 Public signing keys must equal keys compiled into the control-plane package. Both signing and promotion compare public-key maps and their digest with the built package. The approved Google Cloud KMS public key `koed-components-2026-01` is embedded in `packages/koed-server/src/component-trust-roots.ts`. Build/package roots must match the configured key map and digests. Trust-key changes are reviewed source changes, not keys installed dynamically during a release.
 
-The signing endpoint accepts GitHub Actions OIDC bearer tokens for audience `koed-component-signer`. `/v1/sign` receives `{keyId, manifest}` and returns `{signature:{schemaVersion:1,keyId,algorithm:"ed25519",signature}}`; `/v1/verify` receives `{keyId,manifest,signature}` and returns `{verified:true}` only for a valid signature. No private signing credentials are stored or used locally.
+The signing endpoint accepts GitHub Actions OIDC bearer tokens for audience `koed-component-signer`. `/v1/sign` receives `{keyId, manifest}` and returns `{signature:{schemaVersion:2,keyId,algorithm:"ed25519",signature}}`; `/v1/verify` receives `{keyId,manifest,signature}` and returns `{verified:true}` only for a valid signature. No private signing credentials are stored or used locally.
 
 ## Promotion checks
 
@@ -61,3 +61,25 @@ CI workflow, ref, commit and `workflow_dispatch` event are accepted. Remove the
 pin after the rehearsal. It signs synthetic oversized manifests, verifies their
 archives and checks tampering; it performs no npm/GitHub release promotion and
 does not establish native Linux or full service lifecycle acceptance.
+
+## Local KMS lifecycle validation
+
+On 2026-10-14, fresh macOS arm64 Base and Privacy Filter component archives were
+signed with KMS key version 1 (`koed-components-2026-01`) using the v2 message.
+The public control-plane npm tarball was installed offline outside the checkout,
+with its embedded production trust roots unchanged. Component installation and
+generation activation passed in isolated homes, followed by healthy Personal and
+Team startup, shutdown, restart and final shutdown. Team diagnostics verified the
+API, database, queues, embedding and Privacy services, Local AI Runtime, API Token,
+MCP Server and device identity. No test service processes remained afterward.
+
+This run used authenticated `gcloud` signing, preinstalled native PostgreSQL and
+llama.cpp binaries, and cached pinned model files. It complements the separate
+GitHub OIDC signing-service rehearsal; it does not validate native dependency
+installation, a fresh Desktop GUI handshake, other platform targets, upgrade or
+rollback migration, or production publication. Publication remained disabled.
+
+Assembly audits account for the remote MCP client's exact dynamic import of the
+selected MCP runtime contracts. That exception requires the concrete
+`@koed/mcp-server` contracts entrypoint in the component dependency closure;
+unowned dynamic imports continue to fail closed.

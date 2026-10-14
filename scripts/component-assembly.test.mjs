@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { classifyRuntimeException } from "./component-assembly-policy.mjs";
 import { projectRuntimeComponents } from "./component-assembly.mjs";
 
 const roots = [];
@@ -1087,4 +1088,35 @@ test("rejects external or escaping symlinks in projected package trees", () => {
       }),
     /symlink|unsupported entr/i
   );
+});
+
+test("remote MCP dynamic contract import requires its concrete component target", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-remote-contract-"));
+  roots.push(root);
+  const edge = {
+    kind: "dynamic",
+    loader: "import",
+    argumentText: "pathToFileURL(entry).href"
+  };
+  const classify = (edgeValue, closure) =>
+    classifyRuntimeException(
+      "@koed-labs/server",
+      "dist/remote-mcp-client.js",
+      edgeValue,
+      closure
+    );
+  const closure = [
+    { manifest: { name: "@koed/mcp-server" }, packageRoot: root }
+  ];
+  assert.match(classify(edge, closure).error, /entrypoint is absent/);
+  write(resolve(root, "dist/runtime-contracts.js"), "export {};\n");
+  assert.equal(
+    classify(edge, closure).owner,
+    "selected-mcp-runtime-contracts-path"
+  );
+  assert.equal(
+    classify({ ...edge, argumentText: "unownedModule" }, closure),
+    null
+  );
+  assert.match(classify(edge, []).error, /entrypoint is absent/);
 });
