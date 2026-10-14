@@ -75,9 +75,15 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
       | Record<string, unknown>
       | undefined;
     if (
-      (Object.keys(parsed).sort().join(",") !==
+      (Object.keys(parsed)
+        .filter((key) => key !== "historicalProjectKeys")
+        .sort()
+        .join(",") !==
         "authority,certificate,device,groupId,groupSecrets,historicalOriginCertificates,recipientCertificates,recovery,relayUrl,userId,version" &&
-        Object.keys(parsed).sort().join(",") !==
+        Object.keys(parsed)
+          .filter((key) => key !== "historicalProjectKeys")
+          .sort()
+          .join(",") !==
           "authority,certificate,device,groupId,groupSecrets,recipientCertificates,recovery,relayUrl,userId,version") ||
       parsed.version !== 1 ||
       ![
