@@ -13,6 +13,7 @@ const publication = (
   overrides: Partial<PublicSquarePublication> = {}
 ): PublicSquarePublication => ({
   id: "pub-1",
+  source: "legacy_job",
   jobId: "job-1",
   agentId: "agent-1",
   agentName: "Builder",
@@ -150,6 +151,47 @@ test("uses checking only for a running Job with an explicit phase", () => {
   assert.equal(waiting.zone, "waiting");
 });
 
+test("keeps native unknown and waiting states visible without guessing Checking", () => {
+  const unknown = toSquareJob(
+    publication({
+      source: "native_command",
+      jobId: null,
+      status: "unknown",
+      lastKnownStatus: "unknown",
+      phase: "checking"
+    }),
+    "viewer-1"
+  );
+  const nativeRunning = toSquareJob(
+    publication({
+      id: "pub-native-running",
+      source: "native_command",
+      jobId: null,
+      status: "running",
+      phase: "checking"
+    }),
+    "viewer-1"
+  );
+  const nativeWaiting = toSquareJob(
+    publication({
+      id: "pub-native-waiting",
+      source: "native_command",
+      jobId: null,
+      status: "waiting",
+      waitingOn: null
+    }),
+    "viewer-1"
+  );
+
+  assert.equal(unknown.zone, "unknown");
+  assert.equal(unknown.statusLabel, "Status unavailable");
+  assert.equal(nativeRunning.zone, "working");
+  assert.equal(nativeRunning.statusLabel, "Working");
+  assert.equal(nativeWaiting.zone, "waiting");
+  assert.equal(nativeWaiting.statusLabel, "Waiting");
+  assert.equal(nativeWaiting.waitingOn, null);
+});
+
 test("keeps queued, offline, duplicate-agent Jobs, and former-owner history distinct", () => {
   const queued = publication({ status: "queued", startedAt: null });
   const offline = publication({
@@ -161,20 +203,33 @@ test("keeps queued, offline, duplicate-agent Jobs, and former-owner history dist
     waitingOn: null
   });
   const duplicate = publication({ id: "pub-3", jobId: "job-3" });
+  const native = publication({
+    id: "pub-native",
+    source: "native_command",
+    jobId: null,
+    status: "running"
+  });
+  const secondNative = publication({
+    id: "pub-native-2",
+    source: "native_command",
+    jobId: null,
+    status: "waiting",
+    waitingOn: null
+  });
   const formerOwner = publication({
     id: "pub-4",
     jobId: "job-4",
     ownerLeftTeam: true
   });
   const model = buildPublicSquareModel({
-    items: [queued, offline, duplicate, formerOwner],
+    items: [queued, offline, duplicate, native, secondNative, formerOwner],
     projects: [{ id: "project-1", name: "Studio" }],
     viewerId: "viewer-1"
   });
 
   assert.deepEqual(
     model.jobs.map((job) => job.id),
-    ["pub-1", "pub-2", "pub-3"]
+    ["pub-1", "pub-2", "pub-3", "pub-native", "pub-native-2"]
   );
   assert.equal(model.jobs.find((job) => job.id === "pub-1")?.zone, "waiting");
   assert.equal(
@@ -184,6 +239,43 @@ test("keeps queued, offline, duplicate-agent Jobs, and former-owner history dist
   assert.equal(model.jobs.find((job) => job.id === "pub-2")?.zone, "offline");
   assert.equal(model.jobs.find((job) => job.id === "pub-2")?.waitingOn, null);
   assert.equal(model.historicalItems[0]?.ownerLeftTeam, true);
-  assert.equal(model.counts.working, 1);
+  assert.equal(model.counts.working, 2);
   assert.equal(model.counts.queued, 1);
+});
+
+test("retains native success, failure, and cancellation as separate history outcomes", () => {
+  const terminal = [
+    publication({
+      id: "pub-succeeded",
+      source: "native_command",
+      jobId: null,
+      status: "succeeded",
+      completedAt: "2026-10-01T10:03:00.000Z"
+    }),
+    publication({
+      id: "pub-failed",
+      source: "native_command",
+      jobId: null,
+      status: "failed",
+      completedAt: "2026-10-01T10:02:00.000Z"
+    }),
+    publication({
+      id: "pub-canceled",
+      source: "native_command",
+      jobId: null,
+      status: "canceled",
+      completedAt: "2026-10-01T10:01:00.000Z"
+    })
+  ];
+  const model = buildPublicSquareModel({
+    items: terminal,
+    projects: [],
+    viewerId: "viewer-1"
+  });
+
+  assert.deepEqual(
+    model.historicalItems.map((item) => item.status),
+    ["succeeded", "failed", "canceled"]
+  );
+  assert.equal(model.jobs.length, 0);
 });

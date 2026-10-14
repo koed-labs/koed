@@ -6,6 +6,17 @@ import {
   type EncryptedPayloadEnvelope
 } from "@koed/shared";
 
+const nativePublicSquare = vi.hoisted(() => ({
+  register: vi.fn(),
+  publishForConnection: vi.fn()
+}));
+
+vi.mock("./native-public-square-repository.js", () => ({
+  registerNativePublicSquareWorkWithClient: nativePublicSquare.register,
+  publishNativePublicSquareWorkForConnectionWithClient:
+    nativePublicSquare.publishForConnection
+}));
+
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
 
 describe("managed Conversation recovery lookup", () => {
@@ -109,6 +120,10 @@ describe("managed Conversation clean stopped continuation", () => {
       projectId?: string | null;
       binding?: Record<string, unknown> | null;
       unsettled?: boolean;
+      teamRequestBindings?: Array<{
+        status: string;
+        managed_execution_id: string | null;
+      }>;
     } = {}
   ) => {
     const execution = {
@@ -170,6 +185,26 @@ describe("managed Conversation clean stopped continuation", () => {
       }
       if (sql.includes("managed_conversation_project_moves")) {
         return { rows: [] };
+      }
+      if (sql.includes("from personal_agent_identities")) {
+        return { rows: [{ current_version: 4, lifecycle: "active" }] };
+      }
+      if (sql.includes("from personal_agent_identity_versions")) {
+        return {
+          rows: [
+            {
+              id: "55555555-5555-4555-8555-555555555555",
+              name: "Mira",
+              role: "Reviewer"
+            }
+          ]
+        };
+      }
+      if (sql.includes("from personal_agent_conversations")) {
+        return { rows: [{ owner_user_id: ownerUserId }] };
+      }
+      if (sql.includes("from team_agent_requests")) {
+        return { rows: options.teamRequestBindings ?? [] };
       }
       if (sql.includes("from managed_conversation_runtime_bindings")) {
         return { rows: binding ? [binding] : [] };
@@ -263,13 +298,14 @@ describe("managed Conversation clean stopped continuation", () => {
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 9).toString("base64")
     );
+    const client = { query, release: vi.fn() };
     const repository = createManagedConversationRepository(
       {
-        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+        connect: vi.fn(async () => client)
       } as unknown as pg.Pool,
       { envelopeEncryptionProvider: provider }
     );
-    return { repository, query, execution, commands };
+    return { repository, query, execution, commands, client };
   };
 
   const promptInput = {
@@ -332,6 +368,80 @@ describe("managed Conversation clean stopped continuation", () => {
       )
     ).toBe(true);
   });
+
+  it.each([
+    {
+      label: "ordinary Agent prompt",
+      teamRequestBindings: [],
+      expectedPublications: 1
+    },
+    {
+      label: "pre-acceptance review prompt",
+      teamRequestBindings: [{ status: "pending", managed_execution_id: null }],
+      expectedPublications: 0
+    },
+    {
+      label: "ambiguous review binding",
+      teamRequestBindings: [
+        { status: "accepted", managed_execution_id: executionId },
+        { status: "pending", managed_execution_id: executionId }
+      ],
+      expectedPublications: 0
+    },
+    {
+      label: "accepted saved prompt",
+      teamRequestBindings: [
+        { status: "accepted", managed_execution_id: executionId }
+      ],
+      expectedPublications: 1
+    }
+  ])(
+    "publishes an eligible $label once",
+    async ({ teamRequestBindings, expectedPublications }) => {
+      nativePublicSquare.register.mockClear();
+      const { repository, client } = repositoryFor({ teamRequestBindings });
+      const agentId = "22222222-2222-4222-8222-222222222222";
+      const projectId = "lp_0123456789abcdef0123456789abcdef";
+
+      await repository.enqueueManagedConversationPrompt(
+        { userId: ownerUserId },
+        {
+          ...promptInput,
+          agentId,
+          expectedAgentVersion: 4,
+          personalAgentContext: {
+            schemaVersion: 1,
+            identity: {
+              agentId,
+              version: 4,
+              identityVersionId: "55555555-5555-4555-8555-555555555555",
+              name: "Mira",
+              role: "Reviewer",
+              avatarReference: null
+            },
+            project: { projectId, name: "Orchard" }
+          }
+        }
+      );
+
+      expect(nativePublicSquare.register).toHaveBeenCalledTimes(
+        expectedPublications
+      );
+      if (expectedPublications > 0) {
+        expect(nativePublicSquare.register).toHaveBeenCalledWith(
+          client,
+          { userId: ownerUserId },
+          expect.objectContaining({
+            executionId,
+            executionGeneration,
+            agentId,
+            agentVersion: 4,
+            originalProjectId: projectId
+          })
+        );
+      }
+    }
+  );
 
   it("fails closed when the existing provider history is absent", async () => {
     const { repository, query } = repositoryFor({ binding: null });
@@ -846,6 +956,7 @@ describe("managed Conversation initial Agent start", () => {
     ) as Record<string, unknown>;
     expect(decodedStartPayload).toMatchObject({
       prompt: "Ship the small fix.",
+      privateTeamAgentReview: true,
       personalAgent: {
         jobId: null,
         agentId,
@@ -971,169 +1082,211 @@ describe("managed Conversation start prompt dispatch", () => {
     Buffer.alloc(32, 7).toString("base64")
   );
 
-  it("resumes a legacy start as a presentation-only prompt without updating its Job", async () => {
-    const encryptedPayload = await provider.encrypt({
-      plaintext: JSON.stringify({
-        prompt: "  Say hello  ",
+  it.each([
+    {
+      label: "legacy Job",
+      jobId: personalAgent.jobId,
+      privateTeamAgentReview: false
+    },
+    { label: "native Agent", jobId: null, privateTeamAgentReview: false },
+    {
+      label: "pre-acceptance review Agent",
+      jobId: null,
+      privateTeamAgentReview: true
+    }
+  ])(
+    "materializes one child prompt for a $label start and publishes only native work",
+    async ({ jobId, privateTeamAgentReview }) => {
+      nativePublicSquare.register.mockClear();
+      const startAgent = { ...personalAgent, jobId };
+      const projectId = "lp_0123456789abcdef0123456789abcdef";
+      const startContext = {
+        ...personalAgentContext,
+        project: { projectId, name: "Orchard" }
+      };
+      const encryptedPayload = await provider.encrypt({
+        plaintext: JSON.stringify({
+          prompt: "  Say hello  ",
+          clientUserMessageId,
+          settings: {
+            model: "claude-test",
+            reasoningEffort: null,
+            permissionMode: "supervised"
+          },
+          personalMemoryContext,
+          personalAgent: startAgent,
+          personalAgentContext: startContext,
+          ...(privateTeamAgentReview ? { privateTeamAgentReview: true } : {})
+        }),
+        scope: {
+          tenantId: ownerUserId,
+          objectClass: "managed_conversation_prompt"
+        },
+        provenance: {
+          rowFamily: "managed_conversation_commands",
+          sourceId: startCommandId
+        },
+        ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+        aad: { ownerUserId, executionId, commandId: startCommandId }
+      });
+      let completed = false;
+      let childInsertParams: unknown[] | undefined;
+      const outboxRow = {
+        id: "outbox-id",
+        cursor: "1",
+        protocol_version: 1,
+        family: "managed_conversation_changed",
+        scope: "personal",
+        personal_owner_user_id: ownerUserId,
+        team_id: null,
+        team_workspace_id: null,
+        thread_id: null,
+        message_id: null,
+        share_grant_id: null,
+        logical_memory_id: null,
+        resource_type: "managed_conversation_execution",
+        resource_id: executionId,
+        actor_principal_id: ownerUserId,
+        mutation_id: "mutation-id",
+        occurred_at: new Date()
+      };
+      const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("update managed_conversation_commands")) {
+          if (completed) return { rows: [] };
+          completed = true;
+          return {
+            rows: [
+              {
+                id: startCommandId,
+                owner_user_id: ownerUserId,
+                execution_id: executionId,
+                execution_generation: 2,
+                command_kind: "start",
+                encrypted_payload: encryptedPayload
+              }
+            ]
+          };
+        }
+        if (
+          sql.includes("from managed_conversation_executions") &&
+          sql.includes("for update")
+        ) {
+          return {
+            rows: [
+              {
+                execution_generation: 2,
+                state: "running",
+                model: "claude-current",
+                reasoning_effort: "high",
+                permission_mode: "auto_edit"
+              }
+            ]
+          };
+        }
+        if (sql.includes("coalesce(max(sequence)"))
+          return { rows: [{ sequence: 4 }] };
+        if (sql.includes("insert into managed_conversation_commands")) {
+          childInsertParams = params;
+          return { rows: [{ id: "child-command-id" }] };
+        }
+        if (sql.includes("insert into collaboration_outbox")) {
+          return { rows: [outboxRow] };
+        }
+        return { rows: [] };
+      });
+      const client = { query, release: vi.fn() };
+      const pool = { connect: vi.fn(async () => client) };
+      const repository = createManagedConversationRepository(
+        pool as unknown as pg.Pool,
+        { envelopeEncryptionProvider: provider }
+      );
+
+      await expect(
+        repository.completeManagedConversationCommand({
+          commandId: startCommandId,
+          leaseToken
+        })
+      ).resolves.toBe(true);
+      await expect(
+        repository.completeManagedConversationCommand({
+          commandId: startCommandId,
+          leaseToken
+        })
+      ).resolves.toBe(false);
+
+      expect(
+        query.mock.calls.filter(([sql]) =>
+          sql.includes("insert into managed_conversation_commands")
+        )
+      ).toHaveLength(1);
+      expect(childInsertParams?.[3]).toBe(
+        `managed-conversation-start-prompt:${startCommandId}`
+      );
+      expect(childInsertParams?.[4]).toBe(4);
+      expect(childInsertParams?.[6]).toBe(clientUserMessageId);
+      expect(childInsertParams?.[7]).toBe(2);
+      const childPayload = JSON.parse(
+        await decryptEnvelopeToUtf8(
+          provider,
+          childInsertParams?.[8] as EncryptedPayloadEnvelope
+        )
+      ) as Record<string, unknown>;
+      expect(childPayload).toMatchObject({
+        prompt: "Say hello",
         clientUserMessageId,
         settings: {
-          model: "claude-test",
-          reasoningEffort: null,
-          permissionMode: "supervised"
+          model: "claude-current",
+          reasoningEffort: "high",
+          permissionMode: "auto_edit"
         },
-        personalMemoryContext,
-        personalAgent,
-        personalAgentContext
-      }),
-      scope: {
-        tenantId: ownerUserId,
-        objectClass: "managed_conversation_prompt"
-      },
-      provenance: {
-        rowFamily: "managed_conversation_commands",
-        sourceId: startCommandId
-      },
-      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
-      aad: { ownerUserId, executionId, commandId: startCommandId }
-    });
-    let completed = false;
-    let childInsertParams: unknown[] | undefined;
-    const outboxRow = {
-      id: "outbox-id",
-      cursor: "1",
-      protocol_version: 1,
-      family: "managed_conversation_changed",
-      scope: "personal",
-      personal_owner_user_id: ownerUserId,
-      team_id: null,
-      team_workspace_id: null,
-      thread_id: null,
-      message_id: null,
-      share_grant_id: null,
-      logical_memory_id: null,
-      resource_type: "managed_conversation_execution",
-      resource_id: executionId,
-      actor_principal_id: ownerUserId,
-      mutation_id: "mutation-id",
-      occurred_at: new Date()
-    };
-    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("update managed_conversation_commands")) {
-        if (completed) return { rows: [] };
-        completed = true;
-        return {
-          rows: [
-            {
-              id: startCommandId,
-              owner_user_id: ownerUserId,
-              execution_id: executionId,
-              execution_generation: 2,
-              command_kind: "start",
-              encrypted_payload: encryptedPayload
-            }
-          ]
-        };
+        personalAgent: { ...startAgent, jobId: null, replayed: false },
+        personalAgentContext: {
+          schemaVersion: 1,
+          identity: {
+            agentId: personalAgent.agentId,
+            version: personalAgent.agentVersion,
+            identityVersionId: personalAgent.identityVersionId,
+            name: "Mira",
+            role: "Reviewer",
+            avatarReference: null
+          },
+          project: { projectId, name: "Orchard" }
+        }
+      });
+      expect(childPayload).not.toHaveProperty("personalMemoryContext");
+      expect(JSON.stringify(childPayload)).not.toContain("private-node-id");
+      expect(JSON.stringify(childPayload)).not.toContain(
+        "Legacy instructions are ignored"
+      );
+      expect(JSON.stringify(childPayload)).not.toContain(
+        "pendingTeamRequestId"
+      );
+      if (jobId === null && !privateTeamAgentReview) {
+        expect(nativePublicSquare.register).toHaveBeenCalledTimes(1);
+        expect(nativePublicSquare.register).toHaveBeenCalledWith(
+          client,
+          { userId: ownerUserId },
+          {
+            commandId: "child-command-id",
+            executionId,
+            executionGeneration: 2,
+            agentId: personalAgent.agentId,
+            agentVersion: personalAgent.agentVersion,
+            originalProjectId: projectId
+          }
+        );
+      } else {
+        expect(nativePublicSquare.register).not.toHaveBeenCalled();
       }
-      if (
-        sql.includes("from managed_conversation_executions") &&
-        sql.includes("for update")
-      ) {
-        return {
-          rows: [
-            {
-              execution_generation: 2,
-              state: "running",
-              model: "claude-current",
-              reasoning_effort: "high",
-              permission_mode: "auto_edit"
-            }
-          ]
-        };
-      }
-      if (sql.includes("coalesce(max(sequence)"))
-        return { rows: [{ sequence: 4 }] };
-      if (sql.includes("insert into managed_conversation_commands")) {
-        childInsertParams = params;
-        return { rows: [{ id: "child-command-id" }] };
-      }
-      if (sql.includes("insert into collaboration_outbox")) {
-        return { rows: [outboxRow] };
-      }
-      return { rows: [] };
-    });
-    const client = { query, release: vi.fn() };
-    const pool = { connect: vi.fn(async () => client) };
-    const repository = createManagedConversationRepository(
-      pool as unknown as pg.Pool,
-      { envelopeEncryptionProvider: provider }
-    );
-
-    await expect(
-      repository.completeManagedConversationCommand({
-        commandId: startCommandId,
-        leaseToken
-      })
-    ).resolves.toBe(true);
-    await expect(
-      repository.completeManagedConversationCommand({
-        commandId: startCommandId,
-        leaseToken
-      })
-    ).resolves.toBe(false);
-
-    expect(
-      query.mock.calls.filter(([sql]) =>
-        sql.includes("insert into managed_conversation_commands")
-      )
-    ).toHaveLength(1);
-    expect(childInsertParams?.[3]).toBe(
-      `managed-conversation-start-prompt:${startCommandId}`
-    );
-    expect(childInsertParams?.[4]).toBe(4);
-    expect(childInsertParams?.[6]).toBe(clientUserMessageId);
-    expect(childInsertParams?.[7]).toBe(2);
-    const childPayload = JSON.parse(
-      await decryptEnvelopeToUtf8(
-        provider,
-        childInsertParams?.[8] as EncryptedPayloadEnvelope
-      )
-    ) as Record<string, unknown>;
-    expect(childPayload).toMatchObject({
-      prompt: "Say hello",
-      clientUserMessageId,
-      settings: {
-        model: "claude-current",
-        reasoningEffort: "high",
-        permissionMode: "auto_edit"
-      },
-      personalAgent: { ...personalAgent, jobId: null, replayed: false },
-      personalAgentContext: {
-        schemaVersion: 1,
-        identity: {
-          agentId: personalAgent.agentId,
-          version: personalAgent.agentVersion,
-          identityVersionId: personalAgent.identityVersionId,
-          name: "Mira",
-          role: "Reviewer",
-          avatarReference: null
-        },
-        project: { projectId: null, name: null }
-      }
-    });
-    expect(childPayload).not.toHaveProperty("personalMemoryContext");
-    expect(JSON.stringify(childPayload)).not.toContain("private-node-id");
-    expect(JSON.stringify(childPayload)).not.toContain(
-      "Legacy instructions are ignored"
-    );
-    expect(JSON.stringify(childPayload)).not.toContain("pendingTeamRequestId");
-    expect(
-      query.mock.calls.some(([sql]) =>
-        /(?:insert\s+into|update|delete\s+from)\s+personal_agent_execution_(?:jobs|job_events|attempts)/iu.test(
-          sql as string
+      expect(
+        query.mock.calls.some(([sql]) =>
+          /(?:insert\s+into|update|delete\s+from)\s+personal_agent_execution_(?:jobs|job_events|attempts)/iu.test(
+            sql as string
+          )
         )
-      )
-    ).toBe(false);
-  });
+      ).toBe(false);
+    }
+  );
 
   it("does not dispatch the prompt when a pending start was canceled", async () => {
     const query = vi.fn(async () => ({ rows: [] }));

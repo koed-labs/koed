@@ -225,6 +225,7 @@ export {
   publicSquareListQuerySchema,
   publicSquarePageSchema,
   publicSquarePublicationSchema,
+  publicSquarePublicationSourceSchema,
   teamProjectMemberConnectionInputSchema,
   teamProjectMemberConnectionSchema
 } from "./public-square-contract.js";
@@ -233,6 +234,7 @@ export type {
   PublicSquareJobStatus,
   PublicSquarePage,
   PublicSquarePublication,
+  PublicSquarePublicationSource,
   TeamProjectMemberConnection
 } from "./public-square-contract.js";
 export {

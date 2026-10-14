@@ -47,6 +47,7 @@ import {
   type EncryptedFieldReference,
   type EncryptedFieldSourceTable
 } from "./encrypted-payload-repository.js";
+import { registerNativePublicSquareWorkWithClient } from "./native-public-square-repository.js";
 
 export type ManagedConversationExecutionState =
   | "starting"
@@ -1576,6 +1577,32 @@ const statusError = (
 ): Error & { statusCode: number } =>
   Object.assign(new Error(message), { statusCode });
 
+const nativePublicSquareWorkMayPublishWithClient = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  executionId: string
+): Promise<boolean> => {
+  const review = await client.query<{
+    status: string;
+    managed_execution_id: string | null;
+  }>(
+    `select status,managed_execution_id
+       from team_agent_requests
+      where owner_user_id=$1
+        and (review_execution_id=$2 or managed_execution_id=$2)
+      for share`,
+    [ownerUserId, executionId]
+  );
+  // A Conversation must have one unambiguous request binding. In particular,
+  // legacy accepted rows may have no review_execution_id, so check the
+  // managed_execution_id as well and fail closed if either side finds more
+  // than one row.
+  if (review.rows.length > 1) return false;
+  const row = review.rows[0];
+  if (!row) return true;
+  return row.status === "accepted" && row.managed_execution_id === executionId;
+};
+
 const validErrorCode = (value: string): boolean =>
   /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(value);
 
@@ -1753,6 +1780,7 @@ export const createManagedConversationRepository = (
     };
     personalAgentContext?: PersonalAgentExecutionContext;
     personalAgentChatContextText?: string | null;
+    privateTeamAgentReview?: boolean;
     serverPurpose?: "team_summary_draft";
     teamSummary?: { teamId: string; requestId: string; jobId?: string };
   }) =>
@@ -1782,6 +1810,9 @@ export const createManagedConversationRepository = (
           : {}),
         ...(input.personalAgentChatContextText
           ? { personalAgentChatContextText: input.personalAgentChatContextText }
+          : {}),
+        ...(input.privateTeamAgentReview
+          ? { privateTeamAgentReview: true }
           : {}),
         ...(input.serverPurpose === "team_summary_draft"
           ? {
@@ -3116,6 +3147,18 @@ export const createManagedConversationRepository = (
           encryptedPayload
         ]
       );
+      await registerNativePublicSquareWorkWithClient(
+        client,
+        { userId: input.ownerUserId },
+        {
+          commandId,
+          executionId: input.executionId,
+          executionGeneration: current.execution_generation,
+          agentId: input.agentId,
+          agentVersion: input.agentVersion,
+          originalProjectId: input.localProjectId
+        }
+      );
       await appendManagedConversationEvent(client, {
         ownerUserId: input.ownerUserId,
         executionId: input.executionId,
@@ -3595,6 +3638,9 @@ export const createManagedConversationRepository = (
                 : {}),
               ...(initialPersonalAgentContext
                 ? { personalAgentContext: initialPersonalAgentContext }
+                : {}),
+              ...(input.initialTeamAgentRequest
+                ? { privateTeamAgentReview: true }
                 : {}),
               settings: {
                 model: input.model,
@@ -4797,6 +4843,26 @@ export const createManagedConversationRepository = (
             input.personalAgentChatFence?.deliveryId ?? null
           ]
         );
+        if (
+          !input.serverPurpose &&
+          personalAgent &&
+          personalAgentContext &&
+          current.project_id &&
+          (await nativePublicSquareWorkMayPublishWithClient(
+            client,
+            actor.userId,
+            input.executionId
+          ))
+        ) {
+          await registerNativePublicSquareWorkWithClient(client, actor, {
+            commandId: result.rows[0]!.id,
+            executionId: input.executionId,
+            executionGeneration: input.executionGeneration,
+            agentId: personalAgent.agentId,
+            agentVersion: personalAgent.agentVersion,
+            originalProjectId: current.project_id
+          });
+        }
         if (personalChatDispatch && input.personalAgentChatFence) {
           await linkPersonalAgentChatChildWithClient(
             client,
@@ -7248,6 +7314,30 @@ export const createManagedConversationRepository = (
                     executionId: row.execution_id,
                     mutationId: `managed-conversation-command:${childCommandId}:queued`
                   });
+                  if (
+                    startAgent &&
+                    startAgent.jobId === null &&
+                    startAgentContext?.project.projectId &&
+                    startPayload?.privateTeamAgentReview !== true &&
+                    (await nativePublicSquareWorkMayPublishWithClient(
+                      client,
+                      row.owner_user_id,
+                      row.execution_id
+                    ))
+                  ) {
+                    await registerNativePublicSquareWorkWithClient(
+                      client,
+                      { userId: row.owner_user_id },
+                      {
+                        commandId: childCommandId,
+                        executionId: row.execution_id,
+                        executionGeneration: current.execution_generation,
+                        agentId: startAgent.agentId,
+                        agentVersion: startAgent.agentVersion,
+                        originalProjectId: startAgentContext.project.projectId
+                      }
+                    );
+                  }
                 }
                 await client.query(
                   `update managed_conversation_commands

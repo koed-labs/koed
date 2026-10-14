@@ -1607,6 +1607,88 @@ describe("collaboration HTTP routes", () => {
     await app.close();
   });
 
+  it("reads native Public Square activity with the authenticated viewer and bounded page", async () => {
+    const fixture = createCollaborationFixture();
+    const publicationId = randomUUID();
+    const listPublicSquare = vi.fn(
+      async (
+        actor: ActorContext,
+        input: { teamId: string; limit: number; cursor?: string }
+      ) =>
+        actor.userId === fixture.ids.bob && input.teamId === fixture.ids.teamA
+          ? {
+              teamId: input.teamId,
+              items: [
+                {
+                  id: publicationId,
+                  source: "native_command",
+                  jobId: null,
+                  agentId: randomUUID(),
+                  agentName: "Release helper",
+                  ownerId: fixture.ids.alice,
+                  ownerName: "Alice",
+                  projectId: randomUUID(),
+                  projectName: "Shared work",
+                  ownerExecutionId: null,
+                  status: "unknown",
+                  lastKnownStatus: "running",
+                  phase: null,
+                  phaseObservedAt: null,
+                  publishedAt: iso,
+                  startedAt: iso,
+                  updatedAt: iso,
+                  completedAt: null,
+                  lastSeenAt: iso,
+                  waitingOn: null,
+                  ownerLeftTeam: false,
+                  sharedBrief: null,
+                  version: 1,
+                  canEditBrief: false,
+                  canRemoveRetainedBrief: false
+                }
+              ],
+              idleAgents: [],
+              nextCursor: null,
+              serverTime: iso
+            }
+          : null
+    );
+    Object.assign(fixture.repository, { listPublicSquare });
+    const app = await buildTestServer(fixture);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/public-square?limit=7&cursor=current-page`,
+        headers: sessionHeaders(fixture.ids.bob)
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(listPublicSquare).toHaveBeenCalledWith(
+        { userId: fixture.ids.bob },
+        { teamId: fixture.ids.teamA, limit: 7, cursor: "current-page" }
+      );
+      const body = jsonBody<{
+        page: { items: Array<Record<string, unknown>> };
+      }>(response);
+      expect(body.page.items[0]).toMatchObject({
+        id: publicationId,
+        source: "native_command",
+        jobId: null,
+        status: "unknown",
+        ownerExecutionId: null,
+        sharedBrief: null
+      });
+      expect(body.page.items[0]).not.toHaveProperty("commandId");
+      const denied = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/${fixture.ids.teamB}/public-square`,
+        headers: sessionHeaders(fixture.ids.bob)
+      });
+      expect(denied.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("requires managed execution in addition to Team chat write for device acceptance", async () => {
     const fixture = createCollaborationFixture();
     const app = await buildTestServer(fixture);

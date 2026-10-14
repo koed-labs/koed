@@ -3063,6 +3063,7 @@ export const encryptedFieldPayloads = pgTable(
         'personal_agent_chat_deliveries',
         'personal_agent_execution_jobs',
         'personal_agent_team_job_publications',
+        'personal_agent_team_native_command_publications',
         'team_agent_offers',
         'team_agent_requests',
         'managed_conversation_recall_feedback',
@@ -9858,6 +9859,12 @@ export const publicSquareProjectConnections = pgTable(
       table.actorUserId,
       table.teamProjectId
     ),
+    unique("public_square_project_connections_id_owner_team_project_unique").on(
+      table.id,
+      table.actorUserId,
+      table.teamId,
+      table.teamProjectId
+    ),
     foreignKey({
       columns: [table.teamProjectId, table.teamId],
       foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
@@ -9915,7 +9922,9 @@ export const personalAgentTeamJobPublications = pgTable(
     lastKnownStatus: text("last_known_status"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
-    publishedAt: now(),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     updatedAt: updatedNow()
   },
   (table) => [
@@ -9931,6 +9940,160 @@ export const personalAgentTeamJobPublications = pgTable(
     index("personal_agent_team_job_publications_team_page_idx")
       .on(table.teamId, table.publishedAt.desc(), table.id.desc())
       .where(sql`${table.state} <> 'revoked'`)
+  ]
+);
+
+// Owner-side snapshot for native Agent prompt commands. This row is written at
+// the accepted prompt boundary even when the Project is private or has no Team
+// connection yet, so later Project sharing can publish only work that is still
+// active at that boundary without consulting mutable Conversation metadata.
+export const personalAgentNativePublicSquareWork = pgTable(
+  "personal_agent_native_public_square_work",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id").notNull(),
+    commandId: uuid("command_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    originalProjectId: text("original_project_id"),
+    createdAt: now()
+  },
+  (table) => [
+    unique("native_public_square_work_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("native_public_square_work_owner_command_unique").on(
+      table.ownerUserId,
+      table.commandId
+    ),
+    foreignKey({
+      columns: [table.executionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "native_public_square_work_owner_execution_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.commandId, table.executionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationCommands.id,
+        managedConversationCommands.executionId,
+        managedConversationCommands.ownerUserId
+      ],
+      name: "native_public_square_work_owner_command_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.agentId, table.agentVersion],
+      foreignColumns: [
+        personalAgentIdentityVersions.ownerUserId,
+        personalAgentIdentityVersions.agentId,
+        personalAgentIdentityVersions.version
+      ],
+      name: "native_public_square_work_agent_version_fk"
+    }).onDelete("restrict"),
+    index("native_public_square_work_project_idx").on(
+      table.ownerUserId,
+      table.originalProjectId,
+      table.createdAt.desc()
+    ),
+    check(
+      "native_public_square_work_generation_check",
+      sql`${table.executionGeneration} > 0 and ${table.agentVersion} > 0
+        and (${table.originalProjectId} is null or length(trim(${table.originalProjectId})) between 1 and 512)`
+    )
+  ]
+);
+
+export const personalAgentTeamNativeCommandPublications = pgTable(
+  "personal_agent_team_native_command_publications",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamProjectId: uuid("team_project_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    workId: uuid("work_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    state: text("state").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    ownerLeftTeam: boolean("owner_left_team").notNull().default(false),
+    frozenStatus: text("frozen_status"),
+    frozenLastKnownStatus: text("frozen_last_known_status"),
+    frozenUpdatedAt: timestamp("frozen_updated_at", { withTimezone: true }),
+    frozenStartedAt: timestamp("frozen_started_at", { withTimezone: true }),
+    frozenLastSeenAt: timestamp("frozen_last_seen_at", { withTimezone: true }),
+    frozenCompletedAt: timestamp("frozen_completed_at", { withTimezone: true }),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamProjectId, table.teamId],
+      foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
+      name: "native_publications_team_project_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.workId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentNativePublicSquareWork.id,
+        personalAgentNativePublicSquareWork.ownerUserId
+      ],
+      name: "native_publications_owner_work_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [
+        table.connectionId,
+        table.ownerUserId,
+        table.teamId,
+        table.teamProjectId
+      ],
+      foreignColumns: [
+        publicSquareProjectConnections.id,
+        publicSquareProjectConnections.actorUserId,
+        publicSquareProjectConnections.teamId,
+        publicSquareProjectConnections.teamProjectId
+      ],
+      name: "native_publications_connection_fk"
+    }).onDelete("restrict"),
+    unique("native_publications_connection_work_unique").on(
+      table.connectionId,
+      table.workId
+    ),
+    index("native_publications_team_page_idx")
+      .on(table.teamId, table.publishedAt.desc(), table.id.desc())
+      .where(sql`${table.state} <> 'revoked'`),
+    check(
+      "native_publications_state_check",
+      sql`${table.state} in ('active','frozen','revoked')
+        and (${table.state} <> 'active' or ${table.ownerLeftTeam} = false)
+        and (${table.state} <> 'frozen' or (${table.ownerLeftTeam} = true and ${table.frozenStatus} is not null and ${table.frozenUpdatedAt} is not null))`
+    ),
+    check(
+      "native_publications_frozen_status_check",
+      sql`${table.frozenStatus} is null or ${table.frozenStatus} in (
+        'queued','running','waiting','succeeded','failed','canceled',
+        'interrupted','offline','unknown'
+      )`
+    ),
+    check(
+      "native_publications_frozen_last_status_check",
+      sql`${table.frozenLastKnownStatus} is null or ${table.frozenLastKnownStatus} in (
+        'queued','running','waiting','succeeded','failed','canceled',
+        'interrupted','offline','unknown'
+      )`
+    ),
+    check("native_publications_version_check", sql`${table.version} > 0`)
   ]
 );
 

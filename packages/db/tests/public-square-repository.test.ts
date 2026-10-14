@@ -125,139 +125,6 @@ describeDb("Public Square repository", () => {
     return { executionId, jobId, agentId };
   };
 
-  const createRunnerAssignedJob = async (input: {
-    ownerId: string;
-    projectId: string | null;
-  }) => {
-    const agentId = randomUUID();
-    const identityVersionId = randomUUID();
-    const deploymentId = randomUUID();
-    const deviceId = randomUUID();
-    const runnerId = `publication-runner-${randomUUID()}`;
-    const leaseToken = randomUUID();
-    await pool.query(
-      `insert into personal_agent_identities
-         (id,owner_user_id,name,role,default_provider,default_model,current_version,
-          creation_request_id,creation_request_fingerprint)
-       values($1,$2,'PR Reviewer','Review pull requests','codex','test-model',1,$3,$4)`,
-      [agentId, input.ownerId, randomUUID(), "d".repeat(64)]
-    );
-    await pool.query(
-      `insert into personal_agent_identity_versions
-         (id,agent_id,owner_user_id,version,name,role,default_provider,
-          default_model,soul_instructions,instruction_source,created_by_user_id,
-          request_id,request_fingerprint)
-       values($1,$2,$3,1,'PR Reviewer','Review pull requests','codex',
-              'test-model','[koed encrypted personal agent soul]','custom',$3,$4,$5)`,
-      [identityVersionId, agentId, input.ownerId, randomUUID(), "e".repeat(64)]
-    );
-    const projectContext = input.projectId
-      ? { projectId: input.projectId, name: "Linked Project" }
-      : { projectId: null, name: null };
-    const personalAgentContext = {
-      schemaVersion: 1 as const,
-      identity: {
-        agentId,
-        version: 1,
-        identityVersionId,
-        name: "PR Reviewer",
-        role: "Review pull requests",
-        soulInstructions: "Find concrete risks."
-      },
-      project: projectContext,
-      activeJob: null,
-      pendingTeamRequestId: null,
-      memory: {
-        searchDomain: input.projectId ? "project" : "global",
-        evidence: []
-      }
-    };
-    const personalMemoryContext = {
-      schemaVersion: 1 as const,
-      status: "skipped" as const,
-      attributionNonce: randomUUID(),
-      searchDomain: input.projectId
-        ? ("project" as const)
-        : ("global" as const),
-      projectId: input.projectId,
-      evidence: []
-    };
-    const repository = createManagedConversationRepository(pool, {
-      envelopeEncryptionProvider: provider
-    });
-    const created = await repository.createManagedConversation(
-      actor(input.ownerId),
-      {
-        projectId: input.projectId,
-        contextKind: input.projectId ? "project" : "independent",
-        provider: "codex",
-        aiClientInstanceId: "codex.default",
-        model: "test-model",
-        permissionMode: "supervised",
-        runnerKind: "local_device",
-        runnerDeploymentId: deploymentId,
-        runnerDeviceId: deviceId,
-        idempotencyKey: randomUUID(),
-        initialPrompt: "Review this pull request.",
-        initialPromptClientUserMessageId: randomUUID(),
-        initialPersonalMemoryContext: personalMemoryContext,
-        initialAgentId: agentId,
-        initialExpectedAgentVersion: 1,
-        initialPersonalAgentContext: personalAgentContext
-      }
-    );
-    const [start] = await repository.claimManagedConversationCommands({
-      ownerUserId: input.ownerId,
-      runnerId,
-      deploymentId,
-      deviceId,
-      leaseMs: 60_000
-    });
-    if (!start?.leaseToken) throw new Error("Expected a claimed start command");
-    const running = await repository.bindManagedConversationRuntime(
-      actor(input.ownerId),
-      {
-        executionId: created.execution.id,
-        expectedStateVersion: created.execution.stateVersion,
-        executionGeneration: 1,
-        runnerId,
-        logicalSessionId: randomUUID(),
-        providerThreadId: randomUUID(),
-        providerCliVersion: "test"
-      }
-    );
-    await repository.completeManagedConversationCommand({
-      commandId: start.id,
-      leaseToken: start.leaseToken,
-      result: { started: true }
-    });
-    const [prompt] = await repository.claimManagedConversationCommands({
-      ownerUserId: input.ownerId,
-      runnerId,
-      deploymentId,
-      deviceId,
-      leaseMs: 60_000
-    });
-    if (!prompt?.leaseToken || prompt.commandKind !== "prompt") {
-      throw new Error("Expected a claimed Agent prompt");
-    }
-    const result = await repository.recordPersonalAgentIntentForManagedCommand(
-      actor(input.ownerId),
-      {
-        commandId: prompt.id,
-        executionId: running.id,
-        executionGeneration: 1,
-        leaseToken: prompt.leaseToken,
-        runnerId,
-        deviceId,
-        deploymentId,
-        providerTurnId: `codex-turn-${randomUUID()}`,
-        intent: { kind: "assign", goal: "Review the pull request" }
-      }
-    );
-    return { ...result, executionId: running.id };
-  };
-
   const createOffer = (teamId: string, ownerId: string, agentId: string) =>
     pool.query(
       `insert into team_agent_offers(team_id,owner_user_id,agent_id,enabled) values($1,$2,$3,true)`,
@@ -330,10 +197,8 @@ describeDb("Public Square repository", () => {
       actor(fixture.adminId),
       { teamId: fixture.teamId, limit: 50 }
     );
-    expect(terminal?.items[0]).toMatchObject({
-      status: "succeeded",
-      completedAt: expect.any(String)
-    });
+    expect(terminal?.items[0]).toMatchObject({ status: "succeeded" });
+    expect(typeof terminal?.items[0]?.completedAt).toBe("string");
 
     const departure = await pool.connect();
     const competing = await pool.connect();
@@ -423,11 +288,12 @@ describeDb("Public Square repository", () => {
     expect(retainedChannelHistory.rows[0]?.message_count).toBe(1);
   });
 
-  it("publishes a runner-created Job after an existing link and denies stale or missing authorization", async () => {
+  it("publishes connected legacy Jobs and hides work after owner access closes", async () => {
     const connected = await createFixture();
-    const linkedJob = await createRunnerAssignedJob({
+    const linkedJob = await insertJob({
       ownerId: connected.ownerId,
-      projectId: connected.localProjectId
+      localProjectId: connected.localProjectId,
+      state: "queued"
     });
     const listed = await publicSquare.listPublicSquare(
       actor(connected.adminId),
@@ -436,6 +302,7 @@ describeDb("Public Square repository", () => {
     expect(
       listed?.items.find((item) => item.jobId === linkedJob.jobId)
     ).toMatchObject({
+      source: "legacy_job",
       jobId: linkedJob.jobId,
       projectId: connected.project.id,
       status: "queued",
@@ -447,36 +314,35 @@ describeDb("Public Square repository", () => {
         where team_id=$1 and user_id=$2`,
       [connected.teamId, connected.ownerId]
     );
-    const disabledOwnerJob = await createRunnerAssignedJob({
+    const disabledOwnerJob = await insertJob({
       ownerId: connected.ownerId,
-      projectId: connected.localProjectId
+      localProjectId: connected.localProjectId,
+      state: "running"
     });
-    const disabledPublication = await pool.query<{ count: number }>(
-      `select count(*)::int as count from personal_agent_team_job_publications where job_id=$1`,
-      [disabledOwnerJob.jobId]
+    const afterDeparture = await publicSquare.listPublicSquare(
+      actor(connected.adminId),
+      { teamId: connected.teamId, limit: 50 }
     );
-    expect(disabledPublication.rows[0]?.count).toBe(0);
+    expect(
+      afterDeparture?.items.some(
+        (item) => item.jobId === disabledOwnerJob.jobId
+      )
+    ).toBe(false);
+    expect(
+      afterDeparture?.items.find((item) => item.jobId === linkedJob.jobId)
+    ).toMatchObject({ ownerLeftTeam: true, status: "queued" });
 
     const unconnected = await createFixture(false);
-    const unconnectedJob = await createRunnerAssignedJob({
+    const unconnectedJob = await insertJob({
       ownerId: unconnected.ownerId,
-      projectId: unconnected.localProjectId
+      localProjectId: unconnected.localProjectId,
+      state: "running"
     });
     const unconnectedPublication = await pool.query<{ count: number }>(
       `select count(*)::int as count from personal_agent_team_job_publications where job_id=$1`,
       [unconnectedJob.jobId]
     );
     expect(unconnectedPublication.rows[0]?.count).toBe(0);
-
-    const independentJob = await createRunnerAssignedJob({
-      ownerId: unconnected.ownerId,
-      projectId: null
-    });
-    const independentPublication = await pool.query<{ count: number }>(
-      `select count(*)::int as count from personal_agent_team_job_publications where job_id=$1`,
-      [independentJob.jobId]
-    );
-    expect(independentPublication.rows[0]?.count).toBe(0);
   });
 
   it("reports the first real attempt start and freezes it at owner departure", async () => {
@@ -607,227 +473,42 @@ describeDb("Public Square repository", () => {
     });
   });
 
-  it("fences live phase writes to the current attempt and preserves the frozen projection", async () => {
+  it("retires the native Agent Job intent and phase write protocols", async () => {
     const fixture = await createFixture();
     const managedRepository = createManagedConversationRepository(pool, {
       envelopeEncryptionProvider: provider
     });
-    const deploymentId = randomUUID();
-    const deviceId = randomUUID();
-    const runnerId = `phase-runner-${randomUUID()}`;
-    const actorForOwner = actor(fixture.ownerId);
-    const managed = await managedRepository.createManagedConversation(
-      actorForOwner,
-      {
-        provider: "codex",
-        aiClientInstanceId: "codex.default",
-        model: "test-model",
-        permissionMode: "supervised",
-        runnerKind: "local_device",
-        projectId: fixture.localProjectId,
-        runnerDeploymentId: deploymentId,
-        runnerDeviceId: deviceId,
-        idempotencyKey: randomUUID()
-      }
-    );
-    const [start] = await managedRepository.claimManagedConversationCommands({
-      ownerUserId: fixture.ownerId,
-      runnerId,
-      deploymentId,
-      deviceId,
-      leaseMs: 60_000
-    });
-    const running = await managedRepository.bindManagedConversationRuntime(
-      actorForOwner,
-      {
-        executionId: managed.execution.id,
-        expectedStateVersion: start!.execution.stateVersion,
-        executionGeneration: 1,
-        runnerId,
-        logicalSessionId: randomUUID(),
-        providerThreadId: randomUUID(),
-        providerCliVersion: "test"
-      }
-    );
-    await managedRepository.completeManagedConversationCommand({
-      commandId: start!.id,
-      leaseToken: start!.leaseToken!,
-      result: { started: true }
-    });
-    const prompt = await managedRepository.enqueueManagedConversationPrompt(
-      actorForOwner,
-      {
-        executionId: running.id,
-        executionGeneration: 1,
-        idempotencyKey: randomUUID(),
-        clientUserMessageId: randomUUID(),
-        prompt: "Run an assigned task"
-      }
-    );
-    const [claimedPrompt] =
-      await managedRepository.claimManagedConversationCommands({
-        ownerUserId: fixture.ownerId,
-        runnerId,
-        deploymentId,
-        deviceId,
-        leaseMs: 60_000
-      });
-    expect(claimedPrompt?.id).toBe(prompt.id);
-
-    const job = await insertJob({
-      ownerId: fixture.ownerId,
-      localProjectId: fixture.localProjectId,
-      state: "running",
-      executionId: running.id
-    });
-    const attemptId = randomUUID();
-    const startedAt = new Date();
-    await pool.query(
-      `update personal_agent_execution_jobs
-          set command_id=$2,last_attempt_id=$3,attempts_started=1
-        where id=$1`,
-      [job.jobId, prompt.id, attemptId]
-    );
-    await pool.query(
-      `insert into personal_agent_execution_attempts(
-        id,owner_user_id,job_id,command_id,attempt_number,attribution_kind,
-        agent_id,agent_version,provider,model,ai_client_instance_id,
-        permission_mode,managed_execution_id,managed_execution_generation,
-        status,started_at,phase,phase_observed_at
-      ) values($1,$2,$3,$4,1,'agent',$5,1,'codex','test-model','codex.default',
-        'supervised',$6,1,'running',$7,'working',$7)`,
-      [
-        attemptId,
-        fixture.ownerId,
-        job.jobId,
-        prompt.id,
-        job.agentId,
-        running.id,
-        startedAt
-      ]
-    );
-    await pool.query(
-      `insert into personal_agent_execution_job_events(
-        owner_user_id,job_id,sequence,event_id,execution_generation,event_type,payload,observed_at
-      ) values($1,$2,1,$3,1,'attempt_started',$4::jsonb,$5)`,
-      [
-        fixture.ownerId,
-        job.jobId,
-        `attempt:${attemptId}:started`,
-        JSON.stringify({ attemptId, attemptNumber: 1 }),
-        startedAt
-      ]
-    );
-    const encryptedPayload = await provider.encrypt({
-      plaintext: JSON.stringify({ personalAgent: { jobId: job.jobId } }),
-      scope: {
-        tenantId: fixture.ownerId,
-        objectClass: "managed_conversation_prompt"
-      },
-      provenance: {
-        rowFamily: "managed_conversation_commands",
-        sourceId: prompt.id
-      },
-      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
-      aad: {
-        ownerUserId: fixture.ownerId,
-        executionId: running.id,
-        commandId: prompt.id
-      }
-    });
-    await pool.query(
-      `update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1`,
-      [prompt.id, encryptedPayload]
-    );
+    const commandId = randomUUID();
     const signal = {
-      commandId: prompt.id,
-      executionId: running.id,
+      commandId,
+      executionId: randomUUID(),
       executionGeneration: 1,
-      leaseToken: claimedPrompt!.leaseToken!,
-      runnerId,
-      deviceId,
-      deploymentId,
-      providerTurnId: "codex-provider-turn-1",
-      attemptId,
-      phase: "checking" as const
+      leaseToken: randomUUID(),
+      runnerId: `phase-runner-${randomUUID()}`,
+      deviceId: randomUUID(),
+      deploymentId: randomUUID(),
+      providerTurnId: `turn-${randomUUID()}`,
+      attemptId: randomUUID()
     };
-    await managedRepository.recordPersonalAgentPhaseForManagedCommand(
-      actorForOwner,
-      signal
-    );
-    const phase = await pool.query<{
-      phase: string;
-      phase_observed_at: Date;
-      provider_turn_id: string | null;
-    }>(
-      `select phase,phase_observed_at,provider_turn_id
-         from personal_agent_execution_attempts where id=$1`,
-      [attemptId]
-    );
-    expect(phase.rows[0]).toMatchObject({
-      phase: "checking",
-      provider_turn_id: signal.providerTurnId
-    });
-    const adminPage = await publicSquare.listPublicSquare(
-      actor(fixture.adminId),
-      { teamId: fixture.teamId, limit: 50 }
-    );
-    expect(
-      adminPage?.items.find((item) => item.jobId === job.jobId)
-    ).toMatchObject({
-      phase: "checking",
-      phaseObservedAt: phase.rows[0]!.phase_observed_at.toISOString()
-    });
 
     await expect(
-      managedRepository.recordPersonalAgentPhaseForManagedCommand(
-        actor(fixture.adminId),
-        signal
+      managedRepository.recordPersonalAgentIntentForManagedCommand(
+        actor(fixture.ownerId),
+        { ...signal, intent: { kind: "assign", goal: "Run an assigned task" } }
       )
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).rejects.toMatchObject({ statusCode: 410 });
     await expect(
       managedRepository.recordPersonalAgentPhaseForManagedCommand(
-        actorForOwner,
-        { ...signal, executionGeneration: 2 }
-      )
-    ).rejects.toMatchObject({ statusCode: 409 });
-    await expect(
-      managedRepository.recordPersonalAgentPhaseForManagedCommand(
-        actorForOwner,
-        { ...signal, providerTurnId: "codex-provider-turn-2", phase: "working" }
-      )
-    ).rejects.toMatchObject({ statusCode: 409 });
-
-    await pool.query(
-      `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
-      [fixture.teamId, fixture.ownerId]
-    );
-    await managedRepository.recordPersonalAgentPhaseForManagedCommand(
-      actorForOwner,
-      { ...signal, phase: "working" }
-    );
-    const frozenPage = await publicSquare.listPublicSquare(
-      actor(fixture.adminId),
-      { teamId: fixture.teamId, limit: 50 }
-    );
-    expect(
-      frozenPage?.items.find((item) => item.jobId === job.jobId)
-    ).toMatchObject({
-      ownerLeftTeam: true,
-      phase: "checking",
-      phaseObservedAt: phase.rows[0]!.phase_observed_at.toISOString()
-    });
-
-    await pool.query(
-      `update managed_conversation_commands set lease_expires_at=now()-interval '1 second' where id=$1`,
-      [prompt.id]
-    );
-    await expect(
-      managedRepository.recordPersonalAgentPhaseForManagedCommand(
-        actorForOwner,
+        actor(fixture.ownerId),
         { ...signal, phase: "checking" }
       )
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).rejects.toMatchObject({ statusCode: 410 });
+
+    const jobs = await pool.query(
+      `select 1 from personal_agent_execution_jobs where owner_user_id=$1 and command_id=$2`,
+      [fixture.ownerId, commandId]
+    );
+    expect(jobs.rowCount).toBe(0);
   });
 
   it("identifies the owner only for actionable live waits", async () => {
@@ -1231,8 +912,8 @@ describeDb("Public Square repository", () => {
     });
     expect(page?.items[0]).toMatchObject({
       jobId: job.jobId,
-      status: "failed",
-      completedAt: expect.any(String)
+      status: "failed"
     });
+    expect(typeof page?.items[0]?.completedAt).toBe("string");
   });
 });

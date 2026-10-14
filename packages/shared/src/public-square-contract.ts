@@ -13,6 +13,7 @@ export const publicSquareLocalProjectIdSchema = z
   });
 
 export const publicSquareJobStatusSchema = z.enum([
+  "unknown",
   "queued",
   "running",
   "waiting",
@@ -24,10 +25,19 @@ export const publicSquareJobStatusSchema = z.enum([
 ]);
 export type PublicSquareJobStatus = z.infer<typeof publicSquareJobStatusSchema>;
 
+export const publicSquarePublicationSourceSchema = z.enum([
+  "legacy_job",
+  "native_command"
+]);
+export type PublicSquarePublicationSource = z.infer<
+  typeof publicSquarePublicationSourceSchema
+>;
+
 export const publicSquarePublicationSchema = z
   .object({
     id: uuid,
-    jobId: uuid,
+    source: publicSquarePublicationSourceSchema.default("legacy_job"),
+    jobId: uuid.nullable().default(null),
     agentId: uuid,
     agentName: z.string().trim().min(1).max(128),
     ownerId: uuid,
@@ -58,6 +68,15 @@ export const publicSquarePublicationSchema = z
     canEditBrief: z.boolean(),
     canRemoveRetainedBrief: z.boolean()
   })
+  .refine(
+    (publication) =>
+      publication.source === "legacy_job"
+        ? publication.jobId !== null
+        : publication.jobId === null,
+    {
+      message: "Legacy Job and native command publication identities differ"
+    }
+  )
   .strict();
 export type PublicSquarePublication = z.infer<
   typeof publicSquarePublicationSchema

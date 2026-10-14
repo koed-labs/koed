@@ -30,6 +30,7 @@ export type EncryptedFieldSourceTable =
   | "personal_agent_chat_deliveries"
   | "personal_agent_execution_jobs"
   | "personal_agent_team_job_publications"
+  | "personal_agent_team_native_command_publications"
   | "managed_conversation_recall_feedback"
   | "team_agent_offers"
   | "team_agent_requests"

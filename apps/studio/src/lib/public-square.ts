@@ -84,16 +84,31 @@ export const publicSquareStatusLabel = (status: string): string => {
     .toLowerCase()
     .replaceAll("_", " ")
     .replaceAll("-", " ");
-  if (!normalized) return "Status unavailable";
+  if (!normalized || normalized === "unknown") return "Status unavailable";
   return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
 };
+
+export const publicSquareIsTerminalStatus = (
+  status: string | null | undefined
+): boolean =>
+  status === "succeeded" ||
+  status === "failed" ||
+  status === "canceled" ||
+  status === "interrupted";
 
 export const publicSquareIsCurrent = (
   item: PublicSquarePublication
 ): boolean => {
   if (item.ownerLeftTeam) return false;
-  const status = item.status === "offline" ? item.lastKnownStatus : item.status;
-  return status === "queued" || status === "running" || status === "waiting";
+  const status = item.status as string;
+  if (status === "offline")
+    return !publicSquareIsTerminalStatus(item.lastKnownStatus as string | null);
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "waiting" ||
+    status === "unknown"
+  );
 };
 
 export const publicSquareSortGroups = (items: PublicSquarePublication[]) => {

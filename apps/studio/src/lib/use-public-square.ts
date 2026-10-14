@@ -8,6 +8,7 @@ import {
 } from "@/lib/public-square-client";
 import {
   publicSquareCurrentPages,
+  publicSquareIsCurrent,
   publicSquareProjectIdKey,
   publicSquareRequestMayApply,
   publicSquareScopeKey,
@@ -17,6 +18,7 @@ import {
   type PublicSquareScope,
   type TeamProjectMemberConnection
 } from "@/lib/public-square";
+import { useVisibleRefresh } from "@/lib/use-visible-refresh";
 
 type FeedState = "loading" | "ready" | "unavailable" | "access-lost";
 type Feed = {
@@ -52,6 +54,7 @@ export function usePublicSquare(input: {
   projects: PublicSquareProject[];
   localProjects: PublicSquareProject[];
   enabled?: boolean;
+  pollEnabled?: boolean;
   onAuthorizationLost?: () => void;
 }) {
   const {
@@ -60,6 +63,7 @@ export function usePublicSquare(input: {
     projects,
     localProjects,
     enabled = true,
+    pollEnabled = true,
     onAuthorizationLost
   } = input;
   const scopeKey = publicSquareScopeKey(scope);
@@ -75,6 +79,28 @@ export function usePublicSquare(input: {
   currentScopeKey.current = scopeKey;
   const [feed, setFeed] = useState<Feed>(() => emptyFeed(scopeKey));
   const visibleFeed = feed.scopeKey === scopeKey ? feed : emptyFeed(scopeKey);
+  const latestFeed = useRef(visibleFeed);
+  latestFeed.current = visibleFeed;
+  const pageReads = useRef(new Map<string, Promise<PublicSquarePage>>());
+  const readPage = useCallback(
+    (cursor: string | null = null) => {
+      const key = `${scopeKey}\u0000${cursor ?? ""}`;
+      const pending = pageReads.current.get(key);
+      if (pending) return pending;
+      const request = client
+        .list(scope.teamId, {
+          limit: 50,
+          ...(cursor ? { cursor } : {})
+        })
+        .finally(() => {
+          if (pageReads.current.get(key) === request)
+            pageReads.current.delete(key);
+        });
+      pageReads.current.set(key, request);
+      return request;
+    },
+    [client, scope.teamId, scopeKey]
+  );
   const mayApply = useCallback(
     (capturedScopeKey: string, capturedGeneration: number) =>
       publicSquareRequestMayApply({
@@ -117,7 +143,7 @@ export function usePublicSquare(input: {
     );
     try {
       const [firstPage, connectionEntries] = await Promise.all([
-        client.list(scope.teamId, { limit: 50 }),
+        readPage(),
         Promise.all(
           teamProjectIds.map(
             async (projectId) =>
@@ -134,7 +160,7 @@ export function usePublicSquare(input: {
           "Koed returned Public Square history for another Team."
         );
       const page = await publicSquareCurrentPages(firstPage, async (cursor) => {
-        const next = await client.list(scope.teamId, { limit: 50, cursor });
+        const next = await readPage(cursor);
         if (!mayApply(capturedScopeKey, capturedGeneration))
           throw new Error("Public Square selection changed.");
         return next;
@@ -174,8 +200,67 @@ export function usePublicSquare(input: {
     mayApply,
     scope.teamId,
     scopeKey,
+    readPage,
     teamProjectIds
   ]);
+
+  const refreshCurrentWork = useCallback(async () => {
+    const current = latestFeed.current;
+    if (
+      !enabled ||
+      current.scopeKey !== scopeKey ||
+      current.state !== "ready" ||
+      !current.items.some(publicSquareIsCurrent)
+    )
+      return false;
+    const capturedScopeKey = scopeKey;
+    const capturedGeneration = generation.current;
+    if (!mayApply(capturedScopeKey, capturedGeneration)) return false;
+    try {
+      const firstPage = await readPage();
+      if (!mayApply(capturedScopeKey, capturedGeneration)) return false;
+      if (firstPage.teamId !== scope.teamId)
+        throw new Error(
+          "Koed returned Public Square history for another Team."
+        );
+      const page = await publicSquareCurrentPages(firstPage, async (cursor) => {
+        const next = await readPage(cursor);
+        if (!mayApply(capturedScopeKey, capturedGeneration))
+          throw new Error("Public Square selection changed.");
+        return next;
+      });
+      if (!mayApply(capturedScopeKey, capturedGeneration)) return false;
+      setFeed((latest) =>
+        latest.scopeKey !== capturedScopeKey || latest.state !== "ready"
+          ? latest
+          : {
+              ...latest,
+              items: page.items,
+              idleAgents: page.idleAgents,
+              nextCursor: page.nextCursor,
+              serverTime: page.serverTime
+            }
+      );
+      return true;
+    } catch (failure) {
+      if (!mayApply(capturedScopeKey, capturedGeneration)) return false;
+      if (
+        failure instanceof PublicSquareRequestError &&
+        [401, 403].includes(failure.status)
+      ) {
+        loseAccess(capturedScopeKey, capturedGeneration);
+      }
+      return false;
+    }
+  }, [enabled, loseAccess, mayApply, readPage, scope.teamId, scopeKey]);
+
+  useVisibleRefresh(
+    refreshCurrentWork,
+    enabled &&
+      pollEnabled &&
+      visibleFeed.state === "ready" &&
+      visibleFeed.items.some(publicSquareIsCurrent)
+  );
 
   useEffect(() => {
     mounted.current = true;

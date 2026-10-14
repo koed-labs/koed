@@ -17,6 +17,7 @@ import {
   getCapturedSessionSummaryWithClient,
   type CapturedSessionSummaryRecord
 } from "./captured-session-repository.js";
+import { publishNativePublicSquareWorkForConnectionWithClient } from "./native-public-square-repository.js";
 import type { ActorContext } from "./types.js";
 
 const THREAD_NAME_MARKER = "[koed encrypted collaboration name]";
@@ -5296,6 +5297,16 @@ export const createCollaborationRepository = (
                 linked.rows[0]!.id,
                 input.localProjectId
               ]
+            );
+            await publishNativePublicSquareWorkForConnectionWithClient(
+              client,
+              actor,
+              {
+                teamId: input.teamId,
+                teamProjectId: projectId,
+                connectionId: linked.rows[0]!.id,
+                localProjectId: input.localProjectId
+              }
             );
           }
         }

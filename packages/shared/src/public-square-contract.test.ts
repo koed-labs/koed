@@ -3,6 +3,7 @@ import {
   publicSquareIdleAgentSchema,
   publicSquarePageSchema,
   publicSquarePublicationSchema,
+  publicSquarePublicationSourceSchema,
   teamProjectMemberConnectionInputSchema
 } from "./public-square-contract.js";
 
@@ -43,6 +44,8 @@ describe("Public Square contracts", () => {
       true
     );
     expect(publicSquarePublicationSchema.parse(safeCard)).toMatchObject({
+      source: "legacy_job",
+      jobId: ids.job,
       startedAt: null,
       waitingOn: null,
       phase: null,
@@ -64,6 +67,46 @@ describe("Public Square contracts", () => {
         }).success
       ).toBe(false);
     }
+  });
+
+  it("accepts native command activity without a legacy Job identifier", () => {
+    const nativeCommand = {
+      ...safeCard,
+      source: "native_command",
+      jobId: null,
+      status: "unknown",
+      lastKnownStatus: "running"
+    } as const;
+    expect(publicSquarePublicationSchema.safeParse(nativeCommand).success).toBe(
+      true
+    );
+    expect(publicSquarePublicationSchema.parse(nativeCommand)).toMatchObject({
+      source: "native_command",
+      jobId: null,
+      status: "unknown",
+      lastKnownStatus: "running"
+    });
+    expect(
+      publicSquarePublicationSourceSchema.safeParse("native_command").success
+    ).toBe(true);
+    expect(
+      publicSquarePublicationSchema.safeParse({
+        ...nativeCommand,
+        commandId: ids.job
+      }).success
+    ).toBe(false);
+    expect(
+      publicSquarePublicationSchema.safeParse({
+        ...nativeCommand,
+        jobId: ids.job
+      }).success
+    ).toBe(false);
+    expect(
+      publicSquarePublicationSchema.safeParse({
+        ...safeCard,
+        jobId: null
+      }).success
+    ).toBe(false);
   });
 
   it("requires the page Team scope and rejects malformed member Project IDs", () => {

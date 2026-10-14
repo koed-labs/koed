@@ -21,6 +21,7 @@ const publication = (
   overrides: Partial<PublicSquarePublication> = {}
 ): PublicSquarePublication => ({
   id: "publication-a",
+  source: "legacy_job",
   jobId: "job-a",
   agentId: "agent-a",
   agentName: "Review agent",
@@ -259,6 +260,32 @@ test("status labels normalize transport spellings without exposing raw output", 
   assert.equal(publicSquareStatusLabel("needs_input"), "Needs Input");
   assert.equal(publicSquareStatusLabel("in-progress"), "In Progress");
   assert.equal(publicSquareStatusLabel(""), "Status unavailable");
+  assert.equal(publicSquareStatusLabel("unknown"), "Status unavailable");
+});
+
+test("unknown and offline unknown work stay in current Team activity, never idle", () => {
+  assert.equal(
+    publicSquareIsCurrent(
+      publication({
+        source: "native_command",
+        jobId: null,
+        status: "unknown",
+        lastKnownStatus: "unknown"
+      })
+    ),
+    true
+  );
+  assert.equal(
+    publicSquareIsCurrent(
+      publication({
+        source: "native_command",
+        jobId: null,
+        status: "offline",
+        lastKnownStatus: "unknown"
+      })
+    ),
+    true
+  );
 });
 
 test("current work drains across pages while completed history remains paginated", async () => {

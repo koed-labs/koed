@@ -357,6 +357,7 @@ export function HostedTeamChannels({
     projects: squareProjects,
     localProjects,
     enabled: navigationReady,
+    pollEnabled: squareOpen && !forYouOpen,
     onAuthorizationLost
   });
   const teamAgentMentions = useTeamAgentMentions(

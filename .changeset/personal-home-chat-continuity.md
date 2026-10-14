@@ -39,3 +39,5 @@ Use native conversation execution and retained delivery records for new Agent wo
 Share local and hosted Personal recipient validation for model, reasoning, permissions and verified device selection. Keep the progress panel with native command activity, readable conversation summaries and labeled file diffs.
 
 Restore owner-approved Agent execution from Team channel requests through the existing native conversation and command lifecycle. Keep private review, durable request status, owner-only controls and explicit question/result sharing, while preserving legacy request history. Draft native request summaries from the exact accepted command rather than unrelated private follow-ups.
+
+Project native Agent activity into Public Square without creating another Job lifecycle. Preserve legacy history, owner-reviewed briefs for each Team, private conversation boundaries and honest queued, waiting, offline and uncertain states.

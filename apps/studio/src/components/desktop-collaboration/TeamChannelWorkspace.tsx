@@ -373,6 +373,7 @@ export function TeamChannelWorkspace({
     projects: squareProjects,
     localProjects,
     enabled: Boolean(snapshot && activeTeam),
+    pollEnabled: squareOpen && !forYouOpen,
     onAuthorizationLost: handleSquareAuthorizationLost
   });
   const teamAgentMentions = useTeamAgentMentions(

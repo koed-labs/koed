@@ -29,6 +29,7 @@ export function PublicSquarePreview() {
     .filter((agent) => agent.status !== "idle")
     .map((agent) => ({
       id: `preview:${agent.id}`,
+      source: "legacy_job",
       jobId: `preview:${agent.id}`,
       agentId: agent.definitionId,
       agentName: agent.name,
@@ -62,7 +63,8 @@ export function PublicSquarePreview() {
     <TeamShell heading="Public Square" wallpaper>
       <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
         <p className="mb-4 text-xs text-subtle">
-          Local preview examples · not connected to a Team backend
+          Local preview examples · sample legacy states only, not connected to a
+          Team backend.
         </p>
         <PublicSquareView
           teamName={activeTeam.name}
@@ -89,7 +91,7 @@ export function PublicSquarePreview() {
               </p>
               <p className="text-subtle">Details not shared</p>
               <p className="text-xs text-faint">
-                Connect Studio to a Team backend to use live Job controls.
+                Connect Studio to a Team backend to view published activity.
               </p>
             </div>
           )}

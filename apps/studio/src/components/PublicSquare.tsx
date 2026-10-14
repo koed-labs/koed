@@ -190,7 +190,9 @@ export function PublicSquare({
     if (!focusJobId || state !== "ready") return;
     if (focusLoad.current.jobId !== focusJobId)
       focusLoad.current = { jobId: focusJobId, pages: 0 };
-    const publication = visibleItems.find((item) => item.jobId === focusJobId);
+    const publication = visibleItems.find(
+      (item) => item.id === focusJobId || item.jobId === focusJobId
+    );
     if (!publication) {
       if (
         hasMore &&
@@ -213,7 +215,7 @@ export function PublicSquare({
     );
     const frame = window.requestAnimationFrame(() => {
       document
-        .getElementById(publicSquareJobAnchor(focusJobId))
+        .getElementById(publicSquarePublicationAnchor(publication.id))
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
@@ -275,15 +277,13 @@ export function PublicSquare({
   };
 
   const renderPublication = (item: PublicSquarePublication) => {
-    const ownerExecutionId =
-      (item as PublicSquarePublication & { ownerExecutionId?: string | null })
-        .ownerExecutionId ?? null;
+    const ownerExecutionId = item.ownerExecutionId;
     return (
       <div className="space-y-2">
         <PublicationCard
           key={item.id}
           item={item}
-          anchorId={publicSquareJobAnchor(item.jobId)}
+          anchorId={publicSquarePublicationAnchor(item.id)}
           brief={publicSquareVisibleBrief(item, withdrawnIds)}
           expanded={expandedIds.has(item.id)}
           draft={publicSquareBriefEditorValue(
@@ -596,7 +596,7 @@ function ProjectHeading({
       </span>
       <h2 className="text-sm font-medium text-foreground">{projectName}</h2>
       <span className="text-[11px] text-faint">
-        {count} {count === 1 ? "job" : "jobs"}
+        {count} {count === 1 ? "work item" : "work items"}
       </span>
       <div className="ml-auto flex min-w-0 items-center gap-2">
         {connectedProject && !selectedChanged && (
@@ -856,8 +856,8 @@ function PublicationCard({
   );
 }
 
-const publicSquareJobAnchor = (jobId: string): string =>
-  `public-square-job-${jobId}`;
+const publicSquarePublicationAnchor = (publicationId: string): string =>
+  `public-square-item-${publicationId}`;
 
 function StatusPanel({
   label,

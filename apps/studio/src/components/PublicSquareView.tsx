@@ -20,6 +20,10 @@ import {
   groupWaitingJobsByUser,
   shouldShowPublicSquareMap
 } from "@/lib/public-square-view";
+import {
+  publicSquareIsTerminalStatus,
+  publicSquareStatusLabel
+} from "@/lib/public-square";
 
 const ROOM_MIN_WIDTH = 280;
 const GAP = 16;
@@ -42,11 +46,12 @@ const SQUARE_CSS = `
 @keyframes ps-bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-2px) } }
 `;
 
-type Station = "working" | "checking" | "waiting";
+type Station = "working" | "checking" | "waiting" | "unknown";
 const STATIONS: { id: Station; label: string }[] = [
   { id: "working", label: "Working" },
   { id: "checking", label: "Checking" },
-  { id: "waiting", label: "Waiting / offline" }
+  { id: "waiting", label: "Waiting / offline" },
+  { id: "unknown", label: "Status unavailable" }
 ];
 
 type RoomFrame = {
@@ -63,7 +68,9 @@ function stationOf(zone: SquareZone): Station | null {
     ? zone
     : zone === "waiting" || zone === "offline"
       ? "waiting"
-      : null;
+      : zone === "unknown"
+        ? "unknown"
+        : null;
 }
 
 function layoutSquare(
@@ -99,6 +106,7 @@ function layoutSquare(
     const slots: { id: string; x: number; y: number }[] = [];
     for (const station of STATIONS) {
       const here = inRoom.filter((job) => stationOf(job.zone) === station.id);
+      if (station.id === "unknown" && here.length === 0) continue;
       labels.push({ ...station, count: here.length, y });
       y += LABEL;
       here.forEach((job, index) =>
@@ -184,19 +192,25 @@ function timeAgoLabel(value: string, asOf: number) {
 }
 
 function hasTerminalOutcome(item: PublicSquarePublication) {
-  const status = item.status === "offline" ? item.lastKnownStatus : item.status;
-  return (
-    status === "succeeded" ||
-    status === "failed" ||
-    status === "canceled" ||
-    status === "interrupted"
-  );
+  const status = publicSquareHistoryStatus(item);
+  return publicSquareIsTerminalStatus(status);
+}
+
+function publicSquareHistoryStatus(item: PublicSquarePublication) {
+  return item.status === "offline"
+    ? (item.lastKnownStatus ?? item.status)
+    : item.status;
 }
 
 function observedEvent(job: SquareJob, asOf: number | null) {
   if (asOf === null) return null;
   const item = job.publication;
-  if (item.status === "running" && item.phase && item.phaseObservedAt) {
+  if (
+    item.status === "running" &&
+    item.source === "legacy_job" &&
+    item.phase &&
+    item.phaseObservedAt
+  ) {
     return {
       id: item.id,
       at: Date.parse(item.phaseObservedAt),
@@ -211,7 +225,7 @@ function observedEvent(job: SquareJob, asOf: number | null) {
       at: Date.parse(item.startedAt),
       agentName: item.agentName,
       projectName: item.projectName,
-      phrase: "started a job"
+      phrase: "started work"
     };
   }
   if (item.status === "offline" && item.lastSeenAt) {
@@ -329,9 +343,9 @@ export function PublicSquareView({
           agentName: item.agentName,
           projectName: item.projectName,
           phrase:
-            item.status === "succeeded"
-              ? "finished a job"
-              : `Job ${item.status}`
+            publicSquareHistoryStatus(item) === "succeeded"
+              ? "finished work"
+              : `Work ${publicSquareStatusLabel(publicSquareHistoryStatus(item)).toLowerCase()}`
         }))
     ].sort((left, right) => right.at - left.at)[0] ?? null;
 
@@ -365,8 +379,14 @@ export function PublicSquareView({
 
   useEffect(() => {
     if (!focusJobId) return;
-    const job = jobs.find((entry) => entry.publication.jobId === focusJobId);
-    const past = historicalItems.find((entry) => entry.jobId === focusJobId);
+    const job = jobs.find(
+      (entry) =>
+        entry.publication.id === focusJobId ||
+        entry.publication.jobId === focusJobId
+    );
+    const past = historicalItems.find(
+      (entry) => entry.id === focusJobId || entry.jobId === focusJobId
+    );
     const target = job?.id ?? past?.id;
     if (target) {
       // The explicit focus target can arrive after the feed's current/history pages load.
@@ -383,23 +403,24 @@ export function PublicSquareView({
     <div className="mx-auto max-w-[1400px] px-2 pb-16 pt-4">
       <style>{SQUARE_CSS}</style>
       <div className="flex flex-wrap items-end gap-x-8 gap-y-4 rounded-2xl border border-border/80 bg-surface/40 px-5 py-4">
-        <Metric value={String(working.length)} label="working Jobs" />
-        <Metric value={String(count(["checking"]))} label="checking Jobs" />
+        <Metric value={String(working.length)} label="working" />
+        <Metric value={String(count(["checking"]))} label="checking" />
         <Metric
           value={String(
             jobs.filter((job) => job.publication.status === "waiting").length
           )}
-          label="waiting Jobs"
+          label="waiting"
         />
-        <Metric value={String(offline.length)} label="offline Jobs" />
+        <Metric value={String(offline.length)} label="offline" />
         <Metric
           value={String(
             jobs.filter((job) => job.publication.status === "queued").length
           )}
-          label="queued Jobs"
+          label="queued"
         />
+        <Metric value={String(count(["unknown"]))} label="status unavailable" />
         <p className="ml-auto self-center text-[11px] text-faint">
-          {jobs.length} {jobs.length === 1 ? "job" : "jobs"} across{" "}
+          {jobs.length} {jobs.length === 1 ? "work item" : "work items"} across{" "}
           {rooms.length} {rooms.length === 1 ? "project" : "projects"}
         </p>
       </div>
@@ -426,8 +447,8 @@ export function PublicSquareView({
         idleAgentCount: idleAgents.length
       }) ? (
         <div className="mt-5 rounded-xl border border-dashed border-border px-6 py-12 text-center text-sm text-subtle">
-          No shared work in {teamName} yet. Team-authorized Jobs will appear
-          here when an owner shares them.
+          No shared work in {teamName} yet. Team-authorized activity will appear
+          here as it is recorded.
         </div>
       ) : (
         <div className="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
@@ -470,7 +491,7 @@ export function PublicSquareView({
                               : { kind: "room", id: room.project.id }
                           )
                         }
-                        aria-label={`Show ${room.project.name} jobs`}
+                        aria-label={`Show ${room.project.name} work`}
                         className="flex h-16 w-full flex-col justify-center gap-1 rounded-t-2xl border-b border-border/60 px-3.5 text-left transition-colors hover:bg-surface-hover/40"
                       >
                         <span className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -480,15 +501,15 @@ export function PublicSquareView({
                           <span className="truncate">{room.project.name}</span>
                           <span className="ml-auto flex-shrink-0 text-xs font-normal text-subtle">
                             {jobsHere.length}{" "}
-                            {jobsHere.length === 1 ? "job" : "jobs"}
+                            {jobsHere.length === 1 ? "item" : "items"}
                           </span>
                         </span>
                         <span className="truncate text-xs text-subtle">
                           {roomLatest && asOf !== null
                             ? `${roomLatest.agentName} ${roomLatest.phrase} · ${timeAgoLabel(new Date(roomLatest.at).toISOString(), asOf)}`
                             : jobsHere.length
-                              ? `${jobsHere.length} active ${jobsHere.length === 1 ? "Job" : "Jobs"}`
-                              : "No active Jobs"}
+                              ? `${jobsHere.length} active ${jobsHere.length === 1 ? "item" : "items"}`
+                              : "No active work"}
                         </span>
                       </button>
                       {room.labels.map((label) => (
@@ -518,7 +539,7 @@ export function PublicSquareView({
                       type="button"
                       onClick={() => setSelection({ kind: "job", id: job.id })}
                       title={`${job.publication.agentName} · ${job.publication.ownerName} · ${job.statusLabel}`}
-                      aria-label={`${job.publication.agentName} Job, ${job.publication.ownerName}, ${job.statusLabel}`}
+                      aria-label={`${job.publication.agentName} work, ${job.publication.ownerName}, ${job.statusLabel}`}
                       className="ps-move absolute h-10 w-8"
                       style={{
                         left: position.x,
@@ -562,12 +583,11 @@ export function PublicSquareView({
                   style={{ top: layout.idleTop, height: layout.idleHeight }}
                 >
                   <span className="absolute left-3.5 top-3.5 text-[10px] font-medium uppercase tracking-wider text-faint">
-                    Idle Agents · {idleAgents.length}
+                    Available to this Team · {idleAgents.length}
                   </span>
                   {idleAgents.length === 0 && (
                     <span className="absolute left-3.5 top-9 text-xs text-subtle">
-                      No explicitly available Agents without an active Job in
-                      this Team.
+                      No active work in this Team.
                     </span>
                   )}
                 </div>
@@ -582,8 +602,8 @@ export function PublicSquareView({
                       key={id}
                       type="button"
                       onClick={() => setSelection({ kind: "idle", id })}
-                      title={`${agent.agentName} · ${agent.ownerName} · No active Job in this Team`}
-                      aria-label={`${agent.agentName}, ${agent.ownerName}, No active Job in this Team`}
+                      title={`${agent.agentName} · ${agent.ownerName} · No active work in this Team`}
+                      aria-label={`${agent.agentName}, ${agent.ownerName}, No active work in this Team`}
                       className="ps-move absolute h-10 w-8 opacity-55"
                       style={{ left: position.x, top: position.y }}
                     >
@@ -607,11 +627,11 @@ export function PublicSquareView({
 
             <section
               className="mt-4 rounded-2xl border border-border bg-surface/10 px-3.5 py-3"
-              aria-label="Finished Jobs"
+              aria-label="Work history"
             >
               <div className="mb-2.5 flex items-center justify-between gap-2">
                 <p className="text-[10px] font-medium uppercase tracking-wider text-faint">
-                  Finished · {terminalItems.length}
+                  History · {terminalItems.length}
                 </p>
                 {hasMore && (
                   <button
@@ -626,7 +646,8 @@ export function PublicSquareView({
               </div>
               {finishedItems.length === 0 ? (
                 <p className="text-xs text-subtle">
-                  Terminal Jobs collect here.
+                  Completed, failed, canceled, and interrupted work appears
+                  here.
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
@@ -635,8 +656,8 @@ export function PublicSquareView({
                       key={item.id}
                       type="button"
                       onClick={() => setSelection({ kind: "job", id: item.id })}
-                      title={`${item.agentName} · ${item.ownerName} · ${item.status}${item.ownerLeftTeam ? " · Owner left Team" : ""}`}
-                      aria-label={`Show ${item.agentName} terminal Job, ${item.status}${item.ownerLeftTeam ? ", owner left Team" : ""}`}
+                      title={`${item.agentName} · ${item.ownerName} · ${publicSquareStatusLabel(publicSquareHistoryStatus(item))}${item.ownerLeftTeam ? " · Owner left Team" : ""}`}
+                      aria-label={`Show ${item.agentName} work, ${publicSquareStatusLabel(publicSquareHistoryStatus(item))}${item.ownerLeftTeam ? ", owner left Team" : ""}`}
                       className={`h-3 w-3 rounded-[3px] ring-offset-2 ring-offset-background hover:ring-2 hover:ring-accent ${teamTone(item.ownerId).solid}`}
                     />
                   ))}
@@ -665,7 +686,11 @@ export function PublicSquareView({
                       <span className="min-w-0 flex-1 truncate text-foreground-secondary">
                         {item.agentName} · {item.projectName}
                       </span>
-                      <span className="text-faint">{item.status}</span>
+                      <span className="text-faint">
+                        {publicSquareStatusLabel(
+                          publicSquareHistoryStatus(item)
+                        )}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -688,8 +713,8 @@ export function PublicSquareView({
                 </span>
               ))}
               <span>
-                The dot under each avatar shows the Job owner. Click an avatar
-                or Project room for details.
+                The dot under each avatar shows who owns the work. Click an
+                avatar or Project room for details.
               </span>
             </div>
           </div>
@@ -703,7 +728,6 @@ export function PublicSquareView({
             ) : selectedJob ? (
               <JobPanel
                 job={selectedJob}
-                viewerId={viewerId}
                 asOf={asOf}
                 onBack={() => setSelection(null)}
               >
@@ -806,13 +830,11 @@ function PanelHeading({ children }: { children: ReactNode }) {
 
 function JobPanel({
   job,
-  viewerId,
   asOf,
   onBack,
   children
 }: {
   job: SquareJob;
-  viewerId: string;
   asOf: number | null;
   onBack: () => void;
   children: ReactNode;
@@ -822,11 +844,15 @@ function JobPanel({
     job.startedAt !== null && asOf !== null
       ? elapsedLabel(job.startedAt, asOf)
       : null;
+  const steps =
+    item.source === "legacy_job"
+      ? ["Started", "Working", "Checking", "Done"]
+      : ["Started", "Working", "Done"];
   const activeStep =
     item.status === "succeeded"
-      ? 4
+      ? steps.length - 1
       : job.zone === "checking"
-        ? 2
+        ? steps.indexOf("Checking")
         : item.startedAt
           ? 1
           : 0;
@@ -850,17 +876,17 @@ function JobPanel({
       </div>
       <p className={`text-sm ${statusClass(job)}`}>
         {job.zone === "offline"
-          ? `Offline · last seen ${item.lastSeenAt ? new Date(item.lastSeenAt).toLocaleString() : "unknown"} · last known ${item.lastKnownStatus ?? "state unavailable"}`
+          ? `Offline · last seen ${item.lastSeenAt ? new Date(item.lastSeenAt).toLocaleString() : "unknown"} · last known ${item.lastKnownStatus ? publicSquareStatusLabel(item.lastKnownStatus) : "state unavailable"}`
           : job.waitingOn
             ? job.waitingOnViewer
               ? "Waiting on you"
               : `Waiting on ${job.waitingOn.name}`
             : job.statusLabel}
       </p>
-      {item.startedAt && (
+      {item.startedAt && job.zone !== "unknown" && (
         <div className="space-y-1.5">
           <div className="flex gap-1">
-            {["Started", "Working", "Checking", "Done"].map((step, index) => (
+            {steps.map((step, index) => (
               <span
                 key={step}
                 className={`h-1 flex-1 rounded-full ${index < activeStep ? "bg-success/60" : index === activeStep && item.status !== "succeeded" ? (job.zone === "offline" ? "bg-faint" : job.zone === "waiting" ? "bg-warning" : "ps-now bg-success") : "bg-surface-hover"}`}
@@ -868,7 +894,7 @@ function JobPanel({
             ))}
           </div>
           <div className="flex justify-between text-[10px] text-faint">
-            {["Started", "Working", "Checking", "Done"].map((step) => (
+            {steps.map((step) => (
               <span key={step}>{step}</span>
             ))}
           </div>
@@ -876,8 +902,7 @@ function JobPanel({
       )}
       {job.zone !== "offline" && job.zone !== "idle" && (
         <div className="text-xs text-subtle">
-          Only {item.ownerId === viewerId ? "you" : item.ownerName} can steer or
-          stop this Job.
+          The private conversation for this work is available only to its owner.
         </div>
       )}
       {children}
@@ -939,7 +964,7 @@ function IdlePanel({
           <p className="mt-0.5 text-xs text-subtle">{agent.ownerName}</p>
         </div>
       </div>
-      <p className="text-sm text-muted">No active Job in this Team</p>
+      <p className="text-sm text-muted">No active work in this Team</p>
     </div>
   );
 }
@@ -969,12 +994,12 @@ function RoomPanel({
           {items.filter((job) => job.publication.status === "waiting").length}{" "}
           waiting · {countZone("offline")} offline ·{" "}
           {items.filter((job) => job.publication.status === "queued").length}{" "}
-          queued
+          queued · {countZone("unknown")} unknown
         </span>
       </div>
       {items.length === 0 ? (
         <p className="mt-3 text-sm text-subtle">
-          No Jobs are active in this Project.
+          No active work in this Project.
         </p>
       ) : (
         <div className="mt-2">
@@ -1041,7 +1066,7 @@ function Highlights({
         <span className="text-xs text-subtle">worth a look</span>
       </div>
       <p className="mt-1 text-xs text-subtle">
-        Routine steps stay on the map. This list only picks up Jobs that may
+        Routine steps stay on the map. This list only picks up work that may
         need attention.
       </p>
       <PanelHeading>Needs a person</PanelHeading>
@@ -1059,7 +1084,7 @@ function Highlights({
               <span className="min-w-0 flex-1 truncate text-foreground">
                 {waitingOnYou.length === 1
                   ? `${waitingOnYou[0]!.publication.agentName} needs you`
-                  : `${waitingOnYou.length} Jobs need you`}
+                  : `${waitingOnYou.length} work items need you`}
               </span>
               {onOpenInbox && (
                 <button
@@ -1079,8 +1104,9 @@ function Highlights({
             >
               <span className="h-2 w-2 flex-shrink-0 rounded-full bg-warning" />
               <span className="text-foreground-secondary">
-                {person.count} {person.count === 1 ? "Job is" : "Jobs are"}{" "}
-                waiting on {person.name}
+                {person.count}{" "}
+                {person.count === 1 ? "work item is" : "work items are"} waiting
+                on {person.name}
               </span>
             </div>
           ))}
@@ -1116,8 +1142,8 @@ function Highlights({
               <span className="min-w-0">
                 <span className="block text-sm text-foreground">
                   {item.status === "succeeded"
-                    ? "Job finished"
-                    : `Job ${item.status}`}
+                    ? "Work finished"
+                    : `Work ${publicSquareStatusLabel(item.status).toLowerCase()}`}
                 </span>
                 <span className="block text-xs text-subtle">
                   {item.agentName} · {item.ownerName} · {item.projectName}

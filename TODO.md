@@ -5,7 +5,7 @@ See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–
 ## Current open tickets
 
 The [separate Personal and Collaboration tables](docs/studio-ui-integration-plan.md) replace the earlier five-ticket count.
-There are 12 distinct open tickets. Nine contain implementation, rewiring or scope assessment. Three contain testing/release acceptance.
+There are 12 distinct open tickets. Eight contain implementation, rewiring or scope assessment. Four contain testing/release acceptance.
 
 | Area          | Open ticket IDs    | Count |
 | ------------- | ------------------ | ----- |
@@ -13,7 +13,7 @@ There are 12 distinct open tickets. Nine contain implementation, rewiring or sco
 | Collaboration | 12, 13, 15, 20, 27 | 5     |
 | Shared        | 03, 22, 29, 30     | 4     |
 
-Tickets 12, 16, 19 and 20 retain Job-based data dependencies. Ticket 13's native channel execution is implemented and focused automated checks pass; live provider and deployed Team acceptance remain open.
+Tickets 16, 19 and 20 retain Job-based data dependencies. Tickets 12 and 13 now use native Public Square publication and channel execution; focused automated checks pass, while live native/hosted and deployed Team acceptance remain open.
 Ticket 04 needs scope reconciliation before adding code. Existing human messaging remains implemented.
 Keep original acceptance records and explicit deferrals. Do not count superseded tickets or repeated tests twice.
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.

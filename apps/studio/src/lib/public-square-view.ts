@@ -9,6 +9,7 @@ export type SquareZone =
   | "checking"
   | "waiting"
   | "offline"
+  | "unknown"
   | "idle";
 
 export type SquareJob = {
@@ -60,39 +61,42 @@ export function toSquareJob(
   item: PublicSquarePublication,
   viewerId: string
 ): SquareJob {
-  const phase = "phase" in item ? item.phase : null;
+  const status = item.status as string;
+  const phase = item.source === "legacy_job" ? item.phase : null;
   const zone: SquareZone =
-    item.status === "offline"
+    status === "offline"
       ? "offline"
-      : item.status === "waiting" || item.status === "queued"
+      : status === "waiting" || status === "queued"
         ? "waiting"
-        : item.status === "running"
+        : status === "running"
           ? phase === "checking"
             ? "checking"
             : "working"
-          : "idle";
+          : "unknown";
   const statusLabel =
-    item.status === "offline"
+    status === "offline"
       ? "Offline"
-      : item.status === "queued"
+      : status === "queued"
         ? "Queued"
-        : item.status === "running"
+        : status === "running"
           ? zone === "checking"
             ? "Checking"
             : "Working"
-          : item.status === "waiting"
+          : status === "waiting"
             ? "Waiting"
-            : item.status === "succeeded"
+            : status === "succeeded"
               ? "Finished"
-              : item.status[0]!.toUpperCase() + item.status.slice(1);
+              : status === "unknown"
+                ? "Status unavailable"
+                : status[0]!.toUpperCase() + status.slice(1);
   return {
     publication: item,
     id: item.id,
     zone,
     statusLabel,
-    waitingOn: item.status === "waiting" ? item.waitingOn : null,
+    waitingOn: status === "waiting" ? item.waitingOn : null,
     waitingOnViewer:
-      item.status === "waiting" && item.waitingOn?.userId === viewerId,
+      status === "waiting" && item.waitingOn?.userId === viewerId,
     startedAt: item.startedAt ? Date.parse(item.startedAt) : null
   };
 }

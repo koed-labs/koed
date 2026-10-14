@@ -383,6 +383,12 @@ export {
   type PublicSquarePublicationRecord
 } from "./public-square-repository.js";
 export {
+  registerNativePublicSquareWorkWithClient,
+  publishNativePublicSquareWorkForConnectionWithClient,
+  type RegisterNativePublicSquareWorkInput,
+  type PublishNativePublicSquareWorkForConnectionInput
+} from "./native-public-square-repository.js";
+export {
   createTeamAgentRequestsRepository,
   TeamAgentRequestUnavailableError,
   TeamAgentRequestVersionConflictError,
