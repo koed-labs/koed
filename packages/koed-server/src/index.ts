@@ -173,3 +173,10 @@ export {
   parseDeviceRequestLink
 } from "./personal-device-request.js";
 export type { DeviceRequestView } from "./personal-device-request.js";
+
+export { createGitProjectProbe, probeGitProject } from "./git-project-probe.js";
+export type {
+  GitProjectProbeInput,
+  GitProjectProbeResult,
+  GitProjectProbeDeps
+} from "./git-project-probe.js";

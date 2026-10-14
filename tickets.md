@@ -1,0 +1,402 @@
+# Repo-Targeted Recall Implementation Tickets
+
+Approved implementation queue. Each ticket is ready for an agent once its listed blockers are complete.
+
+This single-file format follows the User's request. The source is the approved Repo-Targeted Recall plan and its review decisions. No external tracker is used.
+
+Baseline: `248fecaa` (14 October 2026). Use the existing submit-and-collect
+Memory Answer tools and semantic retrieval without a dedicated reranker.
+Ticket numbers, blockers, and milestone order remain unchanged.
+
+## Manual product milestones
+
+Prioritize these short previews so the User can try the product before the full
+cutover. Each preview takes roughly 3–5 minutes once the implementation agent
+prepares the build and sample data. These are optional feedback opportunities.
+They do not add tickets, formal acceptance gates, or another test suite.
+
+The agent supplies a runnable preview, the exact place to open or command to
+run, a sample question, and the expected result. Use an isolated demo profile
+with sample memory. Rehearse the flow first so the User spends their time trying
+the behavior. A missing second device or Team account does not block unrelated
+work. Record brief feedback and make small adjustments in the relevant ticket.
+
+### M1: Remember something and recall it from another checkout
+
+Complete tickets in this order: **01 → 02 → 03 → 08 → 09**.
+
+Try it: capture one distinctive project decision in a Codex Conversation. Ask
+for that decision from a subdirectory or another worktree, then open the Project
+in Desktop.
+
+Expected result: the answer recalls the decision with its source, and Desktop
+groups the sessions under the same Project while retaining their checkout paths.
+The agent demonstrates one non-blocking submission and explicit result collection,
+requesting citations at submission. The User can inspect Desktop while recall
+runs; the agent retains the task ID and collects with `wait=true` when needed.
+No polling commands or completion notifications need to be managed by the User.
+This is the first complete capture → recall → inspection loop. Claude Code, Pi,
+managed Conversations, historical imports, and sync are not needed for this preview.
+
+### M2: Change an assignment and judge the answers
+
+Next, complete **10 → 17**. Preview ticket 17 on a dependent branch while
+keeping its release after ticket 16.
+
+Try it: move one sample session to another Project and repeat its recall
+question. Open a prepared anchor-change preview to see the affected sessions.
+Then ask one Global question with sample decisions from two repositories.
+
+Expected result: the move changes which Project can recall the session. The
+review clearly shows what a bulk action would change. The Global answer favors
+similarly relevant current-repository evidence and identifies other Projects.
+The User can dismiss the bulk preview without applying it.
+Use the current semantic retrieval setup; no additional ranking model is needed.
+
+### M3: Use the same memory on another device
+
+Next, complete **11 → 12 → 13**.
+
+Try it: ask the M1 question from a clone on a second paired device. Inspect the
+selected anchor in Desktop. If useful, accept the prepared Project association
+and observe one shared anchor-selection update.
+
+Expected result: the same repository memory is available despite different
+paths. Shared configuration applies only to the accepted association. The
+implementation agent covers offline replay and conflict cases in ticket tests.
+
+### M4: Experience the Team flow
+
+Next, complete **14 → 15 → 18**. Preview ticket 18 with the dependent Global
+branch while retaining its release after ticket 16.
+
+Try it: use the prepared Team fixture to share one sample session and ask about
+it from the teammate's clone. Move the personal session, then use the explicit
+share-update action and repeat the question.
+
+Expected result: the teammate recalls the shared repository evidence. A personal
+move leaves the existing Team snapshot alone until the explicit share update.
+The Global answer labels repository context consistently with M2.
+
+### Complete the remaining coverage and release
+
+Finish **04 → 05 → 06 → 07 → 16**, then release the already-previewed Global
+work in **17 → 18**. Tickets 04–07 can proceed earlier whenever their blockers
+are complete, as long as they do not delay the first useful preview.
+
+Ticket 16 retains the complete integration checks and single Project cutover.
+The User does not need to rerun the automated matrix as a manual milestone.
+
+## Execution rules
+
+- Work on a ticket only after its listed blockers are complete. The current frontier is ticket 01. Follow the milestone order above for priority rather than numeric ticket order.
+- Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
+- Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
+- Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
+- Build early Global previews on a dependent branch and keep those commits separate from the Project cutover. Manual previews do not require merging incomplete behavior to main or adding feature flags.
+- Every behavior ticket includes the persistence, API, caller or UI, tests, and documentation needed to demonstrate its stated outcome. Do not create layer-only follow-up tickets for missing work.
+- Preserve the alpha decisions: no backward compatibility, feature flag, mixed-version support, database reset, or automatic historical backfill. Existing logical sessions remain unresolved until explicit User reassignment.
+- Preserve Workspace authorization and Share Grant boundaries throughout. Identity and Project association never grant access or choose a Workspace. Synthesis remains in the AI Client.
+- Reuse the existing durable task runtime, collection/cancellation tools, and evidence-selection repairs. Preserve the Supported Capture Hook; recall delivery does not use Stop-hook feedback.
+- The optional historical repair command stays deferred. It is not part of this implementation queue.
+- All tickets are approved and labeled ready-for-agent. A ticket with blockers still waits for their completion.
+
+## Verification scope
+
+- Acceptance criteria define outcomes, not a separate new test for every checkbox. Reuse shared fixtures and existing suites for identity, assignment, tasks, authorization, and evidence selection.
+- Test shared rules once, then use focused integration checks to prove each capture producer and retrieval path carries and enforces them. Do not repeat the entire identity matrix through every client or UI.
+- Keep the small ranking cases in the existing evaluation harness. No new benchmark framework, broad model/host matrix, or expanded runtime budgets are required.
+- Ticket 16 runs the relevant shared suites and representative integrated flows, with focused new checks for gaps. Preserve coverage for unresolved history, stale writes, sync conflicts, and unauthorized access.
+- The 3–5 minute manual milestones stay optional. Unrelated async and evidence follow-ups already tracked in the backlog are outside these tickets.
+
+## 01: Share Git discovery without changing behavior
+
+**What to build:** Project discovery uses one shared Git probe and persisted device salt, giving later work a single tested integration point.
+
+**Blocked by:** None (can start immediately).
+
+**Status:** complete
+
+- [x] Existing Project discovery and inspection return the same roots, remotes, aliases, branches, and local identities after extraction.
+- [x] Inject local configuration, filesystem and Git dependencies, and the persisted device salt instead of creating producer-specific state.
+- [x] Bound Git execution and cache results by local profile and checkout with a short TTL and configuration invalidation.
+- [x] Distinguish non-Git directories from probe failures and ambiguous results.
+- [x] Cover real fixture repositories, worktrees, repeated discovery, and failed Git execution with focused tests.
+- [x] Update architecture documentation for the shared discovery boundary. This behavior-preserving refactor can merge independently.
+
+**Validation:** Shared probe and metadata suites: 10 tests passed. Server typecheck, targeted ESLint, and formatting passed. The wider CLI suite has an unrelated doctor-output failure (50/51 pass); it does not exercise the extracted Git boundary.
+
+## 02: Select and inspect one repository anchor
+
+**What to build:** A User can inspect and edit a checkout's selected repository anchor and see a stable identity or an explicit unresolved result.
+
+**Blocked by:** 01: Share Git discovery without changing behavior.
+
+**Status:** ready-for-agent
+
+- [ ] Implement local explicit selection, associated replicated selection, portable upstream, portable origin, and device-local fallback in that order. Provide the typed input for replicated selections without inventing associations.
+- [ ] Normalize equivalent SSH and HTTPS addresses to one anchor. Remote names, extra remotes, and historical aliases never contribute additional matching values.
+- [ ] Return portable repository, device-local repository, non-Git Project, or unresolved identity with the root, branch observation, resolution reason, and provenance.
+- [ ] Expose anchor inspection and local editing through Project discovery and Desktop. Invalid explicit selections and conflicting URLs remain unresolved without fallback.
+- [ ] Use stable checkout identifiers with originating-device provenance. A path reused for another checkout must not inherit its identity or review history.
+- [ ] Test custom remote names, forks with and without the same anchor, duplicate URLs, non-Git Projects, and the A/B/C extra-remote counterexample.
+- [ ] Record the identity contract in an ADR and explicitly supersede conflicting alias-matching decisions while retaining Personal Device Sync privacy and Workspace authorization boundaries.
+
+## 03: Capture and inspect repository assignments for Codex sessions
+
+**What to build:** New Codex Captured Sessions receive inspectable repository assignments, while existing sessions retain a deliberate unresolved state through later capture.
+
+**Blocked by:** 02: Select and inspect one repository anchor.
+
+**Status:** ready-for-agent
+
+- [ ] Carry identity from the Codex Transcript Watcher and Supported Capture Hook through capture to owner session inspection.
+- [ ] Persist automatic and override identities, assignment versions, originating checkout/device provenance, and separate branch observations. Retain the original cwd and resolved Git root.
+- [ ] Use one effective assignment rule: a User override wins, otherwise the recorded automatic assignment applies. Resetting an override restores that recorded state.
+- [ ] Prepare and exercise the cutover transition that marks every existing logical session unresolved until explicitly reassigned. Activate it only in ticket 16.
+- [ ] Both capture upsert paths preserve assigned and historical-unresolved states during duplicate, delayed, conflicting, and continued capture.
+- [ ] Record conflicting observations for later review instead of unioning identities or silently replacing assignments. Re-ingestion must not create a new lineage to evade the unresolved state.
+- [ ] Demonstrate new capture and a continued pre-cutover Conversation through owner inspection. Add focused persistence and integration tests, indexes, and capture documentation.
+
+## 04: Capture Claude Code sessions with the same assignment rules
+
+**What to build:** Claude Code Conversations produce the same repository assignments and historical-session behavior as Codex.
+
+**Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Pass the shared resolver result through Claude Code transcript capture, the Transcript Watcher, and relevant Supported Capture Hook paths to session inspection.
+- [ ] Use the shared effective-assignment and conflict behavior rather than implementing a separate identity policy.
+- [ ] Demonstrate capture from a repository root and subdirectory, and from two worktrees with the same selected anchor.
+- [ ] Duplicate and reordered capture cannot replace an assignment, User override, or historical-unresolved state.
+- [ ] Test a continued pre-cutover Conversation and unavailable Git metadata.
+- [ ] Update Claude Code integration and ingestion documentation for the new behavior.
+
+## 05: Capture Pi sessions with the same assignment rules
+
+**What to build:** Pi Conversations carry repository context through capture and owner inspection without changing recorded assignments on later turns.
+
+**Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Integrate the shared identity contract into Pi transcript watching and applicable capture signals.
+- [ ] Demonstrate root, subdirectory, worktree, and non-Git capture through the shared capture boundary.
+- [ ] Preserve recorded identity and User overrides across duplicate, delayed, and conflicting observations.
+- [ ] Continuing an existing unresolved Pi session cannot resolve its old or new turns automatically.
+- [ ] Test unavailable Git metadata and preserve logical-session identity across re-ingestion.
+- [ ] Update the relevant Pi integration and ingestion documentation.
+
+## 06: Capture repository assignments for managed Conversations
+
+**What to build:** Desktop-managed Conversations retain the identity of their actual Project across start, capture, and owner inspection.
+
+**Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Pass the managed Conversation's Project and checkout context through each supported managed runtime to the shared capture contract.
+- [ ] Resolve the Conversation's target Project rather than the supervisor's or API process's cwd.
+- [ ] Retain non-Git and standalone Conversation Project behavior without assigning an unrelated repository.
+- [ ] Demonstrate a new managed Conversation, a worktree Conversation, and a continued unresolved Conversation.
+- [ ] Duplicate observations and runtime restarts preserve the same assignment and logical session.
+- [ ] Update managed Conversation integration documentation and add focused runtime-to-capture integration coverage using the shared assignment fixtures.
+
+## 07: Preserve assignments during historical imports
+
+**What to build:** Historical imports retain source provenance and cannot silently assign existing memory using today's checkout.
+
+**Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Apply the shared assignment contract to Codex, Claude Code, and Pi historical import producers.
+- [ ] Use trustworthy source-time metadata for eligible newly imported sessions. Current directory contents alone cannot establish historical identity.
+- [ ] Re-imports of an existing logical session preserve its unresolved state, assignment, or User override.
+- [ ] Missing paths, reused paths, ambiguous provenance, and same-path records from another device remain unresolved.
+- [ ] Demonstrate source-time assignment where supported and preservation of a continued or re-imported pre-cutover session.
+- [ ] Keep automatic backfill out of startup and upgrade flows. Document the limitations and add import regression tests.
+
+## 08: Recall Personal Memory by effective Project identity
+
+**What to build:** Memory Answer targets the requested repository across every Personal retrieval path while preserving explicit Project and Session requests.
+
+**Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Resolve and persist the target root, identity, branch observation, and resolution status before durable task acceptance. Carry that context through workers, API schemas, remote clients, search, source expansion, and graph browsing; retries reuse it.
+- [ ] Apply the same effective-assignment filter to raw evidence, Memory Nodes, Curated Memory, and replicated artifact retrieval.
+- [ ] Default Project scope resolves the caller's root. An explicit Project Y requested from repository X resolves Y only; unresolved targets report a resolution error without substituting X or Global scope.
+- [ ] Match selected identities by equality. Device-local and non-Git identities remain bound to their originating device.
+- [ ] Exclude unresolved sessions and honor overrides. Preserve Session scope, ownership, source eligibility, and all time bounds.
+- [ ] Use the same scope rules for blocking and non-blocking recall. Extend existing task tests to show that cwd, anchor, or branch changes and worker restart cannot retarget a pending task, and repeated authorized collection returns its stored result without another recall. Keep collection User-owned rather than cwd-bound.
+- [ ] Preserve complete observed source references, chunk identities, visibility, lineage, and evidence budgets when adding repository metadata. Keep current assignment and access checks; pinning request context does not snapshot Personal Memory.
+- [ ] Demonstrate repo X roots, worktrees, clones, and forks with a shared anchor matching while repo Y stays excluded, including search followed by expansion.
+- [ ] Audit every project predicate and document the retrieval surface and persisted task context. Reuse shared API/database fixtures to cover each distinct filter boundary without repeating the full scenario matrix.
+
+## 09: Group Desktop Projects and reassign individual sessions
+
+**What to build:** Desktop shows the same Project groups as recall, and a User can move or reset a session with immediate, predictable results.
+
+**Blocked by:** 08: Recall Personal Memory by effective Project identity.
+
+**Status:** ready-for-agent
+
+- [ ] Group by effective identity while retaining checkout paths for navigation and source provenance.
+- [ ] Keep unresolved history visible and inspectable without placing it in an inferred repository group.
+- [ ] Persist a single-session reassignment as a User override and increment its assignment version.
+- [ ] An override without a portable identity suppresses the original portable identity. Resetting an override restores the recorded automatic state, including historical unresolved state.
+- [ ] Demonstrate that grouping, recall, and source inspection agree before reassignment, after reassignment, and after reset.
+- [ ] Cover concurrent assignment updates and ownership boundaries. Update Desktop and Project assignment documentation.
+
+## 10: Review anchor changes and apply bounded bulk reassignment
+
+**What to build:** A User can review anchor changes or capture conflicts and reassign exactly the sessions they accepted.
+
+**Blocked by:** 09: Group Desktop Projects and reassign individual sessions.
+
+**Status:** ready-for-agent
+
+- [ ] Persist anchor-change and capture-conflict events with owner, originating device, stable checkout identifier, previous and target identities, and event revision.
+- [ ] Display a fixed session set with assignment versions and an exact count. By default include only that checkout's sessions with the previous automatic identity and no manual override.
+- [ ] Exclude unresolved history and manual overrides unless the User explicitly includes them. Show every override that will be replaced.
+- [ ] Recheck ownership, checkout, event revision, and every assignment version at execution. Reject the whole action if the review is stale.
+- [ ] Apply the accepted set atomically as User overrides and record completion so replay cannot apply it again. Never expand the reviewed set with later sessions.
+- [ ] Supersede stale A-to-B events after a B-to-C change. Dismissal changes no assignments, and a reused or same-path checkout cannot be included accidentally.
+- [ ] Test stale reviews, concurrent edits, explicitly included unresolved sessions, replay, and Desktop/recall agreement. Team snapshots remain unchanged.
+- [ ] Document the review, reassignment, and dismissal behavior.
+
+## 11: Preserve repository assignments across Personal Device Sync
+
+**What to build:** An authorized second Personal device recalls a synced session in the same repository context without exposing repository identity to the relay.
+
+**Blocked by:** 08: Recall Personal Memory by effective Project identity.
+
+**Status:** ready-for-agent
+
+- [ ] Derive the selected anchor's group-keyed token and carry assignment provenance through authenticated encrypted session and checkpoint transport.
+- [ ] Match in the verified group and key epoch while preserving separate local checkout identities.
+- [ ] Preserve effective assignments and historical-unresolved state across import, later checkpoints, replay, and continued source capture.
+- [ ] Keep device-local identities bound to the originating device and prevent same-path matches on another device.
+- [ ] Version affected wire semantics and update producers, consumers, and fixtures together without rewriting signed historical packages or adding legacy readers.
+- [ ] Demonstrate two-device capture, sync, Project recall, and owner inspection, including a session that remains unresolved after a later checkpoint.
+- [ ] Test authorization, key-epoch handling, duplicate delivery, and relay-visible privacy. Update the Personal Device Sync protocol and operational documentation.
+
+## 12: Associate Projects and sync anchor selection updates
+
+**What to build:** A User links local Projects and shares anchor selection changes or deletions with those associated checkouts, including offline devices.
+
+**Blocked by:** 02: Select and inspect one repository anchor.
+
+**Status:** ready-for-agent
+
+- [ ] Create stable Project association identifiers scoped to the User and Personal Device Group. Require local acceptance before an unassociated checkout uses a shared selection.
+- [ ] Provide Desktop association and selection controls. Ordinary clone recall can still match independently resolved equal anchors without a configuration association.
+- [ ] Transport separate encrypted, authenticated selection records bound to the association, stable selection identifier, authoring device, unique revision, and replaced revisions.
+- [ ] Deliver sequential set and delete operations independently of Conversation capture. Retain deletion records so offline delivery cannot restore a superseded selection.
+- [ ] Apply only the current selection of the associated Project. Require its anchor among current normalized remotes, tolerate duplicate URLs, and preserve local explicit precedence.
+- [ ] Deletion removes the replicated preference and resumes the normal detection order. Distinguish shared deletion from local anchor override removal; neither reassigns existing sessions.
+- [ ] Detect concurrent revisions and leave affected resolution unresolved rather than choosing arrival order. Ticket 13 supplies the User resolution flow.
+- [ ] Test quiet checkouts, offline replacement/deletion, replay, and the unrelated comparison-remote counterexample. Document association and selection lifecycle behavior.
+
+## 13: Resolve concurrent synced anchor selections
+
+**What to build:** Users can inspect and resolve conflicting anchor changes without losing edits or reviving deleted selections.
+
+**Blocked by:** 12: Associate Projects and sync anchor selection updates.
+
+**Status:** ready-for-agent
+
+- [ ] Show concurrent set/set and set/delete revisions for the same selection record in Desktop.
+- [ ] Keep an affected checkout unresolved while conflict remains, unless a local explicit selection takes precedence.
+- [ ] Let a User select an anchor or deletion through an operation that replaces all reviewed current conflict revisions.
+- [ ] Recheck the reviewed conflict state before resolution. A newly arrived competing revision must not be silently discarded.
+- [ ] Replicate the resolution so online and formerly offline devices converge without relying on wall clock or arrival order.
+- [ ] Re-creating a deleted selection requires an explicit revision replacing the deletion. Replays and superseded revisions have no new effect.
+- [ ] Demonstrate resolution across two devices without session capture or reassignment. Add offline/concurrent tests and user documentation.
+
+## 14: Share and recall Team Memory by Project snapshot
+
+**What to build:** A Team member recalls shared memory from the same repository despite different local checkout paths.
+
+**Blocked by:** 08: Recall Personal Memory by effective Project identity.
+
+**Status:** ready-for-agent
+
+- [ ] Snapshot the effective portable identity and permitted Project label when creating a Share Grant representation.
+- [ ] Snapshot unresolved classification when no portable identity exists. Never export the original automatic identity through a non-portable override.
+- [ ] Use the snapshot for Team search, expansion, and graph paths without requiring the sharer's local session row to establish repository identity.
+- [ ] Resolve caller or explicit-target context to a portable identity before accepting a Project task. Return a Project-resolution error for device-local or unresolved targets without falling back to local path equality or Global scope.
+- [ ] Keep persisted repository context separate from the selected Workspace/backend, Team Membership, Share Grants, and source access. Collection cannot retarget the task to another Workspace or Personal Memory. Apply authorization and time bounds to every path, and fresh access checks to result collection.
+- [ ] Use only the selected portable fingerprint for Team matching and document the accepted repository-name guessing exposure.
+- [ ] Use the Team fixture to demonstrate member A sharing repo X, member B asking from another clone of X, exclusion of repo Y, and denial of private or revoked sources. Extend existing task authorization coverage to deny a completed Project answer when access is revoked before collection.
+- [ ] Update Team sharing, retrieval, and integration documentation.
+
+## 15: Update Team Project snapshots only through explicit action
+
+**What to build:** Personal reassignment leaves existing Team snapshots unchanged until the owner explicitly updates the shared representation.
+
+**Blocked by:** 09: Group Desktop Projects and reassign individual sessions; 14: Share and recall Team Memory by Project snapshot.
+
+**Status:** ready-for-agent
+
+- [ ] Demonstrate that personal moves, resets, anchor edits, and new captures do not mutate an existing Team Project snapshot.
+- [ ] New shares use the current effective assignment, while an existing share retains its recorded assignment.
+- [ ] Provide an authorized explicit share-update action that snapshots the current effective portable identity or unresolved classification.
+- [ ] Recheck current owner authority, Share Grant state, and relevant assignment/representation revisions before committing the update.
+- [ ] Never expose the previous automatic repository when the current override has no portable identity.
+- [ ] Use the Team fixture to test overrides before sharing, after sharing, snapshot updates, revoked grants, private sources, and expansion boundaries.
+- [ ] Document the difference between Personal reassignment and Team snapshot update.
+
+## 16: Integrate and validate the Project recall cutover
+
+**What to build:** One coordinated alpha release enables the complete Project identity behavior with every existing session explicitly unresolved.
+
+**Blocked by:** 04: Capture Claude Code sessions with the same assignment rules; 05: Capture Pi sessions with the same assignment rules; 06: Capture repository assignments for managed Conversations; 07: Preserve assignments during historical imports; 10: Review anchor changes and apply bounded bulk reassignment; 11: Preserve repository assignments across Personal Device Sync; 13: Resolve concurrent synced anchor selections; 15: Update Team Project snapshots only through explicit action.
+
+**Status:** ready-for-agent
+
+- [ ] Integrate all preceding Project behavior tickets and audit every enabled capture, recall, expansion, graph, Desktop, Personal Device Sync, and Team surface.
+- [ ] Apply the cutover transition once to all existing logical sessions, including data captured after additive preparation but before activation. Preserve source memory, lineage, and retained provenance.
+- [ ] Prove that later turns, duplicate ingestion, imports, and received checkpoints cannot resolve a pre-cutover session. Explicit reassignment resolves it, and resetting that override restores unresolved state.
+- [ ] Remove transitional matching forms and temporary call paths. Merge no state to main with mixed old/new Project matching rules and introduce no feature flag or mixed-version support.
+- [ ] Run the shared contract suites, migration validation, representative Team and two-device sync flows, and applicable formatting, lint, typecheck, and build checks. Reuse earlier ticket coverage and add checks only for remaining integration gaps.
+- [ ] Verify blocking and submit-and-collect recall use the persisted repository context. Reuse task regressions for repeated reads, timeout/reconnect, cancellation, expiry, failure, and access denial; collect the same task after interrupted observation rather than resubmitting. Retain requested citations and evidence. No new task runtime or automatic completion delivery is required.
+- [ ] Verify that Global and Session recall and Desktop inspection still expose authorized unresolved history. No database reset or automatic historical repair is performed.
+- [ ] Complete the ADR, protocol, ingestion, retrieval, async/durable recall, configuration, integration, and Desktop documentation and record acceptance evidence. Preserve the reranker-free baseline and existing evidence-selection regressions.
+- [ ] Merge the integration branch as the single Project behavior cutover only after all blockers and acceptance criteria pass.
+
+## 17: Prefer relevant current-repository evidence in Personal Global recall
+
+**What to build:** Personal Global Memory Answer can find current-repository evidence that the global candidate limit would otherwise discard.
+
+**Blocked by:** 08: Recall Personal Memory by effective Project identity.
+
+**Status:** ready-for-agent
+
+- [ ] Retrieve bounded Global and current-repository candidate pools using the task's persisted context, with the same authorization, time bounds, source eligibility, and effective-assignment rules. Account for both passes within existing search, decrypt, candidate, and evidence budgets and reuse the query embedding where possible.
+- [ ] Merge by canonical source identity before final ranking and truncation. Preserve complete observed references, chunk identities, visibility, lineage, and Project provenance. Retain distinct selected parent summaries alongside partial children within existing evidence-budget rules; shared lineage is not independent corroboration.
+- [ ] Apply a bounded repository preference through the existing semantic score and candidate-fusion pipeline, with a smaller branch preference only when repository and known branch match. Define the scale and placement, preserve relevance thresholds, and prevent overlap between pools from giving an unintended double boost. No reranker model or service is introduced.
+- [ ] Return current, other, or unknown Project classification and an authorized label. Unresolved caller context and mixed or incomparable evidence receive no current-repository preference.
+- [ ] Have the AI Client identify other Projects and preserve unknown provenance in answers. Retain AI Client synthesis.
+- [ ] Extend existing deterministic tests/evaluations for candidate recovery beyond the Global pool limit, equal relevance, clearly better other-repository evidence, and overlap between pools. Compare with the current semantic retrieval baseline; reuse evidence-selection regressions rather than adding another harness.
+- [ ] Test that shared branch names alone give no cross-repository preference and that historical-unresolved evidence remains unknown.
+- [ ] Document limits and behavior. This ticket can be developed after its blocker, but its release follows ticket 16.
+
+## 18: Apply Global repository preferences to Team Memory
+
+**What to build:** Team Global Memory Answer uses authorized Project snapshots to improve relevance and label evidence without weakening Team access rules.
+
+**Blocked by:** 14: Share and recall Team Memory by Project snapshot; 17: Prefer relevant current-repository evidence in Personal Global recall.
+
+**Status:** ready-for-agent
+
+- [ ] Retrieve bounded Team Global and current-repository candidates from the selected Workspace and authorized Share Grants using the same time and source rules.
+- [ ] Classify evidence from the Team snapshot rather than the owner's current personal assignment.
+- [ ] Reuse the persisted request context, result classifications, prompt behavior, candidate limits, budgets, evidence-merge rules, and semantic ranking contract established for Personal Global recall.
+- [ ] Apply a branch preference only when a matching branch observation is known and authorized. Missing or incomparable metadata gives no preference.
+- [ ] Use the Team fixture to prove private and revoked sources remain absent from both pools and all expansions.
+- [ ] Run the shared ranking cases against Team fixtures for equal relevance, candidate recovery, clearly better other-repository evidence, pool overlap, and unknown snapshots. Add only Team-specific snapshot and authorization assertions.
+- [ ] Update Team retrieval and integration documentation. Release only after the Project cutover in ticket 16.

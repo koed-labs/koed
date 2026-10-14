@@ -12,12 +12,16 @@ import {
   deriveLocalProjectId,
   hmacProjectValue,
   mergeGitRemoteAliases,
-  normalizeGitRemoteUrl,
   normalizeProjectDisplayName,
   type NormalizedGitRemote,
   type ProjectMetadataV1,
   type ProjectPackageMetadata
 } from "@koed/shared";
+import {
+  createGitProjectProbe,
+  probeGitProject,
+  type GitProjectProbeResult
+} from "./git-project-probe.js";
 import type { KoedServerPaths } from "./paths.js";
 
 export interface ProjectMetadataStore {
@@ -33,6 +37,7 @@ export interface ProjectMetadataResult {
   message: string;
   project?: ProjectMetadataV1;
   projects?: ProjectMetadataV1[];
+  gitProbe?: Pick<GitProjectProbeResult, "status" | "failedCommands">;
 }
 
 export interface ProjectMetadataDeps {
@@ -44,6 +49,7 @@ export interface ProjectMetadataDeps {
   execFile?: typeof nodeExecFile;
   now?: () => Date;
   randomId?: () => string;
+  probeGit?: typeof probeGitProject;
 }
 
 const depsWithDefaults = (
@@ -56,7 +62,12 @@ const depsWithDefaults = (
   mkdirSync: deps.mkdirSync ?? mkdirSync,
   execFile: deps.execFile ?? nodeExecFile,
   now: deps.now ?? (() => new Date()),
-  randomId: deps.randomId ?? randomUUID
+  randomId: deps.randomId ?? randomUUID,
+  probeGit:
+    deps.probeGit ??
+    (deps.execFile
+      ? createGitProjectProbe({ execFile: deps.execFile })
+      : probeGitProject)
 });
 
 const defaultStore = (
@@ -94,7 +105,10 @@ const readStore = (
             .map(normalizeProjectMetadata)
         : []
     };
-    if (parsed.schemaVersion !== 3) {
+    if (
+      parsed.schemaVersion !== 3 ||
+      parsed.deviceSaltId !== store.deviceSaltId
+    ) {
       writeStore(paths, store, deps);
     }
     return store;
@@ -184,47 +198,6 @@ const normalizeProjectMetadata = (
   };
 };
 
-const git = async (
-  cwd: string,
-  args: string[],
-  deps: Required<ProjectMetadataDeps>
-): Promise<string | null> =>
-  await new Promise((resolveValue) => {
-    deps.execFile(
-      "git",
-      ["-C", cwd, ...args],
-      { timeout: 5_000 },
-      (error, stdout) => {
-        if (error) {
-          resolveValue(null);
-          return;
-        }
-        resolveValue(String(stdout).trim() || null);
-      }
-    );
-  });
-
-const readGitRemotes = async (
-  cwd: string,
-  deps: Required<ProjectMetadataDeps>
-): Promise<NormalizedGitRemote[]> => {
-  const raw = await git(cwd, ["remote", "-v"], deps);
-  if (!raw) return [];
-  const byNameAndUrl = new Map<string, NormalizedGitRemote>();
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
-    if (!match) continue;
-    const [, name, url] = match;
-    if (!name || !url) continue;
-    byNameAndUrl.set(`${name}\n${url}`, normalizeGitRemoteUrl(url, name));
-  }
-  return [...byNameAndUrl.values()].sort((left, right) =>
-    `${left.name}:${left.fingerprint}`.localeCompare(
-      `${right.name}:${right.fingerprint}`
-    )
-  );
-};
-
 const readPackageName = (
   packageJsonPath: string,
   deps: Required<ProjectMetadataDeps>
@@ -278,11 +251,19 @@ export const discoverProjectMetadata = async (
 ): Promise<ProjectMetadataResult> => {
   const deps = depsWithDefaults(depsInput);
   const store = readStore(paths, deps);
+  // Persist the profile salt before yielding to Git, so simultaneous producers
+  // do not invent independent local identities on first discovery.
+  if (!deps.existsSync(paths.projectMetadataPath))
+    writeStore(paths, store, deps);
   const now = deps.now().toISOString();
   const cwd = resolve(input.cwd);
-  const projectRoot = await git(cwd, ["rev-parse", "--show-toplevel"], deps);
-  const gitRoot = projectRoot ? resolve(projectRoot) : null;
-  const remotes = gitRoot ? await readGitRemotes(gitRoot, deps) : [];
+  const observation = await deps.probeGit({
+    profile: paths.projectMetadataPath,
+    cwd,
+    deviceSalt: store.deviceSaltId
+  });
+  const gitRoot = observation.root;
+  const remotes = observation.remotes;
   const packages = discoverPackages(gitRoot, cwd, deps);
   const localProjectId = deriveLocalProjectId({
     salt: store.deviceSaltId,
@@ -297,21 +278,12 @@ export const discoverProjectMetadata = async (
     previousProject?.git?.remotes ?? [],
     remotes
   );
-  const branch = gitRoot
-    ? await git(gitRoot, ["branch", "--show-current"], deps)
-    : null;
-  const headCommit = gitRoot
-    ? await git(gitRoot, ["rev-parse", "HEAD"], deps)
-    : null;
-  const commonDir = gitRoot
-    ? await git(gitRoot, ["rev-parse", "--git-common-dir"], deps)
-    : null;
-  const gitDir = gitRoot
-    ? await git(gitRoot, ["rev-parse", "--git-dir"], deps)
-    : null;
-  const resolvedCommonDir =
-    gitRoot && commonDir ? resolve(gitRoot, commonDir) : null;
-  const resolvedGitDir = gitRoot && gitDir ? resolve(gitRoot, gitDir) : null;
+  const {
+    branch,
+    headCommit,
+    commonDir: resolvedCommonDir,
+    gitDir: resolvedGitDir
+  } = observation;
   const isWorktree = Boolean(
     resolvedCommonDir && resolvedGitDir && resolvedCommonDir !== resolvedGitDir
   );
@@ -373,6 +345,10 @@ export const discoverProjectMetadata = async (
     ok: true,
     state: "discovered",
     message: "Project metadata discovered.",
+    gitProbe: {
+      status: observation.status,
+      failedCommands: observation.failedCommands
+    },
     project
   };
 };
