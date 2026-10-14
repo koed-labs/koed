@@ -936,7 +936,9 @@ export function App({
     if (statusReadyOverride !== undefined || desktopHealthIsReady) return;
     const interval = window.setInterval(
       () => void activeStatusStore.refresh(),
-      1_500
+      // Full diagnostics share the AI Client control quota with startup and
+      // background work. Status events still trigger an immediate refresh.
+      5_000
     );
     return () => window.clearInterval(interval);
   }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);

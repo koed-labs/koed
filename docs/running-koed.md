@@ -331,6 +331,12 @@ node packages/koed-server/dist/cli.js stop --json
 node packages/koed-server/dist/cli.js restart --json
 ```
 
+Desktop's unready health indicator refreshes full diagnostics every five seconds,
+then stops periodic refreshes once healthy. Status events still refresh immediately.
+Full diagnostics validate API access and AI Client configuration, so their polling
+must leave room in the shared control quota for startup, setup and background work.
+The API's rate-limit protections are unchanged.
+
 `status --startup --json` is the bounded machine-readable readiness contract
 used by the supervisor and Desktop while local services start. It reads managed
 runtime ownership and process IDs, parses the API `/ready` checks, probes live
