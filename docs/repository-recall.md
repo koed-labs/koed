@@ -155,3 +155,47 @@ three synthetic encryption providers, stages a recorded Personal repository iden
 applies/resets a fixed review, and compares materialized Team families and decrypted
 representations. It also repeats the fixture's positive and negative access validation.
 It does not replace the later Team Project snapshot or staged release gates.
+
+## Personal Global Repository Preference
+
+Ticket 17 is developed on a dependent branch and releases after ticket 16. The
+local adapter pins Global caller context before task acceptance. The encrypted
+request stores the resolved identity or explicit `null` when discovery fails.
+Retries preserve that value and never infer context from the worker directory.
+Global recall continues to search all authorized Personal Memory.
+
+Each semantic stage partitions its existing candidate cap: one quarter (rounded
+down, at least one when the cap exceeds one) retrieves current-repository
+candidates; the remainder retrieves Global candidates. Both pools share one query
+embedding, SQL snapshot, authorization, source eligibility and time bounds. The
+combined pre-hydration rows cannot exceed the previous stage cap. Canonical source
+identity merges overlapping rows before hydration and decryption. Both passes count
+against the existing search budget; when only one pass remains, retrieval uses the
+Global pool alone. Unknown caller context also uses the Global pool alone.
+
+After the existing semantic threshold, stage weights and exact-anchor fusion,
+current-repository evidence receives `0.04`; a known matching branch adds `0.01`.
+These fixed additions apply once per canonical candidate, regardless of pool overlap.
+They can prefer similarly relevant evidence but do not remove stronger evidence
+from other Projects. A shared branch name in another repository adds nothing.
+Branch provenance comes from consistent capture observations, never an override's
+chosen target branch. Mixed, unresolved, or device-incomparable evidence adds nothing.
+
+Evidence carries `current`, `other` or `unknown` classification, authorized Project
+labels, and source Session lineage. Mixed summaries preserve their individual
+Project labels while their overall classification remains unknown. Full observed
+references retain chunk identities, counts, stages, generations and parent lineage.
+Assignment provenance distinguishes a manual User override from the automatic
+assignment and retains the captured Project label separately from the effective
+label. An AI Client must not reinterpret a deliberate move as misclassification
+or a conflict just because retained source text still names the captured Project.
+Distinct selected parent summaries and partial children remain subject to the
+existing evidence budget. The AI Client identifies other Projects, preserves unknown
+provenance, and treats shared history as one underlying source rather than independent
+corroboration. No reranker, model service, or backend synthesis is introduced.
+
+Deterministic PostgreSQL vectors compare the baseline Global pool with candidate
+recovery, stronger foreign evidence, overlapping pools, historical unknown evidence,
+owner isolation and mixed summary lineage. Existing worker evidence-selection
+regressions cover parent summaries and partial children. Durable task tests verify
+known and unknown Global context through encrypted worker replacement.

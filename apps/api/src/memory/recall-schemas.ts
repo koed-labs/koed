@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { memoryRetrievalExactHintsSchema } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  memoryRetrievalExactHintsSchema
+} from "@koed/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import {
   retrievalScopeSchema,
@@ -13,6 +16,8 @@ export const searchMemorySchema = z
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     project_id: z.string().min(1).optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
+    max_search_passes: z.union([z.literal(1), z.literal(2)]).optional(),
     team_workspace_id: z.string().uuid().optional(),
     authorization_boundary: z.string().min(1).max(32768).optional(),
     exact_hints: memoryRetrievalExactHintsSchema.optional(),

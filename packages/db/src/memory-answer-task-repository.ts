@@ -1,4 +1,8 @@
-import { repositoryRecallContextSchema, repositoryScopeId } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  repositoryRecallContextSchema,
+  repositoryScopeId
+} from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type pg from "pg";
@@ -452,6 +456,14 @@ export const createMemoryAnswerTaskRepository = (
             throw new Error(
               "Project task target must match its pinned repository context"
             );
+        }
+        if (!input.teamWorkspaceId && snapshot.search_domain === "global") {
+          if (snapshot.repository_context === undefined)
+            throw new Error(
+              "Global task requires its pinned repository context or explicit null"
+            );
+          if (snapshot.repository_context !== null)
+            repositoryIdentitySchema.parse(snapshot.repository_context);
         }
         const requestedWorkspace = (requestInput as Record<string, unknown>)
           .team_workspace_id;

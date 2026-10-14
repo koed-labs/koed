@@ -386,16 +386,18 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Retrieve bounded Global and current-repository candidate pools using the task's persisted context, with the same authorization, time bounds, source eligibility, and effective-assignment rules. Account for both passes within existing search, decrypt, candidate, and evidence budgets and reuse the query embedding where possible.
-- [ ] Merge by canonical source identity before final ranking and truncation. Preserve complete observed references, chunk identities, visibility, lineage, and Project provenance. Retain distinct selected parent summaries alongside partial children within existing evidence-budget rules; shared lineage is not independent corroboration.
-- [ ] Apply a bounded repository preference through the existing semantic score and candidate-fusion pipeline, with a smaller branch preference only when repository and known branch match. Define the scale and placement, preserve relevance thresholds, and prevent overlap between pools from giving an unintended double boost. No reranker model or service is introduced.
-- [ ] Return current, other, or unknown Project classification and an authorized label. Unresolved caller context and mixed or incomparable evidence receive no current-repository preference.
-- [ ] Have the AI Client identify other Projects and preserve unknown provenance in answers. Retain AI Client synthesis.
-- [ ] Extend existing deterministic tests/evaluations for candidate recovery beyond the Global pool limit, equal relevance, clearly better other-repository evidence, and overlap between pools. Compare with the current semantic retrieval baseline; reuse evidence-selection regressions rather than adding another harness.
-- [ ] Test that shared branch names alone give no cross-repository preference and that historical-unresolved evidence remains unknown.
-- [ ] Document limits and behavior. This ticket can be developed after its blocker, but its release follows ticket 16.
+- [x] Retrieve bounded Global and current-repository candidate pools using the task's persisted context, with the same authorization, time bounds, source eligibility, and effective-assignment rules. Account for both passes within existing search, decrypt, candidate, and evidence budgets and reuse the query embedding where possible.
+- [x] Merge by canonical source identity before final ranking and truncation. Preserve complete observed references, chunk identities, visibility, lineage, and Project provenance. Retain distinct selected parent summaries alongside partial children within existing evidence-budget rules; shared lineage is not independent corroboration.
+- [x] Apply a bounded repository preference through the existing semantic score and candidate-fusion pipeline, with a smaller branch preference only when repository and known branch match. Define the scale and placement, preserve relevance thresholds, and prevent overlap between pools from giving an unintended double boost. No reranker model or service is introduced.
+- [x] Return current, other, or unknown Project classification and an authorized label. Unresolved caller context and mixed or incomparable evidence receive no current-repository preference.
+- [x] Have the AI Client identify other Projects and preserve unknown provenance in answers. Retain AI Client synthesis.
+- [x] Extend existing deterministic tests/evaluations for candidate recovery beyond the Global pool limit, equal relevance, clearly better other-repository evidence, and overlap between pools. Compare with the current semantic retrieval baseline; reuse evidence-selection regressions rather than adding another harness.
+- [x] Test that shared branch names alone give no cross-repository preference and that historical-unresolved evidence remains unknown.
+- [x] Document limits and behavior. This ticket can be developed after its blocker, but its release follows ticket 16.
+
+**Validation:** Deterministic PostgreSQL fixtures cover bounded candidate recovery, equal relevance, stronger other-Project evidence, pool overlap before hydration, owner/time boundaries, unknown and mixed provenance, and explicit manual assignment labels. Encrypted task recovery retains known or null Global context. Worker regressions retain complete references and selected parent summaries with partial children. Native M2 rehearsal compared baseline and contextual retrieval with one embedding call, collected the non-blocking Global answer with Cobalt and Indigo labels, and left a styled one-session anchor review prepared with its Dismiss action. Release remains gated by ticket 16 on the dependent branch.
 
 ## 18: Apply Global repository preferences to Team Memory
 

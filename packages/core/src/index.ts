@@ -379,6 +379,9 @@ export interface RetrievalMetadata {
   embeddingCalls?: number;
   embeddingTokens?: number | null;
   vectorCandidateCount?: number;
+  searchPasses?: number;
+  globalCandidateCount?: number;
+  currentRepositoryCandidateCount?: number;
 
   temporalFilter?: {
     recentDays?: number;
@@ -471,6 +474,8 @@ export interface SearchMemoryInput {
   searchDomain?: MemorySearchDomain;
   sessionId?: string;
   projectId?: string;
+  repositoryContext?: unknown;
+  maxSearchPasses?: 1 | 2;
   limit?: number;
   recentDays?: number;
   sourceAfter?: string;
@@ -567,6 +572,7 @@ export interface MemorySearchResult extends MemoryCandidateProvenance {
   lcmNodeSummaryModel?: string | null;
   score: number;
   citation: MemorySearchCitation;
+  observedReferences?: MemorySearchCitation[];
 }
 
 export interface AnswerEvidenceBundle {
@@ -660,6 +666,8 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       projectId?: string;
+      repositoryContext?: unknown;
+      maxSearchPasses?: 1 | 2;
       limit?: number;
       recentDays?: number;
       sourceAfter?: string;

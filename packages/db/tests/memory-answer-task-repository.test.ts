@@ -827,4 +827,60 @@ describeDb("durable Memory Answer task repository", () => {
       })
     ).rejects.toThrow();
   });
+  it.each([
+    null,
+    {
+      kind: "portable_repository",
+      key: "gr_global_pinned",
+      root: "/accepted",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_global",
+      originatingDeviceId: "fixture_device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/global"
+    } satisfies RepositoryIdentity
+  ])(
+    "persists Global context through encrypted lease recovery: %j",
+    async (context) => {
+      const { actor } = await createActor("global-pinned");
+      const options = { envelopeEncryptionProvider: encryptionProvider };
+      const tasks = createMemoryAnswerTaskRepository(pool, options);
+      const request = {
+        input: {
+          query: "cross-project decisions",
+          search_domain: "global",
+          repository_context: context
+        },
+        caller: { cwd: "/accepted" }
+      };
+      const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        maxQueued: 16,
+        request
+      });
+      const first = await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "original",
+        leaseMs: 1000
+      });
+      expect(first.task?.request).toEqual(request);
+      await pool.query(
+        "update memory_answer_tasks set lease_until=now()-interval '1 second' where id=$1",
+        [accepted.id]
+      );
+      const restarted = createMemoryAnswerTaskRepository(pool, options);
+      const retry = await restarted.claimMemoryAnswerTask(actor, {
+        leaseOwner: "restarted",
+        leaseMs: 60000
+      });
+      expect(retry.task?.request).toEqual(request);
+      await expect(
+        tasks.acceptMemoryAnswerTask(actor, {
+          origin: "mcp",
+          maxQueued: 16,
+          request: { input: { query: "unpinned", search_domain: "global" } }
+        })
+      ).rejects.toThrow("pinned repository context");
+    }
+  );
 });

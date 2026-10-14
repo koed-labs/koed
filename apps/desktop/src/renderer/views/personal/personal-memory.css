@@ -3150,3 +3150,79 @@
 .personal-repository-anchor form p {
   flex-basis: 100%;
 }
+
+.personal-repository-anchor button,
+.personal-repository-anchor select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--foreground);
+  min-height: 2.25rem;
+  padding: 0.4rem 0.65rem;
+  font: inherit;
+}
+.personal-repository-anchor button {
+  cursor: pointer;
+}
+.personal-repository-anchor button:hover:not(:disabled) {
+  background: var(--accent);
+}
+.personal-repository-anchor button:focus-visible,
+.personal-repository-anchor select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.personal-repository-anchor button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.personal-repository-anchor select {
+  max-width: 100%;
+}
+.personal-repository-review {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  line-height: 1.5;
+}
+.personal-repository-review h3 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.personal-repository-review p {
+  margin: 0.5rem 0;
+  overflow-wrap: anywhere;
+}
+.personal-repository-review > label,
+.personal-repository-review li label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.65rem 0;
+}
+.personal-repository-review input[type="checkbox"] {
+  flex: none;
+  margin-top: 0.3rem;
+  accent-color: var(--primary);
+}
+.personal-repository-review ul {
+  padding: 0;
+  margin: 0.75rem 0;
+  list-style: none;
+}
+.personal-repository-review li {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--secondary);
+}
+.personal-repository-review li + li {
+  margin-top: 0.5rem;
+}
+.personal-repository-review button + button {
+  margin-left: 0.5rem;
+}
+.personal-repository-review [role="alert"] {
+  color: var(--destructive);
+}

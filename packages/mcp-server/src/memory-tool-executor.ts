@@ -340,7 +340,8 @@ export class MemoryToolExecutor {
         return await this.client.search({
           ...search,
           retrieval_scope: "personal",
-          project_id: pinned.project_id
+          project_id: pinned.project_id,
+          repository_context: pinned.repository_context
         });
       }
       case "memory_expand": {
@@ -456,11 +457,19 @@ export class MemoryToolExecutor {
         }
       );
     }
-    if (taskAuthority?.scope !== "team" && input.search_domain === "project") {
-      if (execution.taskContext && !input.repository_context)
+    if (
+      !input.team_workspace_id &&
+      taskAuthority?.scope !== "team" &&
+      (input.search_domain === "project" || input.search_domain === "global")
+    ) {
+      if (
+        execution.taskContext &&
+        (input.repository_context === undefined ||
+          (input.search_domain === "project" && !input.repository_context))
+      )
         throw Object.assign(
           new Error(
-            "Accepted Project task is missing pinned repository context"
+            "Accepted memory task is missing pinned repository context"
           ),
           {
             memoryAnswerTaskErrorCode: "invalid_project_scope",
@@ -589,6 +598,8 @@ export class MemoryToolExecutor {
       client: progressAwareRetrievalClient,
       retrievalScope,
       searchDomain: input.search_domain,
+      repositoryContext:
+        retrievalScope === "personal" ? input.repository_context : undefined,
       projectId,
       teamWorkspaceId,
       sessionId: input.session_id,

@@ -73,3 +73,59 @@ it("pins the requested Project before acceptance and preserves it through cwd, a
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it("pins Global caller context and preserves explicit unknown context on retry", async () => {
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "koed-global-context-"))
+  );
+  try {
+    execFileSync("git", ["init", "--initial-branch=main", directory]);
+    execFileSync("git", [
+      "-C",
+      directory,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/example/global.git"
+    ]);
+    const environment = { KOED_HOME: path.join(directory, "profile") };
+    const pinned = await pinRepositoryRecallContext(
+      { search_domain: "global" },
+      { cwd: directory },
+      environment
+    );
+    expect(pinned.repository_context).toMatchObject({
+      kind: "portable_repository",
+      branch: "main"
+    });
+    execFileSync("git", [
+      "-C",
+      directory,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/example/changed.git"
+    ]);
+    execFileSync("git", [
+      "-C",
+      directory,
+      "symbolic-ref",
+      "HEAD",
+      "refs/heads/changed"
+    ]);
+    expect(
+      await pinRepositoryRecallContext(pinned, { cwd: "/missing" }, environment)
+    ).toEqual(pinned);
+    const unknown = await pinRepositoryRecallContext(
+      { search_domain: "global" },
+      { cwd: path.join(directory, "missing") },
+      environment
+    );
+    expect(unknown.repository_context).toBeNull();
+    expect(
+      await pinRepositoryRecallContext(unknown, { cwd: directory }, environment)
+    ).toEqual(unknown);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
