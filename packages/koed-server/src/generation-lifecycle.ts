@@ -557,7 +557,8 @@ const desktopBundleGeneration = (
     id,
     productVersion: capability.productVersion,
     base: {
-      manifest: manifest as unknown as VerifiedGeneration["base"]["manifest"],
+      kind: "desktop-bundle",
+      manifest,
       root: resolve(capability.resourcesPath, "koed-runtime"),
       manifestDigest: capability.bundleDigest
     },

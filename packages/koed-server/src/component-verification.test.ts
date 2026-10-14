@@ -10,9 +10,13 @@ import {
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  goldenComponentArchive,
+  signedComponentFixture
+} from "./component-test-fixtures.js";
 import {
   componentManifestSigningBytes,
+  canonicalComponentManifestBytes,
   verifyComponent,
   verifyExtractedComponent,
   verifyExtractedComponentWithTestSeams
@@ -21,6 +25,7 @@ import { productionComponentTrustRoots } from "./component-trust-roots.js";
 import type { ComponentManifest } from "./component-contract.js";
 import {
   buildComponentManifest,
+  canonicalComponentManifestBytes as releaseManifestBytes,
   signComponentManifest
 } from "../../../scripts/koed-server-package-lib.mjs";
 
@@ -42,6 +47,20 @@ afterEach(() => {
 });
 
 describe("signed component verification", () => {
+  it("preserves pre-change golden manifest bytes in runtime and bootstrap tooling", async () => {
+    const sample = await signedComponentFixture({}, undefined, {
+      bytes: goldenComponentArchive
+    });
+    fixtures.push(sample);
+    const golden = Buffer.from(
+      '{"archive":{"bytes":94,"name":"base.tar.gz","sha256":"a68f245c59a083f3d3180875b39630cabde2da43e50bdfe0f1481cd8644617e0"},"component":"base","files":[{"path":"entry.js","sha256":"7992a39d6cde5e050eb78461a8bf9ad986175a94826e835c110b3967290bd249"}],"productVersion":"0.8.1","requiredFiles":["entry.js"],"runtimes":[{"kind":"node","minimumNapi":10,"modulesAbi":"137","nodeRange":">=24 <25","runtimeRange":">=24 <25"}],"schemaVersion":1,"target":{"architecture":"x64","platform":"linux"}}',
+      "utf8"
+    );
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    expect(canonicalComponentManifestBytes(manifest)).toEqual(golden);
+    expect(releaseManifestBytes(manifest)).toEqual(golden);
+    await expect(verifyComponent(sample.input)).resolves.toEqual(manifest);
+  });
   it("accepts real Ed25519 fixture signature and rejects signed component mismatch", async () => {
     const sample = await fixture();
     await expect(verifyComponent(sample.input)).resolves.toBeDefined();

@@ -7,6 +7,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
@@ -41,7 +42,10 @@ vi.mock("./generation-lifecycle-filesystem.js", async () => {
   };
 });
 
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  goldenComponentArchive,
+  signedComponentFixture
+} from "./component-test-fixtures.js";
 import {
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
@@ -146,6 +150,18 @@ describe("generation lifecycle", () => {
       paths,
       verifyDesktopRuntimeBundle(resourcesPath)
     );
+    expect(before.generation.base.kind).toBe("desktop-bundle");
+    expect(before.generation.base.manifest).not.toHaveProperty("archive");
+    expect(before.generation.base.manifestDigest).toBe(
+      "f9efbfe8d5def8379d1d287d211b013b10bdf84cad71e0bae7f7c26cc9fc602d"
+    );
+    expect(before.generation.id).toBe(
+      createHash("sha256")
+        .update(
+          `${before.generation.owner.installationId}\nf9efbfe8d5def8379d1d287d211b013b10bdf84cad71e0bae7f7c26cc9fc602d`
+        )
+        .digest("hex")
+    );
     const oldId = before.generation.id;
     await before.release();
     writeBundle("0.9.0");
@@ -204,11 +220,15 @@ describe("generation lifecycle", () => {
     const paths = pathsForTest();
     const productVersion = "0.8.1";
     const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-    const fixture = await signedComponentFixture({
-      component: "privacy",
-      productVersion,
-      target
-    });
+    const fixture = await signedComponentFixture(
+      {
+        component: "privacy",
+        productVersion,
+        target
+      },
+      undefined,
+      { bytes: goldenComponentArchive }
+    );
     temporaryRoots.push(fixture.root);
     fixtureRuntime.value = fixture.input.runtime;
     fixtureKeys.value.clear();
@@ -254,9 +274,27 @@ describe("generation lifecycle", () => {
       privacy,
       owner: desktopOwner
     });
+    const privacyDigest =
+      "4dc1e2ba93ca362257e2f72800b90c818838a565ee3184a8a5e8a067466b2d5b";
+    expect(privacy.manifestDigest).toBe(privacyDigest);
+    // Resources and owner vary with temp paths; remaining identity bytes are golden.
+    const goldenIdentity = `{"bundleDigest":"f9efbfe8d5def8379d1d287d211b013b10bdf84cad71e0bae7f7c26cc9fc602d","kind":"desktop-bundle-with-privacy","owner":{"installationId":${JSON.stringify(desktopOwner.installationId)},"kind":"desktop"},"privacy":{"manifestDigest":"${privacyDigest}","root":"runtime/components/privacy/0.8.1/${privacyDigest}/payload"},"productVersion":"0.8.1","resourcesPath":${JSON.stringify(capability.resourcesPath)},"schemaVersion":1}`;
+    expect(generation.id).toBe(
+      createHash("sha256").update(goldenIdentity).digest("hex")
+    );
+    const record = JSON.parse(
+      readFileSync(
+        resolve(paths.generationsDir, generation.id, "generation.json"),
+        "utf8"
+      )
+    ) as { kind: string; privacy: unknown };
+    expect(record.kind).toBe("desktop-bundle-with-privacy");
+    expect(record.privacy).not.toHaveProperty("kind");
     await activateGeneration(paths, generation.id, desktopOwner);
     const pin = await pinDesktopBundleGenerationForStart(paths, capability);
     expect(pin.generation.id).toBe(generation.id);
+    expect(pin.generation.base.kind).toBe("desktop-bundle");
+    expect(pin.generation.privacy?.kind).toBe("signed-component");
     await pin.release();
     writeFileSync(
       resolve(runtimeRoot, "desktop-bundle-manifest.json"),

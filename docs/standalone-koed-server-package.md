@@ -403,6 +403,15 @@ only within that root. These checks detect ordinary link and replacement races;
 they do not claim defense against a same-UID attacker with arbitrary ability to
 mutate the verifier process or its staging files.
 
+Component acquisition downloads and verifies archives in exclusive private
+staging directories without holding the component publication lock. Publication
+then locks the store, rechecks existing digests and cache entries, and atomically
+publishes the verified tree and index; conflicts fail closed and failed staging
+is removed. HTTPS transfers bound response headers to 30 seconds and reset a
+30-second body idle timeout on each chunk, allowing large progressing downloads
+without an absolute transfer deadline. Caller cancellation and byte limits still
+apply throughout acquisition and publication.
+
 Component verification is not wired into package installation yet. Production
 component trust roots are intentionally empty, so component verification fails
 closed and official component promotion remains blocked pending explicit

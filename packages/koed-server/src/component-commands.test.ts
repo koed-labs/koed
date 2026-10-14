@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +28,8 @@ import { writeFileSync } from "node:fs";
 import { signedComponentFixture } from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { stageComponent } from "./component-store.js";
+import { pinDesktopBundleGenerationForStart } from "./generation-lifecycle.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import {
   runComponentActivate,
   runComponentInstall,
@@ -60,10 +68,14 @@ const context = (
   };
 };
 
-const signedOfflineSource = async (version: string) => {
+const signedOfflineSource = async (
+  version: string,
+  component: "base" | "privacy" = "base"
+) => {
   const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
   const fixture = await signedComponentFixture({
     productVersion: version,
+    component,
     target
   });
   const manifestPath = resolve(fixture.root, "manifest.json");
@@ -97,6 +109,49 @@ afterEach(() => {
 });
 
 describe("component status command", () => {
+  it("stages privacy without treating active Desktop bundle as a signed base", async () => {
+    const signed = await signedOfflineSource("0.9.0", "privacy");
+    fixtures.push(signed.fixture);
+    const current = context({
+      runtime: signed.runtime,
+      target: signed.target,
+      execution: "packaged",
+      environment: {
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }
+    });
+    const resources = resolve(current.paths.koedHome, "resources");
+    mkdirSync(resolve(resources, "koed-runtime"), { recursive: true });
+    writeFileSync(
+      resolve(resources, "koed-runtime/desktop-bundle-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        component: "base",
+        productVersion: "0.9.0",
+        target: signed.target,
+        files: []
+      })
+    );
+    const capability = verifyDesktopRuntimeBundle(resources);
+    const pin = await pinDesktopBundleGenerationForStart(
+      current.paths,
+      capability
+    );
+    current.owner = pin.generation.owner;
+    current.desktopRuntimeCapability = capability;
+    const desktopId = pin.generation.id;
+    await pin.release();
+    await expect(
+      runComponentInstall(current, {
+        component: "privacy",
+        source: signed.source
+      })
+    ).resolves.toEqual({ state: "staged" });
+    expect((await runComponentStatus(current)).activeGeneration).toBe(
+      desktopId
+    );
+  });
   it("reports required base as missing when no signed generation is installed", async () => {
     const result = await runComponentStatus(context());
     expect(result.components).toEqual({

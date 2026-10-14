@@ -206,9 +206,12 @@ export async function runComponentInstall(
               entry.manifest.component === "privacy" &&
               entry.manifest.productVersion === version
           ))
-      : active?.base.manifest.productVersion === version
+      : active?.base.kind === "signed-component" &&
+          active.base.manifest.productVersion === version
         ? active.base
-        : (priorGeneration?.base ??
+        : ((priorGeneration?.base.kind === "signed-component"
+            ? priorGeneration.base
+            : undefined) ??
           installed.find(
             (entry) =>
               entry.manifest.component === "base" &&

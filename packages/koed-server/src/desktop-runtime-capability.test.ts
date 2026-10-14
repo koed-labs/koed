@@ -48,6 +48,13 @@ describe("private Desktop runtime bundle capability", () => {
     const resourcesPath = temp();
     bundle(resourcesPath);
     const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    expect(capability.bundleDigest).toBe(
+      "56b688782aa7bc4524456e87469e3ec194ad63d203393d7b1bb7d5b1224752ae"
+    );
+    expect(Object.isFrozen(capability.manifest)).toBe(true);
+    expect(Object.isFrozen(capability.manifest.target)).toBe(true);
+    expect(Object.isFrozen(capability.manifest.files)).toBe(true);
+    expect(Object.isFrozen(capability.manifest.files[0])).toBe(true);
     expect(validateDesktopRuntimeCapability(capability)).toBe(true);
     expect(
       validateDesktopRuntimeCapability({
@@ -61,6 +68,47 @@ describe("private Desktop runtime bundle capability", () => {
         )
       })
     ).toBe(false);
+  });
+
+  it.each(["platform", "architecture", "kind"])(
+    "rejects coercible non-string %s manifest values",
+    (field) => {
+      const resourcesPath = temp();
+      bundle(resourcesPath);
+      const path = resolve(
+        resourcesPath,
+        "koed-runtime/desktop-bundle-manifest.json"
+      );
+      const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+        target: Record<string, unknown>;
+        files: { kind: unknown }[];
+      };
+      if (field === "kind") manifest.files[0]!.kind = ["file"];
+      else manifest.target[field] = [manifest.target[field]];
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => verifyDesktopRuntimeBundle(resourcesPath)).toThrow(
+        "Desktop runtime bundle manifest is invalid"
+      );
+    }
+  );
+
+  it("retains extra manifest fields in verified data and bundle identity", () => {
+    const resourcesPath = temp();
+    bundle(resourcesPath);
+    const path = resolve(
+      resourcesPath,
+      "koed-runtime/desktop-bundle-manifest.json"
+    );
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+      extra?: string;
+    };
+    manifest.extra = "retained";
+    writeFileSync(path, JSON.stringify(manifest));
+    const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    expect(capability.manifest).toHaveProperty("extra", "retained");
+    expect(capability.bundleDigest).not.toBe(
+      "56b688782aa7bc4524456e87469e3ec194ad63d203393d7b1bb7d5b1224752ae"
+    );
   });
 
   it("rejects a bundle whose actual asset bytes differ from its manifest", () => {

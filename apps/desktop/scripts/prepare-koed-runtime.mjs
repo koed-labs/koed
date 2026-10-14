@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global console, process */
 import { createHash } from "node:crypto";
+import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifact-canonical-json.mjs";
 import {
   existsSync,
   mkdirSync,
@@ -85,15 +86,6 @@ if (missing.length > 0) {
 
 const hashFile = (path) =>
   createHash("sha256").update(readFileSync(path)).digest("hex");
-const canonicalJson = (value) => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-};
 const runtimeFiles = [];
 const visit = (directory, prefix = "") => {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -143,7 +135,7 @@ writeFileSync(bundleManifestPath, `${JSON.stringify(bundleManifest)}\n`, {
   mode: 0o600
 });
 const bundleManifestDigest = createHash("sha256")
-  .update(canonicalJson(bundleManifest))
+  .update(canonicalArtifactBytes(bundleManifest))
   .digest("hex");
 
 console.log(

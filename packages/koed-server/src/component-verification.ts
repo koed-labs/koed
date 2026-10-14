@@ -1,5 +1,9 @@
 import { createHash, verify as cryptoVerify } from "node:crypto";
 import {
+  canonicalArtifactJson as canonicalJson,
+  canonicalArtifactBytes
+} from "./artifact-canonical-json.mjs";
+import {
   closeSync,
   constants,
   fstatSync,
@@ -48,22 +52,7 @@ export interface ComponentVerificationInput {
 
 export const canonicalComponentManifestBytes = (
   manifest: ComponentManifest
-): Buffer => Buffer.from(canonicalJson(manifest), "utf8");
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined)
-    throw new Error("component manifest has unsupported JSON value");
-  return encoded;
-}
+): Buffer => canonicalArtifactBytes(manifest);
 
 function assertRecord(
   value: unknown,
