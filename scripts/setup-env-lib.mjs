@@ -16,8 +16,7 @@ export const retainedCompatibilityKeys = new Set([
 // untouched.
 export const legacyEmbeddingAccelerationDefaults = new Map([
   ["EMBEDDING_LLAMA_N_CTX", { from: "32768", to: "8192" }],
-  ["EMBEDDING_LLAMA_N_UBATCH", { from: "8192", to: "512" }],
-  ["EMBEDDING_RERANKER_LLAMA_N_UBATCH", { from: "8192", to: "512" }]
+  ["EMBEDDING_LLAMA_N_UBATCH", { from: "8192", to: "512" }]
 ]);
 
 export const splitEnvLine = (line) => {

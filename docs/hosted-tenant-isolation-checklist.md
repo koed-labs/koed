@@ -36,7 +36,7 @@ originating User. Team visibility is grant-based.
 1. Team Workspace reads fail closed when the requester has no enabled Team
    Membership or no enabled Workspace Access.
 2. Team Workspace reads must filter candidates before semantic ranking,
-   lexical matching, graph expansion, reranking, and Evidence Bundle assembly.
+   lexical matching, graph expansion, and Evidence Bundle assembly.
 3. Team-visible derived memory may include only source rows authorized for the
    requested Team and Workspace. A private summary, graph edge, embedding, or
    rollup must not become Team-visible by relabeling.
@@ -45,7 +45,7 @@ originating User. Team visibility is grant-based.
 5. Membership, Workspace Access, Share Grants, billing gates, and lifecycle
    states are resolved at request time. Stored credentials must not cache Team
    authority.
-6. Workers, embedding services, rerankers, diagnostics, and observability
+6. Workers, embedding services, diagnostics, and observability
    pipelines must receive only data that has already passed the caller's access
    boundary or must operate as internal trusted services with private
    networking and no public endpoints.
@@ -94,7 +94,7 @@ hosted V1.0 goes live:
   or management.
 - Support/admin customer lookup, diagnostics, export, repair, and break-glass
   actions.
-- Background worker jobs that project, summarize, embed, rerank, or index
+- Background worker jobs that project, summarize, embed, or index
   customer memory.
 - Observability, logging, traces, and error reporting.
 - Backups, restores, migrations, database exports, and local support bundles.

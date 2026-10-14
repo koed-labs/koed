@@ -10,7 +10,7 @@ No profile activates clean release-V1 processing names until all applicable impl
 2. deterministic stale detection and generation-aware key/query support;
 3. resumable Source-cohort rebuilds;
 4. resumable LCM-cohort rebuilds, including the durable summary-to-node-embedding handoff;
-5. exact-compatible retrieval/reranking gates;
+5. exact-compatible retrieval gates;
 6. minimal status, lag, retry, failure, and rollback-preflight surfaces;
 7. backup/restore reconciliation for retained generations and lifecycle high-water state;
 8. source/payload/protocol negotiation and coarse derivation readiness for remote paths.

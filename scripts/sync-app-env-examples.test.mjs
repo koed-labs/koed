@@ -129,12 +129,6 @@ test("renders shared memory config outside app sections", () => {
     },
     {
       source: "API",
-      appKey: "RERANKER_KEY",
-      rootKey: "EMBEDDING_RERANKER_KEY",
-      value: ""
-    },
-    {
-      source: "API",
       appKey: "SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS",
       rootKey: "SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS",
       value: "300000"
@@ -144,7 +138,7 @@ test("renders shared memory config outside app sections", () => {
 
   assert.match(
     block,
-    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nEMBEDDING_RERANKER_KEY=\nSEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS=300000\n\n# API app\nAPI_PORT=3300/
+    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nSEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS=300000\n\n# API app\nAPI_PORT=3300/
   );
 });
 

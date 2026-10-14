@@ -1,14 +1,7 @@
-import { performance } from "node:perf_hooks";
 import { HttpError } from "./auth.js";
-import {
-  rerankerEnabled,
-  rerankerModel,
-  verifyRerankerModelArtifact,
-  type EmbeddingServiceEnv
-} from "./env-config.js";
+import { type EmbeddingServiceEnv } from "./env-config.js";
 import {
   LlamaServerClient,
-  type LlamaRerankResult,
   type TokenPiece,
   type LlamaServerOptions
 } from "./llama-server.js";
@@ -18,11 +11,7 @@ import {
   EmbeddingPriorityScheduler,
   normalizeEmbeddingPriority
 } from "./priority-scheduler.js";
-import type {
-  EmbeddedChunk,
-  EmbedResponse,
-  RerankResponse
-} from "./schemas.js";
+import type { EmbeddedChunk, EmbedResponse } from "./schemas.js";
 import {
   accelerationDescription,
   type ResolvedAcceleration
@@ -45,17 +34,15 @@ export interface LlamaEmbeddingClient {
     vectors: number[][];
     measuredTokens: number | null;
   }>;
-  rerank(query: string, documents: string[]): Promise<LlamaRerankResult>;
+
   acceleration?(): ResolvedAcceleration | null;
 }
 
 export class EmbeddingRuntime {
   readonly scheduler = new EmbeddingPriorityScheduler();
   embeddingServer: LlamaEmbeddingClient | null = null;
-  rerankerServer: LlamaEmbeddingClient | null = null;
+
   private embeddingLoadPromise: Promise<void> | null = null;
-  private rerankerLoadPromise: Promise<void> | null = null;
-  private loadedRerankerArtifactSha256: string | null = null;
 
   constructor(
     readonly config: EmbeddingServiceEnv,
@@ -87,63 +74,14 @@ export class EmbeddingRuntime {
     return this.embeddingLoadPromise;
   }
 
-  async loadRerankerModel(): Promise<void> {
-    if (!rerankerEnabled(this.config)) {
-      return;
-    }
-    if (this.rerankerServer?.isRunning()) {
-      return;
-    }
-    if (this.rerankerLoadPromise) {
-      return this.rerankerLoadPromise;
-    }
-    this.rerankerLoadPromise = this.loadRerankerModelOnce().finally(() => {
-      this.rerankerLoadPromise = null;
-    });
-    return this.rerankerLoadPromise;
-  }
-
   async shutdownRuntime(): Promise<void> {
-    const rerankerServer = this.rerankerServer;
-    this.rerankerServer = null;
-    this.loadedRerankerArtifactSha256 = null;
     const embeddingServer = this.embeddingServer;
     this.embeddingServer = null;
-    await Promise.all([
-      rerankerServer?.stop() ?? Promise.resolve(),
-      embeddingServer?.stop() ?? Promise.resolve()
-    ]);
+    await embeddingServer?.stop();
   }
 
   isModelLoaded(): boolean {
     return this.embeddingServer !== null && this.embeddingServer.isRunning();
-  }
-
-  isRerankerLoaded(): boolean {
-    return this.rerankerServer !== null && this.rerankerServer.isRunning();
-  }
-
-  rerankerProvenance(): {
-    model: string;
-    artifact: string;
-    artifactRevision: string;
-    artifactHash: string;
-  } | null {
-    const artifactHash = this.loadedRerankerArtifactSha256;
-    if (
-      !this.isRerankerLoaded() ||
-      !artifactHash ||
-      !this.config.rerankerKey ||
-      !this.config.rerankerArtifact
-    ) {
-      return null;
-    }
-    return {
-      model: this.config.rerankerKey,
-      artifact: this.config.rerankerArtifact,
-      artifactRevision: `sha256:${artifactHash}`,
-      artifactHash
-    };
   }
 
   healthQueueSnapshot() {
@@ -152,10 +90,6 @@ export class EmbeddingRuntime {
 
   embeddingAcceleration(): ResolvedAcceleration | null {
     return this.embeddingServer?.acceleration?.() ?? null;
-  }
-
-  rerankerAcceleration(): ResolvedAcceleration | null {
-    return this.rerankerServer?.acceleration?.() ?? null;
   }
 
   modelAcceleration(): string {
@@ -306,44 +240,6 @@ export class EmbeddingRuntime {
     };
   }
 
-  async rerankTexts(
-    query: string,
-    documents: string[]
-  ): Promise<RerankResponse> {
-    const localReranker = await this.getReranker();
-    this.logger.debug("reranker scoring started", {
-      event: event("embedding.reranker.scoring_started"),
-      reranker: {
-        model_key: this.config.rerankerKey,
-        document_count: documents.length
-      }
-    });
-    const started = performance.now();
-    const result = await localReranker.rerank(query, documents);
-    const latencyMs = Math.max(0, Math.round(performance.now() - started));
-    this.logger.debug("reranker scoring completed", {
-      event: event("embedding.reranker.scoring_completed"),
-      reranker: {
-        model_key: this.config.rerankerKey,
-        document_count: documents.length,
-        score_count: result.scores.length,
-        measured_tokens: result.measuredTokens,
-        latency_ms: latencyMs
-      }
-    });
-    const provenance = this.rerankerProvenance();
-    if (!provenance) {
-      throw new Error("loaded reranker provenance is unavailable");
-    }
-    return {
-      ...provenance,
-      latencyMs,
-      inputTokens: result.measuredTokens,
-      costUsd: 0,
-      scores: result.scores.map(Number)
-    };
-  }
-
   private async scheduledTextChunks(
     text: string,
     inputIndex: number,
@@ -454,17 +350,6 @@ export class EmbeddingRuntime {
     };
   }
 
-  private async getReranker(): Promise<LlamaEmbeddingClient> {
-    if (!rerankerEnabled(this.config)) {
-      throw new HttpError(404, "reranker is disabled");
-    }
-    await this.loadRerankerModel();
-    if (!this.rerankerServer?.isRunning()) {
-      throw new HttpError(503, "reranker model is still loading");
-    }
-    return this.rerankerServer;
-  }
-
   private async loadEmbeddingModelOnce(): Promise<void> {
     if (this.embeddingServer !== null) {
       await this.embeddingServer.stop();
@@ -495,7 +380,7 @@ export class EmbeddingRuntime {
         port: this.config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: this.config.llamaNCtx,
         nThreads: this.config.llamaNThreads,
         nBatch: this.config.llamaNBatch,
@@ -526,76 +411,11 @@ export class EmbeddingRuntime {
     });
   }
 
-  private async loadRerankerModelOnce(): Promise<void> {
-    this.logger.info("reranker load started", {
-      event: event("embedding.reranker.load_started"),
-      reranker: {
-        model_key: this.config.rerankerKey,
-        runtime: "llama-server"
-      }
-    });
-    try {
-      const modelPath = this.resolveRerankerModelPath();
-      this.loadedRerankerArtifactSha256 = await verifyRerankerModelArtifact(
-        this.config
-      );
-      this.rerankerServer = this.createClient({
-        name: "reranker",
-        modelPath,
-        port: this.config.rerankerServerPort,
-        pooling: "rank",
-        embedding: true,
-        reranking: true,
-        nCtx: this.config.rerankerNCtx,
-        nThreads: this.config.rerankerNThreads,
-        nBatch: this.config.rerankerNBatch,
-        nUbatch: this.config.rerankerNUbatch,
-        parallel: this.config.rerankerParallel,
-        promptCacheEnabled: this.config.rerankerPromptCacheEnabled,
-        accelerationPolicy: this.config.rerankerAccelerationPolicy,
-        accelerationDevice: this.config.rerankerAccelerationDevice,
-        gpuIdleUnloadSeconds: this.config.rerankerGpuIdleUnloadSeconds
-      });
-      await this.startClient(this.rerankerServer);
-    } catch (error) {
-      this.logger.error("reranker load failed", {
-        event: event("embedding.reranker.load_failed"),
-        reranker: { model_key: this.config.rerankerKey },
-        error: errorType(error)
-      });
-      this.rerankerServer = null;
-      this.loadedRerankerArtifactSha256 = null;
-      throw error;
-    }
-    this.logger.info("reranker load completed", {
-      event: event("embedding.reranker.load_completed"),
-      reranker: {
-        model_key: this.config.rerankerKey,
-        runtime: "llama-server"
-      }
-    });
-  }
-
   private resolveEmbeddingModelPath(): string {
     if (this.config.modelPath) {
       return this.config.modelPath;
     }
     return `/models/${this.config.modelFile}`;
-  }
-
-  private resolveRerankerModelPath(): string {
-    if (this.config.rerankerModelPath) {
-      return this.config.rerankerModelPath;
-    }
-    if (
-      this.config.rerankerRepo === null ||
-      this.config.rerankerFile === null
-    ) {
-      throw new HttpError(404, "reranker is disabled");
-    }
-    throw new Error(
-      "RERANKER_MODEL_PATH is required for the TypeScript Embedding Service"
-    );
   }
 
   private async startClient(client: LlamaEmbeddingClient): Promise<void> {
@@ -605,5 +425,3 @@ export class EmbeddingRuntime {
     await maybeStart.start?.();
   }
 }
-
-export { rerankerEnabled, rerankerModel };

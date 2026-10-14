@@ -59,14 +59,14 @@ grant Team management privileges.
 
 The default support view must not expose raw Memory, prompts, query text,
 transcripts, source payloads, request bodies, Evidence Bundles, citations,
-rerank documents, embeddings, vectors, files, cookies, API Tokens, invite
+embeddings, vectors, files, cookies, API Tokens, invite
 tokens, device secrets, provider keys, database URLs, object-storage
 credentials, WorkOS secrets, or reusable service credentials.
 
 ## Forbidden Default Paths
 
 Support/admin tooling must not use normal user recall, graph, answer,
-expansion, rerank, LCM, or Evidence Bundle routes to inspect customer content.
+expansion, LCM, or Evidence Bundle routes to inspect customer content.
 Those routes remain user-facing product routes and must continue to enforce the
 requesting User's Team Membership, Workspace Access, Share Grants, lifecycle
 gates, and entitlement gates.
@@ -173,7 +173,7 @@ Before exposing support/admin tooling in Koed-managed cloud:
   logs, queue payloads, audit metadata, status responses, or default support
   views.
 - Tests must prove unauthorized candidates are filtered before decrypt,
-  reranking, graph expansion, Evidence Bundle assembly, and support/export
+  graph expansion, Evidence Bundle assembly, and support/export
   packaging.
 - Break-glass tests must prove expiry, revocation, approval, customer-visible
   audit, and redaction behavior before raw-content access is enabled.

@@ -258,22 +258,18 @@ describe("retrieval-success live benchmark helpers", () => {
     );
   });
 
-  it("isolates reranker env aliases while running against the deterministic server", async () => {
+  it("isolates embedding settings while running against the deterministic server", async () => {
     const previous = {
       EMBEDDING_SERVICE_URL: process.env.EMBEDDING_SERVICE_URL,
       EMBEDDING_SERVICE_TOKEN: process.env.EMBEDDING_SERVICE_TOKEN,
       EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
       EMBEDDING_QUERY_INSTRUCTION_ENABLED:
-        process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED,
-      EMBEDDING_RERANKER_KEY: process.env.EMBEDDING_RERANKER_KEY,
-      RERANKER_KEY: process.env.RERANKER_KEY
+        process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED
     };
     process.env.EMBEDDING_SERVICE_URL = "http://original.test";
     process.env.EMBEDDING_SERVICE_TOKEN = "original-token";
     process.env.EMBEDDING_MODEL = "original-model";
     delete process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
-    process.env.EMBEDDING_RERANKER_KEY = "qwen3-reranker-0.6b";
-    process.env.RERANKER_KEY = "qwen3-reranker-0.6b";
 
     try {
       await withTemporaryEmbeddingEnv(
@@ -290,8 +286,6 @@ describe("retrieval-success live benchmark helpers", () => {
           );
           expect(process.env.EMBEDDING_MODEL).toBe("qwen3-0.6b");
           expect(process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED).toBe("false");
-          expect(process.env.EMBEDDING_RERANKER_KEY).toBeUndefined();
-          expect(process.env.RERANKER_KEY).toBeUndefined();
         }
       );
 
@@ -299,8 +293,6 @@ describe("retrieval-success live benchmark helpers", () => {
       expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe("original-token");
       expect(process.env.EMBEDDING_MODEL).toBe("original-model");
       expect(process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED).toBeUndefined();
-      expect(process.env.EMBEDDING_RERANKER_KEY).toBe("qwen3-reranker-0.6b");
-      expect(process.env.RERANKER_KEY).toBe("qwen3-reranker-0.6b");
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) {

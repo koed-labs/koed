@@ -70,8 +70,7 @@ describe("allocateAndPersistLocalPorts", () => {
       API_HOST_PORT: "3300",
       POSTGRES_HOST_PORT: "15432",
       EMBEDDING_SERVICE_HOST_PORT: "3800",
-      EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18080",
-      EMBEDDING_LLAMA_RERANKER_SERVER_PORT: "18081"
+      EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18080"
     };
 
     const first = await allocateAndPersistLocalPorts(
@@ -92,8 +91,6 @@ describe("allocateAndPersistLocalPorts", () => {
     expect(first.EMBEDDING_SERVICE_HOST_PORT).toBe("3800");
     expect(second.EMBEDDING_SERVICE_HOST_PORT).toBe("3801");
     expect(first.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT).toBe("18080");
-    expect(second.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT).toBe("18082");
-    expect(first.EMBEDDING_LLAMA_RERANKER_SERVER_PORT).toBe("18081");
-    expect(second.EMBEDDING_LLAMA_RERANKER_SERVER_PORT).toBe("18083");
+    expect(second.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT).toBe("18081");
   });
 });

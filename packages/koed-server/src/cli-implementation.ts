@@ -772,12 +772,8 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "status") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
+      if (modelKind !== "embedding" && modelKind !== "privacy") {
+        throw new Error("--kind must be embedding or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(
@@ -796,12 +792,8 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "install") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
+      if (modelKind !== "embedding" && modelKind !== "privacy") {
+        throw new Error("--kind must be embedding or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(

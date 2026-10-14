@@ -340,19 +340,4 @@ describe("resolveApiServerConfig", () => {
       alertWebhookToken: "ops-alert-secret"
     });
   });
-
-  it("uses the documented root reranker key for server config", () => {
-    expect(
-      resolveApiServerConfig({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
-      }).rerankerKey
-    ).toBe("qwen3-reranker-0.6b");
-
-    expect(
-      resolveApiServerConfig({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_KEY: "app-local"
-      }).rerankerKey
-    ).toBe("app-local");
-  });
 });

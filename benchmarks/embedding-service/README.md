@@ -49,38 +49,6 @@ throughput is available. Adapter rows use
 `koed_adapter_llama_server_usage`, which is the `usage.prompt_tokens` value
 forwarded through the Koed adapter response.
 
-## Reranking Validation Benchmark
-
-Reranking is not an embedding workload. Qwen3-Reranker is served as a
-query-document classifier: the request must use `/v1/rerank`, and llama-server
-must run with `--embedding --pooling rank --reranking`. Only benchmark GGUF
-files that contain the Qwen rerank template, rank pooling metadata,
-`classifier.output_labels = ["yes", "no"]`, and `cls.output.weight`.
-
-```bash
-THREADS="8" \
-CONCURRENCY="1 2" \
-DOCUMENT_COUNTS="10 25" \
-RERANKER_CONTEXT_PER_SLOT=8192 \
-RERANKER_BATCH_SIZE=8192 \
-RERANKER_UBATCH_SIZE=8192 \
-RERANKER_PARALLEL=4 \
-RERANKER_PROMPT_CACHE_ENABLED=true \
-REQUESTS_PER_SCENARIO=3 \
-./benchmarks/embedding-service/run_rerank_matrix.sh
-```
-
-If a raw GGUF path is available inside the model cache volume, pass
-`RERANKER_MODEL_PATH` to benchmark raw `llama-server` `/v1/rerank` directly as
-a diagnostic. The production comparison should still use the Koed adapter
-because that is the supported runtime boundary.
-
-`RERANKER_CONTEXT_PER_SLOT` is multiplied by the raw llama-server parallel slot
-count to produce total `--ctx-size`. Keep `RERANKER_BATCH_SIZE` and
-`RERANKER_UBATCH_SIZE` at least as large as the largest formatted rerank prompt
-you intend to score; llama-server rejects longer rerank pairs instead of
-silently truncating them.
-
 ## Summaries
 
 Summarize an artifact directory:
@@ -107,23 +75,12 @@ LLAMA_N_UBATCH=512
 LLAMA_PARALLEL=1
 ```
 
-Reranking:
-
-```bash
-RERANKER_CONTEXT_PER_SLOT=8192
-RERANKER_LLAMA_N_BATCH=8192
-RERANKER_LLAMA_N_UBATCH=8192
-RERANKER_PARALLEL=4
-RERANKER_PROMPT_CACHE_ENABLED=true
-```
-
 Important knobs to sweep:
 
 - `LLAMA_N_THREADS`
 - `LLAMA_N_BATCH`
 - `LLAMA_N_UBATCH`
 - `LLAMA_PARALLEL`
-- `RERANKER_PARALLEL`
 
 ## Apple Metal Context Benchmark
 

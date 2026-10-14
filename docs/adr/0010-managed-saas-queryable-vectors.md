@@ -1,5 +1,7 @@
 # Managed SaaS Queryable Vectors
 
+> Supersession (14 October 2026): The dedicated reranker and its configuration, runtime, and evaluation arms have been removed. Recall uses semantic vector retrieval; the authorization and embedding decisions below still apply.
+
 Status: Accepted for the Team SaaS launch plan.
 
 ## Context
