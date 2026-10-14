@@ -1,3 +1,7 @@
+import {
+  discoverProjectMetadata,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
 import { createHash } from "node:crypto";
 import { conversationSourceRewriteGenerationId } from "@koed/shared";
 import fs, { type FSWatcher } from "node:fs";
@@ -349,7 +353,12 @@ export const processPiTranscriptSignal = async (
     excludedThrough[target] ?? baseline
   );
   if (boundary < captureBaseline) throw new Error("pi_session_truncated");
-  if (!artifact)
+  if (!artifact) {
+    const project = (
+      await discoverProjectMetadata(resolveKoedServerPaths(env), {
+        cwd: identity.cwd
+      })
+    ).project;
     artifact = artifactFrom(
       await client.ensureConversationSourceArtifact({
         sourceSession: {
@@ -357,6 +366,9 @@ export const processPiTranscriptSignal = async (
           sourceRuntime: "pi",
           captureMethod: "api",
           cwd: identity.cwd,
+          ...(project?.repository
+            ? { repositoryIdentity: project.repository }
+            : {}),
           idempotencyKey: `pi-session:${identity.id}`,
           sourceHash: hash({ provider: "pi", sessionId: identity.id }),
           metadata: {
@@ -392,6 +404,7 @@ export const processPiTranscriptSignal = async (
         redactedSourceLabel: `${identity.id}.jsonl`
       })
     );
+  }
   if (
     env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" &&
     (artifact.providerCursorOffset < baseline ||

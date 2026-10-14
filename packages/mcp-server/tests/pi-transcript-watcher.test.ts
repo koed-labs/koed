@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { normalizeGitRemoteUrl } from "@koed/shared";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,16 +33,56 @@ const appendPaddingRecords = (
 };
 
 describe("Pi transcript watcher", () => {
-  it.each([false, true])(
-    "resumes from durable cursor and fails closed on truncation (future only: %s)",
-    async (futureOnly) => {
+  it.each([
+    { checkout: "root", futureOnly: false },
+    { checkout: "subdirectory", futureOnly: false },
+    { checkout: "worktree-one", futureOnly: false },
+    { checkout: "worktree-two", futureOnly: false },
+    { checkout: "non-git", futureOnly: false },
+    { checkout: "unavailable", futureOnly: false },
+    { checkout: "root", futureOnly: true }
+  ])(
+    "preserves shared assignments and durable replay from $checkout (future only: $futureOnly)",
+    async ({ checkout, futureOnly }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-watch-"));
       temporaryDirectories.push(root);
       const sessions = path.join(root, "sessions");
       fs.mkdirSync(sessions, { recursive: true });
       const sourceSessionId = randomUUID();
       const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
-      const cwd = "/tmp/pi-project";
+      const repo = path.join(root, "repository");
+      fs.mkdirSync(repo);
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+      git("init");
+      git(
+        "remote",
+        "add",
+        "origin",
+        "https://example.test/team/pi-capture.git"
+      );
+      git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Fixture"
+      );
+      fs.mkdirSync(path.join(repo, "subdirectory"));
+      const worktree = path.join(root, checkout);
+      if (checkout.startsWith("worktree"))
+        git("worktree", "add", "-b", checkout, worktree);
+      if (checkout === "non-git") fs.mkdirSync(worktree);
+      const cwd =
+        checkout === "root"
+          ? repo
+          : checkout === "subdirectory"
+            ? path.join(repo, checkout)
+            : worktree;
+      const registrations: Record<string, unknown>[] = [];
       const preconsent = line({
         type: "session",
         version: 3,
@@ -79,6 +121,7 @@ describe("Pi transcript watcher", () => {
           };
         },
         async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+          registrations.push(input);
           artifact = {
             id: randomUUID(),
             sourceGenerationId: randomUUID(),
@@ -210,6 +253,32 @@ describe("Pi transcript watcher", () => {
       const signal = { sourceSessionId, transcriptPath, cwd };
 
       await processPiTranscriptSignal(client, state, signal, env);
+      const expectedKind =
+        checkout === "non-git"
+          ? "non_git_project"
+          : checkout === "unavailable"
+            ? "unresolved"
+            : "portable_repository";
+      expect(registrations[0]).toMatchObject({
+        sourceSession: {
+          sourceRuntime: "pi",
+          cwd,
+          repositoryIdentity: { kind: expectedKind }
+        }
+      });
+      if (expectedKind === "portable_repository")
+        expect(registrations[0]).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              key: normalizeGitRemoteUrl(
+                "https://example.test/team/pi-capture.git"
+              ).fingerprint,
+              root: fs.realpathSync(
+                checkout.startsWith("worktree") ? worktree : repo
+              )
+            }
+          }
+        });
       const firstBoundary = fs.statSync(transcriptPath).size;
       expect((cursor as { sourceOffset?: unknown } | null)?.sourceOffset).toBe(
         firstBoundary

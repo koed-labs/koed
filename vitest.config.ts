@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import desktopPackage from "./apps/desktop/package.json" with { type: "json" };
 
@@ -93,6 +93,8 @@ export default defineConfig({
     ]
   },
   test: {
+    // Ignored dependency snapshots and preview checkouts are not test sources.
+    exclude: [...configDefaults.exclude, "scratch/**", ".pnpm-store/**"],
     globals: true,
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],

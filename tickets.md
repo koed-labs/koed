@@ -179,7 +179,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 - [x] Test a continued pre-cutover Conversation and unavailable Git metadata.
 - [x] Update Claude Code integration and ingestion documentation for the new behavior.
 
-**Validation:** Claude watcher tests exercise real Git roots, subdirectories, and two worktrees with the same selected remote, plus unavailable metadata producing an explicit unresolved observation. The watcher and Supported Capture Hook regression run passes 54 tests. The shared PostgreSQL assignment suite now runs for Codex, Claude Code, and Pi and passes 12 cases covering continued capture, conflicting and duplicate observations, User overrides, historical-unresolved state, reset, and owner boundaries. Production typechecking, full test typechecking, and targeted formatting/lint validate the change. Claude integration and ingestion documentation describe the shared boundary and source-time import limitations.
+**Validation:** Claude watcher tests exercise real Git roots, subdirectories, and two worktrees with the same selected remote, plus unavailable metadata producing an explicit unresolved observation. The primary watcher and Supported Capture Hook regression run passes 29 tests. The shared PostgreSQL assignment suite now runs for Codex, Claude Code, and Pi and passes nine cases covering continued capture, conflicting and duplicate observations, User overrides, historical-unresolved state, reset, and owner boundaries. Production typechecking, full test typechecking, and targeted formatting/lint validate the change. Claude integration and ingestion documentation describe the shared boundary and source-time import limitations.
 
 ## 05: Capture Pi sessions with the same assignment rules
 
@@ -187,14 +187,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Integrate the shared identity contract into Pi transcript watching and applicable capture signals.
-- [ ] Demonstrate root, subdirectory, worktree, and non-Git capture through the shared capture boundary.
-- [ ] Preserve recorded identity and User overrides across duplicate, delayed, and conflicting observations.
-- [ ] Continuing an existing unresolved Pi session cannot resolve its old or new turns automatically.
-- [ ] Test unavailable Git metadata and preserve logical-session identity across re-ingestion.
-- [ ] Update the relevant Pi integration and ingestion documentation.
+- [x] Integrate the shared identity contract into Pi transcript watching and applicable capture signals.
+- [x] Demonstrate root, subdirectory, worktree, and non-Git capture through the shared capture boundary.
+- [x] Preserve recorded identity and User overrides across duplicate, delayed, and conflicting observations.
+- [x] Continuing an existing unresolved Pi session cannot resolve its old or new turns automatically.
+- [x] Test unavailable Git metadata and preserve logical-session identity across re-ingestion.
+- [x] Update the relevant Pi integration and ingestion documentation.
+
+**Validation:** Pi capture tests use real repository roots, subdirectories, two worktrees, non-Git Projects, and unavailable metadata. They exercise capture policy pause/resume, durable cursor replay, rewrite generations, restart, and truncation without changing logical-session identity. The primary Pi, Claude, and Capture Hook suites pass 37 cases; the three-provider PostgreSQL assignment contract passes nine cases for recorded assignments, overrides, historical-unresolved state, conflicts, and authorization. Production and full test typechecking, targeted lint, and formatting pass. Normal test discovery now excludes ignored dependency snapshots and scratch preview checkouts. Pi integration and ingestion documentation describe the effective assignment boundary.
 
 ## 06: Capture repository assignments for managed Conversations
 

@@ -722,3 +722,12 @@ and its recorded effective assignment. Neither subsequent records nor auxiliary
 source components replace the assignment or resolve historical-unresolved state.
 Hook signals and filesystem discovery converge through the same Transcript
 Watcher and source registration; the watcher's own cwd never supplies the Project.
+
+### Pi repository context
+
+New live Pi source registrations carry the shared repository observation resolved
+from the authenticated transcript header's cwd. Later pages and resumed cursor
+processing reuse the same logical Captured Session. Repository metadata does not
+change source fingerprints, cursor identities, or the existing append-only and
+rewrite-generation checks. Recorded assignments, User overrides, and historical
+unresolved state remain authoritative across duplicate and delayed ingestion.
