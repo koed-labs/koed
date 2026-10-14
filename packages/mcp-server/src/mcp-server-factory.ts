@@ -190,7 +190,27 @@ export type KoedMcpRuntimeClient = Pick<
   | "startMemoryAnswerTask"
   | "getMemoryAnswerTask"
   | "cancelMemoryAnswerTask"
->;
+> & {
+  /** Bounds `memory_answer_result(wait=true)` observation for this runtime. */
+  readonly memoryAnswerObservation?: {
+    maxObservationMs?: number;
+    pollMs?: number;
+  };
+};
+
+// Static collection outcomes that are safe to show and must not read as denial.
+const passThroughCollectionErrors = new Set([
+  "Memory Answer task has expired.",
+  "Memory Answer observation lifecycle ended. Collect the existing task again if needed."
+]);
+
+// The runtime rejected the request before accepting a task, so the caller may
+// safely correct or retry it. Timeouts and 5xx responses stay ambiguous.
+const isDefinitiveSubmissionRejection = (error: unknown): boolean =>
+  error instanceof LocalAiRuntimeError &&
+  error.statusCode >= 400 &&
+  error.statusCode < 500 &&
+  error.statusCode !== 408;
 
 export interface CreateKoedMcpServerOptions {
   runtimeClient?: KoedMcpRuntimeClient;
@@ -247,6 +267,19 @@ export const createKoedMcpServer = async (
     }
   );
 
+  const markRuntimeAvailable = async (): Promise<void> => {
+    runtimeAvailable = true;
+    if (!capabilitiesNeedRefresh) return;
+    try {
+      runtimeCapabilities = await backendToolCapabilities(runtimeClient);
+      registerExposedTools(runtimeCapabilities);
+      capabilitiesNeedRefresh = false;
+    } catch {
+      // A successful tool call can still return while capability refresh
+      // waits for the Local AI Runtime to finish starting.
+    }
+  };
+
   const registerTool = (toolName: LocalRuntimeToolName): void => {
     if (registeredTools.has(toolName)) return;
     server.registerTool(
@@ -298,8 +331,10 @@ export const createKoedMcpServer = async (
                 context.mcpReq.signal
               );
               validateMemoryAnswerTask(task);
+              await markRuntimeAvailable();
               return jsonResponse({ ...pendingMemoryAnswerTask(task) });
-            } catch {
+            } catch (error) {
+              if (isDefinitiveSubmissionRejection(error)) throw error;
               return toolErrorResponse(
                 "Memory Answer acceptance could not be confirmed; a task may already exist. Do not automatically resubmit. Check Koed availability and authorization."
               );
@@ -314,18 +349,7 @@ export const createKoedMcpServer = async (
             context.mcpReq.signal,
             invocationKey
           );
-          runtimeAvailable = true;
-          if (capabilitiesNeedRefresh) {
-            try {
-              runtimeCapabilities =
-                await backendToolCapabilities(runtimeClient);
-              registerExposedTools(runtimeCapabilities);
-              capabilitiesNeedRefresh = false;
-            } catch {
-              // A successful tool call can still return while capability refresh
-              // waits for the Local AI Runtime to finish starting.
-            }
-          }
+          await markRuntimeAvailable();
           if (toolName === "memory_answer" && response.status !== "pending") {
             const answerInput = input as Record<string, unknown>;
             const detailed =
@@ -400,7 +424,7 @@ export const createKoedMcpServer = async (
               : memoryAnswerCancelToolDescription,
           annotations: {
             readOnlyHint: name === "memory_answer_result",
-            destructiveHint: false
+            destructiveHint: name === "memory_answer_cancel"
           },
           inputSchema:
             name === "memory_answer_result"
@@ -425,6 +449,7 @@ export const createKoedMcpServer = async (
                     },
                     taskId,
                     {
+                      ...runtimeClient.memoryAnswerObservation,
                       signal: context.mcpReq.signal,
                       wait: "wait" in collection && collection.wait === true
                     }
@@ -468,7 +493,7 @@ export const createKoedMcpServer = async (
           } catch (error) {
             return toolErrorResponse(
               error instanceof Error &&
-                error.message === "Memory Answer task has expired."
+                passThroughCollectionErrors.has(error.message)
                 ? error.message
                 : "Memory Answer task is unavailable or access is denied."
             );

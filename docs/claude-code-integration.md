@@ -403,6 +403,5 @@ The conditional-delivery matrix passed on Claude Code 2.1.267 using native print
 execution with its explicit noninteractive background opt-in. Both enabled and
 disabled backgrounding, final statuses, dependency ordering, and waiter
 interruption were checked. This adds no interactive TUI or reopened-session
-guarantee. See
-[validated scope and known gaps](async-memory-answer.md#validated-scope-and-known-gaps)
-for prerequisites and limits.
+guarantee. See [validation](async-memory-answer.md#validation) for what the
+protocol tests and evaluation suite establish.

@@ -6,7 +6,13 @@ export function collectMemoryAnswerTask(
     subscribe?(taskId: string, wake: () => void): () => void;
   },
   taskId: string,
-  options?: { signal?: AbortSignal; wait?: boolean }
+  options?: {
+    signal?: AbortSignal;
+    wait?: boolean;
+    /** Defaults to the delivery's one-day bound. */
+    maxObservationMs?: number;
+    pollMs?: number;
+  }
 ): Promise<MemoryAnswerTask>;
 
 export function isMemoryAnswerTaskId(value: unknown): value is string;

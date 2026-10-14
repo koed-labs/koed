@@ -102,6 +102,10 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     LocalRuntimeCallerContext
   >;
   private readonly maxQueued: number;
+  readonly memoryAnswerObservation: {
+    maxObservationMs: number;
+    pollMs?: number;
+  };
 
   constructor(private readonly options: RemoteBackendRuntimeClientOptions) {
     this.maxQueued = options.maxQueued ?? 100;
@@ -112,6 +116,10 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     ) {
       throw new Error("Remote Memory Answer queue limit must be 1-10000");
     }
+    this.memoryAnswerObservation = {
+      maxObservationMs: options.observationTimeoutMs ?? 60_000,
+      ...(options.pollMs !== undefined ? { pollMs: options.pollMs } : {})
+    };
     this.delivery = new MemoryAnswerDelivery(
       {
         start: (input, caller, key, signal) =>
@@ -119,10 +127,7 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
         get: (id, signal) => this.getMemoryAnswerTask(id, signal),
         cancel: (id, signal) => this.cancelMemoryAnswerTask(id, signal)
       },
-      {
-        maxObservationMs: options.observationTimeoutMs ?? 60_000,
-        pollMs: options.pollMs
-      }
+      this.memoryAnswerObservation
     );
   }
 

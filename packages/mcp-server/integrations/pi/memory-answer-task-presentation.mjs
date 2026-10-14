@@ -4,7 +4,7 @@ import { MemoryAnswerDelivery } from "./memory-answer-delivery.mjs";
 export const collectMemoryAnswerTask = async (
   port,
   taskId,
-  { signal, wait = false } = {}
+  { signal, wait = false, maxObservationMs, pollMs } = {}
 ) => {
   if (typeof wait !== "boolean")
     throw new Error("Memory Answer wait must be a boolean.");
@@ -53,10 +53,10 @@ export const collectMemoryAnswerTask = async (
     return task;
   };
   if (!wait) return await read(taskId);
-  const delivery = new MemoryAnswerDelivery({
-    get: read,
-    subscribe: port.subscribe?.bind(port)
-  });
+  const delivery = new MemoryAnswerDelivery(
+    { get: read, subscribe: port.subscribe?.bind(port) },
+    { maxObservationMs, pollMs }
+  );
   const observed = await delivery.observe(taskId, { signal });
   checkAbort();
   if (observed.kind === "terminal") {

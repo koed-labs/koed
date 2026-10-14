@@ -11,6 +11,8 @@ import {
   createKoedMcpServer,
   type KoedMcpRuntimeClient
 } from "../src/mcp-server-factory.js";
+import { LocalAiRuntimeError } from "../src/local-runtime-client.js";
+import { localRuntimeToolNames } from "../src/local-runtime-protocol.js";
 import { collectMemoryAnswerTask } from "../integrations/pi/memory-answer-task-presentation.mjs";
 
 const connections: Array<{ client: Client; server: StdioServerHandle }> = [];
@@ -376,6 +378,86 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
     expect(JSON.stringify(response)).not.toContain("private");
     expect(runtime.callTool).not.toHaveBeenCalled();
     expect(runtime.startMemoryAnswerTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a definitive queue-full rejection with its retry delay", async () => {
+    const { client, runtime } = await connect({
+      startMemoryAnswerTask: vi.fn(async () => {
+        throw new LocalAiRuntimeError(
+          "Koed Memory Answer queue is full",
+          429,
+          5000
+        );
+      })
+    });
+    const response = await submit(client);
+    expect(response).toMatchObject({
+      isError: true,
+      structuredContent: { statusCode: 429, retryAfterMs: 5000 }
+    });
+    expect(JSON.stringify(response)).not.toContain("could not be confirmed");
+    expect(runtime.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([408, 503])(
+    "keeps HTTP %i submission failures ambiguous",
+    async (statusCode) => {
+      const { client } = await connect({
+        startMemoryAnswerTask: vi.fn(async () => {
+          throw new LocalAiRuntimeError("private upstream detail", statusCode);
+        })
+      });
+      const response = await submit(client);
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response)).toContain("could not be confirmed");
+      expect(JSON.stringify(response)).not.toContain("private");
+    }
+  );
+
+  it("refreshes capabilities after a non-blocking submission recovers the runtime", async () => {
+    const capabilities = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("runtime is starting"))
+      .mockResolvedValue({
+        protocolVersion: 1 as const,
+        curatedMemoryIntakeAvailable: true,
+        supportedTools: localRuntimeToolNames,
+        memoryAnswerTeamBackendAvailable: true
+      });
+    const { client } = await connect({ capabilities });
+    expect((await submit(client)).structuredContent).toMatchObject({
+      status: "pending"
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain(
+      "memory_intake_propose"
+    );
+    expect(capabilities).toHaveBeenCalledTimes(2);
+  });
+
+  it("annotates cancellation as destructive and collection as read-only", async () => {
+    const { client } = await connect();
+    const tools = (await client.listTools()).tools;
+    expect(
+      tools.find((tool) => tool.name === "memory_answer_cancel")?.annotations
+    ).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(
+      tools.find((tool) => tool.name === "memory_answer_result")?.annotations
+    ).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+  });
+
+  it("bounds an explicit wait by the runtime observation policy", async () => {
+    const current = task();
+    const { client, runtime } = await connect({
+      getMemoryAnswerTask: vi.fn(async () => current),
+      memoryAnswerObservation: { maxObservationMs: 60, pollMs: 25 }
+    });
+    const response = await client.callTool({
+      name: "memory_answer_result",
+      arguments: { task_id: current.id, wait: true }
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response)).toContain("observation lifecycle ended");
+    expect(runtime.cancelMemoryAnswerTask).not.toHaveBeenCalled();
   });
 
   it("collects a delayed answer with an explicit blocking wait", async () => {
