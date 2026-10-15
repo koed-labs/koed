@@ -17,12 +17,16 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
-  const pool = createDbPool({ connectionString: databaseUrl });
-  const repository = createMemorySourceRepository(pool);
+  let pool: ReturnType<typeof createDbPool>;
+  let repository: ReturnType<typeof createMemorySourceRepository>;
   const directories: string[] = [];
-  beforeAll(() => runDbMigrations(pool), 60_000);
+  beforeAll(async () => {
+    pool = createDbPool({ connectionString: databaseUrl });
+    repository = createMemorySourceRepository(pool);
+    await runDbMigrations(pool);
+  }, 60_000);
   afterAll(async () => {
-    await pool.end();
+    await pool?.end();
     for (const directory of directories)
       fs.rmSync(directory, { recursive: true, force: true });
   });

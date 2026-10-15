@@ -14,10 +14,14 @@ import { resolveCaptureRepositoryIdentity } from "../src/capture-repository-cont
 
 const databaseUrl = process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)("managed target to capture assignment", () => {
-  const pool = createDbPool({ connectionString: databaseUrl });
-  const repository = createMemorySourceRepository(pool);
-  beforeAll(() => runDbMigrations(pool), 60_000);
-  afterAll(() => pool.end());
+  let pool: ReturnType<typeof createDbPool>;
+  let repository: ReturnType<typeof createMemorySourceRepository>;
+  beforeAll(async () => {
+    pool = createDbPool({ connectionString: databaseUrl });
+    repository = createMemorySourceRepository(pool);
+    await runDbMigrations(pool);
+  }, 60_000);
+  afterAll(() => pool?.end());
   describe.each(["codex", "claude-code", "pi"] as const)(
     "%s",
     (sourceRuntime) => {

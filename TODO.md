@@ -104,49 +104,15 @@ children share lineage and must not count as independent corroboration.
   change. Keep checksum enforcement; do not accept a mismatched artifact or
   change the pinned model merely to make installation succeed.
 
-## Project cutover integration checks (ticket 16)
+## Project release follow-ups
 
-- Transition persisted directed-sync V1 uploads and their durable queue entries
-  before release. Preserve old ciphertext and reconcile a remotely applied but
-  locally unacknowledged package using authenticated receipt metadata. Do not
-  merely reuse its sequence/idempotency key for a different V2 payload: the
-  relationship/sequence uniqueness and target sequence fence would reject it.
-  Prove queued, partially uploaded, and acknowledgement-lost cases without
-  accepting V1 package bodies in the released reader. Target receipt admission
-  and migration 0061 are implemented under ADR 0059, with native absent/partial/
-  applied metadata cases and API authorization tests. Source metadata adoption and
-  worker dispatch now preserve cursors, fence claims, discover exhausted queues,
-  hold unresolved staging against housekeeping, and schedule V2 snapshots. Native
-  metadata and worker tests pass. Genuine pre-cutover V1 fixtures now pass native
-  source/target worker rehearsals through the authenticated API for queued,
-  partial, and acknowledgement-lost packages. The rehearsals preserve old
-  ciphertext and raw memory, consume the old sequence, and complete V2 at the
-  next sequence with unresolved history. The API chunk schema now requires V2
-  metadata. Migration 0062 now activates the one-time assignment transition. Native tests cover migration replay, capture continuation, reassignment/reset, preserved Team snapshots, and retained PDS source/receiver upgrades. The wider integration audit remains open.
+- Release the locally validated Project cutover as one coordinated change.
+  The approved minor changeset and acceptance evidence are recorded in
+  `docs/project-cutover-validation.md`. Push, PR creation, and main merge remain
+  separate release actions.
 
-- Coordinate the directed Captured Session Sync snapshot extension across every
-  producer, consumer, admission schema, and fixture before activation. Make the
-  explicit unresolved/portable snapshot mandatory in the released profile and
-  version its wire semantics; remove the preparatory optional-field path.
-  Include the upload manifest's repository snapshot hash and remove preparatory
-  optional internal delta/ack fields when all producers and fixtures are aligned.
-
-- Finish the signed source-profile transition for already-published PDS
-  checkpoint chains. Cumulative checkpoint V4 baselines and the pre-0058 receiver
-  migration tests are implemented under ADR 0058. The old source publisher
-  transition now verifies an unchanged-prefix baseline followed by resumed capture.
-  Closed-source V3 now signs an immutable closure boundary; genuine V2 closed
-  source and V3 wire fixtures are retained. Migration 0059 and the native closed
-  source test verify automatic republication with immutable old provenance.
-  Native old-receiver migration validation now proves signed-boundary admission,
-  raw-source reuse, stable identity, explicit override preservation, and reset to
-  unresolved history. Migration 0060 now supersedes pending old-profile PDS
-  outbox work atomically with publication, preserves ACK and transport history,
-  and fences claims, reader access, manual retries, recipient refresh, and wake
-  scheduling. Native fixtures cover in-flight, committed, and acknowledged work.
-  Retain the final integrated two-device rehearsal at release; do not add a legacy
-  reader or automatically resolve historical assignment.
-
-- When integrating the Global branch, use a PDS replica's verified captured branch
-  observation for branch preference, alongside the local effective-assignment
-  check. Do not infer branch agreement merely from an imported automatic identity.
+- Integrate the previewed Global work after the ticket 16 checkpoint. Use a PDS
+  replica's verified captured branch observation for branch preference, alongside
+  the local effective-assignment check. Do not infer branch agreement merely from
+  an imported automatic identity. Finish the Personal and Team Global acceptance
+  checks before marking tickets 17 and 18 complete.

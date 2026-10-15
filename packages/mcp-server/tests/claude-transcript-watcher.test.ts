@@ -66,6 +66,11 @@ import {
 const temporaryDirectories: string[] = [];
 
 beforeEach(() => {
+  const koedHome = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-claude-profile-")
+  );
+  temporaryDirectories.push(koedHome);
+  vi.stubEnv("KOED_HOME", koedHome);
   filesystemRace.failReaddirPath = null;
   filesystemRace.remainingFailures = 0;
   listSubagents.mockResolvedValue([]);
@@ -79,6 +84,7 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+  vi.unstubAllEnvs();
 });
 
 const fixture = () => {

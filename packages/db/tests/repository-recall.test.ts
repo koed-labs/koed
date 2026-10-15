@@ -208,15 +208,16 @@ describe.skipIf(!databaseUrl)(
         index === 0 ? 1 : 0
       );
       vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.fixture");
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            model: "qwen3-0.6b",
-            dimensions: 1024,
-            vectors: [vector]
-          }),
-          { status: 200 }
-        )
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "qwen3-0.6b",
+              dimensions: 1024,
+              vectors: [vector]
+            }),
+            { status: 200 }
+          )
       );
       const sources = await repo.listSourcesNeedingEmbeddings(10000);
       const ids = new Set([first.event.id, clone.event.id, other.event.id]);
@@ -344,6 +345,24 @@ describe.skipIf(!databaseUrl)(
         projectName: "Unresolved history",
         projectPath: null
       });
+      for (const domain of ["global", "session"] as const) {
+        const unresolvedRecall = await createMemoryEngine(repo).searchMemory({
+          requesterContext: actor,
+          query: "cobalt copper",
+          scope: "personal",
+          searchDomain: domain,
+          ...(domain === "session" ? { sessionId: clone.session.id } : {}),
+          retrievalStage: "raw_fallback_search",
+          limit: 10
+        });
+        expect(JSON.stringify(unresolvedRecall), domain).toContain(
+          clone.event.id
+        );
+        if (domain === "session")
+          expect(
+            unresolvedRecall.results.map((entry) => entry.sourceId)
+          ).not.toContain(other.event.id);
+      }
     });
   }
 );

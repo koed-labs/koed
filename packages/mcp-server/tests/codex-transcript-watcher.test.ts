@@ -19,7 +19,7 @@ import fs, {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexHistoricalCandidate } from "../src/codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "../src/codex-compressed-transcript.js";
 
@@ -54,11 +54,16 @@ const temporaryDirectory = (): string => {
   return directory;
 };
 
+beforeEach(() => {
+  vi.stubEnv("KOED_HOME", temporaryDirectory());
+});
+
 afterEach(async () => {
   await Promise.all(watcherHandles.splice(0).map((watcher) => watcher.stop()));
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
+  vi.unstubAllEnvs();
 });
 
 const trackedWatcher = (
