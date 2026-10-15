@@ -891,6 +891,49 @@ describe("local edge upstream routing", () => {
     }
   });
 
+  it("routes only bounded recurring task operations to the selected authority", () => {
+    const id = "7bd960fe-6ff0-4bff-8101-4232aa61cb69";
+    for (const [method, path] of [
+      [
+        "GET",
+        `/v1/personal-agents/${id}/recurring-tasks?limit=100&before=${id}`
+      ],
+      ["POST", `/v1/personal-agents/${id}/recurring-tasks`],
+      ["GET", `/v1/recurring-agent-tasks/${id}`],
+      ["PATCH", `/v1/recurring-agent-tasks/${id}`],
+      ["POST", `/v1/recurring-agent-tasks/${id}/control`],
+      ["POST", `/v1/recurring-agent-tasks/${id}/run-now`],
+      [
+        "GET",
+        `/v1/recurring-agent-tasks/${id}/occurrences?limit=50&before=${id}`
+      ],
+      ["POST", "/v1/managed-conversation-runner/recurring-agent-tasks/claim"]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).not.toThrow();
+    }
+    for (const [method, path] of [
+      ["DELETE", `/v1/recurring-agent-tasks/${id}`],
+      ["POST", `/v1/recurring-agent-tasks/${id}/complete`],
+      ["GET", `/v1/recurring-agent-tasks/${id}?owner=other`],
+      ["GET", `/v1/recurring-agent-tasks/${id}/occurrences?limit=51`],
+      ["GET", `/v1/personal-agents/${id}/recurring-tasks?limit=101`],
+      ["GET", `/v1/personal-agents/${id}/recurring-tasks?before=invalid`],
+      ["GET", `/v1/personal-agents/${id}/recurring-tasks?limit=1&limit=2`],
+      ["POST", `/v1/personal-agents/not-a-uuid/recurring-tasks`],
+      ["GET", "/v1/managed-conversation-runner/recurring-agent-tasks/claim"],
+      [
+        "POST",
+        "/v1/managed-conversation-runner/recurring-agent-tasks/claim?device=other"
+      ]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).toThrow();
+    }
+  });
+
   it("allows bounded Personal Agent library routes through managed execution credentials", () => {
     const agentId = "7bd960fe-6ff0-4bff-8101-4232aa61cb69";
     const allowed: Array<["GET" | "POST" | "PATCH", string]> = [

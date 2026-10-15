@@ -84,6 +84,13 @@ describe("Managed Conversation runtime coordinator", () => {
       koedHome: home,
       envelopeEncryptionProvider: {} as never,
       commandWakePool: {} as never,
+      fetch: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ occurrence: null }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          })
+      ) as typeof globalThis.fetch,
       logger: pino({ enabled: false }),
       createService: createService as never,
       resolveAuthority: () => authority

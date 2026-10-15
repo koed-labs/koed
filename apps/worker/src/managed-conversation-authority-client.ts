@@ -14,7 +14,9 @@ import type {
 } from "@koed/db";
 import {
   fetchBoundedJsonObject,
+  recurringAgentOccurrenceSchema,
   upstreamApiUrl,
+  type RecurringAgentOccurrence,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
@@ -120,7 +122,15 @@ export type ManagedConversationAuthorityRepository = Pick<
 export type ManagedConversationAuthorityClient =
   ManagedConversationAuthorityRepository & {
     personalAgentChatRunner: PersonalAgentChatRunnerAuthority;
+    recurringAgentTaskRunner: RecurringAgentTaskRunnerAuthority;
   };
+
+export interface RecurringAgentTaskRunnerAuthority {
+  claimNext(input: {
+    runnerId: string;
+    leaseMs: number;
+  }): Promise<RecurringAgentOccurrence | null>;
+}
 
 class ManagedConversationAuthorityError extends Error {
   readonly transient: boolean;
@@ -375,8 +385,21 @@ export const createManagedConversationAuthorityClient = (options: {
     }
   };
 
+  const recurringAgentTaskRunner: RecurringAgentTaskRunnerAuthority = {
+    async claimNext(input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/recurring-agent-tasks/claim",
+        { runnerId: input.runnerId, leaseMs: input.leaseMs }
+      );
+      if (payload.occurrence === null) return null;
+      return recurringAgentOccurrenceSchema.parse(payload.occurrence);
+    }
+  };
+
   return {
     personalAgentChatRunner,
+    recurringAgentTaskRunner,
     async getPersonalAgentExecutionJob(_actor, jobId) {
       const payload = await request(
         "GET",

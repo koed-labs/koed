@@ -155,6 +155,55 @@ describe("Managed Conversation authority client", () => {
     expect(remoteClaim).toHaveBeenCalledOnce();
   });
 
+  it("claims recurring occurrences from the selected authority with only runner scope", async () => {
+    const occurrence = {
+      id: "00000000-0000-4000-8000-000000000081",
+      taskId: "00000000-0000-4000-8000-000000000082",
+      taskRevision: 3,
+      trigger: "scheduled",
+      scheduledAt: "2026-10-15T10:00:00.000Z",
+      status: "dispatched",
+      conversationId: "00000000-0000-4000-8000-000000000081",
+      messageId: "00000000-0000-4000-8000-000000000083",
+      deliveryId: "00000000-0000-4000-8000-000000000084",
+      executionId: "00000000-0000-4000-8000-000000000085",
+      errorCode: null,
+      createdAt: "2026-10-15T10:00:00.000Z",
+      updatedAt: "2026-10-15T10:00:01.000Z",
+      completedAt: null
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ occurrence }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device bound-instance",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await expect(
+      client.recurringAgentTaskRunner.claimNext({
+        runnerId: "recurring-agent-task:test",
+        leaseMs: 120_000
+      })
+    ).resolves.toEqual(occurrence);
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+      "https://team.example.test/v1/managed-conversation-runner/recurring-agent-tasks/claim"
+    );
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      runnerId: "recurring-agent-task:test",
+      leaseMs: 120_000
+    });
+    expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: "Koed-Device bound-instance"
+    });
+  });
+
   it("routes every hosted Personal Agent job and attempt operation to authority with no local fallback", async () => {
     const localMethods = Object.fromEntries(
       [

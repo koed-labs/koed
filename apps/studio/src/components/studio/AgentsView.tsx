@@ -1209,6 +1209,10 @@ export function AgentsView({
             cloneLoading={cloneLoadingId === selected.id}
             restoring={restoringId === selected.id}
             lifecycleError={lifecycleError}
+            ownerVerified={Boolean(
+              draftScope && draftScope.ownerId === selected.ownerId
+            )}
+            ownerAuthorityKey={`${draftScope?.backendId ?? "unverified"}:${draftScope?.ownerId ?? "unverified"}`}
             teamAvailability={
               selected.lifecycle === "active" && draftScope ? (
                 <AgentTeamAvailability

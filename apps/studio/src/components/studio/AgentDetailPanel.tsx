@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
 import { Archive, Award, Copy, Pencil, Sparkles, X } from "lucide-react";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import { Tooltip } from "@/components/Tooltip";
 import { relativeTime } from "@/lib/collab";
+import { RecurringAgentTasks } from "./RecurringAgentTasks";
 import {
   milestonesFor,
   relationshipNarrative,
@@ -39,7 +40,9 @@ export function AgentDetailPanel({
   cloneLoading,
   restoring,
   lifecycleError,
-  teamAvailability
+  teamAvailability,
+  ownerVerified,
+  ownerAuthorityKey
 }: {
   agent: PersonalAgent;
   loading: boolean;
@@ -59,7 +62,10 @@ export function AgentDetailPanel({
   restoring: boolean;
   lifecycleError: string | null;
   teamAvailability?: ReactNode;
+  ownerVerified: boolean;
+  ownerAuthorityKey: string;
 }) {
+  const detailInstanceId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const completedJobs = agent.jobs.filter((job) => job.state === "succeeded");
   const runningNow = agent.stats
@@ -466,6 +472,14 @@ export function AgentDetailPanel({
           </section>
         </>
       )}
+      <RecurringAgentTasks
+        key={`${detailInstanceId}:${ownerAuthorityKey}:${agent.id}`}
+        agentId={agent.id}
+        agentName={agent.name}
+        agentActive={agent.lifecycle === "active"}
+        ownerVerified={ownerVerified}
+        onOpenConversation={onOpenConversation}
+      />
       {teamAvailability}
     </aside>
   );

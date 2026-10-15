@@ -5,7 +5,8 @@ import {
   handlePersonalAgents,
   handlePersonalConversations,
   handlePersonalAgentRoleTemplates,
-  handleTeamAgentRequests
+  handleTeamAgentRequests,
+  handleRecurringAgentTasks
 } from "./personal-agents-http.mjs";
 
 async function call(overrides = {}) {
@@ -49,6 +50,171 @@ test("agent proxy forwards only to local owner-authenticated API", async () => {
     }
   });
   assert.equal(result.status, 201);
+});
+
+async function recurringRoute({
+  path,
+  method = "GET",
+  body,
+  routeFamily = "personal-agents",
+  validCsrf = () => true,
+  fetchImpl = async () => Response.json({ tasks: [] })
+}) {
+  let result;
+  const request = Readable.from(
+    body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
+  );
+  request.method = method;
+  request.headers = {
+    "content-type": "application/json",
+    "x-studio-csrf": "csrf"
+  };
+  const handler =
+    routeFamily === "recurring-agent-tasks"
+      ? handleRecurringAgentTasks
+      : handlePersonalAgents;
+  await handler({
+    request,
+    url: new URL(`http://localhost${path}`),
+    routeFamily,
+    validCsrf,
+    resolveToken: async () => "secret",
+    apiBase: "http://127.0.0.1:43300",
+    fetchImpl,
+    send: (status, responseBody) => {
+      result = { status, body: responseBody };
+    }
+  });
+  return result;
+}
+
+test("recurring task collection forwards only bounded owner routes and UUID cursors", async () => {
+  const cursor = "11111111-1111-4111-8111-111111111111";
+  let forwarded;
+  const result = await recurringRoute({
+    path: `/studio-api/personal-agents/${cursor}/recurring-tasks?limit=100&before=${cursor}`,
+    fetchImpl: async (url, init) => {
+      forwarded = { url: url.href, method: init.method };
+      return Response.json({ tasks: [], nextCursor: null });
+    }
+  });
+  assert.deepEqual(forwarded, {
+    url: `http://127.0.0.1:43300/v1/personal-agents/${cursor}/recurring-tasks?limit=100&before=${cursor}`,
+    method: "GET"
+  });
+  assert.equal(result.status, 200);
+  assert.equal(
+    (
+      await recurringRoute({
+        path: `/studio-api/personal-agents/${cursor}/recurring-tasks?limit=100&unexpected=1`,
+        fetchImpl: () => assert.fail("invalid query must not reach API")
+      })
+    ).status,
+    400
+  );
+});
+
+test("recurring task create and control writes require CSRF", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const create = await recurringRoute({
+    path: `/studio-api/personal-agents/${agentId}/recurring-tasks`,
+    method: "POST",
+    body: { requestId: "33333333-3333-4333-8333-333333333333" },
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("CSRF must be checked before forwarding")
+  });
+  const control = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}/control`,
+    routeFamily: "recurring-agent-tasks",
+    method: "POST",
+    body: { action: "pause", expectedRevision: 1 },
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("CSRF must be checked before forwarding")
+  });
+  assert.equal(create.status, 403);
+  assert.equal(control.status, 403);
+});
+
+test("recurring detail, run-now and occurrence history use strict methods and bounded cursor queries", async () => {
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const cursor = "11111111-1111-4111-8111-111111111111";
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: url.href, method: init.method });
+    return Response.json({ task: { id: taskId } });
+  };
+  const detail = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}`,
+    routeFamily: "recurring-agent-tasks",
+    fetchImpl
+  });
+  const manualRun = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}/run-now`,
+    routeFamily: "recurring-agent-tasks",
+    method: "POST",
+    body: { requestId: cursor, expectedRevision: 1 },
+    fetchImpl
+  });
+  const history = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}/occurrences?limit=50&before=${cursor}`,
+    routeFamily: "recurring-agent-tasks",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.href, method: init.method });
+      return Response.json({ occurrences: [], nextCursor: null });
+    }
+  });
+  assert.equal(detail.status, 200);
+  assert.equal(manualRun.status, 200);
+  assert.equal(history.status, 200);
+  assert.deepEqual(calls, [
+    {
+      url: `http://127.0.0.1:43300/v1/recurring-agent-tasks/${taskId}`,
+      method: "GET"
+    },
+    {
+      url: `http://127.0.0.1:43300/v1/recurring-agent-tasks/${taskId}/run-now`,
+      method: "POST"
+    },
+    {
+      url: `http://127.0.0.1:43300/v1/recurring-agent-tasks/${taskId}/occurrences?limit=50&before=${cursor}`,
+      method: "GET"
+    }
+  ]);
+  assert.equal(
+    (
+      await recurringRoute({
+        path: `/studio-api/recurring-agent-tasks/${taskId}/occurrences?before=bad`,
+        routeFamily: "recurring-agent-tasks",
+        fetchImpl: () => assert.fail("invalid cursor must not reach API")
+      })
+    ).status,
+    400
+  );
+});
+
+test("recurring task gateway hides upstream details and bounds history pages", async () => {
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const hidden = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}`,
+    routeFamily: "recurring-agent-tasks",
+    fetchImpl: async () =>
+      Response.json(
+        { error: "/Users/private/provider/secret" },
+        { status: 503 }
+      )
+  });
+  assert.doesNotMatch(JSON.stringify(hidden.body), /Users\/private|provider/);
+  const overLimit = await recurringRoute({
+    path: `/studio-api/recurring-agent-tasks/${taskId}/occurrences?limit=50`,
+    routeFamily: "recurring-agent-tasks",
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ data: "x".repeat(2 * 1024 * 1024 + 1) }), {
+        headers: { "content-type": "application/json" }
+      })
+  });
+  assert.equal(overLimit.status, 503);
+  assert.match(String(overLimit.body.error), /Recurring tasks are unavailable/);
 });
 
 test("Personal removal proxy enforces CSRF and forwards the owner-scoped API route", async () => {

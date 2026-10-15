@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { registerRecurringAgentTaskRoutes } from "../recurring-agent-tasks/routes.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -2295,6 +2297,267 @@ export const registerManagedConversationRoutes = (
     })
     .strict();
 
+  // Both interactive and recurring work use the same target, Client, Project,
+  // permission and Agent-context checks before the native chat transaction.
+  const preparePersonalConversationSubmission = async (
+    request: FastifyRequest,
+    ownerUserId: string,
+    input: z.infer<typeof personalAgentChatSubmitSchema>
+  ) => {
+    const repository = context.requireRepository();
+    const localRunner = localExecutionProfiles.has(
+      context.config.deploymentProfile
+    )
+      ? await runnerIdentity(request)
+      : null;
+    const target: {
+      deviceId: string;
+      deploymentId: string;
+      label?: string | null;
+      sourceDeviceCredentialId?: string | null;
+    } | null =
+      localRunner?.deviceId === input.context.targetDeviceId
+        ? localRunner
+        : ((
+            await targetDevices(
+              repository,
+              ownerUserId,
+              await requestingDeviceId(request)
+            )
+          ).find(
+            (candidate) => candidate.deviceId === input.context.targetDeviceId
+          ) ?? null);
+    if (!target) {
+      throw Object.assign(
+        new Error(
+          "Target Personal Device is not eligible for managed execution"
+        ),
+        { statusCode: 403 }
+      );
+    }
+    const [instances, credentials] = await Promise.all([
+      repository.listAiClientInstances({ userId: ownerUserId }),
+      repository.listDeviceCredentials({ userId: ownerUserId })
+    ]);
+    const normalizedRecipients = [];
+    const preparedAgentContexts: Record<string, unknown> = {};
+    for (const recipient of input.recipients) {
+      const localTarget =
+        localRunner !== null && localRunner.deviceId === target.deviceId;
+      const selectedInstance = instances.find(
+        (candidate) =>
+          candidate.driverId === recipient.provider &&
+          (localTarget
+            ? candidate.instanceId === recipient.aiClientInstanceId &&
+              candidate.sourceDeviceCredentialId === null
+            : candidate.hostedInstanceId === recipient.aiClientInstanceId &&
+              candidate.sourceDeviceCredentialId !== null)
+      );
+      const sourceCredential = credentials.find(
+        (credential) =>
+          credential.id === selectedInstance?.sourceDeviceCredentialId &&
+          credential.deviceInstanceId === target.deviceId &&
+          protocolDeploymentId(credential.metadata) === target.deploymentId &&
+          credential.revokedAt === null &&
+          credential.operationFamilies.includes("managed_execution") &&
+          (credential.expiresAt === null ||
+            Date.parse(credential.expiresAt) > Date.now())
+      );
+      if (!selectedInstance || (!localTarget && !sourceCredential)) {
+        throw managedCapabilityUnavailable(
+          "Selected AI Client instance is not published by the target runner"
+        );
+      }
+      const normalized = {
+        ...recipient,
+        aiClientInstanceId: selectedInstance.instanceId
+      };
+      if (!isSupportedAiClientDriverId(normalized.provider)) {
+        throw managedCapabilityUnavailable(
+          "Selected AI Client driver is unsupported"
+        );
+      }
+      const settings = {
+        provider: normalized.provider as z.infer<
+          typeof startSchema
+        >["provider"],
+        aiClientInstanceId: normalized.aiClientInstanceId,
+        model: normalized.model,
+        reasoningEffort: normalized.reasoningEffort,
+        permissionMode: normalized.permissionMode
+      };
+      if (localTarget) {
+        await assertLocalLaunchSelection(
+          repository,
+          ownerUserId,
+          {
+            ...settings,
+            projectId: input.context.projectId,
+            contextKind: input.context.contextKind,
+            runnerKind: "local_device",
+            idempotencyKey: input.requestId
+          },
+          null
+        );
+      } else {
+        await assertDeferredLaunchSelection(
+          repository,
+          ownerUserId,
+          settings,
+          sourceCredential!.id
+        );
+        await assertManagedCapability(repository, ownerUserId, {
+          provider: normalized.provider,
+          aiClientInstanceId: normalized.aiClientInstanceId,
+          capability: aiClientCapabilityIds.managedConversationStart,
+          runnerDeviceId: target.deviceId,
+          runnerDeploymentId: target.deploymentId,
+          sourceDeviceCredentialId: sourceCredential!.id
+        });
+      }
+      if (
+        normalized.selectedResourceIds.length > 0 &&
+        normalized.selectedResourceHostedInstanceId !==
+          selectedInstance.hostedInstanceId
+      ) {
+        throw Object.assign(
+          new Error("Selected AI Client resources belong to another instance"),
+          { statusCode: 409 }
+        );
+      }
+      normalizedRecipients.push(normalized);
+      if (recipient.kind === "agent") {
+        const turnContext = await buildPersonalAgentTurnContext({
+          repository,
+          ownerUserId: ownerUserId,
+          agentId: recipient.agentId,
+          expectedAgentVersion: recipient.agentVersion,
+          projectId: input.context.projectId
+        });
+        preparedAgentContexts[recipient.agentId] = turnContext.context;
+      }
+    }
+    if (input.sourceExecutionId) {
+      const source = await repository.getManagedConversationExecution(
+        { userId: ownerUserId },
+        input.sourceExecutionId
+      );
+      if (
+        !source ||
+        source.projectId !== input.context.projectId ||
+        source.runnerDeviceId !== target.deviceId ||
+        source.runnerDeploymentId !== target.deploymentId
+      ) {
+        throw Object.assign(
+          new Error("Source conversation does not match this verified target"),
+          { statusCode: 409 }
+        );
+      }
+      const latest =
+        await repository.getLatestManagedConversationCommandForExecution(
+          { userId: ownerUserId },
+          input.sourceExecutionId
+        );
+      if (
+        (await repository.hasIndeterminateManagedConversationPrompt(
+          { userId: ownerUserId },
+          {
+            executionId: input.sourceExecutionId,
+            executionGeneration: source.executionGeneration
+          }
+        )) ||
+        (latest?.commandKind === "prompt" &&
+          ["queued", "dispatching", "indeterminate"].includes(latest.state))
+      ) {
+        throw Object.assign(
+          new Error(
+            "Source conversation has an active or indeterminate prompt"
+          ),
+          { statusCode: 409 }
+        );
+      }
+    }
+    return {
+      targetDeploymentId: target.deploymentId,
+      recipients: normalizedRecipients,
+      preparedAgentContexts
+    };
+  };
+  const submitNativeMessage = async (
+    request: FastifyRequest,
+    ownerUserId: string,
+    conversationId: string,
+    input: z.infer<typeof personalAgentChatSubmitSchema>
+  ): Promise<z.infer<typeof personalAgentChatSubmitResponseSchema>> => {
+    const prepared = await preparePersonalConversationSubmission(
+      request,
+      ownerUserId,
+      input
+    );
+    return personalAgentChatSubmitResponseSchema.parse(
+      await context
+        .requireRepository()
+        .submitPersonalAgentChatMessage(
+          { userId: ownerUserId },
+          { ...input, conversationId, ...prepared }
+        )
+    );
+  };
+
+  registerRecurringAgentTaskRoutes(app, context, {
+    authenticateOwner: async (request) => ({
+      userId: (await authenticateManaged(request)).id
+    }),
+    authenticateRunner: async (request) => {
+      const user = await authenticateManaged(request);
+      const identity = await runnerIdentity(request);
+      return {
+        userId: user.id,
+        deviceId: identity.deviceId,
+        deploymentId: identity.deploymentId
+      };
+    },
+    submitNativeMessage,
+    validateLaunch: async (
+      request,
+      ownerUserId,
+      execution,
+      taskContext,
+      expectedTargetDeploymentId
+    ) => {
+      const prepared = await preparePersonalConversationSubmission(
+        request,
+        ownerUserId,
+        {
+          requestId: randomUUID(),
+          text: "Validate recurring task execution settings",
+          context: { ...taskContext, targetDeviceId: execution.targetDeviceId },
+          recipients: [
+            {
+              kind: "generic",
+              agentId: null,
+              agentVersion: null,
+              ...execution,
+              selectedResourceIds: []
+            }
+          ]
+        }
+      );
+      if (
+        expectedTargetDeploymentId &&
+        prepared.targetDeploymentId !== expectedTargetDeploymentId
+      )
+        throw Object.assign(new Error("Recurring task target changed"), {
+          statusCode: 409
+        });
+      return {
+        targetDeploymentId: prepared.targetDeploymentId,
+        canonicalAiClientInstanceId: prepared.recipients[0]!.aiClientInstanceId
+      };
+    },
+    proxyManaged
+  });
+
   app.get(
     "/v1/personal-conversations",
     { preHandler: managedConversationReadRateLimit },
@@ -2373,194 +2636,7 @@ export const registerManagedConversationRoutes = (
           .status(proxied.status)
           .send(personalAgentChatSubmitResponseSchema.parse(proxied.payload));
 
-      const repository = context.requireRepository();
-      const localRunner = localExecutionProfiles.has(
-        context.config.deploymentProfile
-      )
-        ? await runnerIdentity(request)
-        : null;
-      const target: {
-        deviceId: string;
-        deploymentId: string;
-        label?: string | null;
-        sourceDeviceCredentialId?: string | null;
-      } | null =
-        localRunner?.deviceId === input.context.targetDeviceId
-          ? localRunner
-          : ((
-              await targetDevices(
-                repository,
-                user.id,
-                await requestingDeviceId(request)
-              )
-            ).find(
-              (candidate) => candidate.deviceId === input.context.targetDeviceId
-            ) ?? null);
-      if (!target) {
-        throw Object.assign(
-          new Error(
-            "Target Personal Device is not eligible for managed execution"
-          ),
-          { statusCode: 403 }
-        );
-      }
-      const [instances, credentials] = await Promise.all([
-        repository.listAiClientInstances({ userId: user.id }),
-        repository.listDeviceCredentials({ userId: user.id })
-      ]);
-      const normalizedRecipients = [];
-      const preparedAgentContexts: Record<string, unknown> = {};
-      for (const recipient of input.recipients) {
-        const localTarget =
-          localRunner !== null && localRunner.deviceId === target.deviceId;
-        const selectedInstance = instances.find(
-          (candidate) =>
-            candidate.driverId === recipient.provider &&
-            (localTarget
-              ? candidate.instanceId === recipient.aiClientInstanceId &&
-                candidate.sourceDeviceCredentialId === null
-              : candidate.hostedInstanceId === recipient.aiClientInstanceId &&
-                candidate.sourceDeviceCredentialId !== null)
-        );
-        const sourceCredential = credentials.find(
-          (credential) =>
-            credential.id === selectedInstance?.sourceDeviceCredentialId &&
-            credential.deviceInstanceId === target.deviceId &&
-            protocolDeploymentId(credential.metadata) === target.deploymentId &&
-            credential.revokedAt === null &&
-            credential.operationFamilies.includes("managed_execution") &&
-            (credential.expiresAt === null ||
-              Date.parse(credential.expiresAt) > Date.now())
-        );
-        if (!selectedInstance || (!localTarget && !sourceCredential)) {
-          throw managedCapabilityUnavailable(
-            "Selected AI Client instance is not published by the target runner"
-          );
-        }
-        const normalized = {
-          ...recipient,
-          aiClientInstanceId: selectedInstance.instanceId
-        };
-        if (!isSupportedAiClientDriverId(normalized.provider)) {
-          throw managedCapabilityUnavailable(
-            "Selected AI Client driver is unsupported"
-          );
-        }
-        const settings = {
-          provider: normalized.provider as z.infer<
-            typeof startSchema
-          >["provider"],
-          aiClientInstanceId: normalized.aiClientInstanceId,
-          model: normalized.model,
-          reasoningEffort: normalized.reasoningEffort,
-          permissionMode: normalized.permissionMode
-        };
-        if (localTarget) {
-          await assertLocalLaunchSelection(
-            repository,
-            user.id,
-            {
-              ...settings,
-              projectId: input.context.projectId,
-              contextKind: input.context.contextKind,
-              runnerKind: "local_device",
-              idempotencyKey: input.requestId
-            },
-            null
-          );
-        } else {
-          await assertDeferredLaunchSelection(
-            repository,
-            user.id,
-            settings,
-            sourceCredential!.id
-          );
-          await assertManagedCapability(repository, user.id, {
-            provider: normalized.provider,
-            aiClientInstanceId: normalized.aiClientInstanceId,
-            capability: aiClientCapabilityIds.managedConversationStart,
-            runnerDeviceId: target.deviceId,
-            runnerDeploymentId: target.deploymentId,
-            sourceDeviceCredentialId: sourceCredential!.id
-          });
-        }
-        if (
-          normalized.selectedResourceIds.length > 0 &&
-          normalized.selectedResourceHostedInstanceId !==
-            selectedInstance.hostedInstanceId
-        ) {
-          throw Object.assign(
-            new Error(
-              "Selected AI Client resources belong to another instance"
-            ),
-            { statusCode: 409 }
-          );
-        }
-        normalizedRecipients.push(normalized);
-        if (recipient.kind === "agent") {
-          const turnContext = await buildPersonalAgentTurnContext({
-            repository,
-            ownerUserId: user.id,
-            agentId: recipient.agentId,
-            expectedAgentVersion: recipient.agentVersion,
-            projectId: input.context.projectId
-          });
-          preparedAgentContexts[recipient.agentId] = turnContext.context;
-        }
-      }
-      if (input.sourceExecutionId) {
-        const source = await repository.getManagedConversationExecution(
-          { userId: user.id },
-          input.sourceExecutionId
-        );
-        if (
-          !source ||
-          source.projectId !== input.context.projectId ||
-          source.runnerDeviceId !== target.deviceId ||
-          source.runnerDeploymentId !== target.deploymentId
-        ) {
-          throw Object.assign(
-            new Error(
-              "Source conversation does not match this verified target"
-            ),
-            { statusCode: 409 }
-          );
-        }
-        const latest =
-          await repository.getLatestManagedConversationCommandForExecution(
-            { userId: user.id },
-            input.sourceExecutionId
-          );
-        if (
-          (await repository.hasIndeterminateManagedConversationPrompt(
-            { userId: user.id },
-            {
-              executionId: input.sourceExecutionId,
-              executionGeneration: source.executionGeneration
-            }
-          )) ||
-          (latest?.commandKind === "prompt" &&
-            ["queued", "dispatching", "indeterminate"].includes(latest.state))
-        ) {
-          throw Object.assign(
-            new Error(
-              "Source conversation has an active or indeterminate prompt"
-            ),
-            { statusCode: 409 }
-          );
-        }
-      }
-      const result = await repository.submitPersonalAgentChatMessage(
-        { userId: user.id },
-        {
-          ...input,
-          conversationId,
-          recipients: normalizedRecipients,
-          targetDeploymentId: target.deploymentId,
-          preparedAgentContexts
-        }
-      );
-      return personalAgentChatSubmitResponseSchema.parse(result);
+      return submitNativeMessage(request, user.id, conversationId, input);
     }
   );
 

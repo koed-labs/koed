@@ -373,6 +373,19 @@ export {
   type CreatePullRequestReviewInput
 } from "./pull-request-repository.js";
 export {
+  createRecurringAgentTaskRepository,
+  type RecurringAgentTaskRepository,
+  type RecurringAgentTaskPage,
+  type RecurringAgentTaskOccurrencePage,
+  type CreateRecurringAgentTaskInput,
+  type UpdateRecurringAgentTaskInput,
+  type ControlRecurringAgentTaskInput,
+  type RecurringAgentRunnerScope,
+  type ClaimedRecurringAgentTaskOccurrence,
+  type RecurringNativeDeliveryState,
+  type RecurringAgentOccurrenceReconciliation
+} from "./recurring-agent-task-repository.js";
+export {
   createAiClientResourceRepository,
   type AiClientResourceRepository,
   type AiClientResourceDiscoveryTarget

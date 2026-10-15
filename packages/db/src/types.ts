@@ -43,6 +43,7 @@ import type { TeamConversationSourceRepository } from "./team-conversation-sourc
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import type { PullRequestRepository } from "./pull-request-repository.js";
 import type { AiClientResourceRepository } from "./ai-client-resource-repository.js";
+import type { RecurringAgentTaskRepository } from "./recurring-agent-task-repository.js";
 
 export type Visibility = "personal";
 
@@ -2026,6 +2027,7 @@ export interface MemorySourceRepository
     PersonalAgentRepository,
     PersonalAgentChatRepository,
     PullRequestRepository,
+    RecurringAgentTaskRepository,
     AiClientResourceRepository,
     PublicSquareRepository,
     SharedMemoryRepository,

@@ -100,6 +100,15 @@ class PersonalAgentPool {
     if (["begin", "commit", "rollback"].includes(sql)) {
       return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
     }
+    // These identity fixtures contain no recurring schedules. Real schedule
+    // retirement and reservation behavior is covered by the disposable DB suite.
+    if (
+      sql.startsWith("select id from recurring_agent_tasks ") ||
+      sql.startsWith("update recurring_agent_tasks ") ||
+      sql.startsWith("update recurring_agent_task_occurrences ")
+    ) {
+      return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
+    }
     if (sql.startsWith("with requested_agents as")) {
       if (sql.includes("personal_agent_chat_deliveries")) {
         this.nativeActivityQueries.push({ sql, values });

@@ -530,12 +530,19 @@ importers:
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+      luxon:
+        specifier: 3.7.2
+        version: 3.7.2
       undici:
         specifier: ^7.28.0
         version: 7.28.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@types/luxon':
+        specifier: 3.7.6
+        version: 3.7.6
 
   packages/ui:
     dependencies:
@@ -2621,6 +2628,9 @@ packages:
 
   '@types/keyv@3.1.4':
     resolution: {integrity: sha512-BQ5aZNSCpj7D6K2ksrRCTmKRLEpnPvWDiLPfoGyhZ++8YtiK9d/3DBKPJgry359X/P1PfruyYwvnvwFjuEiEIg==}
+
+  '@types/luxon@3.7.6':
+    resolution: {integrity: sha512-6KSjliQAXK8ZLgFQO4B7iE4Rpf/B3rItzCFuXezBY/XIAGxOdLd7vRNK9/StRPwiS/yJsVbB7HKpW46B8tcEuQ==}
 
   '@types/mdast@4.0.4':
     resolution: {integrity: sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==}
@@ -8157,6 +8167,8 @@ snapshots:
   '@types/keyv@3.1.4':
     dependencies:
       '@types/node': 25.8.0
+
+  '@types/luxon@3.7.6': {}
 
   '@types/mdast@4.0.4':
     dependencies:

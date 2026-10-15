@@ -2768,6 +2768,13 @@ export const createPersonalAgentRepository = (
         `select pg_advisory_xact_lock(hashtextextended($1, 0))`,
         [`personal-agent:retire:${input.actor.userId}:${input.requestId}`]
       );
+      // Recurring tasks follow task -> Agent -> occurrence lock order. Taking
+      // those task locks first makes retirement and schedule activation atomic.
+      await client.query(
+        `select id from recurring_agent_tasks
+          where owner_user_id=$1 and agent_id=$2 order by id for update`,
+        [input.actor.userId, input.agentId]
+      );
       const current = await client.query<IdentityRow>(
         `select id, owner_user_id, name, role, avatar_reference, lifecycle,
             default_provider, default_model, default_reasoning_effort,
@@ -2819,7 +2826,23 @@ export const createPersonalAgentRepository = (
           retirementFingerprint
         ]
       );
-      return result.rows[0] ? mapIdentity(result.rows[0]) : null;
+      if (!result.rows[0]) return null;
+      await client.query(
+        `update recurring_agent_tasks
+            set status='needs_review',revision=revision+1,next_run_at=null,
+                last_error_code='personal_agent_retired',updated_at=now()
+          where owner_user_id=$1 and agent_id=$2 and status='active'`,
+        [input.actor.userId, input.agentId]
+      );
+      await client.query(
+        `update recurring_agent_task_occurrences
+            set status='canceled',lease_token=null,lease_expires_at=null,
+                claimed_by_runner_id=null,completed_at=now(),updated_at=now()
+          where owner_user_id=$1 and agent_id=$2 and status='reserved'
+            and write_dispatched=false`,
+        [input.actor.userId, input.agentId]
+      );
+      return mapIdentity(result.rows[0]);
     });
 
   const restorePersonalAgent = async (input: {

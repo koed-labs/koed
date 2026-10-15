@@ -1,6 +1,6 @@
 # Current UI integration direction — 2026-10-14
 
-See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–28 replace the historical soul, role-template, Agent Job protocol and parallel-recall direction below. Ticket 29 plans recurring tasks for both Codex and Claude using OpenDots concepts. Ticket 30 tracks retained-UI and release acceptance. Historical completed entries below are evidence, not approval to preserve superseded behavior.
+See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–28 replace the historical soul, role-template, Agent Job protocol and parallel-recall direction below. Ticket 29 implements owner-managed recurring tasks for Codex and Claude using OpenDots concepts; see [scheduling and recovery rules](docs/studio-recurring-agent-tasks.md) and the implementation checkpoint. Its live and deployment acceptance remains open. Ticket 30 tracks retained-UI and release acceptance. Historical completed entries below are evidence, not approval to preserve superseded behavior.
 
 ## Current open tickets
 

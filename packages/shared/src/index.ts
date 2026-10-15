@@ -2221,3 +2221,5 @@ export type {
 } from "./studio-notifications.js";
 
 export { conversationTitleFromPrompt } from "./conversation-title.js";
+
+export * from "./recurring-agent-task-contract.js";

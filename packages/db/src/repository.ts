@@ -87,6 +87,7 @@ import {
 import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import { createPullRequestRepository } from "./pull-request-repository.js";
+import { createRecurringAgentTaskRepository } from "./recurring-agent-task-repository.js";
 import { createAiClientResourceRepository } from "./ai-client-resource-repository.js";
 import {
   codexIdePromptUserText,
@@ -4108,6 +4109,9 @@ export const createMemorySourceRepository = (
       teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
     }),
     ...createPullRequestRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createRecurringAgentTaskRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createAiClientResourceRepository(pool),

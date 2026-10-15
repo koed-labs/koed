@@ -32,7 +32,9 @@ export const ids = {
   unknownAgent: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   teammate: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   subscription: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-  nativePublication: "15151515-1515-4515-8515-151515151515"
+  nativePublication: "15151515-1515-4515-8515-151515151515",
+  recurringTask: "30303030-3030-4030-8030-303030303030",
+  recurringOccurrence: "31313131-3131-4131-8131-313131313131"
 } as const;
 
 const now = new Date().toISOString();
@@ -69,6 +71,7 @@ type SyntheticMessage = {
 
 type SyntheticAgent = {
   id: string;
+  ownerUserId: string;
   name: string;
   role: string;
   soulInstructions: string;
@@ -95,6 +98,7 @@ const agent = (
   lifecycle: SyntheticAgent["lifecycle"] = "active"
 ): SyntheticAgent => ({
   id,
+  ownerUserId: ids.user,
   name,
   role: "Synthetic teammate",
   soulInstructions: "Use clear, concise language.",
@@ -239,6 +243,7 @@ export class SyntheticStudioApi {
   readonly unexpectedReads: string[] = [];
   readonly mutationCounts = new Map<string, number>();
   readonly requestCounts = new Map<string, number>();
+  readonly recurringTaskWrites: Array<Record<string, unknown>> = [];
   private readonly agents = [
     agent(ids.busyAgent, "Busy Reviewer"),
     agent(ids.idleAgent, "Calm Reviewer"),
@@ -250,6 +255,12 @@ export class SyntheticStudioApi {
   private readonly projectConnectionHolds = new Map<string, HeldResponse>();
   private readonly projectConnectionHoldSkips = new Map<string, number>();
   private readonly jobsPageAttempts = new Map<string, number>();
+  private readonly recurringTasks = new Map<string, Record<string, unknown>>();
+  private readonly recurringOccurrences = new Map<
+    string,
+    Array<Record<string, unknown>>
+  >();
+  private readonly recurringTaskListHolds = new Map<string, HeldResponse>();
   private readonly seenClientMessages = new Map<
     string,
     ReturnType<typeof rawMessage>
@@ -313,6 +324,66 @@ export class SyntheticStudioApi {
     };
     this.jobsPageHolds.set(agentId, held);
     return held;
+  }
+
+  holdNextRecurringTaskList(agentId: string): HeldResponse {
+    let markStarted!: () => void;
+    let unblock!: () => void;
+    const held: HeldResponse = {
+      started: new Promise<void>((resolve) => (markStarted = resolve)),
+      waiting: new Promise<void>((resolve) => (unblock = resolve)),
+      begin: () => markStarted(),
+      release: () => unblock()
+    };
+    this.recurringTaskListHolds.set(agentId, held);
+    return held;
+  }
+
+  seedRecurringTask(agentId: string, title: string): void {
+    const createdAt = new Date().toISOString();
+    this.recurringTasks.set(ids.recurringTask, {
+      id: ids.recurringTask,
+      agentId,
+      title,
+      prompt: "Synthetic private recurring instructions.",
+      schedule: {
+        kind: "interval",
+        everyMinutes: 60,
+        anchorAt: createdAt
+      },
+      context: { projectId: null, contextKind: "independent" },
+      execution: {
+        provider: "codex",
+        aiClientInstanceId: "codex.synthetic",
+        targetDeviceId: "synthetic-runner",
+        model: "gpt-6-sol",
+        reasoningEffort: null,
+        permissionMode: "supervised"
+      },
+      status: "paused",
+      revision: 1,
+      nextRunAt: null,
+      lastRunAt: null,
+      lastErrorCode: null,
+      createdAt,
+      updatedAt: createdAt
+    });
+    this.recurringOccurrences.set(ids.recurringTask, []);
+  }
+
+  dispatchLatestRecurringOccurrence(taskId = ids.recurringTask): void {
+    const occurrences = this.recurringOccurrences.get(taskId) ?? [];
+    const latest = occurrences[0];
+    if (!latest) return;
+    this.recurringOccurrences.set(taskId, [
+      {
+        ...latest,
+        status: "dispatched",
+        executionId: ids.recurringOccurrence,
+        updatedAt: new Date().toISOString()
+      },
+      ...occurrences.slice(1)
+    ]);
   }
 
   holdNextProjectConnection(
@@ -451,6 +522,11 @@ export class SyntheticStudioApi {
               nextCursor: null
             },
             { source: "managed_execution", complete: true, nextCursor: null },
+            {
+              source: "native_agent_activity",
+              complete: true,
+              nextCursor: null
+            },
             { source: "personal_agent_job", complete: true, nextCursor: null },
             { source: "pull_request_review", complete: true, nextCursor: null }
           ],
@@ -525,6 +601,79 @@ export class SyntheticStudioApi {
     if (path === "/v1/managed-conversations/access" && method === "GET") {
       await route.fulfill({
         json: { backendId: url.origin, user: { id: ids.user } }
+      });
+      return;
+    }
+    if (path === "/v1/managed-conversations" && method === "GET") {
+      await route.fulfill({
+        json: {
+          executions: [
+            {
+              id: ids.root,
+              projectId: null,
+              provider: "codex",
+              aiClientInstanceId: "codex.synthetic",
+              runnerDeviceId: "synthetic-runner",
+              model: "gpt-6-sol",
+              reasoningEffort: null,
+              permissionMode: "supervised",
+              executionGeneration: 1,
+              stateVersion: 1,
+              state: "running",
+              lastErrorCode: null,
+              createdAt: now,
+              updatedAt: now,
+              startedAt: now,
+              stoppedAt: null
+            }
+          ]
+        }
+      });
+      return;
+    }
+    if (path === "/v1/personal-conversations" && method === "GET") {
+      await route.fulfill({
+        json: { conversations: [], hasMore: false, nextCursor: null }
+      });
+      return;
+    }
+    const hostedExecutionPath = path.match(
+      /^\/v1\/managed-conversations\/([^/]+)\/(runtime|agent-state)$/
+    );
+    if (hostedExecutionPath && method === "GET") {
+      const [, executionId, resource] = hostedExecutionPath;
+      const execution = {
+        id: executionId,
+        projectId: null,
+        provider: "codex",
+        aiClientInstanceId: "codex.synthetic",
+        runnerDeviceId: "synthetic-runner",
+        model: "gpt-6-sol",
+        reasoningEffort: null,
+        permissionMode: "supervised",
+        executionGeneration: 1,
+        stateVersion: 1,
+        state: "running",
+        lastErrorCode: null
+      };
+      await route.fulfill({
+        json:
+          resource === "runtime"
+            ? {
+                execution,
+                items: [],
+                hasIndeterminatePrompt: false,
+                latestCommand: null
+              }
+            : {
+                executionId,
+                executionGeneration: 1,
+                executionState: "running",
+                activeAgentId: null,
+                participants: [],
+                jobs: [],
+                messages: []
+              }
       });
       return;
     }
@@ -642,6 +791,148 @@ export class SyntheticStudioApi {
         .map((agentId) => this.activity(agentId));
       await route.fulfill({ json: { contractVersion: 1, activity } });
       return;
+    }
+    const recurringCollection = path.match(
+      /^\/v1\/personal-agents\/([^/]+)\/recurring-tasks$/
+    );
+    if (recurringCollection) {
+      const [, agentId] = recurringCollection;
+      if (method === "GET") {
+        const held = this.recurringTaskListHolds.get(agentId);
+        if (held) {
+          this.recurringTaskListHolds.delete(agentId);
+          held.begin();
+          await held.waiting;
+        }
+        const tasks = [...this.recurringTasks.values()].filter(
+          (task) => task.agentId === agentId
+        );
+        await route.fulfill({ json: { tasks, nextCursor: null } });
+        return;
+      }
+      if (method === "POST") {
+        const createdAt = new Date().toISOString();
+        const input = body ?? {};
+        const task = {
+          id: ids.recurringTask,
+          agentId,
+          title: input.title,
+          prompt: input.prompt,
+          schedule: input.schedule,
+          context: input.context,
+          execution: input.execution,
+          status: "paused",
+          revision: 1,
+          nextRunAt: null,
+          lastRunAt: null,
+          lastErrorCode: null,
+          createdAt,
+          updatedAt: createdAt
+        };
+        this.recurringTasks.set(ids.recurringTask, task);
+        this.recurringOccurrences.set(ids.recurringTask, []);
+        this.recurringTaskWrites.push({ action: "create", ...input });
+        await this.recordMutation(route, `POST ${path}`);
+        await route.fulfill({ status: 201, json: { task } });
+        return;
+      }
+    }
+    const recurringTaskPath = path.match(
+      /^\/v1\/recurring-agent-tasks\/([^/]+)(?:\/(control|run-now|occurrences))?$/
+    );
+    if (recurringTaskPath) {
+      const [, taskId, action] = recurringTaskPath;
+      const task = this.recurringTasks.get(taskId);
+      if (!task) {
+        await route.fulfill({ status: 404, json: { error: "not_found" } });
+        return;
+      }
+      if (method === "GET" && !action) {
+        await route.fulfill({ json: { task } });
+        return;
+      }
+      if (method === "PATCH" && !action) {
+        const input = body ?? {};
+        const updated = {
+          ...task,
+          title: input.title,
+          prompt: input.prompt,
+          schedule: input.schedule,
+          context: input.context,
+          execution: input.execution,
+          status: "paused",
+          revision: Number(task.revision) + 1,
+          updatedAt: new Date().toISOString()
+        };
+        this.recurringTasks.set(taskId, updated);
+        this.recurringTaskWrites.push({ action: "update", ...input });
+        await this.recordMutation(route, `PATCH ${path}`);
+        await route.fulfill({ json: { task: updated } });
+        return;
+      }
+      if (method === "POST" && action === "control") {
+        const input = body ?? {};
+        const status =
+          input.action === "archive"
+            ? "archived"
+            : input.action === "pause"
+              ? "paused"
+              : "active";
+        const updated = {
+          ...task,
+          status,
+          revision: Number(task.revision) + 1,
+          nextRunAt:
+            status === "active"
+              ? new Date(Date.now() + 60 * 60_000).toISOString()
+              : null,
+          updatedAt: new Date().toISOString()
+        };
+        this.recurringTasks.set(taskId, updated);
+        this.recurringTaskWrites.push({ action: "control", ...input });
+        await this.recordMutation(route, `POST ${path}`);
+        await route.fulfill({ json: { task: updated } });
+        return;
+      }
+      if (method === "POST" && action === "run-now") {
+        const createdAt = new Date().toISOString();
+        const occurrence = {
+          id: ids.recurringOccurrence,
+          taskId,
+          taskRevision: Number(task.revision),
+          trigger: "manual",
+          scheduledAt: createdAt,
+          status: "reserved",
+          conversationId: ids.root,
+          messageId: null,
+          deliveryId: null,
+          executionId: null,
+          errorCode: null,
+          createdAt,
+          updatedAt: createdAt,
+          completedAt: null
+        };
+        this.recurringOccurrences.set(taskId, [occurrence]);
+        this.recurringTasks.set(taskId, {
+          ...task,
+          lastRunAt: createdAt,
+          revision: Number(task.revision) + 1,
+          updatedAt: createdAt
+        });
+        this.recurringTaskWrites.push({ action: "run-now", ...(body ?? {}) });
+        await this.recordMutation(route, `POST ${path}`);
+        await route.fulfill({ json: { occurrence } });
+        return;
+      }
+      if (method === "GET" && action === "occurrences") {
+        await route.fulfill({
+          json: {
+            occurrences: this.recurringOccurrences.get(taskId) ?? [],
+            nextCursor: null
+          }
+        });
+        return;
+      }
     }
     const agentPath = path.match(
       /^\/v1\/personal-agents\/([^/]+)(?:\/(jobs|retire|restore))?$/

@@ -73,12 +73,12 @@ See the [Orys study and backend source map](studio-orys-implementation-study.md)
 | 02                          | Browser-local connection and existing local execution boundary.                                                                                                                         | Browser regression under 30.                                                                                                                                                                                                                 | Implemented for accepted scope.                          |
 | 03                          | Hosted sign-in, backend selection and local runner integration were assembled.                                                                                                          | Complete the recorded two-identity/two-device acceptance: backend switching, membership/revocation, runner availability and disconnect. Own these rows in 03, referenced by 30.                                                              | Testing/acceptance open; no new code gap confirmed here. |
 | 22                          | Shared scoped Skill picker across Studio and Electron, owner-private launch, native availability/execution status, bounded discovery, send-time revalidation and access-change fencing. | Verify live native invocation, reconnect and supported device/hosted paths. Installation and sign-in stay in the original Client; provider execution limits are recorded in the Plugins/Skills checkpoint.                                   | Supported integration implemented; live acceptance open. |
-| 29                          | Reference research and initial recurring-task direction.                                                                                                                                | Settle schedule, time-zone, missed-run, overlap and restart semantics. Implement through native Codex/Claude execution, common Memory and history. Team availability/audience must be explicit before Team use.                              | Planned; scheduler not implemented or enabled.           |
+| 29                          | Owner-managed schedules, encrypted definitions, durable occurrences, native submission/recovery and Studio controls are implemented.                                                    | Validate live Codex/Claude, offline restart, hosted device recovery and packaging/deployment. Latest-only missed runs, overlap prevention, review and private audience rules are implemented; see the recurring-task design.                 | Implementation complete; live acceptance open.           |
 | 30, incorporating former 23 | Focused automated checks and Studio production build pass for the simplification checkpoint.                                                                                            | Release regression on both sides, provider execution, deployment/migrations, packaging and supported platforms. Reference 03's acceptance results rather than counting those tests twice. Retain previous explicit deferrals until resolved. | Testing/release open.                                    |
 
 ## Remaining ticket count
 
-There are 12 distinct open tickets: two require feature work or scope decisions, one has a gated instruction-loading implementation, and nine cover testing/release acceptance.
+There are 12 distinct open tickets: one retains deferred feature scope, one has a gated instruction-loading implementation, and ten cover testing/release acceptance.
 The number counts tickets, not estimated effort. A ticket with both code and tests counts once.
 A surface can remain untested without creating another implementation ticket.
 
@@ -89,9 +89,9 @@ A surface can remain untested without creating another implementation ticket.
 | Shared            | 03, 22, 29, 30                                 | 4     |
 | Total, unique IDs | 03, 04, 12, 13, 15, 16, 19, 20, 22, 27, 29, 30 | 12    |
 
-The three feature/rewiring/gated-implementation tickets are 04, 15 and 29.
-Ticket 04 assessment is complete; the User chose instruction-only Claude loading with permission isolation before enablement. Its hosted catalogue gap and prior live-review deferrals remain explicit. Ticket 22's [implementation checkpoint](studio-plugins-skills-assessment.md#implementation-checkpoint) records the supported integration, provider limits and remaining live acceptance; Client-owned installation and sign-in boundaries remain unchanged. Tickets 15 and 29 retain unresolved scope details. Ticket 27’s approved destination wiring is implemented; its live acceptance remains open.
-The nine testing/release tickets are 03, 12, 13, 16, 19, 20, 22, 27 and 30. Acceptance can reveal further implementation defects.
+The remaining feature/scope and gated-implementation tickets are 15 and 04 respectively.
+Ticket 04 assessment is complete; the User chose instruction-only Claude loading with permission isolation before enablement. Its hosted catalogue gap and prior live-review deferrals remain explicit. Ticket 22's [implementation checkpoint](studio-plugins-skills-assessment.md#implementation-checkpoint) records the supported integration, provider limits and remaining live acceptance; Client-owned installation and sign-in boundaries remain unchanged. Ticket 15 retains its explicit scope deferral. Ticket 29’s approved owner-private implementation and focused checks are complete; live and deployment acceptance remain open. Ticket 27’s approved destination wiring is implemented; its live acceptance remains open.
+The ten testing/release tickets are 03, 12, 13, 16, 19, 20, 22, 27, 29 and 30. Acceptance can reveal further implementation defects.
 
 Tickets 17–18 are consolidated into 16, 21 into 28, and 23 into 30. Subtasks 14a–14c remain within 14.
 Historical local Codex acceptance and explicit deferrals in 04–05 remain recorded. Reopening 04 for assessment does not revoke those accepted results.
@@ -116,7 +116,7 @@ Ticket 04 assessment is recorded in [Project chat assessment](studio-project-cha
 1. Complete the remaining instruction-only Claude enablement gates in 04 and resolve Ticket 15’s explicit feedback deferral.
 2. Validate native channel Agent execution under 13 and private/group Agent execution under 27, including owner/requester/outsider isolation and recovery.
 3. Complete live acceptance for native Public Square 12, PRs 16, Home 19 and For you 20.
-4. Complete recurring tasks 29 and, after its explicit deferral is resolved, Team feedback 15. Validate the supported Plugins/Skills 22 implementation against live Clients and devices.
+4. Validate recurring tasks 29 and, after its explicit deferral is resolved, implement Team feedback 15. Validate the supported Plugins/Skills 22 implementation against live Clients and devices.
 5. Complete 03 and 30 acceptance with separate Personal and Collaboration results.
 
 Run focused tests during each implementation ticket. Final release testing does not replace those completion gates.
@@ -146,6 +146,8 @@ The initial reconciliation added no implementation or live acceptance result. Th
 Inspected CopilotKit/OpenDots main at `625452e06cde74cb25b0ce319e2c1be0488f5a5f` on 2026-10-14. Reference: https://github.com/CopilotKit/OpenDots. Its `src/server/store.ts` persists interval/next-run state, claims runs with leases, schedules repeats after success and retains interrupted/failed runs for explicit review. `src/server/runner.ts` separates scheduling from an injected executor. Its default chat adapter uses an OpenAI-compatible API (`src/server/dot-agent.ts`), not Codex app-server. Claude support is not established by that adapter.
 
 Reuse concepts only initially: schedule separate from execution, durable occurrence identity, explicit pause/resume/Run now, next-run visibility and honest interruption. Adapt execution through Koed’s existing Codex and Claude native adapters. Decide interval versus calendar/time-zone semantics, missed-run behavior, concurrency and restart handling before implementation. An unavailable provider/device must not trigger another account/provider or silently replay uncertain effects. Scheduled runs use the same Memory and progress path and appear in Agent/conversation history. No OpenDots runtime, credential model, Intelligence dependency or separate Memory store is adopted.
+
+Ticket 29's 2026-10-15 implementation follows the [agreed scheduling and recovery rules](studio-recurring-agent-tasks.md), which resolve those initial questions. A follow-up reference check at OpenDots `79b4db192f608cfa6f2976c6f16a160a1a952424` retained interruption review as a useful concept. Koed uses the User-approved fixed cadence and latest-only missed-run policy through its own native execution lifecycle.
 
 ## Validation and data boundaries
 
@@ -309,3 +311,11 @@ The existing minor changeset includes the behavior changes; the assessment has
 no separate changeset, as approved. Native/hosted multi-account and live
 Codex/Claude acceptance remain open, so the count stays 12: three feature tickets,
 one gated implementation and eight testing/release tickets.
+
+## Ticket 29 scheduling and recovery checkpoint, 2026-10-15
+
+The User approved latest-only missed-run recovery, owner-managed private tasks and explicit Team sharing. The [recurring-task design](studio-recurring-agent-tasks.md) records fixed-anchor intervals, daily/weekly time zones, daylight-saving behavior, explicit activation, non-overlap, stable native submission identity and review after uncertain effects. Implemented with Luna Extra High subagents through the existing native Personal chat submission path, without another Job executor or Memory path. The existing minor changeset includes this feature with User approval. This checkpoint does not activate a schedule or certify deployment or live provider acceptance.
+
+Validation for Ticket 29: shared scheduling/contract tests 16; new API route tests 11; existing managed/Personal conversation and upstream routing regression tests 128; worker runner/authority/coordinator tests 23; disposable PostgreSQL recurrence tests 5; existing Agent identity/history tests 21; Studio client tests 7; Studio gateway tests 28; synthetic browser tests 2. Typechecks/build checks pass for shared, DB, API, worker and Studio; Studio production build and DB migration check pass. Release metadata is synchronized. The disposable PostgreSQL cluster was removed; no configured Personal database migration or live schedule was performed. Focused checks do not certify live provider execution, hosted two-device recovery, packaging or other supported platforms.
+
+Scoped lint passes for the new recurring-task code. The existing Agent repository's legacy role-template mapping still has 25 typed-lint errors; the same 25 errors were reproduced from the unchanged branch HEAD in a temporary source copy, which was then removed. This is not a passing whole-repository lint gate.

@@ -4392,6 +4392,180 @@ export const personalAgentIdentityVersions = pgTable(
   ]
 );
 
+/** Durable recurrence definitions. Execution details and prompts stay encrypted. */
+export const recurringAgentTasks = pgTable(
+  "recurring_agent_tasks",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").notNull(),
+    title: text("title").notNull(),
+    schedule: jsonb("schedule").notNull(),
+    targetDeviceId: text("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    encryptedDefinition: jsonb("encrypted_definition")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    status: text("status").notNull().default("paused"),
+    revision: integer("revision").notNull().default(1),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    lastErrorCode: text("last_error_code"),
+    creationRequestId: uuid("creation_request_id").notNull(),
+    creationRequestDigest: text("creation_request_digest").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "recurring_agent_tasks_owner_agent_fk"
+    }).onDelete("cascade"),
+    unique("recurring_agent_tasks_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("recurring_agent_tasks_owner_create_request_unique").on(
+      table.ownerUserId,
+      table.creationRequestId
+    ),
+    index("recurring_agent_tasks_owner_agent_updated_idx").on(
+      table.ownerUserId,
+      table.agentId,
+      table.updatedAt.desc(),
+      table.id.desc()
+    ),
+    index("recurring_agent_tasks_due_idx")
+      .on(table.targetDeviceId, table.nextRunAt, table.id)
+      .where(sql`${table.status} = 'active'`),
+    check(
+      "recurring_agent_tasks_title_check",
+      sql`length(trim(${table.title})) between 1 and 120`
+    ),
+    check(
+      "recurring_agent_tasks_status_check",
+      sql`${table.status} in ('paused','active','needs_review','archived')`
+    ),
+    check(
+      "recurring_agent_tasks_revision_check",
+      sql`${table.revision} > 0 and ${table.creationRequestDigest} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "recurring_agent_tasks_active_due_check",
+      sql`(${table.status} = 'active' and ${table.nextRunAt} is not null) or (${table.status} <> 'active' and ${table.nextRunAt} is null)`
+    )
+  ]
+);
+
+/** An occurrence is an idempotency reservation linked to the existing Personal chat pipeline. */
+export const recurringAgentTaskOccurrences = pgTable(
+  "recurring_agent_task_occurrences",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    taskId: uuid("task_id").notNull(),
+    taskRevision: integer("task_revision").notNull(),
+    trigger: text("trigger").notNull(),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("reserved"),
+    conversationId: uuid("conversation_id").notNull(),
+    requestId: uuid("request_id").notNull(),
+    targetDeviceId: text("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    encryptedLaunch: jsonb("encrypted_launch")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    messageId: uuid("message_id"),
+    deliveryId: uuid("delivery_id"),
+    executionId: uuid("execution_id"),
+    commandId: uuid("command_id"),
+    errorCode: text("error_code"),
+    writeDispatched: boolean("write_dispatched").notNull().default(false),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    claimedByRunnerId: text("claimed_by_runner_id"),
+    reconciliationCheckedAt: timestamp("reconciliation_checked_at", {
+      withTimezone: true
+    }),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.taskId, table.ownerUserId],
+      foreignColumns: [recurringAgentTasks.id, recurringAgentTasks.ownerUserId],
+      name: "recurring_agent_task_occurrences_task_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "recurring_agent_task_occurrences_agent_fk"
+    }).onDelete("restrict"),
+    unique("recurring_agent_task_occurrences_owner_conversation_unique").on(
+      table.ownerUserId,
+      table.conversationId
+    ),
+    unique("recurring_agent_task_occurrences_owner_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    unique("recurring_agent_task_occurrences_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    uniqueIndex("recurring_agent_task_occurrences_scheduled_slot_unique")
+      .on(table.taskId, table.taskRevision, table.scheduledAt)
+      .where(sql`${table.trigger} = 'scheduled'`),
+    uniqueIndex("recurring_agent_task_occurrences_one_active_per_task_unique")
+      .on(table.taskId)
+      .where(sql`${table.status} in ('reserved','dispatched')`),
+    index("recurring_agent_task_occurrences_claim_idx")
+      .on(table.targetDeploymentId, table.targetDeviceId, table.createdAt)
+      .where(sql`${table.status} = 'reserved'`),
+    index("recurring_agent_task_occurrences_reconcile_idx")
+      .on(table.targetDeploymentId, table.targetDeviceId, table.updatedAt)
+      .where(sql`${table.status} = 'dispatched'`),
+    check(
+      "recurring_agent_task_occurrences_trigger_check",
+      sql`${table.trigger} in ('scheduled','manual')`
+    ),
+    check(
+      "recurring_agent_task_occurrences_status_check",
+      sql`${table.status} in ('reserved','dispatched','completed','needs_review','canceled')`
+    ),
+    check(
+      "recurring_agent_task_occurrences_version_check",
+      sql`${table.taskRevision} > 0 and ${table.agentVersion} > 0`
+    ),
+    check(
+      "recurring_agent_task_occurrences_identity_check",
+      sql`${table.id} = ${table.conversationId} and ${table.id} = ${table.requestId}`
+    ),
+    check(
+      "recurring_agent_task_occurrences_lease_check",
+      sql`(${table.leaseToken} is null and ${table.leaseExpiresAt} is null and ${table.claimedByRunnerId} is null) or (${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null and ${table.claimedByRunnerId} is not null)`
+    ),
+    check(
+      "recurring_agent_task_occurrences_write_state_check",
+      sql`${table.status} <> 'reserved' or ${table.writeDispatched} = true or ${table.messageId} is null`
+    )
+  ]
+);
+
 export const personalAgentNameClaims = pgTable(
   "personal_agent_name_claims",
   {

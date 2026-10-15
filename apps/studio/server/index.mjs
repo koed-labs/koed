@@ -27,6 +27,7 @@ import {
   handlePersonalAgents,
   handlePersonalConversations,
   handleManagedConversations,
+  handleRecurringAgentTasks,
   handlePersonalAgentRoleTemplates,
   handlePublicSquare,
   handleTeamAgentRequests
@@ -1942,6 +1943,7 @@ export const createStudioServer = ({
         })) ||
         (await handlePersonalConversations(localApiOptions)) ||
         (await handleTeamAgentRequests(localApiOptions)) ||
+        (await handleRecurringAgentTasks(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||
         (await handlePersonalAgentRoleTemplates(localApiOptions)) ||
         (await handleManagedConversations(localApiOptions))

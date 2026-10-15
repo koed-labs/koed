@@ -3,6 +3,11 @@ const uuid =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const detail = new RegExp(`^/(${uuid})(/(?:retire|restore))?$`);
 const history = new RegExp(`^/(${uuid})/jobs$`);
+const recurringTaskCollection = new RegExp(`^/(${uuid})/recurring-tasks$`, "i");
+const recurringTaskDetail = new RegExp(`^/(${uuid})$`, "i");
+const recurringTaskControl = new RegExp(`^/(${uuid})/control$`, "i");
+const recurringTaskRunNow = new RegExp(`^/(${uuid})/run-now$`, "i");
+const recurringTaskOccurrences = new RegExp(`^/(${uuid})/occurrences$`, "i");
 const personalConversationDetail = new RegExp(`^/(${uuid})$`, "i");
 const personalConversationMessages = new RegExp(`^/(${uuid})/messages$`, "i");
 const personalConversationCancel = new RegExp(
@@ -37,6 +42,34 @@ function validPersonalAgentHistoryQuery(searchParams) {
     cursors.length <= 1 &&
     (!limits.length || /^(?:[1-9]|1[0-9]|20)$/.test(limits[0])) &&
     (!cursors.length || /^[A-Za-z0-9_-]{1,256}$/.test(cursors[0]))
+  );
+}
+
+function validRecurringTaskOccurrencesQuery(searchParams) {
+  const limits = searchParams.getAll("limit");
+  const cursors = searchParams.getAll("before");
+  return (
+    [...searchParams.keys()].every(
+      (key) => key === "limit" || key === "before"
+    ) &&
+    limits.length <= 1 &&
+    cursors.length <= 1 &&
+    (!limits.length || /^(?:[1-9]|[1-4][0-9]|50)$/.test(limits[0])) &&
+    (!cursors.length || new RegExp(`^${uuid}$`, "i").test(cursors[0]))
+  );
+}
+
+function validRecurringTaskListQuery(searchParams) {
+  const limits = searchParams.getAll("limit");
+  const cursors = searchParams.getAll("before");
+  return (
+    [...searchParams.keys()].every(
+      (key) => key === "limit" || key === "before"
+    ) &&
+    limits.length <= 1 &&
+    cursors.length <= 1 &&
+    (!limits.length || /^(?:[1-9]|[1-9][0-9]|100)$/.test(limits[0])) &&
+    (!cursors.length || new RegExp(`^${uuid}$`, "i").test(cursors[0]))
   );
 }
 
@@ -111,7 +144,9 @@ export async function handlePersonalAgents({
                     ? "/studio-api/personal-agent-role-templates"
                     : routeFamily === "personal-removals"
                       ? "/studio-api/personal-removals"
-                      : prefix;
+                      : routeFamily === "recurring-agent-tasks"
+                        ? "/studio-api/recurring-agent-tasks"
+                        : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -120,6 +155,29 @@ export async function handlePersonalAgents({
   const suffix = url.pathname.slice(routePrefix.length);
   const match = detail.exec(suffix);
   const historyMatch = history.exec(suffix);
+  const recurringCollectionMatch =
+    routeFamily === "personal-agents"
+      ? recurringTaskCollection.exec(suffix)
+      : null;
+  const recurringDetailMatch =
+    routeFamily === "recurring-agent-tasks"
+      ? recurringTaskDetail.exec(suffix)
+      : null;
+  const recurringControlMatch =
+    routeFamily === "recurring-agent-tasks"
+      ? recurringTaskControl.exec(suffix)
+      : null;
+  const recurringRunNowMatch =
+    routeFamily === "recurring-agent-tasks"
+      ? recurringTaskRunNow.exec(suffix)
+      : null;
+  const recurringOccurrencesMatch =
+    routeFamily === "recurring-agent-tasks"
+      ? recurringTaskOccurrences.exec(suffix)
+      : null;
+  const recurringHistoryRoute = Boolean(recurringOccurrencesMatch);
+  const recurringTaskListRoute =
+    Boolean(recurringCollectionMatch) && request.method === "GET";
   const activityRoute =
     routeFamily === "personal-agents" && suffix === "/activity";
   const squareRoute =
@@ -129,56 +187,66 @@ export async function handlePersonalAgents({
       ? teamAgentRequestsRoute(suffix)
       : null;
   const methods =
-    routeFamily === "conversation-titles"
-      ? new RegExp(`^/${uuid}$`).test(suffix)
-        ? ["PATCH"]
-        : []
-      : routeFamily === "ai-client-resources"
-        ? suffix === "/instances"
+    routeFamily === "recurring-agent-tasks"
+      ? recurringControlMatch || recurringRunNowMatch
+        ? ["POST"]
+        : recurringOccurrencesMatch
           ? ["GET"]
-          : suffix === "/discover"
-            ? ["POST"]
-            : new RegExp(`^/discover/${uuid}$`).test(suffix)
-              ? ["GET"]
-              : []
-        : routeFamily === "home"
-          ? homeMethods(suffix)
-          : routeFamily === "team-agent-requests"
-            ? (teamAgentRequestRoute?.methods ?? [])
-            : routeFamily === "public-square"
-              ? (squareRoute?.methods ?? [])
-              : routeFamily === "personal-agent-role-templates"
-                ? suffix === ""
-                  ? ["GET"]
-                  : []
-                : routeFamily === "personal-removals"
+          : recurringDetailMatch
+            ? ["GET", "PATCH"]
+            : []
+      : routeFamily === "conversation-titles"
+        ? new RegExp(`^/${uuid}$`).test(suffix)
+          ? ["PATCH"]
+          : []
+        : routeFamily === "ai-client-resources"
+          ? suffix === "/instances"
+            ? ["GET"]
+            : suffix === "/discover"
+              ? ["POST"]
+              : new RegExp(`^/discover/${uuid}$`).test(suffix)
+                ? ["GET"]
+                : []
+          : routeFamily === "home"
+            ? homeMethods(suffix)
+            : routeFamily === "team-agent-requests"
+              ? (teamAgentRequestRoute?.methods ?? [])
+              : routeFamily === "public-square"
+                ? (squareRoute?.methods ?? [])
+                : routeFamily === "personal-agent-role-templates"
                   ? suffix === ""
-                    ? ["GET", "PUT"]
+                    ? ["GET"]
                     : []
-                  : routeFamily === "personal-conversations"
+                  : routeFamily === "personal-removals"
                     ? suffix === ""
-                      ? ["GET"]
-                      : personalConversationMessages.test(suffix)
-                        ? ["POST"]
-                        : personalConversationCancel.test(suffix) ||
-                            personalConversationContinue.test(suffix)
+                      ? ["GET", "PUT"]
+                      : []
+                    : routeFamily === "personal-conversations"
+                      ? suffix === ""
+                        ? ["GET"]
+                        : personalConversationMessages.test(suffix)
                           ? ["POST"]
-                          : personalConversationDetail.test(suffix)
-                            ? ["GET", "PATCH"]
-                            : []
-                    : routeFamily === "managed-conversations"
-                      ? managedMethods(suffix)
-                      : suffix === ""
-                        ? ["GET", "POST"]
-                        : activityRoute || historyMatch
-                          ? ["GET"]
-                          : suffix === "/capabilities"
-                            ? ["GET"]
-                            : match
-                              ? match[2]
-                                ? ["POST"]
-                                : ["GET", "PATCH"]
-                              : [];
+                          : personalConversationCancel.test(suffix) ||
+                              personalConversationContinue.test(suffix)
+                            ? ["POST"]
+                            : personalConversationDetail.test(suffix)
+                              ? ["GET", "PATCH"]
+                              : []
+                      : routeFamily === "managed-conversations"
+                        ? managedMethods(suffix)
+                        : recurringCollectionMatch
+                          ? ["GET", "POST"]
+                          : suffix === ""
+                            ? ["GET", "POST"]
+                            : activityRoute || historyMatch
+                              ? ["GET"]
+                              : suffix === "/capabilities"
+                                ? ["GET"]
+                                : match
+                                  ? match[2]
+                                    ? ["POST"]
+                                    : ["GET", "PATCH"]
+                                  : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -220,6 +288,8 @@ export async function handlePersonalAgents({
     !teamAgentRequestList &&
     !activityRoute &&
     !historyMatch &&
+    !recurringHistoryRoute &&
+    !recurringTaskListRoute &&
     !homeList &&
     !personalConversationRead &&
     !personalRemovalsRoute
@@ -288,6 +358,20 @@ export async function handlePersonalAgents({
   }
   if (historyMatch && !validPersonalAgentHistoryQuery(url.searchParams)) {
     send(400, { error: "invalid_history_query" });
+    return true;
+  }
+  if (
+    recurringHistoryRoute &&
+    !validRecurringTaskOccurrencesQuery(url.searchParams)
+  ) {
+    send(400, { error: "invalid_occurrences_query" });
+    return true;
+  }
+  if (
+    recurringTaskListRoute &&
+    !validRecurringTaskListQuery(url.searchParams)
+  ) {
+    send(400, { error: "invalid_recurring_task_list_query" });
     return true;
   }
   try {
@@ -371,7 +455,7 @@ export async function handlePersonalAgents({
                 ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
                 : squareRoute
                   ? `${squareRoute.path}${squareList ? url.search : ""}`
-                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || turnDiffRoute || activityRoute || historyMatch || homeList || personalConversationRead ? url.search : ""}`,
+                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || turnDiffRoute || activityRoute || historyMatch || recurringHistoryRoute || recurringTaskListRoute || homeList || personalConversationRead ? url.search : ""}`,
         base
       ),
       {
@@ -443,7 +527,10 @@ export async function handlePersonalAgents({
             conflictCode === "name_conflict"
               ? "An Agent with this name or a previous name already exists. Choose another name."
               : status === 409
-                ? "The request conflicts with the current state. Refresh and check agent, model, and runtime availability before trying again."
+                ? routeFamily === "recurring-agent-tasks" ||
+                  recurringCollectionMatch
+                  ? "The task changed or is running. Refresh its status before trying again."
+                  : "The request conflicts with the current state. Refresh and check agent, model, and runtime availability before trying again."
                 : status === 429
                   ? "Koed is receiving too many requests. Wait a minute, then try again. Your changes have not been confirmed."
                   : status === 503
@@ -466,9 +553,11 @@ export async function handlePersonalAgents({
           ? 9 * 1024 * 1024
           : historyMatch
             ? 8 * 1024 * 1024
-            : activityRoute
-              ? 1024 * 1024
-              : 4 * 1024 * 1024;
+            : recurringHistoryRoute
+              ? 2 * 1024 * 1024
+              : activityRoute
+                ? 1024 * 1024
+                : 4 * 1024 * 1024;
         if (size > maximumResponseBytes) {
           await reader.cancel();
           throw new Error("response_too_large");
@@ -486,7 +575,9 @@ export async function handlePersonalAgents({
           ? "Public Square is unavailable. Check the Koed connection and try again."
           : routeFamily === "team-agent-requests"
             ? "Team activity is unavailable. Check the Koed connection and try again."
-            : "Agents are unavailable. Check the local Koed connection and try again."
+            : routeFamily === "recurring-agent-tasks"
+              ? "Recurring tasks are unavailable. Check the Koed connection and try again."
+              : "Agents are unavailable. Check the local Koed connection and try again."
     });
   }
   return true;
@@ -657,6 +748,13 @@ export function handleTeamAgentRequests(options) {
   return handlePersonalAgents({
     ...options,
     routeFamily: "team-agent-requests"
+  });
+}
+
+export function handleRecurringAgentTasks(options) {
+  return handlePersonalAgents({
+    ...options,
+    routeFamily: "recurring-agent-tasks"
   });
 }
 

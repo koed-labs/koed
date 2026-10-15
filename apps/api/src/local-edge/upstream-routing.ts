@@ -709,6 +709,48 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "managed_execution") {
+    if (
+      pathname.startsWith("/v1/recurring-agent-tasks/") ||
+      /^\/v1\/personal-agents\/[^/]+\/recurring-tasks$/.test(pathname) ||
+      pathname.startsWith(
+        "/v1/managed-conversation-runner/recurring-agent-tasks/"
+      )
+    ) {
+      const id =
+        "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+      const matches = (pattern: string) =>
+        new RegExp(pattern, "i").test(pathname);
+      const isList =
+        matches(`^/v1/personal-agents/${id}/recurring-tasks$`) ||
+        matches(`^/v1/recurring-agent-tasks/${id}/occurrences$`);
+      if (method === "GET" && isList) {
+        const keys = [...parsed.searchParams.keys()];
+        const maxLimit = pathname.endsWith("/occurrences") ? 50 : 100;
+        const limit = parsed.searchParams.get("limit");
+        const before = parsed.searchParams.get("before");
+        if (
+          new Set(keys).size !== keys.length ||
+          keys.some((key) => key !== "limit" && key !== "before") ||
+          (limit !== null &&
+            (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > maxLimit)) ||
+          (before !== null && !new RegExp(`^${id}$`, "i").test(before))
+        )
+          deny();
+        return;
+      }
+      if (parsed.searchParams.size !== 0) deny();
+      if (
+        ((method === "GET" || method === "PATCH") &&
+          matches(`^/v1/recurring-agent-tasks/${id}$`)) ||
+        (method === "POST" &&
+          (matches(`^/v1/personal-agents/${id}/recurring-tasks$`) ||
+            matches(`^/v1/recurring-agent-tasks/${id}/(?:control|run-now)$`) ||
+            pathname ===
+              "/v1/managed-conversation-runner/recurring-agent-tasks/claim"))
+      )
+        return;
+      deny();
+    }
     if (pathname.startsWith("/v1/ai-client-resources/")) {
       const id =
         "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";

@@ -31,6 +31,7 @@ import {
   createLocalPersonalAgentChatRunnerAuthority,
   createPersonalAgentChatDispatcher
 } from "./personal-agent-chat-dispatcher.js";
+import { createRecurringAgentTaskRunner } from "./recurring-agent-task-runner.js";
 
 type ServiceOptions = Parameters<typeof createManagedConversationService>[0];
 
@@ -151,6 +152,14 @@ export const createManagedConversationRuntimeCoordinator = (options: {
           fetch: options.fetch
         })
       : null;
+    const recurringAgentTaskAuthorityClient =
+      authorityClient ??
+      createManagedConversationAuthorityClient({
+        baseUrl: options.apiUrl,
+        authorization: options.apiToken,
+        envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+        fetch: options.fetch
+      });
     const repository = authorityClient
       ? combineManagedConversationRepositories(
           options.localRepository,
@@ -448,6 +457,11 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       runnerId: `personal-agent-chat:${randomUUID()}`,
       logger: options.logger
     });
+    const recurringAgentTaskRunner = createRecurringAgentTaskRunner({
+      authority: recurringAgentTaskAuthorityClient.recurringAgentTaskRunner,
+      runnerId: `recurring-agent-task:${randomUUID()}`,
+      logger: options.logger
+    });
     return {
       ...managedService,
       start() {
@@ -455,8 +469,10 @@ export const createManagedConversationRuntimeCoordinator = (options: {
         pullRequestRunner.start();
         aiClientResourceRunner.start();
         personalAgentChatDispatcher.start();
+        recurringAgentTaskRunner.start();
       },
       async stop() {
+        await recurringAgentTaskRunner.stop();
         await personalAgentChatDispatcher.stop();
         await aiClientResourceRunner.stop();
         await pullRequestRunner.stop();

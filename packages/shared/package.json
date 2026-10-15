@@ -114,6 +114,10 @@
     "./personal-agent-chat-contract": {
       "types": "./dist/personal-agent-chat-contract.d.ts",
       "import": "./dist/personal-agent-chat-contract.js"
+    },
+    "./recurring-agent-tasks": {
+      "types": "./dist/recurring-agent-task-contract.d.ts",
+      "import": "./dist/recurring-agent-task-contract.js"
     }
   },
   "files": [
@@ -129,6 +133,10 @@
   "dependencies": {
     "json-canonicalize": "2.0.0",
     "undici": "^7.28.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "luxon": "3.7.2"
+  },
+  "devDependencies": {
+    "@types/luxon": "3.7.6"
   }
 }
