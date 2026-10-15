@@ -222,13 +222,13 @@ const classifyMemoryAnswerFailure = (
   retrievalIncomplete: boolean,
   exhaustedBudgets: readonly string[]
 ): MemoryAnswerFailureKind => {
+  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   if (
     /"code"\s*:\s*"(?:custom|invalid_[a-z_]+|too_small|too_big)"/.test(
       workerErrorMessage
     )
   )
     return "validation";
-  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   return retrievalIncomplete ? "retrieval" : "worker";
 };
 
@@ -393,10 +393,10 @@ const structuredMemoryAnswerSchema = z
     }
     if (
       answer.memory_status === "insufficient" &&
-      (answer.relevant_memory_found || hasEvidence)
+      answer.relevant_memory_found !== hasEvidence
     ) {
       contradiction(
-        "insufficient requires relevant_memory_found=false and no selected evidence"
+        "insufficient requires relevant_memory_found to match selected partial evidence"
       );
     }
   });
@@ -2549,7 +2549,8 @@ const buildDynamicMemoryAnswerPrompt = (
   state: MemoryAnswerToolState,
   config: MemoryAnswerWorkerConfig,
   promptTemplate: LoadedPrompt,
-  promptTokenLimit: number
+  promptTokenLimit: number,
+  promptSuffix: string
 ): {
   prompt: string;
   promptTokens: ReturnType<typeof countTokensForModel>;
@@ -2559,7 +2560,7 @@ const buildDynamicMemoryAnswerPrompt = (
       schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
       memory_status: "found | not_found | insufficient | pending_summary",
       relevant_memory_found:
-        "true only when at least one inspected memory candidate is genuinely relevant",
+        "true when selected supporting evidence is nonempty, including partial evidence for insufficient",
       answer_markdown: "Concise markdown answer for the main agent.",
       relevance_explanation:
         "Short explanation of why selected evidence is relevant, including recency/conflict reasoning when evidence differs over time, or why no relevant memory was found.",
@@ -2644,21 +2645,23 @@ const buildDynamicMemoryAnswerPrompt = (
           : "No scripted first pass ran. Start without scripted evidence and use only the enabled worker retrieval tools within the shared budget.",
       JSON.stringify(firstPassContext, null, 2)
     ].join("\n");
-    return renderLoadedPrompt(promptTemplate, {
-      search_domain: state.searchDomain,
-      first_pass_guidance: state.evaluation.scriptedFirstPass
-        ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
-        : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
-      required_json_schema: requiredJsonSchema,
-      question: state.query,
-      retrieval_scope: state.retrievalScope,
-      default_search_domain: state.searchDomain,
-      optional_defaults: optionalDefaults,
-      limit: state.limit,
-      max_searches: config.maxSearches,
-      max_expansions: config.maxExpansions,
-      initial_evidence_section: initialEvidenceSection
-    }).text;
+    return (
+      renderLoadedPrompt(promptTemplate, {
+        search_domain: state.searchDomain,
+        first_pass_guidance: state.evaluation.scriptedFirstPass
+          ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
+          : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
+        required_json_schema: requiredJsonSchema,
+        question: state.query,
+        retrieval_scope: state.retrievalScope,
+        default_search_domain: state.searchDomain,
+        optional_defaults: optionalDefaults,
+        limit: state.limit,
+        max_searches: config.maxSearches,
+        max_expansions: config.maxExpansions,
+        initial_evidence_section: initialEvidenceSection
+      }).text + promptSuffix
+    );
   };
 
   let prompt = render();
@@ -2679,7 +2682,9 @@ const buildDynamicMemoryAnswerPrompt = (
   }
   if (promptTokenEstimate.tokens > promptTokenLimit) {
     throw new Error(
-      `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
+      promptSuffix
+        ? "Memory answer validation feedback exceeds prompt-token budget"
+        : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
     );
   }
   return { prompt, promptTokens: promptTokenEstimate };
@@ -2687,7 +2692,10 @@ const buildDynamicMemoryAnswerPrompt = (
 
 const runCodexWithRetries = async (
   config: MemoryAnswerWorkerConfig,
-  runner: (timeoutMs: number) => Promise<MemoryAnswerAttemptRun>,
+  runner: (
+    timeoutMs: number,
+    validationFeedback?: string
+  ) => Promise<MemoryAnswerAttemptRun>,
   validate: (run: MemoryAnswerAttemptRun) => ValidatedMemoryAnswerRun,
   attempts: MemoryAnswerAppServerExecution[],
   answerJobId?: string,
@@ -2708,7 +2716,7 @@ const runCodexWithRetries = async (
     }
     let run: MemoryAnswerAttemptRun | undefined;
     try {
-      run = await runner(config.timeoutMs);
+      run = await runner(config.timeoutMs, lastErrorMessage);
       const result = run.result;
       if (result.text.trim().length === 0) {
         throw new Error("Codex memory answer produced empty output");
@@ -4035,7 +4043,10 @@ const runDynamicToolMemoryAnswer = async (
   let promptTokens = countTokensForModel("", { model: options.config.model });
   const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
 
-  const runner = async (): Promise<MemoryAnswerAttemptRun> => {
+  const runner = async (
+    _timeoutMs: number,
+    validationFeedback?: string
+  ): Promise<MemoryAnswerAttemptRun> => {
     if (options.signal?.aborted) {
       throw new Error("Memory answer request was cancelled");
     }
@@ -4052,6 +4063,9 @@ const runDynamicToolMemoryAnswer = async (
       0,
       options.config.maxPromptTokens - state.ledger.promptTokenEstimateConsumed
     );
+    const validationFeedbackPrompt = validationFeedback
+      ? `\nThe previous answer failed validation. Correct this before finishing:\n${validationFeedback.slice(0, 2000)}`
+      : "";
     if (remainingPromptTokens <= 0) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
       throw new Error("Memory answer prompt-token budget exhausted");
@@ -4063,7 +4077,8 @@ const runDynamicToolMemoryAnswer = async (
         state,
         options.config,
         options.promptTemplate,
-        remainingPromptTokens
+        remainingPromptTokens,
+        validationFeedbackPrompt
       );
       prompt = built.prompt;
       promptTokens = built.promptTokens;
@@ -4093,6 +4108,17 @@ const runDynamicToolMemoryAnswer = async (
           developerInstructions: koedMemoryAnswerDeveloperInstructions,
           signal: options.signal,
           onProgress: options.onProgress,
+          dynamicTools: dynamicToolSpecs(),
+          dynamicToolHandler,
+          validateOutput: (value) => {
+            validate({
+              result: {
+                text: JSON.stringify(value),
+                model: options.config.model
+              },
+              state
+            });
+          },
           outputSchema: {
             type: "object",
             properties: {
@@ -4188,7 +4214,9 @@ const runDynamicToolMemoryAnswer = async (
     };
   };
 
-  const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
+  const validateUnchecked = (
+    run: MemoryAnswerAttemptRun
+  ): ValidatedMemoryAnswerRun => {
     const { result, state } = run;
     const structuredAnswer = parseStructuredMemoryAnswer(
       JSON.parse(stripJsonFence(result.text))
@@ -4255,13 +4283,10 @@ const runDynamicToolMemoryAnswer = async (
     const curatedEvidence = selectedEvidence.slice(0, selectedEvidenceLimit);
     if (
       structuredAnswer.memory_status === "insufficient" &&
-      curatedEvidence.length === 0 &&
-      state.errors.length === 0 &&
-      state.ledger.budgetExhaustions.length === 0
+      structuredAnswer.missing.length === 0 &&
+      structuredAnswer.missing_evidence.length === 0
     ) {
-      throw new Error(
-        "Memory answer worker returned insufficient after complete retrieval without selected partial evidence; use not_found when no inspected candidate is relevant"
-      );
+      throw new Error("Insufficient answers must identify missing evidence");
     }
     if (
       structuredAnswer.memory_status === "not_found" &&
@@ -4302,6 +4327,17 @@ const runDynamicToolMemoryAnswer = async (
       );
     }
     return { markdown, structuredAnswer, curatedEvidence };
+  };
+
+  const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
+    try {
+      return validateUnchecked(run);
+    } catch (error) {
+      throw new Error(
+        `Structured answer validation failed: ${errorMessage(error)}`,
+        { cause: error }
+      );
+    }
   };
 
   let retryResult: Awaited<ReturnType<typeof runCodexWithRetries>>;

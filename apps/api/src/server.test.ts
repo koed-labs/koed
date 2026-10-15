@@ -1201,6 +1201,7 @@ const createFakeRepository = () => {
     getLocalSyncDeployment: async () => null,
     getConversationProjectionBacklog: async () => ({
       liveProjectionRows: 0,
+      parkedLiveProjectionRows: 0,
       historicalImportRows: 0,
       historicalImportBytes: 0
     }),
@@ -10674,7 +10675,8 @@ describe("account and access flows", () => {
         diagnosticOnly: true,
         pendingRows: 0,
         pendingBytes: 0,
-        liveProjectionRows: 0
+        liveProjectionRows: 0,
+        parkedLiveProjectionRows: 0
       }
     });
     expect(body.components.alertDelivery).toEqual({
@@ -10899,6 +10901,7 @@ describe("account and access flows", () => {
     const repository = createFakeRepository();
     repository.getConversationProjectionBacklog = async () => ({
       liveProjectionRows: 0,
+      parkedLiveProjectionRows: 0,
       historicalImportRows: 50_000,
       historicalImportBytes: 9_000_000
     });
@@ -10932,7 +10935,8 @@ describe("account and access flows", () => {
         diagnosticOnly: true,
         pendingRows: 50_000,
         pendingBytes: 9_000_000,
-        liveProjectionRows: 0
+        liveProjectionRows: 0,
+        parkedLiveProjectionRows: 0
       }
     });
   });
@@ -14522,6 +14526,33 @@ describe("account and access flows", () => {
       expect(runTransition.statusCode).toBe(200);
       expect(sourceTransition.statusCode).toBe(200);
     }
+    const transitionSource = (expectedState: string, state: string) =>
+      app.inject({
+        method: "PATCH",
+        url: `/v1/historical-import-sources/${sourceId}`,
+        headers: ownerHeaders,
+        payload: { expectedState, state }
+      });
+    const alreadyApplied = await transitionSource("eligible", "queued");
+    const staleTransition = await transitionSource("discovered", "eligible");
+    const originalSourceTransition =
+      repository.transitionHistoricalImportSource.bind(repository);
+    // The real repository returns null while downstream work is unfinished.
+    repository.transitionHistoricalImportSource = async () => null;
+    const pendingCompletion = await transitionSource("queued", "completed");
+    repository.transitionHistoricalImportSource = originalSourceTransition;
+    expect(alreadyApplied.statusCode).toBe(409);
+    expect(alreadyApplied.json()).toMatchObject({
+      code: "historical_import_transition_already_applied"
+    });
+    expect(staleTransition.statusCode).toBe(409);
+    expect(staleTransition.json()).toMatchObject({
+      code: "historical_import_state_conflict"
+    });
+    expect(pendingCompletion.statusCode).toBe(409);
+    expect(pendingCompletion.json()).toMatchObject({
+      code: "historical_import_completion_pending"
+    });
     await app.inject({
       method: "PUT",
       url: "/v1/capture-policies",

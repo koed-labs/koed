@@ -18,6 +18,9 @@ export interface HistoricalProviderBatchResult {
   state: "progress" | "source_exhausted" | "waiting" | "completed" | "skipped";
   selection: HistoricalCandidateSelection;
   runId?: string;
+  // Reported without stopping the pass, so one conflicted source cannot block
+  // later sources.
+  diagnosticCode?: string;
 }
 
 export interface HistoricalProviderAdapter<Candidate> {
@@ -208,6 +211,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
             : result.selection;
       }
       if (result.runId) state.runId = result.runId;
+      if (result.diagnosticCode) input.onError?.(result.diagnosticCode);
       if (result.state === "progress") progressed = true;
       if (result.state !== "completed" && result.state !== "skipped") {
         allTerminal = false;

@@ -1029,9 +1029,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       const code = watcherErrorCode(error);
       if (
         code === "transcript_prefix_mutated" ||
-        code === "transcript_truncated"
+        code === "transcript_truncated" ||
+        code === "codex_history_response_oversized"
       ) {
-        // A new filesystem hint cannot repair an already journalled range.
+        // A new filesystem hint cannot repair an already journalled range, and
+        // an oversized first native page stays oversized as the thread grows.
         // Keep retrying for recovery, without letting a damaged file monopolize scans.
         const attempts = Math.min((previousFailure?.attempts ?? 0) + 1, 7);
         this.sourceFailures.delete(transcriptPath);

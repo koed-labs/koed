@@ -10,6 +10,7 @@ import { createHistoricalRawAdmission } from "./historical-raw-admission.js";
 const dependencies = () => {
   let backlog = {
     liveProjectionRows: 0,
+    parkedLiveProjectionRows: 0,
     historicalImportRows: 0,
     historicalImportBytes: 0
   };
@@ -122,6 +123,7 @@ describe("raw historical admission", () => {
       arrange: (fixture: ReturnType<typeof dependencies>) =>
         fixture.setBacklog({
           liveProjectionRows: 3,
+          parkedLiveProjectionRows: 0,
           historicalImportRows: 0,
           historicalImportBytes: 0
         }),

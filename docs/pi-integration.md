@@ -305,3 +305,18 @@ Koed does not inspect the folder's current Git state or require it to exist.
 The local folder group claims no current checkout incarnation. Re-import,
 resumed capture, and later checkpoints preserve existing assignments, overrides,
 and the migration's unresolved history.
+### Memory Answer worker tools and validation
+
+Pi Memory Answer workers run separately from interactive Pi Conversations. Each
+worker receives scoped Koed scan, search, and expansion tools plus
+`koed_structured_result`. A private loopback bridge forwards retrieval to the
+Local AI Runtime's existing handlers, preserving the selected Personal or Team
+scope and request budgets. The bridge uses an ephemeral credential retained only
+in the worker's private temporary configuration and closes with the worker.
+
+The result tool validates answers before acknowledging completion. Rejected
+answers return corrective feedback to Pi in the same turn; subsequent worker
+attempts also receive bounded validation feedback within the prompt-token budget.
+An `insufficient` answer may retain genuinely relevant partial evidence, with
+`relevant_memory_found` matching whether evidence was selected, and must identify
+what remains missing. Retrieval failure does not establish absence of Memory.

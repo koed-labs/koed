@@ -500,7 +500,7 @@ export const validateHistoricalImportTransition = (
   if (!allowedTransitions[from].includes(to)) {
     throw Object.assign(
       new Error(`Invalid historical import transition: ${from} -> ${to}`),
-      { statusCode: 409 }
+      { statusCode: 409, code: "historical_import_transition_invalid" }
     );
   }
 };
@@ -969,7 +969,7 @@ const requireImportPolicy = async (
   ) {
     throw Object.assign(
       new Error("Historical import blocked by effective Capture Policy"),
-      { statusCode: 409 }
+      { statusCode: 409, code: "historical_import_capture_policy_blocked" }
     );
   }
   return policy;
@@ -989,7 +989,8 @@ const requireWritableRun = async (
   );
   if (result.rowCount === 0) {
     throw Object.assign(new Error("Historical import run is not writable"), {
-      statusCode: 409
+      statusCode: 409,
+      code: "historical_import_run_not_writable"
     });
   }
 };
@@ -1091,7 +1092,8 @@ const validateBatchBoundary = async (
     input.sourceOffset > source.registrationFrontierOffset
   ) {
     throw Object.assign(new Error("Historical import cursor conflict"), {
-      statusCode: 409
+      statusCode: 409,
+      code: "historical_import_cursor_conflict"
     });
   }
   const segment = await client.query<{
@@ -1114,7 +1116,7 @@ const validateBatchBoundary = async (
   ) {
     throw Object.assign(
       new Error("Historical import segment verification failed"),
-      { statusCode: 409 }
+      { statusCode: 409, code: "historical_import_segment_verification_failed" }
     );
   }
   return "advance";
@@ -1331,7 +1333,8 @@ const ingestBatchRecord = (
       throw Object.assign(
         new Error("Historical import source is not writable"),
         {
-          statusCode: 409
+          statusCode: 409,
+          code: "historical_import_source_not_writable"
         }
       );
     }
@@ -1373,7 +1376,8 @@ const ingestBatchRecord = (
     );
     if (cursorResult.rowCount !== 1) {
       throw Object.assign(new Error("Historical import cursor conflict"), {
-        statusCode: 409
+        statusCode: 409,
+        code: "historical_import_cursor_conflict"
       });
     }
     const range = batchSourceEventRange(input);
