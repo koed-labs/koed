@@ -29458,6 +29458,12 @@ describeDb("memory repository visibility", () => {
        set session_id = null, external_session_id = 'sessionless-helper'
        where external_turn_id = 'sessionless-open-turn'`
     );
+    // Stand in for a Projection pass that left the agent rows waiting.
+    await pool.query(
+      `update conversation_items
+       set agent_seal_waiting_at = now()
+       where metadata ->> 'transcriptType' = 'agent_message'`
+    );
 
     await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
       liveProjectionRows: 6,
@@ -29480,6 +29486,104 @@ describeDb("memory repository visibility", () => {
         delete process.env.MEMORY_AGENT_TURN_STALE_MS;
       else process.env.MEMORY_AGENT_TURN_STALE_MS = previousStaleMs;
     }
+  });
+
+  it("counts live rows as pressure until Projection leaves them waiting for a seal", async () => {
+    const alice = await repo.createUser({
+      email: `alice-seal-marker-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `seal-marker-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        idempotencyKey: `seal-marker-${randomUUID()}`
+      }
+    );
+    const recent = Date.now();
+    const transcriptItem = (
+      index: number,
+      transcriptType: string,
+      payload: Record<string, unknown>,
+      rawText: string
+    ) => ({
+      sessionId: session.id,
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "transcript",
+      externalSessionId: session.externalSessionId ?? undefined,
+      externalThreadId: session.externalSessionId ?? undefined,
+      externalTurnId: "seal-marker-open-turn",
+      sourceRecordType: "event_msg",
+      sourceEventType: String(payload.type),
+      sourceSequence: index,
+      eventTime: new Date(recent + index).toISOString(),
+      rawJson: { type: "event_msg", payload },
+      rawText,
+      sourceHash: `seal-marker-${index}-${randomUUID()}`,
+      idempotencyKey: `seal-marker-${index}-${randomUUID()}`,
+      projectionStatus: "pending" as const,
+      metadata: { transcriptType }
+    });
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          transcriptItem(
+            0,
+            "mcp_tool_call_end",
+            {
+              type: "mcp_tool_call_end",
+              invocation: { tool: "memory_answer", arguments: {} },
+              result: { Ok: { content: [{ type: "text", text: "Raw only." }] } }
+            },
+            "Raw only."
+          ),
+          transcriptItem(
+            1,
+            "reasoning_raw_content",
+            { type: "agent_reasoning_raw_content", text: "Raw reasoning." },
+            "Raw reasoning."
+          ),
+          transcriptItem(
+            2,
+            "agent_message",
+            { type: "agent_message", message: "Still working on it." },
+            "Still working on it."
+          )
+        ]
+      }
+    );
+
+    // Unscanned rows are runnable until Projection proves they wait.
+    await expect(
+      repo.getConversationProjectionBacklog()
+    ).resolves.toMatchObject({
+      liveProjectionRows: 3,
+      parkedLiveProjectionRows: 0
+    });
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { workClass: "live_capture_projection" }
+    );
+    expect(projection.rawItemsWaitingForAgentSeal).toBe(1);
+
+    await expect(
+      repo.getConversationProjectionBacklog()
+    ).resolves.toMatchObject({
+      liveProjectionRows: 0,
+      parkedLiveProjectionRows: 1
+    });
+    const marked = await pool.query<{ transcript_type: string }>(
+      `select metadata ->> 'transcriptType' as transcript_type
+       from conversation_items
+       where agent_seal_waiting_at is not null and projection_status = 'pending'`
+    );
+    expect(marked.rows.map((row) => row.transcript_type)).toEqual([
+      "agent_message"
+    ]);
   });
 
   it("checks runtime only before later atomic admission units", async () => {
