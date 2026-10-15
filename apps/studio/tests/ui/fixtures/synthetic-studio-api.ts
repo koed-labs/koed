@@ -631,6 +631,13 @@ export class SyntheticStudioApi {
       });
       return;
     }
+    if (
+      path === `/v1/managed-conversations/${ids.root}/project-moves/latest` &&
+      method === "GET"
+    ) {
+      await route.fulfill({ json: { move: null } });
+      return;
+    }
     if (path === "/v1/personal-conversations" && method === "GET") {
       await route.fulfill({
         json: { conversations: [], hasMore: false, nextCursor: null }

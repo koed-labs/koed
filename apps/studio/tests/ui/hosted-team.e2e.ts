@@ -1060,8 +1060,10 @@ test("a late owned Agent project check cannot post into a newly selected convers
     { exact: true }
   );
   await expect(groupComposer).toBeVisible();
+  await expect(groupComposer).toBeEnabled();
   const roomBDraft = "Room B draft must survive Room A completion";
   await groupComposer.fill(roomBDraft);
+  await expect(groupComposer).toHaveValue(roomBDraft);
 
   const connectionResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());

@@ -573,10 +573,8 @@ export function HostedTeamChannels({
     !authorizationLost &&
     realtimeConnection.owner === ownerKey &&
     realtimeConnection.connected;
-  const visibleDraftText =
-    authorityKey && hydratedKey === authorityKey ? draftText : "";
-  const visiblePendingSend =
-    authorityKey && hydratedKey === authorityKey ? pendingSend : null;
+  const visibleDraftText = draftReady ? draftText : "";
+  const visiblePendingSend = draftReady ? pendingSend : null;
   const handleAuthorizationLost = useCallback(() => {
     revokedRef.current = true;
     realtimeConnectedOwner.current = "";
@@ -2674,27 +2672,36 @@ export function HostedTeamChannels({
     }
   };
   const updateDraft = (value: string) => {
-    if (authorityKey && hydratedKey === authorityKey)
-      draftByAuthority.current.set(authorityKey, {
-        ...(draftByAuthority.current.get(authorityKey) ?? {}),
-        text: value,
-        mentionUserIds: draftMentionUserIds,
-        pendingSend
-      });
+    if (
+      !authorityKey ||
+      authorityKeyRef.current !== authorityKey ||
+      !draftReady
+    )
+      return;
+    draftByAuthority.current.set(authorityKey, {
+      ...(draftByAuthority.current.get(authorityKey) ?? {}),
+      text: value,
+      mentionUserIds: draftMentionUserIds,
+      pendingSend
+    });
     setDraftText(value);
   };
   const updateMentionUserIds = (userIds: string[]) => {
+    if (
+      !authorityKey ||
+      authorityKeyRef.current !== authorityKey ||
+      !draftReady
+    )
+      return;
     setDraftMentionUserIds(userIds);
-    if (authorityKey && hydratedKey === authorityKey) {
-      const current = draftByAuthority.current.get(authorityKey) ?? {
-        text: draftText,
-        pendingSend
-      };
-      draftByAuthority.current.set(authorityKey, {
-        ...current,
-        mentionUserIds: userIds
-      });
-    }
+    const current = draftByAuthority.current.get(authorityKey) ?? {
+      text: draftText,
+      pendingSend
+    };
+    draftByAuthority.current.set(authorityKey, {
+      ...current,
+      mentionUserIds: userIds
+    });
   };
   const updateThreadMentionUserIds = (userIds: string[]) => {
     setThreadMentionUserIds(userIds);
@@ -2948,69 +2955,72 @@ export function HostedTeamChannels({
                                     </div>
                                   </div>
                                 )}
-                              <ChatComposer
-                                placeholder={
-                                  activeDirectMessage
-                                    ? `Message ${activeDirectMessageTitle}`
-                                    : `Message #${activeThread?.name ?? "channel"}`
-                                }
-                                projectName={agentProjectName}
-                                branch="shared"
-                                value={visibleDraftText}
-                                onChange={updateDraft}
-                                initialMentionUserIds={draftMentionUserIds}
-                                onMentionUserIdsChange={updateMentionUserIds}
-                                onSend={(text, selection) =>
-                                  sendTeamComposer(text, selection)
-                                }
-                                agents={activeComposerAgentMentions}
-                                teamMembers={
-                                  activeDirectMessage
-                                    ? activeDirectMessageParticipants.map(
-                                        (participant) => ({
-                                          id: participant.id,
-                                          name: participant.displayName
-                                        })
-                                      )
-                                    : people
-                                        .filter(
-                                          (person) =>
-                                            person.membershipState === "enabled"
+                              <fieldset
+                                disabled={!activeThread || !draftReady}
+                                className="m-0 min-w-0 border-0 p-0"
+                              >
+                                <ChatComposer
+                                  placeholder={
+                                    activeDirectMessage
+                                      ? `Message ${activeDirectMessageTitle}`
+                                      : `Message #${activeThread?.name ?? "channel"}`
+                                  }
+                                  projectName={agentProjectName}
+                                  branch="shared"
+                                  value={visibleDraftText}
+                                  onChange={updateDraft}
+                                  initialMentionUserIds={draftMentionUserIds}
+                                  onMentionUserIdsChange={updateMentionUserIds}
+                                  onSend={(text, selection) =>
+                                    sendTeamComposer(text, selection)
+                                  }
+                                  agents={activeComposerAgentMentions}
+                                  teamMembers={
+                                    activeDirectMessage
+                                      ? activeDirectMessageParticipants.map(
+                                          (participant) => ({
+                                            id: participant.id,
+                                            name: participant.displayName
+                                          })
                                         )
-                                        .map((person) => ({
-                                          id: person.id,
-                                          name: person.displayName
-                                        }))
-                                }
-                                modelOptions={teamAgentMentions.models}
-                                modelAvailabilityWarning={
-                                  teamAgentMentions.modelAvailabilityWarning
-                                }
-                                activeAgentId={activeMentionAgentId}
-                                onActiveAgentChange={(agentId) =>
-                                  setTeamMentionSelection({
-                                    scopeKey: teamMentionScopeKey,
-                                    agentId
-                                  })
-                                }
-                                showExecutionControls={false}
-                                switchToExecutionControlsOnMention={true}
-                                showMetaBar={false}
-                                showFormattingToolbar
-                                sendEnabled={Boolean(
-                                  activeThread &&
-                                  drafts &&
-                                  hydrated &&
-                                  hydratedKey === authorityKey
-                                )}
-                                footer={
-                                  visiblePendingSend
-                                    ? "Resolve the previous send before sending this edit."
-                                    : activeDirectMessage
-                                      ? "@Agent options belong to people in this conversation. Colleague requests go to the owner privately; only an outcome they share appears here."
-                                      : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
-                                }
-                              />
+                                      : people
+                                          .filter(
+                                            (person) =>
+                                              person.membershipState ===
+                                              "enabled"
+                                          )
+                                          .map((person) => ({
+                                            id: person.id,
+                                            name: person.displayName
+                                          }))
+                                  }
+                                  modelOptions={teamAgentMentions.models}
+                                  modelAvailabilityWarning={
+                                    teamAgentMentions.modelAvailabilityWarning
+                                  }
+                                  activeAgentId={activeMentionAgentId}
+                                  onActiveAgentChange={(agentId) =>
+                                    setTeamMentionSelection({
+                                      scopeKey: teamMentionScopeKey,
+                                      agentId
+                                    })
+                                  }
+                                  showExecutionControls={false}
+                                  switchToExecutionControlsOnMention={true}
+                                  showMetaBar={false}
+                                  showFormattingToolbar
+                                  sendEnabled={Boolean(
+                                    activeThread && drafts && draftReady
+                                  )}
+                                  footer={
+                                    visiblePendingSend
+                                      ? "Resolve the previous send before sending this edit."
+                                      : activeDirectMessage
+                                        ? "@Agent options belong to people in this conversation. Colleague requests go to the owner privately; only an outcome they share appears here."
+                                        : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
+                                  }
+                                />
+                              </fieldset>
                             </div>
                           </footer>
                         ) : null

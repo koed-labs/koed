@@ -241,6 +241,19 @@ const installHomeFixture = async (page: Page, home: HomeFixture) => {
   await page.route("**/v1/home**", (route) => home.route(route));
 };
 
+test.beforeAll(async ({ browser }) => {
+  // The UI server health check warms /studio/agents, while Home tests exercise
+  // the separate /studio route. Compile that route before parallel Home tests
+  // so cold dev-server work cannot leave the feed mid-load.
+  const page = await browser.newPage();
+  try {
+    await installSyntheticApi(page);
+    await page.goto("/studio", { waitUntil: "domcontentloaded" });
+  } finally {
+    await page.close();
+  }
+});
+
 test("reminder clear syncs across pages, survives polling, and returns for a new source revision", async ({
   page,
   context
@@ -249,11 +262,11 @@ test("reminder clear syncs across pages, survives polling, and returns for a new
   await installHomeFixture(page, home);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/studio", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("3 things need you.")).toBeVisible();
   await page.clock.install({ time: new Date("2026-10-02T12:00:00.000Z") });
   await expect(
     page.getByRole("button", { name: "Clear Synthetic approval" })
   ).toBeVisible();
-  await expect(page.getByText("3 things need you.")).toBeVisible();
   await expect(page.getByText("Older Agent job review")).toHaveCount(0);
   await page.getByRole("button", { name: "Load more chats" }).click();
   await expect(page.getByText("Older Agent job review")).toBeVisible();
