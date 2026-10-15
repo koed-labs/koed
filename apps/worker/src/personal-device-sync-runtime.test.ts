@@ -933,7 +933,8 @@ describe("PDS session materialization", () => {
       sourceTimestamp: "2026-07-15T00:00:00.000Z"
     });
     const manifest = {
-      version: "2",
+      version: "3",
+      profileTransition: null,
       repositoryAssignment: {
         version: "1",
         state: "historical_unresolved",

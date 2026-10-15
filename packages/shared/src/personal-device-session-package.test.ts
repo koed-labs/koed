@@ -37,6 +37,7 @@ import {
   verifyPdsSessionCheckpointManifest,
   verifyPdsSessionManifest,
   type PdsSessionPackage,
+  type PdsConversationSourceItem,
   type PdsSessionPackageRuntimeContext
 } from "./personal-device-session-package.js";
 
@@ -59,7 +60,7 @@ const sessionPackageVector = (
 const productionFixture = JSON.parse(
   readFileSync(
     new URL(
-      "../test-fixtures/personal-device-session-package-v2.json",
+      "../test-fixtures/personal-device-session-package-v3.json",
       import.meta.url
     ),
     "utf8"
@@ -504,6 +505,78 @@ describe("PDS origin-signed session package", () => {
     expect(pkg.envelopes).toHaveLength(2);
   });
 
+  it("signs a closed-source upgrade while preserving its closure and timestamps", () => {
+    const f = fixture();
+    const previous = f.manifest;
+    const transition = {
+      previousProfile: "pre_repository_cutover" as const,
+      previousManifestHash: Buffer.alloc(32, 24).toString("base64url"),
+      previousSourceSequence: previous.sourceSequence,
+      previousClosureHash: previous.sourceClosureHash
+    };
+    const input = {
+      runtime: f.input.runtime,
+      originDeploymentId: previous.originDeploymentId,
+      sourceSequence: "8",
+      sourceNativeSessionId: previous.sourceNativeSessionId,
+      contentEpoch: previous.contentEpoch,
+      closedSession: previous.closedSession,
+      terminalCursor: previous.terminal.cursor,
+      items: previous.rawClosure.records.map(
+        (record) =>
+          JSON.parse(
+            Buffer.from(record.payload, "base64url").toString("utf8")
+          ) as PdsConversationSourceItem
+      ),
+      sourceFingerprintKey: f.sourceKey,
+      tombstoneFloorKey: f.tombstoneKey,
+      originSigningPrivateKey: f.origin.privateKey,
+      profileTransition: transition
+    };
+    const upgraded = createPdsSessionManifest(input);
+    expect(
+      verifyPdsSessionManifest(
+        upgraded,
+        f.origin.publicKey,
+        upgraded.originSignature.signerKeyId
+      )
+    ).toEqual(upgraded);
+    expect(upgraded.rawClosure).toEqual(previous.rawClosure);
+    expect(upgraded.closedSession).toEqual(previous.closedSession);
+    expect(upgraded.logicalMemoryId).toBe(previous.logicalMemoryId);
+    expect(upgraded.profileTransition).toEqual(transition);
+    const altered = structuredClone(upgraded);
+    altered.profileTransition!.previousManifestHash = Buffer.alloc(
+      32,
+      25
+    ).toString("base64url");
+    expect(() =>
+      verifyPdsSessionManifest(
+        altered,
+        f.origin.publicKey,
+        altered.originSignature.signerKeyId
+      )
+    ).toThrow();
+    expect(() =>
+      createPdsSessionManifest({ ...input, sourceSequence: "7" })
+    ).toThrow(/retained boundary/);
+    expect(() =>
+      createPdsSessionManifest({
+        ...input,
+        profileTransition: {
+          ...transition,
+          previousClosureHash: Buffer.alloc(32, 26).toString("base64url")
+        }
+      })
+    ).toThrow(/retained boundary/);
+    const missing = structuredClone(upgraded) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete missing.profileTransition;
+    expect(() => validatePdsSessionManifest(missing)).toThrow();
+  });
+
   it("binds native fork lineage into the signed source manifest", () => {
     const forkedFromExternalThreadId = "codex-parent-thread-41";
     const { input, verify, manifest, serving } = fixture(
@@ -552,31 +625,53 @@ describe("PDS origin-signed session package", () => {
     ).toBe(sessionPackageVector.sourceClosureHash);
   });
 
-  it("rejects the unchanged pre-assignment signed source fixture", () => {
-    const previous = JSON.parse(
+  it("retains a genuine old closed-source publication without admitting it to the current reader", () => {
+    const old = JSON.parse(
       readFileSync(
         new URL(
-          "../test-fixtures/personal-device-session-package-v1.json",
+          "../test-fixtures/pds-pre-cutover-closed-source-v2.json",
           import.meta.url
         ),
         "utf8"
       )
-    ) as typeof productionFixture;
-    expect(() =>
-      parsePdsSessionManifestJson(previous.originManifest)
-    ).toThrow();
-    const runtime = createPdsSessionPackageRuntimeContext({
-      ...previous.runtime,
-      now: new Date(previous.runtime.now)
-    });
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(previous.package, {
-        runtime,
-        recipientKemPrivateKey: previous.recipientKemPrivateKey,
-        now: new Date(previous.runtime.now)
-      })
-    ).toThrow();
+    ) as {
+      manifest: { version: string; closedSession: { closed: boolean } };
+      encryptedPackage: PdsSessionPackage;
+    };
+    expect(old.manifest.version).toBe("2");
+    expect(old.manifest.closedSession.closed).toBe(true);
+    expect(old.encryptedPackage.header.sourceManifestHash).toBeTruthy();
+    expect(() => validatePdsSessionManifest(old.manifest)).toThrow(/profile/);
   });
+
+  it.each(["v1", "v2"])(
+    "rejects the unchanged pre-cutover signed source fixture %s",
+    (version) => {
+      const previous = JSON.parse(
+        readFileSync(
+          new URL(
+            `../test-fixtures/personal-device-session-package-${version}.json`,
+            import.meta.url
+          ),
+          "utf8"
+        )
+      ) as typeof productionFixture;
+      expect(() =>
+        parsePdsSessionManifestJson(previous.originManifest)
+      ).toThrow();
+      const runtime = createPdsSessionPackageRuntimeContext({
+        ...previous.runtime,
+        now: new Date(previous.runtime.now)
+      });
+      expect(() =>
+        verifyAndDecryptPdsSessionPackage(previous.package, {
+          runtime,
+          recipientKemPrivateKey: previous.recipientKemPrivateKey,
+          now: new Date(previous.runtime.now)
+        })
+      ).toThrow();
+    }
+  );
 
   it("verifies committed production wire fixture and rejects cryptographic drift", () => {
     const runtime = createPdsSessionPackageRuntimeContext({

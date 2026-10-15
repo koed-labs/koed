@@ -36,7 +36,7 @@ import {
 } from "./personal-device-sync-jcs.js";
 
 export const PDS_SESSION_PACKAGE_VERSION = "1" as const;
-export const PDS_SESSION_MANIFEST_VERSION = "2" as const;
+export const PDS_SESSION_MANIFEST_VERSION = "3" as const;
 export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "4" as const;
 export const PDS_SESSION_CHECKPOINT_PROFILE = "cumulative_checkpoint" as const;
 export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
@@ -104,7 +104,15 @@ export interface PdsProjectAliasManifest {
   tokens: string[];
 }
 
+export interface PdsClosedProfileTransition {
+  previousProfile: "pre_repository_cutover";
+  previousManifestHash: string;
+  previousSourceSequence: string;
+  previousClosureHash: string;
+}
+
 export interface PdsSessionManifest {
+  profileTransition: PdsClosedProfileTransition | null;
   version: typeof PDS_SESSION_MANIFEST_VERSION;
   repositoryAssignment: PdsRepositoryAssignment;
   protocol: typeof PDS_PROTOCOL;
@@ -282,6 +290,7 @@ export interface PdsRetainedSessionPackage {
 }
 
 export interface CreatePdsSessionManifestInput {
+  profileTransition?: PdsClosedProfileTransition | null;
   /** Validated runtime state supplies all relay-visible identity and authority fields. */
   runtime: PdsSessionPackageRuntimeContext;
   originDeploymentId: string;
@@ -1131,6 +1140,11 @@ const unsignedSourceManifest = (
     input.sourceNativeSessionId
   );
   const manifest = {
+    profileTransition: validatePdsClosedProfileTransition(
+      input.profileTransition ?? null,
+      sourceClosureHash(closure.records),
+      input.sourceSequence
+    ),
     version: PDS_SESSION_MANIFEST_VERSION,
     protocol: PDS_PROTOCOL,
     packageId: "",
@@ -1227,6 +1241,45 @@ export const createPdsSessionManifest = (
     runtime.serving.signingPublicKey
   );
   return validatePdsSessionManifest(manifest);
+};
+
+/** A closed source upgrade republishes exactly the sealed source closure. */
+export const validatePdsClosedProfileTransition = (
+  value: unknown,
+  closureHash: string,
+  sourceSequence: string
+): PdsClosedProfileTransition | null => {
+  if (value === null) return null;
+  const transition = own(value, "closed profile transition");
+  exact(
+    transition,
+    [
+      "previousProfile",
+      "previousManifestHash",
+      "previousSourceSequence",
+      "previousClosureHash"
+    ],
+    "closed profile transition"
+  );
+  if (transition.previousProfile !== "pre_repository_cutover")
+    throw new TypeError(
+      "PDS closed transition requires the pre-cutover profile"
+    );
+  requireHash(transition.previousManifestHash, "previous manifest hash");
+  requireHash(transition.previousClosureHash, "previous closure hash");
+  const previousSequence = requireUint64(
+    transition.previousSourceSequence,
+    "previous profile source sequence"
+  );
+  requireUint64(sourceSequence, "source sequence");
+  if (
+    transition.previousClosureHash !== closureHash ||
+    BigInt(sourceSequence) <= BigInt(previousSequence)
+  )
+    throw new TypeError(
+      "PDS closed profile transition does not preserve its retained boundary"
+    );
+  return transition as unknown as PdsClosedProfileTransition;
 };
 
 export const validatePdsCheckpointProfileTransition = (
@@ -1452,6 +1505,7 @@ const validateRawRecord = (
 
 const sourceManifestFields = [
   "version",
+  "profileTransition",
   "repositoryAssignment",
   "protocol",
   "packageId",
@@ -1511,6 +1565,11 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
     "sourceClosureHash"
   ])
     requireHash(manifest[field], field);
+  validatePdsClosedProfileTransition(
+    manifest.profileTransition,
+    String(manifest.sourceClosureHash),
+    String(manifest.sourceSequence)
+  );
   validateClosedSession(manifest.closedSession);
   if ("projectAliasManifest" in manifest) {
     validateProjectAliases(

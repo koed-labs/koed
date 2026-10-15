@@ -1,5 +1,5 @@
-> **Selected repository assignment amendment:** Ticket 11 adds closed source
-> manifest version `"2"` and cumulative checkpoint manifest version `"3"`.
+> **Project cutover amendment:** The released profiles use closed source
+> manifest version `"3"` and cumulative checkpoint manifest version `"4"`.
 > Both require the encrypted, origin-signed `repositoryAssignment` described in
 > section 9. The old signed source bytes stay unchanged in storage and fixtures;
 > the new source reader rejects those old profiles. Transport and governance
@@ -1079,3 +1079,17 @@ Historical-unresolved assignments and local User overrides remain authoritative.
 The current reader rejects earlier manifest profiles. See
 [ADR 0058](adr/0058-signed-checkpoint-profile-baselines.md) for the trade-off and
 remaining release checks.
+
+### Closed source profile upgrade boundary
+
+The V3 closed-source manifest requires `profileTransition`, null for an ordinary
+publication. An upgrade from retained pre-cutover state instead signs exactly
+`previousProfile: "pre_repository_cutover"`, `previousManifestHash`,
+`previousSourceSequence`, and `previousClosureHash`. The new source sequence must
+increase and the raw closure hash must equal the prior closure hash. The origin
+signature and package identity cover this boundary. Older signed profiles remain
+stored unchanged and are rejected by the released reader.
+
+Closed-source publisher and receiver migration validation remains a ticket 16
+release gate. Republishing must preserve the sealed raw source, native and logical
+identity, and original closed-session timestamps; it must not reopen capture.

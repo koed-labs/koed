@@ -125,7 +125,9 @@ children share lineage and must not count as independent corroboration.
   checkpoint chains. Cumulative checkpoint V4 baselines and the pre-0058 receiver
   migration tests are implemented under ADR 0058. The old source publisher
   transition now verifies an unchanged-prefix baseline followed by resumed capture.
-  Validate previously closed source publications before release. Preserve old
+  Closed-source V3 now signs an immutable closure boundary; genuine V2 closed
+  source and V3 wire fixtures are retained. Finish database republication and
+  receiver migration validation for closed sources before release. Preserve old
   signed packages and existing logical Session identities; prove continued capture and an offline receiver can establish the
   new source-profile baseline without a legacy reader or automatic reassignment.
 - When integrating the Global branch, use a PDS replica's verified captured branch

@@ -58,7 +58,8 @@ const securePackage = (): PdsSessionPackage => {
 };
 
 const checkpointManifest = {
-  version: "2",
+  version: "4",
+  profileTransition: null,
   profile: "cumulative_checkpoint",
   packageId: "package-one",
   sourceClosureHash: "closure-one"
