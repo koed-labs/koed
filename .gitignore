@@ -32,3 +32,4 @@ packages/evals/reports/experience-replay/
 # Tooling and OS files
 .playwright-cli/
 .DS_Store
+.worktrees/
