@@ -350,6 +350,65 @@ describe("Claude historical import", () => {
     expect(client.listConversationSourceSegments).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "historical_import_completion_pending",
+      { completed: false, completionPending: true, diagnosticCodes: [] }
+    ],
+    [
+      "historical_import_state_conflict",
+      {
+        completed: false,
+        completionPending: true,
+        diagnosticCodes: ["historical_import_state_conflict"]
+      }
+    ],
+    [
+      "historical_import_transition_already_applied",
+      { completed: true, completionPending: false, diagnosticCodes: [] }
+    ]
+  ])(
+    "keeps an exhausted source nonterminal when completion returns %s",
+    async (code, expected) => {
+      const artifactId = randomUUID();
+      watcherMocks.discover.mockResolvedValueOnce([
+        { externalSessionId: "claude-session", cwd: "/work/project" }
+      ]);
+      watcherMocks.register.mockResolvedValueOnce([
+        { id: artifactId, sourceComponentId: "main" }
+      ]);
+      const client = {
+        lookupHistoricalImportSource: vi.fn(async () => ({
+          source: {
+            id: randomUUID(),
+            runId: randomUUID(),
+            artifactId,
+            sessionId: randomUUID(),
+            sourceSessionId: "claude-session",
+            sourceFingerprint: "b".repeat(64),
+            historicalCursorOffset: 100,
+            historicalCursorLine: 2,
+            registrationFrontierOffset: 100,
+            state: "importing"
+          }
+        })),
+        transitionHistoricalImportSource: vi.fn(async () => {
+          throw new MemoryApiError("conflict", {
+            status: 409,
+            payload: { error: "conflict", code }
+          });
+        })
+      } as unknown as MemoryApiClient;
+
+      await expect(
+        importSelectedClaudeHistory({
+          client,
+          sourceSessionIds: ["claude-session"]
+        })
+      ).resolves.toMatchObject(expected);
+    }
+  );
+
   it("creates durable import state only when the artifact is new", async () => {
     const artifactId = randomUUID();
     const sourceId = randomUUID();

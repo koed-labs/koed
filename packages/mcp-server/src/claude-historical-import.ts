@@ -330,6 +330,8 @@ export const importSelectedClaudeHistory = async (input: {
   };
   const results: Array<Record<string, unknown>> = [];
   const diagnosticCodes: string[] = [];
+  // Raw import finished but a source completion was rejected for now.
+  let completionPending = false;
   let remainingBatches = input.maxBatches ?? Number.POSITIVE_INFINITY;
   let completed = true;
   signalLoop: for (const [signalIndex, signal] of signals.entries()) {
@@ -424,8 +426,11 @@ export const importSelectedClaudeHistory = async (input: {
       } catch (error) {
         const outcome = historicalCompletionOutcome(error);
         if (!outcome) throw error;
-        if (!outcome.completed && outcome.diagnosticCode)
-          diagnosticCodes.push(outcome.diagnosticCode);
+        if (!outcome.completed) {
+          completionPending = true;
+          if (outcome.diagnosticCode)
+            diagnosticCodes.push(outcome.diagnosticCode);
+        }
       }
       if (remainingBatches <= 0) {
         const hasMoreSources =
@@ -442,7 +447,8 @@ export const importSelectedClaudeHistory = async (input: {
     runId: newRun?.id ?? [...runIds][0] ?? null,
     runIds: [...runIds],
     sources: results,
-    completed,
+    completed: completed && !completionPending,
+    completionPending: completed && completionPending,
     diagnosticCodes
   };
 };
@@ -713,7 +719,14 @@ export const createClaudeHistoricalProviderAdapter = (input: {
           )
         : undefined;
       return {
-        state: result.completed === true ? "completed" : "progress",
+        // Like Codex and Pi, a source awaiting completion stays nonterminal
+        // without rescheduling the pass immediately.
+        state:
+          result.completed === true
+            ? "completed"
+            : result.completionPending === true
+              ? "source_exhausted"
+              : "progress",
         selection: currentSelection,
         ...(activeRunId ? { runId: activeRunId } : {}),
         ...(diagnosticCode ? { diagnosticCode } : {})

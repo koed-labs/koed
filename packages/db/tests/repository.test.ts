@@ -29369,8 +29369,14 @@ describeDb("memory repository visibility", () => {
     );
     const recent = new Date().toISOString();
     const stale = new Date(Date.now() - 60 * 60_000).toISOString();
-    const item = (turn: string, index: number, eventTime: string) => ({
-      sessionId: session.id,
+    const item = (
+      turn: string,
+      index: number,
+      eventTime: string,
+      transcriptType = "agent_message",
+      sessionId = session.id
+    ) => ({
+      sessionId,
       sourceKind: "codex",
       sourceAdapterVersion: "codex-app-server-v1",
       sourceTransport: "app_server",
@@ -29383,7 +29389,7 @@ describeDb("memory repository visibility", () => {
       rawText: `${turn} ${index}`,
       sourceHash: `parked-${turn}-${index}-${randomUUID()}`,
       idempotencyKey: `parked-${turn}-${index}-${randomUUID()}`,
-      metadata: { transcriptType: "agent_message" }
+      metadata: { transcriptType }
     });
     await repo.createConversationItems(
       { userId: alice.id },
@@ -29394,13 +29400,42 @@ describeDb("memory repository visibility", () => {
           item("completed-turn", 2, recent),
           item("completed-turn", 3, recent),
           item("stale-turn", 4, stale),
-          item("errored-turn", 5, recent)
+          item("errored-turn", 5, recent),
+          // A user prompt projects without a seal, even in an open turn.
+          item("open-turn", 7, recent, "user_message")
         ]
       }
     );
     await repo.createConversationItems(
       { userId: alice.id },
       { items: [item("sessionless-open-turn", 6, recent)] }
+    );
+    // Another User's completion signal with the same external identifiers
+    // must not seal Alice's sessionless turn.
+    const bob = await repo.createUser({
+      email: `bob-parked-live-${randomUUID()}@example.com`
+    });
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        externalSessionId: `parked-live-bob-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `parked-live-bob-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          item(
+            "sessionless-open-turn",
+            8,
+            recent,
+            "agent_message",
+            bobSession.id
+          )
+        ]
+      }
     );
     await pool.query(
       `update conversation_items
@@ -29414,7 +29449,7 @@ describeDb("memory repository visibility", () => {
       `update conversation_items
        set source_adapter_version = 'claude-code-hook-signal-v1',
          source_event_type = 'turn_completed'
-       where source_sequence = 3`
+       where source_sequence in (3, 8)`
     );
     // Helper turns can run without a Captured Session; they use the same
     // external-session boundary as Projection selection.
@@ -29425,7 +29460,7 @@ describeDb("memory repository visibility", () => {
     );
 
     await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
-      liveProjectionRows: 4,
+      liveProjectionRows: 6,
       parkedLiveProjectionRows: 3,
       historicalImportRows: 0,
       historicalImportBytes: 0
@@ -29437,7 +29472,7 @@ describeDb("memory repository visibility", () => {
       await expect(
         repo.getConversationProjectionBacklog()
       ).resolves.toMatchObject({
-        liveProjectionRows: 7,
+        liveProjectionRows: 9,
         parkedLiveProjectionRows: 0
       });
     } finally {
