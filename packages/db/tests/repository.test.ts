@@ -29398,6 +29398,10 @@ describeDb("memory repository visibility", () => {
         ]
       }
     );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      { items: [item("sessionless-open-turn", 6, recent)] }
+    );
     await pool.query(
       `update conversation_items
        set projection_work_class = 'live_capture_projection',
@@ -29412,10 +29416,17 @@ describeDb("memory repository visibility", () => {
          source_event_type = 'turn_completed'
        where source_sequence = 3`
     );
+    // Helper turns can run without a Captured Session; they use the same
+    // external-session boundary as Projection selection.
+    await pool.query(
+      `update conversation_items
+       set session_id = null, external_session_id = 'sessionless-helper'
+       where external_turn_id = 'sessionless-open-turn'`
+    );
 
     await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
       liveProjectionRows: 4,
-      parkedLiveProjectionRows: 2,
+      parkedLiveProjectionRows: 3,
       historicalImportRows: 0,
       historicalImportBytes: 0
     });
@@ -29426,7 +29437,7 @@ describeDb("memory repository visibility", () => {
       await expect(
         repo.getConversationProjectionBacklog()
       ).resolves.toMatchObject({
-        liveProjectionRows: 6,
+        liveProjectionRows: 7,
         parkedLiveProjectionRows: 0
       });
     } finally {

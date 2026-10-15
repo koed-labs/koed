@@ -6261,7 +6261,21 @@ export const createMemorySourceRepository = (
       }>(
         `
         with backlog_items as (
-          select ci.*
+          select
+            -- Same turn boundary as Projection selection.
+            coalesce(ci.session_id::text, ci.external_session_id)
+              as boundary_session,
+            coalesce(ci.turn_id::text, ci.external_turn_id) as boundary_turn,
+            ci.projection_work_class,
+            ci.projection_status,
+            coalesce(ci.event_time, ci.observed_at) as activity_at,
+            case
+              when ci.projection_work_class = 'historical_import_backfill'
+                then octet_length(ci.raw_json::text)
+                  + octet_length(coalesce(ci.raw_text, ''))
+                  + octet_length(coalesce(ci.transport_chunk_text, ''))
+              else 0
+            end as historical_bytes
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
@@ -6275,69 +6289,50 @@ export const createMemorySourceRepository = (
                 and s.personal_deleted_at is null
               )
             )
-        ), open_live_turns as (
+        ), open_live_turns as materialized (
           -- Live rows in a turn with no completion signal and recent activity
           -- wait for an agent seal; they need no Projection capacity yet.
-          select
-            bi.owner_user_id, bi.visibility, bi.session_id,
-            bi.external_session_id, bi.turn_id, bi.external_turn_id
+          select bi.boundary_session, bi.boundary_turn
           from backlog_items bi
           where $1::bigint > 0
             and bi.projection_work_class = 'live_capture_projection'
             and bi.projection_status = 'pending'
-            and coalesce(bi.turn_id::text, bi.external_turn_id) is not null
-          group by
-            bi.owner_user_id, bi.visibility, bi.session_id,
-            bi.external_session_id, bi.turn_id, bi.external_turn_id
-          having max(coalesce(bi.event_time, bi.observed_at))
+            and bi.boundary_session is not null
+            and bi.boundary_turn is not null
+          group by bi.boundary_session, bi.boundary_turn
+          having max(bi.activity_at)
               > now() - $1::bigint * interval '1 millisecond'
             and not exists (
               select 1
               from conversation_items signal
-              where signal.owner_user_id is not distinct from bi.owner_user_id
-                and signal.visibility = bi.visibility
-                and signal.session_id is not distinct from bi.session_id
-                and signal.external_session_id is not distinct from bi.external_session_id
-                and signal.turn_id is not distinct from bi.turn_id
-                and signal.external_turn_id is not distinct from bi.external_turn_id
+              where coalesce(signal.session_id::text, signal.external_session_id)
+                  = bi.boundary_session
+                and coalesce(signal.turn_id::text, signal.external_turn_id)
+                  = bi.boundary_turn
                 and signal.personal_deleted_at is null
                 and ${turnCompleteSignalSql("signal")}
             )
-        ), classified_items as (
-          select
-            bi.*,
-            (
-              bi.projection_status = 'pending'
-              and exists (
-                select 1
-                from open_live_turns t
-                where t.owner_user_id is not distinct from bi.owner_user_id
-                  and t.visibility = bi.visibility
-                  and t.session_id is not distinct from bi.session_id
-                  and t.external_session_id is not distinct from bi.external_session_id
-                  and t.turn_id is not distinct from bi.turn_id
-                  and t.external_turn_id is not distinct from bi.external_turn_id
-              )
-            ) as parked
-          from backlog_items bi
-          where bi.projection_work_class = 'live_capture_projection'
         )
         select
-          (select count(*) filter (where not parked) from classified_items)::text
-            as live_projection_rows,
-          (select count(*) filter (where parked) from classified_items)::text
-            as parked_live_projection_rows,
+          count(*) filter (
+            where bi.projection_work_class = 'live_capture_projection'
+              and t.boundary_session is null
+          )::text as live_projection_rows,
+          count(*) filter (
+            where bi.projection_work_class = 'live_capture_projection'
+              and t.boundary_session is not null
+          )::text as parked_live_projection_rows,
           count(*) filter (
             where bi.projection_work_class = 'historical_import_backfill'
           )::text as historical_import_rows,
-          coalesce(sum(
-            octet_length(bi.raw_json::text)
-            + octet_length(coalesce(bi.raw_text, ''))
-            + octet_length(coalesce(bi.transport_chunk_text, ''))
-          ) filter (
-            where bi.projection_work_class = 'historical_import_backfill'
-          ), 0)::text as historical_import_bytes
+          coalesce(sum(bi.historical_bytes), 0)::text
+            as historical_import_bytes
         from backlog_items bi
+        left join open_live_turns t
+          on bi.projection_work_class = 'live_capture_projection'
+          and bi.projection_status = 'pending'
+          and t.boundary_session = bi.boundary_session
+          and t.boundary_turn = bi.boundary_turn
       `,
         [projectionAgentTurnStaleMs()]
       );
