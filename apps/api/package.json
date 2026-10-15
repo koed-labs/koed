@@ -31,6 +31,8 @@
     "dev": "pnpm run build:browser && tsx watch src/index.ts",
     "start": "node dist/index.js",
     "smoke:webtransport": "tsx scripts/smoke-webtransport.ts",
+    "prototype:agent-auth": "tsx --tsconfig ../../tsconfig.base.json prototypes/workos-agent-auth/cli.ts",
+    "prototype:agent-auth:smoke": "tsx --tsconfig ../../tsconfig.base.json prototypes/workos-agent-auth/smoke.ts",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
     "verify:browser-build": "node scripts/verify-browser-approval-build.mjs"
