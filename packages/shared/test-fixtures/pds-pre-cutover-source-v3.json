@@ -1,0 +1,565 @@
+{
+  "notice": "Synthetic source publisher fixture generated with implementation 65698832 against schema through 0057; no live credentials or memory.",
+  "manifest": {
+    "protocol": "koed/pds/v1",
+    "version": "3",
+    "profile": "cumulative_checkpoint",
+    "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+    "originDeploymentId": "_9p0_2Ed0_MAuQoyhJkYAQ",
+    "originDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+    "originAuthorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "originSignedAt": "2026-07-15T00:00:00.000Z",
+    "sourceSequence": "0",
+    "sourceType": "captured_session",
+    "sourceNativeSessionId": "owned-precutover-source",
+    "sourceFingerprint": "D_EN6EzKLHlXEzvavaevNxmu7SdbdGq4GiZxAg9a8UQ",
+    "logicalMemoryId": "849EGBQsoBbcsu4hNP8LUHL5wMfhLh_-2G3HO-ykfXM",
+    "deletionFloorToken": "Z3pBJ80nKlPH372h3NiZ0JU6_Q4vvDePHTRVJLwbhjU",
+    "sourceClosureHash": "4LLffzDpA3ZJMc5oYBYT4F9n-23Iqt05fslrOcl4cDM",
+    "contentEpoch": "3",
+    "repositoryAssignment": {
+      "version": "1",
+      "state": "recorded",
+      "assignmentVersion": "1",
+      "capturedCwd": "/fixture/source",
+      "branchObservation": "main",
+      "automatic": {
+        "kind": "portable_repository",
+        "key": "gr_pre_cutover_source",
+        "root": "/fixture/source",
+        "branch": "main",
+        "reason": "origin",
+        "checkoutId": "fixture-checkout",
+        "originatingDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+        "selectedRemote": "origin",
+        "anchorDisplay": "example.test/team/source"
+      },
+      "override": null,
+      "selectedAnchor": {
+        "epoch": "3",
+        "token": "s79vfwnYFMtHsJ5Sj3PIhsrRO4dT9jS83Sgj_EDUBqE"
+      }
+    },
+    "sourceSession": {
+      "logicalSessionId": "22222222-2222-4222-8222-222222222222",
+      "externalSessionId": "owned-precutover-source",
+      "sourceAdapter": "pi",
+      "sourceAdapterVersion": "pi-session-v1",
+      "sourceRuntime": "pi",
+      "captureMethod": "transcript",
+      "sourceCreatedAt": "2026-07-14T23:00:00.000Z"
+    },
+    "checkpoint": {
+      "version": "1",
+      "ordinal": "0",
+      "previousClosureHash": null,
+      "itemCount": "2"
+    },
+    "terminal": {
+      "cursor": "2",
+      "itemCount": "2"
+    },
+    "rawClosure": {
+      "recordCount": "2",
+      "rawByteCount": "469",
+      "records": [
+        {
+          "ordinal": "0",
+          "sourceNativeItemId": "item-0:0",
+          "sourceTimestamp": "2026-07-14T23:59:00.000Z",
+          "observedAt": "2026-07-14T23:59:00.100Z",
+          "payload": "eyJhY3RvciI6InVzZXIiLCJjb250ZW50Ijoib2xkIHNvdXJjZSB0dXJuIDAiLCJtZXRhZGF0YSI6eyJzb3VyY2VSb2xlIjoidXNlciJ9LCJvYnNlcnZlZEF0IjoiMjAyNi0wNy0xNFQyMzo1OTowMC4xMDBaIiwic2VxdWVuY2UiOiIwIiwic291cmNlTmF0aXZlSXRlbUlkIjoiaXRlbS0wOjAiLCJzb3VyY2VUaW1lc3RhbXAiOiIyMDI2LTA3LTE0VDIzOjU5OjAwLjAwMFoiLCJ0eXBlIjoidXNlcl9tZXNzYWdlIn0",
+          "payloadHash": "ksHHNnKBnGNgh2_mhNJ0KJolRlnsi_nN-JHMC8ernkk"
+        },
+        {
+          "ordinal": "1",
+          "sourceNativeItemId": "item-1:0",
+          "sourceTimestamp": "2026-07-14T23:59:01.000Z",
+          "observedAt": "2026-07-14T23:59:01.100Z",
+          "payload": "eyJhY3RvciI6ImFnZW50IiwiY29udGVudCI6Im9sZCBzb3VyY2UgdHVybiAxIiwibWV0YWRhdGEiOnsic291cmNlUm9sZSI6ImFnZW50In0sIm9ic2VydmVkQXQiOiIyMDI2LTA3LTE0VDIzOjU5OjAxLjEwMFoiLCJzZXF1ZW5jZSI6IjEiLCJzb3VyY2VOYXRpdmVJdGVtSWQiOiJpdGVtLTE6MCIsInNvdXJjZVRpbWVzdGFtcCI6IjIwMjYtMDctMTRUMjM6NTk6MDEuMDAwWiIsInR5cGUiOiJhZ2VudF9tZXNzYWdlIn0",
+          "payloadHash": "2FCtLa6kyiKKLAXgsQge2KUJlvHbetkIWMJ3QBSOJ1c"
+        }
+      ]
+    },
+    "originSignature": {
+      "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+      "signature": "HX1LxMrNzWdQr3zAb1L8LYjeFUOs3XSBBI2BVYzy5Dpi7UOkhurHQ_qd3CUwz254_UN35_Xu9S34JG76sYbWDQ"
+    }
+  },
+  "encryptedPackage": {
+    "header": {
+      "protocol": "koed/pds/v1",
+      "version": "1",
+      "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0",
+      "groupId": "kK25vv539v4UIJpTngdiqw",
+      "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+      "sourceManifestHash": "JGktDHaCMeHlLbXDVHMXvKaoVCfloZgs4Ew6bjoM__4",
+      "originDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+      "contentEpoch": "3",
+      "recipientEpoch": "3",
+      "plaintextByteCount": "2908",
+      "chunkCount": "1",
+      "payloadNonce": "-fqdSBySpaioPz9v",
+      "expiresAt": "2030-07-15T00:00:00.000Z",
+      "servingDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+      "servingSigningKeyId": "br9TBLuG8VFg4-xdShUcXg",
+      "authorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "intendedRecipientSnapshot": ["4LHAIZO9Z0J-9VODJeq1hQ"],
+      "intendedRecipientSnapshotHash": "R3mtbJJqJ_Qj36Ci_m3Vop16hi1SH4pNlSXPORoHZ3o",
+      "payloadCiphertextHash": "L8HykgG1i9nMMdfxr8GzwudQsR7sFcSPxfVakYOKHsM",
+      "payloadTag": "LXCKqyoKQbAhnFqH6_9IIg",
+      "servingSignature": {
+        "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+        "signature": "72iuFpDp9IOobIEQD_tCAZmIciaRs_WeyfSTIL9y0FYQoRkQTxN5XY_ziDtPIbETHZGCQbthGIFZYZnUgsxhAA"
+      }
+    },
+    "envelopes": [
+      {
+        "protocol": "koed/pds/v1",
+        "version": "1",
+        "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0",
+        "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+        "contentEpoch": "3",
+        "recipientEpoch": "3",
+        "senderDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+        "recipientDeviceId": "4LHAIZO9Z0J-9VODJeq1hQ",
+        "recipientKemKeyId": "3xFSjxo5m6Ew3keEnQJbrQ",
+        "ephemeralPublicKey": "1RulBC5X5dRgSOQj6P6YDO5T-btXIDNTnLXkNlPH5j0",
+        "nonce": "6q35v5omEoJLXOIW",
+        "ciphertext": "NleF7VDEmXPt8v22vmmq_hFkfCvKE1URzNeLgsIGwFY",
+        "tag": "gkhTPMA1tSeAWaYAb0Htzw",
+        "servingSignature": {
+          "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+          "signature": "-Ga6CC4T4FW8ZSsL_W6kURRLF6F9Z7ZUNtLuz3n4UHyBPiWRXe1cS3_KFh6ggdUy4BlbeiaCjbnfddwOXeI-DA"
+        }
+      }
+    ],
+    "chunks": [
+      {
+        "protocol": "koed/pds/v1",
+        "version": "1",
+        "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0",
+        "groupId": "kK25vv539v4UIJpTngdiqw",
+        "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+        "chunkIndex": "0",
+        "chunkCount": "1",
+        "ciphertext": "FCMLBWNGlC8vA8Goh18TQa7v49iZs1oCzaSoILWq7OdYmrppSuutWMUqIeqdzkLi25R3YpUEv2sTh4FRvwgD965TjsOgy1biWDocUzz-EY5WAG6W-CUTsm0Tt71OrfRI9xDj1DrolBbi5E1wKEA2ktfSJE6Z2v0m8a77EJjIJMi1LJYWTWyidBlw5m0fXowWpqnHQf9Hmd6xKieGNzgp3q2e0_yiMQhBsFoGO63CPdxyRSWcdTFNUknBULE2jswWOgXbpybdO_9wuLR5tOCxRyRNZPnnWbrHURQ8zPNdQdNdiVvmwZ2zSDDVepwQSKBJgG9fm1gVXJCX6G7MmOnad5Q5GyoRBTE9NLAiquR3-5JBrPwjrB2RdpPCtRt4MAgAdRV-kkRpVYE4RjgOWK8wP_mXL0FSK7FfS1NzZ1LmANsuzxzllj6JVFAwY3X5HlAh8CLX-iiqbf0zfAYq5TC_lJtmbraf_hpHIAWcqC6OZY5o0wZG-9IIQ_-zPLrWKdb-hhSkkjMInlAZUkyVFwLU4GprGjzGjjEqMOXWjP7voI7D8GK6B_J0CubaTiMTPv8qnLhn3g6G1Cqjj9UyfNtThvBaM4axW0sgestI8cG-4spgS7bLASWBVHwo2M2NKMZEmZIsPFydGrozVOW4vDQ-WT5SzGtKZ6GiDK-YF5tq6aV9DXpkEc3OTS2afqf1RzceMGxcdEnoHyUOJQFJeCml2EG9u7IxdmtOs5VgBEnRx_UFpht-7UlnPvhyQPw9Gt478Z3u6LeeTjsGJ0rnLVravUHUVwVNezqrEhKMJ6LzKWv1lg7o4gdd6K4N8Lh8m_yJWUxjTjrfQRs7AssDtuMnC0rTL6ORqnbzcBscvQp2LdlO7f7vwA-URIBUdcJpYzrUlJVLSqfN5bSy66h5TmvjSKpDMRpmHog7HEbEMrzToZnnY3vE7SvEbUyNlzjFkyd53rjlwEccT3VYK4rGcJCyhbJ0-PATdXgFzaOjxsygS9FwmCxriqimP2ICwjycSS9RC_Fi81g_WBIt5fNzbIXwsmnIpjv__p4wMIxNbPCCwcFJKXObvXjQrGal5U8s3ya-lsJMx2_mQzwT2uvHbTLaNpxiHBOtUzvlXCwvS-vzQ0-whxfPLjV6SC7ua09-2NpSg1yB5bH7OfsPZzfiMixGKj6XCk45qVHv2ItsxKCFxRhFIqyVj0OriaaM8YL0NY2xBxfqwPWlP0qdvwjFzKTNWsfd8hTIJd90teObnyk-OYTGrRaNwYMjm3Lo5LjJBhxhrjP_WMm_FYycoEpH8rli-yS01RWuT0LTWgS5PyRIPu-uiQ30wL-JN1uDyuyqt_42aueldULD4VCtXZCH4EFmV-YerTic6YNcZ4BMUOF3aD38kqOR4t72KJQ87a08Tctlzu6Dxu7OXIy78XTnQgo--Ht9peINRaX408A-ixn1ue2w7jisFURHfIatKUoYC6d9tKhySXIjLhS8EhrbYWKCG6LWTTpJg14r-BM7J5vAmji1igeo2AlGLxlK_u70mUXpAd3x245skb3GuMnbnElZ5tRGvzyjclV-47M-tNgWrkqF6gaRK7M2GAfgr5tLHv7q_Had77N3yayEiyc7TS8my75kcrPBYdpOzCtk9P62B3ibPU1VP3wPaeVR5Cwz0ILWINCcXZW1Tx4nayaCT1NWIlSOxrtHeBIVaZQXE7SRYmSqEoQ3rQES8grsBBNzosG7sLCHYnN5nWmArJeh7Fee2rKigqFf-5E-0yNC-WzXneQHQOvDdL4vBdRJw6DoAHR7uolUChOPKU-Mq9TL1ZpWn7xz-GcWK9Dmwtox--Gd2iWsmLkuTCGzn4Y9dsRlEFJx88gi92Wv0BLdMk0MB4-D5CAv0-HNXGegsaA_6d25oCPCHj3pSF7QGZJ1K8iuLtBM7Jt4xAMuMJRCOt9Npffs4WTeEtl3AiRBxF-FT8MWUGLB-UZb1wxYjPRxBjWnCyNFxLzrOL5hziNXet6G6XhEKXtJwOFCQoe9VewNii6NcbhQv_evmeg5L2xUx3cUiRdf7ovAQT9EfcPaCOKfIKlOGHiRc_XxAwiM4Ax4NO0yhkloeUaOGLgOVNg7BTOrdr6Sr7lBtdnZBI2ElkfEGdd-NwtXqplBvdA-NjVt6E2JvVE3xImVx92kj52jIDLSvr-9GAonJzVQkoLnaMPkBo-6F1LSduJ78hbfjynMNYE0BKpzOr7IVWxwKP-5hnFCotgH198Alz8cQQMeco-ZfeMhcAEL7a7fbQoVSvSNWkarPUcoRZm-2xNmvu-D90BHt89iYrZdq_FjTsKA5nu4oJHM15uQ8j5Lc5W0GcDmOKDpFdFQLCK7TLao8w5d-CFJWzyrVdo1I8H9PHhw0ALxocoYhSHCOiUMKPz-2_8drYOghouv-tQZ6JCq7DwEdkmTcK7XI3TggUo_aePbWFe_T2CsuOGM8ZRN7Qyw3Tnh-B6-y4C7yPtQEOGJucAARXRDtBjdCe81u3Op0qpamF3te3nCoeOXY6rSz_jUmbdQBpsRle5OXiTwJLbiTiWbNNYqYGvt6vDap4FUQPgsjWvHGSk8OPkWhBysUqjlp6l6gmOYCesvwAm-LBd2TCYaHWjAie8UNLW8dfeFnsrB22wanO_l3HFAygjVIKdLRFRbeO0TADsQfNqGmNo05zvd1Wo70jAWi9msiwyPrvH7_8u6sfy2_wIS-5FtmbQ3JwAWwGsP0ySnz81IoqN4SSTGv0LLHHDNQqk3Qa9YFaNe9edJSkoRCidAXagTDlTdmdz5GqpeYnQY53TUPo9u4Csbr4cbvh2-cOzlpmklp_jg6FkWaHEjTQqwyZC-DoYq1qY41qIcrdP81b61E7Vxo5bUbHkULoD9VscGTu_fXxWrmUQ9gaYhg67Z3gBNgE101JRYwQYb7zigKRmmc9wgqfNGSkHVD7tAdU1y84pRpKL-AIoCJbOIssfHceicanqGloYzO-fodLwr0ftK5lwWfDdDdSNS-jsQdxhL_5jPbxuYct7S_q9wlif0zFTgGAceD00eNY8k_a4_2Mp_r7xh8C1tIlNYYyYlN8J7dSbfnFRiXRsHJ3GfLcyhTQUdWstZstJW8_eqneREUjgoSZejbrHrnAr0YV0zk4JFGiYLHQiozRKFaMjHQvFDTcLc5iNM65WyecjETsDJktmEuXQiqsk9ltU4TK3tRniUxtNHnVlrxG1Yg-tTafZAEDQD4hx0WHKheNWEAUUqbj6vpCeTVTV2ams6acTvIQf-0WVvY8SiCsN4UBRQp8PrpEg_7vR5GbkZaPoj8cVaGmdlFxN4VrrCm8-wc2AvzJosu20q6I7Bn4D9b136VfJAoyII8tJnwFJp2WFCgq3ls_-U3_lyg3-eeGskDBrEIuh0_YdafszsmM4W9sUi5u3sva-h8mYX8DQXnw6ZSTO9OQwIyXCPRmupKJ82yY3nwMYzy0xswIqUA-Zzou_sGOjr8m5xuAr6ou5NKk9zxhJD0Q6qWUbsn6M8iRng6gvC_wZ9p1TZaaaEXAz9bD0x3xpZjrs2cXq9vBAwYQ9QPhkqkWOVVeucVVue1dIKtWBx0kFeTGPp4mK4oqyJbUgYLpvnUsnP18hsVZPEVG-0YJZOsiq3aCDw3FkeeqCarEeOSMYzNWCGmRQi2tFffa2ODzz5NGRdxqkA9OL3GClemiHu3OR2KH4El9yeW6PsAK-DBwpz9cPonMPVG5VCiTHKAFulJYwEX_n8D5k95NckUZS5MtUifWpoIw2sCVsE-78BxxiNqc3EGapSO32AVwzfE_K9O9cH2kNqC_SqqKilik4JgbaBjTEutSvJd9rOaQE98JMMtsO7-kE8EWdT74BRoCOg15iBpUsP8ToQGA",
+        "chunkHash": "QHkmWunxGBCX3xr5jghYuV9hO-1_ZyDo04DZdb8IJKo"
+      }
+    ],
+    "packageDigest": "gS6JUz-bK2v3QSjkxLSjctbVhHDtSvIlJafNm0qso6A"
+  },
+  "session": {
+    "id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+    "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+    "visibility": "personal",
+    "external_session_id": "owned-precutover-source",
+    "source_runtime": "pi",
+    "capture_method": "transcript",
+    "idempotency_key": null,
+    "source_hash": null,
+    "model": null,
+    "cwd": "/fixture/source",
+    "source_kind": "pi",
+    "source_adapter_version": "pi-session-v1",
+    "external_thread_id": "owned-precutover-source",
+    "forked_from_external_thread_id": null,
+    "parent_session_id": null,
+    "parent_external_thread_id": null,
+    "agent_nickname": null,
+    "agent_role": null,
+    "agent_path": null,
+    "thread_source": null,
+    "source_metadata": {},
+    "metadata": {},
+    "captured_at": "2026-10-15T00:51:59.484Z",
+    "created_at": "2026-07-14T23:00:00.000Z",
+    "updated_at": "2026-10-15T00:51:59.484Z",
+    "invalidated_at": null,
+    "invalidation_reason": null,
+    "personal_deleted_at": null,
+    "personal_deleted_by_user_id": null,
+    "personal_deletion_reason": null,
+    "captured_project_provenance": {
+      "outcome": "unambiguous",
+      "candidates": [
+        {
+          "id": "/fixture/source",
+          "name": "source",
+          "path": "/fixture/source"
+        }
+      ],
+      "capturedCwd": "/fixture/source",
+      "schemaVersion": 1,
+      "capturedProjectId": null
+    },
+    "automatic_project_id": "/fixture/source",
+    "automatic_project_name": "source",
+    "automatic_project_path": "/fixture/source",
+    "automatic_project_detected_at": "2026-10-15T00:51:59.484Z",
+    "project_override_id": null,
+    "project_override_name": null,
+    "project_override_path": null,
+    "project_override_at": null,
+    "project_override_by_user_id": null,
+    "source_fingerprint": null,
+    "captured_project": {},
+    "import_observed_at": null,
+    "logical_session_id": "22222222-2222-4222-8222-222222222222",
+    "repository_assignment_state": "recorded",
+    "repository_assignment_version": 1,
+    "repository_automatic_identity": {
+      "key": "gr_pre_cutover_source",
+      "kind": "portable_repository",
+      "root": "/fixture/source",
+      "branch": "main",
+      "reason": "origin",
+      "checkoutId": "fixture-checkout",
+      "anchorDisplay": "example.test/team/source",
+      "selectedRemote": "origin",
+      "originatingDeviceId": "0Ti0k8ifxw3g7U2USdywaQ"
+    },
+    "repository_override_identity": null
+  },
+  "turns": [
+    {
+      "id": "9b2a009d-c169-4caa-82e8-9be0bb365616",
+      "session_id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+      "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+      "visibility": "personal",
+      "external_turn_id": "turn-1",
+      "turn_index": 1,
+      "source_runtime": "pi",
+      "capture_method": "api",
+      "source_kind": "pi",
+      "source_adapter_version": "pi-session-v1",
+      "external_thread_id": "owned-precutover-source",
+      "source_metadata": {
+        "sourceTransport": "transcript_watcher",
+        "externalThreadId": "owned-precutover-source",
+        "externalSessionId": "owned-precutover-source"
+      },
+      "idempotency_key": "turn:426d1e35-628a-4b1a-948e-4eb9ed58ed02:turn-1",
+      "source_hash": "turn:426d1e35-628a-4b1a-948e-4eb9ed58ed02:turn-1",
+      "created_at": "2026-10-15T00:51:59.517Z",
+      "captured_at": "2026-10-15T00:51:59.517Z",
+      "started_at": null,
+      "completed_at": null,
+      "invalidated_at": null,
+      "invalidation_reason": null
+    },
+    {
+      "id": "bc9c9802-a2a0-4a27-8525-bd857d17edf8",
+      "session_id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+      "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+      "visibility": "personal",
+      "external_turn_id": "turn-0",
+      "turn_index": 0,
+      "source_runtime": "pi",
+      "capture_method": "api",
+      "source_kind": "pi",
+      "source_adapter_version": "pi-session-v1",
+      "external_thread_id": "owned-precutover-source",
+      "source_metadata": {
+        "sourceTransport": "transcript_watcher",
+        "externalThreadId": "owned-precutover-source",
+        "externalSessionId": "owned-precutover-source"
+      },
+      "idempotency_key": "turn:426d1e35-628a-4b1a-948e-4eb9ed58ed02:turn-0",
+      "source_hash": "turn:426d1e35-628a-4b1a-948e-4eb9ed58ed02:turn-0",
+      "created_at": "2026-10-15T00:51:59.495Z",
+      "captured_at": "2026-10-15T00:51:59.495Z",
+      "started_at": null,
+      "completed_at": null,
+      "invalidated_at": null,
+      "invalidation_reason": null
+    }
+  ],
+  "items": [
+    {
+      "id": "e99e5864-2457-48ba-a85e-8fae26319dfe",
+      "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+      "visibility": "personal",
+      "session_id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+      "turn_id": "bc9c9802-a2a0-4a27-8525-bd857d17edf8",
+      "source_kind": "pi",
+      "source_adapter_version": "pi-session-v1",
+      "source_transport": "transcript_watcher",
+      "external_session_id": "owned-precutover-source",
+      "external_thread_id": "owned-precutover-source",
+      "external_turn_id": "turn-0",
+      "external_item_id": "item-0:0",
+      "parent_external_item_id": null,
+      "source_record_type": "message",
+      "source_event_type": "user_message",
+      "source_line_number": null,
+      "source_sequence": 0,
+      "event_time": "2026-07-14T23:59:00.000Z",
+      "observed_at": "2026-07-14T23:59:00.100Z",
+      "raw_json": {
+        "type": "pi_session_record",
+        "contentBlock": {
+          "text": "old source turn 0",
+          "type": "text"
+        },
+        "sourceRecord": {
+          "id": "item-0",
+          "type": "message",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "text": "old source turn 0",
+                "type": "text"
+              }
+            ]
+          }
+        }
+      },
+      "raw_text": "old source turn 0",
+      "source_hash": "old-source-hash-0",
+      "idempotency_key": "conversation-item:6d91c491216845ed09f4aefc584a65674507c3c21c5c3132218df1e58e78df84",
+      "projection_status": "pending",
+      "projection_version": null,
+      "projected_at": null,
+      "projection_error": null,
+      "memory_excluded_at": null,
+      "memory_exclusion_reason": null,
+      "memory_excluded_by_user_id": null,
+      "metadata": {
+        "actor": "user",
+        "projectId": "/fixture/source",
+        "sourceRole": "user",
+        "canonicalStableItemId": "item-0:0",
+        "canonicalConversationItemKey": "conversation-item:6d91c491216845ed09f4aefc584a65674507c3c21c5c3132218df1e58e78df84",
+        "canonicalConversationItemKind": "message",
+        "canonicalConversationItemActor": "user",
+        "canonicalConversationItemContentHash": "45bb52818ad9e83660787fd9709c34ab7dc5d4455ce48390ce034b4f4682aa04"
+      },
+      "logical_source_id": null,
+      "transport_chunk_index": 0,
+      "transport_chunk_count": 1,
+      "transport_chunk_text": null,
+      "transport_chunk_encoding": null,
+      "created_at": "2026-10-15T00:51:59.495Z",
+      "personal_deleted_at": null,
+      "personal_deleted_by_user_id": null,
+      "personal_deletion_reason": null,
+      "canonical_stable_item_id": "item-0:0",
+      "canonical_item_key": "conversation-item:6d91c491216845ed09f4aefc584a65674507c3c21c5c3132218df1e58e78df84",
+      "canonical_source_priority": 100,
+      "projection_policy_revision": null,
+      "projection_work_class": "live_capture_projection",
+      "import_observed_at": null,
+      "source_fingerprint": null,
+      "captured_project": {}
+    },
+    {
+      "id": "ebfa4a7c-f802-4634-bc0d-0bd698aa9ab6",
+      "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+      "visibility": "personal",
+      "session_id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+      "turn_id": "9b2a009d-c169-4caa-82e8-9be0bb365616",
+      "source_kind": "pi",
+      "source_adapter_version": "pi-session-v1",
+      "source_transport": "transcript_watcher",
+      "external_session_id": "owned-precutover-source",
+      "external_thread_id": "owned-precutover-source",
+      "external_turn_id": "turn-1",
+      "external_item_id": "item-1:0",
+      "parent_external_item_id": null,
+      "source_record_type": "message",
+      "source_event_type": "agent_message",
+      "source_line_number": null,
+      "source_sequence": 1,
+      "event_time": "2026-07-14T23:59:01.000Z",
+      "observed_at": "2026-07-14T23:59:01.100Z",
+      "raw_json": {
+        "type": "pi_session_record",
+        "contentBlock": {
+          "text": "old source turn 1",
+          "type": "text"
+        },
+        "sourceRecord": {
+          "id": "item-1",
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "old source turn 1",
+                "type": "text"
+              }
+            ],
+            "stopReason": "stop"
+          }
+        }
+      },
+      "raw_text": "old source turn 1",
+      "source_hash": "old-source-hash-1",
+      "idempotency_key": "conversation-item:07607a25380e9b97b5e11053f3b6498a43ae74c41364a5d8612dacc844651a2c",
+      "projection_status": "pending",
+      "projection_version": null,
+      "projected_at": null,
+      "projection_error": null,
+      "memory_excluded_at": null,
+      "memory_exclusion_reason": null,
+      "memory_excluded_by_user_id": null,
+      "metadata": {
+        "actor": "agent",
+        "projectId": "/fixture/source",
+        "sourceRole": "agent",
+        "semanticControl": "turn_completed",
+        "canonicalStableItemId": "item-1:0",
+        "canonicalConversationItemKey": "conversation-item:07607a25380e9b97b5e11053f3b6498a43ae74c41364a5d8612dacc844651a2c",
+        "canonicalConversationItemKind": "message",
+        "canonicalConversationItemActor": "agent",
+        "canonicalConversationItemContentHash": "982b48a033bd30e6eba536ad0fc877cf5d503c2b4a65154af6ebfba889aded1c"
+      },
+      "logical_source_id": null,
+      "transport_chunk_index": 0,
+      "transport_chunk_count": 1,
+      "transport_chunk_text": null,
+      "transport_chunk_encoding": null,
+      "created_at": "2026-10-15T00:51:59.517Z",
+      "personal_deleted_at": null,
+      "personal_deleted_by_user_id": null,
+      "personal_deletion_reason": null,
+      "canonical_stable_item_id": "item-1:0",
+      "canonical_item_key": "conversation-item:07607a25380e9b97b5e11053f3b6498a43ae74c41364a5d8612dacc844651a2c",
+      "canonical_source_priority": 100,
+      "projection_policy_revision": null,
+      "projection_work_class": "live_capture_projection",
+      "import_observed_at": null,
+      "source_fingerprint": null,
+      "captured_project": {}
+    }
+  ],
+  "closure": {
+    "id": "c0205487-e934-4448-bc5e-1ea09ff640b2",
+    "group_id": "6577d7ab-0990-482c-a8e4-f6ea5896f89b",
+    "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+    "source_session_id": "426d1e35-628a-4b1a-948e-4eb9ed58ed02",
+    "source_sequence": "0",
+    "terminal_cursor": "2",
+    "terminal_item_count": "2",
+    "source_closure_hash": "4LLffzDpA3ZJMc5oYBYT4F9n-23Iqt05fslrOcl4cDM",
+    "package_id": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+    "source_manifest_hash": "JGktDHaCMeHlLbXDVHMXvKaoVCfloZgs4Ew6bjoM__4",
+    "state": "ready",
+    "closed_at": "2026-10-15T00:51:59.544Z",
+    "created_at": "2026-10-15T00:51:59.539Z",
+    "publication_kind": "checkpoint",
+    "checkpoint_ordinal": "0"
+  },
+  "retained": {
+    "id": "83607ecb-762d-4b5e-98e4-4ca36e324314",
+    "group_id": "6577d7ab-0990-482c-a8e4-f6ea5896f89b",
+    "owner_user_id": "d78bcfa4-7632-40f7-b937-20ad9952d091",
+    "package_id": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+    "source_manifest_hash": "JGktDHaCMeHlLbXDVHMXvKaoVCfloZgs4Ew6bjoM__4",
+    "source_fingerprint": "D_EN6EzKLHlXEzvavaevNxmu7SdbdGq4GiZxAg9a8UQ",
+    "source_closure_hash": "4LLffzDpA3ZJMc5oYBYT4F9n-23Iqt05fslrOcl4cDM",
+    "origin_deployment_id": "_9p0_2Ed0_MAuQoyhJkYAQ",
+    "origin_device_id": "0Ti0k8ifxw3g7U2USdywaQ",
+    "source_sequence": "0",
+    "logical_memory_id": "849EGBQsoBbcsu4hNP8LUHL5wMfhLh_-2G3HO-ykfXM",
+    "deletion_floor_token": "Z3pBJ80nKlPH372h3NiZ0JU6_Q4vvDePHTRVJLwbhjU",
+    "encrypted_envelope": {
+      "chunks": [
+        {
+          "groupId": "kK25vv539v4UIJpTngdiqw",
+          "version": "1",
+          "protocol": "koed/pds/v1",
+          "chunkHash": "QHkmWunxGBCX3xr5jghYuV9hO-1_ZyDo04DZdb8IJKo",
+          "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+          "chunkCount": "1",
+          "chunkIndex": "0",
+          "ciphertext": "FCMLBWNGlC8vA8Goh18TQa7v49iZs1oCzaSoILWq7OdYmrppSuutWMUqIeqdzkLi25R3YpUEv2sTh4FRvwgD965TjsOgy1biWDocUzz-EY5WAG6W-CUTsm0Tt71OrfRI9xDj1DrolBbi5E1wKEA2ktfSJE6Z2v0m8a77EJjIJMi1LJYWTWyidBlw5m0fXowWpqnHQf9Hmd6xKieGNzgp3q2e0_yiMQhBsFoGO63CPdxyRSWcdTFNUknBULE2jswWOgXbpybdO_9wuLR5tOCxRyRNZPnnWbrHURQ8zPNdQdNdiVvmwZ2zSDDVepwQSKBJgG9fm1gVXJCX6G7MmOnad5Q5GyoRBTE9NLAiquR3-5JBrPwjrB2RdpPCtRt4MAgAdRV-kkRpVYE4RjgOWK8wP_mXL0FSK7FfS1NzZ1LmANsuzxzllj6JVFAwY3X5HlAh8CLX-iiqbf0zfAYq5TC_lJtmbraf_hpHIAWcqC6OZY5o0wZG-9IIQ_-zPLrWKdb-hhSkkjMInlAZUkyVFwLU4GprGjzGjjEqMOXWjP7voI7D8GK6B_J0CubaTiMTPv8qnLhn3g6G1Cqjj9UyfNtThvBaM4axW0sgestI8cG-4spgS7bLASWBVHwo2M2NKMZEmZIsPFydGrozVOW4vDQ-WT5SzGtKZ6GiDK-YF5tq6aV9DXpkEc3OTS2afqf1RzceMGxcdEnoHyUOJQFJeCml2EG9u7IxdmtOs5VgBEnRx_UFpht-7UlnPvhyQPw9Gt478Z3u6LeeTjsGJ0rnLVravUHUVwVNezqrEhKMJ6LzKWv1lg7o4gdd6K4N8Lh8m_yJWUxjTjrfQRs7AssDtuMnC0rTL6ORqnbzcBscvQp2LdlO7f7vwA-URIBUdcJpYzrUlJVLSqfN5bSy66h5TmvjSKpDMRpmHog7HEbEMrzToZnnY3vE7SvEbUyNlzjFkyd53rjlwEccT3VYK4rGcJCyhbJ0-PATdXgFzaOjxsygS9FwmCxriqimP2ICwjycSS9RC_Fi81g_WBIt5fNzbIXwsmnIpjv__p4wMIxNbPCCwcFJKXObvXjQrGal5U8s3ya-lsJMx2_mQzwT2uvHbTLaNpxiHBOtUzvlXCwvS-vzQ0-whxfPLjV6SC7ua09-2NpSg1yB5bH7OfsPZzfiMixGKj6XCk45qVHv2ItsxKCFxRhFIqyVj0OriaaM8YL0NY2xBxfqwPWlP0qdvwjFzKTNWsfd8hTIJd90teObnyk-OYTGrRaNwYMjm3Lo5LjJBhxhrjP_WMm_FYycoEpH8rli-yS01RWuT0LTWgS5PyRIPu-uiQ30wL-JN1uDyuyqt_42aueldULD4VCtXZCH4EFmV-YerTic6YNcZ4BMUOF3aD38kqOR4t72KJQ87a08Tctlzu6Dxu7OXIy78XTnQgo--Ht9peINRaX408A-ixn1ue2w7jisFURHfIatKUoYC6d9tKhySXIjLhS8EhrbYWKCG6LWTTpJg14r-BM7J5vAmji1igeo2AlGLxlK_u70mUXpAd3x245skb3GuMnbnElZ5tRGvzyjclV-47M-tNgWrkqF6gaRK7M2GAfgr5tLHv7q_Had77N3yayEiyc7TS8my75kcrPBYdpOzCtk9P62B3ibPU1VP3wPaeVR5Cwz0ILWINCcXZW1Tx4nayaCT1NWIlSOxrtHeBIVaZQXE7SRYmSqEoQ3rQES8grsBBNzosG7sLCHYnN5nWmArJeh7Fee2rKigqFf-5E-0yNC-WzXneQHQOvDdL4vBdRJw6DoAHR7uolUChOPKU-Mq9TL1ZpWn7xz-GcWK9Dmwtox--Gd2iWsmLkuTCGzn4Y9dsRlEFJx88gi92Wv0BLdMk0MB4-D5CAv0-HNXGegsaA_6d25oCPCHj3pSF7QGZJ1K8iuLtBM7Jt4xAMuMJRCOt9Npffs4WTeEtl3AiRBxF-FT8MWUGLB-UZb1wxYjPRxBjWnCyNFxLzrOL5hziNXet6G6XhEKXtJwOFCQoe9VewNii6NcbhQv_evmeg5L2xUx3cUiRdf7ovAQT9EfcPaCOKfIKlOGHiRc_XxAwiM4Ax4NO0yhkloeUaOGLgOVNg7BTOrdr6Sr7lBtdnZBI2ElkfEGdd-NwtXqplBvdA-NjVt6E2JvVE3xImVx92kj52jIDLSvr-9GAonJzVQkoLnaMPkBo-6F1LSduJ78hbfjynMNYE0BKpzOr7IVWxwKP-5hnFCotgH198Alz8cQQMeco-ZfeMhcAEL7a7fbQoVSvSNWkarPUcoRZm-2xNmvu-D90BHt89iYrZdq_FjTsKA5nu4oJHM15uQ8j5Lc5W0GcDmOKDpFdFQLCK7TLao8w5d-CFJWzyrVdo1I8H9PHhw0ALxocoYhSHCOiUMKPz-2_8drYOghouv-tQZ6JCq7DwEdkmTcK7XI3TggUo_aePbWFe_T2CsuOGM8ZRN7Qyw3Tnh-B6-y4C7yPtQEOGJucAARXRDtBjdCe81u3Op0qpamF3te3nCoeOXY6rSz_jUmbdQBpsRle5OXiTwJLbiTiWbNNYqYGvt6vDap4FUQPgsjWvHGSk8OPkWhBysUqjlp6l6gmOYCesvwAm-LBd2TCYaHWjAie8UNLW8dfeFnsrB22wanO_l3HFAygjVIKdLRFRbeO0TADsQfNqGmNo05zvd1Wo70jAWi9msiwyPrvH7_8u6sfy2_wIS-5FtmbQ3JwAWwGsP0ySnz81IoqN4SSTGv0LLHHDNQqk3Qa9YFaNe9edJSkoRCidAXagTDlTdmdz5GqpeYnQY53TUPo9u4Csbr4cbvh2-cOzlpmklp_jg6FkWaHEjTQqwyZC-DoYq1qY41qIcrdP81b61E7Vxo5bUbHkULoD9VscGTu_fXxWrmUQ9gaYhg67Z3gBNgE101JRYwQYb7zigKRmmc9wgqfNGSkHVD7tAdU1y84pRpKL-AIoCJbOIssfHceicanqGloYzO-fodLwr0ftK5lwWfDdDdSNS-jsQdxhL_5jPbxuYct7S_q9wlif0zFTgGAceD00eNY8k_a4_2Mp_r7xh8C1tIlNYYyYlN8J7dSbfnFRiXRsHJ3GfLcyhTQUdWstZstJW8_eqneREUjgoSZejbrHrnAr0YV0zk4JFGiYLHQiozRKFaMjHQvFDTcLc5iNM65WyecjETsDJktmEuXQiqsk9ltU4TK3tRniUxtNHnVlrxG1Yg-tTafZAEDQD4hx0WHKheNWEAUUqbj6vpCeTVTV2ams6acTvIQf-0WVvY8SiCsN4UBRQp8PrpEg_7vR5GbkZaPoj8cVaGmdlFxN4VrrCm8-wc2AvzJosu20q6I7Bn4D9b136VfJAoyII8tJnwFJp2WFCgq3ls_-U3_lyg3-eeGskDBrEIuh0_YdafszsmM4W9sUi5u3sva-h8mYX8DQXnw6ZSTO9OQwIyXCPRmupKJ82yY3nwMYzy0xswIqUA-Zzou_sGOjr8m5xuAr6ou5NKk9zxhJD0Q6qWUbsn6M8iRng6gvC_wZ9p1TZaaaEXAz9bD0x3xpZjrs2cXq9vBAwYQ9QPhkqkWOVVeucVVue1dIKtWBx0kFeTGPp4mK4oqyJbUgYLpvnUsnP18hsVZPEVG-0YJZOsiq3aCDw3FkeeqCarEeOSMYzNWCGmRQi2tFffa2ODzz5NGRdxqkA9OL3GClemiHu3OR2KH4El9yeW6PsAK-DBwpz9cPonMPVG5VCiTHKAFulJYwEX_n8D5k95NckUZS5MtUifWpoIw2sCVsE-78BxxiNqc3EGapSO32AVwzfE_K9O9cH2kNqC_SqqKilik4JgbaBjTEutSvJd9rOaQE98JMMtsO7-kE8EWdT74BRoCOg15iBpUsP8ToQGA",
+          "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0"
+        }
+      ],
+      "header": {
+        "groupId": "kK25vv539v4UIJpTngdiqw",
+        "version": "1",
+        "protocol": "koed/pds/v1",
+        "expiresAt": "2030-07-15T00:00:00.000Z",
+        "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+        "chunkCount": "1",
+        "payloadTag": "LXCKqyoKQbAhnFqH6_9IIg",
+        "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0",
+        "contentEpoch": "3",
+        "payloadNonce": "-fqdSBySpaioPz9v",
+        "authorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "originDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+        "recipientEpoch": "3",
+        "servingDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+        "servingSignature": {
+          "signature": "72iuFpDp9IOobIEQD_tCAZmIciaRs_WeyfSTIL9y0FYQoRkQTxN5XY_ziDtPIbETHZGCQbthGIFZYZnUgsxhAA",
+          "signerKeyId": "br9TBLuG8VFg4-xdShUcXg"
+        },
+        "plaintextByteCount": "2908",
+        "sourceManifestHash": "JGktDHaCMeHlLbXDVHMXvKaoVCfloZgs4Ew6bjoM__4",
+        "servingSigningKeyId": "br9TBLuG8VFg4-xdShUcXg",
+        "payloadCiphertextHash": "L8HykgG1i9nMMdfxr8GzwudQsR7sFcSPxfVakYOKHsM",
+        "intendedRecipientSnapshot": ["4LHAIZO9Z0J-9VODJeq1hQ"],
+        "intendedRecipientSnapshotHash": "R3mtbJJqJ_Qj36Ci_m3Vop16hi1SH4pNlSXPORoHZ3o"
+      },
+      "envelopes": [
+        {
+          "tag": "gkhTPMA1tSeAWaYAb0Htzw",
+          "nonce": "6q35v5omEoJLXOIW",
+          "version": "1",
+          "protocol": "koed/pds/v1",
+          "packageId": "frgZyPAAGsn9wuAsY6OKyLOAPWjwk0q2Q75yEz-Thyo",
+          "ciphertext": "NleF7VDEmXPt8v22vmmq_hFkfCvKE1URzNeLgsIGwFY",
+          "transportId": "9enaLFTufBd6PnPCDjw-KUCOt0AZHC0oCdvVJ0yAgT0",
+          "contentEpoch": "3",
+          "recipientEpoch": "3",
+          "senderDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+          "servingSignature": {
+            "signature": "-Ga6CC4T4FW8ZSsL_W6kURRLF6F9Z7ZUNtLuz3n4UHyBPiWRXe1cS3_KFh6ggdUy4BlbeiaCjbnfddwOXeI-DA",
+            "signerKeyId": "br9TBLuG8VFg4-xdShUcXg"
+          },
+          "recipientDeviceId": "4LHAIZO9Z0J-9VODJeq1hQ",
+          "recipientKemKeyId": "3xFSjxo5m6Ew3keEnQJbrQ",
+          "ephemeralPublicKey": "1RulBC5X5dRgSOQj6P6YDO5T-btXIDNTnLXkNlPH5j0"
+        }
+      ],
+      "packageDigest": "gS6JUz-bK2v3QSjkxLSjctbVhHDtSvIlJafNm0qso6A"
+    },
+    "state": "ready",
+    "created_at": "2026-10-15T00:51:59.539Z",
+    "updated_at": "2026-10-15T00:51:59.539Z",
+    "source_profile": "cumulative_checkpoint",
+    "checkpoint_ordinal": "0",
+    "checkpoint_previous_closure_hash": null,
+    "checkpoint_item_count": "2"
+  },
+  "mappings": [
+    {
+      "id": "2e1c527b-0e06-4479-ae13-8bc558a23c2d",
+      "closure_id": "c0205487-e934-4448-bc5e-1ea09ff640b2",
+      "replica_id": null,
+      "conversation_item_id": "e99e5864-2457-48ba-a85e-8fae26319dfe",
+      "source_ordinal": "0",
+      "created_at": "2026-10-15T00:51:59.539Z"
+    },
+    {
+      "id": "43717e9a-6b2f-4ae5-8d9a-aeca5a853567",
+      "closure_id": "c0205487-e934-4448-bc5e-1ea09ff640b2",
+      "replica_id": null,
+      "conversation_item_id": "ebfa4a7c-f802-4634-bc0d-0bd698aa9ab6",
+      "source_ordinal": "1",
+      "created_at": "2026-10-15T00:51:59.539Z"
+    }
+  ],
+  "sequence": {
+    "id": "a4689726-8855-4431-a266-1e7a7cbc98e7",
+    "group_id": "6577d7ab-0990-482c-a8e4-f6ea5896f89b",
+    "origin_deployment_id": "_9p0_2Ed0_MAuQoyhJkYAQ",
+    "origin_device_id": "0Ti0k8ifxw3g7U2USdywaQ",
+    "next_sequence": "1",
+    "updated_at": "2026-10-15T00:51:59.539Z"
+  }
+}

@@ -57,3 +57,13 @@ retaining source and prefix fences.
 This decision covers cumulative checkpoint chains. Previously closed source
 publication and persisted directed-sync upload transitions remain explicit
 integration checks in ticket 16; they are not declared complete by this ADR.
+
+## Validation
+
+The dedicated pre-0058 source migration fixture uses a signed V3 publication
+created by the prior publisher. It verifies rollback on build failure, exactly one
+V4 baseline without additional turns, unchanged retained ciphertext and source
+item mappings, and a later ordinary checkpoint after native Pi capture resumes.
+The Session remains historical-unresolved throughout. The companion receiver
+migration fixture covers retained source bytes, replica identity, and ledger
+continuity across the same database migration.
