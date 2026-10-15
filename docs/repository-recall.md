@@ -116,6 +116,12 @@ restores the recorded automatic assignment, including unresolved history.
 | Materialized Personal replicated evidence | The same Session predicates apply to local source rows, alongside existing replication-readiness checks. Assignment transport is added by ticket 11. |
 | Durable task completion                   | The final Memory Question must retain the accepted Project scope.                                                                                    |
 
+Scoped Session lookup uses the effective repository assignment. A captured display
+Project ID cannot substitute for that identity. Unscoped owner inspection still
+returns authorized unresolved history. Memory-browser results use the same
+repository scope IDs as their filters. They label unresolved entries as
+`Unresolved history` and return no current Project path for those entries.
+
 `repository_scope_matches` is the shared SQL equality boundary. It returns false
 for unresolved identities, malformed scope values, and path-only inputs. It is
 only a narrowing predicate; callers retain all existing User and source-access

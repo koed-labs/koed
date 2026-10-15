@@ -307,23 +307,12 @@ export const createMemoryNodeRepository = (
           mn.created_at,
           mn.updated_at,
           mn.pinned_at,
-          coalesce(
-            s.project_override_id,
-            s.automatic_project_id,
-            case when s.id is null then ev.payload ->> 'projectId' end,
-            'unassigned'
-          ) as project_id,
-          coalesce(
-            s.project_override_name,
-            s.automatic_project_name,
-            case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
-            'Unassigned'
-          ) as project_name,
-          coalesce(
-            s.project_override_path,
-            s.automatic_project_path,
-            case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
-          ) as project_path,
+          coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+          case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null
+            then 'Unresolved history'
+            else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
+          case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null
+            then null else coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'root' end as project_path,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
         from memory_nodes mn

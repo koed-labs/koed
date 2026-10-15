@@ -135,6 +135,11 @@ describe.skipIf(!databaseUrl)(
         )
       ).not.toContain(other.node.id);
       expect(
+        (await repo.listMemoryBrowserItems(actor, { projectId: scope })).find(
+          (node) => node.id === first.node.id
+        )
+      ).toMatchObject({ projectId: scope, projectPath: a.root });
+      expect(
         (
           await repo.expandMemoryNode(first.node.id, actor, {
             searchDomain: "project",
@@ -331,6 +336,14 @@ describe.skipIf(!databaseUrl)(
       expect(await repo.listLcmGraphNodes(actor, { projectId: scope })).toEqual(
         []
       );
+      const unknown = (await repo.listMemoryBrowserItems(actor)).find(
+        (node) => node.id === clone.node.id
+      );
+      expect(unknown).toMatchObject({
+        projectId: "unassigned",
+        projectName: "Unresolved history",
+        projectPath: null
+      });
     });
   }
 );
