@@ -4,6 +4,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -232,6 +234,22 @@ describe("koed-server CLI entrypoint detection", () => {
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
+  });
+
+  it("recognizes argv paths that are symlinks to the loaded CLI", () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), "koed-cli-entrypoint-"));
+    const cliPath = resolve(tempDir, "cli.js");
+    const symlinkPath = resolve(tempDir, "cli-symlink.js");
+    try {
+      writeFileSync(cliPath, "");
+      symlinkSync(cliPath, symlinkPath);
+
+      expect(
+        isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, symlinkPath)
+      ).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("explicitly exits only the packaged long-running supervisor", () => {

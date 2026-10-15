@@ -716,6 +716,17 @@ type BundledDatabaseResolution =
   | { ok: true; environment: NodeJS.ProcessEnv }
   | { ok: false; error: string; action: string };
 
+const resolveEffectiveApiTokenPepper = (
+  invocationEnvironment: NodeJS.ProcessEnv,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  persistedPepper?: string
+): string | undefined =>
+  trimValue(invocationEnvironment.API_TOKEN_PEPPER) ??
+  trimValue(environment.API_TOKEN_PEPPER) ??
+  trimValue(repoEnv.API_TOKEN_PEPPER) ??
+  trimValue(persistedPepper);
+
 const resolveBundledDatabaseEnvironment = (
   paths: KoedServerPaths,
   invocationEnvironment: NodeJS.ProcessEnv,
@@ -737,13 +748,22 @@ const resolveBundledDatabaseEnvironment = (
         action: `Fix or remove ${persisted.path}, then rerun koed setup core --json.`
       };
     }
+    const apiTokenPepper =
+      recoveryCommand === "core"
+        ? resolveEffectiveApiTokenPepper(
+            invocationEnvironment,
+            environment,
+            repoEnv,
+            persisted.state === "valid"
+              ? persisted.secrets.API_TOKEN_PEPPER
+              : undefined
+          )
+        : undefined;
     return {
       ok: true,
       environment: {
         DATABASE_URL: explicitDatabaseUrl,
-        ...(persisted.state === "valid" && persisted.secrets.API_TOKEN_PEPPER
-          ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
-          : {})
+        ...(apiTokenPepper ? { API_TOKEN_PEPPER: apiTokenPepper } : {})
       }
     };
   }
@@ -779,17 +799,24 @@ const resolveBundledDatabaseEnvironment = (
     ...environment,
     ...(password ? { POSTGRES_PASSWORD: password } : {})
   };
+  const apiTokenPepper =
+    recoveryCommand === "core"
+      ? resolveEffectiveApiTokenPepper(
+          invocationEnvironment,
+          environment,
+          repoEnv,
+          persisted.state === "valid"
+            ? persisted.secrets.API_TOKEN_PEPPER
+            : undefined
+        )
+      : undefined;
   return {
     ok: true,
     environment: {
       ...localPostgresEnv(
         resolveLocalPostgresRuntimePaths(paths, postgresEnvironment)
       ),
-      ...(recoveryCommand === "core" &&
-      persisted.state === "valid" &&
-      persisted.secrets.API_TOKEN_PEPPER
-        ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
-        : {})
+      ...(apiTokenPepper ? { API_TOKEN_PEPPER: apiTokenPepper } : {})
     }
   };
 };

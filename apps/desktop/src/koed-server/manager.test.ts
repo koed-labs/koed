@@ -4322,7 +4322,15 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
-        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? { state: "installed", message: "Model is verified." }
+              : { ok: true, state: "installed" }
+          ),
+          ""
+        );
       },
       spawn: () => childProcess() as never,
       openExternal: async () => undefined

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   personalSyncAdvancedUsageText,
@@ -154,9 +155,13 @@ export const isKoedServerCliEntrypoint = (
 ): boolean => {
   if (!moduleUrl || !argvPath) return false;
   try {
-    return pathToFileURL(argvPath).href === moduleUrl;
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
   } catch {
-    return false;
+    try {
+      return pathToFileURL(argvPath).href === moduleUrl;
+    } catch {
+      return false;
+    }
   }
 };
 

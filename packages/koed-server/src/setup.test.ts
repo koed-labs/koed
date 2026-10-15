@@ -609,6 +609,92 @@ describe("Codex setup wrapper", () => {
     );
   });
 
+  it("uses the effective API Token pepper for bundled-local core setup", async () => {
+    const scenarios = [
+      {
+        environmentPepper: "operator-pepper",
+        repoPepper: "repo-pepper",
+        expectedPepper: "operator-pepper"
+      },
+      {
+        repoPepper: "repo-pepper",
+        expectedPepper: "repo-pepper"
+      },
+      {
+        databaseUrl: "postgres://operator/explicit",
+        expectedPepper: "persisted-pepper"
+      }
+    ];
+
+    for (const scenario of scenarios) {
+      const root = tempDir();
+      writeRuntimeState(root);
+      writeLocalPorts(root);
+      writeLocalSecrets(root, {
+        POSTGRES_PASSWORD: "database-password",
+        API_TOKEN_PEPPER: "persisted-pepper"
+      });
+      writeFileSync(
+        resolve(root, ".env"),
+        [
+          "KOED_RUNTIME_MODE=local-personal",
+          "KOED_DEPENDENCY_MODE=bundled-local",
+          "POSTGRES_HOST_PORT=15432",
+          ...(scenario.repoPepper
+            ? [`API_TOKEN_PEPPER=${scenario.repoPepper}`]
+            : [])
+        ].join("\n")
+      );
+      let provisionedWithPepper: string | undefined;
+      let databaseUrl: string | undefined;
+
+      const result = await setupCore({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "local-personal",
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          KOED_AUTO_PORTS: "1",
+          ...(scenario.databaseUrl
+            ? { DATABASE_URL: scenario.databaseUrl }
+            : {}),
+          ...(scenario.environmentPepper
+            ? { API_TOKEN_PEPPER: scenario.environmentPepper }
+            : {})
+        },
+        resolveRuntime: (paths) =>
+          ({
+            kind: "source",
+            artifactSource: "source-checkout",
+            root: paths.repoRoot,
+            apiEntry: "api",
+            workerEntry: "worker",
+            embeddingServiceEntry: "embedding",
+            privacyServiceEntry: "privacy",
+            mcpCli: "mcp",
+            localAiRuntime: "local-ai",
+            captureHook: "capture",
+            dbPackageRoot: "db",
+            missing: []
+          }) as never,
+        provisionLocalApiToken: async (_paths, _runtime, environment) => {
+          provisionedWithPepper = environment.API_TOKEN_PEPPER;
+          databaseUrl = environment.DATABASE_URL;
+          return { token: "core", reused: false, ownerUserId: "owner" };
+        },
+        migrateCodex: () => ({ migrated: false })
+      });
+
+      expect(result.ok).toBe(true);
+      expect(provisionedWithPepper).toBe(scenario.expectedPepper);
+      if (scenario.databaseUrl) {
+        expect(databaseUrl).toBe(scenario.databaseUrl);
+      } else {
+        expect(new URL(databaseUrl!).port).toBe("45432");
+      }
+    }
+  });
+
   it("migrates existing Koed marker without changing Codex profile bytes", async () => {
     const root = tempDir();
     const codexConfig = resolve(root, "codex/config.toml");
