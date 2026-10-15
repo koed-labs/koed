@@ -1,4 +1,7 @@
-import { capturedSessionSyncUploadPackageManifestSchema } from "@koed/shared";
+import {
+  syncProfileTransitionReceiptSchema,
+  capturedSessionSyncUploadPackageManifestSchema
+} from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MemorySourceRepository } from "@koed/db";
@@ -320,6 +323,16 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const prepareSourcePackage = async (relationshipId: string) => {
+    const transition = await options.repository.getSourceSyncProfileTransition({
+      relationshipId
+    });
+    if (transition) {
+      const transport =
+        await options.repository.getSyncTransportContext(relationshipId);
+      if (!transport?.remoteBaseUrl)
+        throw new Error("Sync target transport is unavailable");
+      return { transport, transition };
+    }
     const deltaResult = await options.repository.readCapturedSessionSyncDelta({
       relationshipId
     });
@@ -335,9 +348,8 @@ export const createCrossIdentitySyncService = (options: {
         summaryNodes.length === 0 &&
         !delta.summarySnapshotIncluded &&
         !delta.repositorySnapshotChanged)
-    ) {
+    )
       return null;
-    }
     const transport =
       await options.repository.getSyncTransportContext(relationshipId);
     if (!transport || !transport.remoteBaseUrl) {
@@ -613,6 +625,7 @@ export const createCrossIdentitySyncService = (options: {
 
   const processOutbox = async (): Promise<boolean> => {
     if (!isSourceIdentityHealthy()) return false;
+    await options.repository.enqueueSourceSyncProfileTransitions();
     const leaseMs = 120_000;
     const entry = await options.repository.claimSyncQueueEntry({
       queue: "outbox",
@@ -740,13 +753,57 @@ export const createCrossIdentitySyncService = (options: {
         }
         return true;
       }
-      const { transport, upload, chunks } = prepared;
+      const { transport } = prepared;
       await requireActiveTransport();
       const authorization = sourceAuthorization({
         backendId: transport.remoteUpstreamBackendId,
         reference: transport.remoteCredentialReference
       });
       const baseUrl = transport.remoteBaseUrl!;
+      if ("transition" in prepared) {
+        const request = prepared.transition;
+        if (!request)
+          throw new InvalidSyncPackageError(
+            "Retained sync transition metadata is unavailable"
+          );
+        const response = await withLeaseHeartbeat({
+          leaseMs,
+          renew: renewClaim,
+          operation: () =>
+            sourceJsonRequest(
+              fetchFn,
+              upstreamApiUrl(
+                baseUrl,
+                `/v1/cross-identity-sync/relationships/${request.relationshipId}/profile-transition`
+              ),
+              authorization,
+              "POST",
+              request
+            )
+        });
+        const parsed = syncProfileTransitionReceiptSchema.safeParse(
+          response.receipt
+        );
+        if (
+          !parsed.success ||
+          crossIdentitySyncDigest(parsed.data.request) !==
+            crossIdentitySyncDigest(request)
+        )
+          throw new InvalidSyncPackageError(
+            "Target profile receipt does not bind the retained upload"
+          );
+        await requireActiveTransport();
+        if (
+          !(await options.repository.adoptSourceSyncProfileReceipt({
+            receipt: parsed.data,
+            outboxId: entry.id,
+            claimToken: entry.claimToken
+          }))
+        )
+          throw new SyncQueueClaimLostError();
+        return true;
+      }
+      const { upload, chunks } = prepared;
       const uploadCommitted = ["uploaded", "verified", "completed"].includes(
         upload.state
       );

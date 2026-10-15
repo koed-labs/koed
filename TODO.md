@@ -114,8 +114,10 @@ children share lineage and must not count as independent corroboration.
   Prove queued, partially uploaded, and acknowledgement-lost cases without
   accepting V1 package bodies in the released reader. Target receipt admission
   and migration 0061 are implemented under ADR 0059, with native absent/partial/
-  applied metadata cases and API authorization tests. Source receipt adoption,
-  worker integration, and real retained-package rehearsal remain open.
+  applied metadata cases and API authorization tests. Source metadata adoption and
+  worker dispatch now preserve cursors, fence claims, discover exhausted queues,
+  hold unresolved staging against housekeeping, and schedule V2 snapshots. Native
+  metadata and worker tests pass; genuine retained-package rehearsal remains open.
 
 - Coordinate the directed Captured Session Sync snapshot extension across every
   producer, consumer, admission schema, and fixture before activation. Make the

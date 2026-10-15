@@ -503,6 +503,18 @@ keeps old-profile inbox work out of the current body reader, cancels old inbox
 claims, and rejects further mutation of a retired upload or
 reuse of the consumed sequence. Receipt replay rechecks current authorization.
 
-The target transition is implemented and validated against native retained
-metadata fixtures. Source receipt adoption and durable worker transition remain
-part of ticket 16. See [ADR 0059](adr/0059-authenticated-directed-sync-profile-transitions.md).
+The worker discovers retained source V1 uploads without opening old chunks. It
+validates the authenticated receipt against the exact local request, then adopts
+it under the current source claim and relationship lock. Superseded work keeps
+its data cursor; applied work advances only to the proven cursor. Adoption stores
+the receipt, completes old work, cancels stale claims and heartbeats, and schedules
+a fresh V2 repository snapshot atomically. Failed, paused, and revoked relationship
+fences remain in force. Expired old source work does not fail the relationship
+before metadata reconciliation can run.
+
+Routine housekeeping retains unreconciled V1 uploads and queue history for active
+or resumable relationships. Normal retention resumes after reconciliation;
+explicit Owner deletion and revocation keep their existing authority. Native
+metadata and worker tests cover these transitions. A full rehearsal using genuine
+retained V1 packages remains a ticket 16 release gate. See
+[ADR 0059](adr/0059-authenticated-directed-sync-profile-transitions.md).

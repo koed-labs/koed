@@ -39,7 +39,13 @@ request before advancing local sequence state. For a superseded upload, it keeps
 the data cursor and publishes V2 at the next sequence. For an applied upload, it
 adopts only the proven completed cursor. Both paths must preserve old encrypted
 bytes and durable queue history, then schedule the current repository snapshot.
-Source-side adoption and worker integration remain release gates until tested.
+Source adoption completes the claimed old work and schedules a fresh repository
+snapshot in the same transaction. The worker discovers retained V1 uploads through
+metadata queries, including dormant or exhausted queues, and never loads their
+chunks through the current body reader. Stale non-revocation work is cancelled.
+Unreconciled V1 staging is held out of routine housekeeping while its relationship
+is active or resumable; normal retention resumes after a receipt is stored.
+Explicit deletion and revocation retain their existing authority.
 
 ## Consequences
 
@@ -48,6 +54,11 @@ body reader, ciphertext rewriting, sequence reuse, database resets, and automati
 historical reassignment. An inconsistent retained state fails closed rather than
 being inferred from a timeout or missing acknowledgement. Existing Team grants
 and Workspace authorization remain independent.
+
+The source native metadata fixture proves applied and superseded cursor handling,
+expired claim rejection, idempotent adoption, unchanged source assignment, retained
+chunks, housekeeping holds, discovery of exhausted work, and durable V2 scheduling.
+Worker tests cover both receipt outcomes, request substitution, and lost leases.
 
 The target native metadata fixture exercises absent, partial, and completed
 uploads, replay and conflicts, retained chunks, queue fencing, credential denial,

@@ -168,6 +168,7 @@ const createFixture = (
       queueEntriesDeleted: 0,
       uploadSessionsDeleted: 0
     }),
+    enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
     claimSyncQueueEntry: vi
       .fn()
       .mockImplementation(({ queue }) =>
@@ -230,12 +231,14 @@ describe("Cross-Identity Sync device identity gate", () => {
         listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
         markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
         cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+        enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
         claimSyncQueueEntry: vi
           .fn()
           .mockImplementation(({ queue }) =>
             Promise.resolve(queue === "outbox" ? entry : null)
           ),
         renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+        getSourceSyncProfileTransition: vi.fn().mockResolvedValue(null),
         readCapturedSessionSyncDelta: readDelta,
         completeSyncQueueEntry: vi.fn().mockResolvedValue(true),
         failSyncQueueEntry: vi.fn().mockResolvedValue(undefined)
@@ -457,11 +460,13 @@ const createProcessingHandshakeFixture = (input: {
       queueEntriesDeleted: 0,
       uploadSessionsDeleted: 0
     }),
+    enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
     claimSyncQueueEntry: vi
       .fn()
       .mockImplementation(({ queue }) =>
         Promise.resolve(queue === "outbox" ? entry : null)
       ),
+    getSourceSyncProfileTransition: vi.fn().mockResolvedValue(null),
     readCapturedSessionSyncDelta: vi.fn().mockResolvedValue({
       relationship: { packageSequence: 0 },
       changes: [{}]
@@ -525,6 +530,8 @@ const createProcessingHandshakeFixture = (input: {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   });
   return {
+    repository,
+    entry,
     acknowledgeSourceSyncPackage,
     completeSyncQueueEntry,
     deferSyncQueueEntry,
@@ -534,6 +541,141 @@ const createProcessingHandshakeFixture = (input: {
     service
   };
 };
+
+describe("Directed Sync retained source profile transition", () => {
+  const request = {
+    protocol: "koed.captured-session-sync/profile-transition/v1" as const,
+    relationshipId: queueEntry().syncRelationshipId,
+    packageId: "77777777-7777-4777-8777-777777777777",
+    sourceSequence: 1,
+    fromCursor: 0,
+    toCursor: 7,
+    requestHash: "a".repeat(64),
+    manifestHash: "b".repeat(64),
+    packageChecksum: "c".repeat(64)
+  };
+  it.each(["superseded", "applied"] as const)(
+    "adopts an authenticated %s receipt without opening old chunks",
+    async (outcome) => {
+      const fixture = createProcessingHandshakeFixture({
+        remoteState: "ready",
+        remoteProcessingCursor: 7
+      });
+      fixture.repository.getSourceSyncProfileTransition = vi
+        .fn()
+        .mockResolvedValue(request);
+      const adopt = vi.fn().mockResolvedValue(true);
+      fixture.repository.adoptSourceSyncProfileReceipt = adopt;
+      const cursor = outcome === "applied" ? 7 : 0;
+      const receipt = {
+        request,
+        outcome,
+        sourceCursor: cursor,
+        targetProcessingCursor: cursor,
+        packageSequence: 1,
+        issuedAt: "2026-10-15T00:00:00.000Z"
+      };
+      fixture.fetchFn.mockResolvedValue(
+        new Response(JSON.stringify({ receipt }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+      await fixture.service.processOnce();
+      expect(adopt).toHaveBeenCalledWith({
+        receipt,
+        outboxId: fixture.entry.id,
+        claimToken: fixture.entry.claimToken
+      });
+      expect(
+        fixture.repository.readCapturedSessionSyncDelta
+      ).not.toHaveBeenCalled();
+      expect(
+        fixture.repository.getSyncPackageBySequence
+      ).not.toHaveBeenCalled();
+      expect(fixture.completeSyncQueueEntry).not.toHaveBeenCalled();
+      expect(fixture.fetchFn).toHaveBeenCalledTimes(1);
+      const [url, options] = fixture.fetchFn.mock.calls[0]! as [
+        URL,
+        RequestInit
+      ];
+      expect(url.pathname).toBe(
+        `/v1/cross-identity-sync/relationships/${request.relationshipId}/profile-transition`
+      );
+      expect(JSON.parse(String(options.body))).toEqual(request);
+      expect(String(options.body)).not.toContain("ciphertext");
+    }
+  );
+  it("does not adopt a remote receipt after losing its source queue lease", async () => {
+    const fixture = createProcessingHandshakeFixture({
+      remoteState: "ready",
+      remoteProcessingCursor: 7
+    });
+    fixture.repository.getSourceSyncProfileTransition = vi
+      .fn()
+      .mockResolvedValue(request);
+    const adopt = vi.fn();
+    fixture.repository.adoptSourceSyncProfileReceipt = adopt;
+    let active = true;
+    fixture.repository.renewSyncQueueLease = vi.fn(async () => active);
+    fixture.fetchFn.mockImplementation(async () => {
+      active = false;
+      return new Response(
+        JSON.stringify({
+          receipt: {
+            request,
+            outcome: "superseded",
+            sourceCursor: 0,
+            targetProcessingCursor: 0,
+            packageSequence: 1,
+            issuedAt: "2026-10-15T00:00:00.000Z"
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    await fixture.service.processOnce();
+    expect(adopt).not.toHaveBeenCalled();
+    expect(fixture.completeSyncQueueEntry).not.toHaveBeenCalled();
+    expect(fixture.repository.getSyncPackageBySequence).not.toHaveBeenCalled();
+  });
+
+  it("rejects an otherwise valid receipt for different retained metadata", async () => {
+    const fixture = createProcessingHandshakeFixture({
+      remoteState: "ready",
+      remoteProcessingCursor: 7
+    });
+    fixture.repository.getSourceSyncProfileTransition = vi
+      .fn()
+      .mockResolvedValue(request);
+    const adopt = vi.fn();
+    fixture.repository.adoptSourceSyncProfileReceipt = adopt;
+    fixture.fetchFn.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          receipt: {
+            request: { ...request, packageChecksum: "d".repeat(64) },
+            outcome: "superseded",
+            sourceCursor: 0,
+            targetProcessingCursor: 0,
+            packageSequence: 1,
+            issuedAt: "2026-10-15T00:00:00.000Z"
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    await fixture.service.processOnce();
+    expect(adopt).not.toHaveBeenCalled();
+    expect(fixture.repository.getSyncPackageBySequence).not.toHaveBeenCalled();
+    expect(fixture.repository.failSyncQueueEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorClass: "InvalidSyncPackageError",
+        terminal: true
+      })
+    );
+  });
+});
 
 describe("Cross-Identity Sync processing handshake", () => {
   it("records a successful remote upload commit before polling processing", async () => {
@@ -705,12 +847,14 @@ describe("Cross-Identity Sync processing handshake", () => {
       listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
       markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
       cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
       claimSyncQueueEntry: vi
         .fn()
         .mockImplementation(({ queue }) =>
           Promise.resolve(queue === "outbox" ? entry : null)
         ),
       renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      getSourceSyncProfileTransition: vi.fn().mockResolvedValue(null),
       readCapturedSessionSyncDelta: vi.fn().mockResolvedValue({
         relationship: {
           packageSequence: 0,
@@ -936,12 +1080,14 @@ describe("Cross-Identity Sync summary transport", () => {
         listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
         markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
         cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+        enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
         claimSyncQueueEntry: vi
           .fn()
           .mockImplementation(({ queue }) =>
             Promise.resolve(queue === "outbox" ? entry : null)
           ),
         renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+        getSourceSyncProfileTransition: vi.fn().mockResolvedValue(null),
         readCapturedSessionSyncDelta: vi.fn().mockResolvedValue({
           relationship: {
             packageSequence: 0,
@@ -1121,6 +1267,7 @@ describe("Cross-Identity Sync summary transport", () => {
         listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
         markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
         cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+        enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
         claimSyncQueueEntry: vi
           .fn()
           .mockImplementation(({ queue }) =>
@@ -1321,6 +1468,7 @@ describe("Cross-Identity Sync summary transport", () => {
       listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
       markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
       cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
       claimSyncQueueEntry: vi
         .fn()
         .mockImplementation(({ queue }) =>
@@ -1437,6 +1585,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
       listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
       markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
       cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
       claimSyncQueueEntry: vi
         .fn()
         .mockImplementation(({ queue }) =>
@@ -1500,6 +1649,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
       listDueSourceSyncHeartbeats,
       markOverdueSyncRelationshipsStale,
       cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
       claimSyncQueueEntry: vi.fn().mockResolvedValue(null)
     } as unknown as MemorySourceRepository;
     const service = createCrossIdentitySyncService({
@@ -1641,6 +1791,7 @@ describe("Cross-Identity Sync inbox binding", () => {
         queueEntriesDeleted: 0,
         uploadSessionsDeleted: 0
       }),
+      enqueueSourceSyncProfileTransitions: vi.fn().mockResolvedValue(0),
       claimSyncQueueEntry: vi
         .fn()
         .mockImplementation(({ queue }) =>

@@ -1,4 +1,7 @@
-import { reconcileTargetSyncProfileWithClient } from "./sync-profile-transition.js";
+import {
+  adoptSourceSyncProfileWithClient,
+  reconcileTargetSyncProfileWithClient
+} from "./sync-profile-transition.js";
 import { randomUUID } from "node:crypto";
 import { writeOwnerPrivateRepositorySnapshot } from "./owner-private-repository-snapshot.js";
 import {
@@ -14,6 +17,7 @@ import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
+  syncProfileTransitionReceiptSchema,
   syncProfileTransitionRequestSchema,
   type SyncProfileTransitionRequest,
   type SyncProfileTransitionReceipt,
@@ -636,6 +640,15 @@ export interface CrossIdentitySyncRepository {
     errorClass: string;
     retryAfterMs: number;
     terminal?: boolean;
+  }): Promise<boolean>;
+  enqueueSourceSyncProfileTransitions(): Promise<number>;
+  getSourceSyncProfileTransition(input: {
+    relationshipId: string;
+  }): Promise<SyncProfileTransitionRequest | null>;
+  adoptSourceSyncProfileReceipt(input: {
+    receipt: SyncProfileTransitionReceipt;
+    outboxId: string;
+    claimToken: string;
   }): Promise<boolean>;
   reconcileTargetSyncProfile(
     actor: SyncActorContext,
@@ -2802,6 +2815,83 @@ export const createCrossIdentitySyncRepository = (
       const snapshot = await readSessionSummarySnapshot({ actor, sessionId });
       return snapshot.nodes.map((node) => node.originNodeId);
     },
+    async enqueueSourceSyncProfileTransitions() {
+      const result =
+        await pool.query(`insert into sync_outbox_entries (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+        select relationship.id,upload.id,'profile-transition-reconcile:'||upload.protocol_package_id::text,upload.request_hash,'{"kind":"profile_transition"}'::jsonb
+        from cross_identity_sync_relationships relationship
+        join users owner on owner.id=relationship.local_user_id
+        join sync_package_upload_sessions upload on upload.sync_relationship_id=relationship.id and upload.source_sequence=relationship.package_sequence+1
+        join sync_external_user_identities remote_user on remote_user.id=relationship.remote_user_identity_id
+        where relationship.side='source' and relationship.revoked_at is null and relationship.state not in ('paused','failed','revoked','purge_pending')
+          and owner.disabled_at is null and owner.deleted_at is null and remote_user.status='active' and remote_user.revoked_at is null
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          and upload.package_manifest->>'format'='koed.captured-session-sync/v1' and upload.package_manifest->>'formatVersion'='1'
+        order by relationship.id limit 100
+        on conflict (sync_relationship_id,idempotency_key) do nothing`);
+      return result.rowCount ?? 0;
+    },
+    async getSourceSyncProfileTransition(input) {
+      const found = await pool.query<Row>(
+        `select upload.* from sync_package_upload_sessions upload
+        join cross_identity_sync_relationships relationship on relationship.id=upload.sync_relationship_id
+        join users owner on owner.id=relationship.local_user_id
+        where relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null
+          and relationship.state not in ('paused','failed','revoked','purge_pending')
+          and owner.disabled_at is null and owner.deleted_at is null
+          and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          and upload.source_sequence=relationship.package_sequence+1
+          and upload.package_manifest->>'format'='koed.captured-session-sync/v1'
+          and upload.package_manifest->>'formatVersion'='1'`,
+        [input.relationshipId]
+      );
+      const upload = found.rows[0];
+      if (!upload) return null;
+      return syncProfileTransitionRequestSchema.parse({
+        protocol: "koed.captured-session-sync/profile-transition/v1",
+        relationshipId: input.relationshipId,
+        packageId: String(upload.protocol_package_id),
+        sourceSequence: numberValue(upload.source_sequence),
+        fromCursor: numberValue(upload.from_cursor),
+        toCursor: numberValue(upload.to_cursor),
+        requestHash: String(upload.request_hash),
+        manifestHash: crossIdentitySyncDigest(upload.package_manifest),
+        packageChecksum: String(upload.package_checksum)
+      });
+    },
+    async adoptSourceSyncProfileReceipt(input) {
+      const receipt = syncProfileTransitionReceiptSchema.parse(input.receipt);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const found = await client.query<Row>(
+          `select relationship.* from cross_identity_sync_relationships relationship join users owner on owner.id=relationship.local_user_id
+          where relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null
+            and relationship.state not in ('paused','failed','revoked','purge_pending') and owner.disabled_at is null and owner.deleted_at is null
+          and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          for update of relationship`,
+          [receipt.request.relationshipId]
+        );
+        if (!found.rows[0]) {
+          await client.query("rollback");
+          return false;
+        }
+        const adopted = await adoptSourceSyncProfileWithClient(
+          client,
+          mapRelationship(found.rows[0]),
+          { ...input, receipt }
+        );
+        await client.query("commit");
+        return adopted;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async reconcileTargetSyncProfile(actor, input) {
       const request = syncProfileTransitionRequestSchema.parse(input);
       const client = await pool.connect();
@@ -3333,6 +3423,7 @@ export const createCrossIdentitySyncRepository = (
              and entry.attempt_count>=entry.max_attempts
              and relationship.state<>'paused'
              ${currentInboxProfile}
+             ${input.queue === "outbox" ? "and not exists(select 1 from sync_package_upload_sessions legacy where legacy.sync_relationship_id=relationship.id and legacy.source_sequence=relationship.package_sequence+1 and legacy.package_manifest->>'format'='koed.captured-session-sync/v1')" : ""}
            order by entry.lease_expires_at,entry.created_at
            for update of relationship,entry skip locked
            limit 1`
@@ -5097,23 +5188,29 @@ export const createCrossIdentitySyncRepository = (
         input.terminalUploadRetentionHours ?? 720,
         24
       );
+      const awaitingProfileReceipt = (
+        alias: string
+      ) => `(${alias}.package_manifest->>'format' is not distinct from 'koed.captured-session-sync/v1'
+        and not exists(select 1 from sync_profile_transition_receipts receipt where receipt.sync_relationship_id=${alias}.sync_relationship_id and receipt.protocol_package_id=${alias}.protocol_package_id)
+        and exists(select 1 from cross_identity_sync_relationships relationship where relationship.id=${alias}.sync_relationship_id and relationship.revoked_at is null and relationship.state<>'purge_pending'))`;
+      const queueRetentionFence = `not exists(select 1 from sync_package_upload_sessions upload where upload.sync_relationship_id=entry.sync_relationship_id and ${awaitingProfileReceipt("upload")})`;
       const client = await pool.connect();
       try {
         await client.query("begin");
         const abandoned = await client.query(
-          "update sync_package_upload_sessions upload set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=coalesce(last_error_message,'AbandonedSyncUpload'),updated_at=now() where ((state in ('created','uploading','uploaded')) or (state in ('verified','processing') and not exists (select 1 from sync_inbox_entries inbox where inbox.upload_session_id=upload.id and inbox.state in ('pending','processing')))) and updated_at<now()-($1::int*interval '1 hour') returning id",
+          `update sync_package_upload_sessions upload set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=coalesce(last_error_message,'AbandonedSyncUpload'),updated_at=now() where not ${awaitingProfileReceipt("upload")} and ((state in ('created','uploading','uploaded')) or (state in ('verified','processing') and not exists (select 1 from sync_inbox_entries inbox where inbox.upload_session_id=upload.id and inbox.state in ('pending','processing')))) and updated_at<now()-($1::int*interval '1 hour') returning id`,
           [abandonedUploadHours]
         );
         const chunks = await client.query(
-          "delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state='failed' and upload.updated_at<now()-($2::int*interval '1 hour'))) returning chunk.id",
+          `delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and not ${awaitingProfileReceipt("upload")} and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state in ('failed','superseded') and upload.updated_at<now()-($2::int*interval '1 hour'))) returning chunk.id`,
           [completedRetentionHours, terminalUploadRetentionHours]
         );
         const queues = await client.query<Row>(
-          "with deleted_outbox as (delete from sync_outbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id), deleted_inbox as (delete from sync_inbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id) select (select count(*) from deleted_outbox)+(select count(*) from deleted_inbox) as count",
+          `with deleted_outbox as (delete from sync_outbox_entries entry where ${queueRetentionFence} and state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id), deleted_inbox as (delete from sync_inbox_entries entry where ${queueRetentionFence} and state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id) select (select count(*) from deleted_outbox)+(select count(*) from deleted_inbox) as count`,
           [terminalQueueRetentionHours]
         );
         const uploads = await client.query(
-          "delete from sync_package_upload_sessions upload where upload.state in ('completed','failed') and upload.updated_at<now()-($1::int*interval '1 hour') and not exists (select 1 from sync_package_chunks chunk where chunk.upload_session_id=upload.id) returning upload.id",
+          `delete from sync_package_upload_sessions upload where not ${awaitingProfileReceipt("upload")} and upload.state in ('completed','failed','superseded') and upload.updated_at<now()-($1::int*interval '1 hour') and not exists (select 1 from sync_package_chunks chunk where chunk.upload_session_id=upload.id) returning upload.id`,
           [terminalUploadRetentionHours]
         );
         await client.query("commit");
