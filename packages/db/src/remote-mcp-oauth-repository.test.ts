@@ -17,21 +17,33 @@ describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
   const future = new Date(now.getTime() + 60_000);
   const old = new Date(now.getTime() - 31 * 24 * 60 * 60_000);
   const owner = randomUUID();
+  const otherOwner = randomUUID();
 
   beforeAll(async () => {
     await admin.query(`create schema ${schema}`);
     await pool.query(
       "create table users (id uuid primary key, disabled_at timestamptz, deleted_at timestamptz); create table audit_events (actor_user_id uuid, owner_user_id uuid, visibility text, action text, target_table text, target_id uuid, metadata jsonb)"
     );
-    await pool.query("insert into users (id) values ($1)", [owner]);
+    await pool.query("insert into users (id) values ($1),($2)", [
+      owner,
+      otherOwner
+    ]);
     const migration = await readFile(
       new URL("../drizzle/0043_remote_mcp_oauth.sql", import.meta.url),
       "utf8"
     );
     await pool.query(migration.replaceAll('"public".', `"${schema}".`));
+    await pool.query(
+      await readFile(
+        new URL("../drizzle/0045_external_agent_grants.sql", import.meta.url),
+        "utf8"
+      )
+    );
   });
   beforeEach(async () => {
-    await pool.query("truncate remote_mcp_oauth_clients cascade");
+    await pool.query(
+      "truncate remote_mcp_oauth_grants, remote_mcp_oauth_clients cascade"
+    );
   });
   afterAll(async () => {
     await pool.end();
@@ -182,5 +194,177 @@ describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
     await store.pruneExpired(now, 1);
     expect(await store.getClient(clientId)).toBeUndefined();
     await expect(store.pruneExpired(now, 501)).rejects.toThrow(RangeError);
+  });
+
+  const binding = () => ({
+    issuer: "https://auth.example.test",
+    providerEnvironment: "staging",
+    registrationId: "agent_reg_test",
+    providerUserId: "user_provider",
+    providerOrganizationId: "org_test",
+    userId: owner,
+    resource: "https://koed.test/mcp",
+    teamBoundaryId: randomUUID(),
+    scopes: ["koed:memory:read", "koed:team:read"],
+    now,
+    expiresAt: future
+  });
+  it("retains a disconnected registration through cleanup and repository recreation", async () => {
+    const input = binding();
+    const issued = (await store.resolveExternalGrant(input))!;
+    expect(issued.scopes).toEqual(input.scopes);
+    expect(
+      await store.updateConnection({
+        userId: owner,
+        resource: input.resource,
+        id: issued.id,
+        version: 1,
+        action: "disconnect",
+        now,
+        expiresAt: future
+      })
+    ).toBe(true);
+    await store.pruneExpired(now);
+    const restarted = createRemoteMcpOAuthRepository(pool);
+    expect(
+      await restarted.resolveExternalGrant({
+        ...input,
+        expiresAt: new Date(future.getTime() + 60_000)
+      })
+    ).toBeNull();
+    expect(
+      await restarted.listConnections(owner, input.resource)
+    ).toMatchObject([
+      { id: issued.id, revokedAt: now, authorizationVersion: 2 }
+    ]);
+  });
+  it("requires owner approval after absolute expiry and rejects stale approval versions", async () => {
+    const input = binding();
+    const issued = (await store.resolveExternalGrant(input))!;
+    expect(
+      await store.resolveExternalGrant({
+        ...input,
+        now: future,
+        expiresAt: new Date(future.getTime() + 60_000)
+      })
+    ).toBeNull();
+    expect(
+      await store.updateConnection({
+        userId: otherOwner,
+        resource: input.resource,
+        id: issued.id,
+        version: 1,
+        action: "approve",
+        now: future,
+        expiresAt: new Date(future.getTime() + 60_000)
+      })
+    ).toBe(false);
+    expect(
+      await store.updateConnection({
+        userId: owner,
+        resource: input.resource,
+        id: issued.id,
+        version: 1,
+        action: "approve",
+        now: future,
+        expiresAt: new Date(future.getTime() + 60_000)
+      })
+    ).toBe(true);
+    expect(
+      await store.resolveExternalGrant({ ...input, now: future })
+    ).toMatchObject({ id: issued.id });
+    expect(
+      await store.updateConnection({
+        userId: owner,
+        resource: input.resource,
+        id: issued.id,
+        version: 1,
+        action: "disconnect",
+        now: future,
+        expiresAt: future
+      })
+    ).toBe(false);
+  });
+  it("binds consent to the exact User, provider identity, organisation and Team mapping", async () => {
+    const input = binding();
+    await store.resolveExternalGrant(input);
+    for (const change of [
+      { userId: otherOwner },
+      { providerUserId: "user_other" },
+      { providerOrganizationId: "org_other" },
+      { teamBoundaryId: randomUUID() }
+    ])
+      expect(
+        await store.resolveExternalGrant({ ...input, ...change })
+      ).toBeNull();
+    expect(await store.listConnections(otherOwner, input.resource)).toEqual([]);
+    expect(
+      await store.listConnections(owner, "https://other.test/mcp")
+    ).toEqual([]);
+  });
+  it("never widens scopes or extends the consent deadline on replacement tokens", async () => {
+    const input = { ...binding(), scopes: ["koed:memory:read"] };
+    const first = (await store.resolveExternalGrant(input))!;
+    const replacement = await store.resolveExternalGrant({
+      ...input,
+      scopes: ["koed:memory:read", "koed:team:read", "koed:capture"],
+      expiresAt: new Date(future.getTime() + 60_000)
+    });
+    expect(replacement).toEqual({
+      id: first.id,
+      scopes: ["koed:memory:read"],
+      expiresAt: future
+    });
+  });
+  it("allows narrower Personal-only tokens without granting or changing Team consent", async () => {
+    const input = binding();
+    const first = (await store.resolveExternalGrant(input))!;
+    expect(
+      await store.resolveExternalGrant({
+        ...input,
+        scopes: ["koed:memory:read"],
+        teamBoundaryId: null
+      })
+    ).toEqual({
+      id: first.id,
+      scopes: ["koed:memory:read"],
+      expiresAt: future
+    });
+    expect(await store.resolveExternalGrant(input)).toMatchObject({
+      scopes: input.scopes
+    });
+  });
+  it("disconnects native OAuth credentials through the shared owner control", async () => {
+    const clientId = await client();
+    const id = await grant(clientId);
+    const hash = await credential(id, "access");
+    await pool.query(
+      "update remote_mcp_oauth_credentials set data=$2 where secret_hash=$1",
+      [hash, { scopes: ["koed:memory:read"] }]
+    );
+    expect(await store.getAccess(hash, now)).not.toBeNull();
+    expect(
+      await store.updateConnection({
+        userId: owner,
+        resource: "https://koed.test/mcp",
+        id,
+        version: 1,
+        action: "disconnect",
+        now,
+        expiresAt: future
+      })
+    ).toBe(true);
+    expect(await store.getAccess(hash, now)).toBeNull();
+    expect(
+      await store.updateConnection({
+        userId: owner,
+        resource: "https://koed.test/mcp",
+        id,
+        version: 2,
+        action: "approve",
+        now,
+        expiresAt: future
+      })
+    ).toBe(false);
   });
 });

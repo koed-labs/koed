@@ -31,7 +31,8 @@ export class DelegatedAuthenticationError extends Error {
   }
 }
 const accessTtlMs = 15 * 60_000;
-const grantTtlMs = 30 * 24 * 60 * 60_000;
+export const remoteMcpGrantTtlMs = 30 * 24 * 60 * 60_000;
+const grantTtlMs = remoteMcpGrantTtlMs;
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
@@ -283,6 +284,22 @@ export const createRemoteMcpOAuthProvider = (options: {
     provider,
     verifier,
     resolvePrincipal,
+    listConnections: (userId: string, page = 0) =>
+      store.listConnections(userId, resource, page * 50),
+    updateConnection: (input: {
+      userId: string;
+      id: string;
+      version: number;
+      action: "disconnect" | "approve";
+    }) => {
+      const time = now();
+      return store.updateConnection({
+        ...input,
+        resource,
+        now: time,
+        expiresAt: new Date(time.getTime() + grantTtlMs)
+      });
+    },
     pruneExpired: () => store.pruneExpired(now()),
     async getAuthorizationRequest(requestSecret: string) {
       const pending = await store.getRequest(digest(requestSecret), now());

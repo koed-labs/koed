@@ -79,6 +79,17 @@ const fixture = () => {
     });
   });
   const resolverOptions = {
+    grantStore: {
+      resolveExternalGrant: vi
+        .fn()
+        .mockImplementation(
+          async (input: { scopes: string[]; expiresAt: Date }) => ({
+            id: "workos:agent_reg_test",
+            scopes: input.scopes,
+            expiresAt: input.expiresAt
+          })
+        )
+    },
     config: config.workos.agentRegistration!,
     resourceUrl: config.remoteMcp.resourceUrl!,
     apiKey: config.workos.clientSecret!,
@@ -114,6 +125,49 @@ const fixture = () => {
 };
 
 describe("WorkOS Agent Registration verifier", () => {
+  it("requires current Koed consent even when the provider validates a replacement credential", async () => {
+    const f = fixture();
+    const credential = await f.token();
+    await expect(
+      f.resolver.resolvePrincipal(credential)
+    ).resolves.toMatchObject({ userId: f.user.id });
+    f.resolverOptions.grantStore.resolveExternalGrant.mockResolvedValueOnce(
+      null
+    );
+    await expect(
+      f.resolver.resolvePrincipal(await f.token())
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(
+      f.resolverOptions.grantStore.resolveExternalGrant
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        issuer: f.resolverOptions.config.issuer,
+        providerEnvironment: "staging",
+        registrationId: "agent_reg_test",
+        providerUserId: "user_test",
+        providerOrganizationId: "org_test",
+        userId: f.user.id
+      })
+    );
+  });
+  it("applies the stored scope ceiling and absolute expiry to the delegated principal", async () => {
+    const f = fixture();
+    const expiresAt = new Date(Date.now() + 20_000);
+    f.resolverOptions.grantStore.resolveExternalGrant.mockResolvedValueOnce({
+      id: "consent-id",
+      scopes: ["koed:memory:read"],
+      expiresAt
+    });
+    const principal = await f.resolver.resolvePrincipal(
+      await f.token({ scope: "koed:memory:read koed:team:read" })
+    );
+    expect(principal).toMatchObject({
+      grantId: "consent-id",
+      scopes: ["koed:memory:read"],
+      teamBoundaryId: null,
+      expiresAt: Math.floor(expiresAt.getTime() / 1000)
+    });
+  });
   it("binds Team scope to the current organisation mapping without granting membership", async () => {
     const f = fixture();
     const resolver = createWorkosAgentRegistration({

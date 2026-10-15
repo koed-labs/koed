@@ -207,6 +207,9 @@ describe.skipIf(!databaseUrl)(
         })
       });
       origin = await app.listen({ host: "127.0.0.1", port: 0 });
+      expect(
+        (await request(await issue(true, true), "/v1/access/check")).statusCode
+      ).toBe(200);
     }, 120_000);
 
     afterAll(async () => {
@@ -522,6 +525,84 @@ describe.skipIf(!databaseUrl)(
       revoked = true;
       expect((await request(token, "/v1/team-context")).statusCode).toBe(401);
       revoked = false;
+    });
+
+    it("withdraws Personal, Team, task and MCP access from old and replacement credentials until owner reapproval", async () => {
+      const token = await issue(true, true);
+      const personal = await accept(token);
+      const personalTaskId = personal.json().task.id;
+      const team = await accept(token, workspaceId);
+      const teamTaskId = team.json().task.id;
+      const store = createRemoteMcpOAuthRepository(pool);
+      const grant = (await store.listConnections(userId, resource)).find(
+        (g) => g.registrationId === "agent_reg_fixture"
+      )!;
+      expect(grant).toBeDefined();
+      expect(
+        await store.updateConnection({
+          userId,
+          resource,
+          id: grant.id,
+          version: grant.authorizationVersion,
+          action: "disconnect",
+          now: new Date(),
+          expiresAt: new Date(Date.now() + 86400_000)
+        })
+      ).toBe(true);
+      await store.pruneExpired(new Date());
+      for (const credential of [token, await issue(true, true)]) {
+        for (const path of [
+          "/v1/access/check",
+          "/v1/team-context",
+          `/v1/memory/answer-tasks/${personalTaskId}`,
+          `/v1/memory/answer-tasks/${teamTaskId}`
+        ])
+          expect((await request(credential, path)).statusCode).toBe(401);
+        expect((await accept(credential)).statusCode).toBe(401);
+        expect((await accept(credential, workspaceId)).statusCode).toBe(401);
+        const mcp = await app.inject({
+          method: "POST",
+          url: "/mcp",
+          headers: {
+            authorization: `Bearer ${credential}`,
+            host: new URL(resource).host,
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json"
+          },
+          payload: {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-11-25",
+              capabilities: {},
+              clientInfo: { name: "disconnected", version: "1" }
+            }
+          }
+        });
+        expect(mcp.statusCode).toBe(401);
+      }
+      expect(
+        await store.updateConnection({
+          userId,
+          resource,
+          id: grant.id,
+          version: grant.authorizationVersion + 1,
+          action: "approve",
+          now: new Date(),
+          expiresAt: new Date(Date.now() + 86400_000)
+        })
+      ).toBe(true);
+      expect(
+        (await request(await issue(), "/v1/team-context")).statusCode
+      ).toBe(200);
+      await pool.query(
+        "update remote_mcp_oauth_grants set expires_at=now()-interval '1 second' where id=$1",
+        [grant.id]
+      );
+      expect(
+        (await request(await issue(), "/v1/access/check")).statusCode
+      ).toBe(401);
     });
   }
 );

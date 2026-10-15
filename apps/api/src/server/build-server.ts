@@ -389,10 +389,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       "Remote MCP requires a configured database-backed OAuth store"
     );
   }
-  const remoteMcpOAuth = config.remoteMcp.enabled
+  const remoteMcpOAuthStore = config.remoteMcp.enabled
+    ? (options.remoteMcpOAuthStore ?? createRemoteMcpOAuthRepository(pool!))
+    : undefined;
+  const remoteMcpOAuth = remoteMcpOAuthStore
     ? createRemoteMcpOAuthProvider({
-        store:
-          options.remoteMcpOAuthStore ?? createRemoteMcpOAuthRepository(pool!),
+        store: remoteMcpOAuthStore,
         resourceUrl: new URL(config.remoteMcp.resourceUrl!)
       })
     : undefined;
@@ -799,6 +801,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         apiKey: config.workos.clientSecret!,
         clientId: config.workos.clientId!,
         providerEnvironment: config.workos.providerEnvironment,
+        grantStore: remoteMcpOAuthStore!,
         requireRepository,
         rateLimitStore,
         requestFetch: options.fetch
@@ -1859,6 +1862,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         config.workos.authkitEnabled &&
         supportsWorkos(config.deploymentProfile),
       publicOrigin: resourceUrl.origin,
+      browserPublicUrl: config.browserPublicUrl,
       additionalAuthorizationServers: config.workos.agentRegistration
         ? [config.workos.agentRegistration.issuer]
         : undefined

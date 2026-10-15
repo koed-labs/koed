@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { decodeJwt } from "jose";
 import { z } from "zod";
 import { fetchBoundedJsonObject } from "@koed/shared";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository, RemoteMcpOAuthStore } from "@koed/db";
 import type { RateLimitStore } from "../infra/rate-limit.js";
 import {
   DelegatedAuthenticationError,
+  remoteMcpGrantTtlMs,
   type RemoteMcpDelegatedPrincipal
 } from "./remote-mcp-oauth.js";
 import type { WorkosAgentRegistrationConfig } from "./workos-agent-config.js";
@@ -42,6 +43,7 @@ export const createWorkosAgentRegistration = (options: {
   apiKey: string;
   clientId: string;
   providerEnvironment: string;
+  grantStore: Pick<RemoteMcpOAuthStore, "resolveExternalGrant">;
   requireRepository: () => Pick<
     MemorySourceRepository,
     "getExternalAuthIdentity" | "getExternalAuthOrganization" | "getUser"
@@ -182,14 +184,33 @@ export const createWorkosAgentRegistration = (options: {
           (!organization || organization.status !== "linked")
         )
           denied();
+        const grant = await options.grantStore.resolveExternalGrant({
+          issuer: config.issuer,
+          providerEnvironment: options.providerEnvironment,
+          registrationId: registration.id,
+          providerUserId: claims.act.sub,
+          providerOrganizationId: claims.org_id,
+          userId: identity.userId,
+          resource: options.resourceUrl,
+          teamBoundaryId: organization?.teamId ?? null,
+          scopes,
+          now: new Date(),
+          expiresAt: new Date(Date.now() + remoteMcpGrantTtlMs)
+        });
+        if (!grant || !grant.scopes.includes("koed:memory:read")) denied();
         return Object.freeze({
           userId: identity.userId,
-          grantId: `workos:${registration.id}`,
+          grantId: grant!.id,
           clientId: options.clientId,
           resource: options.resourceUrl,
-          scopes: Object.freeze(scopes),
-          expiresAt,
-          teamBoundaryId: organization?.teamId ?? null
+          scopes: Object.freeze(grant!.scopes),
+          expiresAt: Math.min(
+            expiresAt,
+            Math.floor(grant!.expiresAt.getTime() / 1000)
+          ),
+          teamBoundaryId: grant!.scopes.includes("koed:team:read")
+            ? (organization?.teamId ?? null)
+            : null
         });
       } catch (error) {
         if (error instanceof DelegatedAuthenticationError) throw error;

@@ -13984,16 +13984,48 @@ export const remoteMcpOAuthGrants = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    clientId: uuid("client_id")
-      .notNull()
-      .references(() => remoteMcpOAuthClients.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id").references(() => remoteMcpOAuthClients.id, {
+      onDelete: "cascade"
+    }),
     resource: text("resource").notNull(),
     scopes: text("scopes").array().notNull(),
+    providerIssuer: text("provider_issuer"),
+    providerEnvironment: text("provider_environment"),
+    providerRegistrationId: text("provider_registration_id"),
+    providerUserId: text("provider_user_id"),
+    providerOrganizationId: text("provider_organization_id"),
+    teamBoundaryId: uuid("team_boundary_id"),
+    authorizationVersion: integer("authorization_version").notNull().default(1),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: now()
   },
-  (table) => [index("remote_mcp_oauth_grants_user_idx").on(table.userId)]
+  (table) => [
+    index("remote_mcp_oauth_grants_user_idx").on(table.userId),
+    unique("remote_mcp_external_registration_unique").on(
+      table.providerIssuer,
+      table.providerEnvironment,
+      table.providerRegistrationId,
+      table.resource
+    ),
+    check(
+      "remote_mcp_grant_binding_check",
+      sql`(
+      ${table.clientId} is not null and ${table.providerIssuer} is null and
+      ${table.providerEnvironment} is null and ${table.providerRegistrationId} is null and
+      ${table.providerUserId} is null and ${table.providerOrganizationId} is null and
+      ${table.teamBoundaryId} is null
+    ) or (
+      ${table.clientId} is null and ${table.providerIssuer} is not null and
+      ${table.providerEnvironment} is not null and ${table.providerRegistrationId} is not null and
+      ${table.providerUserId} is not null and ${table.providerOrganizationId} is not null
+    )`
+    ),
+    check(
+      "remote_mcp_grant_version_check",
+      sql`${table.authorizationVersion} > 0`
+    )
+  ]
 );
 
 export const remoteMcpOAuthCredentials = pgTable(

@@ -53,6 +53,15 @@ describe.skipIf(!databaseUrl)(
         "utf8"
       );
       await pool.query(migration.replaceAll('"public".', `"${schema}".`));
+      await pool.query(
+        await readFile(
+          new URL(
+            "../../../../packages/db/drizzle/0045_external_agent_grants.sql",
+            import.meta.url
+          ),
+          "utf8"
+        )
+      );
       const app = express();
       app.use(
         mcpAuthRouter({
