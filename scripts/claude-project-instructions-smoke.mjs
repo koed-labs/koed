@@ -217,38 +217,65 @@ async function child(fixturePath, resume) {
   });
 }
 
+async function readInstalledSdkVersion() {
+  const manifestPath = fileURLToPath(
+    new URL(
+      "../packages/mcp-server/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+      import.meta.url
+    )
+  );
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.name, "@anthropic-ai/claude-agent-sdk");
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+  return manifest.version;
+}
+
 async function main() {
   if (process.argv[2] === "--phase") {
     await runPhase(process.argv[3], process.argv.includes("--resume"));
     return;
   }
-  const availability = await checkClaudeCodeAvailability(environment);
-  if (
-    !availability.available ||
-    !availability.executablePath ||
-    !availability.authenticated
-  ) {
-    console.error(
-      "BLOCKED: a supported, signed-in Claude Code installation is required. No provider query ran."
-    );
-    process.exitCode = 2;
-    return;
-  }
-  const model = process.env.KOED_CLAUDE_SMOKE_MODEL?.trim();
-  if (!model) {
-    console.error(
-      "BLOCKED: set KOED_CLAUDE_SMOKE_MODEL to an available model from this Claude installation. No provider query ran."
-    );
-    process.exitCode = 2;
-    return;
-  }
   const root = await realpath(
     await mkdtemp(join(tmpdir(), "koed-claude-instructions-smoke-"))
   );
+  let stage = "sdk-manifest";
   try {
+    const sdkVersion = await readInstalledSdkVersion();
+    const env = {
+      ...environment,
+      KOED_HOME: join(root, "koed"),
+      KOED_CLAUDE_CODE_DISCOVERY_CACHE: join(
+        root,
+        "claude-code-installation.json"
+      )
+    };
+
+    stage = "availability";
+    const availability = await checkClaudeCodeAvailability(env);
+    if (
+      !availability.available ||
+      !availability.executablePath ||
+      !availability.authenticated
+    ) {
+      console.error(
+        "BLOCKED: a supported, signed-in Claude Code installation is required. No provider query ran."
+      );
+      process.exitCode = 2;
+      return;
+    }
+
+    stage = "model-preflight";
+    const model = process.env.KOED_CLAUDE_SMOKE_MODEL?.trim();
+    if (!model) {
+      console.error(
+        "BLOCKED: set KOED_CLAUDE_SMOKE_MODEL to an available model from this Claude installation. No provider query ran."
+      );
+      process.exitCode = 2;
+      return;
+    }
+
     const projectPath = join(root, "project");
     await mkdir(join(projectPath, ".claude"), { recursive: true, mode: 0o700 });
-    const env = { ...environment, KOED_HOME: join(root, "koed") };
     const fixture = {
       projectPath,
       managedHome: null,
@@ -275,12 +302,15 @@ async function main() {
     );
     const fixturePath = join(root, "fixture.json");
     await writeFile(fixturePath, JSON.stringify(fixture), { mode: 0o600 });
+    stage = "initial-process";
     await child(fixturePath, false);
     await writeFile(
       join(projectPath, "CLAUDE.md"),
       "The Project marker is replacement-marker.\n"
     );
+    stage = "resume-process";
     await child(fixturePath, true);
+    stage = "standalone-process";
     const independentPath = join(root, "independent");
     await mkdir(independentPath, { mode: 0o700 });
     await writeFile(
@@ -335,8 +365,13 @@ async function main() {
       releaseManagedClaudeHomeLease(standaloneHome, env);
     }
     console.log(
-      `PASS: Claude ${availability.version}; root instructions, history, separate-process resume, immutable snapshot, permission denial, settings/hook isolation, selected-skill refusal and standalone instruction exclusion.`
+      `PASS: Claude Code ${availability.version}; Claude Agent SDK ${sdkVersion}; root instructions, history, separate-process resume, immutable snapshot, permission denial, settings/hook isolation, selected-skill refusal and standalone instruction exclusion.`
     );
+  } catch {
+    console.error(
+      `FAIL [${stage}]: disposable Claude instruction validation did not pass. Provider output and local paths are omitted.`
+    );
+    process.exitCode = 1;
   } finally {
     await rm(root, { recursive: true, force: true });
   }

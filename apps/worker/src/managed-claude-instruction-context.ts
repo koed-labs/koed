@@ -21,7 +21,7 @@ export const assertManagedClaudeInstructionTransferSupported = (input: {
   }
 };
 
-/** Default-off until the disposable live SDK/executable acceptance gate passes. */
+/** Fresh sessions opt out only when explicitly disabled; marked sessions resume their frozen snapshot. */
 export const managedClaudeInstructionContext = async (input: {
   managedHome: string;
   sessionId: string;
@@ -31,7 +31,7 @@ export const managedClaudeInstructionContext = async (input: {
 }): Promise<ClaudeProjectInstructionsResult | undefined> => {
   const env = input.env ?? process.env;
   const initialize =
-    input.newSession === true && env.KOED_CLAUDE_PROJECT_INSTRUCTIONS === "1";
+    input.newSession === true && env.KOED_CLAUDE_PROJECT_INSTRUCTIONS !== "0";
   try {
     if (initialize) markManagedClaudeInstructionHome(input.managedHome, env);
     // An expected snapshot stays required even if the rollout flag is disabled.

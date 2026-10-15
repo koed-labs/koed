@@ -39,8 +39,7 @@ const fixture = async () => {
   const env = {
     HOME: root,
     KOED_HOME: join(root, "koed"),
-    CLAUDE_CONFIG_DIR: sourceHome,
-    KOED_CLAUDE_PROJECT_INSTRUCTIONS: "1"
+    CLAUDE_CONFIG_DIR: sourceHome
   };
   const managedHome = prepareManagedClaudeHome(env);
   cleanups.push(async () => releaseManagedClaudeHomeLease(managedHome, env));
@@ -61,6 +60,20 @@ it("leaves rollout-disabled and existing legacy homes unchanged", async () => {
   expect(
     managedClaudeInstructionHomeVersion(f.managedHome, f.env)
   ).toBeUndefined();
+});
+
+it("creates an immutable snapshot for a fresh session when the flag is unset", async () => {
+  const f = await fixture();
+  await writeFile(join(f.projectPath, "CLAUDE.md"), "Use the default marker.");
+
+  const snapshot = await managedClaudeInstructionContext({
+    ...f,
+    newSession: true
+  });
+
+  expect(snapshot?.append).toContain("default marker");
+  expect(managedClaudeInstructionHomeVersion(f.managedHome, f.env)).toBe(1);
+  expect(Object.hasOwn(f.env, "KOED_CLAUDE_PROJECT_INSTRUCTIONS")).toBe(false);
 });
 
 it("restores the frozen snapshot after lease reuse even when rollout is disabled", async () => {
@@ -139,6 +152,36 @@ it("binds each snapshot to the exact native session and Project", async () => {
   await expect(
     managedClaudeInstructionContext({ ...f, projectPath: otherProject })
   ).rejects.toThrow("ManagedConversationProjectInstructionsSnapshotError");
+});
+
+it("keeps fresh provider sessions in one managed home on independent snapshots", async () => {
+  const f = await fixture();
+  const firstSessionId = f.sessionId;
+  const secondSessionId = randomUUID();
+  await writeFile(join(f.projectPath, "CLAUDE.md"), "First agent marker.");
+
+  const firstSnapshot = await managedClaudeInstructionContext({
+    ...f,
+    sessionId: firstSessionId,
+    newSession: true
+  });
+  await writeFile(join(f.projectPath, "CLAUDE.md"), "Second agent marker.");
+  const secondSnapshot = await managedClaudeInstructionContext({
+    ...f,
+    sessionId: secondSessionId,
+    newSession: true
+  });
+
+  expect(firstSnapshot?.append).toContain("First agent marker");
+  expect(firstSnapshot?.append).not.toContain("Second agent marker");
+  expect(secondSnapshot?.append).toContain("Second agent marker");
+  expect(secondSnapshot?.append).not.toContain("First agent marker");
+  expect(
+    await managedClaudeInstructionContext({ ...f, sessionId: firstSessionId })
+  ).toEqual(firstSnapshot);
+  expect(
+    await managedClaudeInstructionContext({ ...f, sessionId: secondSessionId })
+  ).toEqual(secondSnapshot);
 });
 
 it("rejects transcript-only transfer of marked sessions without changing their snapshot", async () => {

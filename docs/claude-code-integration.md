@@ -49,8 +49,15 @@ confirmation. Profile setup succeeds while Claude Code is signed out and reports
 provides an idempotent repair action, and explains how to copy `claude auth
 login` and refresh capabilities.
 
-From a contributor checkout after building the MCP Server, the equivalent Local
-Operator Script is:
+From a contributor checkout with the server and MCP Server built, the equivalent
+setup command also registers the Claude AI Client instance:
+
+```bash
+node packages/koed-server/dist/cli.js setup claude \
+  --executable /absolute/path/to/claude --json
+```
+
+The lower-level Local Operator Script configures MCP and hooks only:
 
 ```bash
 pnpm claude:configure
@@ -58,8 +65,10 @@ pnpm claude:configure
 
 The Local Operator Script checks Claude Code sign-in without using it as a
 profile-setup gate, installs the Koed MCP Server at Claude Code's user scope,
-merges the Koed Capture Hook into the local Claude settings file, and registers
-`claude.default`. It preserves unrelated hooks and MCP entries. Restart Claude
+merges the Koed Capture Hook into the local Claude settings file. Use Desktop
+setup or the server setup command to register `claude.default` for managed
+execution; the lower-level script does not write the instance registry.
+These setup paths preserve unrelated hooks and MCP entries. Restart Claude
 Code after the command completes.
 
 Validate or remove only the Koed-owned integration with:
@@ -84,6 +93,12 @@ an installation elsewhere, pass an absolute executable path:
 KOED_CLAUDE_CODE_EXECUTABLE=/absolute/path/to/claude \
 pnpm claude:configure
 ```
+
+Desktop/server setup additionally checks Claude Desktop's versioned macOS
+installation directory under `~/Library/Application Support/Claude/claude-code`.
+The runtime resolver does not scan that directory: setup registers the chosen
+executable for managed execution. A versioned installation path can become stale
+after Claude Desktop updates; rerun setup/repair to select the current executable.
 
 `KOED_CLAUDE_CODE_EXECUTABLE` takes priority over discovered paths. The stable
 absolute launcher path is stored in the AI Client registry before Claude
