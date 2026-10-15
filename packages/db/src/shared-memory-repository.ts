@@ -1,10 +1,16 @@
+import {
+  classifyTeamRepositoryEvidence,
+  globalRepositoryPoolLimits,
+  type ClassifiedRepositoryEvidence
+} from "./global-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import { snapshotOwnedTeamRepository } from "./team-repository-snapshot.js";
 import {
   portableTeamFingerprintForScope,
   teamRepositorySnapshotSchema,
   unresolvedTeamRepositorySnapshot,
-  type TeamRepositorySnapshot
+  type TeamRepositorySnapshot,
+  type RepositoryIdentity
 } from "@koed/shared";
 import pg from "pg";
 import { recordAuditEventWithClient } from "./audit-repository.js";
@@ -709,6 +715,13 @@ export interface PendingSharedMemorySemanticItem {
 }
 
 export interface SharedMemorySemanticCandidate {
+  repositorySnapshot?: TeamRepositorySnapshot;
+  disclosedRepositorySnapshot?: TeamRepositorySnapshot;
+  project?: Pick<
+    ClassifiedRepositoryEvidence,
+    "classification" | "label" | "branch"
+  >;
+  repositoryPreference?: { repository: number; branch: number };
   source: SharedMemorySourceRef;
   candidateId: string;
   shareGrantId: string;
@@ -1575,6 +1588,8 @@ export interface SharedMemoryRepository {
       representations?: SharedMemoryRepresentation[];
       parentCandidateIds?: string[];
       strictLimit?: boolean;
+      repositoryContext?: RepositoryIdentity | null;
+      maxSearchPasses?: 1 | 2;
       authorizationBoundary?: SharedMemorySemanticAuthorizationBoundary;
     }
   ): Promise<SharedMemorySemanticCandidate[]>;
@@ -8861,6 +8876,8 @@ export const createSharedMemoryRepository = (
           );
           return [
             {
+              repositorySnapshot: authorized.grant.repositorySnapshot,
+              disclosedRepositorySnapshot: item.repositorySnapshot,
               source: authorized.grant.source,
               candidateId: input.candidateId,
               shareGrantId: input.shareGrantId,
@@ -18430,8 +18447,20 @@ export const createSharedMemoryRepository = (
       );
       const candidateLimit =
         Math.min(Math.max(input.limit, 1), 50) * (input.strictLimit ? 1 : 4);
-      const rows = await pool.query<Row>(
-        `select smi.id,smi.share_grant_id,smi.representation_id,
+      const limits = globalRepositoryPoolLimits(
+        candidateLimit,
+        input.searchDomain === "global" &&
+          input.limit > 1 &&
+          input.maxSearchPasses === 2 &&
+          input.repositoryContext?.kind === "portable_repository"
+      );
+      const queryRows = async (
+        domain: string,
+        fingerprint: string | null,
+        limit: number
+      ) =>
+        pool.query<Row>(
+          `select smi.id,smi.share_grant_id,smi.representation_id,
                 smi.pseudonymous_source_id,smi.source_item_index,
                 smi.source_revision,smi.item_type,smi.occurred_at,
                 smi.representation_policy_revision,smi.content_policy_version,
@@ -18533,36 +18562,63 @@ export const createSharedMemoryRepository = (
             )
           order by v.embedding <=> $6::${semanticVectorCast(input.dimensions)},smi.id
           limit $11`,
-        [
-          actor.userId,
-          input.teamWorkspaceId,
-          input.model,
-          input.dimensions,
-          input.version,
-          JSON.stringify(input.queryVector),
-          input.sourceAfter ?? null,
-          input.sourceBefore ?? null,
-          input.representations === undefined ? null : input.representations,
-          input.parentCandidateIds?.length ? input.parentCandidateIds : null,
-          candidateLimit,
-          input.searchDomain,
-          input.sessionId ?? null,
-          input.searchDomain === "project"
-            ? portableTeamFingerprintForScope(input.projectId)
-            : null,
-          input.recentDays ?? null,
-          input.authorizationBoundary?.shareGrantIds ?? null,
-          input.authorizationBoundary?.teamId ?? null,
-          input.authorizationBoundary?.teamVersion ?? null,
-          input.authorizationBoundary?.workspaceVersion ?? null,
-          input.authorizationBoundary?.membershipVersion ?? null,
-          input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
-        ]
+          [
+            actor.userId,
+            input.teamWorkspaceId,
+            input.model,
+            input.dimensions,
+            input.version,
+            JSON.stringify(input.queryVector),
+            input.sourceAfter ?? null,
+            input.sourceBefore ?? null,
+            input.representations === undefined ? null : input.representations,
+            input.parentCandidateIds?.length ? input.parentCandidateIds : null,
+            limit,
+            domain,
+            input.sessionId ?? null,
+            fingerprint,
+            input.recentDays ?? null,
+            input.authorizationBoundary?.shareGrantIds ?? null,
+            input.authorizationBoundary?.teamId ?? null,
+            input.authorizationBoundary?.teamVersion ?? null,
+            input.authorizationBoundary?.workspaceVersion ?? null,
+            input.authorizationBoundary?.membershipVersion ?? null,
+            input.authorizationBoundary?.workspaceAccessVersion ?? null,
+            input.authorizationBoundary?.userRowVersion ?? null
+          ]
+        );
+      const globalRows = await queryRows(
+        input.searchDomain,
+        input.searchDomain === "project"
+          ? portableTeamFingerprintForScope(input.projectId)
+          : null,
+        limits.global
       );
+      const currentRows =
+        limits.current > 0
+          ? await queryRows(
+              "project",
+              input.repositoryContext!.key,
+              limits.current
+            )
+          : { rows: [] as Row[] };
+      // Merge before disclosure so pool overlap consumes neither another decrypt
+      // nor another evidence slot. Grant-scoped source IDs retain visibility.
+      const merged = new Map<string, Row>();
+      for (const row of [...globalRows.rows, ...currentRows.rows]) {
+        const key = JSON.stringify([
+          row.representation,
+          row.pseudonymous_source_id,
+          row.source_item_index,
+          row.source_revision
+        ]);
+        const previous = merged.get(key);
+        if (!previous || Number(row.score) > Number(previous.score))
+          merged.set(key, row);
+      }
       const hydrated = await hydrateAuthorizedSemanticCandidates(
         actor,
-        rows.rows.map((row) => ({
+        [...merged.values()].map((row) => ({
           candidateId: stringValue(row.id),
           shareGrantId: stringValue(row.share_grant_id),
           teamWorkspaceId: input.teamWorkspaceId,
@@ -18588,6 +18644,30 @@ export const createSharedMemoryRepository = (
           exactHints: input.exactHints
         }))
       );
+      if (input.searchDomain === "global") {
+        for (const candidate of hydrated) {
+          const context = classifyTeamRepositoryEvidence(
+            candidate.repositorySnapshot ?? unresolvedTeamRepositorySnapshot(),
+            candidate.disclosedRepositorySnapshot,
+            input.repositoryContext ?? null
+          );
+          candidate.project = {
+            classification: context.classification,
+            label: context.label,
+            branch: context.branch
+          };
+          candidate.repositoryPreference = {
+            repository: context.repositoryBonus,
+            branch: context.branchBonus
+          };
+          candidate.score += context.repositoryBonus + context.branchBonus;
+        }
+        hydrated.sort(
+          (left, right) =>
+            right.score - left.score ||
+            left.candidateId.localeCompare(right.candidateId)
+        );
+      }
       return hydrated.slice(0, input.limit);
     },
 

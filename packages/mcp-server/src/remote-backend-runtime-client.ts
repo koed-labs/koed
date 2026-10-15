@@ -310,6 +310,7 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
         return this.options.client.search({
           ...search,
           project_id: pinned.project_id,
+          repository_context: pinned.repository_context,
           retrieval_scope: "personal"
         });
       }

@@ -95,9 +95,23 @@ The full workspace TypeScript build, test typecheck, repository lint, and
 formatting checks passed. The Desktop package build also passed. The built
 Project workspace renderer validator passed with an isolated Electron profile.
 
+## Global integration evidence
+
+Tickets 17 and 18 are integrated after the ticket 16 checkpoint. Native Personal
+Global tests cover candidate recovery, stronger foreign evidence, overlap,
+unknown and mixed provenance, time bounds, owner isolation, and captured PDS
+branches. A missing PDS branch observation gives no branch bonus. A local move
+to another repository cannot reuse the source branch.
+
+The complete native Shared Memory repository suite passes all 87 cases. The
+merged Global contract, worker, context, and API suites pass 109 tests. Native
+durable task tests pass 15 cases, including encrypted known and explicit-null
+Global context. Workspace compilation, test typechecking, lint, and formatting
+also pass after integration.
+
 ## Release boundary
 
-The Project cutover is locally validated on the integration branch. The User
-approved one minor changeset for this change. The dependent Global work in tickets
-17 and 18 remains a separate integration checkpoint. Push, pull request creation,
-and merge to main remain separate release actions.
+The Project cutover and dependent Global work are locally integrated and
+validated. The User approved one minor changeset for this change. Push, pull
+request creation, and merge to main remain separate release actions. The main
+branch must receive the complete Project cutover before the Global follow-on.

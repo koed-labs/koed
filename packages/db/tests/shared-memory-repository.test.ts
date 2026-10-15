@@ -7932,6 +7932,113 @@ describeDb("Shared Memory repository", () => {
     expect(new Set(projectScoped.map((item) => item.shareGrantId))).toEqual(
       new Set([rollupGrant.shareGrantId])
     );
+    const globalContext = {
+      kind: "portable_repository" as const,
+      key: fingerprint,
+      root: "/another-clone",
+      branch: "main",
+      reason: "origin" as const,
+      checkoutId: null,
+      originatingDeviceId: "teammate-device",
+      selectedRemote: "origin",
+      anchorDisplay: null
+    };
+    const contextualInput = {
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      queryVector,
+      model: semanticModel,
+      dimensions: 384 as const,
+      version: semanticVersion,
+      limit: 4,
+      searchDomain: "global" as const,
+      strictLimit: true,
+      repositoryContext: globalContext,
+      maxSearchPasses: 2 as const
+    };
+    const contextual =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        contextualInput
+      );
+    expect(contextual).toHaveLength(3);
+    expect(new Set(contextual.map((item) => item.candidateId)).size).toBe(3);
+    expect(contextual[0]).toMatchObject({
+      shareGrantId: rollupGrant.shareGrantId,
+      project: {
+        classification: "current",
+        label: "Scope test project",
+        branch: null
+      },
+      repositoryPreference: { repository: 0.04, branch: 0 }
+    });
+    expect(
+      contextual
+        .filter((item) => item.shareGrantId !== rollupGrant.shareGrantId)
+        .every((item) => item.project?.classification === "unknown")
+    ).toBe(true);
+    const onePass = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      { ...contextualInput, maxSearchPasses: 1 }
+    );
+    expect(contextual[0]!.score).toBe(
+      onePass.find((item) => item.candidateId === contextual[0]!.candidateId)!
+        .score
+    );
+    const rollupItem = semanticItems.find(
+      (item) => item.semanticItemId === contextual[0]!.candidateId
+    )!;
+    // Change only this disposable test's synthetic semantic vectors; embedding
+    // publication is idempotent and intentionally cannot overwrite an embedding.
+    const setRollupRelevance = (similarity: number) =>
+      pool.query(
+        "update team_memory_semantic_vectors_384 set embedding=$2::vector where semantic_item_id=$1",
+        [
+          rollupItem.semanticItemId,
+          JSON.stringify([
+            similarity,
+            Math.sqrt(1 - similarity * similarity),
+            ...Array.from({ length: 382 }, () => 0)
+          ])
+        ]
+      );
+    await setRollupRelevance(0.98);
+    const recovered =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        { ...contextualInput, limit: 2 }
+      );
+    expect(recovered[0]).toMatchObject({
+      shareGrantId: rollupGrant.shareGrantId
+    });
+    const baselineLimited =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          ...contextualInput,
+          limit: 2,
+          repositoryContext: null,
+          maxSearchPasses: 1
+        }
+      );
+    expect(
+      baselineLimited.some(
+        (item) => item.shareGrantId === rollupGrant.shareGrantId
+      )
+    ).toBe(false);
+    await setRollupRelevance(0.8);
+    const betterOther =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        { ...contextualInput, limit: 2 }
+      );
+    expect(betterOther[0]!.shareGrantId).not.toBe(rollupGrant.shareGrantId);
+    await setRollupRelevance(1);
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        { ...contextualInput, recentDays: 1 }
+      )
+    ).resolves.toEqual([]);
     await expect(
       repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),

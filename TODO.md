@@ -111,8 +111,7 @@ children share lineage and must not count as independent corroboration.
   `docs/project-cutover-validation.md`. Push, PR creation, and main merge remain
   separate release actions.
 
-- Integrate the previewed Global work after the ticket 16 checkpoint. Use a PDS
-  replica's verified captured branch observation for branch preference, alongside
-  the local effective-assignment check. Do not infer branch agreement merely from
-  an imported automatic identity. Finish the Personal and Team Global acceptance
-  checks before marking tickets 17 and 18 complete.
+- Tickets 17 and 18 are now integrated and locally validated after the ticket 16
+  checkpoint. Preserve their release order after the Project cutover when
+  preparing the release. The PDS branch preference uses the verified captured
+  observation and checks the local effective assignment.

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { createMemoryEngine } from "@koed/core";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import {
+  createPdsRepositoryAssignment,
+  repositoryScopeId,
+  type RepositoryIdentity
+} from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createDbPool,
@@ -363,6 +367,287 @@ describe.skipIf(!databaseUrl)(
             unresolvedRecall.results.map((entry) => entry.sourceId)
           ).not.toContain(other.event.id);
       }
+    });
+    it("bounds Global pools, recovers current evidence, and keeps stronger foreign and unknown evidence honest", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const user = await repo.createUser({
+        email: `global-recall-${randomUUID()}@example.test`
+      });
+      const actor = { userId: user.id };
+      const a = identity("global_a"),
+        b = identity("global_b");
+      const queryVector: number[] = Array.from({ length: 1024 }, (_, index) =>
+        index === 0 ? 1 : 0
+      );
+      vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.fixture");
+      vi.stubEnv("MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT", "4");
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "qwen3-0.6b",
+              dimensions: 1024,
+              vectors: [queryVector]
+            }),
+            { status: 200 }
+          )
+      );
+      const capture = async (
+        context: RepositoryIdentity | null,
+        score: number,
+        owner = actor
+      ) => {
+        const session = await repo.createCapturedSession(owner, {
+          externalSessionId: randomUUID(),
+          cwd: a.root!,
+          ...(context ? { repositoryIdentity: context } : {})
+        });
+        const event = await repo.createMemoryEvent(owner, {
+          sessionId: session.id,
+          projectId: repositoryScopeId(a)!,
+          actor: "user",
+          visibility: "personal",
+          eventType: "captured",
+          rawEventType: "user_message",
+          content: "Release checklist decision and rationale.",
+          idempotencyKey: randomUUID()
+        });
+        const sources = await repo.listSourcesNeedingEmbeddings(10000);
+        const source = sources.find((source) => source.sourceId === event.id)!;
+        const vector = [...queryVector];
+        vector[0] = score;
+        vector[1] = Math.sqrt(1 - score * score);
+        await repo.upsertSourceEmbedding({
+          source,
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          version: "qwen3-0.6b",
+          vector,
+          modelArtifactHash: "a".repeat(64),
+          tokenizer: "qwen3-embedding-0.6b-gguf",
+          inputTransform: "qwen3-retrieval-document-v1",
+          pooling: "last",
+          normalization: "l2"
+        });
+        return { session, event };
+      };
+      const foreign = await Promise.all(
+        Array.from({ length: 5 }, () => capture(b, 0.61))
+      );
+      const current = await capture(a, 0.6);
+      const search = async (
+        context: RepositoryIdentity | null,
+        maxSearchPasses?: 1 | 2,
+        limit = 1
+      ) =>
+        createMemoryEngine(repo).searchMemory({
+          requesterContext: actor,
+          query: "release checklist rationale",
+          scope: "personal",
+          searchDomain: "global",
+          repositoryContext: context,
+          maxSearchPasses,
+          retrievalStage: "raw_fallback_search",
+          limit
+        });
+      expect((await search(null)).results[0]?.sourceId).not.toBe(
+        current.event.id
+      );
+      fetchMock.mockClear();
+      const recovered = await search(a);
+      expect(recovered.results[0]?.sourceId, JSON.stringify(recovered)).toBe(
+        current.event.id
+      );
+      expect(recovered.results[0]?.provenance).toMatchObject({
+        project: { classification: "current", branch: "main" },
+        repositoryPreference: { repository: 0.04, branch: 0.01 }
+      });
+      expect(recovered.metadata).toMatchObject({
+        searchPasses: 2,
+        globalCandidateCount: 3,
+        currentRepositoryCandidateCount: 1
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect((await search(a, 1)).results[0]?.sourceId).not.toBe(
+        current.event.id
+      );
+      const stronger = await capture(b, 0.9);
+      const strongest = await search(a, undefined, 4);
+      expect(strongest.results[0]?.sourceId).toBe(stronger.event.id);
+      expect(strongest.results[0]?.provenance).toMatchObject({
+        project: { classification: "other", label: b.anchorDisplay },
+        repositoryPreference: { repository: 0, branch: 0 }
+      });
+      expect(
+        strongest.results.filter((row) => row.sourceId === current.event.id)
+      ).toHaveLength(1);
+      const unknown = await capture(null, 0.88);
+      const withUnknown = await search(a, undefined, 4);
+      expect(
+        withUnknown.results.find((row) => row.sourceId === unknown.event.id)
+          ?.provenance
+      ).toMatchObject({
+        project: { classification: "unknown" },
+        repositoryPreference: { repository: 0, branch: 0 }
+      });
+      const outsider = await repo.createUser({
+        email: `global-outsider-${randomUUID()}@example.test`
+      });
+      const denied = await capture(a, 1, { userId: outsider.id });
+      expect(JSON.stringify(await search(a, undefined, 4))).not.toContain(
+        denied.event.id
+      );
+      const equallyRelevantForeign = await capture(b, 0.95);
+      const overlap = await capture(a, 0.95);
+      const overlapped = await search(a, undefined, 4);
+      const preferred = overlapped.results.find(
+        (row) => row.sourceId === overlap.event.id
+      )!;
+      expect(preferred.provenance).toMatchObject({
+        repositoryPreference: { repository: 0.04, branch: 0.01 }
+      });
+      expect(overlapped.results[0]?.sourceId).toBe(overlap.event.id);
+      expect(
+        overlapped.results.some(
+          (row) => row.sourceId === equallyRelevantForeign.event.id
+        )
+      ).toBe(true);
+      expect(preferred.observedReferences).toHaveLength(2);
+      expect(
+        overlapped.results.filter((row) => row.sourceId === overlap.event.id)
+      ).toHaveLength(1);
+      expect(overlapped.metadata.hydrationCount).toBeLessThanOrEqual(3);
+      await repo.moveCapturedSessionToProject(actor, overlap.session.id, {
+        id: repositoryScopeId(b)!,
+        name: "Moved Project",
+        path: b.root,
+        repositoryIdentity: b,
+        expectedAssignmentVersion: 1
+      });
+      const reassigned = (await search(a, undefined, 4)).results.find(
+        (row) => row.sourceId === overlap.event.id
+      )!;
+      expect(reassigned.provenance?.sourceAssignments).toContainEqual({
+        sessionId: overlap.session.id,
+        assignmentSource: "manual_override",
+        capturedProjectLabel: a.anchorDisplay,
+        effectiveProjectLabel: b.anchorDisplay
+      });
+      expect(reassigned.provenance?.project).toMatchObject({
+        classification: "other",
+        label: b.anchorDisplay,
+        branch: null
+      });
+      await repo.resetCapturedSessionProject(actor, overlap.session.id, 2);
+      const outOfWindow = await createMemoryEngine(repo).searchMemory({
+        requesterContext: actor,
+        query: "release checklist rationale",
+        scope: "personal",
+        searchDomain: "global",
+        repositoryContext: a,
+        retrievalStage: "raw_fallback_search",
+        sourceAfter: "2040-01-01T00:00:00.000Z",
+        limit: 4
+      });
+      expect(outOfWindow.results).toEqual([]);
+      expect(outOfWindow.metadata).toMatchObject({
+        globalCandidateCount: 0,
+        currentRepositoryCandidateCount: 0
+      });
+      const mixed = await repo.createMemoryNode(actor, {
+        visibility: "personal",
+        summaryText: "Release checklist decision across Projects",
+        sourceHash: randomUUID()
+      });
+      await pool.query(
+        "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,0),($1,$3,1)",
+        [mixed.id, current.event.id, foreign[0]!.event.id]
+      );
+      await pool.query("update memory_nodes set kind='rollup' where id=$1", [
+        mixed.id
+      ]);
+      const mixedSource = (await repo.listSourcesNeedingEmbeddings(10000)).find(
+        (source) => source.sourceId === mixed.id
+      )!;
+      await repo.upsertSourceEmbedding({
+        source: mixedSource,
+        model: "qwen3-0.6b",
+        dimensions: 1024,
+        version: "qwen3-0.6b",
+        vector: queryVector,
+        modelArtifactHash: "a".repeat(64),
+        tokenizer: "qwen3-embedding-0.6b-gguf",
+        inputTransform: "qwen3-retrieval-document-v1",
+        pooling: "last",
+        normalization: "l2"
+      });
+      const summaries = await createMemoryEngine(repo).searchMemory({
+        requesterContext: actor,
+        query: "release checklist rationale",
+        scope: "personal",
+        searchDomain: "global",
+        repositoryContext: a,
+        retrievalStage: "rollup_search",
+        limit: 4
+      });
+      const provenance = summaries.results.find(
+        (row) => row.sourceId === mixed.id
+      )?.provenance;
+      expect(provenance).toMatchObject({
+        project: { classification: "unknown" },
+        repositoryPreference: { repository: 0, branch: 0 }
+      });
+      expect(provenance?.lineageSessionIds).toEqual(
+        expect.arrayContaining([current.session.id, foreign[0]!.session.id])
+      );
+      expect(provenance?.projectSources).toContainEqual({
+        classification: "current",
+        label: a.anchorDisplay,
+        branch: "main"
+      });
+      expect(provenance?.projectSources).toContainEqual({
+        classification: "other",
+        label: b.anchorDisplay,
+        branch: "main"
+      });
+      expect(foreign).toHaveLength(5);
+      const pds = await capture(a, 0.999);
+      const sourceAssignment = (branchObservation: string | null) =>
+        createPdsRepositoryAssignment(
+          pds.session.repositoryAssignment!,
+          "1",
+          Buffer.alloc(32, 17).toString("base64url"),
+          { branchObservation }
+        );
+      const setPdsSnapshot = async (branchObservation: string | null) =>
+        pool.query(
+          "update sessions set metadata=jsonb_set(metadata,'{pds}',jsonb_build_object('repositoryAssignment',$2::jsonb)) where id=$1",
+          [pds.session.id, JSON.stringify(sourceAssignment(branchObservation))]
+        );
+      // A verified PDS snapshot can deliberately omit a branch even though its
+      // imported automatic identity retains the source's original branch.
+      await setPdsSnapshot(null);
+      expect((await search(a)).results[0]?.provenance).toMatchObject({
+        project: { classification: "current", branch: null },
+        repositoryPreference: { repository: 0.04, branch: 0 }
+      });
+      await setPdsSnapshot("main");
+      expect((await search(a)).results[0]?.provenance).toMatchObject({
+        project: { classification: "current", branch: "main" },
+        repositoryPreference: { repository: 0.04, branch: 0.01 }
+      });
+      await updateSessionRepositoryOverride(pool, {
+        ownerUserId: actor.userId,
+        sessionId: pds.session.id,
+        expectedVersion: 1,
+        identity: b
+      });
+      expect((await search(b)).results[0]?.provenance).toMatchObject({
+        project: { classification: "current", branch: null },
+        repositoryPreference: { repository: 0.04, branch: 0 }
+      });
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
     });
   }
 );

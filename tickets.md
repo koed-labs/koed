@@ -91,7 +91,7 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 ## Execution rules
 
-- Work on a ticket only after its listed blockers are complete. M1 is complete and ready for optional User inspection. M2, M3, and M4 are complete and assessed. Ticket 18 is checkpointed as f696f8cb on codex/repo-global-recall; its release remains after ticket 16. Continue 04–07 and 16 on the Project integration branch. Follow the milestone order above for priority rather than numeric ticket order.
+- Work on a ticket only after its listed blockers are complete. M1–M4 are complete and assessed. Tickets 04–16 are implemented, and ticket 16 is locally validated at checkpoint 49784dfc. Integrate and validate the previewed Global work in tickets 17 and 18 next. Keep release ordering after the Project cutover.
 - Ticket 01 is a behavior-preserving prefactor and can merge independently. Develop tickets 02–15 on one integration branch with incremental commits and focused verification.
 - Ticket 16 is the integration and release gate. Intermediate tickets must be demoable on that branch, but main must receive the complete Project behavior in one cutover.
 - Tickets 17 and 18 can start when their implementation blockers are complete. Release them only after ticket 16. This release constraint is separate from their blocking edges.
@@ -463,16 +463,18 @@ source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 **Blocked by:** 08: Recall Personal Memory by effective Project identity.
 
-**Status:** ready-for-agent
+**Status:** complete; locally integrated and validated, release follows ticket 16
 
-- [ ] Retrieve bounded Global and current-repository candidate pools using the task's persisted context, with the same authorization, time bounds, source eligibility, and effective-assignment rules. Account for both passes within existing search, decrypt, candidate, and evidence budgets and reuse the query embedding where possible.
-- [ ] Merge by canonical source identity before final ranking and truncation. Preserve complete observed references, chunk identities, visibility, lineage, and Project provenance. Retain distinct selected parent summaries alongside partial children within existing evidence-budget rules; shared lineage is not independent corroboration.
-- [ ] Apply a bounded repository preference through the existing semantic score and candidate-fusion pipeline, with a smaller branch preference only when repository and known branch match. Define the scale and placement, preserve relevance thresholds, and prevent overlap between pools from giving an unintended double boost. No reranker model or service is introduced.
-- [ ] Return current, other, or unknown Project classification and an authorized label. Unresolved caller context and mixed or incomparable evidence receive no current-repository preference.
-- [ ] Have the AI Client identify other Projects and preserve unknown provenance in answers. Retain AI Client synthesis.
-- [ ] Extend existing deterministic tests/evaluations for candidate recovery beyond the Global pool limit, equal relevance, clearly better other-repository evidence, and overlap between pools. Compare with the current semantic retrieval baseline; reuse evidence-selection regressions rather than adding another harness.
-- [ ] Test that shared branch names alone give no cross-repository preference and that historical-unresolved evidence remains unknown.
-- [ ] Document limits and behavior. This ticket can be developed after its blocker, but its release follows ticket 16.
+- [x] Retrieve bounded Global and current-repository candidate pools using the task's persisted context, with the same authorization, time bounds, source eligibility, and effective-assignment rules. Account for both passes within existing search, decrypt, candidate, and evidence budgets and reuse the query embedding where possible.
+- [x] Merge by canonical source identity before final ranking and truncation. Preserve complete observed references, chunk identities, visibility, lineage, and Project provenance. Retain distinct selected parent summaries alongside partial children within existing evidence-budget rules; shared lineage is not independent corroboration.
+- [x] Apply a bounded repository preference through the existing semantic score and candidate-fusion pipeline, with a smaller branch preference only when repository and known branch match. Define the scale and placement, preserve relevance thresholds, and prevent overlap between pools from giving an unintended double boost. No reranker model or service is introduced.
+- [x] Return current, other, or unknown Project classification and an authorized label. Unresolved caller context and mixed or incomparable evidence receive no current-repository preference.
+- [x] Have the AI Client identify other Projects and preserve unknown provenance in answers. Retain AI Client synthesis.
+- [x] Extend existing deterministic tests/evaluations for candidate recovery beyond the Global pool limit, equal relevance, clearly better other-repository evidence, and overlap between pools. Compare with the current semantic retrieval baseline; reuse evidence-selection regressions rather than adding another harness.
+- [x] Test that shared branch names alone give no cross-repository preference and that historical-unresolved evidence remains unknown.
+- [x] Document limits and behavior. This ticket can be developed after its blocker, but its release follows ticket 16.
+
+**Validation:** Deterministic PostgreSQL fixtures cover bounded candidate recovery, equal relevance, stronger other-Project evidence, pool overlap before hydration, owner/time boundaries, unknown and mixed provenance, and explicit manual assignment labels. Encrypted task recovery retains known or null Global context. Worker regressions retain complete references and selected parent summaries with partial children. Native M2 rehearsal compared baseline and contextual retrieval with one embedding call, collected the non-blocking Global answer with Cobalt and Indigo labels, and left a styled one-session anchor review prepared with its Dismiss action. The preview is now integrated after ticket 16 checkpoint 49784dfc. Native integration checks also prove that PDS branch preference uses the captured observation and respects a later local assignment. Release follows the Project cutover.
 
 ## 18: Apply Global repository preferences to Team Memory
 
@@ -480,12 +482,14 @@ source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 **Blocked by:** 14: Share and recall Team Memory by Project snapshot; 17: Prefer relevant current-repository evidence in Personal Global recall.
 
-**Status:** ready-for-agent
+**Status:** complete; locally integrated and validated, release follows ticket 16
 
-- [ ] Retrieve bounded Team Global and current-repository candidates from the selected Workspace and authorized Share Grants using the same time and source rules.
-- [ ] Classify evidence from the Team snapshot rather than the owner's current personal assignment.
-- [ ] Reuse the persisted request context, result classifications, prompt behavior, candidate limits, budgets, evidence-merge rules, and semantic ranking contract established for Personal Global recall.
-- [ ] Apply a branch preference only when a matching branch observation is known and authorized. Missing or incomparable metadata gives no preference.
-- [ ] Use the Team fixture to prove private and revoked sources remain absent from both pools and all expansions.
-- [ ] Run the shared ranking cases against Team fixtures for equal relevance, candidate recovery, clearly better other-repository evidence, pool overlap, and unknown snapshots. Add only Team-specific snapshot and authorization assertions.
-- [ ] Update Team retrieval and integration documentation. Release only after the Project cutover in ticket 16.
+- [x] Retrieve bounded Team Global and current-repository candidates from the selected Workspace and authorized Share Grants using the same time and source rules.
+- [x] Classify evidence from the Team snapshot rather than the owner's current personal assignment.
+- [x] Reuse the persisted request context, result classifications, prompt behavior, candidate limits, budgets, evidence-merge rules, and semantic ranking contract established for Personal Global recall.
+- [x] Apply a branch preference only when a matching branch observation is known and authorized. Missing or incomparable metadata gives no preference.
+- [x] Use the Team fixture to prove private and revoked sources remain absent from both pools and all expansions.
+- [x] Run the shared ranking cases against Team fixtures for equal relevance, candidate recovery, clearly better other-repository evidence, pool overlap, and unknown snapshots. Add only Team-specific snapshot and authorization assertions.
+- [x] Update Team retrieval and integration documentation. Release only after the Project cutover in ticket 16.
+
+**Validation:** The existing native Shared Memory repository suite passes all 87 cases, including Team Global equal relevance, candidate recovery beyond the baseline limit, stronger other-repository evidence, pool overlap without duplicate preference, unknown snapshots, and unchanged time filters. The worker and repository classifier suites pass 81 cases, including Personal/Team pass accounting and authorized comparable branch requirements. A disposable copy of the maintained Team fixture uses its normally generated embeddings to verify equal results across clone paths, private and revoked source exclusion, authorized expansion, and immediate search/expansion denial after revocation. Production builds, full test typechecking, targeted lint and formatting, and eight API schema tests pass. M4 is assessed. The Global preview is now integrated locally after ticket 16 checkpoint 49784dfc. The complete 87-case native Shared Memory suite, 109 merged Global unit/worker/API cases, 15 native durable task cases, workspace build, test typechecking, targeted lint, and formatting pass. Release follows the Project cutover.

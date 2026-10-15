@@ -179,3 +179,13 @@ protocol support. It should replace only the submission/observation adapter,
 not create another queue, worker or Memory Answer format. Task-protocol support
 alone does not guarantee that a harness wakes an idle agent or permits model
 progress while work is pending; that behavior still needs host acceptance tests.
+
+### Team Global repository context
+
+Team Global tasks use the persisted repository context established at submission.
+The worker forwards this context on scripted and follow-up searches, counts both
+Global and current-repository passes against the existing search budget, and
+preserves Project provenance in evidence. Both pools reuse one query embedding;
+canonical overlap is merged before authorized content disclosure. Result collection
+continues to revalidate the selected Workspace, Share Grants, and snapshot versions
+before returning evidence. A later checkout change does not retarget a pending task.

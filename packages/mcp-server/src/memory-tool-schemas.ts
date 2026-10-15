@@ -1,5 +1,5 @@
 import {
-  repositoryRecallContextSchema,
+  repositoryIdentitySchema,
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE
 } from "@koed/shared";
 import { z } from "zod";
@@ -31,7 +31,7 @@ export const memoryAnswerInputSchema = z
     response_detail: memoryAnswerResponseDetailSchema.default("answer_only"),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
-    repository_context: repositoryRecallContextSchema.optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
     team_workspace_id: uuidSchema.optional(),
     team_backend_id: z
@@ -50,6 +50,14 @@ export const memoryAnswerInputSchema = z
     include_evidence: z.boolean().default(false)
   })
   .strict()
+  .refine(
+    (input) =>
+      input.search_domain !== "project" ||
+      input.repository_context === undefined ||
+      (input.repository_context !== null &&
+        input.repository_context.kind !== "unresolved"),
+    "Project recall requires a resolved repository context"
+  )
   .refine(
     (input) =>
       input.team_backend_id === undefined ||
@@ -118,7 +126,7 @@ export const memorySearchInputSchema = z
     query: z.string().trim().min(1).max(32_000),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
-    repository_context: repositoryRecallContextSchema.optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
     recent_days: z.number().int().positive().max(36500).optional(),
     source_after: z.string().datetime().optional(),
@@ -132,7 +140,7 @@ export const memoryExpandInputSchema = z
     nodeId: uuidSchema,
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
-    repository_context: repositoryRecallContextSchema.optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
     recent_days: z.number().int().positive().max(36500).optional(),
     source_after: z.string().datetime().optional(),

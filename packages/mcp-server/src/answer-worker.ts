@@ -8,6 +8,7 @@ import {
   MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
+  type RepositoryIdentity,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import {
@@ -51,7 +52,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v9";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v10";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -698,6 +699,7 @@ interface ToolSearchRecord {
   sourceBefore?: string;
   limit: number;
   hitCount: number;
+  searchPasses?: number;
   phase?: "first_pass" | "worker";
   durationMs?: number;
   errorClass?: string;
@@ -1588,11 +1590,32 @@ const observedReferenceLineage = (
         ? (record.observedReferences as unknown[])
         : []),
       {
-        nodeId: record.nodeId,
-        sourceType: record.sourceType,
-        sourceId: record.sourceId,
-        sourceChunkIndex: record.sourceChunkIndex,
-        visibility: record.visibility
+        ...recordFromUnknown(record.citation),
+        ...Object.fromEntries(
+          [
+            "nodeId",
+            "sourceType",
+            "sourceId",
+            "sourceChunkIndex",
+            "sourceChunkCount",
+            "retrievalStage",
+            "parentNodeIds",
+            "sourceRevision",
+            "sourceGeneration",
+            "occurredAt",
+            "capturedAt",
+            "visibility",
+            "representation",
+            "provenanceId",
+            "provenance",
+            "grantProvenance",
+            "visibilityProvenance",
+            "generationProvenance",
+            "canonicalSourceIdentity"
+          ]
+            .filter((key) => record[key] !== undefined)
+            .map((key) => [key, record[key]])
+        )
       }
     ];
   });
@@ -2106,6 +2129,21 @@ const dynamicToolResult = (
   text: JSON.stringify(value)
 });
 
+const searchPassesFromResult = (result: Record<string, unknown>): number =>
+  recordFromUnknown(result.retrieval).searchPasses === 2 ? 2 : 1;
+const globalSearchContext = (
+  searchDomain: string,
+  scope: string,
+  context: RepositoryIdentity | null | undefined,
+  remaining: number
+): Record<string, unknown> =>
+  searchDomain === "global" && (scope === "personal" || scope === "team")
+    ? {
+        repository_context: context ?? null,
+        max_search_passes: remaining > 1 ? 2 : 1
+      }
+    : {};
+
 const createMemoryAnswerDynamicToolHandler = (
   state: MemoryAnswerToolState,
   options: {
@@ -2115,6 +2153,7 @@ const createMemoryAnswerDynamicToolHandler = (
     searchDomain: string;
     sessionId?: string;
     projectId?: string;
+    repositoryContext?: RepositoryIdentity | null;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -2164,6 +2203,21 @@ const createMemoryAnswerDynamicToolHandler = (
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
+      if (
+        options.searchDomain === "global" &&
+        options.repositoryContext &&
+        options.repositoryContext.kind !== "unresolved" &&
+        options.config.maxSearches - state.ledger.searchAttempts <= 2
+      ) {
+        return dynamicToolResult(
+          {
+            kind: "validation_error",
+            message:
+              "Use a direct search with the remaining budget; another scan would leave no room to retrieve Global and current-repository candidates."
+          },
+          false
+        );
+      }
       const searchQuery = (stringArg(args, "query") ?? state.query).slice(
         0,
         512
@@ -2175,6 +2229,12 @@ const createMemoryAnswerDynamicToolHandler = (
         const scanResult = await withinRequestDeadline(state, () =>
           options.client.search({
             query: searchQuery,
+            ...globalSearchContext(
+              searchDomain,
+              options.retrievalScope,
+              options.repositoryContext,
+              options.config.maxSearches - state.ledger.searchAttempts + 1
+            ),
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
             session_id: sessionId,
@@ -2191,6 +2251,7 @@ const createMemoryAnswerDynamicToolHandler = (
             limit: 1
           })
         );
+        state.ledger.searchAttempts += searchPassesFromResult(scanResult) - 1;
         state.retrievals.push(
           sanitizeRetrievalDiagnostic(scanResult.retrieval ?? scanResult)
         );
@@ -2211,6 +2272,7 @@ const createMemoryAnswerDynamicToolHandler = (
           sourceBefore: options.sourceBefore,
           limit: 1,
           hitCount: 0,
+          searchPasses: searchPassesFromResult(scanResult),
           phase: "worker",
           durationMs: Date.now() - started
         });
@@ -2287,6 +2349,12 @@ const createMemoryAnswerDynamicToolHandler = (
         const searchResult = await withinRequestDeadline(state, () =>
           options.client.search({
             query: searchQuery,
+            ...globalSearchContext(
+              searchDomain,
+              options.retrievalScope,
+              options.repositoryContext,
+              options.config.maxSearches - state.ledger.searchAttempts + 1
+            ),
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
             session_id: sessionId,
@@ -2304,6 +2372,7 @@ const createMemoryAnswerDynamicToolHandler = (
             limit
           })
         );
+        state.ledger.searchAttempts += searchPassesFromResult(searchResult) - 1;
         const hits = hitsFromSearch(searchResult);
         const bounded = boundEvidence(
           combineMemoryAnswerCandidateLists(
@@ -2340,6 +2409,7 @@ const createMemoryAnswerDynamicToolHandler = (
           sourceBefore: options.sourceBefore,
           limit,
           hitCount: hits.length,
+          searchPasses: searchPassesFromResult(searchResult),
           phase: "worker",
           durationMs: Date.now() - started
         });
@@ -3388,6 +3458,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   searchDomain: string;
   sessionId?: string;
   projectId?: string;
+  repositoryContext?: RepositoryIdentity | null;
   teamWorkspaceId?: string;
   recentDays?: number;
   sourceAfter?: string;
@@ -3409,6 +3480,14 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     reason: "search_budget";
   }>;
 }> => {
+  const contextualGlobal = options.searchDomain === "global";
+  const passCost =
+    contextualGlobal &&
+    options.repositoryContext &&
+    options.repositoryContext.kind !== "unresolved" &&
+    options.maxSearches > 1
+      ? 2
+      : 1;
   const common = {
     retrieval_scope: options.retrievalScope,
     search_domain: options.searchDomain,
@@ -3418,6 +3497,12 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     recent_days: options.recentDays,
     source_after: options.sourceAfter,
     source_before: options.sourceBefore,
+    ...(contextualGlobal
+      ? {
+          repository_context: options.repositoryContext ?? null,
+          max_search_passes: passCost
+        }
+      : {}),
     exact_hints: candidateExactHints(
       options.retrievalHints,
       options.exactAnchorChecks !== false
@@ -3446,7 +3531,6 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   const queries = firstPassQueries(options.query, options.retrievalHints);
   if (
     options.searchDomain === "global" &&
-    options.retrievalScope === "personal" &&
     queries.length === 1 &&
     options.maxSearches > 1
   ) {
@@ -3485,6 +3569,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit: options.limit,
             hitCount: hits.length,
+            searchPasses: searchPassesFromResult(result),
             phase: "first_pass",
             durationMs: Date.now() - started
           }
@@ -3515,6 +3600,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit: options.limit,
             hitCount: 0,
+            searchPasses: passCost,
             phase: "first_pass",
             durationMs: Date.now() - started,
             errorClass: error instanceof Error ? error.name : "Error"
@@ -3525,10 +3611,10 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
       };
     }
   }
-  const followUpReserve = options.maxSearches > 1 ? 1 : 0;
+  const followUpReserve = options.maxSearches > passCost ? passCost : 0;
   const firstPassCallBudget = Math.max(
     1,
-    options.maxSearches - followUpReserve
+    Math.floor((options.maxSearches - followUpReserve) / passCost)
   );
   // Scans are allocated in deterministic rounds across hint classes. With the
   // default five-call first-pass budget this admits caller, semantic, and
@@ -3573,6 +3659,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit: options.limit,
             hitCount: hits.length,
+            searchPasses: searchPassesFromResult(result),
             phase: "first_pass" as const,
             durationMs: Date.now() - started
           },
@@ -3598,6 +3685,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit: 1,
             hitCount: 0,
+            searchPasses: passCost,
             phase: "first_pass" as const,
             durationMs: Date.now() - started,
             errorClass: error instanceof Error ? error.name : "Error"
@@ -3694,6 +3782,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit,
             hitCount: hits.length,
+            searchPasses: searchPassesFromResult(result),
             phase: "first_pass" as const,
             durationMs: Date.now() - started
           },
@@ -3719,6 +3808,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit,
             hitCount: 0,
+            searchPasses: passCost,
             phase: "first_pass" as const,
             durationMs: Date.now() - started,
             errorClass: error instanceof Error ? error.name : "Error"
@@ -3807,6 +3897,7 @@ const runDynamicToolMemoryAnswer = async (
     searchDomain: string;
     sessionId?: string;
     projectId?: string;
+    repositoryContext?: RepositoryIdentity | null;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -3863,6 +3954,7 @@ const runDynamicToolMemoryAnswer = async (
         searchDomain: options.searchDomain,
         sessionId: options.sessionId,
         projectId: options.projectId,
+        repositoryContext: options.repositoryContext,
         teamWorkspaceId: options.teamWorkspaceId,
         recentDays: options.recentDays,
         sourceAfter: options.sourceAfter,
@@ -3881,7 +3973,10 @@ const runDynamicToolMemoryAnswer = async (
         errors: [],
         skippedQueries: []
       };
-  ledger.searchAttempts = firstPass.searches.length;
+  ledger.searchAttempts = firstPass.searches.reduce(
+    (sum, search) => sum + (search.searchPasses ?? 1),
+    0
+  );
   const initialBoundedEvidence = boundEvidence(
     combineMemoryAnswerCandidateLists(
       evidenceItems(payload),
@@ -4277,6 +4372,7 @@ export const answerWithMemoryWorker = async (
     searchDomain?: string;
     sessionId?: string;
     projectId?: string;
+    repositoryContext?: RepositoryIdentity | null;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -4350,6 +4446,7 @@ export const answerWithMemoryWorker = async (
       searchDomain: options.searchDomain ?? "project",
       sessionId: options.sessionId,
       projectId: options.projectId,
+      repositoryContext: options.repositoryContext,
       teamWorkspaceId: options.teamWorkspaceId,
       recentDays: options.recentDays,
       sourceAfter: options.sourceAfter,

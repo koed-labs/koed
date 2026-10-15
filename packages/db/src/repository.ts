@@ -1,3 +1,10 @@
+import { repositoryIdentitySchema, repositoryScopeId } from "@koed/shared";
+import { globalRepositoryContextJoinSql } from "./global-repository-context-sql.js";
+import {
+  canonicalGlobalCandidateKey,
+  classifyRepositoryEvidence,
+  globalRepositoryPoolLimits
+} from "./global-repository-context.js";
 import { createRepositoryReviewRepository } from "./repository-review-repository.js";
 import { createHash } from "node:crypto";
 import pg from "pg";
@@ -10939,6 +10946,22 @@ export const createMemorySourceRepository = (
       if (searchDomain === "project" && !input.projectId) {
         throw new Error("Project-scoped memory search requires projectId");
       }
+      const parsedRepositoryContext = repositoryIdentitySchema
+        .nullable()
+        .safeParse(input.repositoryContext ?? null);
+      const repositoryContext =
+        searchDomain === "global" &&
+        parsedRepositoryContext.success &&
+        parsedRepositoryContext.data?.kind !== "unresolved"
+          ? parsedRepositoryContext.data
+          : null;
+      const currentRepositoryScope =
+        repositoryContext && input.maxSearchPasses !== 1
+          ? repositoryScopeId(repositoryContext)
+          : null;
+      let searchPasses = 1,
+        globalCandidateCount = 0,
+        currentRepositoryCandidateCount = 0;
       const requestedParentNodeIds = input.parentNodeIds?.filter(Boolean) ?? [];
       const visibleParentNodeIds = requestedParentNodeIds.length
         ? (
@@ -11027,6 +11050,9 @@ export const createMemorySourceRepository = (
         embedding_dimensions: number | null;
         source_chunk_index: number;
         source_chunk_count: number;
+        repository_contexts?: unknown[];
+        candidate_pool?: "global" | "current";
+        observed_references?: MemorySearchResult["citation"][];
       };
       type StageResult = {
         name: RetrievalStageName;
@@ -11153,7 +11179,24 @@ export const createMemorySourceRepository = (
         rows: VectorRow[]
       ): VectorRow[] => {
         if (stage === "rollup_search" && !requestedStage) {
-          return rows.slice(0, rollupResultLimit);
+          return searchDomain === "global"
+            ? [...rows]
+                .sort((a, b) => {
+                  const preference = (row: VectorRow) => {
+                    const affinity = classifyRepositoryEvidence(
+                      row.repository_contexts,
+                      repositoryContext
+                    );
+                    return (
+                      Number(row.score) * stageWeight[stage] +
+                      affinity.repositoryBonus +
+                      affinity.branchBonus
+                    );
+                  };
+                  return preference(b) - preference(a);
+                })
+                .slice(0, rollupResultLimit)
+            : rows.slice(0, rollupResultLimit);
         }
         return rows;
       };
@@ -11291,6 +11334,11 @@ export const createMemorySourceRepository = (
               parentNodeIds: string[] = []
             ): Promise<StageResult> => {
               const started = Date.now();
+              const pools = globalRepositoryPoolLimits(
+                limit,
+                Boolean(currentRepositoryScope)
+              );
+              if (pools.current > 0) searchPasses = 2;
               databaseReads += 1;
               const vectorResult = await pool.query<VectorRow>(
                 `
@@ -11461,7 +11509,8 @@ export const createMemorySourceRepository = (
                   me.embedding_model,
                   me.embedding_dimensions,
                   me.source_chunk_index,
-                  me.source_chunk_count
+                  me.source_chunk_count,
+                  repo_context.contexts as repository_contexts
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
@@ -11472,6 +11521,7 @@ export const createMemorySourceRepository = (
                  and cma.status = 'current'
                  and cma.suppressed_at is null
                  and (cma.expires_at is null or cma.expires_at > now())
+                ${searchDomain === "global" ? globalRepositoryContextJoinSql() : "left join lateral (select null::jsonb as contexts) repo_context on true"}
                 left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
@@ -11740,16 +11790,22 @@ export const createMemorySourceRepository = (
                     )
                   )
               )
-              select *
-              from candidates
-              order by score desc, created_at desc, source_id
-              limit $4
+              select * from (
+                (select candidates.*, 'global'::text as candidate_pool from candidates
+                  order by score desc, created_at desc, source_id limit $4)
+                union all
+                (select candidates.*, 'current'::text as candidate_pool from candidates
+                  where $16::integer>0 and jsonb_array_length(repository_contexts)>0
+                    and not exists(select 1 from jsonb_array_elements(repository_contexts) context
+                      where not coalesce(repository_scope_matches(context->'identity',$15::text),false))
+                  order by score desc, created_at desc, source_id limit $16)
+              ) pooled order by score desc, created_at desc, source_id
             `,
                 [
                   actor.userId,
                   visibility,
                   vectorLiteral(queryVector),
-                  limit,
+                  pools.global,
                   embedded.model,
                   embedded.dimensions,
                   localEmbeddingVersion(),
@@ -11759,11 +11815,61 @@ export const createMemorySourceRepository = (
                   stage,
                   sourceAfter,
                   sourceBefore,
-                  parentNodeIds
+                  parentNodeIds,
+                  currentRepositoryScope,
+                  pools.current
                 ]
               );
+              globalCandidateCount += vectorResult.rows.filter(
+                (row) => row.candidate_pool === "global"
+              ).length;
+              currentRepositoryCandidateCount += vectorResult.rows.filter(
+                (row) => row.candidate_pool === "current"
+              ).length;
+              const uniqueRows = new Map<string, VectorRow>();
+              for (const row of vectorResult.rows) {
+                const key = canonicalGlobalCandidateKey(row);
+                const previous = uniqueRows.get(key);
+                const reference: MemorySearchResult["citation"] = {
+                  nodeId: row.id,
+                  sourceType: row.source_type,
+                  sourceId: row.source_id,
+                  sourceChunkIndex: row.source_chunk_index,
+                  sourceChunkCount: row.source_chunk_count,
+                  retrievalStage: row.retrieval_stage,
+                  parentNodeIds: row.parent_node_ids ?? [],
+                  sourceGeneration: row.source_generation ?? undefined,
+                  occurredAt: row.occurred_at?.toISOString(),
+                  visibility: row.visibility,
+                  provenance: {
+                    candidatePool: row.candidate_pool,
+                    project: classifyRepositoryEvidence(
+                      row.repository_contexts,
+                      repositoryContext
+                    )
+                  }
+                };
+                if (previous && searchDomain === "global") {
+                  previous.observed_references = [
+                    ...(previous.observed_references ?? []),
+                    reference
+                  ];
+                  previous.parent_node_ids = [
+                    ...new Set([
+                      ...(previous.parent_node_ids ?? []),
+                      ...(row.parent_node_ids ?? [])
+                    ])
+                  ];
+                } else
+                  uniqueRows.set(
+                    searchDomain === "global"
+                      ? key
+                      : JSON.stringify([key, row.id, uniqueRows.size]),
+                    { ...row, observed_references: [reference] }
+                  );
+              }
               const rows = await hydrateSearchRows(
-                vectorResult.rows.map((row) => {
+                [...uniqueRows.values()].map((row) => {
                   const filteredSummary = row.has_out_of_window_sources
                     ? filteredNodeSourceText(row.filtered_source_items)
                     : null;
@@ -11977,6 +12083,8 @@ export const createMemorySourceRepository = (
         MemorySearchResult & {
           createdAt: Date;
           stagePriority: number;
+          baseScore: number;
+          repositoryContexts: unknown[];
         }
       >();
       const addRow = (
@@ -12001,6 +12109,8 @@ export const createMemorySourceRepository = (
           source_chunk_count?: number | null;
           score: number;
           created_at: Date;
+          repository_contexts?: unknown[];
+          observed_references?: MemorySearchResult["citation"][];
         },
         weight: number
       ) => {
@@ -12011,18 +12121,109 @@ export const createMemorySourceRepository = (
           )
         );
         const normalizedText = summaryText.toLowerCase();
-        const key = normalizedText
-          ? `${row.visibility}:${normalizedText}`
-          : `${row.source_type}:${row.source_id}`;
-        const score =
+        const key =
+          searchDomain === "global"
+            ? canonicalGlobalCandidateKey(row)
+            : normalizedText
+              ? `${row.visibility}:${normalizedText}`
+              : `${row.source_type}:${row.source_id}`;
+        const baseScore =
           Number(row.score) * weight +
           Math.min(exactAnchorMatches.length, 4) * 0.25;
         const priority = stagePriority[row.retrieval_stage];
         const existing = merged.get(key);
+        const repositoryContexts = [
+          ...(existing?.repositoryContexts ?? []),
+          ...(row.repository_contexts ?? [])
+        ];
+        const affinity = classifyRepositoryEvidence(
+          repositoryContexts,
+          repositoryContext
+        );
+        const provenance =
+          searchDomain === "global"
+            ? {
+                project: {
+                  classification: affinity.classification,
+                  label: affinity.label,
+                  branch: affinity.branch
+                },
+                repositoryPreference: {
+                  repository: affinity.repositoryBonus,
+                  branch: affinity.branchBonus
+                },
+                sourceAssignments: repositoryContexts.flatMap((context) => {
+                  const row =
+                    context && typeof context === "object"
+                      ? (context as Record<string, unknown>)
+                      : {};
+                  if (typeof row.sessionId !== "string") return [];
+                  return [
+                    {
+                      sessionId: row.sessionId,
+                      assignmentSource:
+                        row.assignmentSource === "manual_override"
+                          ? "manual_override"
+                          : "automatic",
+                      capturedProjectLabel:
+                        typeof row.capturedProjectLabel === "string"
+                          ? row.capturedProjectLabel
+                          : null,
+                      effectiveProjectLabel: classifyRepositoryEvidence(
+                        [context],
+                        repositoryContext
+                      ).label
+                    }
+                  ];
+                }),
+                projectSources: [
+                  ...new Map(
+                    repositoryContexts.map((context) => {
+                      const source = classifyRepositoryEvidence(
+                        [context],
+                        repositoryContext
+                      );
+                      return [
+                        JSON.stringify(source),
+                        {
+                          classification: source.classification,
+                          label: source.label,
+                          branch: source.branch
+                        }
+                      ];
+                    })
+                  ).values()
+                ],
+                lineageSessionIds: [
+                  ...new Set(
+                    repositoryContexts.flatMap((context) =>
+                      typeof (context as { sessionId?: unknown })?.sessionId ===
+                      "string"
+                        ? [(context as { sessionId: string }).sessionId]
+                        : []
+                    )
+                  )
+                ]
+              }
+            : undefined;
+        const observedReferences =
+          searchDomain === "global"
+            ? [
+                ...new Map(
+                  [
+                    ...(existing?.observedReferences ?? []),
+                    ...(row.observed_references ?? [])
+                  ].map((reference) => [JSON.stringify(reference), reference])
+                ).values()
+              ]
+            : undefined;
+        const score =
+          baseScore + affinity.repositoryBonus + affinity.branchBonus;
         if (
           !existing ||
-          score > existing.score ||
-          (score === existing.score && priority > existing.stagePriority)
+          baseScore > existing.baseScore ||
+          (baseScore === existing.baseScore &&
+            priority > existing.stagePriority)
         ) {
           merged.set(key, {
             nodeId: row.id,
@@ -12031,7 +12232,12 @@ export const createMemorySourceRepository = (
             sourceChunkIndex: row.source_chunk_index ?? undefined,
             sourceChunkCount: row.source_chunk_count ?? undefined,
             retrievalStage: row.retrieval_stage,
-            parentNodeIds: row.parent_node_ids ?? undefined,
+            parentNodeIds: [
+              ...new Set([
+                ...(existing?.parentNodeIds ?? []),
+                ...(row.parent_node_ids ?? [])
+              ])
+            ],
             sourceGeneration: row.source_generation ?? undefined,
             occurredAt: row.occurred_at?.toISOString(),
             visibility: row.visibility,
@@ -12046,6 +12252,10 @@ export const createMemorySourceRepository = (
                 : undefined,
             lcmNodeSummaryModel: row.lcm_summary_model ?? undefined,
             score,
+            baseScore,
+            repositoryContexts,
+            observedReferences,
+            provenance,
             citation: {
               nodeId: row.id,
               sourceType: row.source_type,
@@ -12053,14 +12263,36 @@ export const createMemorySourceRepository = (
               sourceChunkIndex: row.source_chunk_index ?? undefined,
               sourceChunkCount: row.source_chunk_count ?? undefined,
               retrievalStage: row.retrieval_stage,
-              parentNodeIds: row.parent_node_ids ?? undefined,
+              parentNodeIds: [
+                ...new Set([
+                  ...(existing?.parentNodeIds ?? []),
+                  ...(row.parent_node_ids ?? [])
+                ])
+              ],
               sourceGeneration: row.source_generation ?? undefined,
               occurredAt: row.occurred_at?.toISOString(),
-              visibility: row.visibility
+              visibility: row.visibility,
+              provenance
             },
             createdAt: row.occurred_at ?? row.created_at,
             stagePriority: priority
           });
+        } else if (existing && searchDomain === "global") {
+          existing.repositoryContexts = repositoryContexts;
+          existing.score =
+            existing.baseScore +
+            affinity.repositoryBonus +
+            affinity.branchBonus;
+          existing.provenance = provenance;
+          existing.citation.provenance = provenance;
+          existing.observedReferences = observedReferences;
+          existing.parentNodeIds = [
+            ...new Set([
+              ...(existing.parentNodeIds ?? []),
+              ...(row.parent_node_ids ?? [])
+            ])
+          ];
+          existing.citation.parentNodeIds = existing.parentNodeIds;
         }
       };
 
@@ -12115,6 +12347,9 @@ export const createMemorySourceRepository = (
           results: [],
           metadata: {
             ...embeddingMetadata,
+            searchPasses,
+            globalCandidateCount,
+            currentRepositoryCandidateCount,
             vectorHitsCount: 0,
             textHitsCount: 0,
             vectorCandidateCount: vectorRows.length,
@@ -12179,7 +12414,9 @@ export const createMemorySourceRepository = (
           lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
           lcmNodeSummaryModel: result.lcmNodeSummaryModel,
           score: result.score,
-          citation: result.citation
+          citation: result.citation,
+          provenance: result.provenance,
+          observedReferences: result.observedReferences
         }));
 
       for (const stage of stageDiagnostics) {
@@ -12191,6 +12428,9 @@ export const createMemorySourceRepository = (
       }
       embeddingMetadata = {
         ...embeddingMetadata,
+        searchPasses,
+        globalCandidateCount,
+        currentRepositoryCandidateCount,
         vectorHitsCount: vectorRows.length,
         vectorCandidateCount: vectorRows.length,
         stages: stageDiagnostics

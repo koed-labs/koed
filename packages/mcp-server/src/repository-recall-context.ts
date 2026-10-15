@@ -6,6 +6,7 @@ import {
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import {
+  repositoryIdentitySchema,
   repositoryRecallContextSchema,
   repositoryScopeId,
   type RepositoryIdentity
@@ -15,14 +16,44 @@ export const pinRepositoryRecallContext = async <
   Input extends {
     search_domain: string;
     project_id?: string;
-    repository_context?: RepositoryIdentity;
+    repository_context?: RepositoryIdentity | null;
   }
 >(
   input: Input,
   caller: { cwd: string },
   environment: NodeJS.ProcessEnv
-): Promise<Input & { repository_context?: RepositoryIdentity }> => {
+): Promise<Input & { repository_context?: RepositoryIdentity | null }> => {
+  if (input.search_domain === "global") {
+    // Null is an explicit, durable unknown context; retries must not discover the worker cwd.
+    if (input.repository_context !== undefined)
+      return {
+        ...input,
+        repository_context:
+          input.repository_context === null
+            ? null
+            : repositoryIdentitySchema.parse(input.repository_context)
+      };
+    try {
+      const pinned = await pinRepositoryRecallContext(
+        { ...input, search_domain: "project", repository_context: undefined },
+        caller,
+        environment
+      );
+      return {
+        ...input,
+        repository_context: pinned.repository_context ?? null
+      };
+    } catch {
+      // Global remains available when the caller's checkout cannot be resolved.
+      return { ...input, repository_context: null };
+    }
+  }
   if (input.search_domain !== "project") return input;
+  if (input.repository_context === null)
+    throw Object.assign(
+      new Error("Project recall requires a resolved repository context"),
+      { statusCode: 400 }
+    );
   if (input.repository_context) {
     const context = repositoryRecallContextSchema.parse(
       input.repository_context
@@ -81,7 +112,10 @@ export const pinRepositoryRecallContext = async <
 };
 
 export const resolveRequestedProjectRoot = (
-  input: { project_id?: string; repository_context?: RepositoryIdentity },
+  input: {
+    project_id?: string;
+    repository_context?: RepositoryIdentity | null;
+  },
   caller: { cwd: string },
   environment: NodeJS.ProcessEnv
 ): string => {

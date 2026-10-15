@@ -20,9 +20,24 @@ repository name and compute its normalized fingerprint. This accepted exposure
 does not bypass Share Grant or Workspace authorization. Personal Device Sync
 continues to use its separate encrypted, group-keyed boundary.
 
-The full Team milestone still requires the explicit snapshot update action in
-ticket 15 and the Team Global preview in ticket 18. Release remains gated by
-the complete Project cutover in ticket 16.
+Team Global recall allocates one quarter of the existing candidate budget to a
+current-repository pool when a portable request context and two search passes
+are available. Both pools use the same query embedding, Workspace, authorization,
+time bounds, and source rules. They merge grant-scoped canonical sources before
+decrypting content, ranking, and truncating the result. Pool overlap contributes
+one candidate and one preference.
+
+The authorized Share Grant snapshot classifies evidence as current, other, or
+unknown. A later Personal move does not change this classification. The existing
+semantic and exact-anchor score receives the same bounded preference as Personal
+Global recall: 0.04 for a matching portable repository, plus 0.01 only when the
+sanitized representation and snapshot agree on a known matching branch. Missing
+or incomparable branch metadata receives no branch preference. Device-local and
+unresolved caller contexts receive no Team repository preference. Authorized
+labels identify other Projects; the AI Client preserves unknown provenance and
+shared lineage. No additional embedding model or reranker is used.
+
+Release remains gated by the complete Project cutover in ticket 16.
 
 Directed Captured Session Sync transfers an owner-authenticated selected-repository
 snapshot into the owner-private replica. It carries no checkout path, device-local
@@ -270,3 +285,52 @@ acknowledgements retain the exact hash. Missing fields and V1 packages are
 rejected. Codex, Claude Code, and Pi use this same profile. Existing encrypted
 source material is retained; the version change does not reset source memory,
 change encryption-envelope versions, or retarget existing Team snapshots.
+
+## Personal Global Repository Preference
+
+The local adapter pins Global caller context before task acceptance. The encrypted
+request stores the resolved identity or explicit `null` when discovery fails.
+Retries preserve that value and never infer context from the worker directory.
+Global recall continues to search all authorized Personal Memory.
+
+For a PDS replica, the branch preference uses the verified captured branch
+observation from its received assignment snapshot. Missing observations give no
+branch bonus, even when the imported automatic identity names a branch. The
+local automatic and effective repository assignments must also agree. A local
+move to another repository cannot reuse the source branch for preference.
+
+Each semantic stage partitions its existing candidate cap: one quarter (rounded
+down, at least one when the cap exceeds one) retrieves current-repository
+candidates; the remainder retrieves Global candidates. Both pools share one query
+embedding, SQL snapshot, authorization, source eligibility and time bounds. The
+combined pre-hydration rows cannot exceed the previous stage cap. Canonical source
+identity merges overlapping rows before hydration and decryption. Both passes count
+against the existing search budget; when only one pass remains, retrieval uses the
+Global pool alone. Unknown caller context also uses the Global pool alone.
+
+After the existing semantic threshold, stage weights and exact-anchor fusion,
+current-repository evidence receives `0.04`; a known matching branch adds `0.01`.
+These fixed additions apply once per canonical candidate, regardless of pool overlap.
+They can prefer similarly relevant evidence but do not remove stronger evidence
+from other Projects. A shared branch name in another repository adds nothing.
+Branch provenance comes from consistent capture observations, never an override's
+chosen target branch. Mixed, unresolved, or device-incomparable evidence adds nothing.
+
+Evidence carries `current`, `other` or `unknown` classification, authorized Project
+labels, and source Session lineage. Mixed summaries preserve their individual
+Project labels while their overall classification remains unknown. Full observed
+references retain chunk identities, counts, stages, generations and parent lineage.
+Assignment provenance distinguishes a manual User override from the automatic
+assignment and retains the captured Project label separately from the effective
+label. An AI Client must not reinterpret a deliberate move as misclassification
+or a conflict just because retained source text still names the captured Project.
+Distinct selected parent summaries and partial children remain subject to the
+existing evidence budget. The AI Client identifies other Projects, preserves unknown
+provenance, and treats shared history as one underlying source rather than independent
+corroboration. No reranker, model service, or backend synthesis is introduced.
+
+Deterministic PostgreSQL vectors compare the baseline Global pool with candidate
+recovery, stronger foreign evidence, overlapping pools, historical unknown evidence,
+owner isolation and mixed summary lineage. Existing worker evidence-selection
+regressions cover parent summaries and partial children. Durable task tests verify
+known and unknown Global context through encrypted worker replacement.

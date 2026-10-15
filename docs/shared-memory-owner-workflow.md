@@ -271,3 +271,14 @@ decisions; an idempotent remote-operation journal; adapter-independent envelope
 validation; and parity tests against the repository transaction contract. No
 such duplicated workflow owner exists today, so no follow-on implementation
 tickets are created.
+
+## Team Global recall
+
+Global questions use the selected Workspace and its authorized Share Grants.
+Repository preferences classify each source from the recorded Team snapshot.
+Moving a Personal Session leaves those results unchanged until the owner applies
+Update Project. A matching repository never supplies access or selects a Workspace.
+Permitted Project labels and comparable branch observations come through the
+representation disclosure policy. Unknown snapshots remain available to authorized
+Global questions without a repository preference. See [repository recall](repository-recall.md)
+for candidate budgets, bounded scoring, and the Project cutover release gate.

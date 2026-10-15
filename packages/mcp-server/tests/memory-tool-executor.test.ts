@@ -226,7 +226,8 @@ describe("MemoryToolExecutor", () => {
     const completed = await executor.executeMemoryAnswerTask(
       memoryAnswerInputSchema.parse({
         query: "What changed?",
-        search_domain: "global"
+        search_domain: "global",
+        repository_context: null
       }),
       { cwd: "/fixture" },
       "task",

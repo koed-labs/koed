@@ -11,3 +11,8 @@ Preserve assignments through Personal Device Sync and use separate Project
 snapshots for Team Share Grants. Existing Sessions become unresolved once during
 the upgrade. Explicit reassignment resolves them. Resetting that override restores
 unresolved history. The upgrade preserves source Memory and retained provenance.
+
+Global recall reserves a bounded candidate pool for the current repository and
+uses a small relevance preference when context matches. Personal and Team
+answers identify other Projects and preserve unknown provenance. Team matching
+uses authorized Share Grant snapshots. No reranker service is required.
