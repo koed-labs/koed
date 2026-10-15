@@ -128,7 +128,9 @@ children share lineage and must not count as independent corroboration.
   Closed-source V3 now signs an immutable closure boundary; genuine V2 closed
   source and V3 wire fixtures are retained. Migration 0059 and the native closed
   source test verify automatic republication with immutable old provenance.
-  Finish receiver migration validation for closed sources before release. Audit
+  Native old-receiver migration validation now proves signed-boundary admission,
+  raw-source reuse, stable identity, explicit override preservation, and reset to
+  unresolved history. Audit
   superseded pre-cutover PDS outbox work so old signed profiles cannot stall
   delivery after the replacement is published; retain ciphertext and receipt history. Preserve old
   signed packages and existing logical Session identities; prove continued capture and an offline receiver can establish the

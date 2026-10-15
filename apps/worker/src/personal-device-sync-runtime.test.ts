@@ -918,7 +918,9 @@ describe("PDS session materialization", () => {
   it("preserves signed native fork lineage on the canonical session", async () => {
     const createCapturedSession = vi.fn().mockResolvedValue({ id: "session" });
     const createConversationItems = vi.fn().mockResolvedValue([{ id: "item" }]);
+    const getPdsClosedReplicaSource = vi.fn().mockResolvedValue(null);
     const repository = {
+      getPdsClosedReplicaSource,
       createCapturedSession,
       createConversationItems
     } as unknown as MemorySourceRepository;
@@ -1015,6 +1017,35 @@ describe("PDS session materialization", () => {
         ])
       }
     );
+    getPdsClosedReplicaSource.mockResolvedValue({
+      id: "session",
+      itemIds: ["item"]
+    });
+    await expect(
+      materializePdsSession(
+        repository,
+        "user",
+        "personal-device-group",
+        manifest,
+        {
+          state: "historical_unresolved",
+          version: 1,
+          automatic: null,
+          override: null,
+          effective: null
+        }
+      )
+    ).resolves.toEqual({ id: "session", itemIds: ["item"] });
+    expect(createCapturedSession).toHaveBeenCalledTimes(1);
+    expect(createConversationItems).toHaveBeenCalledTimes(1);
+    expect(getPdsClosedReplicaSource).toHaveBeenLastCalledWith({
+      logicalSessionId: manifest.closedSession.logicalSessionId,
+      externalSessionId: manifest.closedSession.externalSessionId,
+      userId: "user",
+      groupId: "personal-device-group",
+      sourceFingerprint: manifest.sourceFingerprint,
+      closureHash: manifest.sourceClosureHash
+    });
   });
 });
 

@@ -1,4 +1,7 @@
-import { validatePdsCheckpointProfileTransition } from "@koed/shared";
+import {
+  validatePdsClosedProfileTransition,
+  validatePdsCheckpointProfileTransition
+} from "@koed/shared";
 import { applyPdsRepositoryAssignmentSnapshot } from "./pds-repository-assignment.js";
 import {
   mapRepositoryAssignment,
@@ -319,7 +322,17 @@ export interface PersonalDeviceSyncLocalRepository {
     checkpoint?: PdsReplicaCheckpointInput;
     encryptedEnvelope: unknown;
   }): Promise<{ retainedPackageId: string; state: PdsMaterializationState }>;
+  getPdsClosedReplicaSource(input: {
+    logicalSessionId: string;
+    externalSessionId: string;
+    userId: string;
+    groupId: string;
+    sourceFingerprint: string;
+    closureHash: string;
+  }): Promise<{ id: string; itemIds: string[] } | null>;
   materializePdsReplica(input: {
+    closedProfileTransition?: PdsClosedProfileTransition | null;
+    pdsRepositoryAssignment?: PdsRepositoryAssignment;
     workerId: string;
     inboxId: string;
     userId: string;
@@ -1060,6 +1073,35 @@ export const createPersonalDeviceSyncLocalRepository = (
     }
   },
 
+  async getPdsClosedReplicaSource(input) {
+    const result = await pool.query<{
+      id: string;
+      item_ids: string[];
+      logical_session_id: string;
+      external_session_id: string | null;
+    }>(
+      `select s.logical_session_id,s.external_session_id,r.local_session_id as id,coalesce(array_agg(m.conversation_item_id order by m.source_ordinal::numeric) filter(where m.conversation_item_id is not null),'{}') as item_ids
+       from pds_logical_replicas r
+       join personal_device_groups g on g.id=r.group_id
+       join local_personal_identities i on i.id=g.local_personal_identity_id
+       join sessions s on s.id=r.local_session_id and s.owner_user_id=i.owner_user_id
+       left join pds_source_item_mappings m on m.replica_id=r.id
+       where i.owner_user_id=$1 and g.group_id=$2 and r.source_fingerprint=$3 and r.closure_hash=$4
+         and r.materialization_profile='closed_v1' and r.materialization_state='ready'
+         and s.personal_deleted_at is null and s.invalidated_at is null
+       group by r.id,s.id`,
+      [input.userId, input.groupId, input.sourceFingerprint, input.closureHash]
+    );
+    const row = result.rows[0];
+    if (
+      row &&
+      (row.logical_session_id !== input.logicalSessionId ||
+        row.external_session_id !== input.externalSessionId)
+    )
+      throw new Error("PdsClosedProfileNativeIdentityConflict");
+    return row ? { id: row.id, itemIds: row.item_ids } : null;
+  },
+
   async materializePdsReplica(input) {
     mustDecimal(input.sourceSequence, "source sequence");
     const client = await pool.connect();
@@ -1078,8 +1120,17 @@ export const createPersonalDeviceSyncLocalRepository = (
       );
       const groupId = group.rows[0]?.id;
       if (!groupId) throw new Error("PDS group is unavailable");
-      const retained = await client.query<{ state: PdsMaterializationState }>(
-        `select p.state from pds_retained_packages p
+      const retained = await client.query<{
+        state: PdsMaterializationState;
+        source_profile_epoch: number;
+        source_profile: string;
+        source_fingerprint: string | null;
+        source_closure_hash: string | null;
+        source_sequence: string;
+        origin_device_id: string;
+        origin_deployment_id: string;
+      }>(
+        `select p.state,p.source_profile,p.source_profile_epoch,p.source_fingerprint,p.source_closure_hash,p.source_sequence,p.origin_device_id,p.origin_deployment_id from pds_retained_packages p
          left join pds_deletion_floors f on f.group_id=p.group_id
            and f.logical_memory_id=p.logical_memory_id
            and f.deletion_floor_token=p.deletion_floor_token
@@ -1088,6 +1139,77 @@ export const createPersonalDeviceSyncLocalRepository = (
       );
       if (!retained.rowCount || retained.rows[0]!.state === "revoked")
         throw new Error("PdsCryptoFloorError");
+      const currentPackage = retained.rows[0]!;
+      if (
+        currentPackage.source_profile !== "closed_v1" ||
+        currentPackage.source_profile_epoch !== 1 ||
+        currentPackage.source_fingerprint !== input.sourceFingerprint ||
+        currentPackage.source_closure_hash !== input.closureHash ||
+        currentPackage.source_sequence !== input.sourceSequence ||
+        currentPackage.origin_device_id !== input.originDeviceId ||
+        currentPackage.origin_deployment_id !== input.originDeploymentId
+      )
+        throw new Error("PdsClosedProfileRetainedBindingError");
+      const transition = validatePdsClosedProfileTransition(
+        input.closedProfileTransition ?? null,
+        input.closureHash,
+        input.sourceSequence
+      );
+      const known = await client.query<{
+        id: string;
+        source_profile_epoch: number;
+        local_session_id: string | null;
+      }>(
+        "select id,source_profile_epoch,local_session_id from pds_logical_replicas where group_id=$1 and source_fingerprint=$2 and closure_hash=$3 and materialization_profile='closed_v1' for update",
+        [groupId, input.sourceFingerprint, input.closureHash]
+      );
+      const prior = known.rows[0];
+      if (prior && prior.local_session_id !== input.localSessionId)
+        throw new Error("PdsClosedProfileSessionConflict");
+      if (prior) {
+        const mapped = await client.query<{ conversation_item_id: string }>(
+          "select conversation_item_id from pds_source_item_mappings where replica_id=$1 order by source_ordinal::numeric",
+          [prior.id]
+        );
+        if (
+          mapped.rows.length !== input.sourceItemIds.length ||
+          mapped.rows.some(
+            (row, index) =>
+              row.conversation_item_id !== input.sourceItemIds[index]
+          )
+        )
+          throw new Error("PdsClosedProfileSourceConflict");
+      }
+      if (prior?.source_profile_epoch === 0) {
+        if (!transition) throw new Error("PdsClosedProfileTransitionRequired");
+        const boundary = await client.query<{
+          source_closed_at: Date;
+          source_manifest_hash: string;
+          source_sequence: string;
+          origin_device_id: string;
+          origin_deployment_id: string;
+        }>(
+          `select o.source_closed_at,p.source_manifest_hash,p.source_sequence,p.origin_device_id,p.origin_deployment_id from pds_replica_observations o join pds_retained_packages p on p.id=o.retained_package_id where o.replica_id=$1 order by p.source_sequence::numeric desc limit 1`,
+          [prior.id]
+        );
+        const head = boundary.rows[0];
+        if (
+          !head ||
+          head.source_manifest_hash !== transition.previousManifestHash ||
+          head.source_sequence !== transition.previousSourceSequence ||
+          head.source_closed_at.getTime() !== input.sourceClosedAt.getTime() ||
+          head.origin_device_id !== input.originDeviceId ||
+          head.origin_deployment_id !== input.originDeploymentId
+        )
+          throw new Error("PdsClosedProfileBoundaryConflict");
+      } else if (prior) {
+        const replay = await client.query(
+          "select 1 from pds_replica_observations where replica_id=$1 and retained_package_id=$2",
+          [prior.id, input.retainedPackageId]
+        );
+        if (!replay.rowCount)
+          throw new Error("PdsClosedProfilePublicationAlreadyApplied");
+      }
       const floored = await client.query(
         `select 1 from pds_retained_packages p join pds_deletion_floors f
            on f.group_id=p.group_id and f.logical_memory_id=p.logical_memory_id
@@ -1153,7 +1275,7 @@ export const createPersonalDeviceSyncLocalRepository = (
       const replica = await client.query<{ id: string }>(
         `insert into pds_logical_replicas (group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,local_session_id,materialization_state,source_profile_epoch)
          values ($1,$2,'closed_v1',$3,$4,$5,$6,1)
-         on conflict (group_id,source_fingerprint,closure_hash) where materialization_profile='closed_v1' do update set local_session_id=coalesce(pds_logical_replicas.local_session_id,excluded.local_session_id),updated_at=now()
+         on conflict (group_id,source_fingerprint,closure_hash) where materialization_profile='closed_v1' do update set local_session_id=coalesce(pds_logical_replicas.local_session_id,excluded.local_session_id),source_profile_epoch=1,updated_at=now()
          returning id`,
         [
           groupId,
@@ -1165,6 +1287,18 @@ export const createPersonalDeviceSyncLocalRepository = (
         ]
       );
       const replicaId = replica.rows[0]!.id;
+      if (input.pdsRepositoryAssignment && prior) {
+        await client.query(
+          "select set_config('koed.pds_replica_append_id',$1,true)",
+          [replicaId]
+        );
+        await applyPdsRepositoryAssignmentSnapshot(
+          client,
+          input.userId,
+          input.localSessionId,
+          input.pdsRepositoryAssignment
+        );
+      }
       await client.query(
         `insert into pds_replica_observations (replica_id,retained_package_id,origin_deployment_id,origin_device_id,source_sequence,source_closed_at,observed_at)
          values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing`,

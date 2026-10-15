@@ -72,6 +72,10 @@ export interface PdsWorkerSecureRuntime {
         sourceClosedAt: Date;
         observedAt: Date;
         sourceItemIds: string[];
+        closedProfileTransition?:
+          | import("@koed/shared").PdsClosedProfileTransition
+          | null;
+        pdsRepositoryAssignment?: import("@koed/shared").PdsRepositoryAssignment;
       }
     | {
         kind: "checkpoint";

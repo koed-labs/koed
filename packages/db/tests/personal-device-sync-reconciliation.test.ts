@@ -193,19 +193,22 @@ describeDb("Personal Device Sync local reconciliation", () => {
           `pds-item-${randomUUID()}`
         ]
       );
+      const originDeploymentId = `deployment-${randomUUID()}`;
+      const sourceFingerprint = `fingerprint-${randomUUID()}`;
+      const closureHash = `closure-${randomUUID()}`;
       const retained = await localRepository.retainPdsInboundPackage({
         userId,
         groupId,
         inboxId: inbox!.id,
         packageId,
         sourceManifestHash,
-        originDeploymentId: `deployment-${randomUUID()}`,
+        originDeploymentId,
         originDeviceId: deviceId,
         sourceSequence: "1",
         logicalMemoryId: `memory-${randomUUID()}`,
         deletionFloorToken: `floor-${randomUUID()}`,
-        sourceFingerprint: `fingerprint-${randomUUID()}`,
-        sourceClosureHash: `closure-${randomUUID()}`,
+        sourceFingerprint,
+        sourceClosureHash: closureHash,
         encryptedEnvelope: { ciphertext: "opaque" }
       });
 
@@ -217,9 +220,9 @@ describeDb("Personal Device Sync local reconciliation", () => {
           groupId,
           retainedPackageId: retained.retainedPackageId,
           localSessionId: localSession.rows[0]!.id,
-          sourceFingerprint: `fingerprint-materialized-${randomUUID()}`,
-          closureHash: `closure-materialized-${randomUUID()}`,
-          originDeploymentId: `deployment-${randomUUID()}`,
+          sourceFingerprint,
+          closureHash,
+          originDeploymentId,
           originDeviceId: deviceId,
           sourceSequence: "1",
           sourceClosedAt: new Date(),

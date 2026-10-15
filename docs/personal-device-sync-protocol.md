@@ -1101,5 +1101,20 @@ source capture remains sealed. The current profile is published once.
 
 Native migration validation covers old V2 source publication, signing failure,
 changed-closure rejection, automatic candidate discovery, retained provenance,
-and the closed-source insertion fence. Closed-source receiver migration remains
-a ticket 16 release gate.
+and the closed-source insertion fence.
+
+An existing closed replica is looked up within the authorized Personal group by
+fingerprint and closure hash. Its logical and provider Session IDs must agree
+with the verified manifest. The receiver reuses its Session and ordered source
+item mappings without ingesting its raw records again. An old replica advances
+only after the signed boundary matches its retained manifest hash, source
+sequence, origin, and original closure time. The inbound retained package must
+bind the current closed profile and source identity. A current replica accepts
+only exact retained-publication replay. Assignment updates retain local override
+and historical-unresolved rules.
+
+The native pre-0058 receiver fixture covers those fences, stable Session and
+replica IDs, preserved ciphertext and source mappings, replay after explicit
+reassignment, reset to unresolved history, and raw-record immutability. The full
+release still requires coordinated queued-delivery transition and integrated
+two-device validation under ticket 16.

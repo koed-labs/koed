@@ -1966,7 +1966,9 @@ const createPdsWorkerRuntimeFromSecret = (
           sourceSequence: manifest.sourceSequence,
           sourceClosedAt: new Date(manifest.closedSession.sourceClosedAt),
           observedAt: new Date(),
-          sourceItemIds: session.itemIds
+          sourceItemIds: session.itemIds,
+          closedProfileTransition: manifest.profileTransition,
+          pdsRepositoryAssignment: manifest.repositoryAssignment
         };
       }
     };
@@ -2075,6 +2077,15 @@ export const materializePdsSession = async (
   manifest: PdsSessionManifest,
   repositoryAssignment: RepositoryAssignment
 ): Promise<{ id: string; itemIds: string[] }> => {
+  const existing = await repository.getPdsClosedReplicaSource({
+    logicalSessionId: manifest.closedSession.logicalSessionId,
+    externalSessionId: manifest.closedSession.externalSessionId,
+    userId,
+    groupId,
+    sourceFingerprint: manifest.sourceFingerprint,
+    closureHash: manifest.sourceClosureHash
+  });
+  if (existing) return existing;
   const identity = manifest.sourceFingerprint ?? manifest.sourceClosureHash;
   const session = await repository.createCapturedSession(
     { userId },
