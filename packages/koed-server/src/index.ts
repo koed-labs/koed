@@ -84,6 +84,7 @@ export {
 } from "./paths.js";
 export {
   discoverProjectMetadata,
+  historicalFolderRepositoryIdentity,
   setProjectAssociationLookup,
   refreshProjectAssociations,
   setProjectRepositoryAnchor,

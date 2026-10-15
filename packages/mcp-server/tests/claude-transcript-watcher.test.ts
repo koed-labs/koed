@@ -102,133 +102,149 @@ const fixture = () => {
 };
 
 describe("Claude transcript watcher", () => {
-  it("pins component frontiers and journals only one bounded component page", async () => {
-    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
-    const agentId = "bounded-history";
-    const subagentDirectory = path.join(
-      path.dirname(transcriptPath),
-      sourceSessionId,
-      "subagents"
-    );
-    const subagentPath = path.join(subagentDirectory, `agent-${agentId}.jsonl`);
-    fs.mkdirSync(subagentDirectory, { recursive: true });
-    const historicalRecord = (id: string, type: string) =>
-      `${JSON.stringify({
-        uuid: id,
-        sessionId: sourceSessionId,
-        cwd: "/tmp/project",
-        timestamp: "2026-08-11T12:00:00.000Z",
-        type,
-        payload: "x".repeat(700)
-      })}\n`;
-    const mainHistory = [
-      historicalRecord(randomUUID(), "user"),
-      historicalRecord(randomUUID(), "assistant"),
-      historicalRecord(randomUUID(), "assistant")
-    ].join("");
-    const auxiliaryHistory = historicalRecord(randomUUID(), "assistant");
-    fs.writeFileSync(transcriptPath, mainHistory);
-    fs.writeFileSync(subagentPath, auxiliaryHistory);
-    const mainFrontier = Buffer.byteLength(mainHistory);
-    const auxiliaryFrontier = Buffer.byteLength(auxiliaryHistory);
-    fs.appendFileSync(
-      transcriptPath,
-      historicalRecord(randomUUID(), "assistant")
-    );
-    fs.appendFileSync(
-      subagentPath,
-      historicalRecord(randomUUID(), "assistant")
-    );
-    listSubagents.mockResolvedValue([agentId]);
-
-    const artifacts = new Map<string, Record<string, unknown>>();
-    const appended: string[] = [];
-    const client = {
-      async lookupConversationSourceArtifact(input: {
-        sourceComponentId: string;
-      }) {
-        const artifact = artifacts.get(input.sourceComponentId);
-        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
-        return { artifact };
-      },
-      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
-        expect(input).toMatchObject({
-          sourceSession: {
-            repositoryIdentity: { kind: "unresolved", key: null, root: null }
-          }
-        });
-        const componentId = String(input.sourceComponentId);
-        const artifact = {
-          id: `artifact-${componentId}`,
-          sessionId: randomUUID(),
-          sourceComponentId: componentId,
-          providerCursorOffset: 0,
-          providerCursorLine: 0,
-          journalStartOffset: 0,
-          liveStartOffset: input.liveStartOffset
-        };
-        artifacts.set(componentId, artifact);
-        return { artifact };
-      },
-      async appendConversationSourceSegment(
-        artifactId: string,
-        input: Record<string, unknown>
-      ) {
-        const componentId = artifactId.replace("artifact-", "");
-        appended.push(componentId);
-        const artifact = {
-          ...artifacts.get(componentId),
-          providerCursorOffset: input.sourceEndOffset,
-          providerCursorLine: input.sourceEndLine
-        };
-        artifacts.set(componentId, artifact);
-        return { artifact };
-      }
-    } as unknown as MemoryApiClient;
-
-    const registered = await registerClaudeHistoricalTranscriptSources(
-      client,
-      {
+  it.each(["/tmp/project", "relative/project", undefined])(
+    "pins component frontiers and uses only a valid recorded folder (%s)",
+    async (recordedCwd) => {
+      const { claudeHome, sourceSessionId, transcriptPath } = fixture();
+      const agentId = "bounded-history";
+      const subagentDirectory = path.join(
+        path.dirname(transcriptPath),
         sourceSessionId,
+        "subagents"
+      );
+      const subagentPath = path.join(
+        subagentDirectory,
+        `agent-${agentId}.jsonl`
+      );
+      fs.mkdirSync(subagentDirectory, { recursive: true });
+      const historicalRecord = (id: string, type: string) =>
+        `${JSON.stringify({
+          uuid: id,
+          sessionId: sourceSessionId,
+          cwd: recordedCwd,
+          timestamp: "2026-08-11T12:00:00.000Z",
+          type,
+          payload: "x".repeat(700)
+        })}\n`;
+      const mainHistory = [
+        historicalRecord(randomUUID(), "user"),
+        historicalRecord(randomUUID(), "assistant"),
+        historicalRecord(randomUUID(), "assistant")
+      ].join("");
+      const auxiliaryHistory = historicalRecord(randomUUID(), "assistant");
+      fs.writeFileSync(transcriptPath, mainHistory);
+      fs.writeFileSync(subagentPath, auxiliaryHistory);
+      const mainFrontier = Buffer.byteLength(mainHistory);
+      const auxiliaryFrontier = Buffer.byteLength(auxiliaryHistory);
+      fs.appendFileSync(
         transcriptPath,
-        cwd: "/tmp/project",
-        hookEventName: "HistoricalImport"
-      },
-      { CLAUDE_CONFIG_DIR: claudeHome },
-      {
-        components: [
-          {
-            componentId: "main",
-            componentRole: "primary",
-            parentComponentId: null,
-            frontierOffset: mainFrontier,
-            frontierLine: 3
-          },
-          {
-            componentId: `subagent.${agentId}`,
-            componentRole: "auxiliary",
-            parentComponentId: "main",
-            frontierOffset: auxiliaryFrontier,
-            frontierLine: 1
-          }
-        ],
-        maxBytesPerPass: 1_024
-      }
-    );
+        historicalRecord(randomUUID(), "assistant")
+      );
+      fs.appendFileSync(
+        subagentPath,
+        historicalRecord(randomUUID(), "assistant")
+      );
+      listSubagents.mockResolvedValue([agentId]);
 
-    expect(appended).toEqual(["main"]);
-    expect(artifacts.get("main")).toMatchObject({
-      liveStartOffset: mainFrontier
-    });
-    expect(artifacts.get(`subagent.${agentId}`)).toMatchObject({
-      liveStartOffset: auxiliaryFrontier,
-      providerCursorOffset: 0
-    });
-    expect(registered[0]?.providerCursorOffset).toBeLessThan(mainFrontier);
-    expect(
-      registered.map((artifact) => artifact.registrationFrontierOffset)
-    ).toEqual([mainFrontier, auxiliaryFrontier]);
-  });
+      const artifacts = new Map<string, Record<string, unknown>>();
+      const appended: string[] = [];
+      const client = {
+        async lookupConversationSourceArtifact(input: {
+          sourceComponentId: string;
+        }) {
+          const artifact = artifacts.get(input.sourceComponentId);
+          if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+          return { artifact };
+        },
+        async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+          expect(input).toMatchObject({
+            sourceSession: {
+              repositoryIdentity: {
+                kind:
+                  recordedCwd === "/tmp/project"
+                    ? "non_git_project"
+                    : "unresolved",
+                root: recordedCwd === "/tmp/project" ? recordedCwd : null,
+                checkoutId: null
+              }
+            }
+          });
+          const componentId = String(input.sourceComponentId);
+          const artifact = {
+            id: `artifact-${componentId}`,
+            sessionId: randomUUID(),
+            sourceComponentId: componentId,
+            providerCursorOffset: 0,
+            providerCursorLine: 0,
+            journalStartOffset: 0,
+            liveStartOffset: input.liveStartOffset
+          };
+          artifacts.set(componentId, artifact);
+          return { artifact };
+        },
+        async appendConversationSourceSegment(
+          artifactId: string,
+          input: Record<string, unknown>
+        ) {
+          const componentId = artifactId.replace("artifact-", "");
+          appended.push(componentId);
+          const artifact = {
+            ...artifacts.get(componentId),
+            providerCursorOffset: input.sourceEndOffset,
+            providerCursorLine: input.sourceEndLine
+          };
+          artifacts.set(componentId, artifact);
+          return { artifact };
+        }
+      } as unknown as MemoryApiClient;
+
+      const registered = await registerClaudeHistoricalTranscriptSources(
+        client,
+        {
+          sourceSessionId,
+          transcriptPath,
+          cwd: "/caller/unrelated-project",
+          hookEventName: "HistoricalImport"
+        },
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        },
+        {
+          components: [
+            {
+              componentId: "main",
+              componentRole: "primary",
+              parentComponentId: null,
+              frontierOffset: mainFrontier,
+              frontierLine: 3
+            },
+            {
+              componentId: `subagent.${agentId}`,
+              componentRole: "auxiliary",
+              parentComponentId: "main",
+              frontierOffset: auxiliaryFrontier,
+              frontierLine: 1
+            }
+          ],
+          maxBytesPerPass: 1_024
+        }
+      );
+
+      expect(appended).toEqual(["main"]);
+      expect(artifacts.get("main")).toMatchObject({
+        liveStartOffset: mainFrontier
+      });
+      expect(artifacts.get(`subagent.${agentId}`)).toMatchObject({
+        liveStartOffset: auxiliaryFrontier,
+        providerCursorOffset: 0
+      });
+      expect(registered[0]?.providerCursorOffset).toBeLessThan(mainFrontier);
+      expect(
+        registered.map((artifact) => artifact.registrationFrontierOffset)
+      ).toEqual([mainFrontier, auxiliaryFrontier]);
+    }
+  );
 
   it("uses the earlier activation frontier of an existing live artifact", async () => {
     const { claudeHome, sourceSessionId, transcriptPath } = fixture();
@@ -289,7 +305,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         hookEventName: "HistoricalImport"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome },
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      },
       {
         components: [
           {
@@ -465,7 +484,10 @@ describe("Claude transcript watcher", () => {
           activatedAt: "2026-08-11T12:00:00.000Z",
           cursors: {}
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).resolves.toEqual([
       expect.objectContaining({
@@ -483,7 +505,10 @@ describe("Claude transcript watcher", () => {
           activatedAt: "2026-08-11T12:00:02.000Z",
           cursors: {}
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).resolves.toEqual([]);
   });
@@ -542,7 +567,8 @@ describe("Claude transcript watcher", () => {
     ]);
 
     const discovered = await discoverClaudeTranscriptSignals(state, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
     expect(discovered).toHaveLength(1);
 
@@ -605,7 +631,8 @@ describe("Claude transcript watcher", () => {
     } as unknown as MemoryApiClient;
 
     await processClaudeTranscriptSignal(client, state, discovered[0]!, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdItems.map((item) => item.sourceEventType)).toEqual([
@@ -615,7 +642,8 @@ describe("Claude transcript watcher", () => {
     expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(2);
     await expect(
       discoverClaudeTranscriptSignals(state, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).resolves.toEqual([]);
   });
@@ -987,11 +1015,13 @@ describe("Claude transcript watcher", () => {
     };
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
     fs.appendFileSync(transcriptPath, assistantLine);
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdItems.map((item) => item.externalTurnId)).toEqual([
@@ -1107,20 +1137,23 @@ describe("Claude transcript watcher", () => {
 
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toMatchObject({ code: "ENOSPC" });
     expect(state.cursors).toEqual({});
 
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toThrow("memory API unavailable");
     expect(state.cursors).toEqual({});
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdBatches).toHaveLength(2);
@@ -1198,7 +1231,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow(`claude_source_timestamp_missing:${sdkMessageId}`);
     expect(state.cursors).toEqual({});
@@ -1432,6 +1468,7 @@ describe("Claude transcript watcher", () => {
       {
         CLAUDE_CONFIG_DIR: claudeHome,
         MEMORY_CLAUDE_SOURCE_SET_QUIET_MS: "25",
+        KOED_HOME: path.join(claudeHome, "koed"),
         MEMORY_CLAUDE_SOURCE_SET_STABILIZATION_TIMEOUT_MS: "100"
       }
     );
@@ -1532,7 +1569,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         hookEventName: "HistoricalImport"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(operations).toEqual([
@@ -1661,7 +1701,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         observedAt: "2026-08-11T12:00:02.000Z"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(ensured).toEqual([
@@ -1906,14 +1949,16 @@ describe("Claude transcript watcher", () => {
     };
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toThrow("transient successor creation failure");
     expect(latest.get("main")).toMatchObject({ lifecycle: "active" });
     expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(1);
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(successorCalls.map((call) => call.parentId)).toEqual([
@@ -2021,7 +2066,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         observedAt: "2026-08-11T12:00:01.000Z"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(appended.equals(Buffer.from(complete))).toBe(true);
@@ -2077,7 +2125,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow("claude_transcript_append_only_identity_violation");
   });
@@ -2100,7 +2151,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow("claude_transcript_outside_config_home");
     expect(getSessionMessages).not.toHaveBeenCalled();

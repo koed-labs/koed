@@ -1,12 +1,15 @@
-import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
-import path from "node:path";
+import {
+  historicalFolderRepositoryIdentity,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
 import {
   isPortableGitRemote,
   normalizeGitRemoteUrl,
+  normalizeRecordedProjectDirectory,
   type RepositoryIdentity
 } from "@koed/shared";
 
-// Historical sources may not establish a device-local identity from a path.
+// Missing or ambiguous source context never inherits the importing process's cwd.
 export const unresolvedHistoricalRepositoryIdentity =
   (): RepositoryIdentity => ({
     kind: "unresolved",
@@ -35,7 +38,7 @@ export const codexSourceTimeRepositoryIdentity = (
     const git = record(metadata.git);
     if (
       typeof metadata.cwd !== "string" ||
-      !(path.isAbsolute(metadata.cwd) || path.win32.isAbsolute(metadata.cwd)) ||
+      !normalizeRecordedProjectDirectory(metadata.cwd) ||
       typeof metadata.timestamp !== "string" ||
       !Number.isFinite(Date.parse(metadata.timestamp)) ||
       typeof git?.repository_url !== "string"
@@ -71,24 +74,44 @@ export const codexSourceTimeRepositoryIdentity = (
   };
 };
 
-// Current discovery checks eligibility only; it never supplies historical identity.
-export const resolveHistoricalCaptureRepositoryIdentity = async (input: {
+/** Only consistent native Session metadata can supply a historical folder. */
+export const codexSourceTimeProjectDirectory = (
+  records: unknown[]
+): string | null => {
+  const metadata = records.flatMap((value) => {
+    const envelope = record(value);
+    return envelope?.type === "session_meta"
+      ? [record(envelope.payload) ?? envelope]
+      : [];
+  });
+  const directories = metadata.map((value) =>
+    normalizeRecordedProjectDirectory(value.cwd)
+  );
+  const anchors = metadata.flatMap((value) => {
+    const url = record(value.git)?.repository_url;
+    if (typeof url !== "string") return [];
+    return [normalizeGitRemoteUrl(url).fingerprint];
+  });
+  const first = directories[0];
+  return first &&
+    directories.every((value) => value === first) &&
+    new Set(anchors).size <= 1
+    ? first
+    : null;
+};
+
+// New imports use source-time context. Existing assignments are retained by the DB.
+export const resolveHistoricalCaptureRepositoryIdentity = (input: {
   sourceTime: RepositoryIdentity | null;
   cwd: string | undefined;
   env: NodeJS.ProcessEnv;
 }): Promise<RepositoryIdentity> => {
-  if (
-    !input.sourceTime ||
-    input.sourceTime.kind !== "portable_repository" ||
-    !input.cwd
-  )
-    return unresolvedHistoricalRepositoryIdentity();
-  const current = await resolveCaptureRepositoryIdentity({
-    cwd: input.cwd,
-    env: input.env
-  });
-  return current?.kind === "portable_repository" &&
-    current.key === input.sourceTime.key
-    ? input.sourceTime
-    : unresolvedHistoricalRepositoryIdentity();
+  if (input.sourceTime?.kind === "portable_repository")
+    return Promise.resolve(input.sourceTime);
+  return Promise.resolve(
+    historicalFolderRepositoryIdentity(
+      resolveKoedServerPaths(input.env),
+      input.cwd
+    ) ?? unresolvedHistoricalRepositoryIdentity()
+  );
 };

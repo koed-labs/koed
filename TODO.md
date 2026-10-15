@@ -106,6 +106,11 @@ children share lineage and must not count as independent corroboration.
 
 ## Project release follow-ups
 
+- Add explicit controls for larger historical catch-up. Automatic selection
+  remains limited to 50 Conversations per supported AI Client from the last
+  30 days. Keep selection controls separate from fresh-import Project assignment
+  and preserve the migration cutoff for previously captured history.
+
 - Release the locally validated Project cutover as one coordinated change.
   The approved minor changeset and acceptance evidence are recorded in
   `docs/project-cutover-validation.md`. Push, PR creation, and main merge remain

@@ -1,4 +1,7 @@
-import { unresolvedHistoricalRepositoryIdentity } from "./historical-repository-context.js";
+import {
+  resolveHistoricalCaptureRepositoryIdentity,
+  unresolvedHistoricalRepositoryIdentity
+} from "./historical-repository-context.js";
 import type { RepositoryIdentity } from "@koed/shared";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
@@ -19,6 +22,7 @@ import {
 } from "./codex-transcript-journal.js";
 import {
   verifiedTranscriptPath,
+  readClaudeTranscriptIdentity,
   type ClaudeTranscriptIndex
 } from "./claude-transcript-discovery.js";
 import type { ClaudeTranscriptWatcherSignal } from "./claude-transcript-watcher-signal.js";
@@ -203,10 +207,10 @@ export const journalClaudeTranscript = async (input: {
         sourceRuntime: "claude-code",
         captureMethod: "api",
         cwd: input.signal.cwd,
-        ...(input.historicalFrontierOffset !== undefined
-          ? { repositoryIdentity: unresolvedHistoricalRepositoryIdentity() }
-          : input.repositoryIdentity
-            ? { repositoryIdentity: input.repositoryIdentity }
+        ...(input.repositoryIdentity
+          ? { repositoryIdentity: input.repositoryIdentity }
+          : input.historicalFrontierOffset !== undefined
+            ? { repositoryIdentity: unresolvedHistoricalRepositoryIdentity() }
             : {}),
         idempotencyKey: `claude-code-session:${input.signal.sourceSessionId}`,
         sourceHash: hash({
@@ -357,6 +361,19 @@ export const registerClaudeHistoricalTranscriptSources = async (
     env,
     options.components
   );
+  const recorded = await readClaudeTranscriptIdentity(
+    await verifiedTranscriptPath(
+      signal.transcriptPath,
+      signal.sourceSessionId,
+      env
+    )
+  );
+  const repositoryIdentity = await resolveHistoricalCaptureRepositoryIdentity({
+    sourceTime: null,
+    cwd:
+      recorded?.sessionId === signal.sourceSessionId ? recorded.cwd : undefined,
+    env
+  });
   const components = options.components
     ? options.components.map((frontier) => {
         const component = discovered.find(
@@ -391,6 +408,7 @@ export const registerClaudeHistoricalTranscriptSources = async (
     const artifact = await journalClaudeTranscript({
       client,
       signal,
+      repositoryIdentity,
       transcriptPath: component.transcriptPath,
       index: {
         timestamps: new Map(),

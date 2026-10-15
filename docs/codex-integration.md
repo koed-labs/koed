@@ -431,9 +431,12 @@ Conversation capture; see [Project associations](personal-project-selection.md).
 
 For eligible new imports, native source-time `session_meta.git.repository_url`
 can establish a portable origin fingerprint. Koed requires a recorded absolute
-cwd and timestamp, rejects conflicting observations, and verifies that the
-available checkout still resolves to that fingerprint. Current Git metadata
-only checks eligibility; it does not replace missing historical metadata. A
-missing or reused checkout, path-only record, or ambiguous source stays
-unresolved. Re-imports and continued pre-cutover Sessions preserve their existing
-assignment or unresolved state. No automatic historical repair runs at startup.
+cwd and timestamp and rejects conflicting observations. The recorded Git identity
+does not depend on today's checkout. Without a reliable Git anchor, consistent
+native Session metadata can supply a local folder Project from its recorded
+absolute cwd. Missing or conflicting context stays unresolved. Koed never uses
+the importing process's cwd or today's Git remotes for this fallback.
+
+Folder groups have no current checkout incarnation. Re-imports and continued
+pre-cutover Sessions preserve existing assignments, User overrides, or unresolved
+state. No automatic historical repair runs at startup.

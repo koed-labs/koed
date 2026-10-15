@@ -1483,7 +1483,12 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             repositoryIdentity:
               await resolveHistoricalCaptureRepositoryIdentity({
                 sourceTime: sourceTime.success ? sourceTime.data : null,
-                cwd: sourceProjectPath,
+                cwd:
+                  typeof identity.context.transcriptMetadata
+                    .sourceTimeProjectDirectory === "string"
+                    ? identity.context.transcriptMetadata
+                        .sourceTimeProjectDirectory
+                    : undefined,
                 env: { ...process.env, KOED_HOME: this.config.koedHome }
               })
           }

@@ -17,6 +17,7 @@ import {
   hmacProjectValue,
   mergeGitRemoteAliases,
   normalizeProjectDisplayName,
+  normalizeRecordedProjectDirectory,
   repositoryIdentitySchema,
   type AssociatedRepositorySelection,
   type NormalizedGitRemote,
@@ -112,6 +113,31 @@ const defaultStore = (
   namedProjects: [],
   projects: []
 });
+
+/** Import-local folder grouping, without claiming a current checkout incarnation. */
+export const historicalFolderRepositoryIdentity = (
+  paths: KoedServerPaths,
+  cwd: string | undefined,
+  depsInput: ProjectMetadataDeps = {}
+): import("@koed/shared").RepositoryIdentity | null => {
+  const root = normalizeRecordedProjectDirectory(cwd);
+  if (!root) return null;
+  const deps = depsWithDefaults(depsInput);
+  const store = readStore(paths, deps);
+  if (!deps.existsSync(paths.projectMetadataPath))
+    writeStore(paths, store, deps);
+  return {
+    kind: "non_git_project",
+    key: `ng_${hmacProjectValue(store.deviceSaltId, JSON.stringify(["historical_folder", root])).slice(12)}`,
+    root,
+    branch: null,
+    reason: "non_git",
+    checkoutId: null,
+    originatingDeviceId: store.deviceSaltId,
+    selectedRemote: null,
+    anchorDisplay: null
+  };
+};
 
 const readStore = (
   paths: KoedServerPaths,

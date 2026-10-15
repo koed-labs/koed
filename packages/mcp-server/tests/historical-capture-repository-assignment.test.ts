@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -37,8 +36,11 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         email: `historical-${randomUUID()}@example.test`
       });
       const actor = { userId: user.id };
+      fs.mkdirSync(path.resolve("scratch/historical-project-imports"), {
+        recursive: true
+      });
       const directory = fs.mkdtempSync(
-        path.join(os.tmpdir(), "koed-historical-import-")
+        path.resolve("scratch/historical-project-imports/database-")
       );
       directories.push(directory);
       const cwd = path.join(directory, "checkout");
@@ -78,7 +80,9 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
       const captured = await repository.createCapturedSession(actor, input);
       expect(captured.repositoryAssignment?.effective).toEqual(identity);
       expect(captured.repositoryAssignment?.effective?.kind).toBe(
-        sourceRuntime === "codex-cli" ? "portable_repository" : "unresolved"
+        sourceRuntime === "codex-cli"
+          ? "portable_repository"
+          : "non_git_project"
       );
       const other = {
         ...identity,
@@ -105,6 +109,10 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         (await repository.createCapturedSession(actor, input))
           .repositoryAssignment
       ).toEqual(override);
+      expect(
+        (await repository.resetCapturedSessionProject(actor, captured.id, 2))
+          ?.repositoryAssignment?.effective
+      ).toEqual(identity);
       await pool.query(
         "update sessions set repository_assignment_state='historical_unresolved',repository_automatic_identity=null,repository_override_identity=null where id=$1",
         [captured.id]
@@ -114,6 +122,20 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
       expect(continued.repositoryAssignment).toMatchObject({
         state: "historical_unresolved",
         automatic: null,
+        effective: null
+      });
+      await pool.query("update sessions set invalidated_at=now() where id=$1", [
+        captured.id
+      ]);
+      const reimported = await repository.createCapturedSession(actor, {
+        ...input,
+        idempotencyKey: randomUUID(),
+        logicalSessionId: randomUUID()
+      });
+      expect(reimported.repositoryAssignment).toMatchObject({
+        state: "historical_unresolved",
+        automatic: null,
+        override: null,
         effective: null
       });
     }

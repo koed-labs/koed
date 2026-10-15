@@ -146,6 +146,50 @@ uses the request's single native workspace root. Ambiguous roots require an
 explicit target or trusted hook. These checks verify transport and Project
 resolution, not answer quality, and do not constitute a VS Code UI test.
 
+### VS Code extension UI verification
+
+The installed `openai.chatgpt` extension 26.51007.21434 was then driven through
+its actual Codex sidebar in VS Code 1.140.0, using its bundled Codex
+0.162.0-alpha.17.2. An unmodified local copy of the editor let UI automation
+distinguish the test window from the User's existing window. Disposable profiles,
+a deterministic local model endpoint, and a recording local recall service kept
+the test independent of live credentials and Memory. No live credentials were
+read or copied.
+
+The first Conversation opened repository `alpha`. The same editor window then
+switched to the `package` subdirectory inside repository `beta` and started a
+new Conversation. Both calls supplied only the query and blocking delivery mode;
+they omitted `project_id`, `conversation_cwd`, `repository_context`, and Search
+Domain. The actual code-mode calls reached the stdio adapter, defaulted to
+Project scope, and resolved distinct repository identities for `alpha` and
+`beta`. Both returned markers were visibly displayed in the sidebar.
+
+The MCP child deliberately started in a third folder, and native hooks were
+omitted. The extension's per-request workspace metadata selected each correct
+repository, including the Git root above `beta/package`, without retaining the
+previous Conversation's Project. This verifies the UI transport and production
+Project discovery path. Semantic retrieval and answer quality remain outside
+this fixture check. No additional product code change was needed.
+
+## Fresh historical import assignment follow-up
+
+Fresh imports now prefer recorded Git metadata, then a recorded absolute folder.
+Focused tests cover Codex, Claude Code, and Pi registration, missing folders,
+reused Git checkouts, conflicting metadata, invalid paths, Windows paths, and
+stable folder grouping within one profile. Claude auxiliary components use the
+main transcript's recorded folder. Caller directories cannot replace missing
+historical context.
+
+Fifteen PostgreSQL assignment regressions cover fresh assignment, replay, manual
+overrides, reset, and invalidated-session re-import. The separate migration 0062
+acceptance test also passed. It preserves the one-time cutoff and prevents
+continued capture from automatically resolving existing history. Tests used
+disposable databases and isolated local profiles.
+
+The larger catch-up controls remain a follow-up in `TODO.md`. Automatic selection
+still uses the last 30 days and at most 50 Conversations per supported AI Client.
+This change adds no migration or startup repair of existing assignments.
+
 ## Release boundary
 
 The Project cutover and dependent Global work are locally integrated and

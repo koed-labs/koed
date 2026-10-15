@@ -801,6 +801,7 @@ export {
   mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
   normalizeProjectDisplayName,
+  normalizeRecordedProjectDirectory,
   safeProjectMetadataForRemote
 } from "./project-metadata.js";
 export {

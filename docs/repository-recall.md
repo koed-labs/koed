@@ -80,11 +80,24 @@ the transition and runs once through the migration journal. Repeated startup doe
 not clear assignments created after the transition. Fresh Sessions record their
 normal capture-time assignment.
 
-Later turns, duplicate ingestion, and imports do not resolve historical Sessions.
+Later turns, duplicate ingestion, and imports do not resolve Sessions marked
+`historical_unresolved` by the migration.
 An explicit User reassignment supplies the effective identity. Resetting that
 override returns the Session to unresolved history. Global and Session recall
 continue to expose authorized unresolved memory. Project recall requires an
 explicit matching assignment.
+
+Fresh historical imports record an automatic assignment only when the
+Conversation first enters Koed. A reliable source-time Git anchor takes priority.
+Otherwise, a valid recorded absolute working folder supplies a local folder
+Project. Missing or conflicting source context stays unresolved. The importing
+process's cwd and today's filesystem contents never supply historical identity.
+
+Historical folder groups use the profile's Project salt and normalized recorded
+path. They have no current checkout identity and do not automatically merge with
+a live checkout at the same path. Manual assignment remains authoritative.
+Re-import, resumed capture, reset, and invalidation recovery retain the recorded
+assignment state. No migration or startup repair reassigns existing history.
 
 ## Resolve Before Accepting Work
 
@@ -329,22 +342,27 @@ It does not replace the later Team Project snapshot or staged release gates.
 
 ## Historical import assignments
 
-Historical imports use the recorded assignment contract and never assign from a
-path alone. Codex native `session_meta` records can supply a source-time origin
-URL, timestamp, and branch. Koed normalizes the recorded URL with the shared Git
-remote normalization. The source must include an absolute checkout path and a
-valid timestamp. The checkout must still resolve to the same portable selected
-anchor; this current probe checks eligibility and cannot supply a missing
-historical anchor. Missing, reused, nonportable, or conflicting provenance remains
-unresolved. Only the source-time branch is retained, and conflicting branch
-observations become unknown.
+Fresh historical imports prefer recorded source-time Git metadata, then a
+valid recorded absolute working folder. Codex native `session_meta` records can
+supply an origin URL, timestamp, and branch. Koed normalizes the recorded URL
+with the shared Git remote normalization. A Git observation requires an absolute
+recorded cwd and a valid timestamp. It remains valid when that checkout is gone
+or now points to another repository. Conflicting branch observations become
+unknown. Conflicting Git anchors cannot be rescued by a folder fallback.
 
-Historical identity carries no checkout root, checkout identifier, or asserted
-originating device. Its explicit unknown-device marker cannot establish a
-device-local match. Claude Code and Pi history currently lack a supported
-source-time repository anchor and therefore register unresolved observations,
-even when the current directory is a Git repository. A copied same-path record
-without a source-time portable anchor remains unresolved.
+Portable historical identity carries no checkout root, checkout identifier, or
+asserted originating device. Its explicit unknown-device marker cannot establish
+a device-local checkout match. Without a reliable Git anchor, Codex uses a
+consistent native recorded cwd. Claude Code uses the main transcript's cwd,
+and Pi uses its verified Session header. Missing, invalid, or ambiguous source
+context remains unresolved. No producer substitutes its process directory.
+
+Folder fallback creates a `non_git_project` identity with the normalized recorded
+path and a profile-salted key. This records an import-local grouping, not proof
+that the source lacked Git. It claims no checkout incarnation and remains separate
+from live checkout identities. Today's files, Git remotes, and checkout choices
+cannot change that identity. Different importing profiles have separate folder
+groups, and the folder key cannot establish a portable Team repository match.
 
 Re-import, delayed capture, and resumed Conversations preserve the existing logical
 Session, assignment, and User override. A pre-cutover historical-unresolved

@@ -744,11 +744,21 @@ page or automatically repair historical Sessions.
 
 ### Historical repository provenance
 
-Historical producers pass source-time or explicit unresolved repository observations
-through the same Session registration boundary as live capture. Codex candidates
-and selected historical journal capture use recorded native Git metadata rather
-than a cached current Project assignment. Current checkout discovery only checks
-that a recorded portable anchor is still comparable. It never invents an anchor
-from a historical path. Claude Code and Pi historical registration explicitly
-remain unresolved where source-time anchors are unavailable. Re-import and
-Projection reuse the existing Session assignment and preserve unresolved history.
+Historical producers pass recorded source context through the same Session
+registration boundary as live capture. A fresh import prefers a reliable
+source-time Git anchor, then a valid recorded absolute working folder. Missing
+or conflicting context produces an unresolved observation. Codex uses native
+Session metadata. Claude Code reads the main transcript's recorded cwd, including
+for auxiliary components. Pi uses the verified Session header's cwd.
+
+Historical assignment never probes today's checkout or substitutes the importing
+process's cwd. A recorded Git anchor remains valid when the folder disappears
+or changes repositories. Folder groups use normalized recorded paths and the
+local profile's Project salt. They claim no current checkout incarnation and
+remain separate from live checkout identities at the same path.
+
+Only initial Session creation records this automatic assignment. Re-import and
+Projection reuse existing assignments and User overrides. Migration 0062's
+`historical_unresolved` state remains authoritative through continued capture,
+invalidation recovery, and re-import. Resetting a User override restores the
+recorded automatic assignment or the migration's unresolved state.

@@ -430,10 +430,14 @@ import does not infer source-time identity from the current checkout; the import
 coverage is handled separately. Desktop inspection shows the effective assignment
 recorded by the API rather than another caller-side identity policy.
 
-### Historical repository limitations
+### Historical Project assignment
 
 Claude Code historical transcripts currently provide no supported source-time
-repository anchor. Historical registration therefore sends an explicit unresolved
-observation. Neither a recorded cwd nor the current checkout's Git metadata can
-resolve that history. Re-import and later live capture preserve an existing
-assignment, User override, or historical-unresolved state.
+Git anchor. Fresh historical registration uses a valid absolute cwd recorded in
+the main transcript to create a local folder Project. Auxiliary components use
+that same assignment. Missing or invalid recorded context stays unresolved.
+
+The folder does not need to exist. Koed does not inspect its current Git state
+or use the importing process's cwd. Re-import and later live capture preserve
+existing assignments, User overrides, and the migration's historical-unresolved
+state. These imports do not repair previously captured Sessions.

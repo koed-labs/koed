@@ -1350,9 +1350,8 @@ describe("Codex Transcript Watcher source journal", () => {
             });
             offeredProjectName = candidate.projectName;
             expect(candidate.sourceSession.repositoryIdentity).toMatchObject({
-              kind: "unresolved",
-              root: null,
-              key: null
+              kind: knownRepository ? "portable_repository" : "non_git_project",
+              root: knownRepository ? null : "/missing/project"
             });
           }
         },
@@ -1375,8 +1374,8 @@ describe("Codex Transcript Watcher source journal", () => {
 
       expect(client.sourceSessions.at(-1)).toMatchObject({
         repositoryIdentity: {
-          kind: "unresolved",
-          root: null
+          kind: knownRepository ? "portable_repository" : "non_git_project",
+          root: knownRepository ? null : "/missing/project"
         }
       });
       const artifact = client.artifacts.get("history-race")!;

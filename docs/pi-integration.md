@@ -294,10 +294,14 @@ Historical import identity requires trustworthy source-time context and cannot
 be inferred from the checkout's current contents. Desktop inspection reads the
 same effective assignment used by recall.
 
-### Historical repository limitations
+### Historical Project assignment
 
 Pi historical Session headers currently provide no supported source-time Git
-anchor. Historical capture explicitly records unresolved repository context,
-including when its cwd currently names a Git repository. A path or branch name
-alone cannot establish historical identity. Re-import, resumed capture, and later
-checkpoints preserve existing assignments, overrides, and unresolved history.
+anchor. Fresh historical capture uses a valid absolute cwd from the verified
+Session header to create a local folder Project. Missing or invalid recorded
+context stays unresolved. The importing process's cwd never supplies this identity.
+
+Koed does not inspect the folder's current Git state or require it to exist.
+The local folder group claims no current checkout incarnation. Re-import,
+resumed capture, and later checkpoints preserve existing assignments, overrides,
+and the migration's unresolved history.
