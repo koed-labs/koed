@@ -7,7 +7,7 @@
 
 > **Incremental publication amendment (2026-09-15):**
 > [ADR-0045](adr/0045-incremental-personal-session-checkpoints.md) adds the explicit
-> `version: "2", profile: "cumulative_checkpoint"` signed manifest profile for automatic completed-turn
+> `version: "4", profile: "cumulative_checkpoint"` signed manifest profile for automatic completed-turn
 > publication. The closed-session V1 rules below remain binding for their original
 > profile; a checkpoint does not permanently close its source Session. Both peers
 > must support the new profile. The existing encrypted transport is reused.
@@ -632,17 +632,18 @@ Captured Session while the origin AI Client can continue that same Conversation.
 It is a distinct signed source-manifest profile; it does not relax the immutable
 closed-session rules above. The PDS protocol identifier and encrypted package
 transport remain `koed/pds/v1` and package version `1`. A receiver dispatches
-only on the explicit manifest `version: "3"` and
+only on the explicit manifest `version: "4"` and
 `profile: "cumulative_checkpoint"`; it must reject an unsupported profile and
 must never interpret a checkpoint as a closed-session manifest.
 
-The v3 manifest has exactly these top-level fields, with
+The v4 manifest has exactly these top-level fields, with
 `projectAliasManifest` optional under section 9's rules:
 
 ```json
 {
   "protocol": "koed/pds/v1",
-  "version": "3",
+  "version": "4",
+  "profileTransition": null,
   "repositoryAssignment": {
     "version": "1",
     "state": "historical_unresolved",
@@ -1059,3 +1060,22 @@ and reject altered wrapper, domain, duplicate member, Unicode, numeric,
 undefined, zero-shared-secret, and envelope-AAD inputs. Implementations consume
 committed expected bytes and outputs; tests must not generate expected
 signatures, X25519 secrets, HKDF, or AEAD output at run time.
+
+### Checkpoint profile upgrade baseline
+
+The coordinated Project release uses the V4 cumulative checkpoint manifest. Every
+manifest includes `profileTransition`: null for ordinary publication, or a signed
+pre-cutover boundary for one upgrade baseline. The boundary binds the prior
+manifest hash, raw closure hash, source sequence, and checkpoint ordinal. The
+publisher preserves the ordinal sequence, source fingerprint, logical Memory ID,
+and deletion floor. It does not rewrite retained encrypted packages.
+
+A database profile epoch records whether a source or replica has entered the
+current profile. Old checkpoint chains are eligible for a baseline even without
+new turns. A newly paired receiver can accept that authenticated baseline at a
+nonzero ordinal. An existing receiver preserves its known raw prefix and origin
+identity; the normal append and read-only fences resume after the baseline.
+Historical-unresolved assignments and local User overrides remain authoritative.
+The current reader rejects earlier manifest profiles. See
+[ADR 0058](adr/0058-signed-checkpoint-profile-baselines.md) for the trade-off and
+remaining release checks.

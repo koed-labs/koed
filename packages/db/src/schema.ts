@@ -13044,6 +13044,7 @@ export const pdsSessionClosures = pgTable(
   "pds_session_closures",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
@@ -13124,6 +13125,7 @@ export const pdsRetainedPackages = pgTable(
   "pds_retained_packages",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
@@ -13187,6 +13189,7 @@ export const pdsLogicalReplicas = pgTable(
   "pds_logical_replicas",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),

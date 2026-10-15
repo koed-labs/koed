@@ -1,3 +1,4 @@
+import type { PdsCheckpointProfileTransition } from "./personal-device-session-package.js";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -408,7 +409,8 @@ const checkpointFixture = () => {
     prefix: typeof items,
     sourceSequence: string,
     sourceTitle = sourceSession.sourceTitle,
-    sourceAdapterVersion = sourceSession.sourceAdapterVersion
+    sourceAdapterVersion = sourceSession.sourceAdapterVersion,
+    profileTransition: PdsCheckpointProfileTransition | null = null
   ) =>
     createPdsSessionCheckpointManifest({
       runtime: base.input.runtime,
@@ -418,6 +420,7 @@ const checkpointFixture = () => {
       contentEpoch: base.manifest.contentEpoch,
       sourceSession: { ...sourceSession, sourceTitle, sourceAdapterVersion },
       checkpoint: { version: "1", ordinal, previousClosureHash },
+      profileTransition,
       terminalCursor: String(prefix.length),
       items: prefix,
       sourceFingerprintKey: base.sourceKey,
@@ -895,6 +898,67 @@ describe("PDS origin-signed session package", () => {
         validatePdsSessionManifest({ ...manifest, [field]: "injected" })
       ).toThrow();
     }
+  });
+
+  it("signs a forward-only profile baseline without resetting ordinals or identity", () => {
+    const { first, pkg, create, items, origin } = checkpointFixture();
+    const transition: PdsCheckpointProfileTransition = {
+      previousProfile: "pre_repository_cutover",
+      previousManifestHash: pkg.header.sourceManifestHash,
+      previousSourceSequence: "11",
+      previousOrdinal: "3",
+      previousClosureHash: first.sourceClosureHash
+    };
+    const current = create(
+      "4",
+      first.sourceClosureHash,
+      items,
+      "12",
+      undefined,
+      undefined,
+      transition
+    );
+    expect(current.profileTransition).toEqual(transition);
+    expect(current.logicalMemoryId).toBe(first.logicalMemoryId);
+    expect(current.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(current.checkpoint.ordinal).toBe("4");
+    expect(
+      verifyPdsSessionCheckpointManifest(
+        current,
+        origin.publicKey,
+        current.originSignature.signerKeyId
+      )
+    ).toEqual(current);
+    expect(() =>
+      verifyPdsSessionCheckpointManifest(
+        {
+          ...current,
+          profileTransition: {
+            ...transition,
+            previousManifestHash: first.packageId
+          }
+        },
+        origin.publicKey,
+        current.originSignature.signerKeyId
+      )
+    ).toThrow();
+    expect(() =>
+      create("0", null, items, "12", undefined, undefined, transition)
+    ).toThrow();
+    expect(() =>
+      create(
+        "4",
+        first.sourceClosureHash,
+        items,
+        "11",
+        undefined,
+        undefined,
+        transition
+      )
+    ).toThrow();
+    expect(() => validatePdsSessionCheckpointAppend(first, current)).toThrow(
+      "already current profile"
+    );
   });
 
   it("round-trips an explicitly versioned cumulative checkpoint profile", () => {

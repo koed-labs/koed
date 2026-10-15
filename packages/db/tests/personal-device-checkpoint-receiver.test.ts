@@ -4,6 +4,7 @@ import {
   createPdsRepositoryAssignment,
   repositoryScopeId,
   type RepositoryAssignment,
+  type PdsCheckpointProfileTransition,
   type RepositoryIdentity
 } from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -39,10 +40,13 @@ describeDb("PDS cumulative checkpoint receiver", () => {
     "recorded",
     "historical",
     "local_override",
-    "device_local"
+    "device_local",
+    "offline_profile_transition"
   ] as const)(
     "defers gaps, preserves %s assignments, and quarantines a divergent suffix",
     async (mode) => {
+      const historical =
+        mode === "historical" || mode === "offline_profile_transition";
       const user = await pool.query<{ id: string }>(
         `insert into users (email,display_name)
        values ($1,$2) returning id`,
@@ -87,21 +91,19 @@ describeDb("PDS cumulative checkpoint receiver", () => {
         key: "dl_pds_a"
       };
       const sourceAssignment: RepositoryAssignment = {
-        state: mode === "historical" ? "historical_unresolved" : "recorded",
+        state: historical ? "historical_unresolved" : "recorded",
         version: 1,
-        automatic:
-          mode === "historical"
-            ? null
-            : mode === "device_local"
-              ? localIdentity
-              : a,
+        automatic: historical
+          ? null
+          : mode === "device_local"
+            ? localIdentity
+            : a,
         override: null,
-        effective:
-          mode === "historical"
-            ? null
-            : mode === "device_local"
-              ? localIdentity
-              : a
+        effective: historical
+          ? null
+          : mode === "device_local"
+            ? localIdentity
+            : a
       };
       const projectKey = Buffer.alloc(32, 9).toString("base64url");
       const sourceSession = {
@@ -283,6 +285,7 @@ describeDb("PDS cumulative checkpoint receiver", () => {
       };
 
       const materialize = async (input: {
+        profileTransition?: PdsCheckpointProfileTransition | null;
         checkpoint: {
           version: "1";
           ordinal: string;
@@ -314,6 +317,7 @@ describeDb("PDS cumulative checkpoint receiver", () => {
           sourceCheckpointAt: new Date("2026-09-14T10:05:00.000Z"),
           observedAt: new Date("2026-09-14T10:05:01.000Z"),
           checkpoint: input.checkpoint,
+          profileTransition: input.profileTransition,
           sourceSession,
           sourceItems: input.sourceItems
         });
@@ -326,14 +330,27 @@ describeDb("PDS cumulative checkpoint receiver", () => {
       const genesis = {
         checkpoint: {
           version: "1" as const,
-          ordinal: "0",
-          previousClosureHash: null,
+          ordinal: mode === "offline_profile_transition" ? "4" : "0",
+          previousClosureHash:
+            mode === "offline_profile_transition"
+              ? hash("legacy-closure-3")
+              : null,
           itemCount: "2"
         },
+        profileTransition:
+          mode === "offline_profile_transition"
+            ? {
+                previousProfile: "pre_repository_cutover" as const,
+                previousManifestHash: hash("legacy-manifest-3"),
+                previousSourceSequence: "4",
+                previousOrdinal: "3",
+                previousClosureHash: hash("legacy-closure-3")
+              }
+            : null,
         closureHash: closure0,
         manifestHash: manifest0,
         packageId: package0,
-        sourceSequence: "1",
+        sourceSequence: mode === "offline_profile_transition" ? "5" : "1",
         sourceItems: makeItems(2)
       };
 
@@ -343,14 +360,14 @@ describeDb("PDS cumulative checkpoint receiver", () => {
       const second = {
         checkpoint: {
           version: "1" as const,
-          ordinal: "1",
+          ordinal: mode === "offline_profile_transition" ? "5" : "1",
           previousClosureHash: closure0,
           itemCount: "4"
         },
         closureHash: closure1,
         manifestHash: manifest1,
         packageId: package1,
-        sourceSequence: "2",
+        sourceSequence: mode === "offline_profile_transition" ? "6" : "2",
         sourceItems: makeItems(4)
       };
 
@@ -425,18 +442,17 @@ describeDb("PDS cumulative checkpoint receiver", () => {
             expectedVersion: 1,
             identity: c
           });
-        const nextAssignment: RepositoryAssignment =
-          mode === "historical"
-            ? {
-                state: "recorded",
-                version: 2,
-                automatic: a,
-                override: null,
-                effective: a
-              }
-            : mode === "device_local"
-              ? { ...sourceAssignment, version: 2 }
-              : { ...sourceAssignment, version: 2, override: b, effective: b };
+        const nextAssignment: RepositoryAssignment = historical
+          ? {
+              state: "recorded",
+              version: 2,
+              automatic: a,
+              override: null,
+              effective: a
+            }
+          : mode === "device_local"
+            ? { ...sourceAssignment, version: 2 }
+            : { ...sourceAssignment, version: 2, override: b, effective: b };
         sourceSession.replicatedRepositoryAssignment = nextAssignment;
         sourceSession.pdsRepositoryAssignment = createPdsRepositoryAssignment(
           nextAssignment,
@@ -471,7 +487,7 @@ describeDb("PDS cumulative checkpoint receiver", () => {
           localSessionId
         );
         expect(assigned?.repositoryAssignment?.effective).toEqual(
-          mode === "historical"
+          historical
             ? null
             : mode === "local_override"
               ? c
@@ -606,14 +622,14 @@ describeDb("PDS cumulative checkpoint receiver", () => {
         const divergent = await materialize({
           checkpoint: {
             version: "1",
-            ordinal: "2",
+            ordinal: mode === "offline_profile_transition" ? "6" : "2",
             previousClosureHash: closure1,
             itemCount: "5"
           },
           closureHash: closure2,
           manifestHash: hash("manifest-divergent"),
           packageId: hash("package-divergent"),
-          sourceSequence: "3",
+          sourceSequence: mode === "offline_profile_transition" ? "7" : "3",
           sourceItems: makeItems(5, true)
         });
         expect(divergent).toMatchObject({

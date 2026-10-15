@@ -445,6 +445,8 @@ source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 **Status:** in-progress
 
+**Integration progress:** Directed Sync V2 is checkpointed with mandatory repository snapshots and hashes. The cumulative PDS V4 profile now has a signed upgrade boundary and database profile epochs. Contract/runtime tests and the pre-0058 migration fixture verify nonzero offline baselines, preservation of signed V3 bytes and raw items, stable Session/replica IDs, ledger continuity, wrong-boundary rejection, and unresolved assignment. Old source publication, closed-source transitions, persisted directed uploads, and the final one-time assignment cutover remain release gates.
+
 - [ ] Integrate all preceding Project behavior tickets and audit every enabled capture, recall, expansion, graph, Desktop, Personal Device Sync, and Team surface.
 - [ ] Apply the cutover transition once to all existing logical sessions, including data captured after additive preparation but before activation. Preserve source memory, lineage, and retained provenance.
 - [ ] Prove that later turns, duplicate ingestion, imports, and received checkpoints cannot resolve a pre-cutover session. Explicit reassignment resolves it, and resetting that override restores unresolved state.

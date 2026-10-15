@@ -1922,6 +1922,7 @@ const createPdsWorkerRuntimeFromSecret = (
               sourceCheckpointAt: new Date(manifest.originSignedAt),
               observedAt: new Date(),
               checkpoint: manifest.checkpoint,
+              profileTransition: manifest.profileTransition,
               ...checkpointInput
             }
           );

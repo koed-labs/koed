@@ -1,5 +1,6 @@
 import type {
   PdsConversationSourceItem,
+  PdsCheckpointProfileTransition,
   PdsSessionCheckpointManifest,
   PdsSessionPackage,
   PdsProjectSelectionRevision,
@@ -35,6 +36,7 @@ export interface PdsSecureSourceKeyContext {
   }>;
   buildCompletedTurnCheckpointPackage(input: {
     source: PdsClosureSource;
+    profileTransition?: PdsCheckpointProfileTransition | null;
     sourceSequence: string;
     items: PdsConversationSourceItem[];
     checkpoint: {

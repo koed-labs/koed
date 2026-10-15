@@ -1,3 +1,4 @@
+import { validatePdsCheckpointProfileTransition } from "@koed/shared";
 import { applyPdsRepositoryAssignmentSnapshot } from "./pds-repository-assignment.js";
 import {
   mapRepositoryAssignment,
@@ -5,7 +6,8 @@ import {
 } from "./repository-assignment.js";
 import type {
   RepositoryAssignment,
-  PdsRepositoryAssignment
+  PdsRepositoryAssignment,
+  PdsCheckpointProfileTransition
 } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -346,6 +348,7 @@ export interface PersonalDeviceSyncLocalRepository {
     sourceCheckpointAt: Date;
     observedAt: Date;
     checkpoint: PdsReplicaCheckpointInput;
+    profileTransition?: PdsCheckpointProfileTransition | null;
     sourceSession: PdsCheckpointSessionInput;
     sourceItems: PdsCheckpointConversationItem[];
   }): Promise<{
@@ -562,9 +565,17 @@ export const createPersonalDeviceSyncLocalRepository = (
         and s.external_session_id is not null
         and not exists (select 1 from pds_logical_replicas r where r.local_session_id=s.id)
         and not exists (select 1 from pds_session_closures c where c.source_session_id=s.id and c.publication_kind='closed')
-        and exists (select 1 from conversation_items ci where ci.session_id=s.id
-          and ci.personal_deleted_at is null and (${pdsCompletionSql})
-          and not exists (select 1 from pds_source_item_mappings m where m.conversation_item_id=ci.id))
+        and (
+          exists (select 1 from conversation_items ci where ci.session_id=s.id
+            and ci.personal_deleted_at is null and (${pdsCompletionSql})
+            and not exists (select 1 from pds_source_item_mappings m where m.conversation_item_id=ci.id))
+          or exists (select 1 from pds_session_closures c where c.group_id=g.id
+            and c.source_session_id=s.id and c.publication_kind='checkpoint'
+            and c.source_profile_epoch=0
+            and not exists (select 1 from pds_session_closures current_profile
+              where current_profile.group_id=c.group_id and current_profile.source_session_id=c.source_session_id
+                and current_profile.source_profile_epoch=1))
+        )
       order by s.id limit 50`,
       [input.afterSessionId ?? null]
     );
@@ -636,8 +647,8 @@ export const createPersonalDeviceSyncLocalRepository = (
       mustDecimal(input.sourceSequence, "source sequence");
       const closure = await client.query<Record<string, unknown>>(
         `insert into pds_session_closures
-         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at)
-         select $1,$2,s.id,$3,$4,$5,$6,$7,$8,$9 from sessions s
+         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,source_profile_epoch)
+         select $1,$2,s.id,$3,$4,$5,$6,$7,$8,$9,1 from sessions s
          where s.id=$10 and s.owner_user_id=$2 and s.visibility='personal'
            and s.invalidated_at is null and s.personal_deleted_at is null
          returning *`,
@@ -659,8 +670,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         throw new Error("PDS source Session is unavailable or already closed");
       await client.query(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,1)`,
         [
           groupId,
           input.userId,
@@ -992,8 +1003,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         state: PdsMaterializationState;
       }>(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,source_profile,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,encrypted_envelope,state)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
+         (group_id,owner_user_id,package_id,source_manifest_hash,source_profile,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,encrypted_envelope,source_profile_epoch,state)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,1,
            case when exists (select 1 from pds_deletion_floors f where f.group_id=$1 and f.logical_memory_id=$9 and f.deletion_floor_token=$10) then 'revoked' else 'ready' end)
          on conflict (group_id,package_id) do update set updated_at=now()
          returning id,state`,
@@ -1123,8 +1134,8 @@ export const createPersonalDeviceSyncLocalRepository = (
       }
       const state: PdsMaterializationState = conflict ? "quarantined" : "ready";
       const replica = await client.query<{ id: string }>(
-        `insert into pds_logical_replicas (group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,local_session_id,materialization_state)
-         values ($1,$2,'closed_v1',$3,$4,$5,$6)
+        `insert into pds_logical_replicas (group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,local_session_id,materialization_state,source_profile_epoch)
+         values ($1,$2,'closed_v1',$3,$4,$5,$6,1)
          on conflict (group_id,source_fingerprint,closure_hash) where materialization_profile='closed_v1' do update set local_session_id=coalesce(pds_logical_replicas.local_session_id,excluded.local_session_id),updated_at=now()
          returning id`,
         [
@@ -1188,6 +1199,11 @@ export const createPersonalDeviceSyncLocalRepository = (
 
   async materializePdsSessionCheckpoint(input) {
     const { checkpoint } = input;
+    const transition = validatePdsCheckpointProfileTransition(
+      input.profileTransition ?? null,
+      checkpoint,
+      input.sourceSequence
+    );
     mustDecimal(input.sourceSequence, "source sequence");
     mustDecimal(checkpoint.ordinal, "checkpoint ordinal");
     mustDecimal(checkpoint.itemCount, "checkpoint item count");
@@ -1240,6 +1256,7 @@ export const createPersonalDeviceSyncLocalRepository = (
       const retained = await client.query<{
         state: PdsMaterializationState;
         source_profile: string;
+        source_profile_epoch: number;
         source_fingerprint: string | null;
         source_closure_hash: string | null;
         checkpoint_ordinal: string | null;
@@ -1251,7 +1268,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         logical_memory_id: string | null;
         deletion_floor_token: string | null;
       }>(
-        `select p.state,p.source_profile,p.source_fingerprint,p.source_closure_hash,
+        `select p.state,p.source_profile,p.source_profile_epoch,p.source_fingerprint,p.source_closure_hash,
                 p.checkpoint_ordinal,p.checkpoint_previous_closure_hash,p.checkpoint_item_count,
                 p.origin_deployment_id,p.origin_device_id,p.source_sequence,
                 p.logical_memory_id,p.deletion_floor_token
@@ -1264,6 +1281,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         !retainedPackage ||
         retainedPackage.state === "revoked" ||
         retainedPackage.source_profile !== "cumulative_checkpoint" ||
+        retainedPackage.source_profile_epoch !== 1 ||
         retainedPackage.source_fingerprint !== input.sourceFingerprint ||
         retainedPackage.source_closure_hash !== input.closureHash ||
         retainedPackage.checkpoint_ordinal !== checkpoint.ordinal ||
@@ -1294,6 +1312,7 @@ export const createPersonalDeviceSyncLocalRepository = (
 
       const variants = await client.query<{
         id: string;
+        source_profile_epoch: number;
         materialization_profile: string;
         closure_hash: string;
         checkpoint_ordinal: string | null;
@@ -1301,7 +1320,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         local_session_id: string | null;
         materialization_state: PdsMaterializationState;
       }>(
-        `select id,materialization_profile,closure_hash,checkpoint_ordinal,
+        `select id,source_profile_epoch,materialization_profile,closure_hash,checkpoint_ordinal,
                 checkpoint_item_count,local_session_id,materialization_state
          from pds_logical_replicas where group_id=$1 and source_fingerprint=$2
          for update`,
@@ -1374,7 +1393,50 @@ export const createPersonalDeviceSyncLocalRepository = (
       const headOrdinal = replica?.checkpoint_ordinal;
       const headCount = replica?.checkpoint_item_count;
       const requestedOrdinal = BigInt(checkpoint.ordinal);
-      const expectedOrdinal = headOrdinal ? BigInt(headOrdinal) + 1n : 0n;
+      const transitioning =
+        transition !== null && (!replica || replica.source_profile_epoch === 0);
+      if (replica?.source_profile_epoch === 0 && !transition)
+        throw new Error("PdsSourceProfileBaselineRequired");
+      if (
+        transitioning &&
+        headOrdinal &&
+        BigInt(transition.previousOrdinal) < BigInt(headOrdinal)
+      )
+        throw new Error("PdsSourceProfileBaselineRollback");
+      if (transitioning && replica && headOrdinal) {
+        const boundary = await client.query<{
+          source_manifest_hash: string;
+          source_closure_hash: string;
+          source_sequence: string;
+        }>(
+          `select c.source_manifest_hash,c.source_closure_hash,p.source_sequence
+           from pds_replica_checkpoints c join pds_retained_packages p on p.id=c.retained_package_id
+           where c.replica_id=$1 and c.checkpoint_ordinal=$2`,
+          [replica.id, headOrdinal]
+        );
+        const known = boundary.rows[0];
+        if (
+          !known ||
+          (transition.previousOrdinal === headOrdinal
+            ? transition.previousManifestHash !== known.source_manifest_hash ||
+              transition.previousClosureHash !== known.source_closure_hash ||
+              transition.previousSourceSequence !== known.source_sequence
+            : BigInt(transition.previousSourceSequence) <=
+              BigInt(known.source_sequence))
+        )
+          throw new Error("PdsSourceProfileBoundaryConflict");
+      }
+      const expectedOrdinal = transitioning
+        ? requestedOrdinal
+        : headOrdinal
+          ? BigInt(headOrdinal) + 1n
+          : 0n;
+      if (
+        transition &&
+        replica?.source_profile_epoch === 1 &&
+        requestedOrdinal > BigInt(headOrdinal!)
+      )
+        throw new Error("PdsSourceProfileAlreadyCurrent");
       if (requestedOrdinal > expectedOrdinal) {
         const deferred = await client.query(
           `update pds_inbox_entries set state='awaiting_predecessor',
@@ -1395,6 +1457,11 @@ export const createPersonalDeviceSyncLocalRepository = (
         };
       }
 
+      if (transitioning)
+        await client.query(
+          "select set_config('koed.pds_profile_baseline_ordinal',$1,true)",
+          [checkpoint.ordinal]
+        );
       let localSessionId = replica?.local_session_id ?? "";
       let previousCount = 0n;
       if (replica) {
@@ -1437,7 +1504,7 @@ export const createPersonalDeviceSyncLocalRepository = (
            join pds_replica_observations o on o.replica_id=c.replica_id and o.retained_package_id=c.retained_package_id
            join pds_retained_packages p on p.id=c.retained_package_id
            join sessions s on s.id=$2
-           where c.replica_id=$1 and c.checkpoint_ordinal='0'`,
+           where c.replica_id=$1 order by c.checkpoint_ordinal::numeric asc limit 1`,
           [replica.id, localSessionId]
         );
         const original = predecessor.rows[0];
@@ -1607,8 +1674,11 @@ export const createPersonalDeviceSyncLocalRepository = (
 
         if (
           requestedOrdinal !== expectedOrdinal ||
-          checkpoint.previousClosureHash !== replica.closure_hash ||
-          itemCount <= previousCount
+          (!transitioning &&
+            checkpoint.previousClosureHash !== replica.closure_hash) ||
+          (transitioning
+            ? itemCount < previousCount
+            : itemCount <= previousCount)
         ) {
           await quarantine(replica.id);
           const processing = await client.query(
@@ -1629,8 +1699,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         }
       } else {
         if (
-          checkpoint.ordinal !== "0" ||
-          checkpoint.previousClosureHash !== null
+          !transitioning &&
+          (checkpoint.ordinal !== "0" ||
+            checkpoint.previousClosureHash !== null)
         ) {
           const deferred = await client.query(
             `update pds_inbox_entries set state='awaiting_predecessor',
@@ -1728,8 +1799,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         replica = {
           id: randomUUID(),
           materialization_profile: "cumulative_checkpoint",
+          source_profile_epoch: 1,
           closure_hash: input.closureHash,
-          checkpoint_ordinal: "0",
+          checkpoint_ordinal: checkpoint.ordinal,
           checkpoint_item_count: checkpoint.itemCount,
           local_session_id: localSessionId,
           materialization_state: "ready"
@@ -1743,8 +1815,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         await client.query(
           `insert into pds_logical_replicas
            (id,group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,
-            checkpoint_ordinal,checkpoint_item_count,local_session_id,materialization_state)
-           values ($1,$2,$3,'cumulative_checkpoint',$4,$5,$6,$7,$8,'ready')`,
+            checkpoint_ordinal,checkpoint_item_count,local_session_id,materialization_state,source_profile_epoch)
+           values ($1,$2,$3,'cumulative_checkpoint',$4,$5,$6,$7,$8,'ready',1)`,
           [
             replica.id,
             groupId,
@@ -1765,7 +1837,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         );
         await client.query(
           `update pds_logical_replicas set closure_hash=$2,checkpoint_ordinal=$3,
-             checkpoint_item_count=$4,materialization_state='ready',updated_at=now()
+             checkpoint_item_count=$4,materialization_state='ready',source_profile_epoch=1,updated_at=now()
            where id=$1`,
           [
             replica.id,
@@ -2240,6 +2312,7 @@ export interface PdsCheckpointPublicationInput {
     source: PdsClosureSource;
     sourceSequence: string;
     closedAt: Date;
+    profileTransition?: PdsCheckpointProfileTransition | null;
     checkpoint?: {
       version: "1";
       ordinal: string;
@@ -2366,13 +2439,16 @@ async function publishPdsSource(
       );
     const existing = await client.query<{
       publication_kind: string;
+      source_profile_epoch: number;
+      source_sequence: string;
+      source_manifest_hash: string;
       checkpoint_ordinal: string | null;
       source_closure_hash: string;
       terminal_item_count: string;
       origin_device_id: string | null;
       origin_deployment_id: string | null;
     }>(
-      "select c.publication_kind,c.checkpoint_ordinal,c.source_closure_hash,c.terminal_item_count,r.origin_device_id,r.origin_deployment_id from pds_session_closures c left join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id where c.group_id=$1 and c.source_session_id=$2 order by c.source_sequence::numeric desc for update of c",
+      "select c.source_profile_epoch,c.source_sequence,c.source_manifest_hash,c.publication_kind,c.checkpoint_ordinal,c.source_closure_hash,c.terminal_item_count,r.origin_device_id,r.origin_deployment_id from pds_session_closures c left join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id where c.group_id=$1 and c.source_session_id=$2 order by c.source_sequence::numeric desc for update of c",
       [groupRow.id, input.sessionId]
     );
     if (
@@ -2418,7 +2494,11 @@ async function publishPdsSource(
       const previousCount = Number(
         existing.rows[0]?.terminal_item_count ?? "0"
       );
-      if (terminalIndex < 0 || terminalIndex + 1 <= previousCount) {
+      if (
+        terminalIndex < 0 ||
+        (terminalIndex + 1 <= previousCount &&
+          existing.rows[0]?.source_profile_epoch !== 0)
+      ) {
         await client.query("commit");
         return null;
       }
@@ -2493,16 +2573,28 @@ async function publishPdsSource(
           previousClosureHash: existing.rows[0]?.source_closure_hash ?? null
         }
       : undefined;
+    const previous = existing.rows[0];
+    const profileTransition: PdsCheckpointProfileTransition | null =
+      checkpointMode && previous?.source_profile_epoch === 0
+        ? {
+            previousProfile: "pre_repository_cutover",
+            previousManifestHash: previous.source_manifest_hash,
+            previousSourceSequence: previous.source_sequence,
+            previousOrdinal: previous.checkpoint_ordinal!,
+            previousClosureHash: previous.source_closure_hash
+          }
+        : null;
     const built = await input.build({
       source,
       sourceSequence,
+      profileTransition,
       closedAt,
       ...(checkpoint ? { checkpoint } : {})
     });
     const closure = await client.query<Record<string, unknown>>(
       `insert into pds_session_closures
-         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,publication_kind,checkpoint_ordinal)
-         values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11) returning *`,
+         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,publication_kind,checkpoint_ordinal,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,1) returning *`,
       [
         groupRow.id,
         input.userId,
@@ -2520,8 +2612,8 @@ async function publishPdsSource(
     const closureRow = closure.rows[0]!;
     await client.query(
       `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope,source_profile,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope,source_profile,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,1)`,
       [
         groupRow.id,
         input.userId,

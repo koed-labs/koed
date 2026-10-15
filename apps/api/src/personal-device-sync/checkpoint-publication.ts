@@ -2,11 +2,7 @@ import {
   pdsSessionPackageDigest,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
-import type {
-  MemorySourceRepository,
-  PdsClosureSource,
-  PdsLocalClosureRecord
-} from "@koed/db";
+import type { MemorySourceRepository, PdsLocalClosureRecord } from "@koed/db";
 import type { PdsSecureKeyProvider } from "./local-source.js";
 import { pdsConversationItemsForClosure } from "./local-source.js";
 import { serializePdsCheckpointSourceForEncryptedStorage } from "./secure-runtime.js";
@@ -21,16 +17,9 @@ type Candidate = {
   sessionId: string;
 };
 
-type CheckpointBuildInput = {
-  source: PdsClosureSource;
-  sourceSequence: string;
-  closedAt: Date;
-  checkpoint?: {
-    version: "1";
-    ordinal: string;
-    previousClosureHash: string | null;
-  };
-};
+type CheckpointBuildInput = Parameters<
+  Parameters<MemorySourceRepository["checkpointPdsSourceSession"]>[0]["build"]
+>[0];
 
 type CheckpointRepository = Pick<
   MemorySourceRepository,
@@ -59,14 +48,20 @@ export const publishPdsCheckpointCandidate = async (input: {
     ...input.candidate,
     originDeploymentId: keyContext.originDeploymentId,
     originDeviceId: keyContext.originDeviceId,
-    async build({ source, sourceSequence, checkpoint }: CheckpointBuildInput) {
+    async build({
+      source,
+      sourceSequence,
+      checkpoint,
+      profileTransition
+    }: CheckpointBuildInput) {
       if (!checkpoint) throw new Error("PdsCheckpointMetadataUnavailableError");
       const items = pdsConversationItemsForClosure(source);
       const built = await keyContext.buildCompletedTurnCheckpointPackage({
         source,
         sourceSequence,
         items,
-        checkpoint
+        checkpoint,
+        profileTransition
       });
       const pkg = built.package;
       const sourceManifestHash = pkg.header.sourceManifestHash;

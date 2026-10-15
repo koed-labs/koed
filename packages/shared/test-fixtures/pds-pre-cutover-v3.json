@@ -1,0 +1,150 @@
+{
+  "notice": "Synthetic signed pre-cutover V3 package, generated with implementation 65698832. No live credentials or memory.",
+  "manifest": {
+    "protocol": "koed/pds/v1",
+    "version": "3",
+    "profile": "cumulative_checkpoint",
+    "packageId": "e3AVmF1o92k_Py5erzNEgd_s4lLTj54WJI7e_qxatKc",
+    "originDeploymentId": "_9p0_2Ed0_MAuQoyhJkYAQ",
+    "originDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+    "originAuthorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "originSignedAt": "2026-07-15T00:00:00.000Z",
+    "sourceSequence": "7",
+    "sourceType": "captured_session",
+    "sourceNativeSessionId": "codex-thread-checkpoint",
+    "sourceFingerprint": "5DaLESWOA6RcttGKZH9Hu6_Vk1MCLqGtIJC0HbF6pSw",
+    "logicalMemoryId": "Nc6dyj4XDS72ZoOrcafqVeuqIZYgLkRheQzFA-53Gt8",
+    "deletionFloorToken": "nr_hn5YpaEOfdMg0VKQJ0fPksaL-ZX6c2vnXKYwgDuc",
+    "sourceClosureHash": "BDTrNy8kjIbmC_WuNmq7_78NYvXcZLMFwyoWYTmHSl8",
+    "contentEpoch": "3",
+    "repositoryAssignment": {
+      "version": "1",
+      "state": "historical_unresolved",
+      "assignmentVersion": "1",
+      "capturedCwd": null,
+      "branchObservation": null,
+      "automatic": null,
+      "override": null,
+      "selectedAnchor": null
+    },
+    "sourceSession": {
+      "logicalSessionId": "11111111-1111-4111-8111-111111111111",
+      "externalSessionId": "codex-thread-checkpoint",
+      "sourceAdapter": "codex",
+      "sourceAdapterVersion": "codex-transcript-v1",
+      "sourceRuntime": "codex",
+      "sourceTitle": "Checkpoint fixture",
+      "captureMethod": "transcript",
+      "sourceCreatedAt": "2026-07-15T00:00:00.000Z"
+    },
+    "checkpoint": {
+      "version": "1",
+      "ordinal": "0",
+      "previousClosureHash": null,
+      "itemCount": "1"
+    },
+    "terminal": {
+      "cursor": "1",
+      "itemCount": "1"
+    },
+    "rawClosure": {
+      "recordCount": "1",
+      "rawByteCount": "267",
+      "records": [
+        {
+          "ordinal": "0",
+          "sourceNativeItemId": "checkpoint-item-0",
+          "sourceTimestamp": "2026-07-15T00:00:00.000Z",
+          "observedAt": "2026-07-15T00:00:00.100Z",
+          "payload": "eyJhY3RvciI6InVzZXIiLCJjb250ZW50IjoiZmlyc3QgY29tcGxldGVkIHR1cm4iLCJtZXRhZGF0YSI6eyJjb250ZW50VHlwZSI6InRleHQvcGxhaW4iLCJzb3VyY2VSb2xlIjoidXNlciJ9LCJvYnNlcnZlZEF0IjoiMjAyNi0wNy0xNVQwMDowMDowMC4xMDBaIiwic2VxdWVuY2UiOiIwIiwic291cmNlTmF0aXZlSXRlbUlkIjoiY2hlY2twb2ludC1pdGVtLTAiLCJzb3VyY2VUaW1lc3RhbXAiOiIyMDI2LTA3LTE1VDAwOjAwOjAwLjAwMFoiLCJ0eXBlIjoibWVzc2FnZSJ9",
+          "payloadHash": "i6FNh9wKPXFsXpQVq4fJxcMi09fJDd2EHPqyoETeZq4"
+        }
+      ]
+    },
+    "originSignature": {
+      "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+      "signature": "5sw_Gl4ZM1c3eXHopWT80ER2EvmjCf-5gLwahhwX9BddBUYboY3ib45uDta5k0j957RHzOQrsP1RAFu6EF89Cw"
+    }
+  },
+  "encryptedPackage": {
+    "header": {
+      "protocol": "koed/pds/v1",
+      "version": "1",
+      "transportId": "H0Cg9YgB9w08WNiLz7nsqUn-HWUZ6yL6LgMDEdA0G10",
+      "groupId": "kK25vv539v4UIJpTngdiqw",
+      "packageId": "e3AVmF1o92k_Py5erzNEgd_s4lLTj54WJI7e_qxatKc",
+      "sourceManifestHash": "F0FujCjYxj_Yyi4FgSqScwsQWX-jBvl_DrhgeRUwFqA",
+      "originDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+      "contentEpoch": "3",
+      "recipientEpoch": "3",
+      "plaintextByteCount": "2160",
+      "chunkCount": "1",
+      "payloadNonce": "_7iEE4Pp7T8E4Qn2",
+      "expiresAt": "2030-07-15T00:00:00.000Z",
+      "servingDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+      "servingSigningKeyId": "br9TBLuG8VFg4-xdShUcXg",
+      "authorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "intendedRecipientSnapshot": ["4LHAIZO9Z0J-9VODJeq1hQ"],
+      "intendedRecipientSnapshotHash": "R3mtbJJqJ_Qj36Ci_m3Vop16hi1SH4pNlSXPORoHZ3o",
+      "payloadCiphertextHash": "RNNWPbIXb-3YJSl2AFgVW7x56W57yvNz0WloFxkI2Xc",
+      "payloadTag": "3kZeB01B0wDUSKHPqzOZng",
+      "servingSignature": {
+        "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+        "signature": "NUACPN2pp-0pXjQsJ7lehgiBFZOaZiKnuDJEHHNrE_3aWJ12m0U9AoVo-LRCvqUH0sLkogHWCeSbEyIJT8dCAg"
+      }
+    },
+    "envelopes": [
+      {
+        "protocol": "koed/pds/v1",
+        "version": "1",
+        "transportId": "H0Cg9YgB9w08WNiLz7nsqUn-HWUZ6yL6LgMDEdA0G10",
+        "packageId": "e3AVmF1o92k_Py5erzNEgd_s4lLTj54WJI7e_qxatKc",
+        "contentEpoch": "3",
+        "recipientEpoch": "3",
+        "senderDeviceId": "0Ti0k8ifxw3g7U2USdywaQ",
+        "recipientDeviceId": "4LHAIZO9Z0J-9VODJeq1hQ",
+        "recipientKemKeyId": "3xFSjxo5m6Ew3keEnQJbrQ",
+        "ephemeralPublicKey": "aowggCZgoWzcB0CV7vCIcCBhblmfQP6GsNsOAjJfJTE",
+        "nonce": "ZvQi92KnlVn5usH7",
+        "ciphertext": "aIa3ReTlx_AFzE2zIZvWmPAzkXV00RrM35FJBWTO9do",
+        "tag": "pamGcDvJnq_PjYEmFllVKw",
+        "servingSignature": {
+          "signerKeyId": "br9TBLuG8VFg4-xdShUcXg",
+          "signature": "rQvYcrNeIvzRHj-qD2eRED449cXG_1uaUNrmdRtQXMrX0sXecSUDxYnJzMz0usxbAU98i4SKhtBNMGMuDEVIAQ"
+        }
+      }
+    ],
+    "chunks": [
+      {
+        "protocol": "koed/pds/v1",
+        "version": "1",
+        "transportId": "H0Cg9YgB9w08WNiLz7nsqUn-HWUZ6yL6LgMDEdA0G10",
+        "groupId": "kK25vv539v4UIJpTngdiqw",
+        "packageId": "e3AVmF1o92k_Py5erzNEgd_s4lLTj54WJI7e_qxatKc",
+        "chunkIndex": "0",
+        "chunkCount": "1",
+        "ciphertext": "mjMLNeDRBjLbzSjBQZ1QQbFybOnMw1RZ2axTnqk0gYMhIKEpMUf2zQ6ELwYnCLeFtAu0eJtPHxu1gBdTenWBvldbv54fvoxmU1KKVmoMUWaCsaKuqd506W4oJtFjPuvJci6LGC76hlIOgyZ8svjOliIpC1AfIG5DYP3p7cMT8wcWvrA5XkZOPLTLsmxHG4QShrxDCrp6FLDNXp-XFQRtKtEChAc5WNeS3CqsUiRNmYFhBay8Yh-_uhmq-Bsrh6WRdY9sVs9yLlXQDUZRwplNSe7Ewo_GQ0SSFzqJWqQVpMqFu-ERPAVqaxn10lgrN1a9a4J8u6GD4c1eTsKTkxQW8ZhZ220pmyN6O8RvZdn8XCoh5X5rTLjrolSz8Sc0RXAfwS2lKe89wLUmCaWGab8GkXptfUIwucSNXv5uiYtR7sZPO08_IL2fnoLSWAR6h5nhMooKdWs52pZf3bdHo0dZurgCPRKTNF1DItF0T9O3V8dOh-2kBoLQYLHsUjrHSpDrmt4iEYBGmmVKZVIpzkxmo4uCkZwZa3eZFDK-U0mGFE3-cXSmzKYaWzZ2FCX76BTHs8Ru-9j9lPeTkpbyl2R2VmWWp4b2t-Rx0KmY5WTTTYATB9qgRpt_Y4XfQ6KJ-yzaUt9ArZ0s13i2QXQJaJQVh1j9hLMvmMscd21FBljHvwZkFFe9Jcm6kYBhng3f6F3zY8sQ2sN9IEA2dVHbfntHcW90nR8ft2yIO-CSd6zqhY3XvdeoyRPRDo1D9slgNwrOgpoQ6dxdsM2GC0uFCof-iwyzOFIy4A1_KQOpA7dJDi8vcEFGGq7PZQ6cOeFP-GJ5HWW6KAYyENGUrRO0rJ9aB-yy68Zj_EuoUj62Z7GQRmGNHkru-T81SRIujKHz64V_nXhwsiCC5vFgX6TwYyMO8RM5CbAQEmH5XOKPR23nEb9v3r-AxSgvg47CGXys2U9mhHL7To7DRS6-TvaT0qvZZNiq0HUPvrpXGzahC2G1IQ2A1epqXEsmbcClNQ_C5siAZ-PMQo1A2FrHfRLjB_Gs7_3zWO_zyoorfzh7a-GSDikwLuh98CgzUamSw-zT1_Xfp-RmjpHI_z0dO9tun8SShNkJ0AnGuQnWcfpSH45CFCj1r5cNx9tWxC_Mp3X1QA4DXAKHApEQrTtieFSYIvyRVzRccNgxYQsoQi--utxkvaCnx8-7W6srwhjnQW0ix3fj-S0ZAQm86yYiU6KpAF4Je6s98qhRQmHajVqbYPBtaJspBtJ5r9sOCZOKbh9Virp9zC2sX8E-GyitSPDlhn51O54_xZMsvrtHHiCxsvWBdDpaVwZD0oMqxwewlnLUPqDCzylQ7BsoO9-rTszHm1PTSrAdbjsGcO-R5dUuavUojjbMp6js4MezhEhyLYvI9Akfz-1g1w1aQKjskABGOoTw5YcPeS8aJHUsNd_vqqMHv4IKuHlTrrabkULwRmaeaQL4CPLiuefGuZN-ZPm5ulLtnefVb7rqxFFPo6uhvYZ6A1rqIgNuByrtGsutiYoO1KFtl-foFWk1TnnFlwYtrnhKOhfI4GV-JgsJL0N2YsKM7MHc3G_ral7cHzGlndJDzFNxggirN3ZPgELNOwpLosi5ci5I25TFCad9LLm7RwQnULG0yp1T239K45IhoAhoZqVbTE2Hy9QLoOdJpb1sn4EGny9jeSxvYMryem4WqPCszReP7hlzhSdVtTtH_NEDVWbV_10_NUHlj-7Ig4AvRMhzPewCk7wgjucMiQ6tV41WeYN2kIWPsOMKJIEr4srDiwulXCeWI8WzoM_s-DaYmuvaHMM07921KJEpPkg-t8Be1_csEvCiitHg13cebh11u23Dkcby7HmlcISKt5D42oRKOt48mabGzOZjlGYXwM2Pg8kNnujuZWEhswaaB7Ae_umD0iuvodzw_2NSEk0VJjf9K4R66lbtd_vUwctBiunlv27cj9elDyeLGtMnYhNiZCfCOR81pPobDMQa7tmPs1SSiYv36hM7rpZcar8e7Vu8donXRDvjxSNB7Dpj3NQNaiMjBZAHhSBsm82HpoOQE8V_acqlisgAXH4ULuWfMSnsWkaM9FRttI1oxk3TOCGUqxLGgumq8_2r3Y1nHw5ZtTrEGlxgeop9H8fB055sfi5qdOAKSmfcQTgYFirU4JMTo-iIT1N0he0ZjjRq6a1JAdvFssxt_rbU4HpY8zk8aVnVk_Mgfc_bpGT3Acl_F1odHldgJKkAfhhE4K_iU0NdIJ_8G23Ik6wjR35l4mynha58zL6UIeuhNGJSZrko_YinQ-EK5IFLkESr8EuQRVoYkgnx4YdF3P_F2Kr1fQt-x-13kTL6v_EAu9s5rd5l_I2MuM_I09nDn5lt5Mjv5Alq8eMYwm82reQiN1BW7i-9SFnYFBYkPqQtjDm0YuJtjwKmNF6bv_6tMQXnNCDfk7Aw1ASaNsXZeuxgvoE-ggYLLKD220hiQpt_1UCM6CkpEGfw957rMt6SVghtDXr_jXprpNzWx5F9HJdK-Li84xMNbCIwa5gezJvYMZogBxPXmOBC9GIkpInjg2pPRjv9ghBp22epUTbMrD8cyr-BaPc21814dBnltFvf10GYZPX7aochHaphKZVSJYzkKX2M5PPdfiK8g9xLR_X_YLPkilAJ9yOjwfRaqmkMbB5NHYEBGRKYoJT3fSPBLqxPH-YtItNDwdN5ElGsS1aG7K_RJftarTRt3PMm90vlyJXwcGVXG02Ukyept0ZsNXVQ0HtgDW0meDvejqP8ws-cwrjFSp9Ll3Euvp2svFlXAeFI7WXN_RxmcvQnXLun8JP1RM5I7nBjVZjAE6bg3EcXKnSTjly-qPrHf7c9ot7fRceOBl_roFTVJRSG",
+        "chunkHash": "itN-aINaoDMbF-ZHCON67vvHr5dzmfi2cjZM7kQzqPw"
+      }
+    ],
+    "packageDigest": "OGHurhdy9HtLataLzdpdYAFTdPEXr8FaJQzdmgYRkoc"
+  },
+  "originPublicKey": "dqH83TDPqvBy0U8tFQQeHJK1eBVVOt5blYnsCHunHf4",
+  "runtimeInput": {
+    "authorityPublicKey": "zouqwYvlA1N_DZxGczdXEGYzpmR8rDtk6WNvxUti8YA",
+    "authorityKeyId": "hlFOpVn9uDo5x9z7G5cQIg",
+    "groupId": "kK25vv539v4UIJpTngdiqw",
+    "authorityHead": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "currentEpoch": "3",
+    "servingCertificate": "{\"authoritySignature\":{\"keyId\":\"hlFOpVn9uDo5x9z7G5cQIg\",\"signature\":\"ewpBKR7tcRl_DI-lvVQJ79Z37gIntmmGvG-MmPRkfqwRe-s3g-B8C_sMiE68Xvt90jHtB-bTYho75VXsiX1DCQ\"},\"deviceId\":\"0Ti0k8ifxw3g7U2USdywaQ\",\"deviceKemKeyId\":\"gl6R8KyjHqLkzfZyzjZnNw\",\"deviceKemPublicKey\":\"B0fbEjjyGSy9HhsQozo1yuK7PMN0Jwi02eLT7wIJ-mc\",\"deviceSigningKeyId\":\"br9TBLuG8VFg4-xdShUcXg\",\"deviceSigningPublicKey\":\"dqH83TDPqvBy0U8tFQQeHJK1eBVVOt5blYnsCHunHf4\",\"epoch\":\"3\",\"expiresAt\":\"2026-07-20T00:00:00.000Z\",\"groupId\":\"kK25vv539v4UIJpTngdiqw\",\"issuedAt\":\"2026-07-14T00:00:00.000Z\",\"operationFamilies\":[\"pds_relay\"],\"protocol\":\"koed/pds/v1\",\"statementHash\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\",\"statementSequence\":\"1\"}",
+    "recipientCertificate": "{\"authoritySignature\":{\"keyId\":\"hlFOpVn9uDo5x9z7G5cQIg\",\"signature\":\"HCgjW9RFaT4pwKH2nX1J_NDrN_2YJj1ap-iZnxUF1uC9TMydDwNV6jTWycvBvCP8dtwpgvsszK0r4xCsAvqMCA\"},\"deviceId\":\"4LHAIZO9Z0J-9VODJeq1hQ\",\"deviceKemKeyId\":\"3xFSjxo5m6Ew3keEnQJbrQ\",\"deviceKemPublicKey\":\"fC6-W5Z9vbgc2SxQId0AnabI5IikP4zbVJhCVOs6HkI\",\"deviceSigningKeyId\":\"35bLRYZ1sgr-f0UUPZ3XyA\",\"deviceSigningPublicKey\":\"bpnUmDMpow2P3lEF_AfZp1Yp4_nEO28KUtF5TB7deao\",\"epoch\":\"3\",\"expiresAt\":\"2026-07-20T00:00:00.000Z\",\"groupId\":\"kK25vv539v4UIJpTngdiqw\",\"issuedAt\":\"2026-07-14T00:00:00.000Z\",\"operationFamilies\":[\"pds_relay\"],\"protocol\":\"koed/pds/v1\",\"statementHash\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\",\"statementSequence\":\"1\"}",
+    "recipientCertificates": [
+      "{\"authoritySignature\":{\"keyId\":\"hlFOpVn9uDo5x9z7G5cQIg\",\"signature\":\"HCgjW9RFaT4pwKH2nX1J_NDrN_2YJj1ap-iZnxUF1uC9TMydDwNV6jTWycvBvCP8dtwpgvsszK0r4xCsAvqMCA\"},\"deviceId\":\"4LHAIZO9Z0J-9VODJeq1hQ\",\"deviceKemKeyId\":\"3xFSjxo5m6Ew3keEnQJbrQ\",\"deviceKemPublicKey\":\"fC6-W5Z9vbgc2SxQId0AnabI5IikP4zbVJhCVOs6HkI\",\"deviceSigningKeyId\":\"35bLRYZ1sgr-f0UUPZ3XyA\",\"deviceSigningPublicKey\":\"bpnUmDMpow2P3lEF_AfZp1Yp4_nEO28KUtF5TB7deao\",\"epoch\":\"3\",\"expiresAt\":\"2026-07-20T00:00:00.000Z\",\"groupId\":\"kK25vv539v4UIJpTngdiqw\",\"issuedAt\":\"2026-07-14T00:00:00.000Z\",\"operationFamilies\":[\"pds_relay\"],\"protocol\":\"koed/pds/v1\",\"statementHash\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\",\"statementSequence\":\"1\"}"
+    ],
+    "now": "2026-07-15T00:00:00.000Z"
+  },
+  "originPrivateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIBnFr2FYEy1/026adUbwULaCGGicjJ9N+1bhZ7A0buDp",
+  "servingPrivateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIBnFr2FYEy1/026adUbwULaCGGicjJ9N+1bhZ7A0buDp",
+  "sourceFingerprintKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "tombstoneFloorKey": "8ODQwLCgkIBwYFBAMCAQABEiM0RVZneImaq7zN3u_wA"
+}

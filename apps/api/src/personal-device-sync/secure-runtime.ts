@@ -434,6 +434,7 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         sourceCreatedAt: input.source.sourceCreatedAt
       };
       const manifest = createPdsSessionCheckpointManifest({
+        profileTransition: input.profileTransition,
         repositoryAssignment: createPdsRepositoryAssignment(
           input.source.repositoryAssignment ?? {
             state: "historical_unresolved",

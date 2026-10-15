@@ -37,7 +37,7 @@ import {
 
 export const PDS_SESSION_PACKAGE_VERSION = "1" as const;
 export const PDS_SESSION_MANIFEST_VERSION = "2" as const;
-export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "3" as const;
+export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "4" as const;
 export const PDS_SESSION_CHECKPOINT_PROFILE = "cumulative_checkpoint" as const;
 export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES = 512 * 1024;
@@ -132,9 +132,19 @@ export interface PdsSessionManifest {
   originSignature: Signature;
 }
 
-/** Explicit V2 profile for signed, cumulative prefixes of a live source Session. */
+/** Signed boundary from a retained pre-cutover checkpoint chain to V4. */
+export interface PdsCheckpointProfileTransition {
+  previousProfile: "pre_repository_cutover";
+  previousManifestHash: string;
+  previousSourceSequence: string;
+  previousOrdinal: string;
+  previousClosureHash: string;
+}
+
+/** V4 profile for signed cumulative prefixes and explicit cutover baselines. */
 export interface PdsSessionCheckpointManifest {
   repositoryAssignment: PdsRepositoryAssignment;
+  profileTransition: PdsCheckpointProfileTransition | null;
   protocol: typeof PDS_PROTOCOL;
   version: typeof PDS_SESSION_CHECKPOINT_MANIFEST_VERSION;
   profile: typeof PDS_SESSION_CHECKPOINT_PROFILE;
@@ -289,6 +299,7 @@ export interface CreatePdsSessionManifestInput {
 }
 
 export interface CreatePdsSessionCheckpointManifestInput {
+  profileTransition?: PdsCheckpointProfileTransition | null;
   runtime: PdsSessionPackageRuntimeContext;
   originDeploymentId: string;
   sourceSequence: string;
@@ -1218,6 +1229,49 @@ export const createPdsSessionManifest = (
   return validatePdsSessionManifest(manifest);
 };
 
+export const validatePdsCheckpointProfileTransition = (
+  value: unknown,
+  checkpoint: { ordinal: string; previousClosureHash: string | null },
+  sourceSequence: string
+): PdsCheckpointProfileTransition | null => {
+  if (value === null) return null;
+  const transition = own(value, "checkpoint profile transition");
+  exact(
+    transition,
+    [
+      "previousProfile",
+      "previousManifestHash",
+      "previousSourceSequence",
+      "previousOrdinal",
+      "previousClosureHash"
+    ],
+    "checkpoint profile transition"
+  );
+  if (transition.previousProfile !== "pre_repository_cutover")
+    throw new TypeError(
+      "PDS checkpoint transition requires the pre-cutover profile"
+    );
+  requireHash(transition.previousManifestHash, "previous manifest hash");
+  requireHash(transition.previousClosureHash, "previous closure hash");
+  const previousOrdinal = requireUint64(
+    transition.previousOrdinal,
+    "previous profile ordinal"
+  );
+  const previousSequence = requireUint64(
+    transition.previousSourceSequence,
+    "previous profile source sequence"
+  );
+  if (
+    BigInt(checkpoint.ordinal) !== BigInt(previousOrdinal) + 1n ||
+    checkpoint.previousClosureHash !== transition.previousClosureHash ||
+    BigInt(sourceSequence) <= BigInt(previousSequence)
+  )
+    throw new TypeError(
+      "PDS checkpoint profile transition does not extend its retained boundary"
+    );
+  return transition as unknown as PdsCheckpointProfileTransition;
+};
+
 export const createPdsSessionCheckpointManifest = (
   input: CreatePdsSessionCheckpointManifestInput
 ): PdsSessionCheckpointManifest => {
@@ -1271,6 +1325,11 @@ export const createPdsSessionCheckpointManifest = (
     input.sourceNativeSessionId
   );
   const unsigned: Omit<PdsSessionCheckpointManifest, "originSignature"> = {
+    profileTransition: validatePdsCheckpointProfileTransition(
+      input.profileTransition ?? null,
+      { ordinal, previousClosureHash: previousClosureHash as string | null },
+      input.sourceSequence
+    ),
     protocol: PDS_PROTOCOL,
     version: PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
     profile: PDS_SESSION_CHECKPOINT_PROFILE,
@@ -1539,6 +1598,7 @@ export const validatePdsSessionManifest = (
 
 const checkpointManifestFields = [
   "repositoryAssignment",
+  "profileTransition",
   "protocol",
   "version",
   "profile",
@@ -1638,6 +1698,14 @@ export const validatePdsSessionCheckpointManifest = (
       "previous checkpoint closure hash"
     );
   }
+  validatePdsCheckpointProfileTransition(
+    manifest.profileTransition,
+    {
+      ordinal,
+      previousClosureHash: checkpoint.previousClosureHash as string | null
+    },
+    manifest.sourceSequence as string
+  );
   if ("projectAliasManifest" in manifest) {
     validateProjectAliases(
       manifest.projectAliasManifest,
@@ -1671,6 +1739,10 @@ export const validatePdsSessionCheckpointAppend = (
 ): PdsSessionCheckpointManifest => {
   const previous = validatePdsSessionCheckpointManifest(previousValue);
   const current = validatePdsSessionCheckpointManifest(currentValue);
+  if (current.profileTransition !== null)
+    throw new TypeError(
+      "PDS checkpoint cannot transition from an already current profile"
+    );
   const stableSourceSession = (
     sourceSession: PdsCheckpointSourceSessionMetadata
   ): JsonRecord => {
