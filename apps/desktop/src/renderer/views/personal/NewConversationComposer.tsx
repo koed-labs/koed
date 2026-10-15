@@ -7,6 +7,7 @@ import type {
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ConversationSelection } from "./ConversationSettings.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { useConversationSkills } from "./use-conversation-skills.js";
 
 import type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
 export type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
@@ -54,6 +55,13 @@ export function NewConversationComposer({
   const instance = options?.instances.find(
     (item) => item.instanceId === selection.instanceId
   );
+  const skillScope = {
+    projectId: contextKind === "independent" ? null : projectId,
+    instanceId: instance?.instanceId,
+    hostedInstanceId: instance?.instanceId,
+    provider: instance?.driverId
+  };
+  const skillChoices = useConversationSkills(skillScope);
   const available =
     api &&
     projectId &&
@@ -71,6 +79,12 @@ export function NewConversationComposer({
       !selection.permissionMode
     )
       return;
+    if (skillChoices.expired) {
+      setError(
+        "Skill choices expired. Remove them and select again before sending."
+      );
+      return;
+    }
     inFlight.current = true;
     setBusy(true);
     setError("");
@@ -103,12 +117,21 @@ export function NewConversationComposer({
       if (prompt.trim()) {
         initialPrompt =
           (initialPromptRef.current?.status === "rejected" &&
-          initialPromptRef.current.prompt !== prompt
+          (initialPromptRef.current.prompt !== prompt ||
+            JSON.stringify(
+              initialPromptRef.current.selectedResourceIds ?? []
+            ) !==
+              JSON.stringify(
+                skillChoices.selection.selectedResourceIds ?? []
+              ) ||
+            initialPromptRef.current.selectedResourceHostedInstanceId !==
+              skillChoices.selection.selectedResourceHostedInstanceId)
             ? null
             : initialPromptRef.current) ??
           ({
             clientUserMessageId: crypto.randomUUID(),
             prompt,
+            ...skillChoices.selection,
             status: "rejected",
             message: "The prompt was not sent. Your draft is available below."
           } satisfies InitialConversationPrompt);
@@ -129,7 +152,14 @@ export function NewConversationComposer({
             threadId: conversation.threadId,
             idempotencyKey: `desktop-prompt:${initialPrompt.clientUserMessageId}`,
             clientUserMessageId: initialPrompt.clientUserMessageId,
-            prompt: initialPrompt.prompt
+            prompt: initialPrompt.prompt,
+            ...(initialPrompt.selectedResourceIds
+              ? {
+                  selectedResourceIds: initialPrompt.selectedResourceIds,
+                  selectedResourceHostedInstanceId:
+                    initialPrompt.selectedResourceHostedInstanceId
+                }
+              : {})
           });
           initialPrompt.status = sent.status;
           initialPrompt.message =
@@ -183,6 +213,11 @@ export function NewConversationComposer({
         autoFocus
         disabled={busy || initialPromptRef.current?.status === "reconciling"}
         label="First message"
+        nativeSkills={
+          api && instance
+            ? { api, scope: skillScope, choices: skillChoices }
+            : undefined
+        }
         onChange={setPrompt}
         onSubmit={() => void start()}
         placeholder={placeholder}

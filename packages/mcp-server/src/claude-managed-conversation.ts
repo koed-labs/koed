@@ -31,6 +31,11 @@ import {
   claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
+import {
+  buildClaudeManagedPluginSkillOptions,
+  ClaudeManagedPluginSkillBridgeError,
+  type ClaudeManagedPluginSkillSelection
+} from "./claude-plugin-skill-bridge.js";
 
 export const CLAUDE_MANAGED_CONVERSATION_PROVIDER = "claude" as const;
 
@@ -116,7 +121,7 @@ export class ClaudeManagedConversationCancelledError extends Error {
 export class ClaudeManagedConversationInstructionIsolationError extends Error {
   constructor() {
     super(
-      "Selected skills cannot run with instruction-only isolation because the pinned Claude SDK has not verified skill loading with filesystem settings disabled."
+      "Selected Claude Skills require a verified native Claude definition while filesystem settings are disabled."
     );
     this.name = "ClaudeManagedConversationInstructionIsolationError";
   }
@@ -1150,7 +1155,8 @@ export class ClaudeManagedConversationSession {
 
   async prompt(
     prompt: string,
-    selectedSkills: readonly string[] = []
+    selectedSkills: readonly string[] = [],
+    selectedPluginSkills: readonly ClaudeManagedPluginSkillSelection[] = []
   ): Promise<ClaudeManagedConversationResult> {
     const normalizedPrompt = assertNonEmpty(prompt, "Claude prompt");
     this.assertOpen();
@@ -1158,7 +1164,7 @@ export class ClaudeManagedConversationSession {
       await this.start();
     }
     const operation = this.turnQueue.then(() =>
-      this.runPrompt(normalizedPrompt, selectedSkills)
+      this.runPrompt(normalizedPrompt, selectedSkills, selectedPluginSkills)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -1169,10 +1175,50 @@ export class ClaudeManagedConversationSession {
 
   private async runPrompt(
     prompt: string,
-    selectedSkills: readonly string[]
+    selectedSkills: readonly string[],
+    selectedPluginSkills: readonly ClaudeManagedPluginSkillSelection[]
   ): Promise<ClaudeManagedConversationResult> {
     this.assertOpen();
-    if (this.config.instructionOnly && selectedSkills.length > 0) {
+    const isolatedSettings =
+      this.config.instructionOnly === true ||
+      (this.config.settingSources ?? []).length === 0;
+    const buildPluginSkillOptions = () => {
+      try {
+        return buildClaudeManagedPluginSkillOptions({
+          selectedNames: selectedSkills,
+          selectedPluginSkills
+        });
+      } catch (error) {
+        if (error instanceof ClaudeManagedPluginSkillBridgeError) {
+          throw new ClaudeManagedConversationInstructionIsolationError();
+        }
+        throw error;
+      }
+    };
+    if (selectedPluginSkills.length > 0 && !isolatedSettings) {
+      throw new ClaudeManagedConversationInstructionIsolationError();
+    }
+    if (selectedPluginSkills.length > 0 && !this.config.canUseTool) {
+      throw new ClaudeManagedConversationInstructionIsolationError();
+    }
+    if (selectedSkills.length > 0 && isolatedSettings) {
+      if (selectedPluginSkills.length === 0) {
+        throw new ClaudeManagedConversationInstructionIsolationError();
+      }
+      // Validate that every selected name is bound to its exact native plugin
+      // before handing any path to the SDK.
+      buildPluginSkillOptions();
+    } else if (selectedPluginSkills.length > 0) {
+      throw new ClaudeManagedConversationInstructionIsolationError();
+    }
+    if (selectedSkills.length === 0 && selectedPluginSkills.length > 0) {
+      throw new ClaudeManagedConversationInstructionIsolationError();
+    }
+    if (selectedPluginSkills.length > 0 && selectedSkills.length > 1) {
+      // A single SDK prompt can invoke one slash Skill command. The `skills`
+      // option only filters availability; it does not execute every selected
+      // Skill, so accepting multiple selections here would silently ignore
+      // some of the user's choices.
       throw new ClaudeManagedConversationInstructionIsolationError();
     }
     const turnId = randomUUID();
@@ -1193,13 +1239,31 @@ export class ClaudeManagedConversationSession {
     const permissionMode =
       executionPolicy === "work" ? this.config.permissionMode : "default";
     const planningTools = ["Read", "Glob", "Grep", "LS", "AskUserQuestion"];
+    const pluginSkillOptions =
+      selectedPluginSkills.length > 0 ? buildPluginSkillOptions() : undefined;
+    const isolatedSettingsOptions = isolatedSettings
+      ? {
+          settings: {
+            disableAllHooks: true as const,
+            permissions: { ask: ["*"] as ["*"] }
+          }
+        }
+      : undefined;
+    const queryPrompt =
+      selectedPluginSkills.length === 1
+        ? `/${selectedSkills[0]}${prompt.length > 0 ? ` ${prompt}` : ""}`
+        : prompt;
+    const skillOptions =
+      pluginSkillOptions ??
+      isolatedSettingsOptions ??
+      (selectedSkills.length > 0 ? { skills: [...selectedSkills] } : {});
     try {
       const koedMcp =
         executionPolicy === "work"
           ? managedKoedMcpServer(this.config.env ?? process.env)
           : null;
       stream = query({
-        prompt,
+        prompt: queryPrompt,
         options: {
           abortController,
           cwd: this.cwd,
@@ -1236,10 +1300,8 @@ export class ClaudeManagedConversationSession {
           strictMcpConfig: true,
           settingSources: this.config.instructionOnly
             ? []
-            : selectedSkills.length > 0
-              ? (["user", "project"] as SettingSource[])
-              : (this.config.settingSources ?? []),
-          ...(selectedSkills.length > 0 ? { skills: [...selectedSkills] } : {}),
+            : (this.config.settingSources ?? []),
+          ...skillOptions,
           sessionStore: this.sessionStore,
           persistSession: true,
           maxTurns: this.config.maxTurns ?? 1,

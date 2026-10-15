@@ -354,7 +354,7 @@ describe("ClaudeManagedConversationSession", () => {
         ClaudeManagedConversationInstructionIsolationError
       );
       expect(failure?.message).toContain(
-        "Selected skills cannot run with instruction-only isolation"
+        "Selected Claude Skills require a verified native Claude definition"
       );
       expect(failure?.message.length).toBeLessThan(200);
       expect(failure?.message).not.toContain("project:skill");
@@ -365,22 +365,345 @@ describe("ClaudeManagedConversationSession", () => {
     }
   });
 
-  it("preserves the legacy selected-skill settings branch when instruction-only isolation is absent", async () => {
+  it("keeps ordinary managed turns isolated and rejects selected skills before a follow-up query", async () => {
     const { config } = fixture();
-    const progress = vi.fn();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession(config);
+
+    try {
+      await session.prompt("Ordinary isolated prompt");
+      expect(queryOptions().settingSources).toEqual([]);
+      expect(queryOptions().strictMcpConfig).toBe(true);
+      expect(queryOptions().skills).toBeUndefined();
+
+      const failure = await session
+        .prompt("Use the selected skill", ["skill"])
+        .then(
+          () => undefined,
+          (error: unknown) => error as Error
+        );
+      expect(failure).toBeInstanceOf(
+        ClaudeManagedConversationInstructionIsolationError
+      );
+      expect(failure?.message).toContain("filesystem settings are disabled");
+      expect(sdk.query).toHaveBeenCalledTimes(1);
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("loads only revalidated plugin and raw .claude Skills without widening turn permissions", async () => {
+    const { config, cwd } = fixture();
+    const canonicalCwd = fs.realpathSync(cwd);
+    const pluginRoot = path.join(canonicalCwd, "configured-plugin");
+    const projectClaudeRoot = path.join(canonicalCwd, ".claude");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), {
+      recursive: true
+    });
+    fs.writeFileSync(
+      path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "review-plugin" })
+    );
+    fs.mkdirSync(path.join(pluginRoot, "skills", "bounded-review"), {
+      recursive: true
+    });
+    fs.writeFileSync(
+      path.join(pluginRoot, "skills", "bounded-review", "SKILL.md"),
+      "---\nname: bounded-review\ndescription: fixture\n---\n"
+    );
+    fs.mkdirSync(path.join(projectClaudeRoot, "skills", "local-review"), {
+      recursive: true
+    });
+    fs.writeFileSync(
+      path.join(projectClaudeRoot, "skills", "local-review", "SKILL.md"),
+      "---\nname: local-review\ndescription: fixture\n---\n"
+    );
+
+    const tools: NonNullable<Options["tools"]> = ["Read", "Grep"];
+    const allowedTools = ["Read", "Grep"];
+    const canUseTool: NonNullable<Options["canUseTool"]> = vi.fn(async () => ({
+      behavior: "deny",
+      message: "Denied in fixture"
+    }));
+    const configuredMcpServers = {
+      koed: { type: "http" as const, url: "http://127.0.0.1:3300/mcp" }
+    };
     sdk.query.mockImplementation(({ options }: { options?: Options }) =>
       queryFrom([successResult(options?.sessionId as string, "hello")])
     );
     const session = new ClaudeManagedConversationSession({
       ...config,
-      onUserFacingProgress: progress
+      tools,
+      allowedTools,
+      canUseTool,
+      mcpServers: configuredMcpServers,
+      settingSources: []
     });
 
     try {
-      await session.prompt("Use the selected skill", ["project:skill"]);
+      await session.prompt(
+        "Use selected plugin Skill",
+        ["review-plugin:bounded-review"],
+        [
+          {
+            name: "review-plugin:bounded-review",
+            providerKind: "plugin",
+            providerPath: pluginRoot
+          }
+        ]
+      );
+
+      const options = queryOptions(0);
+      expect(options.settingSources).toEqual([]);
+      expect(options.settings).toEqual({
+        disableAllHooks: true,
+        permissions: { ask: ["*"] }
+      });
+      expect(options.plugins).toEqual([
+        { type: "local", path: pluginRoot, skipMcpDiscovery: true }
+      ]);
+      expect(options.skills).toEqual(["review-plugin:bounded-review"]);
+      expect(
+        (sdk.query.mock.calls[0]?.[0] as { prompt?: unknown } | undefined)
+          ?.prompt
+      ).toBe("/review-plugin:bounded-review Use selected plugin Skill");
+      expect(options.strictMcpConfig).toBe(true);
+      expect(options.mcpServers).toMatchObject(configuredMcpServers);
+      expect(options.tools).toEqual(tools);
+      expect(options.allowedTools).toEqual(allowedTools);
+      expect(options.canUseTool).toBe(canUseTool);
+      expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+
+      await session.prompt(
+        "Use selected Project Skill",
+        [".claude:local-review"],
+        [
+          {
+            name: ".claude:local-review",
+            providerKind: "claude_root",
+            providerPath: projectClaudeRoot
+          }
+        ]
+      );
+      expect(queryOptions(1).plugins).toEqual([
+        { type: "local", path: projectClaudeRoot, skipMcpDiscovery: true }
+      ]);
+      expect(queryOptions(1).skills).toEqual([".claude:local-review"]);
+      expect(
+        (sdk.query.mock.calls[1]?.[0] as { prompt?: unknown } | undefined)
+          ?.prompt
+      ).toBe("/.claude:local-review Use selected Project Skill");
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("keeps isolated query controls active when no Skill is selected", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession(config);
+    try {
+      await session.start("Hello");
+      expect(queryOptions().settingSources).toEqual([]);
+      expect(queryOptions().settings).toEqual({
+        disableAllHooks: true,
+        permissions: { ask: ["*"] }
+      });
+      expect(queryOptions().skills).toBeUndefined();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("does not override explicit nonempty filesystem setting sources", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      settingSources: ["user", "project"]
+    });
+    try {
+      await session.start("Hello");
       expect(queryOptions().settingSources).toEqual(["user", "project"]);
-      expect(queryOptions().skills).toEqual(["project:skill"]);
-      expect(progress).not.toHaveBeenCalled();
+      expect(queryOptions().settings).toBeUndefined();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("rejects ambiguous duplicate native names before SDK submission", async () => {
+    const { config, cwd } = fixture();
+    const homeClaudeRoot = path.join(cwd, "home", ".claude");
+    const projectClaudeRoot = path.join(cwd, ".claude");
+    for (const root of [homeClaudeRoot, projectClaudeRoot]) {
+      fs.mkdirSync(path.join(root, "skills", "shared"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "skills", "shared", "SKILL.md"),
+        "---\nname: shared\ndescription: fixture\n---\n"
+      );
+    }
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      settingSources: []
+    });
+
+    try {
+      await expect(
+        session.prompt(
+          "Use the ambiguous Skill",
+          [".claude:shared"],
+          [
+            {
+              name: ".claude:shared",
+              providerKind: "claude_root",
+              providerPath: homeClaudeRoot
+            },
+            {
+              name: ".claude:shared",
+              providerKind: "claude_root",
+              providerPath: projectClaudeRoot
+            }
+          ]
+        )
+      ).rejects.toBeInstanceOf(
+        ClaudeManagedConversationInstructionIsolationError
+      );
+      expect(sdk.query).not.toHaveBeenCalled();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it.each([
+    ["without the managed tool callback", false, false],
+    ["multiple selected Skills", true, true]
+  ])(
+    "fails closed for native Skill selection %s",
+    async (_label, hasCallback, multipleSkills) => {
+      const { config, cwd } = fixture();
+      const pluginRoot = path.join(cwd, "bounded-plugin");
+      fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), {
+        recursive: true
+      });
+      fs.writeFileSync(
+        path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "bounded-plugin" })
+      );
+      for (const name of ["first", "second"]) {
+        const directory = path.join(pluginRoot, "skills", name);
+        fs.mkdirSync(directory, { recursive: true });
+        fs.writeFileSync(
+          path.join(directory, "SKILL.md"),
+          `---\nname: ${name}\ndescription: fixture\n---\n`
+        );
+      }
+      const selectedNames = multipleSkills
+        ? ["bounded-plugin:first", "bounded-plugin:second"]
+        : ["bounded-plugin:first"];
+      const session = new ClaudeManagedConversationSession({
+        ...config,
+        settingSources: [],
+        ...(hasCallback
+          ? {
+              canUseTool: async () => ({
+                behavior: "deny" as const,
+                message: "Denied in fixture"
+              })
+            }
+          : {})
+      });
+      try {
+        await expect(
+          session.prompt(
+            "Use the selected native Skill",
+            selectedNames,
+            selectedNames.map((name) => ({
+              name,
+              providerKind: "plugin" as const,
+              providerPath: pluginRoot
+            }))
+          )
+        ).rejects.toBeInstanceOf(
+          ClaudeManagedConversationInstructionIsolationError
+        );
+        expect(sdk.query).not.toHaveBeenCalled();
+      } finally {
+        await session.closeAndWait();
+      }
+    }
+  );
+
+  it("rejects selected skills with explicitly empty settings sources before SDK submission", async () => {
+    const { config } = fixture();
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      settingSources: []
+    });
+
+    try {
+      const failure = await session
+        .prompt("Run the selected skill", ["skill"])
+        .then(
+          () => undefined,
+          (error: unknown) => error as Error
+        );
+      expect(failure).toBeInstanceOf(
+        ClaudeManagedConversationInstructionIsolationError
+      );
+      expect(sdk.query).not.toHaveBeenCalled();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("rejects selected skills before SDK submission on a resumed isolated session", async () => {
+    const { config } = fixture();
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      resumeSessionId: randomUUID()
+    });
+
+    try {
+      const failure = await session
+        .prompt("Continue with the selected skill", ["skill"])
+        .then(
+          () => undefined,
+          (error: unknown) => error as Error
+        );
+      expect(failure).toBeInstanceOf(
+        ClaudeManagedConversationInstructionIsolationError
+      );
+      expect(sdk.query).not.toHaveBeenCalled();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("preserves explicitly configured settings sources for generic selected-skill callers", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      settingSources: ["user"]
+    });
+
+    try {
+      await session.prompt("Use the selected skill", ["skill"]);
+      expect(queryOptions().settingSources).toEqual(["user"]);
+      expect(queryOptions().skills).toEqual(["skill"]);
+      expect(
+        (sdk.query.mock.calls[0]?.[0] as { prompt?: unknown } | undefined)
+          ?.prompt
+      ).toBe("Use the selected skill");
+      expect(queryOptions().settings).toBeUndefined();
     } finally {
       await session.closeAndWait();
     }

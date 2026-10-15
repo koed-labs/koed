@@ -1,5 +1,11 @@
 # Studio AI Client resources
 
+This is the historical implementation review and 2026-10-02 probe record. The
+[Ticket 22 assessment](studio-plugins-skills-assessment.md) records current
+discovery-versus-execution gaps. Discovery through a configured Client does not
+prove that its resources are available in Koed's isolated conversation runtime.
+Preserve Ticket 04's later Claude instruction-only permission isolation.
+
 Studio reads Skills and installed client resources from the AI Client instance
 that owns them. Discovery is read-only, scoped to the User, authorized
 computer, AI Client instance, and Project. It does not create a managed

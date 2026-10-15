@@ -50,9 +50,11 @@ const launch = {
 const prompt = {
   clientUserMessageId: "33333333-3333-4333-8333-333333333333",
   prompt: "  Explain\nthis Project  ",
+  selectedResourceIds: [`res_${"a".repeat(64)}`],
+  selectedResourceHostedInstanceId: "codex.default",
   status: "queued",
   message: ""
-} as const;
+} satisfies import("./use-managed-conversation-lifecycle.js").InitialConversationPrompt;
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -82,49 +84,67 @@ describe("managed Conversation lifecycle", () => {
   const started = () =>
     lifecycle.started(project, conversation, "starting", launch, prompt);
 
-  it("persists and restores the same launch, message, and provisional title", async () => {
-    vi.useFakeTimers();
-    let saved = "";
-    const api = {
-      readRecovery: vi.fn(async () => ({
-        operation: "recovery_read",
-        value: saved
-      })),
-      writeRecovery: vi.fn(async (_owner: string, value: string) => {
-        saved = value;
-        return { operation: "recovery_write", ok: true };
-      }),
-      inspect: vi.fn(async () => ({
-        operation: "inspect",
-        status: "starting",
-        executionId
-      }))
-    } as unknown as ManagedConversationDesktopApi;
-    await act(async () =>
-      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
-    );
-    await act(async () => {
-      expect(started()).toBe(executionId);
-    });
-    expect(lifecycle.drafts.get(executionId)?.thread).toMatchObject({
-      name: "Explain this Project",
-      sample: prompt.prompt
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(150);
-    });
-    expect(saved).toContain("launch-original");
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await act(async () =>
-      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
-    );
-    expect(lifecycle.drafts.get(executionId)).toMatchObject({
-      conversation,
-      launchInput: launch,
-      initialPrompt: prompt
-    });
-  });
+  it.each(["queued", "rejected"] as const)(
+    "restores a %s first message with its opaque Skill scope and no replay",
+    async (status) => {
+      const selectedPrompt = { ...prompt, status };
+      vi.useFakeTimers();
+      let saved = "";
+      const api = {
+        readRecovery: vi.fn(async () => ({
+          operation: "recovery_read",
+          value: saved
+        })),
+        writeRecovery: vi.fn(async (_owner: string, value: string) => {
+          saved = value;
+          return { operation: "recovery_write", ok: true };
+        }),
+        inspect: vi.fn(async () => ({
+          operation: "inspect",
+          status: "starting",
+          executionId
+        }))
+      } as unknown as ManagedConversationDesktopApi;
+      await act(async () =>
+        root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+      );
+      await act(async () => {
+        expect(
+          lifecycle.started(
+            project,
+            conversation,
+            "starting",
+            launch,
+            selectedPrompt
+          )
+        ).toBe(executionId);
+      });
+      expect(lifecycle.drafts.get(executionId)?.thread).toMatchObject({
+        name: "Explain this Project",
+        sample: prompt.prompt
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(saved).toContain("launch-original");
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await act(async () =>
+        root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+      );
+      expect(lifecycle.drafts.get(executionId)).toMatchObject({
+        conversation,
+        launchInput: launch,
+        initialPrompt: {
+          ...selectedPrompt,
+          message:
+            status === "rejected"
+              ? "Select your Skills again before retrying this message."
+              : selectedPrompt.message
+        }
+      });
+    }
+  );
 
   it("does not let delayed recovery replace a newly accepted Conversation or another owner", async () => {
     const first = deferred<{ operation: "recovery_read"; value: string }>();

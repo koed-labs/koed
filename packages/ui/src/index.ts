@@ -2,6 +2,7 @@ export * from "./cn.js";
 export * from "./theme.js";
 export * from "./components/empty-state.js";
 export * from "./components/layout.js";
+export * from "./components/native-skill-picker.js";
 export * from "./primitives/avatar.js";
 export * from "./primitives/badge.js";
 export * from "./primitives/button.js";

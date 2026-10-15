@@ -129,6 +129,89 @@ describe("Claude transcript parser", () => {
     );
   });
 
+  it("keeps provider isMeta Skill expansion raw-only without changing the human turn", () => {
+    const sessionId = randomUUID();
+    const userId = randomUUID();
+    const skillExpansionId = randomUUID();
+    const assistantId = randomUUID();
+    const toolResultId = randomUUID();
+    const skillBody = "Internal native Skill instructions";
+    const bytes = Buffer.from(
+      [
+        {
+          type: "user",
+          uuid: userId,
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Real user prompt" }]
+          }
+        },
+        {
+          type: "user",
+          uuid: skillExpansionId,
+          isMeta: true,
+          message: {
+            role: "user",
+            content: [{ type: "text", text: skillBody }]
+          }
+        },
+        {
+          type: "assistant",
+          uuid: assistantId,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Answer" }]
+          }
+        },
+        {
+          type: "user",
+          uuid: toolResultId,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", content: "Tool output" }]
+          }
+        }
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n"
+    );
+
+    const result = parseClaudeTranscriptJournalBytes({
+      bytes,
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      sessionId,
+      externalSessionId: sessionId,
+      sourceFingerprint: "a".repeat(64)
+    });
+
+    expect(result.items.map((item) => item.sourceEventType)).toEqual([
+      "user_message",
+      "unknown",
+      "agent_message",
+      "tool_result"
+    ]);
+    expect(result.items[0]?.rawText).toBe("Real user prompt");
+    expect(result.items[1]).toMatchObject({
+      externalTurnId: userId,
+      sourceEventType: "unknown",
+      observationComponent: "unknown",
+      metadata: { actor: "system", transcriptType: "unknown" },
+      rawJson: {
+        sourceRecord: {
+          isMeta: true,
+          message: { content: [{ text: skillBody }] }
+        }
+      }
+    });
+    expect(result.items[1]?.rawText).toBeUndefined();
+    expect(result.items[2]?.externalTurnId).toBe(userId);
+    expect(result.items[2]?.rawText).toBe("Answer");
+    expect(result.items[3]?.externalTurnId).toBe(userId);
+    expect(result.items[3]?.rawText).toBe("Tool output");
+    expect(result.parserState.currentTurnId).toBe(userId);
+  });
+
   it("holds incomplete trailing source records", () => {
     expect(() =>
       parseClaudeTranscriptJournalBytes({

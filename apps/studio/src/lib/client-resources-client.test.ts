@@ -1,7 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CLIENT_RESOURCE_DISCOVERY_DEADLINE_MS,
+  ClientResourceDiscoveryError,
+  clientResourceAvailability,
+  clientResourceCanBeSelected,
+  clientResourceErrorMessage,
   discoverClientResources,
-  loadClientResourceTargets
+  loadClientResourceTargets,
+  type ClientResourceCatalog
 } from "./client-resources-client";
 import { studioAuthenticatedRequest } from "./personal-agents-client";
 
@@ -10,7 +16,8 @@ vi.mock("./personal-agents-client", () => ({
 }));
 const request = vi.mocked(studioAuthenticatedRequest);
 const timestamp = new Date().toISOString();
-const catalog = {
+const discoveryRequestId = "22222222-2222-4222-8222-222222222222";
+const catalog: ClientResourceCatalog = {
   version: 1,
   provider: "codex",
   aiClientInstanceId: "codex",
@@ -32,7 +39,7 @@ const catalog = {
 };
 const operation = (values: Record<string, unknown> = {}) => ({
   operationId: "11111111-1111-4111-8111-111111111111",
-  requestId: "22222222-2222-4222-8222-222222222222",
+  requestId: discoveryRequestId,
   hostedInstanceId: catalog.hostedInstanceId,
   projectId: null,
   state: "completed",
@@ -42,9 +49,14 @@ const operation = (values: Record<string, unknown> = {}) => ({
   catalog,
   ...values
 });
+beforeEach(() => {
+  vi.spyOn(crypto, "randomUUID").mockReturnValue(discoveryRequestId);
+});
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("native AI Client resources", () => {
@@ -62,7 +74,6 @@ describe("native AI Client resources", () => {
           instanceId: "codex",
           hostedInstanceId: "computer-b-codex",
           driverId: "codex",
-          enabled: true,
           sourceDeviceLabel: "Computer B"
         }
       ],
@@ -83,6 +94,7 @@ describe("native AI Client resources", () => {
       "Computer B"
     ]);
     expect(targets[1].authenticationState).toBe("unknown");
+    expect(targets[1].enabled).toBeNull();
   });
   it("discovers native Skills without creating a Job or injecting their text", async () => {
     request.mockResolvedValue(operation());
@@ -101,6 +113,33 @@ describe("native AI Client resources", () => {
     });
     expect(String(options?.body)).not.toContain("review");
   });
+  it("keeps native availability separate from verified managed invocation", () => {
+    const [legacySkill] = catalog.resources;
+    expect(clientResourceAvailability(legacySkill)).toBe("available");
+    expect(clientResourceCanBeSelected(legacySkill)).toBe(false);
+    expect(
+      clientResourceAvailability({
+        ...legacySkill,
+        status: "unavailable",
+        availability: "unknown",
+        executionSupport: "koed_managed"
+      })
+    ).toBe("unknown");
+    expect(
+      clientResourceCanBeSelected({
+        ...legacySkill,
+        availability: "available",
+        executionSupport: "koed_managed"
+      })
+    ).toBe(true);
+    expect(
+      clientResourceCanBeSelected({
+        ...legacySkill,
+        availability: "available",
+        executionSupport: "inventory_only"
+      })
+    ).toBe(false);
+  });
   it("rejects a catalog from another Client or Project and expired catalogs", async () => {
     request.mockResolvedValue(
       operation({
@@ -113,7 +152,7 @@ describe("native AI Client resources", () => {
         hostedInstanceId: catalog.hostedInstanceId,
         projectId: null
       })
-    ).rejects.toThrow("configuration changed");
+    ).rejects.toThrow("changed during discovery");
     request.mockResolvedValue(
       operation({
         projectId: "different",
@@ -125,7 +164,7 @@ describe("native AI Client resources", () => {
         hostedInstanceId: catalog.hostedInstanceId,
         projectId: null
       })
-    ).rejects.toThrow("configuration changed");
+    ).rejects.toThrow("changed during discovery");
     request.mockResolvedValue(
       operation({
         catalog: {
@@ -157,5 +196,80 @@ describe("native AI Client resources", () => {
         projectId: null
       })
     ).rejects.toThrow();
+  });
+  it("rejects operations from a different discovery request even when scope matches", async () => {
+    request.mockResolvedValue(
+      operation({ requestId: "33333333-3333-4333-8333-333333333333" })
+    );
+    await expect(
+      discoverClientResources({
+        hostedInstanceId: catalog.hostedInstanceId,
+        projectId: null
+      })
+    ).rejects.toMatchObject({
+      code: "AiClientResourceTargetScopeMismatch"
+    });
+  });
+  it("preserves a validated actionable error code", async () => {
+    request.mockResolvedValue(
+      operation({
+        state: "failed",
+        catalog: undefined,
+        errorCode: "AiClientCodexAuthenticationRequired"
+      })
+    );
+    let failure: unknown;
+    try {
+      await discoverClientResources({
+        hostedInstanceId: catalog.hostedInstanceId,
+        projectId: null
+      });
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toBeInstanceOf(ClientResourceDiscoveryError);
+    expect(failure).toMatchObject({
+      code: "AiClientCodexAuthenticationRequired"
+    });
+    expect(clientResourceErrorMessage(failure)).toContain(
+      "Sign in through Codex"
+    );
+    expect(clientResourceErrorMessage(failure)).not.toContain(
+      "AiClientCodexAuthenticationRequired"
+    );
+  });
+  it("rejects canceled requests without accepting a late catalog", async () => {
+    const controller = new AbortController();
+    request.mockImplementation(() => new Promise(() => undefined));
+    const pending = discoverClientResources(
+      { hostedInstanceId: catalog.hostedInstanceId, projectId: null },
+      controller.signal
+    );
+    controller.abort(new DOMException("Request canceled", "AbortError"));
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+  it("does not start discovery when its scope was already canceled", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("Request canceled", "AbortError"));
+    await expect(
+      discoverClientResources(
+        { hostedInstanceId: catalog.hostedInstanceId, projectId: null },
+        controller.signal
+      )
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("enforces the bounded 60-second discovery deadline", async () => {
+    vi.useFakeTimers();
+    request.mockImplementation(() => new Promise(() => undefined));
+    const pending = discoverClientResources({
+      hostedInstanceId: catalog.hostedInstanceId,
+      projectId: null
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: "AiClientResourceDiscoveryTimedOut"
+    });
+    await vi.advanceTimersByTimeAsync(CLIENT_RESOURCE_DISCOVERY_DEADLINE_MS);
+    await rejected;
   });
 });

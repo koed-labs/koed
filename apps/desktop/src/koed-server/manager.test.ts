@@ -5158,6 +5158,29 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       const method = init?.method ?? "GET";
       const body = init?.body ? JSON.parse(String(init.body)) : null;
       calls.push({ method, path: url.pathname, body });
+      if (url.pathname === "/v1/ai-client-resources/discover") {
+        return Response.json({
+          operationId: "11111111-1111-4111-8111-111111111111",
+          requestId: (body as { requestId: string }).requestId,
+          hostedInstanceId: "codex.default",
+          projectId: null,
+          state: "completed",
+          revision: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          catalog: {
+            version: 1,
+            provider: "codex",
+            aiClientInstanceId: "codex.default",
+            hostedInstanceId: "codex.default",
+            projectId: null,
+            computerLabel: null,
+            observedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            resources: []
+          }
+        });
+      }
       if (method === "GET" && url.pathname === "/v1/managed-conversations") {
         return new Response(
           JSON.stringify({ executions: [execution("project-1")] }),
@@ -5228,6 +5251,20 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
 
     try {
+      await expect(
+        manager.managedConversation({
+          operation: "resources",
+          aiClientInstanceId: "codex.default",
+          projectId: null
+        })
+      ).resolves.toMatchObject({
+        operation: "resources",
+        catalog: { aiClientInstanceId: "codex.default", projectId: null }
+      });
+      expect(
+        calls.find((call) => call.path === "/v1/ai-client-resources/discover")
+          ?.body
+      ).toMatchObject({ hostedInstanceId: "codex.default", projectId: null });
       const standaloneStart = await manager.managedConversation({
         operation: "start",
         projectId: "local-chats-project",
@@ -5261,7 +5298,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         clientUserMessageId: "12345678-1234-4234-8234-123456789012",
         prompt: "Continue this standalone chat.",
         fileMentionCommandIds: [],
-        terminalContextReferences: []
+        terminalContextReferences: [],
+        selectedResourceIds: [`res_${"a".repeat(64)}`],
+        selectedResourceHostedInstanceId: "codex.default"
       });
       expect(queuedPrompt).toMatchObject({
         operation: "send",
@@ -5345,6 +5384,8 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         calls.find((call) => call.path.endsWith("/prompts"))?.body
       ).toMatchObject({
         executionGeneration: 7,
+        selectedResourceIds: [`res_${"a".repeat(64)}`],
+        selectedResourceHostedInstanceId: "codex.default",
         clientUserMessageId: "12345678-1234-4234-8234-123456789012",
         prompt: "Continue this standalone chat."
       });

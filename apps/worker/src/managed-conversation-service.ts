@@ -158,6 +158,17 @@ import { pullRequestReviewOutput } from "./pull-request-review-output.js";
 
 const commandLeaseMs = 180_000;
 const commandHeartbeatMs = 45_000;
+
+export const managedConversationNativeSkillProjectPaths = async (input: {
+  sourceProjectPath: string;
+  checkoutProjectPath: string;
+}): Promise<{
+  projectPath: string;
+  resourceIdentityProjectPath: string;
+}> => ({
+  projectPath: await realpath(input.checkoutProjectPath),
+  resourceIdentityProjectPath: await realpath(input.sourceProjectPath)
+});
 const restorationLeaseMs = 180_000;
 const defaultTurnTimeoutMs = 10 * 60_000;
 const maximumSourceSegments = 1_000_000;
@@ -4230,16 +4241,32 @@ export const createManagedConversationService = (options: {
     return `${prompt}\n\n${sections.join("\n\n")}`;
   };
 
-  const selectedNativeSkillsForCommand = async (
-    command: ClaimedManagedConversationCommand,
-    binding: ManagedConversationRuntimeBindingRecord
-  ): Promise<NativeSkillInvocation[]> => {
+  const selectedNativeSkillResourceIdsForCommand = (
+    command: ClaimedManagedConversationCommand
+  ): string[] => {
     const parsed = managedConversationSelectedResourceIdsSchema.safeParse(
       command.payload?.selectedResourceIds ?? []
     );
     if (!parsed.success)
       throw managedConversationError("ManagedConversationPayloadError");
-    if (parsed.data.length === 0) return [];
+    return parsed.data;
+  };
+
+  const selectedNativeSkillsForCommand = async (
+    command: ClaimedManagedConversationCommand,
+    binding: ManagedConversationRuntimeBindingRecord
+  ): Promise<NativeSkillInvocation[]> => {
+    const selectedResourceIds =
+      selectedNativeSkillResourceIdsForCommand(command);
+    if (selectedResourceIds.length === 0) return [];
+    if (
+      command.execution.provider === "claude" &&
+      selectedResourceIds.length > 1
+    ) {
+      throw managedConversationError(
+        "ManagedConversationInstructionSkillsUnavailableError"
+      );
+    }
     const hostedInstanceId = command.payload?.selectedResourceHostedInstanceId;
     if (typeof hostedInstanceId !== "string" || !hostedInstanceId.trim()) {
       throw managedConversationError("ManagedConversationResourceScopeError");
@@ -4296,15 +4323,19 @@ export const createManagedConversationService = (options: {
       driverId: command.execution.provider,
       env: process.env
     });
+    const nativeSkillProjectPaths = command.execution.projectId
+      ? await managedConversationNativeSkillProjectPaths({
+          sourceProjectPath: binding.sourceProjectPath,
+          checkoutProjectPath: binding.projectPath
+        })
+      : { projectPath: null };
     return revalidateSelectedNativeSkills({
       instance,
       ownerUserId: command.ownerUserId,
       hostedInstanceId,
       projectId: command.execution.projectId,
-      projectPath: command.execution.projectId
-        ? await realpath(binding.projectPath)
-        : null,
-      selectedResourceIds: parsed.data,
+      ...nativeSkillProjectPaths,
+      selectedResourceIds,
       environment
     });
   };
@@ -7330,6 +7361,15 @@ export const createManagedConversationService = (options: {
   const runCommand = async (
     command: ClaimedManagedConversationCommand
   ): Promise<void> => {
+    if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
+    if (command.execution.executionGeneration !== command.executionGeneration) {
+      throw Object.assign(new Error("Managed Conversation command is stale"), {
+        name: "ManagedConversationFencedError"
+      });
+    }
+    assertManagedConversationExecutionOwner(command.execution);
+    const pendingCheckpoint =
+      command.commandKind === "prompt" ? pendingCheckpointFor(command) : null;
     if (
       command.commandKind === "prompt" &&
       command.payload?.pullRequestReviewId !== undefined &&
@@ -7348,20 +7388,16 @@ export const createManagedConversationService = (options: {
           ...parseManagedConversationSettings(command.payload.settings)
         }
       };
-      if (!pendingCheckpointFor(command))
+      if (!pendingCheckpoint)
         await assertManagedConversationTurnSettings(
           options.repository,
           command.execution,
           { deviceId: options.deviceId, deploymentId: options.deploymentId }
         );
     }
+    // Parsing the queued turn settings replaces the command object, so retain
+    // the lease narrowing before code below passes it to authority methods.
     if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
-    if (command.execution.executionGeneration !== command.executionGeneration) {
-      throw Object.assign(new Error("Managed Conversation command is stale"), {
-        name: "ManagedConversationFencedError"
-      });
-    }
-    assertManagedConversationExecutionOwner(command.execution);
     if (options.pullRequestControl) {
       const review = await options.pullRequestControl.getReviewForExecution(
         command.executionId,
@@ -7812,7 +7848,6 @@ export const createManagedConversationService = (options: {
         command.execution,
         command.ownerUserId
       );
-      const pendingCheckpoint = pendingCheckpointFor(command);
       if (pendingCheckpoint) {
         await ensureTurnBaselineCheckpoint(command, checkpointBinding);
         await captureTerminalExecutionCheckpoint({
@@ -8027,6 +8062,25 @@ export const createManagedConversationService = (options: {
         command,
         checkpointBinding
       );
+      const claudeNativeSkills =
+        command.execution.provider === "claude"
+          ? nativeSkills.map((skill) => {
+              if (
+                skill.provider !== "claude" ||
+                !skill.providerKind ||
+                !skill.providerPath
+              ) {
+                throw managedConversationError(
+                  "ManagedConversationInstructionSkillsUnavailableError"
+                );
+              }
+              return {
+                name: skill.name,
+                providerKind: skill.providerKind,
+                providerPath: skill.providerPath
+              };
+            })
+          : [];
       if (command.execution.provider === "claude") {
         if (providerRuntime.provider !== "claude") {
           throw managedConversationError(
@@ -8040,7 +8094,8 @@ export const createManagedConversationService = (options: {
             providerTurnDispatchAttempts.add(command.id);
             return session.prompt(
               turnPrompt,
-              nativeSkills.map((skill) => skill.name)
+              nativeSkills.map((skill) => skill.name),
+              claudeNativeSkills
             );
           },
           providerRuntime.session

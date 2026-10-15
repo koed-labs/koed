@@ -1,4 +1,9 @@
 import {
+  aiClientResourceCatalogSchema,
+  managedConversationSelectedResourceIdsSchema,
+  type AiClientResourceCatalog
+} from "@koed/shared/ai-client-resource-catalog";
+import {
   isSupportedAiClientDriverId,
   parseManagedConversationSettings,
   type AiClientPermissionMode,
@@ -95,6 +100,17 @@ export type ManagedConversationStartRequest = {
   idempotencyKey: string;
 };
 
+export type ManagedConversationResourcesRequest = {
+  operation: "resources";
+  aiClientInstanceId: string;
+  projectId: string | null;
+};
+
+export type ManagedConversationSkillSelection = {
+  selectedResourceIds?: string[];
+  selectedResourceHostedInstanceId?: string;
+};
+
 export type ManagedConversationLaunchOptionsRequest = {
   operation: "launch_options";
 };
@@ -130,18 +146,19 @@ export type ManagedConversationInspectRequest = {
   executionId: string;
 };
 
-export type ManagedConversationSendRequest = {
-  operation: "send";
-  executionId: string;
-  capturedSessionId: string;
-  threadId: string;
-  idempotencyKey: string;
-  clientUserMessageId: string;
-  prompt: string;
-  fileMentionCommandIds: string[];
-  terminalContextReferences: string[];
-  settingsChange?: ManagedConversationSettingsChange;
-};
+export type ManagedConversationSendRequest =
+  ManagedConversationSkillSelection & {
+    operation: "send";
+    executionId: string;
+    capturedSessionId: string;
+    threadId: string;
+    idempotencyKey: string;
+    clientUserMessageId: string;
+    prompt: string;
+    fileMentionCommandIds: string[];
+    terminalContextReferences: string[];
+    settingsChange?: ManagedConversationSettingsChange;
+  };
 
 export type ManagedConversationTargetsRequest = {
   operation: "targets";
@@ -207,6 +224,7 @@ export type ManagedConversationForkRequest = {
 export type ManagedConversationRequest =
   | ManagedConversationStartRequest
   | ManagedConversationLaunchOptionsRequest
+  | ManagedConversationResourcesRequest
   | ManagedConversationDraftRequest
   | ManagedConversationRecoveryRequest
   | ManagedConversationInspectRequest
@@ -333,6 +351,7 @@ export type ManagedConversationLaunchOptions = {
 };
 
 export type ManagedConversationResult =
+  | { operation: "resources"; catalog: AiClientResourceCatalog }
   | {
       operation: "launch_options";
       options: ManagedConversationLaunchOptions;
@@ -450,6 +469,24 @@ export const parseManagedConversationRequest = (
   value: unknown
 ): ManagedConversationRequest => {
   const input = record(value, "Managed Conversation request");
+  if (input.operation === "resources") {
+    exactKeys(
+      input,
+      ["operation", "aiClientInstanceId", "projectId"],
+      "AI Client resources"
+    );
+    return {
+      operation: "resources",
+      aiClientInstanceId: identifier(
+        input.aiClientInstanceId,
+        "AI Client instance"
+      ),
+      projectId:
+        input.projectId === null
+          ? null
+          : identifier(input.projectId, "Project id")
+    };
+  }
   if (input.operation === "start") {
     exactKeys(
       input,
@@ -642,7 +679,13 @@ export const parseManagedConversationRequest = (
         "prompt",
         "fileMentionCommandIds",
         "terminalContextReferences",
-        ...(Object.hasOwn(input, "settingsChange") ? ["settingsChange"] : [])
+        ...(Object.hasOwn(input, "settingsChange") ? ["settingsChange"] : []),
+        ...(Object.hasOwn(input, "selectedResourceIds")
+          ? ["selectedResourceIds"]
+          : []),
+        ...(Object.hasOwn(input, "selectedResourceHostedInstanceId")
+          ? ["selectedResourceHostedInstanceId"]
+          : [])
       ],
       "Managed Conversation send"
     );
@@ -681,6 +724,26 @@ export const parseManagedConversationRequest = (
         "Client user message id"
       ),
       prompt: prompt(input.prompt),
+      ...(Object.hasOwn(input, "selectedResourceIds") ||
+      Object.hasOwn(input, "selectedResourceHostedInstanceId")
+        ? (() => {
+            const ids = managedConversationSelectedResourceIdsSchema.parse(
+              input.selectedResourceIds ?? []
+            );
+            if (
+              ids.length > 0 ||
+              input.selectedResourceHostedInstanceId !== undefined
+            )
+              return {
+                selectedResourceIds: ids,
+                selectedResourceHostedInstanceId: identifier(
+                  input.selectedResourceHostedInstanceId,
+                  "Skill AI Client scope"
+                )
+              };
+            return { selectedResourceIds: ids };
+          })()
+        : {}),
       ...(Object.hasOwn(input, "settingsChange")
         ? {
             settingsChange: (() => {
@@ -1335,6 +1398,13 @@ export const parseManagedConversationResult = (
   value: unknown
 ): ManagedConversationResult => {
   const result = record(value, "Managed Conversation result");
+  if (result.operation === "resources") {
+    exactKeys(result, ["operation", "catalog"], "AI Client resources result");
+    return {
+      operation: "resources",
+      catalog: aiClientResourceCatalogSchema.parse(result.catalog)
+    };
+  }
   if (result.operation === "launch_options") {
     exactKeys(
       result,
@@ -1807,6 +1877,9 @@ export const parseManagedConversationResult = (
 };
 
 export interface ManagedConversationDesktopApi {
+  resources?: (
+    input: Omit<ManagedConversationResourcesRequest, "operation">
+  ) => Promise<Extract<ManagedConversationResult, { operation: "resources" }>>;
   launchOptions: () => Promise<
     Extract<ManagedConversationResult, { operation: "launch_options" }>
   >;

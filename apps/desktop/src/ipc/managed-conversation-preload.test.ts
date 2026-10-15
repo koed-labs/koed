@@ -19,6 +19,77 @@ const identity = {
 };
 
 describe("Managed Conversation preload bridge", () => {
+  it("correlates resource discovery with the exact local Client, Project and unexpired catalog", async () => {
+    const catalog = {
+      version: 1,
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      hostedInstanceId: "codex.default",
+      computerLabel: null,
+      projectId: null,
+      observedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      resources: []
+    };
+    const invoke = vi.fn(async () => ({ operation: "resources", catalog }));
+    const api = createManagedConversationPreloadApi(invoke);
+    await expect(
+      api.resources!({ aiClientInstanceId: "codex.default", projectId: null })
+    ).resolves.toMatchObject({ catalog });
+    invoke.mockResolvedValue({
+      operation: "resources",
+      catalog: { ...catalog, aiClientInstanceId: "other" }
+    });
+    await expect(
+      api.resources!({ aiClientInstanceId: "codex.default", projectId: null })
+    ).rejects.toThrow("changed");
+    invoke.mockResolvedValue({
+      operation: "resources",
+      catalog: {
+        ...catalog,
+        observedAt: new Date(Date.now() - 120_000).toISOString(),
+        expiresAt: new Date(Date.now() - 60_000).toISOString()
+      }
+    });
+    await expect(
+      api.resources!({ aiClientInstanceId: "codex.default", projectId: null })
+    ).rejects.toThrow("changed");
+  });
+
+  it("preserves native Skill selections through send without passing source text or paths", async () => {
+    const invoke = vi.fn(async (_channel: string, value: unknown) => {
+      const request = value as {
+        idempotencyKey: string;
+        clientUserMessageId: string;
+      };
+      return {
+        operation: "send",
+        status: "queued",
+        conversation: identity,
+        idempotencyKey: request.idempotencyKey,
+        clientUserMessageId: request.clientUserMessageId
+      };
+    });
+    const api = createManagedConversationPreloadApi(invoke);
+    const selectedResourceIds = [`res_${"a".repeat(64)}`];
+    await api.send({
+      executionId: "execution-1",
+      capturedSessionId: "session-1",
+      threadId: "thread-1",
+      idempotencyKey: "selected-skill",
+      clientUserMessageId: "12345678-1234-4234-8234-123456789012",
+      prompt: "Review",
+      selectedResourceIds,
+      selectedResourceHostedInstanceId: "codex.default"
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      managedConversationCommandChannel,
+      expect.objectContaining({
+        selectedResourceIds,
+        selectedResourceHostedInstanceId: "codex.default"
+      })
+    );
+  });
   it("preserves a conditional settings change and rejects ownership fields", async () => {
     const invoke = vi.fn(async (_channel, request: any) => ({
       operation: "send",
@@ -197,6 +268,7 @@ describe("Managed Conversation preload bridge", () => {
       "launchOptions",
       "readDraft",
       "readRecovery",
+      "resources",
       "respond",
       "resume",
       "runtime",

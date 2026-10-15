@@ -46,6 +46,58 @@ const parseRuntimeResult = (latestCommand: Record<string, unknown>) => {
 };
 
 describe("Managed Conversation protocol", () => {
+  it("accepts opaque Skill IDs and exact Client scope while refusing paths, duplicates and unscoped selections", () => {
+    const send = {
+      operation: "send",
+      executionId: "execution-1",
+      capturedSessionId: "session-1",
+      threadId: "thread-1",
+      idempotencyKey: "skill-turn",
+      clientUserMessageId: "12345678-1234-4234-8234-123456789012",
+      prompt: "Review this",
+      fileMentionCommandIds: [],
+      terminalContextReferences: [],
+      selectedResourceIds: [`res_${"a".repeat(64)}`],
+      selectedResourceHostedInstanceId: "codex.default"
+    };
+    expect(parseManagedConversationRequest(send)).toMatchObject({
+      selectedResourceIds: send.selectedResourceIds,
+      selectedResourceHostedInstanceId: "codex.default"
+    });
+    expect(() =>
+      parseManagedConversationRequest({
+        ...send,
+        selectedResourceIds: ["/private/SKILL.md"]
+      })
+    ).toThrow();
+    expect(() =>
+      parseManagedConversationRequest({
+        ...send,
+        selectedResourceIds: [
+          ...send.selectedResourceIds,
+          ...send.selectedResourceIds
+        ]
+      })
+    ).toThrow();
+    const unscoped: Partial<typeof send> = { ...send };
+    delete unscoped.selectedResourceHostedInstanceId;
+    expect(() => parseManagedConversationRequest(unscoped)).toThrow();
+    expect(
+      parseManagedConversationRequest({
+        operation: "resources",
+        aiClientInstanceId: "codex.default",
+        projectId: null
+      })
+    ).toMatchObject({ operation: "resources", projectId: null });
+    expect(() =>
+      parseManagedConversationRequest({
+        operation: "resources",
+        aiClientInstanceId: "codex.default",
+        projectId: null,
+        path: "/private/project"
+      })
+    ).toThrow();
+  });
   it("preserves projectless identities and start results", () => {
     expect(parseManagedConversationIdentity(identity)).toEqual(identity);
     expect(

@@ -361,6 +361,101 @@ describe("PersonalMemoryWorkspace", () => {
     vi.restoreAllMocks();
   });
 
+  it("selects a native Skill for a resumed Conversation and sends its opaque Client scope", async () => {
+    const resourceId = `res_${"a".repeat(64)}`;
+    const managed = managedApi({
+      resume: vi.fn<ManagedConversationDesktopApi["resume"]>(async (scope) => ({
+        operation: "resume",
+        status: "ready",
+        conversation: {
+          ...scope,
+          executionId: "execution-1",
+          executionOwner: { driverId: "codex", instanceId: "codex.default" }
+        }
+      })),
+      resources: vi.fn<NonNullable<ManagedConversationDesktopApi["resources"]>>(
+        async () => ({
+          operation: "resources",
+          catalog: {
+            version: 1,
+            provider: "codex",
+            aiClientInstanceId: "codex.default",
+            hostedInstanceId: "codex.default",
+            computerLabel: null,
+            projectId: "project-1",
+            observedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            resources: [
+              {
+                resourceId,
+                kind: "skill",
+                name: "review",
+                status: "ready",
+                availability: "available",
+                executionSupport: "koed_managed",
+                source: "user",
+                invocation: "native_skill"
+              }
+            ]
+          }
+        })
+      )
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([thread(1)])]),
+        loadEventPage: vi.fn(async () => [event(1)])
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managed}
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: "project-1", sessionId }}
+          store={store}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector("textarea")?.disabled).toBe(false)
+    );
+    const textarea = container.querySelector("textarea")!;
+    const enter = async (text: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )!.set!.call(textarea, text);
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      });
+    await enter("/review");
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="option"]')).not.toBeNull()
+    );
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[role="option"]')!.click()
+    );
+    await enter("Continue reviewing");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send prompt"]')!
+        .click()
+    );
+    await vi.waitFor(() =>
+      expect(managed.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "Continue reviewing",
+          selectedResourceIds: [resourceId],
+          selectedResourceHostedInstanceId: "codex.default"
+        })
+      )
+    );
+    expect(
+      container.querySelector('[aria-label="Selected Skills"]')
+    ).toBeNull();
+  });
+
   it("clears execution context attachments when navigating to another Conversation", async () => {
     const otherSession = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const store = new PersonalMemoryStore(

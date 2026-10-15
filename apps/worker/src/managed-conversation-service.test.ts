@@ -10,7 +10,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import type {
   ManagedConversationExecutionRecord,
@@ -35,6 +35,7 @@ import {
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
+  managedConversationNativeSkillProjectPaths,
   managedConversationProviderHistoryAvailable,
   managedConversationCodexHistoryProof,
   managedConversationRebasedPrefixMatches,
@@ -4436,6 +4437,340 @@ describe("Managed Conversation service lifecycle", () => {
       await service.stop();
     }
   });
+
+  it("keeps native Skill identity on the registered Project while resolving the verified checkout", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "koed-native-skill-project-paths-")
+    );
+    try {
+      const sourceProjectPath = join(root, "registered-source");
+      const checkoutProjectPath = join(root, "verified-checkout");
+      await mkdir(sourceProjectPath, { recursive: true });
+      await mkdir(checkoutProjectPath, { recursive: true });
+      await expect(
+        managedConversationNativeSkillProjectPaths({
+          sourceProjectPath,
+          checkoutProjectPath
+        })
+      ).resolves.toEqual({
+        projectPath: await realpath(checkoutProjectPath),
+        resourceIdentityProjectPath: await realpath(sourceProjectPath)
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves provider availability checks before selected Claude Skill revalidation", async () => {
+    const ownerUserId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const selectedResourceId = `res_${"a".repeat(64)}`;
+    const claudeExecution = {
+      ...terminalExecutionFixture({
+        ownerUserId,
+        executionId: randomUUID(),
+        deploymentId,
+        deviceId
+      }),
+      provider: "claude" as const,
+      aiClientInstanceId: `missing-claude-${randomUUID()}`,
+      state: "running" as const,
+      runnerId: randomUUID(),
+      runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const selectedSkillCommand = {
+      id: randomUUID(),
+      ownerUserId,
+      executionId: claudeExecution.id,
+      executionGeneration: claudeExecution.executionGeneration,
+      commandKind: "prompt" as const,
+      sequence: 1,
+      attempts: 1,
+      leaseToken: randomUUID(),
+      clientUserMessageId: randomUUID(),
+      payload: {
+        prompt: "Use the selected Skill",
+        selectedResourceIds: [selectedResourceId],
+        selectedResourceHostedInstanceId: "claude-hosted"
+      },
+      execution: claudeExecution
+    };
+    const listAiClientInstances = vi.fn(async () => []);
+    const getManagedConversationRuntimeBinding = vi.fn(async () => null);
+    const getOwnerReviewBindingForExecution = vi.fn(async () => null);
+    const failManagedConversationCommand = vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: false
+    }));
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => [
+        selectedSkillCommand
+      ]),
+      getManagedConversationRuntimeBinding,
+      getOwnerReviewBindingForExecution,
+      listAiClientInstances,
+      listCurrentAiClientCapabilitySnapshots: vi.fn(async () => []),
+      renewManagedConversationCommandLease: vi.fn(async () => true),
+      failManagedConversationCommand,
+      cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+      getManagedConversationExecution: vi.fn(async () => claudeExecution),
+      setManagedConversationExecutionState: vi.fn(async () => true)
+    };
+    const service = createManagedConversationService({
+      repository: repository as unknown as MemorySourceRepository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: "must-not-start-provider",
+      deviceId,
+      deploymentId,
+      koedHome: "/tmp/koed-claude-selected-skill-test",
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+    });
+    try {
+      await expect(service.processOnce()).resolves.toEqual({
+        completed: 0,
+        failed: 1
+      });
+      expect(failManagedConversationCommand).toHaveBeenCalledWith({
+        commandId: selectedSkillCommand.id,
+        leaseToken: selectedSkillCommand.leaseToken,
+        state: "failed",
+        errorCode: "ManagedConversationProviderUnavailableError"
+      });
+      expect(listAiClientInstances).not.toHaveBeenCalled();
+      expect(
+        repository.listCurrentAiClientCapabilitySnapshots
+      ).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("keeps accepted Claude checkpoint recovery ahead of the stale Skill guard", async () => {
+    const root = await mkdtemp(
+      resolve(tmpdir(), "koed-claude-skill-checkpoint-")
+    );
+    const previousRegistry = process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+    const registryPath = resolve(root, "ai-client-instances.json");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.test",
+            driverId: "claude",
+            displayName: "Claude test",
+            executablePath: process.execPath
+          }
+        ]
+      })
+    );
+    process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = registryPath;
+    const ownerUserId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = {
+      ...terminalExecutionFixture({
+        ownerUserId,
+        executionId: randomUUID(),
+        deploymentId,
+        deviceId
+      }),
+      provider: "claude" as const,
+      aiClientInstanceId: "claude.test",
+      state: "running" as const,
+      runnerId: randomUUID(),
+      runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const command = {
+      id: randomUUID(),
+      ownerUserId,
+      executionId: execution.id,
+      executionGeneration: execution.executionGeneration,
+      commandKind: "prompt" as const,
+      sequence: 1,
+      attempts: 1,
+      leaseToken: randomUUID(),
+      clientUserMessageId: randomUUID(),
+      payload: {
+        prompt: "Recover accepted work",
+        selectedResourceIds: [`res_${"a".repeat(64)}`],
+        selectedResourceHostedInstanceId: "claude-hosted"
+      },
+      result: {
+        phase: "checkpoint_pending" as const,
+        providerTurnId: "turn-1",
+        sourceGenerationId: randomUUID()
+      },
+      execution
+    };
+    const getManagedConversationRuntimeBinding = vi.fn(async () => {
+      const error = new Error("recovery binding intentionally unavailable");
+      error.name = "ManagedConversationRuntimeBindingError";
+      throw error;
+    });
+    const failManagedConversationCommand = vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: false
+    }));
+    const listAiClientInstances = vi.fn(async () => []);
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => [command]),
+      getManagedConversationRuntimeBinding,
+      getOwnerReviewBindingForExecution: vi.fn(async () => null),
+      listAiClientInstances,
+      listCurrentAiClientCapabilitySnapshots: vi.fn(async () => []),
+      renewManagedConversationCommandLease: vi.fn(async () => true),
+      failManagedConversationCommand,
+      cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+      getManagedConversationExecution: vi.fn(async () => execution),
+      setManagedConversationExecutionState: vi.fn(async () => true)
+    };
+    const service = createManagedConversationService({
+      repository: repository as unknown as MemorySourceRepository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: "must-not-start-provider",
+      deviceId,
+      deploymentId,
+      koedHome: resolve(root, "koed-home"),
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+    });
+    try {
+      await expect(service.processOnce()).resolves.toEqual({
+        completed: 0,
+        failed: 1
+      });
+      expect(getManagedConversationRuntimeBinding).toHaveBeenCalledOnce();
+      expect(failManagedConversationCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: command.id,
+          state: "indeterminate",
+          errorCode: "ManagedConversationRuntimeBindingError"
+        })
+      );
+      expect(failManagedConversationCommand).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          errorCode: "ManagedConversationInstructionSkillsUnavailableError"
+        })
+      );
+      expect(listAiClientInstances).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+      if (previousRegistry === undefined) {
+        delete process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+      } else {
+        process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = previousRegistry;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "does not reject an empty selected-Skill list for %s before normal provider handling",
+    async (provider) => {
+      const ownerUserId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const execution = {
+        ...terminalExecutionFixture({
+          ownerUserId,
+          executionId: randomUUID(),
+          deploymentId,
+          deviceId
+        }),
+        provider,
+        aiClientInstanceId: `missing-${provider}-${randomUUID()}`,
+        state: "running" as const,
+        runnerId: randomUUID(),
+        runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      };
+      const command = {
+        id: randomUUID(),
+        ownerUserId,
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration,
+        commandKind: "prompt" as const,
+        sequence: 1,
+        attempts: 1,
+        leaseToken: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        payload: { prompt: "Continue", selectedResourceIds: [] },
+        execution
+      };
+      const failManagedConversationCommand = vi.fn(async () => ({
+        updated: true,
+        reconciled: false,
+        requeued: false
+      }));
+      const repository = {
+        listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+          async () => []
+        ),
+        listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+        reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+        claimManagedConversationCommands: vi.fn(async () => [command]),
+        getOwnerReviewBindingForExecution: vi.fn(async () => null),
+        renewManagedConversationCommandLease: vi.fn(async () => true),
+        failManagedConversationCommand,
+        cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+        getManagedConversationExecution: vi.fn(async () => execution),
+        setManagedConversationExecutionState: vi.fn(async () => true)
+      };
+      const service = createManagedConversationService({
+        repository: repository as unknown as MemorySourceRepository,
+        apiUrl: "http://127.0.0.1:3300",
+        apiToken: "test-token",
+        localOwnerUserId: ownerUserId,
+        appServerBinary: "must-not-start-provider",
+        deviceId,
+        deploymentId,
+        koedHome: "/tmp/koed-empty-selected-skill-test",
+        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+      });
+      try {
+        await expect(service.processOnce()).resolves.toEqual({
+          completed: 0,
+          failed: 1
+        });
+        expect(failManagedConversationCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            commandId: command.id,
+            errorCode: "ManagedConversationProviderUnavailableError"
+          })
+        );
+        expect(failManagedConversationCommand).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            errorCode: "ManagedConversationInstructionSkillsUnavailableError"
+          })
+        );
+      } finally {
+        await service.stop();
+      }
+    }
+  );
 
   it("does not block command processing on unrelated startup recovery", async () => {
     let finishRecovery!: (value: []) => void;

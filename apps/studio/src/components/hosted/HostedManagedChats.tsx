@@ -33,6 +33,7 @@ import {
   hostedRecoveryGuardForSelection,
   hostedRecoverySelectionIsCurrent,
   hostedNewStartPromptForVerifiedScope,
+  hostedPrivateLaunchResourceScope,
   hostedMessagesForSelection,
   hostedMessagesWithTransientOutput,
   hostedLaunchInstancesForDevice,
@@ -2856,12 +2857,11 @@ export function HostedManagedChats({
                       projectName={selectedProjectName ?? "Managed runtime"}
                       branch="managed runtime"
                       value={initialPrompt}
-                      clientResourceScope={{
-                        projectId: launchProjectId || null,
-                        hostedInstanceId: launchInstance?.hostedInstanceId,
-                        instanceId: launchInstance?.instanceId,
-                        provider: launchInstance?.driverId
-                      }}
+                      clientResourceScope={hostedPrivateLaunchResourceScope(
+                        launchProjectId || null,
+                        launchInstance
+                      )}
+                      allowNativeSkillSelection={Boolean(launchInstance)}
                       modelOptions={launchDeviceInstances.flatMap(
                         (instance) => instance.models
                       )}

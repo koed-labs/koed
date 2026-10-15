@@ -1,31 +1,24 @@
 "use client";
 
+import { useCallback, type RefObject } from "react";
 import {
-  useEffect,
-  useState,
-  useMemo,
-  type KeyboardEvent,
-  type RefObject
-} from "react";
-export type NativeSkillKeyboardHandler = (
-  event: KeyboardEvent<HTMLTextAreaElement>
-) => boolean;
+  NativeSkillPickerCore,
+  type NativeSkillKeyboardHandler,
+  type NativeSkillPickerScope
+} from "@koed/ui/native-skill-picker";
 import {
   clientLabel,
+  clientResourceErrorMessage,
   discoverClientResources,
   loadClientResourceTargets,
   type ClientResourceCatalog
 } from "@/lib/client-resources-client";
 
-export type NativeSkillScope = Readonly<{
-  projectId: string | null;
-  hostedInstanceId?: string;
-  instanceId?: string;
-  provider?: string;
-}>;
+export type { NativeSkillKeyboardHandler } from "@koed/ui/native-skill-picker";
+export type NativeSkillScope = NativeSkillPickerScope;
 export type NativeSkill = ClientResourceCatalog["resources"][number];
 
-/** Discovery is read-only and is scoped to the selected native Client and Project. */
+/** Studio adapter that resolves and validates the selected native Client scope. */
 export function NativeSkillPicker({
   scope,
   query,
@@ -35,35 +28,37 @@ export function NativeSkillPicker({
 }: {
   scope: NativeSkillScope;
   query: string;
-  onSelect: (skill: NativeSkill) => void;
+  onSelect: (skill: NativeSkill, catalogExpiresAt: string) => void;
   onDismiss: () => void;
   keyboardRef: RefObject<NativeSkillKeyboardHandler | null>;
 }) {
-  const [result, setResult] = useState<{
-    key: string;
-    catalog?: ClientResourceCatalog;
-    error?: string;
-  } | null>(null);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const key = JSON.stringify(scope);
-  useEffect(() => {
-    const controller = new AbortController();
-    void (async () => {
-      const targets = await loadClientResourceTargets(controller.signal);
-      const matches = targets.filter((target) =>
-        scope.hostedInstanceId
-          ? target.hostedInstanceId === scope.hostedInstanceId
-          : target.provider === scope.provider &&
-            (!scope.instanceId || target.instanceId === scope.instanceId)
+  const loadCatalog = useCallback(
+    async (
+      requestedScope: NativeSkillPickerScope,
+      signal: AbortSignal
+    ): Promise<ClientResourceCatalog> => {
+      const targets = await loadClientResourceTargets(signal);
+      const matches = targets.filter(
+        (target) =>
+          (!requestedScope.hostedInstanceId ||
+            target.hostedInstanceId === requestedScope.hostedInstanceId) &&
+          (!requestedScope.instanceId ||
+            target.instanceId === requestedScope.instanceId) &&
+          (!requestedScope.provider ||
+            target.provider === requestedScope.provider)
       );
-      if (matches.length !== 1)
+      if (matches.length > 1)
         throw new Error(
-          matches.length
-            ? "Choose a specific AI Client and computer before selecting a Skill."
+          "Choose a specific AI Client and computer before selecting a Skill."
+        );
+      if (matches.length === 0)
+        throw new Error(
+          requestedScope.hostedInstanceId || requestedScope.instanceId
+            ? "The selected AI Client is no longer available on this computer. Choose it again to see its Skills."
             : "Choose an available AI Client to see its Skills."
         );
       const target = matches[0];
-      if (!target.enabled)
+      if (target.enabled === false)
         throw new Error(
           "This AI Client is disabled. Enable it in its settings before choosing a Skill."
         );
@@ -74,124 +69,36 @@ export function NativeSkillPicker({
       const catalog = await discoverClientResources(
         {
           hostedInstanceId: target.hostedInstanceId,
-          projectId: scope.projectId
+          projectId: requestedScope.projectId
         },
-        controller.signal
+        signal
       );
       if (
         catalog.provider !== target.provider ||
-        catalog.aiClientInstanceId !== target.instanceId
+        catalog.aiClientInstanceId !== target.instanceId ||
+        catalog.hostedInstanceId !== target.hostedInstanceId ||
+        catalog.projectId !== requestedScope.projectId
       )
         throw new Error(
-          "The AI Client changed. Refresh its Skills before continuing."
+          "The AI Client or Project changed. Refresh its Skills before continuing."
         );
-      if (!controller.signal.aborted) setResult({ key, catalog });
-    })().catch((error: unknown) => {
-      if (!controller.signal.aborted)
-        setResult({
-          key,
-          error:
-            error instanceof Error ? error.message : "Skills are unavailable."
-        });
-    });
-    return () => controller.abort();
-  }, [
-    key,
-    scope.hostedInstanceId,
-    scope.instanceId,
-    scope.projectId,
-    scope.provider
-  ]);
-  const current = result?.key === key ? result : null;
-  const skills = useMemo(
-    () =>
-      current?.catalog?.resources.filter(
-        (resource) =>
-          resource.kind === "skill" &&
-          resource.status === "ready" &&
-          resource.invocation === "native_skill" &&
-          `${resource.name} ${resource.description ?? ""}`
-            .toLocaleLowerCase()
-            .includes(query.toLocaleLowerCase())
-      ) ?? [],
-    [current?.catalog, query]
+      return catalog;
+    },
+    []
   );
-  const activeIndex = skills.length ? highlightedIndex % skills.length : 0;
-  useEffect(() => {
-    const handler: NativeSkillKeyboardHandler = (event) => {
-      if (event.key === "Escape") {
-        onDismiss();
-        return true;
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        if (skills.length)
-          setHighlightedIndex(
-            (index) =>
-              (index + (event.key === "ArrowDown" ? 1 : -1) + skills.length) %
-              skills.length
-          );
-        return true;
-      }
-      if (event.key === "Enter" && !event.shiftKey) {
-        if (skills[activeIndex]) onSelect(skills[activeIndex]);
-        return true;
-      }
-      return false;
-    };
-    keyboardRef.current = handler;
-    return () => {
-      if (keyboardRef.current === handler) keyboardRef.current = null;
-    };
-  }, [activeIndex, keyboardRef, onDismiss, onSelect, skills]);
+  const title = `${clientLabel(scope.provider ?? "AI Client")} Skills`;
   return (
-    <div
-      className="absolute bottom-full left-2 z-40 mb-2 max-h-64 w-[min(24rem,calc(100cqw-1rem))] overflow-y-auto rounded-lg border border-border-strong bg-surface p-2 shadow-xl"
-      role="dialog"
-      aria-label="AI Client Skills"
-    >
-      <div className="mb-2 flex items-center justify-between px-2 text-xs text-subtle">
-        <span>
-          {clientLabel(
-            current?.catalog?.provider ?? scope.provider ?? "AI Client"
-          )}{" "}
-          Skills
-        </span>
-        <button type="button" onClick={onDismiss} aria-label="Close Skills">
-          Close
-        </button>
-      </div>
-      {current?.error ? (
-        <p className="px-2 py-3 text-sm text-foreground-secondary">
-          {current.error}
-        </p>
-      ) : !current?.catalog ? (
-        <p className="px-2 py-3 text-sm text-subtle">
-          Reading configured Skills…
-        </p>
-      ) : !skills.length ? (
-        <p className="px-2 py-3 text-sm text-subtle">
-          No matching available Skills in this Client and Project.
-        </p>
-      ) : (
-        skills.map((skill, index) => (
-          <button
-            key={skill.resourceId}
-            role="option"
-            aria-selected={index === activeIndex}
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onSelect(skill)}
-            className={`block w-full rounded px-2 py-2 text-left hover:bg-surface-hover ${index === activeIndex ? "bg-surface-hover" : ""}`}
-          >
-            <span className="block text-sm text-foreground">/{skill.name}</span>
-            {skill.description && (
-              <span className="block line-clamp-2 text-xs text-subtle">
-                {skill.description}
-              </span>
-            )}
-          </button>
-        ))
-      )}
-    </div>
+    <NativeSkillPickerCore
+      scope={scope}
+      query={query}
+      title={title}
+      loadCatalog={loadCatalog}
+      onSelect={onSelect}
+      onDismiss={onDismiss}
+      keyboardRef={keyboardRef}
+      formatError={clientResourceErrorMessage}
+      loadingMessage="Reading configured Skills…"
+      className="absolute bottom-full left-2 z-40 mb-2 max-h-64 w-[min(24rem,calc(100cqw-1rem))] overflow-y-auto rounded-lg border border-border-strong bg-surface p-2 text-foreground shadow-xl"
+    />
   );
 }

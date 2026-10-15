@@ -42,9 +42,9 @@ If the private snapshot cannot be recovered, do not silently substitute current 
 
 ## Selected skills
 
-The current Claude adapter switches to `settingSources: ["user", "project"]` when selected skills are present. Therefore ordinary-chat isolation is not evidence of isolation for that branch.
+Ticket 22 removes the implicit expansion to user/Project settings. Worker-managed Claude chats retain `settingSources: []`, including selected-Skill turns. A Skill can never add filesystem settings sources. See the [Plugins/Skills implementation checkpoint](studio-plugins-skills-assessment.md#implementation-checkpoint) for the isolated native bridge, its verified subset and acceptance limits. Generic adapter callers that explicitly configure non-empty sources retain exactly those sources.
 
-Before general enablement, verify whether the pinned SDK's explicit `skills` option can execute the selected, validated skills without enabling filesystem settings. Keep resource selection and freshness validation. If this is unsupported, retain the feature gate and record the limitation under Ticket 22; do not silently discard selected skills, import Project permissions, or advertise instruction-only isolation for those turns. Discovery itself currently uses broader settings sources and needs separate review under Ticket 22; this document does not certify its isolation.
+The instruction snapshot gate remains default-off and independent of Skill selection. A native Skill filter alone is not an execution or permission boundary; fresh resource validation and Koed's tool callback remain required. Settings inventory must use the same isolated native discovery route rather than enable broad settings for inspection.
 
 ## Validation before enablement
 
@@ -59,7 +59,7 @@ The worker now integrates the root-file reader with fresh ordinary Claude starts
 
 `KOED_CLAUDE_PROJECT_INSTRUCTIONS=1` opts fresh starts into the validation path; the default is off. Disabling the flag later does not remove the requirement to recover an already marked session's snapshot. This is a contributor validation gate, not a claim of production acceptance. No running service configuration was changed.
 
-Opted-in turns keep filesystem settings disabled and reject selected skills before SDK submission with an explicit error. This preserves instruction-only isolation without claiming unverified skill execution. Safe root-only status uses the existing progress path; local and hosted chat views translate the new failure codes into readable messages. No instruction bytes or local paths are put in those status/error messages.
+Opted-in turns keep filesystem settings disabled. Unverified selected Skills fail before model submission; Ticket 22 defines the narrowly verified native bridge. Safe root-only status uses the existing progress path; local and hosted chat views translate the new failure codes into readable messages. No instruction bytes or local paths are put in those status/error messages.
 
 Fork and handoff reconstruct a different managed home without carrying the private snapshot. Authority guards now reject owner-matched numeric snapshot markers before queuing fork/handoff commands or changing source state. They reuse captured-session metadata for a content-free version flag; no new schema or instruction text is stored there. Source-side signed-marker checks also reject marked sessions before sealing or publishing transfer material. Instruction-enabled sessions intentionally do not support fork/device transfer; snapshot transport is not claimed. General enablement still awaits the live Claude gate. Do not treat the validation flag as support for transferring instruction-enabled sessions. This limitation does not reopen deferred Claude Project Move or hosted acceptance.
 
@@ -71,7 +71,7 @@ pnpm --filter @koed/worker build
 KOED_CLAUDE_SMOKE_MODEL=<available-model> node scripts/claude-project-instructions-smoke.mjs
 ```
 
-The script uses a temporary Project and Koed home, existing Claude sign-in, and separate processes for first execution and resume. It does not use a live database or copy credentials. It checks root guidance, history, frozen instructions after disk edits, real tool denial, settings/hook isolation and pre-submission selected-skill refusal; standalone exclusion is checked with a separate native session in an independent workspace, with a parent instruction marker present. Provider text and local paths are not printed. On this host it exited with `BLOCKED` (code 2): no supported signed-in Claude Code executable was available, and no provider query ran. This is not a live pass.
+The script uses a temporary Project and Koed home, existing Claude sign-in, and separate processes for first execution and resume. It does not use a live database or copy credentials. It checks root guidance, history, frozen instructions after disk edits, real tool denial, settings/hook isolation and pre-submission refusal of an unverified Skill; standalone exclusion is checked with a separate native session in an independent workspace, with a parent instruction marker present. Provider text and local paths are not printed. On this host it exited with `BLOCKED` (code 2): no supported signed-in Claude Code executable was available, and no provider query ran. This is not a live pass.
 
 The approved existing minor changeset describes this gated implementation. Ticket 04 remains open and the distinct open-ticket count stays 12.
 

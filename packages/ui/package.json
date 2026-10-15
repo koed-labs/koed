@@ -14,7 +14,8 @@
     "./theme": {
       "types": "./dist/theme.d.ts",
       "default": "./dist/theme.js"
-    }
+    },
+    "./native-skill-picker": "./src/components/native-skill-picker.tsx"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -35,8 +36,8 @@
   "devDependencies": {
     "@types/react": "~19.2.14",
     "@types/react-dom": "~19.2.3",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "tailwindcss": "^4.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"

@@ -26,6 +26,23 @@ export const aiClientResourceStatusSchema = z.enum([
   "unavailable"
 ]);
 
+/** Provider evidence about whether a native resource is installed or usable. */
+export const aiClientResourceAvailabilitySchema = z.enum([
+  "available",
+  "configured",
+  "needs_sign_in",
+  "disabled",
+  "unavailable",
+  "unknown"
+]);
+
+/** Whether Koed has a verified route to invoke a resource in managed execution. */
+export const aiClientResourceExecutionSupportSchema = z.enum([
+  "koed_managed",
+  "inventory_only",
+  "unknown"
+]);
+
 export const aiClientResourceInvocationSchema = z.literal("native_skill");
 
 export const aiClientResourceSchema = z
@@ -35,6 +52,8 @@ export const aiClientResourceSchema = z
     name: z.string().trim().min(1).max(160),
     description: z.string().max(1_000).optional(),
     status: aiClientResourceStatusSchema,
+    availability: aiClientResourceAvailabilitySchema.optional(),
+    executionSupport: aiClientResourceExecutionSupportSchema.optional(),
     source: aiClientResourceSourceSchema,
     invocation: aiClientResourceInvocationSchema.nullable()
   })
@@ -64,14 +83,23 @@ export const aiClientResourceCatalogSchema = z
         });
       }
       ids.add(resource.resourceId);
-      if (
-        (resource.kind === "skill") !==
-        (resource.invocation === "native_skill")
-      ) {
+      if (resource.kind !== "skill" && resource.invocation === "native_skill") {
         context.addIssue({
           code: "custom",
           path: ["resources", index, "invocation"],
           message: "Only Skills can have a native skill invocation."
+        });
+      }
+      if (
+        resource.invocation === "native_skill" &&
+        resource.executionSupport !== undefined &&
+        resource.executionSupport !== "koed_managed"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["resources", index, "executionSupport"],
+          message:
+            "Native Skill invocation requires verified managed execution support."
         });
       }
     }
@@ -204,6 +232,12 @@ export const managedConversationSelectedResourceIdsSchema = z
   });
 
 export type AiClientResource = z.infer<typeof aiClientResourceSchema>;
+export type AiClientResourceAvailability = z.infer<
+  typeof aiClientResourceAvailabilitySchema
+>;
+export type AiClientResourceExecutionSupport = z.infer<
+  typeof aiClientResourceExecutionSupportSchema
+>;
 export type AiClientResourceCatalog = z.infer<
   typeof aiClientResourceCatalogSchema
 >;

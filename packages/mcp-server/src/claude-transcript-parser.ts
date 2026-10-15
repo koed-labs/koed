@@ -85,6 +85,7 @@ export const parseClaudeTranscriptJournalBytes = (input: {
         ? []
         : [message.content];
     const isProviderInternal =
+      entry.isMeta === true ||
       type === "queue-operation" ||
       record(entry.origin).kind === "task-notification";
     const isHumanUser =

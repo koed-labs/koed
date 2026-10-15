@@ -189,6 +189,7 @@
   color: var(--muted-foreground);
 }
 .personal-managed-composer-field.conversation-input {
+  position: relative;
   display: block;
   border-radius: 16px;
   padding: 12px;

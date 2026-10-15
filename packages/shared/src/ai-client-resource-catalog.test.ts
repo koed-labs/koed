@@ -52,6 +52,64 @@ describe("AI Client resource catalog contract", () => {
     ).toHaveLength(1);
   });
 
+  it("preserves legacy v1 catalogs and accepts explicit provider evidence", () => {
+    const legacy = aiClientResourceCatalogSchema.parse({
+      ...scope,
+      resources: [
+        {
+          resourceId: `res_${"a".repeat(64)}`,
+          kind: "skill",
+          name: "review",
+          status: "ready",
+          source: "project",
+          invocation: "native_skill"
+        }
+      ]
+    });
+    const current = aiClientResourceCatalogSchema.parse({
+      ...scope,
+      resources: [
+        {
+          resourceId: `res_${"b".repeat(64)}`,
+          kind: "skill",
+          name: "review",
+          status: "unavailable",
+          availability: "available",
+          executionSupport: "inventory_only",
+          source: "configured",
+          invocation: null
+        },
+        {
+          resourceId: `res_${"c".repeat(64)}`,
+          kind: "mcp_server",
+          name: "docs",
+          status: "unavailable",
+          availability: "needs_sign_in",
+          executionSupport: "inventory_only",
+          source: "configured",
+          invocation: null
+        },
+        {
+          resourceId: `res_${"d".repeat(64)}`,
+          kind: "plugin",
+          name: "unknown-plugin",
+          status: "unavailable",
+          availability: "unknown",
+          executionSupport: "unknown",
+          source: "configured",
+          invocation: null
+        }
+      ]
+    });
+
+    expect(legacy.resources[0]).not.toHaveProperty("availability");
+    expect(current.resources.map(({ availability }) => availability)).toEqual([
+      "available",
+      "needs_sign_in",
+      "unknown"
+    ]);
+  });
+
   it("rejects paths, duplicate IDs, and Skill/non-Skill invocation mismatches", () => {
     const pathLeak = aiClientResourceCatalogSchema.safeParse({
       ...scope,
@@ -80,9 +138,25 @@ describe("AI Client resource catalog contract", () => {
         }
       ]
     });
+    const unverifiedInvocation = aiClientResourceCatalogSchema.safeParse({
+      ...scope,
+      resources: [
+        {
+          resourceId: `res_${"c".repeat(64)}`,
+          kind: "skill",
+          name: "review",
+          status: "unavailable",
+          availability: "available",
+          executionSupport: "inventory_only",
+          source: "project",
+          invocation: "native_skill"
+        }
+      ]
+    });
 
     expect(pathLeak.success).toBe(false);
     expect(mismatch.success).toBe(false);
+    expect(unverifiedInvocation.success).toBe(false);
   });
 
   it("binds completed operation catalogs to the requested computer and Project", () => {

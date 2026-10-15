@@ -29,6 +29,7 @@ const writeFakeAppServer = (
     versionDelayMs?: number;
     nodeEntry?: boolean;
     expectedConfigOverrides?: string[];
+    expectedTurnStartInput?: unknown;
     modelPages?: Array<{
       expectedCursor?: string | null;
       response: Record<string, unknown>;
@@ -74,6 +75,9 @@ if (!process.argv.includes("app-server") || !process.argv.includes("--listen") |
 }
 const expectedConfigOverrides = ${JSON.stringify(
       options.expectedConfigOverrides ?? []
+    )};
+const expectedTurnStartInput = ${JSON.stringify(
+      options.expectedTurnStartInput ?? null
     )};
 const actualConfigOverrides = [];
 for (let index = 0; index < process.argv.length; index += 1) {
@@ -210,6 +214,13 @@ lineReader.on("line", (line) => {
     return;
   }
   if (message.method === "turn/start") {
+    if (
+      expectedTurnStartInput !== null &&
+      JSON.stringify(message.params.input) !== JSON.stringify(expectedTurnStartInput)
+    ) {
+      console.error("unexpected turn/start input: " + JSON.stringify(message.params.input));
+      process.exit(55);
+    }
     turnId = turnIndex === 0 ? "turn-test" : "turn-test-" + (turnIndex + 1);
     const currentTurnStatus = turnStatuses[turnIndex] ?? turnStatus;
     turnIndex += 1;
@@ -819,6 +830,61 @@ describe("Codex app-server runner", () => {
       }
     }
   );
+
+  it("sends selected Skills as structured native turn input", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-selected-skill-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    const skillPath = path.join(
+      tempDirectory,
+      ".agents",
+      "skills",
+      "review",
+      "SKILL.md"
+    );
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, "name: review\n");
+    const expectedInput = [
+      { type: "text", text: "$review Prompt text", text_elements: [] },
+      { type: "skill", name: "review", path: skillPath }
+    ];
+
+    try {
+      const result = await runCodexAppServerTurn(
+        "Prompt text",
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            expectedTurnStartInput: expectedInput
+          }),
+          model: "gpt-5.4-mini",
+          reasoningEffort: "low",
+          cwd: tempDirectory,
+          env: {
+            ...process.env,
+            CODEX_HOME: realCodexHome,
+            FAKE_REAL_CODEX_HOME: realCodexHome
+          },
+          clientName: "koed-selected-skill-test",
+          baseInstructions: "Return the answer.",
+          developerInstructions: "",
+          approvalPolicy: "never",
+          sandboxMode: "read-only",
+          approvalsReviewer: "user",
+          selectedSkills: [{ name: "review", path: skillPath }]
+        },
+        3000
+      );
+
+      const turnStart = result.rawEvents?.find(
+        (event) => event.method === "turn/start"
+      )?.params as Record<string, unknown> | undefined;
+      expect(turnStart?.input).toEqual(expectedInput);
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
 
   it("forwards narrowly scoped app-server config overrides", async () => {
     const tempDirectory = fs.mkdtempSync(

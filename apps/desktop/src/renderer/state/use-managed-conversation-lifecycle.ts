@@ -1,3 +1,4 @@
+import { managedConversationSelectedResourceIdsSchema } from "@koed/shared/ai-client-resource-catalog";
 import {
   managedConversationUpdatesSince,
   type ManagedConversationUpdateEnvelope
@@ -18,6 +19,8 @@ import type { PersonalMemoryStore } from "./personal-memory.js";
 export type InitialConversationPrompt = {
   clientUserMessageId: string;
   prompt: string;
+  selectedResourceIds?: string[];
+  selectedResourceHostedInstanceId?: string;
   status: "queued" | "rejected" | "reconciling";
   message: string;
 };
@@ -104,11 +107,34 @@ const recoveredManagedConversationDrafts = (
                   typeof item.message !== "string"
                 )
                   return undefined;
+                const resourceIds =
+                  managedConversationSelectedResourceIdsSchema.safeParse(
+                    item.selectedResourceIds ?? []
+                  );
+                const hasSkillChoices =
+                  resourceIds.success && resourceIds.data.length > 0;
+                // Retain opaque scope for recovery diagnostics, but never replay a
+                // choice whose display catalog and expiry were not restored.
+                const resourceScope =
+                  hasSkillChoices &&
+                  typeof item.selectedResourceHostedInstanceId === "string" &&
+                  item.selectedResourceHostedInstanceId.length > 0 &&
+                  item.selectedResourceHostedInstanceId.length <= 160
+                    ? {
+                        selectedResourceIds: resourceIds.data,
+                        selectedResourceHostedInstanceId:
+                          item.selectedResourceHostedInstanceId
+                      }
+                    : {};
                 return {
+                  ...resourceScope,
                   clientUserMessageId: item.clientUserMessageId,
                   prompt: item.prompt,
                   status: item.status,
-                  message: item.message
+                  message:
+                    item.status === "rejected" && hasSkillChoices
+                      ? `${item.message} Select your Skills again before retrying this message.`.trim()
+                      : item.message
                 };
               })()
             : undefined;

@@ -26,6 +26,26 @@ export const createManagedConversationPreloadApi = (
   invoke: ManagedConversationIpcInvoke
 ): ManagedConversationDesktopApi => {
   const api: ManagedConversationDesktopApi = {
+    resources: async (input) => {
+      const request = parseManagedConversationRequest({
+        operation: "resources",
+        ...input
+      });
+      const result = correlated(
+        "resources",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (
+        result.catalog.aiClientInstanceId !== input.aiClientInstanceId ||
+        result.catalog.hostedInstanceId !== input.aiClientInstanceId ||
+        result.catalog.projectId !== input.projectId ||
+        Date.parse(result.catalog.expiresAt) <= Date.now()
+      )
+        throw new Error(
+          "AI Client resources changed. Refresh before choosing a Skill."
+        );
+      return result;
+    },
     launchOptions: async () =>
       correlated(
         "launch_options",

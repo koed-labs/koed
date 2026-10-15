@@ -1,3 +1,4 @@
+import { aiClientResourceDiscoveryOperationSchema } from "@koed/shared/ai-client-resource-catalog";
 import { hostname } from "node:os";
 import {
   readPersonalDeviceNames,
@@ -3274,6 +3275,59 @@ export const createKoedServerManager = ({
   const managedConversation: ManagedConversationDesktopHandler = async (
     request
   ) => {
+    if (request.operation === "resources") {
+      // Reuse the same owner-authenticated, device-scoped discovery pipeline as Studio.
+      // The original Electron composer executes locally; no renderer paths or remote target override.
+      let operation = aiClientResourceDiscoveryOperationSchema.parse(
+        await authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL("/v1/ai-client-resources/discover", apiOrigin),
+            init: {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                hostedInstanceId: request.aiClientInstanceId,
+                projectId: request.projectId,
+                requestId: randomUUID()
+              })
+            }
+          }),
+          512 * 1024
+        )
+      );
+      const deadline = Date.now() + 75_000;
+      while (operation.state === "pending" || operation.state === "running") {
+        if (Date.now() >= deadline)
+          throw new PersonalMemoryBoundaryError("not_ready", true);
+        await new Promise<void>((resolve) => setTimeout(resolve, 750));
+        operation = aiClientResourceDiscoveryOperationSchema.parse(
+          await authenticatedPersonalMemoryRequest(
+            ({ apiOrigin }) => ({
+              url: new URL(
+                `/v1/ai-client-resources/discover/${encodeURIComponent(operation.operationId)}`,
+                apiOrigin
+              ),
+              init: { method: "GET" }
+            }),
+            512 * 1024
+          )
+        );
+      }
+      const catalog = operation.catalog;
+      if (
+        operation.state !== "completed" ||
+        !catalog ||
+        catalog.aiClientInstanceId !== request.aiClientInstanceId ||
+        catalog.hostedInstanceId !== request.aiClientInstanceId ||
+        catalog.projectId !== request.projectId ||
+        Date.parse(catalog.expiresAt) <= Date.now()
+      )
+        throw new PersonalMemoryBoundaryError("not_ready", false);
+      return parseManagedConversationResult({
+        operation: "resources",
+        catalog
+      });
+    }
     if (request.operation === "launch_options") {
       const payload = await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => ({
@@ -3817,6 +3871,13 @@ export const createKoedServerManager = ({
               idempotencyKey: request.idempotencyKey,
               clientUserMessageId: request.clientUserMessageId,
               prompt: request.prompt,
+              ...(request.selectedResourceIds
+                ? {
+                    selectedResourceIds: request.selectedResourceIds,
+                    selectedResourceHostedInstanceId:
+                      request.selectedResourceHostedInstanceId
+                  }
+                : {}),
               fileMentionCommandIds: request.fileMentionCommandIds,
               terminalContextReferences: request.terminalContextReferences,
               ...(request.settingsChange

@@ -298,6 +298,19 @@ export type HostedLaunchOptions = {
   projects: Array<{ id: string; name: string }>;
 };
 
+/** Keep the prelaunch native-resource scope bound to its chosen Project and Client. */
+export const hostedPrivateLaunchResourceScope = (
+  projectId: string | null,
+  instance: HostedLaunchOptions["instances"][number] | undefined
+) => ({
+  projectId,
+  ...(instance?.hostedInstanceId
+    ? { hostedInstanceId: instance.hostedInstanceId }
+    : {}),
+  ...(instance?.instanceId ? { instanceId: instance.instanceId } : {}),
+  ...(instance?.driverId ? { provider: instance.driverId } : {})
+});
+
 export const hostedLaunchInstancesForDevice = (
   options: HostedLaunchOptions | null,
   deviceId: string

@@ -210,8 +210,9 @@ it("shows a rejected isolated Claude skill turn while keeping its draft and chat
   await mount(undefined, base.execution.id);
   const view = mocks.view.mock.lastCall?.[0];
   expect(view.runtime.error).toContain(
-    "Remove the skill selection and send again"
+    "Remove the Skill selection and send again"
   );
+  expect(view.runtime.error).toContain("isolated Client settings");
   expect(view.runtime.error).not.toContain("ManagedConversation");
   expect(view.initialDraft).toBe("Retained prompt");
   expect(container.textContent).not.toContain("Reconnect conversation");

@@ -7,7 +7,7 @@ export const managedInstructionFailureMessage = (
     case "ManagedConversationProjectInstructionsSnapshotError":
       return "Claude's saved Project instructions could not be restored. Restore the original instruction snapshot before continuing; the current file has not replaced it.";
     case "ManagedConversationInstructionSkillsUnavailableError":
-      return "Selected skills are not yet supported with isolated Claude Project instructions. Remove the skill selection and send again.";
+      return "This Claude Skill cannot run with Koed's isolated Client settings. Remove the Skill selection and send again, or choose a compatible Skill.";
     case "ManagedConversationProjectInstructionsTransferError":
       return "This Claude chat's saved Project instructions cannot yet be transferred to another runtime. The transfer has not completed.";
     default:

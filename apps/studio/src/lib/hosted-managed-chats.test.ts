@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, hostedNewStartPromptForVerifiedScope, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadHostedRecallFeedback, updateHostedRecallFeedback, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedPrivateLaunchResourceScope, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, hostedNewStartPromptForVerifiedScope, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadHostedRecallFeedback, updateHostedRecallFeedback, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation, type HostedLaunchOptions } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -29,6 +29,23 @@ const json = (value: unknown, status = 200) =>
     status,
     headers: { "content-type": "application/json" }
   });
+
+test("binds hosted private launch Skills to the selected Client, computer, and Project", () => {
+  const selected = {
+    instanceId: "codex-instance",
+    hostedInstanceId: "hosted-codex-on-device-b",
+    driverId: "codex"
+  } as HostedLaunchOptions["instances"][number];
+  assert.deepEqual(hostedPrivateLaunchResourceScope("project-b", selected), {
+    projectId: "project-b",
+    hostedInstanceId: "hosted-codex-on-device-b",
+    instanceId: "codex-instance",
+    provider: "codex"
+  });
+  assert.deepEqual(hostedPrivateLaunchResourceScope(null, undefined), {
+    projectId: null
+  });
+});
 
 test("hosted recall feedback uses the exact answer route and desired-state PUT", async () => {
   const requests: Array<{ path: string; method: string; body?: string }> = [];

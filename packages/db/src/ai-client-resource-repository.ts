@@ -173,6 +173,23 @@ export interface AiClientResourceRepository {
   }): Promise<AiClientResourceDiscoveryOperation | null>;
 }
 
+// Recheck the current Client and device grant after claim as well as before it.
+const resourceOperationAuthorizedSql = `exists (
+               select 1 from ai_client_instances i
+               left join device_credentials d on d.id=i.source_device_credential_id
+                 and d.owner_user_id=i.owner_user_id and d.revoked_at is null
+                 and (d.expires_at is null or d.expires_at>now())
+               where i.owner_user_id=o.owner_user_id
+                 and i.instance_id=o.ai_client_instance_id
+                 and i.source_device_credential_id=o.source_device_credential_id
+                 and i.driver_id=o.provider
+                 and i.enabled=true
+                 and ((o.source_device_credential_id='${LOCAL_DEVICE_CREDENTIAL_ID}'::uuid)
+                   or (d.id is not null and d.device_instance_id=o.target_device_id
+                     and d.metadata->>'protocolDeploymentId'=o.target_deployment_id::text
+                     and 'managed_execution'=any(d.operation_families)))
+             )`;
+
 export const createAiClientResourceRepository = (
   pool: QueryClient
 ): AiClientResourceRepository => ({
@@ -288,8 +305,9 @@ export const createAiClientResourceRepository = (
     let row = inserted.rows[0];
     if (!row) {
       const existing = await pool.query<OperationRow>(
-        `select * from ai_client_resource_discovery_operations
-         where owner_user_id=$1 and request_id=$2 limit 1`,
+        `select o.* from ai_client_resource_discovery_operations o
+         where o.owner_user_id=$1 and o.request_id=$2
+           and ${resourceOperationAuthorizedSql} limit 1`,
         [actor.userId, input.requestId]
       );
       row = existing.rows[0];
@@ -303,8 +321,9 @@ export const createAiClientResourceRepository = (
   async getAiClientResourceDiscoveryOperation(actor, input) {
     if (!UUID.test(input.operationId)) return null;
     const { rows } = await pool.query<OperationRow>(
-      `select * from ai_client_resource_discovery_operations
-       where id=$1 and owner_user_id=$2 limit 1`,
+      `select o.* from ai_client_resource_discovery_operations o
+       where o.id=$1 and o.owner_user_id=$2
+         and ${resourceOperationAuthorizedSql} limit 1`,
       [input.operationId, actor.userId]
     );
     return rows[0] ? mapOperation(rows[0]) : null;
@@ -334,21 +353,7 @@ export const createAiClientResourceRepository = (
            where o.owner_user_id=$1 and o.target_deployment_id=$2 and o.target_device_id=$3
              and (o.state='pending' or (o.state='running' and o.lease_expires_at<=now()))
              and o.attempt<3
-             and exists (
-               select 1 from ai_client_instances i
-               left join device_credentials d on d.id=i.source_device_credential_id
-                 and d.owner_user_id=i.owner_user_id and d.revoked_at is null
-                 and (d.expires_at is null or d.expires_at>now())
-               where i.owner_user_id=o.owner_user_id
-                 and i.instance_id=o.ai_client_instance_id
-                 and i.source_device_credential_id=o.source_device_credential_id
-                 and i.driver_id=o.provider
-                 and i.enabled=true
-                 and ((o.source_device_credential_id='${LOCAL_DEVICE_CREDENTIAL_ID}'::uuid)
-                   or (d.id is not null and d.device_instance_id=o.target_device_id
-                     and d.metadata->>'protocolDeploymentId'=o.target_deployment_id::text
-                     and 'managed_execution'=any(d.operation_families)))
-             )
+             and ${resourceOperationAuthorizedSql}
            order by o.created_at,o.id for update of o skip locked limit $4
          )
          update ai_client_resource_discovery_operations o
@@ -400,11 +405,12 @@ export const createAiClientResourceRepository = (
 
   async heartbeatAiClientResourceDiscoveryOperation(input) {
     const result = await pool.query(
-      `update ai_client_resource_discovery_operations
+      `update ai_client_resource_discovery_operations o
        set lease_expires_at=now()+($8::int*interval '1 millisecond'), updated_at=now()
        where id=$1 and owner_user_id=$2 and target_deployment_id=$3 and target_device_id=$4
          and claimed_by_runner_id=$5 and lease_token=$6 and revision=$7
-         and state='running' and lease_expires_at>now() returning id`,
+         and state='running' and lease_expires_at>now()
+         and ${resourceOperationAuthorizedSql} returning id`,
       [
         input.operationId,
         input.ownerUserId,
@@ -422,13 +428,14 @@ export const createAiClientResourceRepository = (
   async completeAiClientResourceDiscoveryOperation(input) {
     const catalog = aiClientResourceCatalogSchema.parse(input.catalog);
     const result = await pool.query<OperationRow>(
-      `update ai_client_resource_discovery_operations
+      `update ai_client_resource_discovery_operations o
        set state='completed', catalog=$8::jsonb, error_code=null, lease_token=null,
            lease_expires_at=null, claimed_by_runner_id=null, revision=revision+1,
            updated_at=now(), completed_at=now()
        where id=$1 and owner_user_id=$2 and target_deployment_id=$3 and target_device_id=$4
          and claimed_by_runner_id=$5 and lease_token=$6 and revision=$7
          and state='running' and lease_expires_at>now()
+         and ${resourceOperationAuthorizedSql}
          and $8::jsonb->>'hostedInstanceId'=hosted_instance_id
          and $8::jsonb->>'aiClientInstanceId'=ai_client_instance_id
          and $8::jsonb->>'provider'=provider
@@ -453,12 +460,13 @@ export const createAiClientResourceRepository = (
     if (!/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(input.errorCode))
       throw fail("AI_CLIENT_RESOURCE_ERROR_CODE_INVALID", 400);
     const { rows } = await pool.query<OperationRow>(
-      `update ai_client_resource_discovery_operations
+      `update ai_client_resource_discovery_operations o
        set state='failed', error_code=$8, lease_token=null, lease_expires_at=null,
            claimed_by_runner_id=null, revision=revision+1, updated_at=now(), completed_at=now()
        where id=$1 and owner_user_id=$2 and target_deployment_id=$3 and target_device_id=$4
          and claimed_by_runner_id=$5 and lease_token=$6 and revision=$7
-         and state='running' and lease_expires_at>now() returning *`,
+         and state='running' and lease_expires_at>now()
+         and ${resourceOperationAuthorizedSql} returning *`,
       [
         input.operationId,
         input.ownerUserId,

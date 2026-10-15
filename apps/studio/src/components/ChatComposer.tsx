@@ -134,6 +134,40 @@ export type ChatComposerAgentSelection = Readonly<{
   selectedResourceHostedInstanceId?: string;
 }>;
 
+function unexpiredNativeSkills(
+  selected: { key: string; expiresAt: string; skills: NativeSkill[] } | null,
+  scopeKey: string
+): NativeSkill[] {
+  return selected?.key === scopeKey &&
+    Date.parse(selected.expiresAt) > Date.now()
+    ? selected.skills
+    : [];
+}
+
+function withoutSelectedNativeSkills(
+  recipient: ChatComposerAgentSelection
+): ChatComposerAgentSelection {
+  const copy = { ...recipient };
+  Reflect.deleteProperty(copy, "selectedResourceIds");
+  Reflect.deleteProperty(copy, "selectedResourceHostedInstanceId");
+  return copy;
+}
+
+function boundedNativeSkillExpiry(
+  selected: { key: string; expiresAt: string } | null,
+  scopeKey: string,
+  proposedExpiry: string
+): string | null {
+  const now = Date.now();
+  const catalogExpiry = Date.parse(proposedExpiry);
+  if (!Number.isFinite(catalogExpiry) || catalogExpiry <= now) return null;
+  const previousExpiry =
+    selected?.key === scopeKey && Date.parse(selected.expiresAt) > now
+      ? Date.parse(selected.expiresAt)
+      : Number.POSITIVE_INFINITY;
+  return new Date(Math.min(previousExpiry, catalogExpiry)).toISOString();
+}
+
 export type ChatComposerRestoreSelection = Readonly<{
   key: string;
   instanceId?: string;
@@ -188,6 +222,8 @@ type ChatComposerProps = {
   sendEnabled?: boolean;
   sendDisabledReason?: string;
   showExecutionControls?: boolean;
+  /** Allows the scoped Skill picker in owner-private launch prompts with controls hidden. */
+  allowNativeSkillSelection?: boolean;
   switchToExecutionControlsOnMention?: boolean;
   showMetaBar?: boolean;
   environmentSwitchDisabled?: boolean;
@@ -238,6 +274,7 @@ export function ChatComposer({
   sendEnabled = true,
   sendDisabledReason,
   showExecutionControls = true,
+  allowNativeSkillSelection = false,
   switchToExecutionControlsOnMention = false,
   showMetaBar = true,
   environmentSwitchDisabled = true,
@@ -352,6 +389,7 @@ export function ChatComposer({
   const [selectedSkills, setSelectedSkills] = useState<{
     key: string;
     skills: NativeSkill[];
+    expiresAt: string;
   } | null>(null);
   const skillKeyboardRef = useRef<NativeSkillKeyboardHandler | null>(null);
   const [skillCaret, setSkillCaret] = useState<number | null>(null);
@@ -561,7 +599,32 @@ export function ChatComposer({
     : null;
   const skillScopeKey = JSON.stringify(resourceScope);
   const skillSelection =
-    selectedSkills?.key === skillScopeKey ? selectedSkills.skills : [];
+    !selectedAgent?.teamRequestOnly && selectedSkills?.key === skillScopeKey
+      ? selectedSkills.skills
+      : [];
+  useEffect(() => {
+    if (!selectedSkills) return;
+    const delay = Date.parse(selectedSkills.expiresAt) - Date.now();
+    const timer = setTimeout(
+      () => {
+        setSelectedSkills((current) =>
+          current?.expiresAt === selectedSkills.expiresAt ? null : current
+        );
+      },
+      Math.max(0, delay) + 1
+    );
+    return () => clearTimeout(timer);
+  }, [selectedSkills]);
+  useEffect(() => {
+    if (
+      !selectedSkills ||
+      (!selectedAgent?.teamRequestOnly && selectedSkills.key === skillScopeKey)
+    )
+      return;
+    // Scope changes and requester-only routing must clear exact resource IDs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedSkills(null);
+  }, [selectedAgent?.teamRequestOnly, selectedSkills, skillScopeKey]);
   const recipientAgentIds = allowMultipleAgentMentions
     ? explicitlyMentionedAgentIds.length
       ? explicitlyMentionedAgentIds
@@ -801,29 +864,49 @@ export function ChatComposer({
   ]);
   useEffect(() => {
     onSelectedResourceIdsChange?.(
-      selectedSkills?.key === skillScopeKey
+      !selectedAgent?.teamRequestOnly && selectedSkills?.key === skillScopeKey
         ? selectedSkills.skills.map((skill) => skill.resourceId)
         : []
     );
-  }, [onSelectedResourceIdsChange, selectedSkills, skillScopeKey]);
+  }, [
+    onSelectedResourceIdsChange,
+    selectedAgent?.teamRequestOnly,
+    selectedSkills,
+    skillScopeKey
+  ]);
   const slashMatch =
-    resourceScope && executionControlsVisible && !selectedAgent?.teamRequestOnly
+    resourceScope &&
+    (executionControlsVisible || allowNativeSkillSelection) &&
+    !selectedAgent?.teamRequestOnly
       ? /(?:^|\s)\/([^\s/]*)$/.exec(draft.slice(0, skillCaret ?? draft.length))
       : null;
   const slashQuery =
     slashMatch && dismissedSkillQuery !== `${skillScopeKey}:${draft}`
       ? slashMatch[1]
       : null;
-  const selectNativeSkill = (skill: NativeSkill) => {
-    if (!slashMatch || skillSelection.length >= 8) return;
+  const selectNativeSkill = (skill: NativeSkill, expiresAt: string) => {
+    const singleSkillScope =
+      resourceScope?.provider === "claude" ||
+      resourceScope?.provider === "claude-code";
+    if (!slashMatch || (!singleSkillScope && skillSelection.length >= 8))
+      return;
+    const selectionExpiry = boundedNativeSkillExpiry(
+      selectedSkills,
+      skillScopeKey,
+      expiresAt
+    );
+    if (!selectionExpiry) return;
     setSelectedSkills({
       key: skillScopeKey,
-      skills: [
-        ...skillSelection.filter(
-          (item) => item.resourceId !== skill.resourceId
-        ),
-        skill
-      ]
+      expiresAt: selectionExpiry,
+      skills: singleSkillScope
+        ? [skill]
+        : [
+            ...skillSelection.filter(
+              (item) => item.resourceId !== skill.resourceId
+            ),
+            skill
+          ]
     });
     const end = skillCaret ?? draft.length;
     const start = end - slashMatch[1].length - 1;
@@ -940,10 +1023,28 @@ export function ChatComposer({
     const trimmed = draft.trim();
     if (!trimmed || !canSend) return;
     modelSettingsTouched.current = true;
+    const submittedSkills = selectedAgent?.teamRequestOnly
+      ? []
+      : unexpiredNativeSkills(selectedSkills, skillScopeKey);
+    const submittedRecipients = recipientSelections.map((recipient) => {
+      if (recipient.agentId !== activeAgentId) return recipient;
+      const recipientWithoutSkills = withoutSelectedNativeSkills(recipient);
+      if (!submittedSkills.length) return recipientWithoutSkills;
+      return {
+        ...recipientWithoutSkills,
+        selectedResourceIds: submittedSkills.map((skill) => skill.resourceId),
+        ...(recipientWithoutSkills.hostedInstanceId
+          ? {
+              selectedResourceHostedInstanceId:
+                recipientWithoutSkills.hostedInstanceId
+            }
+          : {})
+      };
+    });
     const selection: ChatComposerSelection = Object.freeze({
       agentId: activeAgentId,
       ...(allowMultipleAgentMentions
-        ? { recipients: recipientSelections }
+        ? { recipients: submittedRecipients }
         : {}),
       mentionUserIds: Array.from(
         new Set(
@@ -969,9 +1070,11 @@ export function ChatComposer({
               (candidate) => effortIndexFor(candidate) === effortIndex
             ) ?? EFFORT_LEVELS[effortIndex]),
       permissionMode: effectiveAccess.id,
-      ...(skillSelection.length
+      ...(submittedSkills.length
         ? {
-            selectedResourceIds: skillSelection.map((skill) => skill.resourceId)
+            selectedResourceIds: submittedSkills.map(
+              (skill) => skill.resourceId
+            )
           }
         : {}),
       ...(selectedCapability?.hostedInstanceId
@@ -1302,12 +1405,16 @@ export function ChatComposer({
                 className="rounded border border-border px-2 py-1 text-xs text-foreground-secondary"
                 aria-label={`Remove Skill ${skill.name}`}
                 onClick={() =>
-                  setSelectedSkills({
-                    key: skillScopeKey,
-                    skills: skillSelection.filter(
-                      (item) => item.resourceId !== skill.resourceId
-                    )
-                  })
+                  setSelectedSkills((current) =>
+                    current?.key === skillScopeKey
+                      ? {
+                          ...current,
+                          skills: current.skills.filter(
+                            (item) => item.resourceId !== skill.resourceId
+                          )
+                        }
+                      : current
+                  )
                 }
               >
                 /{skill.name} ×

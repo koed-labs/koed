@@ -575,6 +575,7 @@ export type {
   SupportedAiClientDriverId
 } from "./ai-client-contract.js";
 export {
+  aiClientResourceAvailabilitySchema,
   aiClientResourceCatalogSchema,
   aiClientResourceCatalogVersion,
   aiClientResourceDiscoveryOperationSchema,
@@ -587,6 +588,7 @@ export {
   aiClientResourceIdSchema,
   aiClientResourceInvocationSchema,
   aiClientResourceKindSchema,
+  aiClientResourceExecutionSupportSchema,
   aiClientResourceSchema,
   aiClientResourceSourceSchema,
   aiClientResourceStatusSchema,
@@ -594,10 +596,12 @@ export {
 } from "./ai-client-resource-catalog.js";
 export type {
   AiClientResource,
+  AiClientResourceAvailability,
   AiClientResourceCatalog,
   AiClientResourceDiscoveryOperation,
   AiClientResourceDiscoveryRequest,
   AiClientResourceDiscoveryRunnerClaim,
+  AiClientResourceExecutionSupport,
   ManagedConversationSelectedResourceIds
 } from "./ai-client-resource-catalog.js";
 export {

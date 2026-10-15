@@ -59,6 +59,7 @@ import {
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { DesktopApi } from "../../../types.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { useConversationSkills } from "./use-conversation-skills.js";
 
 import {
   NativeConversationSurface,
@@ -2068,6 +2069,19 @@ function ManagedConversationComposer({
   const [draftError, setDraftError] = useState("");
   const [resolvedConversation, setResolvedConversation] =
     useState<ManagedConversationIdentity>(conversation);
+  const skillScope = {
+    projectId: resolvedConversation.projectId,
+    instanceId:
+      resolvedConversation.executionOwner?.instanceId ??
+      initialSelection?.aiClientInstanceId,
+    hostedInstanceId:
+      resolvedConversation.executionOwner?.instanceId ??
+      initialSelection?.aiClientInstanceId,
+    provider:
+      resolvedConversation.executionOwner?.driverId ??
+      initialSelection?.aiClientDriverId
+  };
+  const skillChoices = useConversationSkills(skillScope);
   const capabilities = useContext(ManagedCapabilitiesContext);
   const ownerCapabilities = resolvedConversation.executionOwner
     ? capabilities?.get(managedOwnerKey(resolvedConversation.executionOwner))
@@ -2137,6 +2151,8 @@ function ManagedConversationComposer({
     fileMentionCommandIds: string[];
     terminalContextReferences: string[];
     settingsChange?: ManagedConversationSettingsChange;
+    selectedResourceIds?: string[];
+    selectedResourceHostedInstanceId?: string;
     contextAttachments: Array<
       | { kind: "file"; reference: string; label: string }
       | { kind: "terminal"; reference: string; label: string }
@@ -2591,6 +2607,12 @@ function ManagedConversationComposer({
       )
     )
       return;
+    if (skillChoices.expired) {
+      setSettingsError(
+        "Skill choices expired. Remove them and select again before sending."
+      );
+      return;
+    }
     const fileMentionCommandIds = contextAttachments
       .filter((attachment) => attachment.kind === "file")
       .map((attachment) => attachment.reference);
@@ -2599,6 +2621,10 @@ function ManagedConversationComposer({
       .map((attachment) => attachment.reference);
     const submission =
       submissionRef.current?.prompt === draft &&
+      JSON.stringify(submissionRef.current.selectedResourceIds ?? []) ===
+        JSON.stringify(skillChoices.selection.selectedResourceIds ?? []) &&
+      submissionRef.current.selectedResourceHostedInstanceId ===
+        skillChoices.selection.selectedResourceHostedInstanceId &&
       JSON.stringify(submissionRef.current.fileMentionCommandIds) ===
         JSON.stringify(fileMentionCommandIds) &&
       JSON.stringify(submissionRef.current.terminalContextReferences) ===
@@ -2610,6 +2636,7 @@ function ManagedConversationComposer({
             idempotencyKey: `desktop-prompt:${crypto.randomUUID()}`,
             clientUserMessageId: crypto.randomUUID(),
             prompt: draft,
+            ...skillChoices.selection,
             fileMentionCommandIds,
             terminalContextReferences,
             contextAttachments,
@@ -2638,6 +2665,13 @@ function ManagedConversationComposer({
         idempotencyKey: submission.idempotencyKey,
         clientUserMessageId: submission.clientUserMessageId,
         prompt: submission.prompt,
+        ...(submission.selectedResourceIds
+          ? {
+              selectedResourceIds: submission.selectedResourceIds,
+              selectedResourceHostedInstanceId:
+                submission.selectedResourceHostedInstanceId
+            }
+          : {}),
         fileMentionCommandIds: submission.fileMentionCommandIds,
         terminalContextReferences: submission.terminalContextReferences,
         ...(submission.settingsChange
@@ -2690,6 +2724,7 @@ function ManagedConversationComposer({
       submissionRef.current = null;
       submissionInFlightRef.current = false;
       lastSubmittedRef.current = submission;
+      skillChoices.clear();
       if (submission.settingsChange) {
         setUsage((current) =>
           current ? { ...current, ...submission.settingsChange!.next } : current
@@ -2732,6 +2767,7 @@ function ManagedConversationComposer({
     startupStatus,
     state.status,
     settingsChange,
+    skillChoices,
     refreshSettingsOptions,
     refreshRuntimeSnapshot
   ]);
@@ -2999,6 +3035,7 @@ function ManagedConversationComposer({
         }
         disabled={inputDisabled}
         label="Prompt selected AI Client"
+        nativeSkills={{ api, scope: skillScope, choices: skillChoices }}
         onChange={(value) => {
           setDraft(value);
           draftRef.current = value;

@@ -45,6 +45,7 @@
   "dependencies": {
     "@koed/koed-server": "workspace:*",
     "@koed/shared": "workspace:*",
+    "@koed/ui": "workspace:*",
     "@radix-ui/react-tooltip": "^1.2.16",
     "clsx": "^2.1.1",
     "lucide-react": "^1.40.0",
@@ -65,11 +66,11 @@
     "concurrently": "^9.2.4",
     "electron": "^41.7.1",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "wait-on": "^9.1.0",
-    "esbuild": "^0.28.0"
+    "wait-on": "^9.1.0"
   }
 }
