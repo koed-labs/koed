@@ -5,7 +5,7 @@ import {
   type PdsSessionCheckpointManifest,
   type PdsSessionPackage
 } from "@koed/shared";
-import type { PdsClosureSource } from "@koed/db";
+import type { PdsClosureSource, MemorySourceRepository } from "@koed/db";
 import {
   createPdsCheckpointPublicationService,
   publishPdsCheckpointCandidate
@@ -122,6 +122,7 @@ describe("PDS completed-turn checkpoint publication", () => {
       };
     });
     const repository = {
+      republishPdsClosedSourceSession: vi.fn(),
       listPdsCheckpointCandidates: vi.fn(async () => [candidate]),
       checkpointPdsSourceSession
     };
@@ -186,6 +187,73 @@ describe("PDS completed-turn checkpoint publication", () => {
     });
   });
 
+  it("publishes a discovered old closed source through the sealed-source signer", async () => {
+    const pkg = securePackage();
+    const boundary = {
+      previousProfile: "pre_repository_cutover" as const,
+      previousManifestHash: "old-manifest",
+      previousClosureHash: "closure-one",
+      previousSourceSequence: "7"
+    };
+    const closedAt = new Date("2026-07-15T00:00:03.000Z");
+    const buildClosedSessionPackage = vi.fn(async () => ({
+      package: pkg,
+      sourceClosureHash: "closure-one",
+      sourceManifestHash: "manifest-one",
+      sourceFingerprint: "fingerprint-one",
+      logicalMemoryId: "logical-memory-one",
+      deletionFloorToken: "floor-one"
+    }));
+    const checkpointPdsSourceSession = vi.fn();
+    const republishPdsClosedSourceSession = vi.fn(
+      async (
+        publication: Parameters<
+          MemorySourceRepository["republishPdsClosedSourceSession"]
+        >[0]
+      ) => {
+        await publication.build({
+          source,
+          sourceSequence: "8",
+          closedAt,
+          closedProfileTransition: boundary
+        });
+        return null;
+      }
+    );
+    const encrypt = vi.fn(async (input: { plaintext: string }) => {
+      expect(input.plaintext).toBeTruthy();
+      return { ciphertext: "encrypted" };
+    });
+    await publishPdsCheckpointCandidate({
+      repository: {
+        listPdsCheckpointCandidates: vi.fn(),
+        checkpointPdsSourceSession,
+        republishPdsClosedSourceSession
+      },
+      secureKeyProvider: {
+        getSourceContext: vi.fn(async () => ({
+          originDeploymentId: "deployment-one",
+          originDeviceId: "device-one",
+          buildClosedSessionPackage
+        }))
+      } as never,
+      envelopeEncryptionProvider: { encrypt } as never,
+      candidate: { ...candidate, closedProfileUpgrade: true }
+    });
+    expect(checkpointPdsSourceSession).not.toHaveBeenCalled();
+    expect(buildClosedSessionPackage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source,
+        sourceSequence: "8",
+        closedAt,
+        closedProfileTransition: boundary
+      })
+    );
+    expect(parseCanonicalPdsJson(encrypt.mock.calls[0]![0].plaintext)).toEqual(
+      pkg
+    );
+  });
+
   it("drains bounded durable candidates on startup and closes cleanly", async () => {
     let listed = false;
     const builtPackage = securePackage();
@@ -194,6 +262,7 @@ describe("PDS completed-turn checkpoint publication", () => {
       resolvePublished = resolve;
     });
     const repository = {
+      republishPdsClosedSourceSession: vi.fn(),
       listPdsCheckpointCandidates: vi.fn(async () => {
         if (listed) return [];
         listed = true;
@@ -280,6 +349,7 @@ describe("PDS completed-turn checkpoint publication", () => {
     const checkpointCalls: string[] = [];
     let firstCandidateAttempts = 0;
     const repository = {
+      republishPdsClosedSourceSession: vi.fn(),
       listPdsCheckpointCandidates: vi.fn(
         async (input?: { afterSessionId?: string }) => {
           listCalls.push(input);
@@ -355,6 +425,7 @@ describe("PDS completed-turn checkpoint publication", () => {
     const listCalls: Array<{ afterSessionId?: string } | undefined> = [];
     const onError = vi.fn();
     const repository = {
+      republishPdsClosedSourceSession: vi.fn(),
       listPdsCheckpointCandidates: vi.fn(
         async (input?: { afterSessionId?: string }) => {
           listCalls.push(input);

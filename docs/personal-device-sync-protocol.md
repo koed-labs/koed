@@ -1090,6 +1090,16 @@ increase and the raw closure hash must equal the prior closure hash. The origin
 signature and package identity cover this boundary. Older signed profiles remain
 stored unchanged and are rejected by the released reader.
 
-Closed-source publisher and receiver migration validation remains a ticket 16
-release gate. Republishing must preserve the sealed raw source, native and logical
-identity, and original closed-session timestamps; it must not reopen capture.
+The publication scan discovers retained old closed sources even when their
+Session predates policy enablement; this republishes an already-shared source
+and does not enable historical backfill. Migration 0059 allows one immutable
+closed publication per source profile epoch. The publisher preserves the original
+closed timestamp, native and logical identity, fingerprint, deletion floor, item
+count, and closure hash. Failed signing or changed identity rolls back the entire
+publication. Retained ciphertext, source mappings, and the old closure survive;
+source capture remains sealed. The current profile is published once.
+
+Native migration validation covers old V2 source publication, signing failure,
+changed-closure rejection, automatic candidate discovery, retained provenance,
+and the closed-source insertion fence. Closed-source receiver migration remains
+a ticket 16 release gate.

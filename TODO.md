@@ -126,8 +126,11 @@ children share lineage and must not count as independent corroboration.
   migration tests are implemented under ADR 0058. The old source publisher
   transition now verifies an unchanged-prefix baseline followed by resumed capture.
   Closed-source V3 now signs an immutable closure boundary; genuine V2 closed
-  source and V3 wire fixtures are retained. Finish database republication and
-  receiver migration validation for closed sources before release. Preserve old
+  source and V3 wire fixtures are retained. Migration 0059 and the native closed
+  source test verify automatic republication with immutable old provenance.
+  Finish receiver migration validation for closed sources before release. Audit
+  superseded pre-cutover PDS outbox work so old signed profiles cannot stall
+  delivery after the replacement is published; retain ciphertext and receipt history. Preserve old
   signed packages and existing logical Session identities; prove continued capture and an offline receiver can establish the
   new source-profile baseline without a legacy reader or automatic reassignment.
 - When integrating the Global branch, use a PDS replica's verified captured branch

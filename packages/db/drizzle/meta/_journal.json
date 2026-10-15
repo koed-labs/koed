@@ -414,6 +414,13 @@
       "when": 1792023629351,
       "tag": "0058_pds_source_profile_baselines",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792026071538,
+      "tag": "0059_pds_closed_profile_publications",
+      "breakpoints": true
     }
   ]
 }

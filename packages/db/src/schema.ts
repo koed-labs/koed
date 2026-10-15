@@ -13068,7 +13068,7 @@ export const pdsSessionClosures = pgTable(
   },
   (table) => [
     uniqueIndex("pds_session_closure_session_unique")
-      .on(table.groupId, table.sourceSessionId)
+      .on(table.groupId, table.sourceSessionId, table.sourceProfileEpoch)
       .where(sql`${table.publicationKind} = 'closed'`),
     uniqueIndex("pds_session_checkpoint_ordinal_unique")
       .on(table.groupId, table.sourceSessionId, table.checkpointOrdinal)

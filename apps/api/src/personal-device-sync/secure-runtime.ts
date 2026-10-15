@@ -354,6 +354,7 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
     },
     buildClosedSessionPackage(input) {
       const manifest = createPdsSessionManifest({
+        profileTransition: input.closedProfileTransition ?? null,
         repositoryAssignment: createPdsRepositoryAssignment(
           input.source.repositoryAssignment ?? {
             state: "historical_unresolved",

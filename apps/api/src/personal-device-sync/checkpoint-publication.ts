@@ -5,7 +5,10 @@ import {
 import type { MemorySourceRepository, PdsLocalClosureRecord } from "@koed/db";
 import type { PdsSecureKeyProvider } from "./local-source.js";
 import { pdsConversationItemsForClosure } from "./local-source.js";
-import { serializePdsCheckpointSourceForEncryptedStorage } from "./secure-runtime.js";
+import {
+  serializePdsPackageForEncryptedStorage,
+  serializePdsCheckpointSourceForEncryptedStorage
+} from "./secure-runtime.js";
 
 const CANDIDATE_BATCH_SIZE = 50;
 const MAX_CANDIDATES_PER_DRAIN = 200;
@@ -15,6 +18,7 @@ type Candidate = {
   userId: string;
   groupId: string;
   sessionId: string;
+  closedProfileUpgrade?: true;
 };
 
 type CheckpointBuildInput = Parameters<
@@ -23,7 +27,9 @@ type CheckpointBuildInput = Parameters<
 
 type CheckpointRepository = Pick<
   MemorySourceRepository,
-  "listPdsCheckpointCandidates" | "checkpointPdsSourceSession"
+  | "listPdsCheckpointCandidates"
+  | "checkpointPdsSourceSession"
+  | "republishPdsClosedSourceSession"
 >;
 
 export interface PdsCheckpointPublicationService {
@@ -52,17 +58,40 @@ export const publishPdsCheckpointCandidate = async (input: {
       source,
       sourceSequence,
       checkpoint,
-      profileTransition
+      profileTransition,
+      closedProfileTransition,
+      closedAt
     }: CheckpointBuildInput) {
-      if (!checkpoint) throw new Error("PdsCheckpointMetadataUnavailableError");
+      if (!checkpoint && !closedProfileTransition)
+        throw new Error("PdsCheckpointMetadataUnavailableError");
       const items = pdsConversationItemsForClosure(source);
-      const built = await keyContext.buildCompletedTurnCheckpointPackage({
-        source,
-        sourceSequence,
-        items,
-        checkpoint,
-        profileTransition
-      });
+      let built: Awaited<
+        ReturnType<typeof keyContext.buildClosedSessionPackage>
+      >;
+      let plaintext: string;
+      if (checkpoint) {
+        const completed = await keyContext.buildCompletedTurnCheckpointPackage({
+          source,
+          sourceSequence,
+          items,
+          checkpoint,
+          profileTransition
+        });
+        built = completed;
+        plaintext = serializePdsCheckpointSourceForEncryptedStorage({
+          manifest: completed.manifest,
+          package: completed.package
+        });
+      } else {
+        built = await keyContext.buildClosedSessionPackage({
+          source,
+          sourceSequence,
+          items,
+          closedAt,
+          closedProfileTransition
+        });
+        plaintext = serializePdsPackageForEncryptedStorage(built.package);
+      }
       const pkg = built.package;
       const sourceManifestHash = pkg.header.sourceManifestHash;
       if (
@@ -85,10 +114,7 @@ export const publishPdsCheckpointCandidate = async (input: {
         logicalMemoryId: built.logicalMemoryId,
         deletionFloorToken: built.deletionFloorToken,
         encryptedEnvelope: await input.envelopeEncryptionProvider.encrypt({
-          plaintext: serializePdsCheckpointSourceForEncryptedStorage({
-            manifest: built.manifest,
-            package: pkg
-          }),
+          plaintext,
           scope: {
             tenantId: input.candidate.userId,
             objectClass: "pds_source_package"
@@ -109,7 +135,9 @@ export const publishPdsCheckpointCandidate = async (input: {
     }
   };
 
-  return input.repository.checkpointPdsSourceSession(publication);
+  return input.candidate.closedProfileUpgrade
+    ? input.repository.republishPdsClosedSourceSession(publication)
+    : input.repository.checkpointPdsSourceSession(publication);
 };
 
 /**

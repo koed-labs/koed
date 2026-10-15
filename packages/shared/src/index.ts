@@ -1034,6 +1034,7 @@ export {
   verifyAndDecryptPdsSessionPackage,
   verifyAndDecryptPdsSessionSourcePackage,
   verifyPdsSessionCheckpointManifest,
+  verifyPdsSessionManifest,
   verifyPdsSessionSourceManifest
 } from "./personal-device-session-package.js";
 export type {

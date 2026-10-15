@@ -1,6 +1,7 @@
 import type {
   PdsConversationSourceItem,
   PdsCheckpointProfileTransition,
+  PdsClosedProfileTransition,
   PdsSessionCheckpointManifest,
   PdsSessionPackage,
   PdsProjectSelectionRevision,
@@ -22,6 +23,7 @@ export interface PdsSecureSourceKeyContext {
   originDeploymentId: string;
   originDeviceId: string;
   buildClosedSessionPackage(input: {
+    closedProfileTransition?: PdsClosedProfileTransition | null;
     source: PdsClosureSource;
     sourceSequence: string;
     items: PdsConversationSourceItem[];
