@@ -13,6 +13,10 @@ import type {
   TeamOverviewSnapshot
 } from "@koed/shared/team-overview";
 import {
+  isTeamOverviewOutcomeSource,
+  teamOverviewSourceKey
+} from "@koed/shared/team-overview";
+import {
   TeamOverviewClient,
   TeamOverviewError,
   type TeamOverviewTransport
@@ -80,16 +84,22 @@ export function useTeamOverview({
       controller.current = requestController;
       setRefreshing(true);
       try {
-        const firstPage = cursor
-          ? await client.getOverview(
-              { cursor, limit: 100 },
-              requestController.signal
-            )
-          : await readLoadedPages(
-              client,
-              requestController.signal,
-              pageCount.current
-            );
+        let firstPage: TeamOverviewSnapshot;
+        let loadedPageCount = pageCount.current;
+        if (cursor) {
+          firstPage = await client.getOverview(
+            { cursor, limit: 100 },
+            requestController.signal
+          );
+        } else {
+          const loadedPages = await readLoadedPages(
+            client,
+            requestController.signal,
+            pageCount.current
+          );
+          firstPage = loadedPages.snapshot;
+          loadedPageCount = loadedPages.pageCount;
+        }
         if (
           !requestIsCurrent(
             sequence,
@@ -128,7 +138,9 @@ export function useTeamOverview({
         setSnapshot(next);
         setState("ready");
         if (cursor) pageCount.current += 1;
-        else pageCount.current = countPagesRead(firstPage, pageCount.current);
+        else
+          pageCount.current =
+            authorityChanged || identityChanged ? 1 : loadedPageCount;
       } catch (failure) {
         if (
           !requestIsCurrent(
@@ -250,18 +262,20 @@ export function useTeamOverview({
       item: TeamOverviewItem,
       action: "clear" | "restore" | "seen"
     ): Promise<boolean> => {
-      if (action === "seen" && item.kind !== "job_outcome") return false;
+      if (action === "seen" && !isTeamOverviewOutcomeSource(item.source))
+        return false;
+      const sourceKey = teamOverviewSourceKey(item);
       if (
         state !== "ready" ||
         !snapshotRef.current ||
         identityScope.current !== identityKey ||
-        pendingRef.current.has(item.sourceEventId)
+        pendingRef.current.has(sourceKey)
       )
         return false;
       const capturedGeneration = generation.current;
       const capturedIdentity = identityKey;
-      pendingRef.current.add(item.sourceEventId);
-      setPendingItemIds((current) => new Set(current).add(item.sourceEventId));
+      pendingRef.current.add(sourceKey);
+      setPendingItemIds((current) => new Set(current).add(sourceKey));
       setMutationError(null);
       try {
         await client.mutate(item, action);
@@ -310,10 +324,10 @@ export function useTeamOverview({
           capturedGeneration === generation.current &&
           capturedIdentity === identityScope.current
         ) {
-          pendingRef.current.delete(item.sourceEventId);
+          pendingRef.current.delete(sourceKey);
           setPendingItemIds((current) => {
             const next = new Set(current);
-            next.delete(item.sourceEventId);
+            next.delete(sourceKey);
             return next;
           });
         }
@@ -383,8 +397,10 @@ function mergePage(
   page: TeamOverviewSnapshot
 ): TeamOverviewSnapshot {
   const merge = (before: TeamOverviewItem[], after: TeamOverviewItem[]) => {
-    const rows = new Map(before.map((item) => [item.sourceEventId, item]));
-    for (const item of after) rows.set(item.sourceEventId, item);
+    const rows = new Map(
+      before.map((item) => [teamOverviewSourceKey(item), item])
+    );
+    for (const item of after) rows.set(teamOverviewSourceKey(item), item);
     return Array.from(rows.values()).sort(
       (a, b) =>
         Number(b.priority === "blocker") - Number(a.priority === "blocker") ||
@@ -425,13 +441,12 @@ async function readLoadedPages(
     pages.push(page);
     cursor = page.nextCursor;
   }
-  return pages
-    .slice(1)
-    .reduce((merged, page) => mergePage(merged, page), pages[0]!);
-}
-
-function countPagesRead(snapshot: TeamOverviewSnapshot, targetDepth: number) {
-  return snapshot.nextCursor ? Math.max(1, targetDepth) : 1;
+  return {
+    snapshot: pages
+      .slice(1)
+      .reduce((merged, page) => mergePage(merged, page), pages[0]!),
+    pageCount: pages.length
+  };
 }
 
 function isAbortError(error: unknown) {

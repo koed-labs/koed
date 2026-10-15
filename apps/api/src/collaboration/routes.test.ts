@@ -1200,253 +1200,370 @@ describe("collaboration HTTP routes", () => {
     await app.close();
   });
 
-  it("pages while keeping global and per-Team attention counts, and enforces action scope", async () => {
-    const fixture = createCollaborationFixture();
-    const threadId = randomUUID();
-    const sourceItems: TeamOverviewItem[] = [
-      {
-        sourceEventId: `message-root:${randomUUID()}`,
-        source: "message_attention",
-        sourceId: threadId,
-        sourceRevision: "root-v1",
-        teamId: fixture.ids.teamA,
-        teamName: "Team A",
-        kind: "message",
-        priority: "attention",
-        state: "recent",
-        title: "Mention",
-        summary: "Please review",
-        updatedAt: iso,
-        unreadCount: 2,
-        destination: { kind: "thread", threadId, rootMessageId: randomUUID() }
-      },
-      {
-        sourceEventId: `request:${randomUUID()}`,
-        source: "agent_request",
-        sourceId: randomUUID(),
-        sourceRevision: "request-v1",
-        teamId: fixture.ids.teamB,
-        teamName: "Team B",
-        kind: "agent_request",
-        priority: "attention",
-        state: "recent",
-        title: "Agent request needs review",
-        summary: "A request",
-        updatedAt: "2026-07-18T00:00:00.000Z",
-        destination: {
+  it.each([false, true])(
+    "pages legacy/native=%s work with grouped counts and exact action scope",
+    async (native) => {
+      const fixture = createCollaborationFixture();
+      const threadId = randomUUID();
+      const sourceItems: TeamOverviewItem[] = [
+        {
+          sourceEventId: `${native ? "agent-action" : "message-root"}:${randomUUID()}`,
+          source: native ? "team_agent_action" : "message_attention",
+          sourceId: threadId,
+          sourceRevision: "root-v1",
+          teamId: fixture.ids.teamA,
+          teamName: "Team A",
+          kind: native ? "agent_action" : "message",
+          priority: "attention",
+          state: "recent",
+          title: "Mention",
+          summary: "Please review",
+          updatedAt: iso,
+          unreadCount: 2,
+          destination: native
+            ? {
+                kind: "team_agent_work",
+                publicationId: randomUUID(),
+                teamProjectId: randomUUID()
+              }
+            : { kind: "thread", threadId, rootMessageId: randomUUID() }
+        },
+        {
+          sourceEventId: `request:${randomUUID()}`,
+          source: "agent_request",
+          sourceId: randomUUID(),
+          sourceRevision: "request-v1",
+          teamId: fixture.ids.teamB,
+          teamName: "Team B",
           kind: "agent_request",
-          requestId: randomUUID(),
-          threadId: randomUUID(),
-          rootMessageId: null
+          priority: "attention",
+          state: "recent",
+          title: "Agent request needs review",
+          summary: "A request",
+          updatedAt: "2026-07-18T00:00:00.000Z",
+          destination: {
+            kind: "agent_request",
+            requestId: randomUUID(),
+            threadId: randomUUID(),
+            rootMessageId: null
+          }
+        },
+        {
+          sourceEventId: `${native ? "agent-outcome" : "job-outcome"}:${randomUUID()}`,
+          source: native ? "team_agent_outcome" : "team_job_outcome",
+          sourceId: randomUUID(),
+          sourceRevision: "outcome-v1",
+          teamId: fixture.ids.teamA,
+          teamName: "Team A",
+          kind: native ? "agent_outcome" : "job_outcome",
+          priority: "attention",
+          state: "recent",
+          title: "Published Job completed",
+          summary: "Build completed",
+          updatedAt: "2026-07-19T00:00:00.000Z",
+          destination: native
+            ? {
+                kind: "team_agent_work",
+                publicationId: randomUUID(),
+                teamProjectId: randomUUID()
+              }
+            : {
+                kind: "team_job",
+                publicationId: randomUUID(),
+                jobId: randomUUID(),
+                teamProjectId: randomUUID()
+              }
         }
-      },
-      {
-        sourceEventId: `job-outcome:${randomUUID()}`,
-        source: "team_job_outcome",
-        sourceId: randomUUID(),
-        sourceRevision: "outcome-v1",
-        teamId: fixture.ids.teamA,
-        teamName: "Team A",
-        kind: "job_outcome",
-        priority: "attention",
-        state: "recent",
-        title: "Published Job completed",
-        summary: "Build completed",
-        updatedAt: "2026-07-19T00:00:00.000Z",
-        destination: {
-          kind: "team_job",
-          publicationId: randomUUID(),
-          jobId: randomUUID(),
-          teamProjectId: randomUUID()
+      ];
+      let states: Array<{
+        ownerUserId: string;
+        teamId: string;
+        sourceEventId: string;
+        source: TeamOverviewItem["source"];
+        sourceId: string;
+        sourceRevision: string;
+        cleared: boolean;
+        seen: boolean;
+        updatedAt: string;
+      }> = [];
+      let forceSourceCompareAndSetMiss = false;
+      const teams = [
+        { teamId: fixture.ids.teamA, name: "Team A" },
+        { teamId: fixture.ids.teamB, name: "Team B" }
+      ];
+      const overviewRepository = {
+        async listAuthorizedTeams(actor: ActorContext) {
+          return actor.userId === fixture.ids.alice ? teams : [];
+        },
+        async listReminderStates(actor: ActorContext) {
+          return states.filter((state) => state.ownerUserId === actor.userId);
+        },
+        async setReminderState(
+          actor: ActorContext,
+          input: {
+            teamId: string;
+            sourceEventId: string;
+            source: TeamOverviewItem["source"];
+            sourceId: string;
+            sourceRevision: string;
+            cleared?: boolean;
+            seen?: boolean;
+          }
+        ) {
+          if (forceSourceCompareAndSetMiss) return null;
+          const item = sourceItems.find(
+            (candidate) =>
+              candidate.teamId === input.teamId &&
+              candidate.sourceEventId === input.sourceEventId &&
+              candidate.sourceRevision === input.sourceRevision
+          );
+          if (
+            actor.userId !== fixture.ids.alice ||
+            !item ||
+            !teams.some((team) => team.teamId === input.teamId)
+          )
+            return null;
+          const old = states.find(
+            (state) =>
+              state.ownerUserId === actor.userId &&
+              state.teamId === input.teamId &&
+              state.sourceEventId === input.sourceEventId
+          );
+          const state = {
+            ownerUserId: actor.userId,
+            teamId: input.teamId,
+            sourceEventId: input.sourceEventId,
+            source: input.source,
+            sourceId: input.sourceId,
+            sourceRevision: input.sourceRevision,
+            cleared: input.cleared ?? old?.cleared ?? false,
+            seen: input.seen ?? old?.seen ?? false,
+            updatedAt: iso
+          };
+          states = [
+            ...states.filter(
+              (candidate) => candidate.sourceEventId !== input.sourceEventId
+            ),
+            state
+          ];
+          return state;
         }
-      }
-    ];
-    let states: Array<{
-      ownerUserId: string;
-      teamId: string;
-      sourceEventId: string;
-      source: TeamOverviewItem["source"];
-      sourceId: string;
-      sourceRevision: string;
-      cleared: boolean;
-      seen: boolean;
-      updatedAt: string;
-    }> = [];
-    let forceSourceCompareAndSetMiss = false;
+      } as unknown as TeamOverviewRepository;
+      const sources = {
+        async listCurrentItems() {
+          return {
+            attention: sourceItems.filter(
+              (item) =>
+                item.source !== "team_job_outcome" &&
+                item.source !== "team_agent_outcome"
+            ),
+            catchUp: sourceItems.filter(
+              (item) =>
+                item.source === "team_job_outcome" ||
+                item.source === "team_agent_outcome"
+            )
+          };
+        },
+        async getCurrentSourceWithClient() {
+          return null;
+        },
+        async validateCurrentSourceWithClient() {
+          return false;
+        }
+      } as unknown as TeamOverviewSourcesRepository;
+      const app = await buildTestServer(fixture, undefined, undefined, {
+        teamOverview: { repository: overviewRepository, sources }
+      });
+
+      const first = await app.inject({
+        method: "GET",
+        url: "/v1/collaboration/teams/overview?limit=1",
+        headers: sessionHeaders(fixture.ids.alice)
+      });
+      const firstPage = jsonBody<{
+        badgeCount: number;
+        teams: Array<{ teamId: string; badgeCount: number }>;
+        attention: TeamOverviewItem[];
+        nextCursor: string | null;
+      }>(first);
+      expect(first.statusCode, first.body).toBe(200);
+      expect(first.json().currentJobOutcomes).toEqual([
+        {
+          teamId: sourceItems[2]!.teamId,
+          sourceEventId: sourceItems[2]!.sourceEventId,
+          sourceRevision: sourceItems[2]!.sourceRevision
+        }
+      ]);
+      expect(first.json().coverage).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "team_agent_action" }),
+          expect.objectContaining({ source: "team_agent_outcome" })
+        ])
+      );
+      expect(firstPage.badgeCount).toBe(2);
+      expect(firstPage.teams).toEqual([
+        { teamId: fixture.ids.teamA, name: "Team A", badgeCount: 1 },
+        { teamId: fixture.ids.teamB, name: "Team B", badgeCount: 1 }
+      ]);
+      expect(firstPage.attention).toHaveLength(1);
+      expect(firstPage.nextCursor).not.toBeNull();
+      const second = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+        headers: sessionHeaders(fixture.ids.alice)
+      });
+      expect(
+        jsonBody<{ badgeCount: number; attention: TeamOverviewItem[] }>(second)
+      ).toMatchObject({
+        badgeCount: 2,
+        attention: [{ teamId: fixture.ids.teamA }]
+      });
+      const malformedCursor = await app.inject({
+        method: "GET",
+        url: "/v1/collaboration/teams/overview?cursor=invalid!",
+        headers: sessionHeaders(fixture.ids.alice)
+      });
+      expect(malformedCursor.statusCode).toBe(400);
+
+      const attentionItem = sourceItems[0]!;
+      const clear = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: attentionItem.sourceRevision }
+      });
+      expect(clear.statusCode).toBe(200);
+      const restore = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/restore`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: attentionItem.sourceRevision }
+      });
+      expect(restore.statusCode).toBe(200);
+      const wrongSeen = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/seen`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: attentionItem.sourceRevision }
+      });
+      expect(wrongSeen.statusCode).toBe(400);
+
+      const outcome = sourceItems[2]!;
+      const seen = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: outcome.sourceRevision }
+      });
+      expect(seen.statusCode).toBe(200);
+      forceSourceCompareAndSetMiss = true;
+      const producerRaced = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: outcome.sourceRevision }
+      });
+      expect(producerRaced.statusCode).toBe(409);
+      forceSourceCompareAndSetMiss = false;
+      const foreignTeam = randomUUID();
+      const foreign = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${foreignTeam}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: { sourceRevision: attentionItem.sourceRevision }
+      });
+      expect(foreign.statusCode).toBe(403);
+      const token = await app.inject({
+        method: "GET",
+        url: "/v1/collaboration/teams/overview",
+        headers: { authorization: "Bearer personal-api-token" }
+      });
+      expect(token.statusCode).toBe(403);
+      sourceItems[0] = { ...attentionItem, sourceRevision: "root-v2" };
+      const changedFeedCursor = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+        headers: sessionHeaders(fixture.ids.alice)
+      });
+      expect(changedFeedCursor.statusCode).toBe(409);
+      await app.close();
+    }
+  );
+
+  it("keeps the same PR reminder independent in two authorized Teams", async () => {
+    const fixture = createCollaborationFixture();
+    const reviewId = randomUUID();
     const teams = [
       { teamId: fixture.ids.teamA, name: "Team A" },
       { teamId: fixture.ids.teamB, name: "Team B" }
     ];
-    const overviewRepository = {
-      async listAuthorizedTeams(actor: ActorContext) {
-        return actor.userId === fixture.ids.alice ? teams : [];
+    const items: TeamOverviewItem[] = teams.map((team) => ({
+      sourceEventId: `pr:${reviewId}`,
+      source: "pull_request_action",
+      sourceId: reviewId,
+      sourceRevision: "same-review-v1",
+      teamId: team.teamId,
+      teamName: team.name,
+      kind: "pull_request_action",
+      priority: "attention",
+      state: "recent",
+      title: "Review ready",
+      summary: null,
+      updatedAt: iso,
+      destination: {
+        kind: "pull_request_review",
+        reviewId,
+        repositoryId: "acme/widget",
+        number: 1
+      }
+    }));
+    // Both Teams have their own metadata row for the same PR source event.
+    // B is deliberately last: an event-only map would shadow A's clear.
+    const states = items.map((item) => ({
+      ownerUserId: fixture.ids.alice,
+      teamId: item.teamId,
+      sourceEventId: item.sourceEventId,
+      source: item.source,
+      sourceId: item.sourceId,
+      sourceRevision: item.sourceRevision,
+      cleared: item.teamId === fixture.ids.teamA,
+      seen: false,
+      updatedAt: iso
+    }));
+    const repository = {
+      async listAuthorizedTeams() {
+        return teams;
       },
-      async listReminderStates(actor: ActorContext) {
-        return states.filter((state) => state.ownerUserId === actor.userId);
+      async listReminderStates() {
+        return states;
       },
-      async setReminderState(
-        actor: ActorContext,
-        input: {
-          teamId: string;
-          sourceEventId: string;
-          source: TeamOverviewItem["source"];
-          sourceId: string;
-          sourceRevision: string;
-          cleared?: boolean;
-          seen?: boolean;
-        }
-      ) {
-        if (forceSourceCompareAndSetMiss) return null;
-        const item = sourceItems.find(
-          (candidate) =>
-            candidate.teamId === input.teamId &&
-            candidate.sourceEventId === input.sourceEventId &&
-            candidate.sourceRevision === input.sourceRevision
-        );
-        if (
-          actor.userId !== fixture.ids.alice ||
-          !item ||
-          !teams.some((team) => team.teamId === input.teamId)
-        )
-          return null;
-        const old = states.find(
-          (state) =>
-            state.ownerUserId === actor.userId &&
-            state.teamId === input.teamId &&
-            state.sourceEventId === input.sourceEventId
-        );
-        const state = {
-          ownerUserId: actor.userId,
-          teamId: input.teamId,
-          sourceEventId: input.sourceEventId,
-          source: input.source,
-          sourceId: input.sourceId,
-          sourceRevision: input.sourceRevision,
-          cleared: input.cleared ?? old?.cleared ?? false,
-          seen: input.seen ?? old?.seen ?? false,
-          updatedAt: iso
-        };
-        states = [
-          ...states.filter(
-            (candidate) => candidate.sourceEventId !== input.sourceEventId
-          ),
-          state
-        ];
-        return state;
+      async setReminderState() {
+        return null;
       }
     } as unknown as TeamOverviewRepository;
     const sources = {
       async listCurrentItems() {
-        return {
-          attention: sourceItems.filter(
-            (item) => item.source !== "team_job_outcome"
-          ),
-          catchUp: sourceItems.filter(
-            (item) => item.source === "team_job_outcome"
-          )
-        };
-      },
-      async getCurrentSourceWithClient() {
-        return null;
-      },
-      async validateCurrentSourceWithClient() {
-        return false;
+        return { attention: items, catchUp: [] };
       }
     } as unknown as TeamOverviewSourcesRepository;
     const app = await buildTestServer(fixture, undefined, undefined, {
-      teamOverview: { repository: overviewRepository, sources }
+      teamOverview: { repository, sources }
     });
-
-    const first = await app.inject({
-      method: "GET",
-      url: "/v1/collaboration/teams/overview?limit=1",
-      headers: sessionHeaders(fixture.ids.alice)
-    });
-    const firstPage = jsonBody<{
-      badgeCount: number;
-      teams: Array<{ teamId: string; badgeCount: number }>;
-      attention: TeamOverviewItem[];
-      nextCursor: string | null;
-    }>(first);
-    expect(firstPage.badgeCount).toBe(2);
-    expect(firstPage.teams).toEqual([
-      { teamId: fixture.ids.teamA, name: "Team A", badgeCount: 1 },
-      { teamId: fixture.ids.teamB, name: "Team B", badgeCount: 1 }
-    ]);
-    expect(firstPage.attention).toHaveLength(1);
-    expect(firstPage.nextCursor).not.toBeNull();
-    const second = await app.inject({
-      method: "GET",
-      url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
-      headers: sessionHeaders(fixture.ids.alice)
-    });
-    expect(
-      jsonBody<{ badgeCount: number; attention: TeamOverviewItem[] }>(second)
-    ).toMatchObject({
-      badgeCount: 2,
-      attention: [{ teamId: fixture.ids.teamA }]
-    });
-    const malformedCursor = await app.inject({
-      method: "GET",
-      url: "/v1/collaboration/teams/overview?cursor=invalid!",
-      headers: sessionHeaders(fixture.ids.alice)
-    });
-    expect(malformedCursor.statusCode).toBe(400);
-
-    const attentionItem = sourceItems[0]!;
-    const clear = await app.inject({
-      method: "POST",
-      url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
-      headers: sessionHeaders(fixture.ids.alice),
-      payload: { sourceRevision: attentionItem.sourceRevision }
-    });
-    expect(clear.statusCode).toBe(200);
-    const restore = await app.inject({
-      method: "POST",
-      url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/restore`,
-      headers: sessionHeaders(fixture.ids.alice),
-      payload: { sourceRevision: attentionItem.sourceRevision }
-    });
-    expect(restore.statusCode).toBe(200);
-
-    const outcome = sourceItems[2]!;
-    const seen = await app.inject({
-      method: "POST",
-      url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
-      headers: sessionHeaders(fixture.ids.alice),
-      payload: { sourceRevision: outcome.sourceRevision }
-    });
-    expect(seen.statusCode).toBe(200);
-    forceSourceCompareAndSetMiss = true;
-    const producerRaced = await app.inject({
-      method: "POST",
-      url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
-      headers: sessionHeaders(fixture.ids.alice),
-      payload: { sourceRevision: outcome.sourceRevision }
-    });
-    expect(producerRaced.statusCode).toBe(409);
-    forceSourceCompareAndSetMiss = false;
-    const foreignTeam = randomUUID();
-    const foreign = await app.inject({
-      method: "POST",
-      url: `/v1/collaboration/teams/${foreignTeam}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
-      headers: sessionHeaders(fixture.ids.alice),
-      payload: { sourceRevision: attentionItem.sourceRevision }
-    });
-    expect(foreign.statusCode).toBe(403);
-    const token = await app.inject({
+    const response = await app.inject({
       method: "GET",
       url: "/v1/collaboration/teams/overview",
-      headers: { authorization: "Bearer personal-api-token" }
-    });
-    expect(token.statusCode).toBe(403);
-    sourceItems[0] = { ...attentionItem, sourceRevision: "root-v2" };
-    const changedFeedCursor = await app.inject({
-      method: "GET",
-      url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
       headers: sessionHeaders(fixture.ids.alice)
     });
-    expect(changedFeedCursor.statusCode).toBe(409);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      badgeCount: 1,
+      teams: [
+        { ...teams[0], badgeCount: 0 },
+        { ...teams[1], badgeCount: 1 }
+      ],
+      attention: [expect.objectContaining({ teamId: fixture.ids.teamB })],
+      cleared: [expect.objectContaining({ teamId: fixture.ids.teamA })]
+    });
     await app.close();
   });
 

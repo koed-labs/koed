@@ -5,6 +5,7 @@ import realtimeCursorFixture from "./realtime-cursor.json";
 export const ids = {
   user: "11111111-1111-4111-8111-111111111111",
   team: "22222222-2222-4222-8222-222222222222",
+  secondTeam: "16161616-1616-4616-8616-161616161616",
   general: "33333333-3333-4333-8333-333333333333",
   launch: "44444444-4444-4444-8444-444444444444",
   root: "55555555-5555-4555-8555-555555555555",
@@ -17,7 +18,8 @@ export const ids = {
   retiredAgent: "99999999-9999-4999-8999-999999999999",
   unknownAgent: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   teammate: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-  subscription: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+  subscription: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  nativePublication: "15151515-1515-4515-8515-151515151515"
 } as const;
 
 const now = new Date().toISOString();
@@ -193,6 +195,7 @@ const syntheticLiveJob = (id: string) => ({
 
 export class SyntheticStudioApi {
   teamOverview: TeamOverviewSnapshot | null = null;
+  teamOverviewPage2: TeamOverviewSnapshot | null = null;
   teamOverviewStatus = 200;
   readonly teamOffers = new Map<string, TeamAgentOffer>();
   readonly unexpectedMutations: string[] = [];
@@ -662,26 +665,62 @@ export class SyntheticStudioApi {
         });
         return;
       }
+      const cursor = url.searchParams.get("cursor");
       await route.fulfill({
-        json: this.teamOverview ?? {
-          schemaVersion: "koed.team-overview/v1",
-          access: { accountScope: ids.user, backendId: url.origin },
-          generatedAt: now,
-          nextCursor: null,
-          teams: [{ teamId: ids.team, name: "Synthetic Team", badgeCount: 0 }],
-          coverage: [
-            { source: "message_attention", complete: true, nextCursor: null },
-            { source: "agent_request", complete: true, nextCursor: null },
-            { source: "team_job_action", complete: true, nextCursor: null },
-            { source: "pull_request_action", complete: true, nextCursor: null },
-            { source: "team_job_outcome", complete: true, nextCursor: null }
-          ],
-          attention: [],
-          catchUp: [],
-          currentJobOutcomes: [],
-          cleared: [],
-          badgeCount: 0
-        }
+        json:
+          cursor && this.teamOverviewPage2
+            ? this.teamOverviewPage2
+            : (this.teamOverview ?? {
+                schemaVersion: "koed.team-overview/v1",
+                access: { accountScope: ids.user, backendId: url.origin },
+                generatedAt: now,
+                nextCursor: null,
+                teams: [
+                  { teamId: ids.team, name: "Synthetic Team", badgeCount: 0 }
+                ],
+                coverage: [
+                  {
+                    source: "message_attention",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "agent_request",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "team_job_action",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "pull_request_action",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "team_job_outcome",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "team_agent_action",
+                    complete: true,
+                    nextCursor: null
+                  },
+                  {
+                    source: "team_agent_outcome",
+                    complete: true,
+                    nextCursor: null
+                  }
+                ],
+                attention: [],
+                catchUp: [],
+                currentJobOutcomes: [],
+                cleared: [],
+                badgeCount: 0
+              })
       });
       return;
     }
@@ -691,15 +730,25 @@ export class SyntheticStudioApi {
     if (overviewMutation && method === "POST") {
       const [, teamId, encodedId, action] = overviewMutation;
       const eventId = decodeURIComponent(encodedId);
-      const feed = this.teamOverview;
-      const body = request.postDataJSON() as { sourceRevision?: unknown };
-      const item = [
-        ...(feed?.attention ?? []),
-        ...(feed?.cleared ?? []),
-        ...(feed?.catchUp ?? [])
-      ].find(
-        (entry) => entry.sourceEventId === eventId && entry.teamId === teamId
+      const feeds = [this.teamOverview, this.teamOverviewPage2].filter(
+        (entry): entry is TeamOverviewSnapshot => entry !== null
       );
+      const body = request.postDataJSON() as { sourceRevision?: unknown };
+      const feed = feeds.find((candidate) =>
+        [
+          ...candidate.attention,
+          ...candidate.cleared,
+          ...candidate.catchUp
+        ].some(
+          (entry) => entry.sourceEventId === eventId && entry.teamId === teamId
+        )
+      );
+      const item = feed
+        ? [...feed.attention, ...feed.cleared, ...feed.catchUp].find(
+            (entry) =>
+              entry.sourceEventId === eventId && entry.teamId === teamId
+          )
+        : undefined;
       if (!feed || !item || item.sourceRevision !== body.sourceRevision) {
         await route.fulfill({
           status: 409,
@@ -715,12 +764,14 @@ export class SyntheticStudioApi {
         feed.cleared = feed.cleared.filter((entry) => entry !== item);
         if (action === "clear") feed.cleared.push(item);
         else feed.attention.push(item);
-        feed.badgeCount = feed.attention.length;
-        feed.teams = feed.teams.map((team) => ({
+      }
+      const attention = feeds.flatMap((current) => current.attention);
+      for (const current of feeds) {
+        current.badgeCount = attention.length;
+        current.teams = current.teams.map((team) => ({
           ...team,
-          badgeCount: feed.attention.filter(
-            (entry) => entry.teamId === team.teamId
-          ).length
+          badgeCount: attention.filter((entry) => entry.teamId === team.teamId)
+            .length
         }));
       }
       await route.fulfill({
@@ -811,6 +862,33 @@ export class SyntheticStudioApi {
           page: {
             teamId: ids.team,
             items: [
+              {
+                id: ids.nativePublication,
+                source: "native_command",
+                jobId: null,
+                agentId: ids.busyAgent,
+                agentName: "Busy Reviewer",
+                ownerId: ids.user,
+                ownerName: "Synthetic user",
+                projectId: ids.launch,
+                projectName: "Synthetic launch",
+                ownerExecutionId: null,
+                status: "running",
+                lastKnownStatus: null,
+                phase: "working",
+                phaseObservedAt: now,
+                publishedAt: now,
+                startedAt: now,
+                updatedAt: now,
+                completedAt: null,
+                lastSeenAt: now,
+                waitingOn: null,
+                ownerLeftTeam: false,
+                sharedBrief: "A Team-visible native publication.",
+                version: 1,
+                canEditBrief: false,
+                canRemoveRetainedBrief: false
+              },
               {
                 id: ids.olderJob,
                 jobId: ids.root,

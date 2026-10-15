@@ -145,3 +145,39 @@ test("authority access failures and stale revisions remain visible to clients", 
     503
   );
 });
+
+test("native Team work keeps encoded source identity on reminder and seen writes", async () => {
+  const publication = "33333333-3333-4333-8333-333333333333";
+  for (const [prefix, action] of [
+    ["agent-action", "clear"],
+    ["agent-action", "restore"],
+    ["agent-outcome", "seen"]
+  ]) {
+    const request = Object.assign(
+      Readable.from([Buffer.from('{"sourceRevision":"native-semantic-v1"}')]),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" }
+      }
+    );
+    const encoded = encodeURIComponent(`${prefix}:${publication}`);
+    const result = await call(`/teams/${team}/overview/${encoded}/${action}`, {
+      request,
+      fetchImpl: async (url, init) => {
+        assert.equal(
+          url.pathname,
+          `/v1/collaboration/teams/${team}/overview/${encoded}/${action}`
+        );
+        assert.equal(init.body, '{"sourceRevision":"native-semantic-v1"}');
+        return Response.json({
+          sourceEventId: `${prefix}:${publication}`,
+          sourceRevision: "native-semantic-v1",
+          seen: action === "seen",
+          cleared: action === "clear"
+        });
+      }
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.sourceEventId, `${prefix}:${publication}`);
+  }
+});

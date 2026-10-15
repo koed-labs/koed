@@ -71,6 +71,9 @@ import {
   withdrawTeamAgentRequestInputSchema
 } from "@koed/shared/team-agent-requests";
 import {
+  isTeamOverviewOutcomeSource,
+  teamOverviewSourceKey,
+  teamOverviewSourceSchema,
   teamOverviewMutationResultSchema,
   teamOverviewQuerySchema,
   teamOverviewSchemaVersion,
@@ -432,7 +435,7 @@ export const registerCollaborationRoutes = (
     const rawAttention = sources.attention;
     const rawCatchUp = sources.catchUp;
     const currentJobOutcomes = [...rawAttention, ...rawCatchUp]
-      .filter((item) => item.source === "team_job_outcome")
+      .filter((item) => isTeamOverviewOutcomeSource(item.source))
       .map(({ teamId, sourceEventId, sourceRevision }) => ({
         teamId,
         sourceEventId,
@@ -445,7 +448,7 @@ export const registerCollaborationRoutes = (
       sourceEventIds: eventIds
     });
     const stateByEvent = new Map(
-      states.map((state) => [state.sourceEventId, state])
+      states.map((state) => [teamOverviewSourceKey(state), state])
     );
     const sourceFingerprint = createHash("sha256")
       .update(
@@ -454,7 +457,7 @@ export const registerCollaborationRoutes = (
           teams: teams.map((team) => team.teamId).sort(),
           sources: [...rawAttention, ...rawCatchUp]
             .map((item) => {
-              const state = stateByEvent.get(item.sourceEventId);
+              const state = stateByEvent.get(teamOverviewSourceKey(item));
               const currentState =
                 state?.teamId === item.teamId &&
                 state.source === item.source &&
@@ -492,7 +495,7 @@ export const registerCollaborationRoutes = (
     const attention: TeamOverviewItem[] = [];
     const cleared: TeamOverviewItem[] = [];
     for (const item of rawAttention) {
-      const state = stateByEvent.get(item.sourceEventId);
+      const state = stateByEvent.get(teamOverviewSourceKey(item));
       const currentState =
         state?.teamId === item.teamId &&
         state.source === item.source &&
@@ -504,7 +507,7 @@ export const registerCollaborationRoutes = (
       else attention.push(item);
     }
     const catchUp = rawCatchUp.filter((item) => {
-      const state = stateByEvent.get(item.sourceEventId);
+      const state = stateByEvent.get(teamOverviewSourceKey(item));
       return !(
         state &&
         state.teamId === item.teamId &&
@@ -546,13 +549,11 @@ export const registerCollaborationRoutes = (
       },
       generatedAt: new Date().toISOString(),
       teams: teamCounts,
-      coverage: [
-        "message_attention",
-        "agent_request",
-        "team_job_action",
-        "team_job_outcome",
-        "pull_request_action"
-      ].map((source) => ({ source, complete: true, nextCursor: null })),
+      coverage: teamOverviewSourceSchema.options.map((source) => ({
+        source,
+        complete: true,
+        nextCursor: null
+      })),
       currentJobOutcomes,
       attention: pageAttention,
       catchUp: pageCatchUp,
@@ -652,7 +653,9 @@ export const registerCollaborationRoutes = (
       if (
         params.action === "clear" &&
         !current.attention.some(
-          (candidate) => candidate.sourceEventId === item.sourceEventId
+          (candidate) =>
+            candidate.teamId === item.teamId &&
+            candidate.sourceEventId === item.sourceEventId
         )
       ) {
         throw badRequest("Only attention items can be cleared");
@@ -660,7 +663,9 @@ export const registerCollaborationRoutes = (
       if (
         params.action === "restore" &&
         !current.attention.some(
-          (candidate) => candidate.sourceEventId === item.sourceEventId
+          (candidate) =>
+            candidate.teamId === item.teamId &&
+            candidate.sourceEventId === item.sourceEventId
         )
       ) {
         throw badRequest("Only current attention items can be restored");
@@ -672,13 +677,15 @@ export const registerCollaborationRoutes = (
       if (
         params.action === "seen" &&
         !current.catchUp.some(
-          (candidate) => candidate.sourceEventId === item.sourceEventId
+          (candidate) =>
+            candidate.teamId === item.teamId &&
+            candidate.sourceEventId === item.sourceEventId
         )
       ) {
         throw badRequest("Only catch-up outcomes can be marked seen");
       }
-      if (params.action === "seen" && item.source !== "team_job_outcome")
-        throw badRequest("Only Team Job outcomes can be marked seen");
+      if (params.action === "seen" && !isTeamOverviewOutcomeSource(item.source))
+        throw badRequest("Only Team work outcomes can be marked seen");
       const state = await context
         .requireTeamOverviewRepository()
         .setReminderState(

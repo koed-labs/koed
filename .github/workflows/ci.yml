@@ -187,6 +187,12 @@ jobs:
           HOME_AUTHORITY_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm --filter @koed/db exec vitest run src/home-repository.integration.test.ts
 
+      - name: Validate native Team overview and per-User reminders
+        env:
+          TEAM_OVERVIEW_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          HOME_AUTHORITY_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+        run: pnpm --filter @koed/db exec vitest run tests/team-overview-sources.test.ts src/team-overview-repository.integration.test.ts
+
       - name: Test
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed

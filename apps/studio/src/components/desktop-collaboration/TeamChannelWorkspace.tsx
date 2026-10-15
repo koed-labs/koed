@@ -2682,6 +2682,12 @@ export function TeamChannelWorkspace({
       setSquareOpen(true);
       return;
     }
+    if (destination.kind === "team_agent_work") {
+      setForYouOpen(false);
+      setFocusSquareJobId(destination.publicationId);
+      setSquareOpen(true);
+      return;
+    }
     if (destination.kind === "agent_request") {
       const request = await teamAgentRequestsClient.findInboxRequest(
         item.teamId,

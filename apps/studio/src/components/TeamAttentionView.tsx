@@ -13,6 +13,10 @@ import type {
   TeamOverviewItem,
   TeamOverviewSnapshot
 } from "@koed/shared/team-overview";
+import {
+  isTeamOverviewOutcomeSource,
+  teamOverviewSourceKey
+} from "@koed/shared/team-overview";
 import type { TeamOverviewState } from "@/lib/use-team-overview";
 
 export function TeamAttentionView({
@@ -86,7 +90,7 @@ export function TeamAttentionView({
   const attention = snapshot?.attention.filter(matchesTeam) ?? [];
   const snapshotCatchUp = snapshot?.catchUp ?? [];
   const catchUpById = new Map(
-    snapshotCatchUp.map((item) => [item.sourceEventId, item])
+    snapshotCatchUp.map((item) => [teamOverviewSourceKey(item), item])
   );
   for (const [id, item] of seenThisVisit?.scope === visitScope
     ? seenThisVisit.items
@@ -271,7 +275,7 @@ export function TeamAttentionView({
                                       current?.scope === visitScope
                                         ? current.items
                                         : []
-                                    ).set(item.sourceEventId, item)
+                                    ).set(teamOverviewSourceKey(item), item)
                                   }));
                                 }
                                 return accepted;
@@ -327,18 +331,20 @@ function groupCatchUp(items: TeamOverviewItem[]) {
   >();
   for (const item of items) {
     const destination = item.destination;
-    const key =
-      destination.kind === "team_job"
-        ? `${item.teamId}:project:${destination.teamProjectId}`
-        : destination.kind === "thread"
-          ? `${item.teamId}:thread:${destination.threadId}`
-          : `${item.teamId}:${destination.kind}:${item.sourceId}`;
-    const label =
-      destination.kind === "team_job"
-        ? `${item.teamName} · Project updates`
-        : destination.kind === "thread"
-          ? `${item.teamName} · Conversation updates`
-          : `${item.teamName} · ${typeLabel(item)} updates`;
+    const teamProjectId =
+      destination.kind === "team_job" || destination.kind === "team_agent_work"
+        ? destination.teamProjectId
+        : null;
+    const key = teamProjectId
+      ? `${item.teamId}:project:${teamProjectId}`
+      : destination.kind === "thread"
+        ? `${item.teamId}:thread:${destination.threadId}`
+        : `${item.teamId}:${destination.kind}:${item.sourceId}`;
+    const label = teamProjectId
+      ? `${item.teamName} · Project updates`
+      : destination.kind === "thread"
+        ? `${item.teamName} · Conversation updates`
+        : `${item.teamName} · ${typeLabel(item)} updates`;
     const current = groups.get(key);
     if (current) current.items.push(item);
     else groups.set(key, { key, label, items: [item] });
@@ -419,9 +425,9 @@ function ItemRows({
     <div className="divide-y divide-border/70">
       {items.map((item) => (
         <AttentionRow
-          key={`${item.sourceEventId}:${item.sourceRevision}`}
+          key={`${teamOverviewSourceKey(item)}:${item.sourceRevision}`}
           item={item}
-          pending={pendingItemIds.has(item.sourceEventId)}
+          pending={pendingItemIds.has(teamOverviewSourceKey(item))}
           canAct={canAct}
           cleared={cleared}
           compact={compact}
@@ -467,7 +473,7 @@ function AttentionRow({
     if (
       !canObserve ||
       !onSeenRef.current ||
-      item.kind !== "job_outcome" ||
+      !isTeamOverviewOutcomeSource(item.source) ||
       typeof IntersectionObserver === "undefined"
     )
       return;
@@ -514,12 +520,13 @@ function AttentionRow({
       window.removeEventListener("focus", maybeReport);
       window.removeEventListener("online", maybeReport);
     };
-  }, [canObserve, item.kind, item.sourceEventId, item.sourceRevision]);
+  }, [canObserve, item.source, item.sourceEventId, item.sourceRevision]);
 
   return (
     <div
       ref={rowRef}
       data-team-overview-event={item.sourceEventId}
+      data-team-overview-team={item.teamId}
       className={`flex items-start gap-3 px-4 ${compact ? "py-2.5" : "py-3.5"}`}
     >
       <div className="min-w-0 flex-1">
@@ -593,6 +600,8 @@ function FilterChip({
 function typeLabel(item: TeamOverviewItem) {
   if (item.kind === "message") return "message thread";
   if (item.kind === "agent_request") return "Agent request";
+  if (item.kind === "agent_action") return "Agent work";
+  if (item.kind === "agent_outcome") return "Agent outcome";
   if (item.kind === "job_action") return "Agent job";
   if (item.kind === "job_outcome") return "Job outcome";
   return "Pull request";
@@ -603,5 +612,5 @@ function outcomeRefKey(ref: {
   sourceEventId: string;
   sourceRevision: string;
 }) {
-  return `${ref.teamId}:${ref.sourceEventId}:${ref.sourceRevision}`;
+  return `${teamOverviewSourceKey(ref)}:${ref.sourceRevision}`;
 }

@@ -297,6 +297,44 @@ const overviewOutcome = {
     teamProjectId: ids.launch
   }
 };
+const overviewNativeAction = {
+  sourceEventId: "agent-action:synthetic-publication",
+  source: "team_agent_action" as const,
+  sourceId: ids.nativePublication,
+  sourceRevision: "native-action:2",
+  teamId: ids.team,
+  teamName: "Synthetic Team",
+  kind: "agent_action" as const,
+  priority: "blocker" as const,
+  state: "blocked" as const,
+  title: "Native Agent work needs your attention",
+  summary: "A next step shared with the Team is waiting.",
+  updatedAt: "2026-10-02T12:00:00.000Z",
+  destination: {
+    kind: "team_agent_work" as const,
+    publicationId: ids.nativePublication,
+    teamProjectId: ids.launch
+  }
+};
+const overviewNativeOutcome = {
+  sourceEventId: "agent-outcome:synthetic-publication",
+  source: "team_agent_outcome" as const,
+  sourceId: ids.nativePublication,
+  sourceRevision: "native-outcome:3",
+  teamId: ids.team,
+  teamName: "Synthetic Team",
+  kind: "agent_outcome" as const,
+  priority: "attention" as const,
+  state: "recent" as const,
+  title: "Native Agent work completed",
+  summary: "A concise outcome shared with the Team.",
+  updatedAt: "2026-10-02T12:00:00.000Z",
+  destination: {
+    kind: "team_agent_work" as const,
+    publicationId: ids.nativePublication,
+    teamProjectId: ids.launch
+  }
+};
 function overviewFixture() {
   return {
     schemaVersion: "koed.team-overview/v1" as const,
@@ -309,6 +347,8 @@ function overviewFixture() {
       "agent_request",
       "team_job_action",
       "team_job_outcome",
+      "team_agent_action",
+      "team_agent_outcome",
       "pull_request_action"
     ].map((source) => ({
       source: source as
@@ -316,6 +356,8 @@ function overviewFixture() {
         | "agent_request"
         | "team_job_action"
         | "team_job_outcome"
+        | "team_agent_action"
+        | "team_agent_outcome"
         | "pull_request_action",
       complete: true,
       nextCursor: null
@@ -415,6 +457,214 @@ test("Team overview retains verified offline rows, then purges attention and see
   await expect(messageRow).toHaveCount(0);
   await expect(outcomeRow).toHaveCount(0);
   await expect(page.getByText(/Team access changed/)).toBeVisible();
+  expect(api.unexpectedMutations).toEqual([]);
+  expect(api.unexpectedReads).toEqual([]);
+});
+
+test("native Team Agent activity routes to its Public Square publication and keeps a visible outcome for this visit", async ({
+  page
+}) => {
+  const api = await installSyntheticApi(page);
+  api.teamOverview = {
+    ...overviewFixture(),
+    teams: [{ teamId: ids.team, name: "Synthetic Team", badgeCount: 1 }],
+    attention: [{ ...overviewNativeAction }],
+    catchUp: [{ ...overviewNativeOutcome }],
+    currentJobOutcomes: [
+      {
+        teamId: overviewNativeOutcome.teamId,
+        sourceEventId: overviewNativeOutcome.sourceEventId,
+        sourceRevision: overviewNativeOutcome.sourceRevision
+      }
+    ],
+    badgeCount: 1
+  };
+  await openTeam(page);
+  await page.getByRole("button", { name: /For you/ }).click();
+  const actionRow = page.locator(
+    '[data-team-overview-event="agent-action:synthetic-publication"]'
+  );
+  const outcomeRow = page.locator(
+    '[data-team-overview-event="agent-outcome:synthetic-publication"]'
+  );
+  await expect(actionRow).toBeVisible();
+  await expect(outcomeRow).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        api.mutationCounts.get(
+          "overview:agent-outcome:synthetic-publication:seen"
+        ) ?? 0
+    )
+    .toBe(1);
+  await expect(outcomeRow).toBeVisible();
+  api.teamOverview.currentJobOutcomes = [];
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(outcomeRow).toHaveCount(0);
+  await actionRow.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(
+    page.getByText("A Team-visible native publication.", { exact: true })
+  ).toBeVisible();
+  await expect(
+    page.locator(`#public-square-item-${ids.nativePublication}`)
+  ).toBeVisible();
+  expect(page.url()).not.toContain("chat=1");
+  expect(
+    [...api.requestCounts.keys()].filter(
+      (path) =>
+        path.includes("managed-conversations") && path.endsWith("/create")
+    )
+  ).toEqual([]);
+  expect(api.unexpectedMutations).toEqual([]);
+  expect(api.unexpectedReads).toEqual([]);
+});
+
+test("Team overview keeps identical source events separate across Teams and pages", async ({
+  page
+}) => {
+  const api = await installSyntheticApi(page);
+  const sharedAction = (teamId: string, teamName: string) => ({
+    sourceEventId: "pr-op:shared-review",
+    source: "pull_request_action" as const,
+    sourceId: "shared-review",
+    sourceRevision: "review:4",
+    teamId,
+    teamName,
+    kind: "pull_request_action" as const,
+    priority: "attention" as const,
+    state: "blocked" as const,
+    title: "Review shared pull request",
+    summary: "The same review is visible through two Team connections.",
+    updatedAt: "2026-10-02T12:00:00.000Z",
+    destination: {
+      kind: "pull_request_review" as const,
+      reviewId: ids.nativePublication,
+      repositoryId: "synthetic/repository",
+      number: 42
+    }
+  });
+  const sharedOutcome = (teamId: string, teamName: string) => ({
+    sourceEventId: "agent-outcome:shared-publication",
+    source: "team_agent_outcome" as const,
+    sourceId: ids.nativePublication,
+    sourceRevision: "native-outcome:8",
+    teamId,
+    teamName,
+    kind: "agent_outcome" as const,
+    priority: "attention" as const,
+    state: "recent" as const,
+    title: "Shared Agent work completed",
+    summary: "A concise Team-visible outcome.",
+    updatedAt: "2026-10-02T12:00:00.000Z",
+    destination: {
+      kind: "team_agent_work" as const,
+      publicationId: ids.nativePublication,
+      teamProjectId: ids.launch
+    }
+  });
+  const teams = [
+    { teamId: ids.team, name: "Synthetic Team", badgeCount: 1 },
+    { teamId: ids.secondTeam, name: "Second Synthetic Team", badgeCount: 1 }
+  ];
+  const teamOneOutcome = sharedOutcome(ids.team, "Synthetic Team");
+  const teamTwoOutcome = sharedOutcome(ids.secondTeam, "Second Synthetic Team");
+  const teamOneOutcomeRef = {
+    teamId: teamOneOutcome.teamId,
+    sourceEventId: teamOneOutcome.sourceEventId,
+    sourceRevision: teamOneOutcome.sourceRevision
+  };
+  const teamTwoOutcomeRef = {
+    teamId: teamTwoOutcome.teamId,
+    sourceEventId: teamTwoOutcome.sourceEventId,
+    sourceRevision: teamTwoOutcome.sourceRevision
+  };
+  api.teamOverview = {
+    ...overviewFixture(),
+    nextCursor: "second-team-page",
+    teams,
+    attention: [sharedAction(ids.team, "Synthetic Team")],
+    catchUp: [teamOneOutcome],
+    currentJobOutcomes: [teamOneOutcomeRef],
+    badgeCount: 2
+  };
+  api.teamOverviewPage2 = {
+    ...overviewFixture(),
+    nextCursor: null,
+    teams,
+    attention: [sharedAction(ids.secondTeam, "Second Synthetic Team")],
+    catchUp: [teamTwoOutcome],
+    currentJobOutcomes: [teamOneOutcomeRef, teamTwoOutcomeRef],
+    badgeCount: 2
+  };
+
+  await openTeam(page);
+  await page.getByRole("button", { name: /For you/ }).click();
+  const row = (teamId: string, eventId: string) =>
+    page.locator(
+      `[data-team-overview-team="${teamId}"][data-team-overview-event="${eventId}"]`
+    );
+  const teamOneAction = row(ids.team, "pr-op:shared-review");
+  const teamTwoAction = row(ids.secondTeam, "pr-op:shared-review");
+  const teamOneOutcomeRow = row(ids.team, "agent-outcome:shared-publication");
+  const teamTwoOutcomeRow = row(
+    ids.secondTeam,
+    "agent-outcome:shared-publication"
+  );
+  await expect(teamOneAction).toBeVisible();
+  await expect(teamOneOutcomeRow).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        api.mutationCounts.get(
+          "overview:agent-outcome:shared-publication:seen"
+        ) ?? 0
+    )
+    .toBe(1);
+
+  await page.getByRole("button", { name: "Load more Team activity" }).click();
+  await expect(teamTwoAction).toBeVisible();
+  await expect(teamTwoOutcomeRow).toBeVisible();
+  await teamTwoOutcomeRow.scrollIntoViewIfNeeded();
+  await expect
+    .poll(
+      () =>
+        api.mutationCounts.get(
+          "overview:agent-outcome:shared-publication:seen"
+        ) ?? 0
+    )
+    .toBe(2);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(teamOneOutcomeRow).toBeVisible();
+  await expect(teamTwoOutcomeRow).toBeVisible();
+
+  api.teamOverview.currentJobOutcomes = [teamTwoOutcomeRef];
+  api.teamOverviewPage2.currentJobOutcomes = [teamTwoOutcomeRef];
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(teamOneOutcomeRow).toHaveCount(0);
+  await expect(teamTwoOutcomeRow).toBeVisible();
+  await expect(teamTwoAction).toBeVisible();
+
+  await teamOneAction.getByRole("button", { name: "Clear reminder" }).click();
+  await expect(teamTwoAction).toBeVisible();
+  await page.getByText("Cleared reminders", { exact: false }).click();
+  await expect(
+    teamOneAction.getByRole("button", { name: "Restore reminder" })
+  ).toBeVisible();
+  await expect(
+    teamTwoAction.getByRole("button", { name: "Clear reminder" })
+  ).toBeVisible();
+
+  const actionWrites = [...api.requestCounts.entries()].filter(
+    ([path]) =>
+      path.includes("/overview/pr-op%3Ashared-review/clear") ||
+      path.includes("/overview/pr-op:shared-review/clear")
+  );
+  expect(actionWrites).toEqual([
+    [
+      `POST /v1/collaboration/teams/${ids.team}/overview/pr-op%3Ashared-review/clear`,
+      1
+    ]
+  ]);
   expect(api.unexpectedMutations).toEqual([]);
   expect(api.unexpectedReads).toEqual([]);
 });

@@ -1,5 +1,8 @@
 import type pg from "pg";
-import type { TeamOverviewSource } from "@koed/shared";
+import {
+  isTeamOverviewOutcomeSource,
+  type TeamOverviewSource
+} from "@koed/shared";
 import type { ActorContext } from "./types.js";
 import type { TeamOverviewSourcesRepository } from "./team-overview-sources.js";
 
@@ -106,7 +109,7 @@ export const createTeamOverviewRepository = (
     return result.rows.map(mapState);
   },
   async setReminderState(actor, input) {
-    if (input.seen !== undefined && input.source !== "team_job_outcome")
+    if (input.seen !== undefined && !isTeamOverviewOutcomeSource(input.source))
       return null;
     const client = await pool.connect();
     try {

@@ -863,6 +863,20 @@ export function HostedTeamChannels({
         setSquareOpen(true);
         return;
       }
+      if (destination.kind === "team_agent_work") {
+        if (item.teamId !== team.id) {
+          const query = new URLSearchParams({
+            team: item.teamId,
+            squareJob: destination.publicationId
+          });
+          router.push(`/collaboration?${query}`);
+          return;
+        }
+        setForYouOpen(false);
+        setFocusSquareJobId(destination.publicationId);
+        setSquareOpen(true);
+        return;
+      }
       if (destination.kind === "agent_request") {
         try {
           const request = await teamAgentRequestsClient.findInboxRequest(

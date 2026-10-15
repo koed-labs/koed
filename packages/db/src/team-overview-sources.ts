@@ -3,7 +3,8 @@ import pg from "pg";
 import {
   type EnvelopeEncryptionProvider,
   type TeamOverviewItem,
-  type TeamOverviewSource
+  type TeamOverviewSource,
+  teamOverviewSourceKey
 } from "@koed/shared";
 import { decryptTeamEncryptedFieldAfterAuthorizationWithClient } from "./encrypted-payload-repository.js";
 import type { TeamOverviewTeamRecord } from "./team-overview-repository.js";
@@ -113,6 +114,38 @@ interface PublicationRow {
   current_blockers: Array<{ id: string; revision: number; itemKind: string }>;
 }
 
+interface NativeBlocker {
+  id: string;
+  revision: number;
+  itemKind: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface NativePublicationRow {
+  id: string;
+  team_id: string;
+  team_name: string;
+  agent_name: string;
+  team_project_id: string;
+  owner_user_id: string;
+  publication_state: "active" | "frozen";
+  publication_version: number;
+  published_at: Date;
+  frozen_status: string | null;
+  frozen_last_known_status: string | null;
+  frozen_updated_at: Date | null;
+  frozen_completed_at: Date | null;
+  native_status: string;
+  command_state: string;
+  command_generation: number;
+  command_completed_at: Date | null;
+  command_updated_at: Date;
+  execution_generation: number;
+  current_blockers: NativeBlocker[];
+  has_team_request_outcome_message: boolean;
+}
+
 interface RequestRow {
   id: string;
   team_id: string;
@@ -134,7 +167,8 @@ interface PullRequestActionRow {
   team_id: string;
   team_name: string;
   publication_id: string;
-  job_id: string;
+  publication_source: "legacy_job" | "native_command";
+  job_id: string | null;
   team_project_id: string;
   review_id: string;
   repository_id: string;
@@ -147,11 +181,13 @@ interface PullRequestActionRow {
   operation_revision: number | null;
   operation_updated_at: Date | null;
   job_state: string;
+  native_work_succeeded: boolean;
 }
 
 interface PullRequestActionProjection {
   item: TeamOverviewItem;
-  linkedJobId: string;
+  linkedPublicationId: string;
+  linkedPublicationIds?: string[];
 }
 
 const digest = (value: unknown): string =>
@@ -701,6 +737,126 @@ export const createTeamOverviewSourcesRepository = (
     return result.rows;
   };
 
+  const listNativePublicationsWithClient = async (
+    client: pg.Pool | pg.PoolClient,
+    actor: ActorContext,
+    team: TeamRow,
+    only?: Omit<TeamOverviewSourceRef, "sourceRevision">
+  ): Promise<NativePublicationRow[]> => {
+    const nativeOnly =
+      only?.source === "team_agent_action" ||
+      only?.source === "team_agent_outcome";
+    const eventIdMatches =
+      !only ||
+      (nativeOnly &&
+        (only.sourceEventId === `agent-action:${only.sourceId}` ||
+          only.sourceEventId === `agent-outcome:${only.sourceId}`));
+    if (only && (!nativeOnly || !eventIdMatches)) return [];
+    const result = await client.query<NativePublicationRow>(
+      `select publication.id,publication.team_id,$3::text as team_name,
+              identity_version.name as agent_name,
+              publication.team_project_id,publication.owner_user_id,
+              publication.state as publication_state,
+              case when publication.state='active' then 0 else publication.version end as publication_version,
+              publication.published_at,publication.frozen_status,
+              publication.frozen_last_known_status,
+              publication.frozen_updated_at,publication.frozen_completed_at,
+              case when publication.state='active' then coalesce(
+                     native_public_square_command_last_known_status(
+                       work.execution_id,work.command_id,work.owner_user_id,work.execution_generation
+                     ),
+                     native_public_square_command_status(
+                       work.execution_id,work.command_id,work.owner_user_id,work.execution_generation
+                     )
+                   )
+                   else coalesce(publication.frozen_last_known_status,publication.frozen_status,'unknown') end as native_status,
+              case when publication.state='active' then command.state else 'frozen' end as command_state,
+              work.execution_generation as command_generation,
+              case when publication.state='active' then command.completed_at
+                   else publication.frozen_completed_at end as command_completed_at,
+              case when publication.state='active' then command.updated_at
+                   else coalesce(publication.frozen_updated_at,publication.published_at) end as command_updated_at,
+              work.execution_generation,
+              coalesce(blockers.items,'[]'::jsonb) as current_blockers,
+              exists (
+                select 1 from team_agent_requests request
+                 where request.team_id=publication.team_id
+                   and request.team_project_id=publication.team_project_id
+                   and request.owner_user_id=publication.owner_user_id
+                   and request.managed_execution_id=work.execution_id
+                   and request.managed_command_id=work.command_id
+                   and request.outcome_message_id is not null
+              ) as has_team_request_outcome_message
+         from personal_agent_team_native_command_publications publication
+         join personal_agent_native_public_square_work work
+           on work.id=publication.work_id and work.owner_user_id=publication.owner_user_id
+         join managed_conversation_commands command
+           on command.id=work.command_id and command.execution_id=work.execution_id
+          and command.owner_user_id=work.owner_user_id
+          and command.execution_generation=work.execution_generation
+         join managed_conversation_executions execution
+           on execution.id=work.execution_id and execution.owner_user_id=work.owner_user_id
+         join personal_agent_identity_versions identity_version
+           on identity_version.agent_id=work.agent_id
+          and identity_version.owner_user_id=work.owner_user_id
+          and identity_version.version=work.agent_version
+         join public_square_project_connections connection
+           on connection.id=publication.connection_id
+          and connection.actor_user_id=publication.owner_user_id
+          and connection.team_id=publication.team_id
+          and connection.team_project_id=publication.team_project_id
+         join collaboration_team_shared_projects project
+           on project.id=publication.team_project_id and project.team_id=publication.team_id
+          and project.unshared_at is null
+         left join lateral (
+           select coalesce(
+                    jsonb_agg(
+                      jsonb_build_object(
+                        'id',item.id,'revision',item.revision,
+                        'itemKind',item.item_kind,'createdAt',item.created_at,
+                        'updatedAt',item.updated_at
+                      ) order by item.id
+                    ),'[]'::jsonb
+                  ) as items
+             from managed_conversation_runtime_items item
+            where publication.state='active'
+              and item.owner_user_id=work.owner_user_id
+              and item.execution_id=work.execution_id
+              and item.execution_generation=work.execution_generation
+              and item.state='pending'
+              and item.item_kind in ('command_approval','file_approval','permissions_approval','user_input')
+              and item.provider_turn_id=coalesce(command.result->>'turnId',command.result->>'providerTurnId')
+              and coalesce(command.result->>'turnId',command.result->>'providerTurnId') is not null
+         ) blockers on true
+         where publication.team_id=$1 and publication.state in ('active','frozen')
+           and ($4::uuid is null or publication.id=$4)
+           and exists (
+             select 1 from collaboration_threads project_thread
+              where project_thread.team_project_id=project.id
+                and project_thread.team_id=project.team_id
+                and project_thread.kind='team_project_channel'
+                and project_thread.lifecycle='active'
+           )
+           and exists (
+             select 1 from team_memberships viewer_membership
+              where viewer_membership.team_id=publication.team_id
+                and viewer_membership.user_id=$2
+                and viewer_membership.status='enabled'
+                and viewer_membership.disabled_at is null
+           )
+           and (publication.state='frozen' or exists (
+             select 1 from team_memberships owner_membership
+              where owner_membership.team_id=publication.team_id
+                and owner_membership.user_id=publication.owner_user_id
+                and owner_membership.status='enabled'
+                and owner_membership.disabled_at is null
+           ))
+        order by publication.published_at desc,publication.id desc`,
+      [team.team_id, actor.userId, team.team_name, only?.sourceId ?? null]
+    );
+    return result.rows;
+  };
+
   const projectionStatus = (row: PublicationRow): string => {
     if (row.publication_state === "frozen")
       return row.frozen_status ?? row.job_state;
@@ -746,11 +902,157 @@ export const createTeamOverviewSourcesRepository = (
     return `j${row.job_version}.${status}.${row.completed_at?.getTime() ?? 0}`;
   };
 
+  const nativePublicationSourceRevision = (
+    row: NativePublicationRow,
+    status: string
+  ): string => {
+    const blockers =
+      status === "waiting"
+        ? [...row.current_blockers]
+            .map((blocker) => ({
+              id: blocker.id,
+              revision: blocker.revision,
+              itemKind: blocker.itemKind
+            }))
+            .sort((a, b) => a.id.localeCompare(b.id))
+        : [];
+    return `n${digest({
+      publicationState: row.publication_state,
+      publicationVersion:
+        row.publication_state === "frozen" ? row.publication_version : 0,
+      status,
+      commandState: row.command_state,
+      commandGeneration: row.command_generation,
+      executionGeneration: row.execution_generation,
+      completedAt: row.command_completed_at?.getTime() ?? null,
+      blockers
+    })}`;
+  };
+
+  const listNativeAgentItemsForTeam = async (
+    client: pg.Pool | pg.PoolClient,
+    actor: ActorContext,
+    team: TeamRow,
+    only?: Omit<TeamOverviewSourceRef, "sourceRevision">,
+    linkedPrPublications: ReadonlySet<string> = new Set()
+  ): Promise<TeamOverviewSourceSnapshot> => {
+    const attention: TeamOverviewItem[] = [];
+    const catchUp: TeamOverviewItem[] = [];
+    const publications = await listNativePublicationsWithClient(
+      client,
+      actor,
+      team,
+      only
+    );
+    for (const publication of publications) {
+      const status = publication.native_status;
+      const sourceRevision = nativePublicationSourceRevision(
+        publication,
+        status
+      );
+      const hasLinkedPrAction = linkedPrPublications.has(publication.id);
+      const ownerNeedsAction =
+        status === "waiting"
+          ? publication.current_blockers.length > 0
+          : ["failed", "unknown", "interrupted"].includes(status);
+      if (
+        publication.publication_state === "active" &&
+        actor.userId === publication.owner_user_id &&
+        ownerNeedsAction &&
+        !hasLinkedPrAction
+      ) {
+        attention.push({
+          sourceEventId: `agent-action:${publication.id}`,
+          source: "team_agent_action",
+          sourceId: publication.id,
+          sourceRevision,
+          teamId: publication.team_id,
+          teamName: publication.team_name,
+          kind: "agent_action",
+          priority: status === "waiting" ? "blocker" : "attention",
+          state: status === "waiting" ? "blocked" : "recent",
+          title:
+            status === "waiting"
+              ? `${publication.agent_name} needs your input`
+              : status === "failed"
+                ? `${publication.agent_name} failed`
+                : status === "interrupted"
+                  ? `${publication.agent_name} was interrupted`
+                  : `${publication.agent_name} outcome is uncertain`,
+          summary: null,
+          updatedAt:
+            (status === "waiting"
+              ? [...publication.current_blockers]
+                  .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+                  .at(-1)?.updatedAt
+              : (publication.command_completed_at?.toISOString() ??
+                publication.command_updated_at.toISOString())) ??
+            publication.published_at.toISOString(),
+          destination: {
+            kind: "team_agent_work",
+            publicationId: publication.id,
+            teamProjectId: publication.team_project_id
+          }
+        });
+      }
+
+      if (
+        !["succeeded", "failed", "canceled", "unknown", "interrupted"].includes(
+          status
+        )
+      )
+        continue;
+      if (
+        publication.has_team_request_outcome_message ||
+        (actor.userId === publication.owner_user_id &&
+          (["failed", "unknown", "interrupted"].includes(status) ||
+            hasLinkedPrAction))
+      )
+        continue;
+
+      catchUp.push({
+        sourceEventId: `agent-outcome:${publication.id}`,
+        source: "team_agent_outcome",
+        sourceId: publication.id,
+        sourceRevision,
+        teamId: publication.team_id,
+        teamName: publication.team_name,
+        kind: "agent_outcome",
+        priority: "attention",
+        state: "recent",
+        title:
+          status === "succeeded"
+            ? `${publication.agent_name} completed`
+            : status === "failed"
+              ? `${publication.agent_name} failed`
+              : status === "canceled"
+                ? `${publication.agent_name} was canceled`
+                : status === "interrupted"
+                  ? `${publication.agent_name} was interrupted`
+                  : `${publication.agent_name} outcome is uncertain`,
+        summary: null,
+        updatedAt: (publication.publication_state === "frozen"
+          ? (publication.frozen_completed_at ??
+            publication.frozen_updated_at ??
+            publication.published_at)
+          : (publication.command_completed_at ?? publication.command_updated_at)
+        ).toISOString(),
+        destination: {
+          kind: "team_agent_work",
+          publicationId: publication.id,
+          teamProjectId: publication.team_project_id
+        }
+      });
+    }
+    return { attention, catchUp };
+  };
+
   const listJobItemsForTeam = async (
     client: pg.Pool | pg.PoolClient,
     actor: ActorContext,
     team: TeamRow,
-    only?: Omit<TeamOverviewSourceRef, "sourceRevision">
+    only: Omit<TeamOverviewSourceRef, "sourceRevision"> | undefined,
+    prActions: PullRequestActionProjection[]
   ): Promise<TeamOverviewSourceSnapshot> => {
     const attention: TeamOverviewItem[] = [];
     const catchUp: TeamOverviewItem[] = [];
@@ -760,17 +1062,15 @@ export const createTeamOverviewSourcesRepository = (
       team,
       only
     );
-    const prActions = await listPullRequestActionsForTeam(
-      client,
-      actor,
-      team,
-      only?.source === "pull_request_action" ? only : undefined
+    const prPublications = new Set(
+      prActions.flatMap(
+        (action) => action.linkedPublicationIds ?? [action.linkedPublicationId]
+      )
     );
-    const prJobs = new Set(prActions.map((action) => action.linkedJobId));
     for (const publication of publications) {
       const status = projectionStatus(publication);
       const sourceRevision = publicationSourceRevision(publication, status);
-      const hasLinkedPrAction = prJobs.has(publication.job_id);
+      const hasLinkedPrAction = prPublications.has(publication.id);
       const ownerNeedsAction =
         status === "waiting"
           ? publication.current_blockers.length > 0
@@ -896,12 +1196,13 @@ export const createTeamOverviewSourcesRepository = (
       : null;
     const result = await client.query<PullRequestActionRow>(
       `select publication.team_id,$3::text as team_name,publication.id as publication_id,
-              publication.job_id,publication.team_project_id,review.id as review_id,
+              'legacy_job'::text as publication_source,publication.job_id,
+              publication.team_project_id,review.id as review_id,
               review.repository_id,review.pull_request_number,review.status as review_status,
               review.revision as review_revision,review.updated_at as review_updated_at,
               operation.id as operation_id,operation.state as operation_state,
               operation.revision as operation_revision,operation.updated_at as operation_updated_at,
-              job.state as job_state
+              job.state as job_state,(job.state='succeeded') as native_work_succeeded
          from personal_agent_team_job_publications publication
          join personal_agent_execution_jobs job on job.id=publication.job_id
            and job.owner_user_id=publication.owner_user_id
@@ -934,12 +1235,135 @@ export const createTeamOverviewSourcesRepository = (
         order by review.updated_at desc,review.id,operation.updated_at desc`,
       [team.team_id, actor.userId, team.team_name, reviewId, operationId]
     );
-    const projections = result.rows.flatMap((row) => {
+    const nativeResult = await client.query<PullRequestActionRow>(
+      `with latest_native_drafts as (
+         select distinct on (draft.review_id) draft.*
+           from pull_request_review_drafts draft
+           join managed_conversation_commands source_command
+             on source_command.id=draft.source_command_id
+            and source_command.execution_id=draft.source_execution_id
+            and source_command.owner_user_id=draft.owner_user_id
+            and source_command.execution_generation=draft.execution_generation
+            and source_command.state='completed'
+           join managed_conversation_executions source_execution
+             on source_execution.id=draft.source_execution_id
+            and source_execution.owner_user_id=draft.owner_user_id
+            and source_execution.execution_generation=draft.execution_generation
+          where draft.owner_user_id=$2 and draft.origin='agent'
+            and draft.source_execution_id is not null
+            and draft.source_command_id is not null
+            and draft.source_result_digest ~ '^[0-9a-f]{64}$'
+          order by draft.review_id,draft.revision desc,draft.updated_at desc,draft.id desc
+       )
+       select publication.team_id,$3::text as team_name,publication.id as publication_id,
+              'native_command'::text as publication_source,null::uuid as job_id,
+              publication.team_project_id,review.id as review_id,
+              review.repository_id,review.pull_request_number,review.status as review_status,
+              review.revision as review_revision,review.updated_at as review_updated_at,
+              operation.id as operation_id,operation.state as operation_state,
+              operation.revision as operation_revision,operation.updated_at as operation_updated_at,
+              source_command.state as job_state,
+              (native_public_square_command_status(
+                 work.execution_id,work.command_id,work.owner_user_id,work.execution_generation
+               )='succeeded') as native_work_succeeded
+         from personal_agent_team_native_command_publications publication
+         join personal_agent_native_public_square_work work
+           on work.id=publication.work_id and work.owner_user_id=publication.owner_user_id
+         join managed_conversation_executions execution
+           on execution.id=work.execution_id and execution.owner_user_id=work.owner_user_id
+          and execution.execution_generation=work.execution_generation
+          and execution.runner_device_id is not null
+         join managed_conversation_commands source_command
+           on source_command.id=work.command_id and source_command.execution_id=work.execution_id
+          and source_command.owner_user_id=work.owner_user_id
+          and source_command.execution_generation=work.execution_generation
+          and source_command.command_kind='prompt'
+         join personal_agent_identity_versions identity_version
+           on identity_version.owner_user_id=work.owner_user_id
+          and identity_version.agent_id=work.agent_id
+          and identity_version.version=work.agent_version
+         join public_square_project_connections connection
+           on connection.id=publication.connection_id
+          and connection.actor_user_id=publication.owner_user_id
+          and connection.team_id=publication.team_id
+          and connection.team_project_id=publication.team_project_id
+         join latest_native_drafts native_draft
+           on native_draft.owner_user_id=work.owner_user_id
+          and native_draft.source_execution_id=work.execution_id
+          and native_draft.source_command_id=work.command_id
+          and native_draft.execution_generation=work.execution_generation
+          and native_draft.source_agent_version=work.agent_version
+         join pull_request_reviews review
+           on review.id=native_draft.review_id and review.owner_user_id=publication.owner_user_id
+          and review.execution_id=work.execution_id and review.agent_id=work.agent_id
+          and review.target_device_id=execution.runner_device_id
+          and review.target_deployment_id=execution.runner_deployment_id
+          and review.project_id is not distinct from work.original_project_id
+          and review.account_id=native_draft.account_id
+         join pull_request_review_drafts current_draft
+           on current_draft.review_id=review.id and current_draft.owner_user_id=review.owner_user_id
+          and current_draft.revision=review.draft_revision
+          and current_draft.account_id=review.account_id
+          and current_draft.execution_generation=work.execution_generation
+          and current_draft.id=native_draft.id
+         left join pull_request_operations operation
+           on operation.review_id=review.id and operation.owner_user_id=review.owner_user_id
+          and operation.kind='push' and operation.state in ('failed','uncertain')
+          and operation.target_device_id=review.target_device_id
+          and operation.target_deployment_id=review.target_deployment_id
+        where publication.team_id=$1 and publication.owner_user_id=$2
+          and publication.state='active'
+          and (review.status in ('stale','draft','frozen','uncertain','failed')
+               or operation.id is not null)
+          and native_draft.source_review_revision < review.revision
+          and native_draft.source_review_revision > 0
+          and ((review.status='stale') or (
+            review.reviewed_base_sha=native_draft.base_sha
+            and review.reviewed_head_sha=native_draft.head_sha
+            and review.reviewed_execution_generation=work.execution_generation
+            and current_draft.base_sha=review.reviewed_base_sha
+            and current_draft.head_sha=review.reviewed_head_sha
+          ))
+          and (review.status<>'draft' or (
+            review.expected_base_sha=current_draft.base_sha
+            and review.expected_head_sha=current_draft.head_sha
+            and review.draft_revision=current_draft.revision
+          ))
+          and ($4::uuid is null or review.id=$4)
+          and ($5::uuid is null or operation.id=$5)
+          and exists (
+            select 1 from collaboration_team_shared_projects project
+             where project.id=publication.team_project_id
+               and project.team_id=publication.team_id and project.unshared_at is null
+          )
+          and exists (
+            select 1 from collaboration_threads project_thread
+             where project_thread.team_project_id=publication.team_project_id
+               and project_thread.team_id=publication.team_id
+               and project_thread.kind='team_project_channel'
+               and project_thread.lifecycle='active'
+          )
+          and exists (
+            select 1 from team_memberships membership
+             join teams active_team on active_team.id=membership.team_id
+             where membership.team_id=publication.team_id and membership.user_id=$2
+               and membership.status='enabled' and membership.disabled_at is null
+               and active_team.lifecycle='active'
+               and active_team.entitlement_status in ('active','grace')
+          )
+        order by review.updated_at desc,review.id,operation.updated_at desc`,
+      [team.team_id, actor.userId, team.team_name, reviewId, operationId]
+    );
+    const rows = [...result.rows, ...nativeResult.rows];
+    const projections = rows.flatMap((row) => {
       const reviewActionable =
         ["stale", "frozen", "uncertain", "failed"].includes(
           row.review_status
         ) ||
-        (row.review_status === "draft" && row.job_state === "succeeded");
+        (row.review_status === "draft" &&
+          (row.publication_source === "native_command"
+            ? row.native_work_succeeded
+            : row.job_state === "succeeded"));
       const reviewItem: TeamOverviewItem = {
         sourceEventId: `pr:${row.review_id}`,
         source: "pull_request_action",
@@ -968,7 +1392,7 @@ export const createTeamOverviewSourcesRepository = (
       };
       if (!row.operation_id) {
         return reviewActionable
-          ? [{ item: reviewItem, linkedJobId: row.job_id }]
+          ? [{ item: reviewItem, linkedPublicationId: row.publication_id }]
           : [];
       }
       const operationItem: TeamOverviewItem = {
@@ -990,24 +1414,41 @@ export const createTeamOverviewSourcesRepository = (
       };
       if (reviewId)
         return reviewActionable
-          ? [{ item: reviewItem, linkedJobId: row.job_id }]
+          ? [{ item: reviewItem, linkedPublicationId: row.publication_id }]
           : [];
       if (operationId)
-        return [{ item: operationItem, linkedJobId: row.job_id }];
+        return [
+          { item: operationItem, linkedPublicationId: row.publication_id }
+        ];
       return [
         ...(reviewActionable
-          ? [{ item: reviewItem, linkedJobId: row.job_id }]
+          ? [{ item: reviewItem, linkedPublicationId: row.publication_id }]
           : []),
-        { item: operationItem, linkedJobId: row.job_id }
+        { item: operationItem, linkedPublicationId: row.publication_id }
       ];
     });
-    const seen = new Set<string>();
-    return projections.filter(({ item }) => {
-      const key = `${item.sourceEventId}\u0000${item.sourceRevision}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const grouped = new Map<string, PullRequestActionProjection>();
+    for (const projection of projections) {
+      const key = `${teamOverviewSourceKey({
+        teamId: projection.item.teamId,
+        sourceEventId: projection.item.sourceEventId
+      })}\u0000${projection.item.sourceRevision}`;
+      const previous = grouped.get(key);
+      if (!previous) {
+        grouped.set(key, {
+          ...projection,
+          linkedPublicationIds: [projection.linkedPublicationId]
+        });
+        continue;
+      }
+      const publicationIds = previous.linkedPublicationIds ?? [
+        previous.linkedPublicationId
+      ];
+      if (!publicationIds.includes(projection.linkedPublicationId))
+        publicationIds.push(projection.linkedPublicationId);
+      previous.linkedPublicationIds = publicationIds;
+    }
+    return [...grouped.values()];
   };
 
   const loadTeamItemsWithClient = async (
@@ -1025,9 +1466,38 @@ export const createTeamOverviewSourcesRepository = (
     for (const team of teams) {
       const messages = await listMessageItemsForTeam(client, actor, team, only);
       const requests = await listRequestItemsForTeam(client, actor, team, only);
-      const jobs = await listJobItemsForTeam(client, actor, team, only);
-      attention.push(...messages.attention, ...requests, ...jobs.attention);
-      catchUp.push(...messages.catchUp, ...jobs.catchUp);
+      const prActions = await listPullRequestActionsForTeam(
+        client,
+        actor,
+        team,
+        only?.source === "pull_request_action" ? only : undefined
+      );
+      const jobs = await listJobItemsForTeam(
+        client,
+        actor,
+        team,
+        only,
+        prActions
+      );
+      const native = await listNativeAgentItemsForTeam(
+        client,
+        actor,
+        team,
+        only,
+        new Set(
+          prActions.flatMap(
+            (action) =>
+              action.linkedPublicationIds ?? [action.linkedPublicationId]
+          )
+        )
+      );
+      attention.push(
+        ...messages.attention,
+        ...requests,
+        ...jobs.attention,
+        ...native.attention
+      );
+      catchUp.push(...messages.catchUp, ...jobs.catchUp, ...native.catchUp);
     }
     return { attention, catchUp };
   };
@@ -1044,9 +1514,37 @@ export const createTeamOverviewSourcesRepository = (
         for (const team of authorized) {
           const messages = await listMessageItemsForTeam(client, actor, team);
           const requests = await listRequestItemsForTeam(client, actor, team);
-          const jobs = await listJobItemsForTeam(client, actor, team);
-          attention.push(...messages.attention, ...requests, ...jobs.attention);
-          catchUp.push(...messages.catchUp, ...jobs.catchUp);
+          const prActions = await listPullRequestActionsForTeam(
+            client,
+            actor,
+            team
+          );
+          const jobs = await listJobItemsForTeam(
+            client,
+            actor,
+            team,
+            undefined,
+            prActions
+          );
+          const native = await listNativeAgentItemsForTeam(
+            client,
+            actor,
+            team,
+            undefined,
+            new Set(
+              prActions.flatMap(
+                (action) =>
+                  action.linkedPublicationIds ?? [action.linkedPublicationId]
+              )
+            )
+          );
+          attention.push(
+            ...messages.attention,
+            ...requests,
+            ...jobs.attention,
+            ...native.attention
+          );
+          catchUp.push(...messages.catchUp, ...jobs.catchUp, ...native.catchUp);
         }
         await client.query("commit");
         return { attention, catchUp };

@@ -16498,7 +16498,7 @@ export const teamOverviewReminderStates = pgTable(
     ),
     check(
       "team_overview_source_kind_check",
-      sql`${table.sourceKind} in ('message_attention', 'agent_request', 'team_job_action', 'team_job_outcome', 'pull_request_action')`
+      sql`${table.sourceKind} in ('message_attention', 'agent_request', 'team_job_action', 'team_job_outcome', 'team_agent_action', 'team_agent_outcome', 'pull_request_action')`
     ),
     check(
       "team_overview_source_event_id_check",

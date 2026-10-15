@@ -262,6 +262,7 @@ export {
 } from "./team-agent-requests-contract.js";
 export {
   collaborationMentionUserIdsSchema,
+  isTeamOverviewOutcomeSource,
   teamOverviewAccessSchema,
   teamOverviewCoverageSchema,
   teamOverviewDestinationSchema,
@@ -272,7 +273,8 @@ export {
   teamOverviewSnapshotSchema,
   teamOverviewSourceMutationSchema,
   teamOverviewSourceSchema,
-  teamOverviewTeamSchema
+  teamOverviewTeamSchema,
+  teamOverviewSourceKey
 } from "./team-overview.js";
 export type {
   TeamOverviewDestination,

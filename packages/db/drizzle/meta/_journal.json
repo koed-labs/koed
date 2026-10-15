@@ -583,6 +583,13 @@
       "when": 1792009113146,
       "tag": "0082_home_native_agent_activity",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1792012731555,
+      "tag": "0083_team_overview_native_agent_activity",
+      "breakpoints": true
     }
   ]
 }

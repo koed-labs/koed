@@ -7,9 +7,15 @@ export const teamOverviewSourceSchema = z.enum([
   "agent_request",
   "team_job_action",
   "team_job_outcome",
+  "team_agent_action",
+  "team_agent_outcome",
   "pull_request_action"
 ]);
 export type TeamOverviewSource = z.infer<typeof teamOverviewSourceSchema>;
+
+export const isTeamOverviewOutcomeSource = (
+  source: TeamOverviewSource
+): boolean => source === "team_job_outcome" || source === "team_agent_outcome";
 
 export const teamOverviewDestinationSchema = z.discriminatedUnion("kind", [
   z
@@ -32,6 +38,13 @@ export const teamOverviewDestinationSchema = z.discriminatedUnion("kind", [
       kind: z.literal("team_job"),
       publicationId: z.uuid(),
       jobId: z.uuid(),
+      teamProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("team_agent_work"),
+      publicationId: z.uuid(),
       teamProjectId: z.uuid()
     })
     .strict(),
@@ -65,6 +78,8 @@ export const teamOverviewItemSchema = z
       "agent_request",
       "job_action",
       "job_outcome",
+      "agent_action",
+      "agent_outcome",
       "pull_request_action"
     ]),
     priority: z.enum(["blocker", "attention"]),
@@ -77,6 +92,11 @@ export const teamOverviewItemSchema = z
   })
   .strict();
 export type TeamOverviewItem = z.infer<typeof teamOverviewItemSchema>;
+
+export const teamOverviewSourceKey = (ref: {
+  teamId: string;
+  sourceEventId: string;
+}): string => `${ref.teamId}\u0000${ref.sourceEventId}`;
 
 export const teamOverviewOutcomeRefSchema = z
   .object({
