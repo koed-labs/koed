@@ -12,7 +12,8 @@ import {
   crossIdentitySyncDigest,
   crossIdentitySyncSummaryNodeRevisionHash,
   generateRecipientKeyMaterial,
-  isCapturedSessionSyncPackageV1
+  isCapturedSessionSyncPackageV2,
+  unresolvedTeamRepositorySnapshot
 } from "../packages/shared/dist/index.js";
 
 const capturedAt = "2026-08-12T00:00:00.000Z";
@@ -156,6 +157,7 @@ const packageFor = (changes, label) => {
     policyDigest: crossIdentitySyncDigest({ representation: "memory_events" }),
     summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
     session: {
+      repositorySnapshot: unresolvedTeamRepositorySnapshot(),
       originSessionId: uuid("session", 1),
       externalSessionId: "reported-shape-v1",
       sourceRuntime: "codex",
@@ -170,7 +172,7 @@ const packageFor = (changes, label) => {
 };
 
 const encryptAndMeasure = async (provider, syncPackage, label) => {
-  if (!isCapturedSessionSyncPackageV1(syncPackage)) {
+  if (!isCapturedSessionSyncPackageV2(syncPackage)) {
     throw new Error(`Invalid ${label} Cross-Identity Sync package.`);
   }
   const startedAt = performance.now();

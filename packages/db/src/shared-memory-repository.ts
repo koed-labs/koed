@@ -1968,7 +1968,7 @@ const ensureCandidateSourceIdentity = async (
           identity: "logical-memory"
         }
       : {
-          protocol: "koed.captured-session-sync/v1",
+          protocol: "koed.captured-session-sync/v2",
           sourceDeploymentId: input.sourceDeploymentProtocolId,
           sourceUserId: input.sourceOwnerPrincipalId,
           originSessionId: input.source.sessionId,

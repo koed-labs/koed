@@ -274,7 +274,7 @@ export const registerGraphRoutes = (
             logicalMemoryId:
               thread.sessionId && localDeployment
                 ? crossIdentitySyncDeterministicUuid({
-                    protocol: "koed.captured-session-sync/v1",
+                    protocol: "koed.captured-session-sync/v2",
                     sourceDeploymentId: localDeployment.protocolDeploymentId,
                     sourceUserId: user.id,
                     originSessionId: thread.sessionId,

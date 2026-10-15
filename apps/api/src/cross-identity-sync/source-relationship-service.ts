@@ -145,7 +145,7 @@ export const prepareSourceSyncRelationship = async (
     protocolDeploymentId: localDeploymentId
   });
   const protocolIdentity = {
-    protocol: "koed.captured-session-sync/v1",
+    protocol: "koed.captured-session-sync/v2",
     sourceDeploymentId: localDeployment.protocolDeploymentId,
     sourceUserId: input.localUserId,
     originSessionId: input.sessionId

@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ import {
   isCapturedSessionSyncChunkV1,
   storeUpstreamCredentialSecret,
   type CapturedSessionSyncChunkV1,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
@@ -107,7 +108,7 @@ const queueEntry = (): SyncQueueEntryRecord => ({
 const summaryNodeFixture = (
   index: number,
   summaryText = `Authoritative summary ${index}`
-): CapturedSessionSyncPackageV1["summaryNodes"][number] => {
+): CapturedSessionSyncPackageV2["summaryNodes"][number] => {
   const node = {
     originNodeId: `cccccccc-cccc-4ccc-8ccc-${String(index).padStart(12, "0")}`,
     kind: "leaf",
@@ -132,7 +133,7 @@ const summaryNodeFixture = (
     createdAt: "2026-07-13T00:00:00.000Z",
     updatedAt: "2026-07-13T00:01:00.000Z"
   } satisfies Omit<
-    CapturedSessionSyncPackageV1["summaryNodes"][number],
+    CapturedSessionSyncPackageV2["summaryNodes"][number],
     "revisionHash"
   >;
   return {
@@ -412,6 +413,15 @@ const createProcessingHandshakeFixture = (input: {
     state: input.uploadState ?? "completed",
     requestHash: "b".repeat(64),
     packageManifest: {
+      objectClass: "sync_package",
+      format: CAPTURED_SESSION_SYNC_FORMAT,
+      formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      packageDigest: "a".repeat(64),
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
+      recipientKeyId: "fixture-key",
+      recipientKeyVersion: 1,
       recordCount: 1,
       summaryRevisionHash: null
     },
@@ -716,6 +726,7 @@ describe("Cross-Identity Sync processing handshake", () => {
         },
         fromCursor: 0,
         session: {
+          repositorySnapshot: unresolvedTeamRepositorySnapshot(),
           originSessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
           externalSessionId: "thread-recovery",
           sourceRuntime: "codex",
@@ -1062,7 +1073,7 @@ describe("Cross-Identity Sync summary transport", () => {
       const mergedSummaryNodes = chunks.flatMap(
         (chunk) => chunk.package.summaryNodes
       );
-      const merged: CapturedSessionSyncPackageV1 = {
+      const merged: CapturedSessionSyncPackageV2 = {
         ...chunks[0]!.package,
         changes: chunks.flatMap((chunk) => chunk.package.changes),
         summaryNodes: mergedSummaryNodes,
@@ -1222,7 +1233,7 @@ describe("Cross-Identity Sync summary transport", () => {
     const policyManifest = { sourceBoundary: "captured_session" };
     const consentManifest = { consented: true };
     const summaryNodes = [summaryNodeFixture(9)];
-    const syncPackage: CapturedSessionSyncPackageV1 = {
+    const syncPackage: CapturedSessionSyncPackageV2 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
       policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
@@ -1243,6 +1254,7 @@ describe("Cross-Identity Sync summary transport", () => {
       policyDigest: crossIdentitySyncDigest(policyManifest),
       summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId: "99999999-9999-4999-8999-999999999999",
         externalSessionId: null,
         sourceRuntime: "codex",
@@ -1324,6 +1336,9 @@ describe("Cross-Identity Sync summary transport", () => {
           requestHash: crossIdentitySyncPackageRequestHash(syncPackage),
           packageManifest: {
             packageDigest,
+            repositorySnapshotHash: crossIdentitySyncDigest(
+              syncPackage.session.repositorySnapshot
+            ),
             recipientKeyId: recipient.keyId,
             recipientKeyVersion: recipient.keyVersion,
             recordCount: 1
@@ -1531,7 +1546,7 @@ describe("Cross-Identity Sync inbox binding", () => {
       source_boundary: "captured_session",
       selectedSessionId: "99999999-9999-4999-8999-999999999999"
     };
-    const syncPackage: CapturedSessionSyncPackageV1 = {
+    const syncPackage: CapturedSessionSyncPackageV2 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
       policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
@@ -1552,6 +1567,7 @@ describe("Cross-Identity Sync inbox binding", () => {
       policyDigest: crossIdentitySyncDigest(policyManifest),
       summaryRevisionHash: crossIdentitySyncDigest([]),
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId: consentManifest.selectedSessionId,
         externalSessionId: null,
         sourceRuntime: "codex",
@@ -1640,6 +1656,9 @@ describe("Cross-Identity Sync inbox binding", () => {
           requestHash: crossIdentitySyncPackageRequestHash(syncPackage),
           packageManifest: {
             packageDigest,
+            repositorySnapshotHash: crossIdentitySyncDigest(
+              syncPackage.session.repositorySnapshot
+            ),
             recipientKeyId: material.keyId,
             recipientKeyVersion: material.keyVersion,
             recordCount: 1

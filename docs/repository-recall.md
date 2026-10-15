@@ -233,3 +233,14 @@ Re-import, delayed capture, and resumed Conversations preserve the existing logi
 Session, assignment, and User override. A pre-cutover historical-unresolved
 Session cannot resolve from newly observed metadata; explicit reassignment remains
 the repair path. No startup or upgrade backfill is introduced.
+
+### Directed Captured Session Sync release profile
+
+The coordinated Project cutover uses `koed.captured-session-sync/v2` with package
+format version 2. Every package and target registration includes an explicit
+portable or unresolved repository snapshot. Every upload manifest includes its
+snapshot hash; targets compare it before applying content, and source
+acknowledgements retain the exact hash. Missing fields and V1 packages are
+rejected. Codex, Claude Code, and Pi use this same profile. Existing encrypted
+source material is retained; the version change does not reset source memory,
+change encryption-envelope versions, or retarget existing Team snapshots.

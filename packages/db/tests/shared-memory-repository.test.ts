@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
@@ -23,7 +24,7 @@ import {
   SharedMemorySourceItemRejectedError,
   validateSharedMemoryCanonicalSourceItem,
   validateSharedMemorySemanticSanitizedReconstruction,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider,
   type PrivacyClassificationResponse,
   type SharedMemoryCanonicalSourceItemDto,
@@ -178,7 +179,7 @@ interface SourceFixture {
   seededEvents: SeededMemoryEvent[];
   leaf: SeededNodeItem;
   rollup: SeededNodeItem;
-  lastSyncPackage: CapturedSessionSyncPackageV1 | null;
+  lastSyncPackage: CapturedSessionSyncPackageV2 | null;
   lastUploadSessionId: string | null;
 }
 
@@ -1158,7 +1159,7 @@ describeDb("Shared Memory repository", () => {
       : session.rows[0]!.id;
     const ownerPrincipalId = fixture.sourceOwnerPrincipalId;
     const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-      protocol: "koed.captured-session-sync/v1",
+      protocol: "koed.captured-session-sync/v2",
       sourceDeploymentId: fixture.sourceProtocolDeploymentId,
       sourceUserId: ownerPrincipalId,
       originSessionId: sourceSessionId,
@@ -1282,7 +1283,7 @@ describeDb("Shared Memory repository", () => {
 
   const applySyncPackage = async (
     source: SourceFixture,
-    syncPackage: CapturedSessionSyncPackageV1,
+    syncPackage: CapturedSessionSyncPackageV2,
     summarySnapshotIncluded = true
   ) => {
     const uploadSessionId = randomUUID();
@@ -1300,6 +1301,15 @@ describeDb("Shared Memory repository", () => {
         syncPackage.packageId,
         hash(`upload-request:${syncPackage.packageId}`),
         JSON.stringify({
+          objectClass: "sync_package",
+          format: syncPackage.format,
+          formatVersion: syncPackage.formatVersion,
+          packageDigest: crossIdentitySyncDigest(syncPackage),
+          repositorySnapshotHash: crossIdentitySyncDigest(
+            syncPackage.session.repositorySnapshot
+          ),
+          recipientKeyId: "fixture-recipient",
+          recipientKeyVersion: 1,
           recordCount:
             syncPackage.changes.length + syncPackage.summaryNodes.length,
           summaryRevisionHash: summarySnapshotIncluded
@@ -1586,7 +1596,7 @@ describeDb("Shared Memory repository", () => {
     };
     const summaryNodes =
       options?.includeSummarySnapshot === false ? [] : [leaf, rollup];
-    const syncPackage: CapturedSessionSyncPackageV1 = {
+    const syncPackage: CapturedSessionSyncPackageV2 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
       policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
@@ -1607,6 +1617,7 @@ describeDb("Shared Memory repository", () => {
       policyDigest: hash(`policy:${source.logicalMemoryId}`),
       summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId: source.sessionId,
         externalSessionId: `external-${source.sessionId}`,
         sourceRuntime: "codex",
@@ -3260,7 +3271,7 @@ describeDb("Shared Memory repository", () => {
         kind: "captured_session",
         sessionId: capturedSessionId,
         logicalMemoryId: crossIdentitySyncDeterministicUuid({
-          protocol: "koed.captured-session-sync/v1",
+          protocol: "koed.captured-session-sync/v2",
           sourceDeploymentId: sourceDeploymentProtocolId,
           sourceUserId: sourceOwnerPrincipalId,
           originSessionId: capturedSessionId,
@@ -3372,7 +3383,7 @@ describeDb("Shared Memory repository", () => {
             kind: "captured_session",
             sessionId: mismatchedSessionId,
             logicalMemoryId: crossIdentitySyncDeterministicUuid({
-              protocol: "koed.captured-session-sync/v1",
+              protocol: "koed.captured-session-sync/v2",
               sourceDeploymentId: mismatchedDeploymentId,
               sourceUserId: sourceOwnerPrincipalId,
               originSessionId: mismatchedSessionId,
@@ -3385,7 +3396,7 @@ describeDb("Shared Memory repository", () => {
           sourceCapabilities: ["memory_events"],
           activationRepresentation: "memory_events",
           logicalMemoryId: crossIdentitySyncDeterministicUuid({
-            protocol: "koed.captured-session-sync/v1",
+            protocol: "koed.captured-session-sync/v2",
             sourceDeploymentId: mismatchedDeploymentId,
             sourceUserId: sourceOwnerPrincipalId,
             originSessionId: mismatchedSessionId,
@@ -3419,7 +3430,7 @@ describeDb("Shared Memory repository", () => {
     const unboundPrincipalId = randomUUID();
     const unboundSessionId = randomUUID();
     const unboundLogicalMemoryId = crossIdentitySyncDeterministicUuid({
-      protocol: "koed.captured-session-sync/v1",
+      protocol: "koed.captured-session-sync/v2",
       sourceDeploymentId: sourceDeploymentProtocolId,
       sourceUserId: unboundPrincipalId,
       originSessionId: unboundSessionId,

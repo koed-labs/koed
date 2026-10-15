@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { describe, expect, it } from "vitest";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -10,9 +11,9 @@ import {
   crossIdentitySyncPackageRequestHash,
   crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
-  isCapturedSessionSyncPackageV1,
+  isCapturedSessionSyncPackageV2,
   type CapturedSessionSyncSummaryNodeV1,
-  type CapturedSessionSyncPackageV1
+  type CapturedSessionSyncPackageV2
 } from "./cross-identity-sync.js";
 
 const summaryNodeFixture = (): CapturedSessionSyncSummaryNodeV1 => {
@@ -44,7 +45,7 @@ const summaryNodeFixture = (): CapturedSessionSyncSummaryNodeV1 => {
   };
 };
 
-const packageFixture = (): CapturedSessionSyncPackageV1 => {
+const packageFixture = (): CapturedSessionSyncPackageV2 => {
   const summaryNodes = [summaryNodeFixture()];
   return {
     format: CAPTURED_SESSION_SYNC_FORMAT,
@@ -67,6 +68,7 @@ const packageFixture = (): CapturedSessionSyncPackageV1 => {
     policyDigest: "b".repeat(64),
     summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
     session: {
+      repositorySnapshot: unresolvedTeamRepositorySnapshot(),
       originSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       externalSessionId: "thread-1",
       sourceRuntime: "codex",
@@ -94,6 +96,9 @@ describe("Cross-Identity Sync protocol", () => {
       objectClass: "sync_package",
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       packageDigest: "a".repeat(64),
       summaryRevisionHash: null,
       recipientKeyId: "sync-recipient:test",
@@ -104,6 +109,12 @@ describe("Cross-Identity Sync protocol", () => {
     expect(
       capturedSessionSyncUploadPackageManifestSchema.safeParse(manifest).success
     ).toBe(true);
+    expect(
+      capturedSessionSyncUploadPackageManifestSchema.safeParse({
+        ...manifest,
+        repositorySnapshotHash: undefined
+      }).success
+    ).toBe(false);
     expect(
       capturedSessionSyncUploadPackageManifestSchema.safeParse({
         ...manifest,
@@ -123,6 +134,19 @@ describe("Cross-Identity Sync protocol", () => {
       }).success
     ).toBe(false);
   });
+
+  it.each(["codex", "codex-cli", "claude-code", "pi"])(
+    "accepts V2 source runtime %s with explicit context",
+    (sourceRuntime) => {
+      const value = packageFixture();
+      expect(
+        isCapturedSessionSyncPackageV2({
+          ...value,
+          session: { ...value.session, sourceRuntime }
+        })
+      ).toBe(true);
+    }
+  );
 
   it("derives stable, namespace-sensitive protocol UUIDs", () => {
     const input = { relationship: "source", idempotencyKey: "retry-key" };
@@ -162,24 +186,35 @@ describe("Cross-Identity Sync protocol", () => {
 
   it("recognizes only the supported package version", () => {
     const value = packageFixture();
-    expect(isCapturedSessionSyncPackageV1(value)).toBe(true);
-    expect(isCapturedSessionSyncPackageV1({ ...value, formatVersion: 2 })).toBe(
+    expect(isCapturedSessionSyncPackageV2(value)).toBe(true);
+    expect(
+      isCapturedSessionSyncPackageV2({
+        ...value,
+        format: "koed.captured-session-sync/v1"
+      })
+    ).toBe(false);
+    const legacySession: Record<string, unknown> = { ...value.session };
+    delete legacySession.repositorySnapshot;
+    expect(
+      isCapturedSessionSyncPackageV2({ ...value, session: legacySession })
+    ).toBe(false);
+    expect(isCapturedSessionSyncPackageV2({ ...value, formatVersion: 1 })).toBe(
       false
     );
-    expect(isCapturedSessionSyncPackageV1({ ...value, unknown: true })).toBe(
+    expect(isCapturedSessionSyncPackageV2({ ...value, unknown: true })).toBe(
       false
     );
-    expect(isCapturedSessionSyncPackageV1({ ...value, toCursor: 2 })).toBe(
+    expect(isCapturedSessionSyncPackageV2({ ...value, toCursor: 2 })).toBe(
       false
     );
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         createdAt: "2026-07-12T07:00:00.000+07:00"
       })
     ).toBe(false);
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         changes: [
           {
@@ -204,12 +239,12 @@ describe("Cross-Identity Sync protocol", () => {
       ...value,
       session: { ...value.session, repositorySnapshot: snapshot }
     };
-    expect(isCapturedSessionSyncPackageV1(withSnapshot)).toBe(true);
+    expect(isCapturedSessionSyncPackageV2(withSnapshot)).toBe(true);
     expect(crossIdentitySyncPackageRequestHash(withSnapshot)).not.toBe(
       crossIdentitySyncPackageRequestHash(value)
     );
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         session: {
           ...value.session,
@@ -218,7 +253,7 @@ describe("Cross-Identity Sync protocol", () => {
       })
     ).toBe(false);
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         session: {
           ...value.session,
@@ -235,7 +270,7 @@ describe("Cross-Identity Sync protocol", () => {
       { ...value.summaryNodes[0], summaryText: "Changed summary." }
     ]);
 
-    expect(isCapturedSessionSyncPackageV1(value)).toBe(true);
+    expect(isCapturedSessionSyncPackageV2(value)).toBe(true);
     expect(
       crossIdentitySyncPackageRequestHash({
         ...value,
@@ -243,7 +278,7 @@ describe("Cross-Identity Sync protocol", () => {
       })
     ).not.toBe(originalRequestHash);
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         summaryNodes: [
           { ...value.summaryNodes[0], summaryText: "Tampered summary." }
@@ -251,7 +286,7 @@ describe("Cross-Identity Sync protocol", () => {
       })
     ).toBe(false);
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         summaryNodes: [...value.summaryNodes, value.summaryNodes[0]]
       })
@@ -262,7 +297,7 @@ describe("Cross-Identity Sync protocol", () => {
     const value = packageFixture();
 
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         fromCursor: 1,
         toCursor: 1,
@@ -275,7 +310,7 @@ describe("Cross-Identity Sync protocol", () => {
     const value = packageFixture();
 
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         fromCursor: 1,
         toCursor: 1,
@@ -325,7 +360,7 @@ describe("Cross-Identity Sync protocol", () => {
     for (const node of invalidNodes) {
       const summaryNodes = [node];
       expect(
-        isCapturedSessionSyncPackageV1({
+        isCapturedSessionSyncPackageV2({
           ...value,
           summaryNodes,
           summaryRevisionHash: crossIdentitySyncDigest(summaryNodes)
@@ -335,7 +370,7 @@ describe("Cross-Identity Sync protocol", () => {
 
     const invalidRevision = [{ ...node, revisionHash: "f".repeat(64) }];
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         summaryNodes: invalidRevision,
         summaryRevisionHash: crossIdentitySyncDigest(invalidRevision)
@@ -344,7 +379,7 @@ describe("Cross-Identity Sync protocol", () => {
 
     const nodesWithoutPrompt = [{ ...node, summaryPromptVersion: null }];
     expect(
-      isCapturedSessionSyncPackageV1({
+      isCapturedSessionSyncPackageV2({
         ...value,
         summaryNodes: nodesWithoutPrompt,
         summaryRevisionHash: crossIdentitySyncDigest(nodesWithoutPrompt)
@@ -390,8 +425,8 @@ describe("Cross-Identity Sync protocol", () => {
         Object.entries(structuredClone(fixture))
       );
       mutated[key] = null;
-      expect(() => isCapturedSessionSyncPackageV1(mutated)).not.toThrow();
-      expect(isCapturedSessionSyncPackageV1(mutated)).toBe(false);
+      expect(() => isCapturedSessionSyncPackageV2(mutated)).not.toThrow();
+      expect(isCapturedSessionSyncPackageV2(mutated)).toBe(false);
     }
 
     const malformed: unknown[] = [
@@ -463,8 +498,8 @@ describe("Cross-Identity Sync protocol", () => {
       }
     ];
     for (const value of malformed) {
-      expect(() => isCapturedSessionSyncPackageV1(value)).not.toThrow();
-      expect(isCapturedSessionSyncPackageV1(value)).toBe(false);
+      expect(() => isCapturedSessionSyncPackageV2(value)).not.toThrow();
+      expect(isCapturedSessionSyncPackageV2(value)).toBe(false);
     }
   });
 });

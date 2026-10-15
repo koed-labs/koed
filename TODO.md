@@ -106,6 +106,14 @@ children share lineage and must not count as independent corroboration.
 
 ## Project cutover integration checks (ticket 16)
 
+- Transition persisted directed-sync V1 uploads and their durable queue entries
+  before release. Preserve old ciphertext and reconcile a remotely applied but
+  locally unacknowledged package using authenticated receipt metadata. Do not
+  merely reuse its sequence/idempotency key for a different V2 payload: the
+  relationship/sequence uniqueness and target sequence fence would reject it.
+  Prove queued, partially uploaded, and acknowledgement-lost cases without
+  accepting V1 package bodies in the released reader.
+
 - Coordinate the directed Captured Session Sync snapshot extension across every
   producer, consumer, admission schema, and fixture before activation. Make the
   explicit unresolved/portable snapshot mandatory in the released profile and

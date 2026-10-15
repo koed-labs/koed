@@ -1,3 +1,4 @@
+import { capturedSessionSyncUploadPackageManifestSchema } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MemorySourceRepository } from "@koed/db";
@@ -20,13 +21,13 @@ import {
   decryptEncryptedJsonPackage,
   fetchBoundedJsonObject,
   isCapturedSessionSyncChunkV1,
-  isCapturedSessionSyncPackageV1,
+  isCapturedSessionSyncPackageV2,
   inspectDeviceIdentityAtKoedHome,
   readUpstreamCredentialAuthorization,
   upstreamApiUrl,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncChunkV1,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
@@ -77,13 +78,13 @@ export interface CrossIdentitySyncService {
 }
 
 const packagePartitions = (
-  base: CapturedSessionSyncPackageV1,
+  base: CapturedSessionSyncPackageV2,
   changes: CapturedSessionSyncChangeV1[],
-  summaryNodes: CapturedSessionSyncPackageV1["summaryNodes"],
+  summaryNodes: CapturedSessionSyncPackageV2["summaryNodes"],
   summarySnapshotIncluded: boolean,
-  partitionByteCount: (partition: CapturedSessionSyncPackageV1) => number
-): CapturedSessionSyncPackageV1[] => {
-  const partitions: CapturedSessionSyncPackageV1[] = [];
+  partitionByteCount: (partition: CapturedSessionSyncPackageV2) => number
+): CapturedSessionSyncPackageV2[] => {
+  const partitions: CapturedSessionSyncPackageV2[] = [];
   const records = [
     ...changes.map((change) => ({ kind: "change" as const, change })),
     ...summaryNodes.map((summaryNode) => ({
@@ -92,11 +93,11 @@ const packagePartitions = (
     }))
   ];
   let currentChanges: CapturedSessionSyncChangeV1[] = [];
-  let currentSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"] = [];
+  let currentSummaryNodes: CapturedSessionSyncPackageV2["summaryNodes"] = [];
   const partition = (
     partitionChanges: CapturedSessionSyncChangeV1[],
-    partitionSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"]
-  ): CapturedSessionSyncPackageV1 => ({
+    partitionSummaryNodes: CapturedSessionSyncPackageV2["summaryNodes"]
+  ): CapturedSessionSyncPackageV2 => ({
     ...base,
     changes: partitionChanges,
     summaryNodes: partitionSummaryNodes,
@@ -324,7 +325,7 @@ export const createCrossIdentitySyncService = (options: {
     });
     const delta = deltaResult as
       | (NonNullable<typeof deltaResult> & {
-          summaryNodes?: CapturedSessionSyncPackageV1["summaryNodes"];
+          summaryNodes?: CapturedSessionSyncPackageV2["summaryNodes"];
         })
       | null;
     const summaryNodes = delta?.summaryNodes ?? [];
@@ -374,7 +375,7 @@ export const createCrossIdentitySyncService = (options: {
       createRecipientPublicKeyEnvelopeEncryptionProvider(recipient);
     const packageId = randomUUID();
     const packageBase: Omit<
-      CapturedSessionSyncPackageV1,
+      CapturedSessionSyncPackageV2,
       "changes" | "summaryNodes" | "summaryRevisionHash" | "toCursor"
     > = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
@@ -464,19 +465,19 @@ export const createCrossIdentitySyncService = (options: {
       );
     }
     const toCursor = selectedChanges.at(-1)?.cursor ?? delta.fromCursor;
-    const base: CapturedSessionSyncPackageV1 = {
+    const base: CapturedSessionSyncPackageV2 = {
       ...packageBase,
       toCursor,
       changes: selectedChanges,
       summaryNodes: selectedSummaryNodes,
       summaryRevisionHash: crossIdentitySyncDigest(selectedSummaryNodes)
     };
-    if (!isCapturedSessionSyncPackageV1(base)) {
+    if (!isCapturedSessionSyncPackageV2(base)) {
       throw new InvalidSyncPackageError("Source sync package is invalid");
     }
     const packageDigest = crossIdentitySyncDigest(base);
     const chunkPayload = (
-      partition: CapturedSessionSyncPackageV1,
+      partition: CapturedSessionSyncPackageV2,
       chunkIndex: number,
       chunkCount: number
     ): CapturedSessionSyncChunkV1 => ({
@@ -575,9 +576,9 @@ export const createCrossIdentitySyncService = (options: {
           format: CAPTURED_SESSION_SYNC_FORMAT,
           formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
           packageDigest,
-          repositorySnapshotHash: base.session.repositorySnapshot
-            ? crossIdentitySyncDigest(base.session.repositorySnapshot)
-            : null,
+          repositorySnapshotHash: crossIdentitySyncDigest(
+            base.session.repositorySnapshot
+          ),
           summaryRevisionHash: delta.summarySnapshotIncluded
             ? base.summaryRevisionHash
             : null,
@@ -931,9 +932,9 @@ export const createCrossIdentitySyncService = (options: {
         packageSequence: upload.sourceSequence,
         summaryRevisionHash,
         repositorySnapshotHash:
-          typeof upload.packageManifest.repositorySnapshotHash === "string"
-            ? upload.packageManifest.repositorySnapshotHash
-            : null,
+          capturedSessionSyncUploadPackageManifestSchema.parse(
+            upload.packageManifest
+          ).repositorySnapshotHash,
         staleAfterSeconds: options.staleAfterSeconds
       };
       await options.repository.acknowledgeSourceSyncPackage(acknowledgement);
@@ -1077,7 +1078,7 @@ export const createCrossIdentitySyncService = (options: {
           "Sync chunk set is incomplete or inconsistent"
         );
       }
-      const merged: CapturedSessionSyncPackageV1 = {
+      const merged: CapturedSessionSyncPackageV2 = {
         ...first.package,
         changes: decrypted.flatMap((chunk) => chunk.package.changes),
         summaryNodes: decrypted.flatMap((chunk) => chunk.package.summaryNodes),
@@ -1094,16 +1095,14 @@ export const createCrossIdentitySyncService = (options: {
         merged.summaryNodes.length >
           CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES_PER_PACKAGE ||
         mergedBytes > CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES ||
-        !isCapturedSessionSyncPackageV1(merged) ||
+        !isCapturedSessionSyncPackageV2(merged) ||
         merged.packageId !== persisted.upload.protocolPackageId ||
         merged.relationshipId !== entry.syncRelationshipId ||
         merged.packageSequence !== persisted.upload.sourceSequence ||
         merged.fromCursor !== persisted.upload.fromCursor ||
         merged.toCursor !== persisted.upload.toCursor ||
-        (manifestRepositorySnapshotHash != null &&
-          (!merged.session.repositorySnapshot ||
-            manifestRepositorySnapshotHash !==
-              crossIdentitySyncDigest(merged.session.repositorySnapshot))) ||
+        manifestRepositorySnapshotHash !==
+          crossIdentitySyncDigest(merged.session.repositorySnapshot) ||
         !Number.isSafeInteger(manifestRecordCount) ||
         manifestRecordCount !==
           merged.changes.length + merged.summaryNodes.length ||

@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import {
   createHash,
   createCipheriv,
@@ -60,7 +61,7 @@ import {
   pdsPortableMemoryEventId,
   rawConversationTransportChunkGroupId,
   resolveSupportedEmbeddingModelConfig,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
@@ -181,6 +182,9 @@ const testSyncPackageUploadManifest = (input?: {
   format: CAPTURED_SESSION_SYNC_FORMAT,
   formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   packageDigest: input?.packageDigest ?? "0".repeat(64),
+  repositorySnapshotHash: crossIdentitySyncDigest(
+    unresolvedTeamRepositorySnapshot()
+  ),
   summaryRevisionHash: input?.summaryRevisionHash ?? null,
   recipientKeyId: "test-recipient-key",
   recipientKeyVersion: 1,
@@ -9827,6 +9831,9 @@ describeDb("memory repository visibility", () => {
       packageId: acknowledgedPackageId
     });
     const acknowledgement = {
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId: ids.relationshipId,
       packageId: acknowledgedPackageId,
       sourceCursor: delta!.changes[0]!.cursor,
@@ -10096,6 +10103,9 @@ describeDb("memory repository visibility", () => {
         ids.relationshipId
       ),
       encryptedRepo.acknowledgeSourceSyncPackage({
+        repositorySnapshotHash: crossIdentitySyncDigest(
+          unresolvedTeamRepositorySnapshot()
+        ),
         relationshipId: ids.relationshipId,
         packageId: inFlightPackageId,
         sourceCursor: delta!.changes[1]!.cursor,
@@ -10178,6 +10188,9 @@ describeDb("memory repository visibility", () => {
     });
     await expect(
       encryptedRepo.acknowledgeSourceSyncPackage({
+        repositorySnapshotHash: crossIdentitySyncDigest(
+          unresolvedTeamRepositorySnapshot()
+        ),
         relationshipId: ids.relationshipId,
         packageId: randomUUID(),
         sourceCursor: delta!.changes[1]!.cursor,
@@ -10458,6 +10471,9 @@ describeDb("memory repository visibility", () => {
     expect(Array.isArray(leafSummaryNode?.sourceOriginEventIds)).toBe(true);
     expect(leafSummaryNode?.childOriginNodeIds).toEqual([]);
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: leafDelta!.toCursor,
@@ -10507,6 +10523,9 @@ describeDb("memory repository visibility", () => {
       "rollup"
     ]);
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: rollupDelta!.toCursor,
@@ -10597,6 +10616,9 @@ describeDb("memory repository visibility", () => {
       summaryRevisionHash: crossIdentitySyncDigest([])
     });
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: emptySummaryDelta!.toCursor,
@@ -10672,6 +10694,7 @@ describeDb("memory repository visibility", () => {
         policyManifest: { sourceBoundary: "captured_session" },
         consentManifest: { consented: true },
         session: {
+          repositorySnapshot: unresolvedTeamRepositorySnapshot(),
           originSessionId,
           externalSessionId: `source-session-${randomUUID()}`,
           sourceRuntime: "codex",
@@ -10861,6 +10884,7 @@ describeDb("memory repository visibility", () => {
       policyManifest: { sourceBoundary: "captured_session" as const },
       consentManifest: { consented: true },
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId,
         externalSessionId: "plaintext-source-session-label",
         sourceRuntime: "codex",
@@ -10913,7 +10937,8 @@ describeDb("memory repository visibility", () => {
         external_session_id: null,
         metadata: {
           syncReplica: true,
-          contentEncrypted: true
+          contentEncrypted: true,
+          repositorySnapshot: unresolvedTeamRepositorySnapshot()
         }
       }
     ]);
@@ -11094,6 +11119,7 @@ describeDb("memory repository visibility", () => {
           policyManifest: { sourceBoundary: "captured_session" },
           consentManifest: { consented: true },
           session: {
+            repositorySnapshot: unresolvedTeamRepositorySnapshot(),
             originSessionId: switchedOriginSessionId,
             externalSessionId: "switched-source-thread",
             sourceRuntime: "codex",
@@ -11183,6 +11209,7 @@ describeDb("memory repository visibility", () => {
           policyManifest: { sourceBoundary: "captured_session" },
           consentManifest: { consented: true },
           session: {
+            repositorySnapshot: unresolvedTeamRepositorySnapshot(),
             originSessionId: spoofedOriginSessionId,
             externalSessionId: "spoofed-source-thread",
             sourceRuntime: "codex",
@@ -11340,7 +11367,7 @@ describeDb("memory repository visibility", () => {
       ...summaryNodeBase,
       revisionHash: crossIdentitySyncDigest(summaryNodeBase)
     };
-    const syncPackage: CapturedSessionSyncPackageV1 = {
+    const syncPackage: CapturedSessionSyncPackageV2 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
       policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
@@ -11363,6 +11390,7 @@ describeDb("memory repository visibility", () => {
       }),
       summaryRevisionHash: crossIdentitySyncDigest([summaryNode]),
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId,
         externalSessionId: "source-thread",
         sourceRuntime: "codex",
@@ -12014,7 +12042,7 @@ describeDb("memory repository visibility", () => {
       ...replacementEventBase,
       revisionHash: crossIdentitySyncDigest(replacementEventBase)
     };
-    const replacementSummaryPackage: CapturedSessionSyncPackageV1 = {
+    const replacementSummaryPackage: CapturedSessionSyncPackageV2 = {
       ...syncPackage,
       packageId: randomUUID(),
       packageSequence: 2,
@@ -12107,7 +12135,7 @@ describeDb("memory repository visibility", () => {
     });
 
     const emptySummaryHash = crossIdentitySyncDigest([]);
-    const emptySummaryPackage: CapturedSessionSyncPackageV1 = {
+    const emptySummaryPackage: CapturedSessionSyncPackageV2 = {
       ...syncPackage,
       packageId: randomUUID(),
       packageSequence: 3,

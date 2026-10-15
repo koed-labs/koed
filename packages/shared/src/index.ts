@@ -1116,7 +1116,7 @@ export {
   crossIdentitySyncPackageRequestHash,
   crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
-  isCapturedSessionSyncPackageV1
+  isCapturedSessionSyncPackageV2
 } from "./cross-identity-sync.js";
 export {
   koedLocalWorkSignalPath,
@@ -1154,7 +1154,7 @@ export type {
   CapturedSessionSyncChunkV1,
   CapturedSessionSyncContributorV1,
   CapturedSessionSyncEventV1,
-  CapturedSessionSyncPackageV1,
+  CapturedSessionSyncPackageV2,
   CapturedSessionSyncSummaryNodeV1,
   CapturedSessionSyncUploadPackageManifest
 } from "./cross-identity-sync.js";

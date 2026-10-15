@@ -201,7 +201,7 @@ export const registerCrossIdentitySyncRoutes = (
       const repository = repo();
       const localDeployment = target.localDeployment;
       const localReplicaId = crossIdentitySyncDeterministicUuid({
-        protocol: "koed.captured-session-sync/v1",
+        protocol: "koed.captured-session-sync/v2",
         relationshipId: input.relationship_id,
         targetDeploymentId: localDeployment.protocolDeploymentId,
         targetUserId: auth.user.id,

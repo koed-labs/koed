@@ -6,7 +6,7 @@ import {
 } from "./repository-assignment.js";
 import {
   createTeamRepositorySnapshot,
-  unresolvedTeamRepositorySnapshot
+  teamRepositorySnapshotSchema
 } from "@koed/shared";
 import pg from "pg";
 import {
@@ -20,7 +20,7 @@ import {
   logicalMemorySourceRevisionIdentity,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncContributorV1,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type CapturedSessionSyncSummaryNodeV1,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedJsonPackage,
@@ -261,7 +261,7 @@ export interface CrossIdentitySyncRelationshipRecord {
   targetProcessingCursor: number;
   packageSequence: number;
   sourceSummaryRevisionHash: string | null;
-  sourceRepositorySnapshotHash?: string | null;
+  sourceRepositorySnapshotHash: string | null;
   targetSummaryRevisionHash: string | null;
   lastPackageId: string | null;
   lastSyncedAt: string | null;
@@ -349,7 +349,7 @@ export interface CrossIdentitySyncRepository {
   getCapturedSessionSyncSource(
     actor: ActorContext,
     sessionId: string
-  ): Promise<CapturedSessionSyncPackageV1["session"] | null>;
+  ): Promise<CapturedSessionSyncPackageV2["session"] | null>;
   getLocalSyncDeployment(): Promise<DeploymentIdentityRecord | null>;
   ensureLocalSyncDeployment(input: {
     profile: DeploymentProfile;
@@ -430,7 +430,7 @@ export interface CrossIdentitySyncRepository {
       creationRequestHash: string;
       policyManifest: Record<string, unknown>;
       consentManifest: Record<string, unknown>;
-      session: CapturedSessionSyncPackageV1["session"];
+      session: CapturedSessionSyncPackageV2["session"];
     }
   ): Promise<{
     relationship: CrossIdentitySyncRelationshipRecord;
@@ -483,11 +483,11 @@ export interface CrossIdentitySyncRepository {
     limit?: number;
   }): Promise<{
     relationship: CrossIdentitySyncRelationshipRecord;
-    session: CapturedSessionSyncPackageV1["session"];
+    session: CapturedSessionSyncPackageV2["session"];
     changes: CapturedSessionSyncChangeV1[];
     summaryNodes: CapturedSessionSyncSummaryNodeV1[];
     summarySnapshotIncluded: boolean;
-    repositorySnapshotChanged?: boolean;
+    repositorySnapshotChanged: boolean;
     summaryRevisionHash: string;
     fromCursor: number;
     toCursor: number;
@@ -635,7 +635,7 @@ export interface CrossIdentitySyncRepository {
   applyCapturedSessionSyncPackage(input: {
     relationshipId: string;
     uploadSessionId: string;
-    package: CapturedSessionSyncPackageV1;
+    package: CapturedSessionSyncPackageV2;
   }): Promise<{
     eventIds: string[];
     invalidatedEventIds: string[];
@@ -649,7 +649,7 @@ export interface CrossIdentitySyncRepository {
     targetProcessingCursor: number;
     packageSequence: number;
     summaryRevisionHash: string | null;
-    repositorySnapshotHash?: string | null;
+    repositorySnapshotHash: string;
     staleAfterSeconds: number;
   }): Promise<void>;
   markSourceSyncProcessing(input: {
@@ -1957,6 +1957,7 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async createTargetSyncRelationship(actor, input) {
+      teamRepositorySnapshotSchema.parse(input.session.repositorySnapshot);
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -2115,8 +2116,7 @@ export const createCrossIdentitySyncRepository = (
               syncReplica: true,
               contentEncrypted: true,
               repositorySnapshot: {
-                ...(input.session.repositorySnapshot ??
-                  unresolvedTeamRepositorySnapshot()),
+                ...input.session.repositorySnapshot,
                 label: null,
                 branchObservation: null
               }
@@ -3697,11 +3697,8 @@ export const createCrossIdentitySyncRepository = (
         const manifestRepositorySnapshotHash =
           uploadManifest.repositorySnapshotHash;
         if (
-          manifestRepositorySnapshotHash !== undefined &&
-          manifestRepositorySnapshotHash !== null &&
-          (!input.package.session.repositorySnapshot ||
-            manifestRepositorySnapshotHash !==
-              crossIdentitySyncDigest(input.package.session.repositorySnapshot))
+          manifestRepositorySnapshotHash !==
+          crossIdentitySyncDigest(input.package.session.repositorySnapshot)
         )
           throw new SyncStateConflictError(
             "Package repository snapshot does not match its upload manifest"
@@ -4454,6 +4451,7 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async acknowledgeSourceSyncPackage(input) {
+      assertHash(input.repositorySnapshotHash);
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -4510,7 +4508,7 @@ export const createCrossIdentitySyncRepository = (
             input.packageId,
             input.summaryRevisionHash,
             input.staleAfterSeconds,
-            input.repositorySnapshotHash ?? null
+            input.repositorySnapshotHash
           ]
         );
         if (!relationship.rows[0]) {
@@ -4519,7 +4517,7 @@ export const createCrossIdentitySyncRepository = (
           );
         }
         const acknowledgedSource = source.rows[0];
-        if (acknowledgedSource && input.repositorySnapshotHash) {
+        if (acknowledgedSource) {
           const currentSession = await client.query<
             Row & RepositoryAssignmentRow
           >(

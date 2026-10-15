@@ -172,7 +172,7 @@ const ensureCapturedSessionLogicalMemory = async (
     return null;
   }
   const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-    protocol: "koed.captured-session-sync/v1",
+    protocol: "koed.captured-session-sync/v2",
     sourceDeploymentId: localDeployment.protocol_deployment_id,
     sourceUserId: ownerUserId,
     originSessionId: sessionId,

@@ -211,7 +211,7 @@ export const createTargetSyncRelationshipSchema = z
         capturedAt: z.iso.datetime(),
         title: z.string().max(500).nullable(),
         sourceAdapterVersion: z.string().max(120).nullable(),
-        repositorySnapshot: teamRepositorySnapshotSchema.optional()
+        repositorySnapshot: teamRepositorySnapshotSchema
       })
       .strict()
   })

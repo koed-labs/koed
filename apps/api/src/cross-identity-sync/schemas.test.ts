@@ -1,3 +1,7 @@
+import {
+  crossIdentitySyncDigest,
+  unresolvedTeamRepositorySnapshot
+} from "@koed/shared";
 import { describe, expect, it } from "vitest";
 import {
   applyRemoteSyncRevocationSchema,
@@ -35,8 +39,11 @@ const responseFixture = () => ({
 
 const uploadManifestFixture = () => ({
   objectClass: "sync_package",
-  format: "koed.captured-session-sync/v1",
-  formatVersion: 1,
+  format: "koed.captured-session-sync/v2",
+  formatVersion: 2,
+  repositorySnapshotHash: crossIdentitySyncDigest(
+    unresolvedTeamRepositorySnapshot()
+  ),
   packageDigest: "c".repeat(64),
   summaryRevisionHash: null,
   recipientKeyId: "sync-recipient:test",
@@ -173,6 +180,7 @@ describe("Cross-Identity Sync response schemas", () => {
         selectedSessionId: "55555555-5555-4555-8555-555555555555"
       },
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId: "55555555-5555-4555-8555-555555555555",
         externalSessionId: null,
         sourceRuntime: "codex",
@@ -186,6 +194,12 @@ describe("Cross-Identity Sync response schemas", () => {
     expect(
       createTargetSyncRelationshipSchema.safeParse(relationship).success
     ).toBe(true);
+    expect(
+      createTargetSyncRelationshipSchema.safeParse({
+        ...relationship,
+        session: { ...relationship.session, repositorySnapshot: undefined }
+      }).success
+    ).toBe(false);
     expect(
       createTargetSyncRelationshipSchema.safeParse({
         ...relationship,

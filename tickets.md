@@ -443,7 +443,7 @@ source runtime build passed. M4 still requires the dependent ticket 18 preview.
 
 **Blocked by:** 04: Capture Claude Code sessions with the same assignment rules; 05: Capture Pi sessions with the same assignment rules; 06: Capture repository assignments for managed Conversations; 07: Preserve assignments during historical imports; 10: Review anchor changes and apply bounded bulk reassignment; 11: Preserve repository assignments across Personal Device Sync; 13: Resolve concurrent synced anchor selections; 15: Update Team Project snapshots only through explicit action.
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 - [ ] Integrate all preceding Project behavior tickets and audit every enabled capture, recall, expansion, graph, Desktop, Personal Device Sync, and Team surface.
 - [ ] Apply the cutover transition once to all existing logical sessions, including data captured after additive preparation but before activation. Preserve source memory, lineage, and retained provenance.
