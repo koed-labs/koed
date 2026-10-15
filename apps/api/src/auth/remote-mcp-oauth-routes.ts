@@ -58,6 +58,7 @@ export const registerRemoteMcpOAuthRoutes = (
     auth: AuthHelpers;
     workosAvailable: boolean;
     publicOrigin: string;
+    additionalAuthorizationServers?: readonly string[];
   }
 ) => {
   const publicOrigin = new URL(options.publicOrigin).origin;
@@ -65,6 +66,23 @@ export const registerRemoteMcpOAuthRoutes = (
     throw new Error("OAuth public origin must match its issuer");
   const sdkApp = express();
   sdkApp.disable("x-powered-by");
+  if (options.additionalAuthorizationServers?.length) {
+    sdkApp.use(
+      "/.well-known/oauth-protected-resource",
+      (_request, response, next) => {
+        const json = response.json.bind(response);
+        response.json = (metadata: Record<string, unknown>) =>
+          json({
+            ...metadata,
+            authorization_servers: [
+              options.issuerUrl.origin,
+              ...options.additionalAuthorizationServers!
+            ]
+          });
+        next();
+      }
+    );
+  }
   let cleanupTimer: ReturnType<typeof setInterval> | undefined;
   let cleanup: Promise<void> | undefined;
   const pruneExpired = () => {

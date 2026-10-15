@@ -186,6 +186,11 @@ import {
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
 import { createRemoteMcpOAuthProvider } from "../auth/remote-mcp-oauth.js";
+import {
+  createWorkosAgentRegistration,
+  isWorkosAgentCredential
+} from "../auth/workos-agent-registration.js";
+import { registerWorkosAgentRoutes } from "../auth/workos-agent-routes.js";
 import { registerRemoteMcpOAuthRoutes } from "../auth/remote-mcp-oauth-routes.js";
 import { registerRemoteMcpRoutes } from "./remote-mcp.js";
 import { supportsWorkos } from "./capabilities.js";
@@ -787,10 +792,30 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
     return retentionRepository;
   };
+  const workosAgentRegistration = config.workos.agentRegistration
+    ? createWorkosAgentRegistration({
+        config: config.workos.agentRegistration,
+        resourceUrl: config.remoteMcp.resourceUrl!,
+        apiKey: config.workos.clientSecret!,
+        clientId: config.workos.clientId!,
+        providerEnvironment: config.workos.providerEnvironment,
+        requireRepository,
+        rateLimitStore,
+        requestFetch: options.fetch
+      })
+    : undefined;
   const authHelpers = createAuthHelpers(requireRepository, {
     hashSecret,
     cookieSecure: config.cookieSecure,
-    resolveDelegatedPrincipal: remoteMcpOAuth?.resolvePrincipal,
+    resolveDelegatedPrincipal: remoteMcpOAuth
+      ? (token) =>
+          workosAgentRegistration && isWorkosAgentCredential(token)
+            ? workosAgentRegistration.resolvePrincipal(token)
+            : remoteMcpOAuth.resolvePrincipal(token)
+      : undefined,
+    isDelegatedCredential: workosAgentRegistration
+      ? isWorkosAgentCredential
+      : undefined,
     recordAuthContext: (request, authContext) =>
       setRequestLogContext(
         request,
@@ -1833,8 +1858,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       workosAvailable:
         config.workos.authkitEnabled &&
         supportsWorkos(config.deploymentProfile),
-      publicOrigin: resourceUrl.origin
+      publicOrigin: resourceUrl.origin,
+      additionalAuthorizationServers: config.workos.agentRegistration
+        ? [config.workos.agentRegistration.issuer]
+        : undefined
     });
+    if (config.workos.agentRegistration)
+      registerWorkosAgentRoutes(app, {
+        config: config.workos.agentRegistration,
+        resourceUrl: resourceUrl.href,
+        rateLimit: rateLimitHandlers.auth
+      });
     registerRemoteMcpRoutes(app, {
       resourceUrl,
       auth: authHelpers,

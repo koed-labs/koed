@@ -21,6 +21,15 @@ export const remoteMcpScopes = [
   "koed:team:read"
 ] as const;
 export const remoteMcpAccessTokenPrefix = "koed_mcp_access_";
+export class DelegatedAuthenticationError extends Error {
+  constructor(
+    readonly statusCode: 401 | 429 | 503,
+    readonly retryAfterMs?: number
+  ) {
+    super("Delegated access is unavailable");
+    this.name = "DelegatedAuthenticationError";
+  }
+}
 const accessTtlMs = 15 * 60_000;
 const grantTtlMs = 30 * 24 * 60 * 60_000;
 const digest = (value: string) =>
@@ -34,6 +43,7 @@ export interface RemoteMcpDelegatedPrincipal {
   readonly resource: string;
   readonly scopes: readonly string[];
   readonly expiresAt: number;
+  readonly teamBoundaryId?: string | null;
 }
 
 export const createRemoteMcpOAuthProvider = (options: {

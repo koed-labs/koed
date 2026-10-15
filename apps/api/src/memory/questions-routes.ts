@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { MemoryQuestionActorContext } from "@koed/db";
+import { actorForAuthenticatedRequest } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   desktopAskCompleteSchema,
@@ -33,18 +34,24 @@ export const registerQuestionRoutes = (
     request: FastifyRequest,
     userId: string
   ): Promise<MemoryQuestionActorContext> => {
-    if (context.config.teamCollaborationEnabled === false)
-      return { userId, allowTeam: false };
     const kind = context.auth.authenticatedCredentialKind(request);
     if (kind === "oauth_delegated") {
-      const principal = await context.auth.resolveDelegatedPrincipal(request);
+      const principal = await context.auth.resolveDelegatedPrincipal(request, {
+        fresh: true
+      });
       return {
         userId,
+        ...(principal && principal.teamBoundaryId !== undefined
+          ? { teamBoundaryId: principal.teamBoundaryId }
+          : {}),
         allowTeam:
+          context.config.teamCollaborationEnabled !== false &&
           principal?.userId === userId &&
           principal.scopes.includes("koed:team:read")
       };
     }
+    if (context.config.teamCollaborationEnabled === false)
+      return { userId, allowTeam: false };
     // Only a successfully authenticated session permits browser Team history.
     // Repository checks still decide whether each retained answer is readable.
     return { userId, allowTeam: kind === "session" };
@@ -215,7 +222,7 @@ export const registerQuestionRoutes = (
           )
         : await authenticateApiToken(request);
       const question = await repo.createFinalMemoryQuestion(
-        { userId: user.id },
+        await actorForAuthenticatedRequest(context.auth, request, user.id),
         input.status === "answered"
           ? {
               idempotencyKey: input.idempotency_key,

@@ -444,6 +444,15 @@ export const createMemoryQuestionRepository = (
     actor: MemoryQuestionActorContext,
     row: T
   ): Promise<T> => {
+    if (actor.teamBoundaryId !== undefined && row.team_workspace_id) {
+      if (!actor.allowTeam || actor.teamBoundaryId === null)
+        throw new SharedMemoryAuthorizationError();
+      const scoped = await pool.query(
+        "select 1 from team_workspaces where id=$1 and team_id=$2",
+        [row.team_workspace_id, actor.teamBoundaryId]
+      );
+      if (!scoped.rows[0]) throw new SharedMemoryAuthorizationError();
+    }
     // Legacy Team history is retained; task-bound history rechecks its frozen authority.
     if (!row.team_authorization) {
       return expandQuestionRow(actor, row);
@@ -979,6 +988,15 @@ export const createMemoryQuestionRepository = (
         );
       }
       const teamAuthority = finalOptions.teamAuthority;
+      if (actor.teamBoundaryId !== undefined && input.teamWorkspaceId) {
+        if (actor.teamBoundaryId === null)
+          throw new SharedMemoryAuthorizationError();
+        const scoped = await client.query(
+          "select 1 from team_workspaces where id=$1 and team_id=$2",
+          [input.teamWorkspaceId, actor.teamBoundaryId]
+        );
+        if (!scoped.rows[0]) throw new SharedMemoryAuthorizationError();
+      }
       if (teamAuthority) {
         if (
           input.teamWorkspaceId !== teamAuthority.recallBoundary.teamWorkspaceId
