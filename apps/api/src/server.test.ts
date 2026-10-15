@@ -11518,6 +11518,105 @@ describe("account and access flows", () => {
     expect(operatorDetails.body).toContain("crossIdentitySync");
   });
 
+  it("authenticates profile transition receipts and rejects body or route substitution", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const repository = createFakeRepository();
+    const reconcile = vi.fn<
+      MemorySourceRepository["reconcileTargetSyncProfile"]
+    >(async (_actor, request) => ({
+      request,
+      outcome: "superseded",
+      sourceCursor: request.fromCursor,
+      targetProcessingCursor: request.fromCursor,
+      packageSequence: request.sourceSequence,
+      issuedAt: new Date().toISOString()
+    }));
+    repository.reconcileTargetSyncProfile = reconcile;
+    const app = await buildServer({ repository });
+    try {
+      const registration = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "sync-transition@example.com",
+          password: "password123"
+        }
+      });
+      const cookie = cookieHeader(registration);
+      const sync = await enrollDeviceCredentialForTest(app, cookie, ["sync"]);
+      const readOnly = await enrollDeviceCredentialForTest(app, cookie, [
+        "team_workspace_read"
+      ]);
+      const request = {
+        protocol: "koed.captured-session-sync/profile-transition/v1",
+        relationshipId: randomUUID(),
+        packageId: randomUUID(),
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 3,
+        requestHash: "a".repeat(64),
+        manifestHash: "b".repeat(64),
+        packageChecksum: "c".repeat(64)
+      };
+      const url = `/v1/cross-identity-sync/relationships/${request.relationshipId}/profile-transition`;
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: browserSessionHeaders(cookie),
+            payload: request
+          })
+        ).statusCode
+      ).toBe(401);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: readOnly.authorization },
+            payload: request
+          })
+        ).statusCode
+      ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: sync.authorization },
+            payload: { ...request, encryptedPackage: {} }
+          })
+        ).statusCode
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: sync.authorization },
+            payload: { ...request, relationshipId: randomUUID() }
+          })
+        ).statusCode
+      ).toBe(400);
+      expect(reconcile).not.toHaveBeenCalled();
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: sync.authorization },
+        payload: request
+      });
+      expect(response.statusCode).toBe(200);
+      expect(
+        jsonBody<{ receipt: { request: unknown; outcome: string } }>(response)
+          .receipt
+      ).toMatchObject({ request, outcome: "superseded" });
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps Cross-Identity Sync behind profile and scoped device boundaries", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
     const targetApp = await buildServer({ repository: createFakeRepository() });

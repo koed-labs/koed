@@ -28,7 +28,8 @@ import type {
   PrivacyLabelPolicy,
   PdsProjectSelectionRecord,
   TeamRepositorySnapshot,
-  RepositoryIdentity
+  RepositoryIdentity,
+  SyncProfileTransitionReceipt
 } from "@koed/shared";
 
 const id = () =>
@@ -442,7 +443,8 @@ export const syncPackageState = pgEnum("sync_package_state", [
   "verified",
   "processing",
   "completed",
-  "failed"
+  "failed",
+  "superseded"
 ]);
 export const syncQueueEntryState = pgEnum("sync_queue_entry_state", [
   "pending",
@@ -11022,6 +11024,41 @@ export const syncRecipientKeys = pgTable(
       .on(table.deploymentIdentityId)
       .where(sql`${table.retiredAt} is null`),
     check("sync_recipient_keys_version_check", sql`${table.keyVersion} > 0`)
+  ]
+);
+
+export const syncProfileTransitionReceipts = pgTable(
+  "sync_profile_transition_receipts",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    protocolPackageId: uuid("protocol_package_id").notNull(),
+    sourceSequence: bigint("source_sequence", { mode: "number" }).notNull(),
+    requestDigest: text("request_digest").notNull(),
+    receipt: jsonb("receipt").$type<SyncProfileTransitionReceipt>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("sync_profile_transition_package_unique").on(
+      table.syncRelationshipId,
+      table.protocolPackageId
+    ),
+    unique("sync_profile_transition_sequence_unique").on(
+      table.syncRelationshipId,
+      table.sourceSequence
+    ),
+    check(
+      "sync_profile_transition_sequence_check",
+      sql`${table.sourceSequence}>0`
+    ),
+    check(
+      "sync_profile_transition_digest_check",
+      sql`${table.requestDigest} ~ '^[a-f0-9]{64}$'`
+    )
   ]
 );
 

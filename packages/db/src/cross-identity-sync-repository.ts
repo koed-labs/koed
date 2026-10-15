@@ -1,3 +1,4 @@
+import { reconcileTargetSyncProfileWithClient } from "./sync-profile-transition.js";
 import { randomUUID } from "node:crypto";
 import { writeOwnerPrivateRepositorySnapshot } from "./owner-private-repository-snapshot.js";
 import {
@@ -13,6 +14,9 @@ import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
+  syncProfileTransitionRequestSchema,
+  type SyncProfileTransitionRequest,
+  type SyncProfileTransitionReceipt,
   capturedSessionSyncUploadPackageManifestSchema,
   classifyApprovalActivity,
   crossIdentitySyncDigest,
@@ -87,7 +91,8 @@ export type SyncPackageState =
   | "verified"
   | "processing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "superseded";
 export type SyncQueueEntryState =
   | "pending"
   | "processing"
@@ -632,6 +637,10 @@ export interface CrossIdentitySyncRepository {
     retryAfterMs: number;
     terminal?: boolean;
   }): Promise<boolean>;
+  reconcileTargetSyncProfile(
+    actor: SyncActorContext,
+    input: SyncProfileTransitionRequest
+  ): Promise<SyncProfileTransitionReceipt | null>;
   applyCapturedSessionSyncPackage(input: {
     relationshipId: string;
     uploadSessionId: string;
@@ -2793,6 +2802,46 @@ export const createCrossIdentitySyncRepository = (
       const snapshot = await readSessionSummarySnapshot({ actor, sessionId });
       return snapshot.nodes.map((node) => node.originNodeId);
     },
+    async reconcileTargetSyncProfile(actor, input) {
+      const request = syncProfileTransitionRequestSchema.parse(input);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        if (
+          !actor.deviceCredentialId ||
+          !(await lockActiveSyncDeviceCredential(client, actor))
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const found = await client.query<Row>(
+          `select * from cross_identity_sync_relationships relationship
+          where id=$1 and local_user_id=$2 and side='target' and revoked_at is null
+            and state not in ('paused','failed','revoked','purge_pending')
+            and ${relationshipCredentialClause("relationship", 3)}
+            and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+            and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+            for update`,
+          [request.relationshipId, actor.userId, actor.deviceCredentialId]
+        );
+        if (!found.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+        const receipt = await reconcileTargetSyncProfileWithClient(
+          client,
+          mapRelationship(found.rows[0]),
+          request
+        );
+        await client.query("commit");
+        return receipt;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async createSyncPackageUploadSession(actor, input) {
       assertSafeControlManifest(input.packageManifest);
       const client = await pool.connect();
@@ -2844,6 +2893,10 @@ export const createCrossIdentitySyncRepository = (
             "Sync relationship must be retried before accepting a new package"
           );
         }
+        if (input.sourceSequence <= numberValue(relationship.package_sequence))
+          throw new SyncStateConflictError(
+            "Sync package sequence has already been consumed"
+          );
         const result = await client.query<Row>(
           "insert into sync_package_upload_sessions (sync_relationship_id,protocol_package_id,package_format_version,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,1,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11) returning *",
           [
@@ -2906,6 +2959,10 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const uploadState = String(upload.state);
+        if (uploadState === "superseded")
+          throw new SyncStateConflictError(
+            "Sync upload was superseded at the profile transition"
+          );
         if (["verified", "processing", "completed"].includes(uploadState)) {
           const existing = await client.query(
             "select * from sync_package_chunks where upload_session_id=$1 and chunk_index=$2",
@@ -3072,7 +3129,7 @@ export const createCrossIdentitySyncRepository = (
           await client.query("commit");
           return upload;
         }
-        if (upload.state === "failed") {
+        if (upload.state === "failed" || upload.state === "superseded") {
           throw new SyncStateConflictError("Sync upload has failed");
         }
         const chunks = await client.query<Row>(
@@ -3237,6 +3294,10 @@ export const createCrossIdentitySyncRepository = (
     async claimSyncQueueEntry(input) {
       const table =
         input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
+      const currentInboxProfile =
+        input.queue === "inbox"
+          ? "and not exists(select 1 from sync_package_upload_sessions legacy where legacy.id=entry.upload_session_id and legacy.package_manifest->>'format'='koed.captured-session-sync/v1')"
+          : "";
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -3271,6 +3332,7 @@ export const createCrossIdentitySyncRepository = (
              and (entry.lease_expires_at is null or entry.lease_expires_at<=now())
              and entry.attempt_count>=entry.max_attempts
              and relationship.state<>'paused'
+             ${currentInboxProfile}
            order by entry.lease_expires_at,entry.created_at
            for update of relationship,entry skip locked
            limit 1`
@@ -3427,6 +3489,7 @@ export const createCrossIdentitySyncRepository = (
                      (entry.lease_expires_at is null or entry.lease_expires_at<=now())))
                 and entry.available_at<=now()
                 and entry.attempt_count<entry.max_attempts
+                ${currentInboxProfile}
                 and (
                   ($2='outbox'
                     and relationship.side='source'

@@ -428,6 +428,13 @@
       "when": 1792027017301,
       "tag": "0060_pds_superseded_profile_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792027576586,
+      "tag": "0061_directed_sync_profile_receipts",
+      "breakpoints": true
     }
   ]
 }

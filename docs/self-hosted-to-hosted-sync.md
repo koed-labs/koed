@@ -484,3 +484,25 @@ available; a fresh cache timestamp alone is insufficient.
   uploads, but clients should not depend on a specific storage provider.
 - Failed sync diagnostics are redacted operational metadata unless a separate
   scoped support/break-glass workflow is approved.
+
+## Project cutover upload reconciliation
+
+The current body reader accepts only Captured Session Sync V2. Retained V1 upload
+metadata can be reconciled through
+`POST /v1/cross-identity-sync/relationships/:relationshipId/profile-transition`.
+The strict `koed.captured-session-sync/profile-transition/v1` control request
+contains the relationship and package IDs, source sequence, cursor range, request
+hash, manifest digest, and encrypted package checksum. Memory bodies and unknown
+fields are rejected. The route requires a scoped Device Credential; browser
+Sessions and API Tokens do not authorize it.
+
+Migration 0061 stores immutable receipts. An applied receipt binds the completed
+package and cursor; a superseded receipt consumes only the next sequence and
+keeps the processing cursor unchanged. The target retains uploaded ciphertext,
+keeps old-profile inbox work out of the current body reader, cancels old inbox
+claims, and rejects further mutation of a retired upload or
+reuse of the consumed sequence. Receipt replay rechecks current authorization.
+
+The target transition is implemented and validated against native retained
+metadata fixtures. Source receipt adoption and durable worker transition remain
+part of ticket 16. See [ADR 0059](adr/0059-authenticated-directed-sync-profile-transitions.md).

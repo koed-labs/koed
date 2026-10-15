@@ -1853,3 +1853,12 @@ export type { PdsRepositoryAssignment } from "./personal-repository-assignment.j
 
 export * from "./personal-project-selection.js";
 export * from "./team-repository-snapshot.js";
+
+export {
+  syncProfileTransitionRequestSchema,
+  syncProfileTransitionReceiptSchema
+} from "./cross-identity-sync-profile-transition.js";
+export type {
+  SyncProfileTransitionRequest,
+  SyncProfileTransitionReceipt
+} from "./cross-identity-sync-profile-transition.js";

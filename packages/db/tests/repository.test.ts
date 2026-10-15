@@ -10637,6 +10637,282 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBe("pending");
   });
 
+  it("reconciles retained V1 delivery metadata without reading package bodies", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      ),
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        createLocalTestKeyEnvelopeEncryptionProvider(
+          randomBytes(32).toString("base64")
+        )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-intake-owner-${randomUUID()}@example.com`
+    });
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceUserId = randomUUID();
+    const challengeHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: `sync-source-${randomUUID()}`,
+      deviceInstanceId: `sync-source-device-${randomUUID()}`,
+      requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const credential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash,
+        credentialKeyId: `sync-intake-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: randomBytes(32).toString("hex"),
+        operationFamilies: ["sync"]
+      }
+    );
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "team_self_hosted",
+      protocolDeploymentId: randomUUID()
+    });
+    const relationshipInput = (overrides: Record<string, unknown> = {}) => {
+      const originSessionId = randomUUID();
+      return {
+        relationshipId: randomUUID(),
+        logicalMemoryId: randomUUID(),
+        originSessionId,
+        localDeploymentIdentityId: localDeployment.id,
+        sourceDeploymentProtocolId,
+        sourceUserId,
+        remoteReplicaId: randomUUID(),
+        localReplicaId: randomUUID(),
+        idempotencyKey: `sync-intake-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true },
+        session: {
+          repositorySnapshot: unresolvedTeamRepositorySnapshot(),
+          originSessionId,
+          externalSessionId: `source-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript" as const,
+          capturedAt: "2026-07-12T00:00:00.000Z",
+          title: "Atomic sync intake",
+          sourceAdapterVersion: "1"
+        },
+        ...overrides
+      };
+    };
+
+    const actor = { userId: owner.id, deviceCredentialId: credential!.id };
+    for (const scenario of ["queued", "partial", "applied"] as const) {
+      const target = await encryptedRepo.createTargetSyncRelationship(
+        actor,
+        relationshipInput()
+      );
+      const relationshipId = target!.relationship.id;
+      const packageId = randomUUID();
+      const manifest = {
+        objectClass: "sync_package",
+        format: "koed.captured-session-sync/v1",
+        formatVersion: 1,
+        packageDigest: "a".repeat(64),
+        summaryRevisionHash: null,
+        recipientKeyId: "old-fixture-key",
+        recipientKeyVersion: 1,
+        recordCount: 1
+      };
+      const request = {
+        protocol: "koed.captured-session-sync/profile-transition/v1" as const,
+        relationshipId,
+        packageId,
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 4,
+        requestHash: "b".repeat(64),
+        manifestHash: crossIdentitySyncDigest(manifest),
+        packageChecksum: "c".repeat(64)
+      };
+      const opaque = {
+        ciphertext: randomBytes(48).toString("base64"),
+        fixture: "retained pre-cutover ciphertext"
+      };
+      let uploadId: string | undefined;
+      if (scenario !== "queued") {
+        uploadId = (
+          await pool.query<{ id: string }>(
+            `insert into sync_package_upload_sessions (sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key)
+          values ($1,$2,$3,$4,$5::jsonb,$6,1,0,4,500,2,'package:1') returning id`,
+            [
+              relationshipId,
+              packageId,
+              scenario === "applied" ? "completed" : "uploading",
+              request.requestHash,
+              JSON.stringify(manifest),
+              request.packageChecksum
+            ]
+          )
+        ).rows[0]!.id;
+        await pool.query(
+          "insert into sync_package_chunks (upload_session_id,chunk_index,chunk_checksum,byte_count,encrypted_payload) values ($1,0,$2,100,$3::jsonb)",
+          [uploadId, "d".repeat(64), JSON.stringify(opaque)]
+        );
+        if (scenario === "applied")
+          await pool.query(
+            "update cross_identity_sync_relationships set source_cursor=4,target_processing_cursor=4,package_sequence=1,last_package_id=$2 where id=$1",
+            [relationshipId, packageId]
+          );
+        await pool.query(
+          "insert into sync_inbox_entries (sync_relationship_id,upload_session_id,idempotency_key,request_hash,state,claim_token,lease_expires_at) values ($1,$2,'old-inbox',$3,'processing',$4,now()+interval '1 hour')",
+          [relationshipId, uploadId, request.requestHash, randomUUID()]
+        );
+        await pool.query(
+          "update sync_inbox_entries set state='pending',claim_token=null,lease_expires_at=null where upload_session_id=$1",
+          [uploadId]
+        );
+        expect(
+          await encryptedRepo.claimSyncQueueEntry({
+            queue: "inbox",
+            leaseMs: 30_000
+          })
+        ).toBeNull();
+        await pool.query(
+          "update sync_inbox_entries set state='processing',claim_token=$2,lease_expires_at=now()+interval '1 hour' where upload_session_id=$1",
+          [uploadId, randomUUID()]
+        );
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, {
+            ...request,
+            packageChecksum: "e".repeat(64)
+          })
+        ).rejects.toThrow(/conflicts/);
+      } else
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, {
+            ...request,
+            sourceSequence: 3
+          })
+        ).rejects.toThrow(/conflicts/);
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile({ userId: owner.id }, request)
+      ).resolves.toBeNull();
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(
+          { userId: randomUUID(), deviceCredentialId: credential!.id },
+          request
+        )
+      ).resolves.toBeNull();
+      const receipt = await encryptedRepo.reconcileTargetSyncProfile(
+        actor,
+        request
+      );
+      expect(receipt).toMatchObject({
+        request,
+        outcome: scenario === "applied" ? "applied" : "superseded",
+        packageSequence: 1,
+        targetProcessingCursor: scenario === "applied" ? 4 : 0
+      });
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(actor, request)
+      ).resolves.toEqual(receipt);
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(actor, {
+          ...request,
+          packageId: randomUUID()
+        })
+      ).rejects.toThrow(/conflicts/);
+      expect(
+        (
+          await pool.query<{
+            package_sequence: string;
+            target_processing_cursor: string;
+          }>(
+            "select package_sequence,target_processing_cursor from cross_identity_sync_relationships where id=$1",
+            [relationshipId]
+          )
+        ).rows[0]
+      ).toEqual({
+        package_sequence: "1",
+        target_processing_cursor: scenario === "applied" ? "4" : "0"
+      });
+      await expect(
+        pool.query(
+          "update sync_profile_transition_receipts set request_digest=$2 where sync_relationship_id=$1",
+          [relationshipId, "f".repeat(64)]
+        )
+      ).rejects.toThrow(/immutable/);
+      if (uploadId) {
+        expect(
+          (
+            await pool.query<{ encrypted_payload: unknown }>(
+              "select encrypted_payload from sync_package_chunks where upload_session_id=$1",
+              [uploadId]
+            )
+          ).rows[0]!.encrypted_payload
+        ).toEqual(opaque);
+        expect(
+          (
+            await pool.query<{ state: string }>(
+              "select state from sync_package_upload_sessions where id=$1",
+              [uploadId]
+            )
+          ).rows[0]!.state
+        ).toBe(scenario === "applied" ? "completed" : "superseded");
+        {
+          expect(
+            (
+              await pool.query(
+                "select state,claim_token,lease_expires_at from sync_inbox_entries where upload_session_id=$1",
+                [uploadId]
+              )
+            ).rows
+          ).toEqual([
+            { state: "cancelled", claim_token: null, lease_expires_at: null }
+          ]);
+          if (scenario === "partial")
+            await expect(
+              encryptedRepo.verifySyncPackageUpload(actor, uploadId, "target")
+            ).rejects.toThrow();
+        }
+      }
+      const next = {
+        syncRelationshipId: relationshipId,
+        protocolPackageId: randomUUID(),
+        idempotencyKey: "package:2",
+        requestHash: "1".repeat(64),
+        packageManifest: testSyncPackageUploadManifest(),
+        packageChecksum: "2".repeat(64),
+        totalBytes: 1,
+        expectedChunkCount: 1,
+        sourceSequence: 1,
+        fromCursor: scenario === "applied" ? 4 : 0,
+        toCursor: 4,
+        relationshipSide: "target" as const
+      };
+      await expect(
+        encryptedRepo.createSyncPackageUploadSession(actor, next)
+      ).rejects.toThrow();
+      await expect(
+        encryptedRepo.createSyncPackageUploadSession(actor, {
+          ...next,
+          sourceSequence: 2
+        })
+      ).resolves.toMatchObject({ sourceSequence: 2 });
+      if (scenario === "applied") {
+        await pool.query(
+          "update device_credentials set revoked_at=now() where id=$1",
+          [credential!.id]
+        );
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, request)
+        ).resolves.toBeNull();
+      }
+    }
+  });
+
   it("uses the enrolled source identity for fail-closed target sync intake", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

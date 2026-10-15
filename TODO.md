@@ -112,7 +112,10 @@ children share lineage and must not count as independent corroboration.
   merely reuse its sequence/idempotency key for a different V2 payload: the
   relationship/sequence uniqueness and target sequence fence would reject it.
   Prove queued, partially uploaded, and acknowledgement-lost cases without
-  accepting V1 package bodies in the released reader.
+  accepting V1 package bodies in the released reader. Target receipt admission
+  and migration 0061 are implemented under ADR 0059, with native absent/partial/
+  applied metadata cases and API authorization tests. Source receipt adoption,
+  worker integration, and real retained-package rehearsal remain open.
 
 - Coordinate the directed Captured Session Sync snapshot extension across every
   producer, consumer, admission schema, and fixture before activation. Make the
