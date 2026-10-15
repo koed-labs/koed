@@ -587,6 +587,7 @@ export const createTeamOverviewSourcesRepository = (
            and requester_membership.user_id=request.requester_user_id
            and requester_membership.status='enabled' and requester_membership.disabled_at is null
          join users owner on owner.id=request.owner_user_id
+           and owner.disabled_at is null and owner.deleted_at is null
          join team_agent_offers offer on offer.team_id=request.team_id
            and offer.owner_user_id=request.owner_user_id and offer.agent_id=request.agent_id
            and offer.enabled=true
@@ -596,8 +597,28 @@ export const createTeamOverviewSourcesRepository = (
            and project.team_id=request.team_id and project.unshared_at is null
          join collaboration_threads thread on thread.id=request.channel_id
            and thread.team_id=request.team_id and thread.lifecycle='active'
-           and thread.kind in ('team_channel','team_project_channel')
-           and (thread.kind='team_channel' or thread.team_project_id=request.team_project_id)
+           and (
+             thread.kind='team_channel'
+             or (thread.kind='team_project_channel'
+                 and thread.team_project_id=request.team_project_id)
+             or (thread.kind in ('dm','group_dm')
+                 and exists (
+                   select 1 from collaboration_participants owner_participant
+                    where owner_participant.thread_id=thread.id
+                      and owner_participant.team_id=request.team_id
+                      and owner_participant.scope='team'
+                      and owner_participant.thread_kind=thread.kind
+                      and owner_participant.user_id=request.owner_user_id
+                 )
+                 and exists (
+                   select 1 from collaboration_participants requester_participant
+                    where requester_participant.thread_id=thread.id
+                      and requester_participant.team_id=request.team_id
+                      and requester_participant.scope='team'
+                      and requester_participant.thread_kind=thread.kind
+                      and requester_participant.user_id=request.requester_user_id
+                 ))
+           )
          join collaboration_messages source_message on source_message.id=request.request_message_id
            and source_message.thread_id=request.channel_id
         where request.team_id=$1 and request.owner_user_id=$2

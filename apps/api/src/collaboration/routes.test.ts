@@ -1822,6 +1822,207 @@ describe("collaboration HTTP routes", () => {
     await app.close();
   });
 
+  it("keeps a group-DM Agent request and explicit outcome bound to its origin thread", async () => {
+    const fixture = createCollaborationFixture();
+    const room = await fixture.repository.createThread(
+      { userId: fixture.ids.bob },
+      {
+        kind: "group_dm",
+        idempotencyKey: randomUUID(),
+        teamId: fixture.ids.teamA,
+        participantUserIds: [
+          fixture.ids.alice,
+          fixture.ids.bob,
+          fixture.ids.carol
+        ]
+      }
+    );
+    const project = await fixture.repository.createTeamSharedProject(
+      { userId: fixture.ids.alice },
+      {
+        teamId: fixture.ids.teamA,
+        idempotencyKey: randomUUID(),
+        name: "Release review"
+      }
+    );
+    expect(room?.kind).toBe("group_dm");
+    expect(project?.id).toBeTruthy();
+
+    const requestId = randomUUID();
+    const agentId = randomUUID();
+    const requestMessageId = randomUUID();
+    const createdRequest = {
+      id: requestId,
+      teamId: fixture.ids.teamA,
+      teamProjectId: project!.id,
+      channelId: room!.id,
+      requestMessageId,
+      originRootMessageId: null,
+      requesterId: fixture.ids.bob,
+      requesterName: "Bob",
+      ownerId: fixture.ids.alice,
+      ownerName: "Alice",
+      agentId,
+      agentName: "Release Helper",
+      status: "awaiting_owner",
+      jobId: null,
+      jobStatus: null,
+      executionStatus: null,
+      outcomeMessageId: null,
+      version: 1,
+      createdAt: iso,
+      updatedAt: iso,
+      canWithdraw: true,
+      canReview: false
+    };
+    let createInput: Record<string, unknown> | null = null;
+    let listInput: Record<string, unknown> | null = null;
+    let outcomeInput: Record<string, unknown> | null = null;
+    let outcomeActor: ActorContext | null = null;
+    let postOutcomeCalls = 0;
+    const teamAgentRequests = {
+      async createRequest(
+        _actor: ActorContext,
+        input: Record<string, unknown>
+      ) {
+        createInput = input;
+        return createdRequest;
+      },
+      async listRequests(_actor: ActorContext, input: Record<string, unknown>) {
+        listInput = input;
+        return {
+          teamId: fixture.ids.teamA,
+          requests: [createdRequest],
+          nextCursor: null,
+          serverTime: iso
+        };
+      },
+      async postOutcome(actor: ActorContext, input: Record<string, unknown>) {
+        outcomeActor = actor;
+        outcomeInput = input;
+        postOutcomeCalls += 1;
+        return {
+          ...createdRequest,
+          status: "accepted",
+          outcomeMessageId: randomUUID(),
+          version: 3,
+          canWithdraw: false
+        };
+      }
+    } as unknown as TeamAgentRequestsRepository;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      teamAgentRequests
+    });
+
+    try {
+      const createResponse = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests`,
+        headers: sessionHeaders(fixture.ids.bob),
+        payload: {
+          idempotencyKey: randomUUID(),
+          teamProjectId: project!.id,
+          channelId: room!.id,
+          agentId,
+          requestText: "Please check the release notes."
+        }
+      });
+
+      expect(createResponse.statusCode, createResponse.body).toBe(200);
+      expect(createInput).toMatchObject({
+        teamId: fixture.ids.teamA,
+        teamProjectId: project!.id,
+        channelId: room!.id,
+        agentId,
+        requestText: "Please check the release notes."
+      });
+      const createdBody = jsonBody<{ request: Record<string, unknown> }>(
+        createResponse
+      );
+      expect(createdBody.request).toMatchObject({
+        id: requestId,
+        teamProjectId: project!.id,
+        channelId: room!.id,
+        requesterId: fixture.ids.bob,
+        ownerId: fixture.ids.alice,
+        status: "awaiting_owner"
+      });
+      expect(createdBody.request).not.toHaveProperty("privateGoal");
+      expect(createdBody.request).not.toHaveProperty("executionId");
+      expect(createdBody.request).not.toHaveProperty("commandId");
+
+      const missingProject = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests`,
+        headers: sessionHeaders(fixture.ids.bob),
+        payload: {
+          idempotencyKey: randomUUID(),
+          channelId: room!.id,
+          agentId,
+          requestText: "Please check the release notes."
+        }
+      });
+      expect(missingProject.statusCode).toBe(400);
+      expect(createInput).toMatchObject({ teamProjectId: project!.id });
+
+      const listResponse = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests?channelId=${room!.id}`,
+        headers: sessionHeaders(fixture.ids.carol)
+      });
+      expect(listResponse.statusCode, listResponse.body).toBe(200);
+      expect(listInput).toMatchObject({
+        teamId: fixture.ids.teamA,
+        channelId: room!.id,
+        inbox: false
+      });
+      expect(
+        jsonBody<{ requests: Array<Record<string, unknown>> }>(listResponse)
+          .requests[0]
+      ).toMatchObject({ channelId: room!.id, id: requestId });
+
+      const outcomeResponse = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${requestId}/outcome`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: {
+          expectedVersion: 2,
+          summary: "I checked the release notes and found no issue."
+        }
+      });
+      expect(outcomeResponse.statusCode, outcomeResponse.body).toBe(200);
+      expect(outcomeActor).toEqual({ userId: fixture.ids.alice });
+      expect(outcomeInput).toEqual({
+        teamId: fixture.ids.teamA,
+        requestId,
+        expectedVersion: 2,
+        summary: "I checked the release notes and found no issue."
+      });
+      expect(
+        jsonBody<{ request: Record<string, unknown> }>(outcomeResponse).request
+      ).toMatchObject({
+        id: requestId,
+        channelId: room!.id,
+        status: "accepted"
+      });
+
+      const redirectedOutcome = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${requestId}/outcome`,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload: {
+          expectedVersion: 2,
+          summary: "Redirect this result.",
+          channelId: randomUUID()
+        }
+      });
+      expect(redirectedOutcome.statusCode).toBe(400);
+      expect(postOutcomeCalls).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("routes owner acceptance through native assignment creation without exposing private IDs", async () => {
     const fixture = createCollaborationFixture();
     const requestId = randomUUID();

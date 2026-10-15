@@ -2874,6 +2874,9 @@ export const createManagedConversationRepository = (
         throw statusError("Team Agent Request changed concurrently", 409);
       }
 
+      const requiredMembers = [
+        ...new Set([input.ownerUserId, input.requesterUserId])
+      ].sort();
       const members = await client.query<{ user_id: string }>(
         `select tm.user_id
            from team_memberships tm
@@ -2884,9 +2887,9 @@ export const createManagedConversationRepository = (
             and t.lifecycle='active' and t.entitlement_status in ('active','grace')
             and u.disabled_at is null and u.deleted_at is null
           order by tm.user_id for share of tm`,
-        [input.teamId, [input.ownerUserId, input.requesterUserId].sort()]
+        [input.teamId, requiredMembers]
       );
-      if (members.rowCount !== 2) {
+      if (members.rows.length !== requiredMembers.length) {
         throw statusError("Team Agent Request is no longer available", 409);
       }
       const project = await client.query(
@@ -2901,15 +2904,41 @@ export const createManagedConversationRepository = (
       }>(
         `select kind,team_project_id from collaboration_threads
           where id=$1 and team_id=$2 and scope='team' and lifecycle='active'
-            and kind in ('team_channel','team_project_channel')
+            and kind in ('team_channel','team_project_channel','dm','group_dm')
           for share`,
         [input.channelId, input.teamId]
       );
+      const sourceThread = channel.rows[0];
+      let privateRoomAuthorized = false;
+      if (sourceThread?.kind === "dm" || sourceThread?.kind === "group_dm") {
+        const requiredParticipants = [
+          ...new Set([input.ownerUserId, input.requesterUserId])
+        ].sort();
+        const participants = await client.query<{ user_id: string }>(
+          `select participant.user_id
+             from collaboration_participants participant
+            where participant.thread_id=$1 and participant.team_id=$2
+              and participant.scope='team' and participant.thread_kind=$3
+              and participant.user_id=any($4::uuid[])
+            order by participant.user_id
+            for share`,
+          [
+            input.channelId,
+            input.teamId,
+            sourceThread.kind,
+            requiredParticipants
+          ]
+        );
+        privateRoomAuthorized =
+          participants.rows.length === requiredParticipants.length;
+      }
       if (
         project.rowCount !== 1 ||
-        !channel.rows[0] ||
-        (channel.rows[0].kind === "team_project_channel" &&
-          channel.rows[0].team_project_id !== input.teamProjectId)
+        !sourceThread ||
+        (sourceThread.kind === "team_project_channel" &&
+          sourceThread.team_project_id !== input.teamProjectId) ||
+        ((sourceThread.kind === "dm" || sourceThread.kind === "group_dm") &&
+          !privateRoomAuthorized)
       ) {
         throw statusError("Team Agent Request is no longer available", 409);
       }

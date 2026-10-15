@@ -195,8 +195,38 @@ const nativeHomeEventsSql = `
      and project.unshared_at is null
     join collaboration_threads thread
       on thread.id=r.channel_id and thread.team_id=r.team_id
-     and thread.kind='team_project_channel' and thread.lifecycle='active'
-     and thread.team_project_id=r.team_project_id
+     and thread.scope='team' and thread.lifecycle='active'
+     and (
+       thread.kind='team_channel'
+       or (thread.kind='team_project_channel' and thread.team_project_id=r.team_project_id)
+       or (thread.kind in ('dm','group_dm')
+           and team.lifecycle='active'
+           and team.entitlement_status in ('active','grace')
+           and exists (
+             select 1 from collaboration_participants owner_participant
+               join team_memberships owner_membership
+                 on owner_membership.team_id=owner_participant.team_id
+                and owner_membership.user_id=owner_participant.user_id
+               join users owner_user on owner_user.id=owner_participant.user_id
+              where owner_participant.thread_id=thread.id
+                and owner_participant.user_id=r.owner_user_id
+                and owner_membership.status='enabled'
+                and owner_membership.disabled_at is null
+                and owner_user.disabled_at is null and owner_user.deleted_at is null
+           ) and exists (
+             select 1 from collaboration_participants requester_participant
+               join team_memberships requester_membership
+                 on requester_membership.team_id=requester_participant.team_id
+                and requester_membership.user_id=requester_participant.user_id
+               join users requester_user on requester_user.id=requester_participant.user_id
+              where requester_participant.thread_id=thread.id
+                and requester_participant.user_id=r.requester_user_id
+                and requester_membership.status='enabled'
+                and requester_membership.disabled_at is null
+                and requester_user.disabled_at is null
+                and requester_user.deleted_at is null
+           ))
+     )
     cross join lateral (
       select coalesce(
         r.native_status_frozen,

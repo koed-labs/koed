@@ -432,7 +432,8 @@ const requireCurrentProject = async (
 
 const requireRequestChannel = async (
   client: pg.PoolClient,
-  input: { teamId: string; teamProjectId: string; channelId: string }
+  input: { teamId: string; teamProjectId: string; channelId: string },
+  requiredParticipants: string[] = []
 ): Promise<boolean> => {
   const result = await client.query<{
     kind: string;
@@ -440,17 +441,42 @@ const requireRequestChannel = async (
   }>(
     `select kind, team_project_id from collaboration_threads
       where id=$1 and team_id=$2 and scope='team' and lifecycle='active'
-        and kind in ('team_channel','team_project_channel')
+        and kind in ('team_channel','team_project_channel','dm','group_dm')
       for share`,
     [input.channelId, input.teamId]
   );
   const row = result.rows[0];
   if (!row) return false;
   if (row.kind === "team_channel") return true;
-  return (
-    row.team_project_id === input.teamProjectId &&
-    (await requireCurrentProject(client, input))
+  if (row.kind === "team_project_channel") {
+    return (
+      row.team_project_id === input.teamProjectId &&
+      (await requireCurrentProject(client, input))
+    );
+  }
+  const participantIds = [...new Set(requiredParticipants)].sort();
+  if (participantIds.length === 0) return false;
+  const participants = await client.query<{ user_id: string }>(
+    `select participant.user_id
+       from collaboration_participants participant
+       join collaboration_threads thread
+         on thread.id=participant.thread_id and thread.team_id=participant.team_id
+        and thread.scope=participant.scope and thread.kind=participant.thread_kind
+       join team_memberships membership
+         on membership.team_id=participant.team_id and membership.user_id=participant.user_id
+       join teams team on team.id=participant.team_id
+       join users user_row on user_row.id=participant.user_id
+      where participant.thread_id=$1 and participant.team_id=$2
+        and participant.scope='team' and participant.thread_kind=$3
+        and participant.user_id=any($4::uuid[])
+        and thread.lifecycle='active'
+        and membership.status='enabled' and membership.disabled_at is null
+        and team.lifecycle='active' and team.entitlement_status in ('active','grace')
+        and user_row.disabled_at is null and user_row.deleted_at is null
+      order by participant.user_id for share of participant,membership`,
+    [input.channelId, input.teamId, row.kind, participantIds]
   );
+  return participants.rows.length === participantIds.length;
 };
 
 const teamProvider = (options: {
@@ -694,7 +720,13 @@ const ensureReviewRequest = async (
   );
   const requestRow = locked.rows[0];
   if (!requestRow) return null;
-  if (!(await requireRequestChannel(client, inputChannel(requestRow))))
+  if (
+    !(await requireRequestChannel(client, inputChannel(requestRow), [
+      actor.userId,
+      requestRow.requester_user_id,
+      requestRow.owner_user_id
+    ]))
+  )
     return null;
   return requestRow;
 };
@@ -897,7 +929,11 @@ export const createTeamAgentRequestsRepository = (
         const duplicateRow = page.rows[0];
         if (
           !duplicateRow ||
-          !(await requireRequestChannel(client, inputChannel(duplicateRow)))
+          !(await requireRequestChannel(client, inputChannel(duplicateRow), [
+            actor.userId,
+            duplicateRow.requester_user_id,
+            duplicateRow.owner_user_id
+          ]))
         ) {
           await client.query("rollback");
           return null;
@@ -946,7 +982,12 @@ export const createTeamAgentRequestsRepository = (
           "Offered Agent is unavailable"
         );
       }
-      if (!(await requireRequestChannel(client, input))) {
+      if (
+        !(await requireRequestChannel(client, input, [
+          actor.userId,
+          offered.owner_user_id
+        ]))
+      ) {
         throw new TeamAgentRequestUnavailableError(
           "Team channel is unavailable"
         );
@@ -1058,6 +1099,8 @@ export const createTeamAgentRequestsRepository = (
         values.push(input.status);
         filters.push(`r.status=$${values.length}`);
       }
+      values.push(actor.userId);
+      const viewerPlaceholder = `$${values.length}`;
       if (cursor) {
         values.push(cursor[0], cursor[1]);
         filters.push(
@@ -1070,8 +1113,47 @@ export const createTeamAgentRequestsRepository = (
           join collaboration_threads ct on ct.id=r.channel_id and ct.team_id=r.team_id
          where ${filters.join(" and ")}
            and ct.lifecycle='active'
-           and ct.kind in ('team_channel','team_project_channel')
-           and (ct.kind='team_channel' or (ct.team_project_id=r.team_project_id and sp.unshared_at is null))
+           and (
+             ct.kind='team_channel'
+             or (ct.kind='team_project_channel'
+                 and ct.team_project_id=r.team_project_id and sp.unshared_at is null)
+             or (ct.kind in ('dm','group_dm')
+                 and exists (
+                   select 1 from collaboration_participants viewer
+                     join team_memberships viewer_membership
+                       on viewer_membership.team_id=viewer.team_id and viewer_membership.user_id=viewer.user_id
+                     join users viewer_user on viewer_user.id=viewer.user_id
+                    where viewer.thread_id=ct.id and viewer.team_id=r.team_id
+                      and viewer.scope='team' and viewer.thread_kind=ct.kind
+                      and viewer.user_id=${viewerPlaceholder}
+                      and viewer_membership.status='enabled' and viewer_membership.disabled_at is null
+                      and viewer_user.disabled_at is null and viewer_user.deleted_at is null
+                 )
+                 and exists (
+                   select 1 from collaboration_participants requester_participant
+                     join team_memberships requester_membership
+                       on requester_membership.team_id=requester_participant.team_id
+                      and requester_membership.user_id=requester_participant.user_id
+                     join users requester_user on requester_user.id=requester_participant.user_id
+                    where requester_participant.thread_id=ct.id and requester_participant.team_id=r.team_id
+                      and requester_participant.scope='team' and requester_participant.thread_kind=ct.kind
+                      and requester_participant.user_id=r.requester_user_id
+                      and requester_membership.status='enabled' and requester_membership.disabled_at is null
+                      and requester_user.disabled_at is null and requester_user.deleted_at is null
+                 )
+                 and exists (
+                   select 1 from collaboration_participants owner_participant
+                     join team_memberships owner_membership
+                       on owner_membership.team_id=owner_participant.team_id
+                      and owner_membership.user_id=owner_participant.user_id
+                     join users owner_user on owner_user.id=owner_participant.user_id
+                    where owner_participant.thread_id=ct.id and owner_participant.team_id=r.team_id
+                      and owner_participant.scope='team' and owner_participant.thread_kind=ct.kind
+                      and owner_participant.user_id=r.owner_user_id
+                      and owner_membership.status='enabled' and owner_membership.disabled_at is null
+                      and owner_user.disabled_at is null and owner_user.deleted_at is null
+                 ))
+           )
          order by r.created_at desc,r.id desc limit $${values.length}`,
         values
       );
@@ -1146,11 +1228,15 @@ export const createTeamAgentRequestsRepository = (
             teamId: request.team_id,
             teamProjectId: request.team_project_id
           })) ||
-          !(await requireRequestChannel(client, {
-            teamId: request.team_id,
-            teamProjectId: request.team_project_id,
-            channelId: request.channel_id
-          }))
+          !(await requireRequestChannel(
+            client,
+            {
+              teamId: request.team_id,
+              teamProjectId: request.team_project_id,
+              channelId: request.channel_id
+            },
+            [actor.userId, request.requester_user_id, request.owner_user_id]
+          ))
         )
           continue;
         const offer = await client.query<{ current_version: number }>(
@@ -1290,7 +1376,11 @@ export const createTeamAgentRequestsRepository = (
             teamId: row.team_id,
             teamProjectId: row.team_project_id
           })) &&
-          (await requireRequestChannel(client, inputChannel(row)));
+          (await requireRequestChannel(client, inputChannel(row), [
+            actor.userId,
+            row.requester_user_id,
+            row.owner_user_id
+          ]));
         const offer = access
           ? await client.query(
               `select 1 from team_agent_offers o
@@ -1675,7 +1765,13 @@ export const createTeamAgentRequestsRepository = (
         prior &&
         (await activeTeamMember(client, actor, prior.team_id, true))
       ) {
-        if (await requireRequestChannel(client, inputChannel(prior))) {
+        if (
+          await requireRequestChannel(client, inputChannel(prior), [
+            actor.userId,
+            prior.requester_user_id,
+            prior.owner_user_id
+          ])
+        ) {
           const replayStatus =
             input.decision === "accept" ? "accepted" : "declined";
           if (
@@ -1796,7 +1892,14 @@ export const createTeamAgentRequestsRepository = (
         [input.requestId, input.teamId, actor.userId]
       );
       const row = selected.rows[0];
-      if (!row || !(await requireRequestChannel(client, inputChannel(row)))) {
+      if (
+        !row ||
+        !(await requireRequestChannel(client, inputChannel(row), [
+          actor.userId,
+          row.requester_user_id,
+          row.owner_user_id
+        ]))
+      ) {
         await client.query("rollback");
         return null;
       }
@@ -1847,7 +1950,14 @@ export const createTeamAgentRequestsRepository = (
         [input.requestId, input.teamId, actor.userId]
       );
       const row = selected.rows[0];
-      if (!row || !(await requireRequestChannel(client, inputChannel(row)))) {
+      if (
+        !row ||
+        !(await requireRequestChannel(client, inputChannel(row), [
+          actor.userId,
+          row.requester_user_id,
+          row.owner_user_id
+        ]))
+      ) {
         await client.query("rollback");
         return null;
       }
@@ -1920,16 +2030,58 @@ export const createTeamAgentRequestsRepository = (
           team_id: string;
           team_project_id: string;
           channel_id: string;
+          requester_user_id: string;
           owner_user_id: string;
           request_message_id: string;
         }>(
-          `select r.id,r.team_id,r.team_project_id,r.channel_id,r.owner_user_id,r.request_message_id
+          `select r.id,r.team_id,r.team_project_id,r.channel_id,r.requester_user_id,
+                  r.owner_user_id,r.request_message_id
              from team_agent_requests r
              join collaboration_team_shared_projects sp on sp.id=r.team_project_id and sp.team_id=r.team_id
              join collaboration_threads ct on ct.id=r.channel_id and ct.team_id=r.team_id and ct.lifecycle='active'
-            where r.id=$1 and r.team_id=$2 and ct.kind in ('team_channel','team_project_channel')
-              and (ct.kind='team_channel' or (ct.team_project_id=r.team_project_id and sp.unshared_at is null))`,
-          [input.resourceId, input.teamId]
+            where r.id=$1 and r.team_id=$2
+              and (
+                ct.kind='team_channel'
+                or (ct.kind='team_project_channel'
+                    and ct.team_project_id=r.team_project_id and sp.unshared_at is null)
+                or (ct.kind in ('dm','group_dm')
+                    and exists (
+                      select 1 from collaboration_participants viewer
+                        join team_memberships viewer_membership
+                          on viewer_membership.team_id=viewer.team_id and viewer_membership.user_id=viewer.user_id
+                        join users viewer_user on viewer_user.id=viewer.user_id
+                       where viewer.thread_id=ct.id and viewer.team_id=r.team_id
+                         and viewer.scope='team' and viewer.thread_kind=ct.kind
+                         and viewer.user_id=$3
+                         and viewer_membership.status='enabled' and viewer_membership.disabled_at is null
+                         and viewer_user.disabled_at is null and viewer_user.deleted_at is null
+                    )
+                    and exists (
+                      select 1 from collaboration_participants requester_participant
+                        join team_memberships requester_membership
+                          on requester_membership.team_id=requester_participant.team_id
+                         and requester_membership.user_id=requester_participant.user_id
+                        join users requester_user on requester_user.id=requester_participant.user_id
+                       where requester_participant.thread_id=ct.id and requester_participant.team_id=r.team_id
+                         and requester_participant.scope='team' and requester_participant.thread_kind=ct.kind
+                         and requester_participant.user_id=r.requester_user_id
+                         and requester_membership.status='enabled' and requester_membership.disabled_at is null
+                         and requester_user.disabled_at is null and requester_user.deleted_at is null
+                    )
+                    and exists (
+                      select 1 from collaboration_participants owner_participant
+                        join team_memberships owner_membership
+                          on owner_membership.team_id=owner_participant.team_id
+                         and owner_membership.user_id=owner_participant.user_id
+                        join users owner_user on owner_user.id=owner_participant.user_id
+                       where owner_participant.thread_id=ct.id and owner_participant.team_id=r.team_id
+                         and owner_participant.scope='team' and owner_participant.thread_kind=ct.kind
+                         and owner_participant.user_id=r.owner_user_id
+                         and owner_membership.status='enabled' and owner_membership.disabled_at is null
+                         and owner_user.disabled_at is null and owner_user.deleted_at is null
+                    ))
+              )`,
+          [input.resourceId, input.teamId, actor.userId]
         );
         const request = row.rows[0];
         if (!request) {

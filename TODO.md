@@ -5,7 +5,7 @@ See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–
 ## Current open tickets
 
 The [separate Personal and Collaboration tables](docs/studio-ui-integration-plan.md) replace the earlier five-ticket count.
-There are 12 distinct open tickets. Five contain implementation, rewiring or a gated rollout. Seven contain testing/release acceptance.
+There are 12 distinct open tickets. Four contain implementation, rewiring or a gated rollout. Eight contain testing/release acceptance.
 
 | Area          | Open ticket IDs    | Count |
 | ------------- | ------------------ | ----- |
@@ -15,6 +15,7 @@ There are 12 distinct open tickets. Five contain implementation, rewiring or a g
 
 Ticket 16 now stores native review completion and shared bounded discovery. Ticket 19 reads native Agent activity with shared reminder state and retained legacy history; live acceptance remains open. Ticket 20 now reads native Team Agent activity and retains legacy history, with independent Team reminders and refreshed pagination; live acceptance remains open. Tickets 12 and 13 now use native Public Square publication and channel execution; focused automated checks pass, while live native/hosted and deployed Team acceptance remain open.
 Ticket 04 assessment is complete: local catalogue and accepted Codex context are wired. Claude root-instruction loading is implemented behind a default-off gate; live Claude checks still gate enablement; selected skills and fork/device transfer are explicitly unavailable; the hosted catalogue and live-review deferrals remain open. See [the assessment](docs/studio-project-chat-assessment.md). Existing human messaging remains implemented.
+Ticket 27 Collaboration assessment is recorded in [the surface and authority map](docs/studio-collaboration-chat-assessment.md). Implemented participant-owned Agent requests in private/group chats with owner-private native execution, explicit result sharing, exact-origin permission checks and guarded local/hosted navigation. Native request status refresh is corrected without private content or extra Job/Memory machinery. Focused checks pass; live provider, cross-account and deployment acceptance remain open under 27.
 Keep original acceptance records and explicit deferrals. Do not count superseded tickets or repeated tests twice.
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.
 

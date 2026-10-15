@@ -473,6 +473,93 @@ describeDb("Team overview sources repository", () => {
     });
   });
 
+  it("keeps private-room Agent request previews inside current origin participants", async () => {
+    const fixture = await makeNativePublishedWork();
+    const roomViewerId = await makeUser("Private overview room viewer");
+    await pool.query(
+      `insert into team_memberships(team_id,user_id,role,status,accepted_at)
+       values($1,$2,'member','enabled',now())`,
+      [fixture.teamId, roomViewerId]
+    );
+    const room = await collaboration.createThread(actor(fixture.ownerId), {
+      kind: "group_dm",
+      idempotencyKey: `private-overview-room:${randomUUID()}`,
+      teamId: fixture.teamId,
+      participantUserIds: [fixture.ownerId, fixture.memberId, roomViewerId]
+    });
+    if (!room) throw new Error("Expected a private overview request room");
+    await pool.query(
+      `insert into team_agent_offers(team_id,owner_user_id,agent_id,enabled)
+       values($1,$2,$3,true)`,
+      [fixture.teamId, fixture.ownerId, fixture.agentId]
+    );
+    const requestMessage = await collaboration.sendMessage(
+      actor(fixture.memberId),
+      {
+        threadId: room.id,
+        idempotencyKey: `private-overview-request:${randomUUID()}`,
+        bodyText: "Sensitive request text stays in the room",
+        provenance: { kind: "user", id: randomUUID() }
+      }
+    );
+    if (!requestMessage)
+      throw new Error("Expected the private request message");
+    const requestId = randomUUID();
+    await pool.query(
+      `insert into team_agent_requests(
+         id,team_id,team_project_id,channel_id,request_message_id,requester_user_id,
+         owner_user_id,agent_id,agent_version,agent_name,status,idempotency_key_hash,request_hash
+       ) values($1,$2,$3,$4,$5,$6,$7,$8,1,'Native shared Agent','awaiting_owner',$9,$10)`,
+      [
+        requestId,
+        fixture.teamId,
+        fixture.teamProjectId,
+        room.id,
+        requestMessage.id,
+        fixture.memberId,
+        fixture.ownerId,
+        fixture.agentId,
+        createHash("sha256").update(randomUUID()).digest("hex"),
+        createHash("sha256").update(randomUUID()).digest("hex")
+      ]
+    );
+
+    const ownerSnapshot = await sources.listCurrentItems(
+      actor(fixture.ownerId)
+    );
+    const privateRequestItem = ownerSnapshot.attention.find(
+      (item) => item.sourceEventId === `request:${requestId}`
+    );
+    expect(privateRequestItem).toMatchObject({
+      source: "agent_request",
+      summary: "Native overview member requested Native shared Agent",
+      destination: {
+        kind: "agent_request",
+        requestId,
+        threadId: room.id
+      }
+    });
+    expect(JSON.stringify(privateRequestItem)).not.toContain(
+      "Sensitive request text stays in the room"
+    );
+    expect(
+      (await sources.listCurrentItems(actor(fixture.memberId))).attention.some(
+        (item) => item.sourceEventId === `request:${requestId}`
+      )
+    ).toBe(false);
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerId]
+    );
+    expect(
+      (await sources.listCurrentItems(actor(fixture.ownerId))).attention.some(
+        (item) => item.sourceEventId === `request:${requestId}`
+      )
+    ).toBe(false);
+  });
+
   it("projects owner blockers and shared Job outcomes without publication noise or future frozen state", async () => {
     const ownerId = await makeUser("Job owner");
     const peerId = await makeUser("Job peer");

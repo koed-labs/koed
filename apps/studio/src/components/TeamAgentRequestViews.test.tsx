@@ -3,7 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
-import { TeamAgentRequestReviewPanel } from "./TeamAgentRequestViews";
+import {
+  TeamAgentRequestReviewPanel,
+  TeamChannelAgentRequests
+} from "./TeamAgentRequestViews";
 import type { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
 
 (
@@ -64,6 +67,81 @@ async function mount(
   });
   return container;
 }
+
+async function mountChannelRequests(
+  props: React.ComponentProps<typeof TeamChannelAgentRequests>
+) {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(<TeamChannelAgentRequests {...props} />);
+  });
+  return container;
+}
+
+it("refreshes native execution status without exposing owner-private actions to the requester", async () => {
+  let visibleRequest = request({
+    status: "accepted",
+    version: 2,
+    executionStatus: "queued",
+    canReview: false
+  });
+  const listRequests = vi.fn(async () => ({
+    teamId,
+    requests: [visibleRequest],
+    nextCursor: null,
+    serverTime: "2026-10-15T10:00:00.000Z"
+  }));
+  const client = { listRequests } as unknown as TeamAgentRequestsClient;
+  const props = {
+    teamId,
+    channelId: visibleRequest.channelId,
+    viewerId: visibleRequest.requesterId,
+    authorityKey: `${teamId}:${visibleRequest.requesterId}`,
+    refreshRevision: 0,
+    client,
+    onAuthorizationLost: vi.fn(),
+    onReview: vi.fn(),
+    onViewWork: vi.fn()
+  } satisfies React.ComponentProps<typeof TeamChannelAgentRequests>;
+
+  const view = await mountChannelRequests(props);
+  await vi.waitFor(() => expect(listRequests).toHaveBeenCalledTimes(1));
+  expect(view.textContent).toContain("Accepted · queued");
+  expect(view.textContent).not.toContain("Continue private chat");
+  expect(view.textContent).not.toContain("View work");
+
+  visibleRequest = request({
+    status: "accepted",
+    version: 2,
+    executionStatus: "running",
+    canReview: false
+  });
+  await act(async () => {
+    root!.render(<TeamChannelAgentRequests {...props} refreshRevision={1} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(listRequests).toHaveBeenCalledTimes(2);
+  expect(view.textContent).toContain("Accepted · working");
+  expect(view.textContent).not.toContain("Continue private chat");
+  expect(view.textContent).not.toContain("View work");
+
+  visibleRequest = request({
+    status: "accepted",
+    version: 2,
+    executionStatus: "succeeded",
+    canReview: false
+  });
+  await act(async () => {
+    root!.render(<TeamChannelAgentRequests {...props} refreshRevision={2} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(listRequests).toHaveBeenCalledTimes(3);
+  expect(view.textContent).toContain("Completed");
+  expect(view.textContent).not.toContain("Continue private chat");
+  expect(view.textContent).not.toContain("View work");
+});
 
 it("keeps native acceptance behind the saved private execution and shows queued state", async () => {
   let reviewExecutionId: string | null = null;

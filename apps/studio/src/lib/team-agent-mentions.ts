@@ -8,6 +8,7 @@ export {
   buildOwnedAgentHandoffDraft,
   buildTeamAgentMentions,
   privateAgentHandoffHref,
+  teamAgentMentionsForParticipants,
   teamMentionSelectionForScope,
   type ScopedTeamMentionSelection,
   type TeamAgentMention

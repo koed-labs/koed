@@ -108,6 +108,7 @@ import { useTeamAgentMentions } from "@/lib/use-team-agent-mentions";
 import {
   buildOwnedAgentHandoffDraft,
   privateAgentHandoffHref,
+  teamAgentMentionsForParticipants,
   teamMentionSelectionForScope,
   type ScopedTeamMentionSelection,
   type TeamAgentMention
@@ -331,6 +332,8 @@ export function TeamChannelWorkspace({
   );
   const directMessageRequestIds = useRef(new Map<string, string>());
   const threadSelectionGeneration = useRef(0);
+  const agentMentionScopeGeneration = useRef(0);
+  const agentMentionScopeKey = useRef<string | null>(null);
   const localProjectRegistrations = useRef(
     new Map<
       string,
@@ -387,12 +390,15 @@ export function TeamChannelWorkspace({
     agent: TeamAgentMention;
     selection: ChatComposerSelection;
     text: string;
+    teamId: string;
+    threadId: string;
     idempotencyKey: string;
     sendClientMessageId: string;
     mentionUserIds: string[];
     rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
+  const agentMentionBusyIntent = useRef<string | null>(null);
   const openRequestReview = useCallback(
     async (request: TeamAgentRequest, draft?: string) => {
       const capturedEpoch = snapshotEpoch.current;
@@ -541,6 +547,32 @@ export function TeamChannelWorkspace({
     activeThread?.kind === "dm" || activeThread?.kind === "group_dm"
       ? activeThread
       : null;
+  const activePrincipalUserId = snapshot?.navigation.teamPrincipal?.id ?? null;
+  const activeDirectMessageParticipants = useMemo(() => {
+    if (!activeDirectMessage || !activePrincipalUserId) return [];
+    const participants = activeDirectMessage.participants.filter(
+      (participant) => participant.membershipState === "enabled"
+    );
+    return participants.some(
+      (participant) => participant.id === activePrincipalUserId
+    )
+      ? participants
+      : [];
+  }, [activeDirectMessage, activePrincipalUserId]);
+  const activeComposerAgentMentions = useMemo(
+    () =>
+      activeDirectMessage
+        ? teamAgentMentionsForParticipants(
+            teamAgentMentions.options,
+            activeDirectMessageParticipants
+          )
+        : teamAgentMentions.options,
+    [
+      activeDirectMessage,
+      activeDirectMessageParticipants,
+      teamAgentMentions.options
+    ]
+  );
   const activeDirectMessageTitle =
     activeDirectMessage && snapshot?.navigation.teamPrincipal
       ? directMessageTitle(
@@ -593,6 +625,17 @@ export function TeamChannelWorkspace({
     openRootMessage.threadId === activeThread?.id
       ? openRootMessage
       : null;
+  const currentAgentMentionScopeKey = JSON.stringify({
+    authorityKey,
+    teamId: activeTeam?.id ?? "",
+    threadId: activeThread?.id ?? "",
+    rootMessageId: visibleOpenRoot?.id ?? ""
+  });
+  useLayoutEffect(() => {
+    if (agentMentionScopeKey.current === currentAgentMentionScopeKey) return;
+    agentMentionScopeKey.current = currentAgentMentionScopeKey;
+    agentMentionScopeGeneration.current += 1;
+  }, [currentAgentMentionScopeKey]);
   const teamMentionScopeKey = JSON.stringify({
     backendId: snapshot?.connection.backendId ?? "",
     principalId: snapshot?.navigation.teamPrincipal?.id ?? "",
@@ -3199,7 +3242,27 @@ export function TeamChannelWorkspace({
     intent: NonNullable<typeof pendingAgentMention>,
     teamProjectId: string
   ): Promise<boolean> => {
-    if (!activeTeam || !snapshot?.navigation.teamPrincipal) return false;
+    if (
+      !activeTeam ||
+      !snapshot?.navigation.teamPrincipal ||
+      intent.teamId !== activeTeam.id ||
+      intent.threadId !== activeThread?.id
+    ) {
+      setStatus(
+        "This Agent request belongs to a conversation that is no longer selected."
+      );
+      return false;
+    }
+    if (
+      !activeComposerAgentMentions.some(
+        (candidate) =>
+          candidate.id === intent.agent.id &&
+          candidate.ownerId === intent.agent.ownerId
+      )
+    ) {
+      setStatus("This Agent is no longer a participant in this conversation.");
+      return false;
+    }
     if (
       intent.rootMessageId &&
       openRootRef.current?.id !== intent.rootMessageId
@@ -3211,7 +3274,40 @@ export function TeamChannelWorkspace({
     }
     const capturedTeamId = activeTeam.id;
     const capturedThreadId = activeThread?.id;
+    const capturedAuthorityKey = authorityKey;
+    const capturedSnapshotEpoch = snapshotEpoch.current;
+    const capturedSelectionGeneration = threadSelectionGeneration.current;
+    const capturedAgentMentionScopeGeneration =
+      agentMentionScopeGeneration.current;
+    const capturedScopeKey = teamMentionScopeKey;
+    const capturedRootMessageId = intent.rootMessageId ?? null;
+    const isCurrentIntent = () =>
+      !revokedRef.current &&
+      Boolean(capturedAuthorityKey) &&
+      snapshotEpoch.current === capturedSnapshotEpoch &&
+      authorityKeyRef.current === capturedAuthorityKey &&
+      threadSelectionGeneration.current === capturedSelectionGeneration &&
+      agentMentionScopeGeneration.current ===
+        capturedAgentMentionScopeGeneration &&
+      selectedRef.current.teamId === capturedTeamId &&
+      selectedRef.current.threadId === capturedThreadId &&
+      (!capturedRootMessageId ||
+        (openRootRef.current?.id === capturedRootMessageId &&
+          openRootRef.current.teamId === capturedTeamId &&
+          openRootRef.current.threadId === capturedThreadId));
+    const clearPendingIntent = () => {
+      setPendingAgentMention((current) =>
+        current?.idempotencyKey === intent.idempotencyKey ? null : current
+      );
+      setTeamMentionSelection((current) =>
+        current?.scopeKey === capturedScopeKey &&
+        current.agentId === intent.agent.id
+          ? { ...current, agentId: null }
+          : current
+      );
+    };
     setAgentMentionBusy(true);
+    agentMentionBusyIntent.current = intent.idempotencyKey;
     setStatus(null);
     try {
       if (intent.agent.kind === "colleague") {
@@ -3229,20 +3325,17 @@ export function TeamChannelWorkspace({
           requestText: intent.text,
           rootMessageId: intent.rootMessageId ?? null
         });
+        if (!isCurrentIntent()) return false;
         setAgentRequestRevision((revision) => revision + 1);
         setStatus("Request sent to the Agent owner for private review.");
-        setPendingAgentMention(null);
-        setTeamMentionSelection((selection) =>
-          selection?.scopeKey === teamMentionScopeKey
-            ? { ...selection, agentId: null }
-            : selection
-        );
+        clearPendingIntent();
         return true;
       }
       const connection = await publicSquareClient.getConnection(
         capturedTeamId,
         teamProjectId
       );
+      if (!isCurrentIntent()) return false;
       if (
         intent.rootMessageId &&
         openRootRef.current?.id !== intent.rootMessageId
@@ -3267,6 +3360,7 @@ export function TeamChannelWorkspace({
             mentionUserIds: intent.mentionUserIds
           });
       if (!sent) return false;
+      if (!isCurrentIntent()) return false;
       if (
         selectedRef.current.teamId !== capturedTeamId ||
         selectedRef.current.threadId !== capturedThreadId ||
@@ -3283,6 +3377,9 @@ export function TeamChannelWorkspace({
           draft: buildOwnedAgentHandoffDraft({
             agentName: intent.agent.name,
             channelName: activeThread?.name ?? "channel",
+            conversationLabel: activeDirectMessage
+              ? activeDirectMessageTitle
+              : `#${activeThread?.name ?? "channel"}`,
             typedMessage: intent.text,
             recentMessages: (intent.rootMessageId
               ? [openRootMessage, ...threadReplies]
@@ -3299,14 +3396,10 @@ export function TeamChannelWorkspace({
           })
         })
       );
-      setPendingAgentMention(null);
-      setTeamMentionSelection((selection) =>
-        selection?.scopeKey === teamMentionScopeKey
-          ? { ...selection, agentId: null }
-          : selection
-      );
+      clearPendingIntent();
       return true;
     } catch (failure) {
+      if (!isCurrentIntent()) return false;
       setStatus(
         failure instanceof Error
           ? failure.message
@@ -3314,7 +3407,10 @@ export function TeamChannelWorkspace({
       );
       return false;
     } finally {
-      setAgentMentionBusy(false);
+      if (agentMentionBusyIntent.current === intent.idempotencyKey) {
+        agentMentionBusyIntent.current = null;
+        setAgentMentionBusy(false);
+      }
     }
   };
 
@@ -3330,7 +3426,7 @@ export function TeamChannelWorkspace({
     text: string,
     selection: ChatComposerSelection
   ) => {
-    if (!selection.agentId || !activeTeam || activeDirectMessage) {
+    if (!selection.agentId) {
       if (
         await send(text, { mentionUserIds: selection.mentionUserIds ?? [] })
       ) {
@@ -3342,19 +3438,20 @@ export function TeamChannelWorkspace({
       }
       return;
     }
-    const agent = teamAgentMentions.options.find(
+    if (!activeTeam || !activeThread) return;
+    const agent = activeComposerAgentMentions.find(
       (candidate) => candidate.id === selection.agentId
     );
     if (!agent) {
-      setStatus(
-        "This Agent is no longer available. Refresh Team Agents and try again."
-      );
+      setStatus("This Agent is no longer a participant in this conversation.");
       return;
     }
     const intent = {
       agent,
       selection,
       text,
+      teamId: activeTeam.id,
+      threadId: activeThread.id,
       idempotencyKey: crypto.randomUUID(),
       sendClientMessageId: crypto.randomUUID(),
       mentionUserIds: selection.mentionUserIds ?? []
@@ -3907,7 +4004,7 @@ export function TeamChannelWorkspace({
                         visibleMessages.length === 0 && !loading ? (
                           <p className="mx-auto max-w-3xl pt-8 text-sm text-subtle">
                             {activeDirectMessage
-                              ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
+                              ? `Private to ${activeDirectMessageTitle}. Agents work privately; owners choose what to share here.`
                               : "No messages yet. Start the conversation."}
                           </p>
                         ) : null
@@ -3930,40 +4027,47 @@ export function TeamChannelWorkspace({
                                 </button>
                               </div>
                             )}
-                            {pendingAgentMention && (
-                              <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
-                                <p className="mb-2 text-xs text-subtle">
-                                  Choose a Team Project for{" "}
-                                  {pendingAgentMention.agent.name}.
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                  {activeTeam.sharedProjects.map((project) => (
+                            {pendingAgentMention &&
+                              pendingAgentMention.teamId === activeTeam.id &&
+                              pendingAgentMention.threadId ===
+                                activeThread?.id && (
+                                <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
+                                  <p className="mb-2 text-xs text-subtle">
+                                    Choose a Team Project for{" "}
+                                    {pendingAgentMention.agent.name}.
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {activeTeam.sharedProjects.map(
+                                      (project) => (
+                                        <button
+                                          key={project.id}
+                                          type="button"
+                                          disabled={agentMentionBusy}
+                                          onClick={() =>
+                                            void completeAgentMention(
+                                              pendingAgentMention,
+                                              project.id
+                                            )
+                                          }
+                                          className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                        >
+                                          {project.name}
+                                        </button>
+                                      )
+                                    )}
                                     <button
-                                      key={project.id}
                                       type="button"
                                       disabled={agentMentionBusy}
                                       onClick={() =>
-                                        void completeAgentMention(
-                                          pendingAgentMention,
-                                          project.id
-                                        )
+                                        setPendingAgentMention(null)
                                       }
-                                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                      className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
                                     >
-                                      {project.name}
+                                      Cancel
                                     </button>
-                                  ))}
-                                  <button
-                                    type="button"
-                                    disabled={agentMentionBusy}
-                                    onClick={() => setPendingAgentMention(null)}
-                                    className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
-                                  >
-                                    Cancel
-                                  </button>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              )}
                             <fieldset
                               disabled={
                                 !activeThread ||
@@ -3988,14 +4092,15 @@ export function TeamChannelWorkspace({
                                 onSend={(text, selection) =>
                                   sendTeamComposer(text, selection)
                                 }
-                                agents={
-                                  activeDirectMessage
-                                    ? []
-                                    : teamAgentMentions.options
-                                }
+                                agents={activeComposerAgentMentions}
                                 teamMembers={
                                   activeDirectMessage
-                                    ? []
+                                    ? activeDirectMessageParticipants.map(
+                                        (participant) => ({
+                                          id: participant.id,
+                                          name: participant.displayName
+                                        })
+                                      )
                                     : activeTeam.people
                                         .filter(
                                           (person) =>
@@ -4018,9 +4123,7 @@ export function TeamChannelWorkspace({
                                   })
                                 }
                                 showExecutionControls={false}
-                                switchToExecutionControlsOnMention={
-                                  !activeDirectMessage
-                                }
+                                switchToExecutionControlsOnMention={true}
                                 showMetaBar={false}
                                 showFormattingToolbar
                                 sendEnabled={Boolean(
@@ -4031,7 +4134,7 @@ export function TeamChannelWorkspace({
                                   visiblePendingSend
                                     ? "Resolve the earlier send before sending this edit."
                                     : activeDirectMessage
-                                      ? "Direct messages stay among these people."
+                                      ? "@Agent options belong to people in this conversation. Colleague requests go to the owner privately; only an outcome they share appears here."
                                       : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
                                 }
                               />
@@ -4108,7 +4211,7 @@ export function TeamChannelWorkspace({
                         )
                       }
                     >
-                      {!activeDirectMessage && activeThread && (
+                      {activeThread && (
                         <TeamChannelAgentRequests
                           teamId={activeTeam.id}
                           channelId={activeThread.id}
@@ -4157,15 +4260,24 @@ export function TeamChannelWorkspace({
                       modelAvailabilityWarning={
                         teamAgentMentions.modelAvailabilityWarning
                       }
-                      agents={teamAgentMentions.options}
-                      teamMembers={activeTeam.people
-                        .filter(
-                          (person) => person.membershipState === "enabled"
-                        )
-                        .map((person) => ({
-                          id: person.id,
-                          name: person.displayName
-                        }))}
+                      agents={activeComposerAgentMentions}
+                      teamMembers={
+                        activeDirectMessage
+                          ? activeDirectMessageParticipants.map(
+                              (participant) => ({
+                                id: participant.id,
+                                name: participant.displayName
+                              })
+                            )
+                          : activeTeam.people
+                              .filter(
+                                (person) => person.membershipState === "enabled"
+                              )
+                              .map((person) => ({
+                                id: person.id,
+                                name: person.displayName
+                              }))
+                      }
                       key={`${authorityKey ?? ""}:${visibleOpenRoot.id}`}
                       agentRequests={
                         activeThread && (
@@ -4227,7 +4339,7 @@ export function TeamChannelWorkspace({
                       }}
                       onSendReply={async (text, selection) => {
                         if (selection.agentId) {
-                          const agent = teamAgentMentions.options.find(
+                          const agent = activeComposerAgentMentions.find(
                             (item) => item.id === selection.agentId
                           );
                           if (!agent) {
@@ -4240,6 +4352,8 @@ export function TeamChannelWorkspace({
                             agent,
                             selection,
                             text,
+                            teamId: activeTeam.id,
+                            threadId: activeThread?.id ?? "",
                             idempotencyKey: crypto.randomUUID(),
                             sendClientMessageId: crypto.randomUUID(),
                             mentionUserIds: selection.mentionUserIds ?? [],

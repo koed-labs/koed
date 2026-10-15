@@ -1065,8 +1065,12 @@ export function ChatComposer({
     setDraft(nextDraft);
     setMentionQuery(null);
     if (!agent.teamMember) {
-      if (!allowMultipleAgentMentions) onAgentMention?.(agent.id);
-      focusAgentSettings(agent.id);
+      if (agent.teamRequestOnly) {
+        changeActiveAgent(agent.id);
+      } else {
+        if (!allowMultipleAgentMentions) onAgentMention?.(agent.id);
+        focusAgentSettings(agent.id);
+      }
     }
     const nextResolved = {
       ...resolvedMentionIds,

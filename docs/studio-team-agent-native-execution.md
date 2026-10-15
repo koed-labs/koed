@@ -75,8 +75,13 @@ Ordinary Personal chats continue through their existing native path.
 ## Scope
 
 Ticket 13 restores the existing channel request workflow for supported native AI Clients.
-It does not add a multi-owner execution coordinator or change destination audiences for private/group Collaboration chats.
-Those destination contracts remain under Ticket 27.
+It does not add a multi-owner execution coordinator. Ticket 27 extends the same
+request lifecycle to private/group Collaboration chats under the User-approved
+participant-only contract. Eligible Agent owners must be current participants;
+review and execution stay owner-private, and explicit question/result sharing
+targets the stored originating thread. The required shared Project context does
+not widen that thread's audience. See the
+[Collaboration chat assessment](studio-collaboration-chat-assessment.md).
 Public Square and For you native activity projection remain Tickets 12 and 20.
 This request's broad status and owner request inbox remain Ticket 13 responsibilities.
 

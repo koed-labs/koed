@@ -70,9 +70,10 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0083_team_overview_native_agent_activity";
+const expectedLatestMigrationTag =
+  "0084_team_agent_request_native_status_realtime";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 83;
+const expectedLatestMigrationIndex = 84;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 

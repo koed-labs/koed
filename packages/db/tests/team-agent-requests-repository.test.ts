@@ -410,6 +410,481 @@ describeDb("Team Agent Requests repository", () => {
     expect(hiddenProjectHistory?.requests).toEqual([]);
   });
 
+  it("keeps direct-message execution owner-scoped while Public Square shows only consented status", async () => {
+    const ownerId = await makeUser("Direct room Agent owner");
+    const requesterId = await makeUser("Direct room requester");
+    const teamViewerId = await makeUser("Direct room Team viewer");
+    const { teamId, project } = await makeTeam(ownerId, requesterId);
+    await pool.query(
+      `insert into team_memberships(team_id,user_id,role,status,accepted_at)
+       values($1,$2,'member','enabled',now())`,
+      [teamId, teamViewerId]
+    );
+    const room = await collaboration.createThread(actor(ownerId), {
+      kind: "dm",
+      idempotencyKey: `direct-agent-room:${randomUUID()}`,
+      teamId,
+      participantUserIds: [ownerId, requesterId]
+    });
+    if (!room) throw new Error("Expected direct Agent request room");
+    const agentId = await makeAgent(ownerId);
+    await requests.updateOffer(actor(ownerId), {
+      teamId,
+      agentId,
+      expectedVersion: 0,
+      enabled: true,
+      description: "Reviews direct-message requests"
+    });
+    const localProjectId = `direct-room-project:${randomUUID()}`;
+    await publicSquare.setPublicSquareConnection(actor(ownerId), {
+      teamId,
+      teamProjectId: project.id,
+      expectedVersion: 0,
+      localProjectId
+    });
+    const request = await requests.createRequest(actor(requesterId), {
+      teamId,
+      idempotencyKey: randomUUID(),
+      teamProjectId: project.id,
+      channelId: room.id,
+      agentId,
+      requestText: "DIRECT_ROOM_REQUEST_TEXT"
+    });
+    expect(request).toMatchObject({
+      channelId: room.id,
+      teamProjectId: project.id,
+      ownerId,
+      requesterId,
+      status: "awaiting_owner"
+    });
+    const executionId = await makeNativeReviewExecution(
+      ownerId,
+      agentId,
+      localProjectId
+    );
+    await requests.updateReview(actor(ownerId), {
+      teamId,
+      requestId: request!.id,
+      expectedVersion: 0,
+      privateGoal: "DIRECT_ROOM_PRIVATE_GOAL",
+      executionId
+    });
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: personalProvider
+    });
+    const accepted = await requests.decideRequest(
+      actor(ownerId),
+      {
+        teamId,
+        requestId: request!.id,
+        expectedVersion: request!.version,
+        decision: "accept"
+      },
+      (client, assignment) =>
+        managed.createManagedConversationAcceptedAgentAssignmentWithClient(
+          client,
+          assignment
+        )
+    );
+    expect(accepted).toMatchObject({
+      status: "accepted",
+      executionStatus: "queued"
+    });
+    const binding = await pool.query<{ managed_command_id: string }>(
+      `select managed_command_id from team_agent_requests where id=$1`,
+      [request!.id]
+    );
+    const commandId = binding.rows[0]!.managed_command_id;
+    const ownerCommand = await managed.getManagedConversationCommand(
+      actor(ownerId),
+      commandId
+    );
+    expect(ownerCommand?.payload).toMatchObject({
+      prompt: "DIRECT_ROOM_PRIVATE_GOAL",
+      personalAgentContext: { project: { projectId: localProjectId } }
+    });
+    expect(
+      await managed.getManagedConversationCommand(actor(requesterId), commandId)
+    ).toBeNull();
+
+    const squareForOtherTeamMember = await publicSquare.listPublicSquare(
+      actor(teamViewerId),
+      { teamId, limit: 10 }
+    );
+    const nativePublication = squareForOtherTeamMember?.items.find(
+      (item) => item.agentId === agentId && item.ownerId === ownerId
+    );
+    expect(nativePublication).toMatchObject({
+      source: "native_command",
+      jobId: null,
+      status: "queued",
+      ownerExecutionId: null,
+      sharedBrief: null
+    });
+    const publicDto = JSON.stringify(nativePublication);
+    for (const privateValue of [
+      room.id,
+      request!.id,
+      request!.requestMessageId,
+      commandId,
+      executionId,
+      "DIRECT_ROOM_REQUEST_TEXT",
+      "DIRECT_ROOM_PRIVATE_GOAL"
+    ]) {
+      expect(publicDto).not.toContain(privateValue);
+    }
+    expect(nativePublication).not.toHaveProperty("channelId");
+    expect(nativePublication).not.toHaveProperty("requestId");
+    expect(nativePublication).not.toHaveProperty("commandId");
+    expect(nativePublication).not.toHaveProperty("executionId");
+
+    const target = await pool.query<{
+      runner_deployment_id: string;
+      runner_device_id: string;
+    }>(
+      `select runner_deployment_id,runner_device_id
+         from managed_conversation_executions where id=$1`,
+      [executionId]
+    );
+    const dispatchInput = {
+      runnerId: "runner",
+      deploymentId: target.rows[0]!.runner_deployment_id,
+      deviceId: target.rows[0]!.runner_device_id,
+      leaseMs: 60_000
+    };
+    await expect(
+      managed.claimManagedConversationCommands({
+        ...dispatchInput,
+        ownerUserId: requesterId
+      })
+    ).resolves.toEqual([]);
+    const [claimed] = await managed.claimManagedConversationCommands({
+      ...dispatchInput,
+      ownerUserId: ownerId
+    });
+    expect(claimed).toMatchObject({
+      id: commandId,
+      ownerUserId: ownerId,
+      execution: { id: executionId, projectId: localProjectId },
+      payload: { prompt: "DIRECT_ROOM_PRIVATE_GOAL" }
+    });
+  });
+
+  it("authorizes private room requests by current participants and freezes status when the owner leaves", async () => {
+    const ownerId = await makeUser("Private room Agent owner");
+    const requesterId = await makeUser("Private room requester");
+    const roomViewerId = await makeUser("Private room viewer");
+    const teamNonparticipantId = await makeUser("Private room nonparticipant");
+    const { teamId, project } = await makeTeam(ownerId, requesterId);
+    await pool.query(
+      `insert into team_memberships(team_id,user_id,role,status,accepted_at)
+       values($1,$2,'member','enabled',now()),($1,$3,'member','enabled',now())`,
+      [teamId, roomViewerId, teamNonparticipantId]
+    );
+    const room = await collaboration.createThread(actor(ownerId), {
+      kind: "group_dm",
+      idempotencyKey: `private-agent-room:${randomUUID()}`,
+      teamId,
+      participantUserIds: [ownerId, requesterId, roomViewerId]
+    });
+    if (!room) throw new Error("Expected private Agent request room");
+    const agentId = await makeAgent(ownerId);
+    const offer = await requests.updateOffer(actor(ownerId), {
+      teamId,
+      agentId,
+      expectedVersion: 0,
+      enabled: true,
+      description: "Reviews private room requests"
+    });
+    const request = await requests.createRequest(actor(requesterId), {
+      teamId,
+      idempotencyKey: randomUUID(),
+      teamProjectId: project.id,
+      channelId: room.id,
+      agentId,
+      requestText: "Please review this in the private room"
+    });
+    expect(request).toMatchObject({
+      channelId: room.id,
+      ownerId,
+      requesterId,
+      status: "awaiting_owner"
+    });
+    expect(
+      (
+        await requests.listRequests(actor(ownerId), { teamId, inbox: true })
+      )?.requests.map((item) => item.id)
+    ).toContain(request!.id);
+    expect(
+      (
+        await requests.listRequests(actor(roomViewerId), {
+          teamId,
+          channelId: room.id
+        })
+      )?.requests.map((item) => item.id)
+    ).toContain(request!.id);
+    expect(
+      (
+        await requests.listRequests(actor(teamNonparticipantId), {
+          teamId,
+          channelId: room.id
+        })
+      )?.requests
+    ).toEqual([]);
+    expect(
+      await requests.getReview(actor(requesterId), {
+        teamId,
+        requestId: request!.id
+      })
+    ).toBeNull();
+    expect(
+      await requests.updateReview(actor(roomViewerId), {
+        teamId,
+        requestId: request!.id,
+        expectedVersion: 0,
+        privateGoal: "Should not be written",
+        executionId: null
+      })
+    ).toBeNull();
+
+    const event = await requests.materializeRealtimeInvalidation(
+      actor(roomViewerId),
+      {
+        teamId,
+        resourceType: "team_agent_request",
+        resourceId: request!.id
+      }
+    );
+    expect(event).toEqual({
+      type: "team_agent_request_invalidated",
+      teamId,
+      requestId: request!.id,
+      channelId: room.id,
+      ownerId,
+      kind: "request"
+    });
+    expect(
+      await requests.materializeRealtimeInvalidation(
+        actor(teamNonparticipantId),
+        {
+          teamId,
+          resourceType: "team_agent_request",
+          resourceId: request!.id
+        }
+      )
+    ).toBeNull();
+
+    const localProjectId = `private-room-project:${randomUUID()}`;
+    await pool.query(
+      `insert into public_square_project_connections(
+        actor_user_id,team_id,team_project_id,local_project_id,version,connected_at
+      ) values($1,$2,$3,$4,1,now())`,
+      [ownerId, teamId, project.id, localProjectId]
+    );
+    const executionId = await makeNativeReviewExecution(
+      ownerId,
+      agentId,
+      localProjectId
+    );
+    const review = await requests.updateReview(actor(ownerId), {
+      teamId,
+      requestId: request!.id,
+      expectedVersion: 0,
+      privateGoal: "Keep the review in owner memory",
+      executionId
+    });
+    expect(review).toMatchObject({ version: 1, executionId });
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: personalProvider
+    });
+    const accepted = await requests.decideRequest(
+      actor(ownerId),
+      {
+        teamId,
+        requestId: request!.id,
+        expectedVersion: request!.version,
+        decision: "accept"
+      },
+      (client, assignment) =>
+        managed.createManagedConversationAcceptedAgentAssignmentWithClient(
+          client,
+          assignment
+        )
+    );
+    expect(accepted).toMatchObject({
+      status: "accepted",
+      executionStatus: "queued"
+    });
+    expect(JSON.stringify(accepted)).not.toContain(
+      "Keep the review in owner memory"
+    );
+    const acceptedBinding = await pool.query<{ managed_command_id: string }>(
+      `select managed_command_id from team_agent_requests where id=$1`,
+      [request!.id]
+    );
+    const managedCommandId = acceptedBinding.rows[0]!.managed_command_id;
+    const acceptedCommand = await managed.getManagedConversationCommand(
+      actor(ownerId),
+      managedCommandId
+    );
+    expect(acceptedCommand?.payload).toMatchObject({
+      prompt: "Keep the review in owner memory"
+    });
+    expect(
+      await managed.getManagedConversationCommand(
+        actor(requesterId),
+        managedCommandId
+      )
+    ).toBeNull();
+    const dispatchTarget = await pool.query<{
+      runner_deployment_id: string;
+      runner_device_id: string;
+    }>(
+      `select runner_deployment_id,runner_device_id
+         from managed_conversation_executions where id=$1`,
+      [executionId]
+    );
+    const { runner_deployment_id: deploymentId, runner_device_id: deviceId } =
+      dispatchTarget.rows[0]!;
+    const dispatchInput = {
+      runnerId: "runner",
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    };
+    await expect(
+      managed.claimManagedConversationCommands({
+        ...dispatchInput,
+        ownerUserId: requesterId
+      })
+    ).resolves.toEqual([]);
+    const [claimedPrivateCommand] =
+      await managed.claimManagedConversationCommands({
+        ...dispatchInput,
+        ownerUserId: ownerId
+      });
+    expect(claimedPrivateCommand).toMatchObject({
+      id: managedCommandId,
+      ownerUserId: ownerId,
+      execution: { id: executionId, projectId: localProjectId },
+      payload: { prompt: "Keep the review in owner memory" }
+    });
+
+    const squareForRoomParticipant = await publicSquare.listPublicSquare(
+      actor(roomViewerId),
+      { teamId, limit: 10 }
+    );
+    const nativePublication = squareForRoomParticipant?.items.find(
+      (item) => item.agentId === agentId && item.ownerId === ownerId
+    );
+    expect(nativePublication).toMatchObject({
+      source: "native_command",
+      jobId: null,
+      status: "running",
+      ownerExecutionId: null,
+      sharedBrief: null
+    });
+    const publicDto = JSON.stringify(nativePublication);
+    for (const privateValue of [
+      room.id,
+      request!.id,
+      request!.requestMessageId,
+      managedCommandId,
+      executionId,
+      "Please review this in the private room",
+      "Keep the review in owner memory"
+    ]) {
+      expect(publicDto).not.toContain(privateValue);
+    }
+    expect(nativePublication).not.toHaveProperty("channelId");
+    expect(nativePublication).not.toHaveProperty("requestId");
+    expect(nativePublication).not.toHaveProperty("commandId");
+    expect(nativePublication).not.toHaveProperty("executionId");
+
+    await pool.query(
+      `update managed_conversation_commands
+          set state='completed',completed_at=now(),lease_token=null,lease_expires_at=null,
+              updated_at=now()
+        where id=$1`,
+      [managedCommandId]
+    );
+    const outcome = await requests.postOutcome(actor(ownerId), {
+      teamId,
+      requestId: request!.id,
+      expectedVersion: accepted!.version,
+      summary: "The shared result is ready."
+    });
+    expect(outcome?.outcomeMessageId).toBeTruthy();
+    const squareAfterExplicitRoomShare = await publicSquare.listPublicSquare(
+      actor(roomViewerId),
+      { teamId, limit: 10 }
+    );
+    const publicationAfterRoomShare = squareAfterExplicitRoomShare?.items.find(
+      (item) => item.agentId === agentId && item.ownerId === ownerId
+    );
+    expect(publicationAfterRoomShare?.sharedBrief).toBeNull();
+    expect(JSON.stringify(publicationAfterRoomShare)).not.toContain(
+      "The shared result is ready."
+    );
+    expect(
+      (
+        await requests.listRequests(actor(roomViewerId), {
+          teamId,
+          channelId: room.id
+        })
+      )?.requests[0]
+    ).toMatchObject({ status: "accepted", executionStatus: "succeeded" });
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [teamId, roomViewerId]
+    );
+    expect(
+      await requests.listRequests(actor(roomViewerId), {
+        teamId,
+        channelId: room.id
+      })
+    ).toBeNull();
+    expect(
+      await requests.materializeRealtimeInvalidation(actor(roomViewerId), {
+        teamId,
+        resourceType: "team_agent_request",
+        resourceId: request!.id
+      })
+    ).toBeNull();
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [teamId, ownerId]
+    );
+    const frozen = await pool.query<{ native_status_frozen: string | null }>(
+      `select native_status_frozen from team_agent_requests where id=$1`,
+      [request!.id]
+    );
+    expect(frozen.rows[0]?.native_status_frozen).toBe("succeeded");
+    await pool.query(
+      `update managed_conversation_commands
+          set state='failed',last_error_code='later_private_change',updated_at=now()
+        where id=$1`,
+      [managedCommandId]
+    );
+    const stillFrozen = await pool.query<{
+      native_status_frozen: string | null;
+    }>(`select native_status_frozen from team_agent_requests where id=$1`, [
+      request!.id
+    ]);
+    expect(stillFrozen.rows[0]?.native_status_frozen).toBe("succeeded");
+    expect(
+      await requests.getReview(actor(ownerId), {
+        teamId,
+        requestId: request!.id
+      })
+    ).toBeNull();
+    expect(offer?.enabled).toBe(true);
+  });
+
   it("binds a fresh private owner review to its execution in the caller transaction", async () => {
     const ownerId = await makeUser("Review owner");
     const requesterId = await makeUser("Review requester");
@@ -803,24 +1278,226 @@ describeDb("Team Agent Requests repository", () => {
     });
     expect(JSON.stringify(command?.payload)).not.toContain("soulInstructions");
 
+    const nativeInvalidationCount = async () =>
+      Number(
+        (
+          await pool.query<{ count: string }>(
+            `select count(*)::text as count from collaboration_outbox
+              where family='team_agent_request_changed' and scope='team'
+                and resource_type='team_agent_request' and resource_id=$1 and team_id=$2`,
+            [request!.id, teamId]
+          )
+        ).rows[0]?.count ?? "0"
+      );
+    const expectOneNativeInvalidation = async (previousCount: number) => {
+      const currentCount = await nativeInvalidationCount();
+      expect(currentCount).toBe(previousCount + 1);
+      return currentCount;
+    };
+    const nativeExecutionStatus = async () =>
+      (
+        await pool.query<{ status: string }>(
+          `select team_agent_request_native_execution_status($1,$2,$3) as status`,
+          [executionId, acceptedCommandId, ownerId]
+        )
+      ).rows[0]?.status;
+
+    const nativeEventsCursorBeforeStatusChanges = await pool.query<{
+      cursor: string;
+    }>(
+      `select coalesce(max(cursor),0)::text as cursor from collaboration_outbox`
+    );
+    let nativeEventsBefore = await nativeInvalidationCount();
+    const nativeStatusEventCountBeforeChanges = nativeEventsBefore;
+
     await pool.query(
       `update managed_conversation_executions set execution_generation=2 where id=$1`,
       [executionId]
     );
-    const staleStatus = await pool.query<{ status: string }>(
-      `select team_agent_request_native_execution_status($1,$2,$3) as status`,
-      [executionId, acceptedCommandId, ownerId]
-    );
-    expect(staleStatus.rows[0]?.status).toBe("unknown");
+    expect(await nativeExecutionStatus()).toBe("unknown");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
     await pool.query(
       `update managed_conversation_executions set execution_generation=1 where id=$1`,
       [executionId]
     );
+    expect(await nativeExecutionStatus()).toBe("queued");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+
     await pool.query(
-      `update managed_conversation_commands set state='completed',completed_at=now()
+      `update managed_conversation_executions
+          set runner_lease_expires_at=now()+interval '1 hour'
+        where id=$1`,
+      [executionId]
+    );
+    expect(await nativeInvalidationCount()).toBe(nativeEventsBefore);
+    await pool.query(
+      `update managed_conversation_commands
+          set state='dispatching',lease_token=$3,
+              lease_expires_at=now()+interval '5 minutes',
+              result=jsonb_build_object('turnId','linked-native-turn')
+        where id=$1 and owner_user_id=$2`,
+      [acceptedCommandId, ownerId, randomUUID()]
+    );
+    expect(await nativeExecutionStatus()).toBe("running");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+
+    await pool.query(
+      `update managed_conversation_commands
+          set lease_expires_at=now()+interval '10 minutes',updated_at=now()
         where id=$1 and owner_user_id=$2`,
       [acceptedCommandId, ownerId]
     );
+    await pool.query(
+      `update managed_conversation_executions
+          set runner_lease_expires_at=now()+interval '10 minutes',runner_last_seen_at=now()
+        where id=$1`,
+      [executionId]
+    );
+    expect(await nativeExecutionStatus()).toBe("running");
+    expect(await nativeInvalidationCount()).toBe(nativeEventsBefore);
+
+    await pool.query(
+      `update managed_conversation_commands
+          set lease_expires_at=now()-interval '1 second'
+        where id=$1 and owner_user_id=$2`,
+      [acceptedCommandId, ownerId]
+    );
+    expect(await nativeExecutionStatus()).toBe("unknown");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+    await pool.query(
+      `update managed_conversation_commands
+          set state='indeterminate',updated_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [acceptedCommandId, ownerId]
+    );
+    expect(await nativeExecutionStatus()).toBe("unknown");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+    await pool.query(
+      `update managed_conversation_commands
+          set state='dispatching',lease_token=$3,
+              lease_expires_at=now()+interval '10 minutes',updated_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [acceptedCommandId, ownerId, randomUUID()]
+    );
+    expect(await nativeExecutionStatus()).toBe("running");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+
+    const linkedTurnId = "linked-native-turn";
+    const runtimeItemIds = [randomUUID(), randomUUID()];
+    await pool.query(
+      `insert into managed_conversation_runtime_items(
+         id,owner_user_id,execution_id,execution_generation,provider_request_id,
+         provider_turn_id,item_kind,state,request_digest,encrypted_payload
+       ) values
+         ($1,$2,$3,1,$4,$5,'user_input','pending',$6,'{}'::jsonb),
+         ($7,$2,$3,1,$8,$5,'user_input','pending',$6,'{}'::jsonb)`,
+      [
+        runtimeItemIds[0],
+        ownerId,
+        executionId,
+        randomUUID(),
+        linkedTurnId,
+        "f".repeat(64),
+        runtimeItemIds[1],
+        randomUUID()
+      ]
+    );
+    expect(await nativeExecutionStatus()).toBe("waiting");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+    await pool.query(
+      `update managed_conversation_runtime_items
+          set state='resolved',resolved_at=now(),updated_at=now()
+        where id=any($1::uuid[])`,
+      [runtimeItemIds]
+    );
+    expect(await nativeExecutionStatus()).toBe("running");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+
+    await pool.query(
+      `update managed_conversation_commands
+          set state='completed',lease_token=null,lease_expires_at=null,
+              completed_at=now(),updated_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [acceptedCommandId, ownerId]
+    );
+    expect(await nativeExecutionStatus()).toBe("succeeded");
+    nativeEventsBefore = await expectOneNativeInvalidation(nativeEventsBefore);
+
+    const unrelatedPrivateCommandId = randomUUID();
+    await pool.query(
+      `insert into managed_conversation_commands(
+         id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,
+         request_digest,execution_generation,state
+       ) select $1,$2,$3,$4,coalesce(max(sequence),-1)+1,'stop',$5,1,'queued'
+           from managed_conversation_commands where execution_id=$3`,
+      [
+        unrelatedPrivateCommandId,
+        ownerId,
+        executionId,
+        `later-private:${randomUUID()}`,
+        "e".repeat(64)
+      ]
+    );
+    await pool.query(
+      `update managed_conversation_commands
+          set state='completed',completed_at=now(),updated_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [unrelatedPrivateCommandId, ownerId]
+    );
+    expect(await nativeInvalidationCount()).toBe(nativeEventsBefore);
+
+    const outsiderId = await makeUser("Nonmember request viewer");
+    expect(
+      await requests.materializeRealtimeInvalidation(actor(outsiderId), {
+        teamId,
+        resourceType: "team_agent_request",
+        resourceId: request!.id
+      })
+    ).toBeNull();
+    const materializedStatusInvalidation =
+      await requests.materializeRealtimeInvalidation(actor(requesterId), {
+        teamId,
+        resourceType: "team_agent_request",
+        resourceId: request!.id
+      });
+    expect(materializedStatusInvalidation).toEqual({
+      type: "team_agent_request_invalidated",
+      teamId,
+      requestId: request!.id,
+      channelId: channel!.id,
+      ownerId,
+      kind: "request"
+    });
+    expect(JSON.stringify(materializedStatusInvalidation)).not.toContain(
+      executionId
+    );
+    expect(JSON.stringify(materializedStatusInvalidation)).not.toContain(
+      acceptedCommandId
+    );
+
+    const nativeStatusEvents = await pool.query<{
+      event: string;
+    }>(
+      `select to_jsonb(event)::text as event from collaboration_outbox event
+        where event.cursor>$1::bigint and event.family='team_agent_request_changed'
+          and event.resource_type='team_agent_request' and event.resource_id=$2
+          and event.team_id=$3`,
+      [
+        nativeEventsCursorBeforeStatusChanges.rows[0]?.cursor,
+        request!.id,
+        teamId
+      ]
+    );
+    expect(nativeStatusEvents.rows.length).toBe(
+      nativeEventsBefore - nativeStatusEventCountBeforeChanges
+    );
+    for (const event of nativeStatusEvents.rows) {
+      expect(event.event).not.toContain(executionId);
+      expect(event.event).not.toContain(acceptedCommandId!);
+      expect(event.event).not.toContain(linkedTurnId);
+      expect(event.event).not.toContain("Privately inspect the release");
+    }
+
     const completedStatus = await requests.listRequests(actor(requesterId), {
       teamId,
       channelId: channel!.id
@@ -848,11 +1525,13 @@ describeDb("Team Agent Requests repository", () => {
         where team_id=$1 and user_id=$2`,
       [teamId, ownerId]
     );
+    const frozenStatusEventCount = await nativeInvalidationCount();
     await pool.query(
       `update managed_conversation_commands set state='failed',last_error_code='later_private_change'
         where id=$1 and owner_user_id=$2`,
       [acceptedCommandId, ownerId]
     );
+    expect(await nativeInvalidationCount()).toBe(frozenStatusEventCount);
     const afterOwnerLeaves = await requests.listRequests(actor(requesterId), {
       teamId,
       channelId: channel!.id

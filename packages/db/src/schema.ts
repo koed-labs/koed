@@ -11278,6 +11278,13 @@ export const teamAgentRequests = pgTable(
     index("team_agent_requests_owner_review_execution_idx")
       .on(table.ownerUserId, table.reviewExecutionId)
       .where(sql`${table.reviewExecutionId} is not null`),
+    index("team_agent_requests_native_execution_status_idx")
+      .on(table.managedExecutionId, table.ownerUserId)
+      .where(
+        sql`${table.status} = 'accepted'
+          and ${table.nativeStatusFrozen} is null
+          and ${table.managedExecutionId} is not null`
+      ),
     index("team_agent_requests_owner_review_unchecked_idx")
       .on(table.ownerUserId, table.id)
       .where(sql`${table.reviewBindingChecked} = false`)

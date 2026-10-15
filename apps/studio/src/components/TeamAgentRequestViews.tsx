@@ -328,7 +328,7 @@ export function TeamChannelAgentRequests({
       setError(
         failure instanceof Error
           ? failure.message
-          : "Older channel requests are unavailable."
+          : "Older conversation requests are unavailable."
       );
       void load();
     } finally {
@@ -386,7 +386,7 @@ export function TeamChannelAgentRequests({
     return null;
   return (
     <section
-      aria-label="Agent requests in this channel"
+      aria-label="Agent requests in this conversation"
       className="mx-auto w-full max-w-3xl px-4 pt-4 sm:px-6"
     >
       {visibleState === "loading" && (
@@ -847,11 +847,11 @@ export function TeamAgentRequestReviewPanel({
                 </p>
                 <p className="mt-0.5 text-[10px] text-faint">
                   Select an Agent message, review or edit it, then post it to
-                  the request’s channel.
+                  the request’s original conversation.
                 </p>
               </div>
               <label className="block text-[11px] font-medium text-subtle">
-                Question for the channel
+                Question for the original conversation
                 <textarea
                   value={question}
                   onChange={(event) => {
@@ -888,7 +888,8 @@ export function TeamAgentRequestReviewPanel({
                 </p>
                 <p className="mt-0.5 text-[10px] text-faint">
                   The connected Agent drafts it in this private execution.
-                  Review and edit it before posting to the Team channel.
+                  Review and edit it before posting to the original
+                  conversation.
                 </p>
               </div>
               {summaryDraftStatus !== "ready" && (
@@ -950,7 +951,7 @@ export function TeamAgentRequestReviewPanel({
                     </button>
                     {visibleRequest.outcomeMessageId && (
                       <span className="text-[10px] text-subtle">
-                        Posted in the request channel.
+                        Posted in the original conversation.
                       </span>
                     )}
                   </div>
@@ -1038,7 +1039,9 @@ function RequestCard({
           </button>
         )}
         {request.outcomeMessageId && (
-          <span className="text-[10px] text-faint">Outcome in channel</span>
+          <span className="text-[10px] text-faint">
+            Outcome in original conversation
+          </span>
         )}
       </div>
     </article>

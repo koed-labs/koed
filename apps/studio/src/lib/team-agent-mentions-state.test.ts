@@ -5,6 +5,7 @@ import {
   buildTeamAgentMentions,
   privateAgentHandoffHref,
   privateAgentHandoffSelection,
+  teamAgentMentionsForParticipants,
   teamMentionSelectionForScope
   // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
 } from "./team-agent-mentions-state.ts";
@@ -80,6 +81,29 @@ test("Team mention choices include active owned Agents and enabled colleague off
     ]
   );
   assert.equal(choices[1]?.teamRequestOnly, true);
+});
+
+test("direct-message Agent choices belong only to current conversation participants", () => {
+  const choices = buildTeamAgentMentions(
+    "owner-a",
+    [owned("own-agent")],
+    [offer(), offer({ agentId: "other-participant-agent", ownerId: "owner-c" })]
+  );
+
+  assert.deepEqual(
+    teamAgentMentionsForParticipants(choices, [
+      { id: "owner-a", membershipState: "enabled" },
+      { id: "owner-b", membershipState: "enabled" },
+      { id: "owner-c", membershipState: "disabled" }
+    ]).map(({ id }) => id),
+    ["own-agent", "colleague-agent"]
+  );
+  assert.deepEqual(
+    teamAgentMentionsForParticipants(choices, [
+      { id: "owner-b", membershipState: "disabled" }
+    ]),
+    []
+  );
 });
 
 test("owner suffix stays in the display label while the canonical mention resolves by ID", () => {

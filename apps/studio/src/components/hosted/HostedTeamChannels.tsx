@@ -52,6 +52,7 @@ import { useTeamAgentMentions } from "@/lib/use-team-agent-mentions";
 import {
   buildOwnedAgentHandoffDraft,
   privateAgentHandoffHref,
+  teamAgentMentionsForParticipants,
   teamMentionSelectionForScope,
   type ScopedTeamMentionSelection,
   type TeamAgentMention
@@ -276,6 +277,8 @@ export function HostedTeamChannels({
   >(async () => false);
   const revokedRef = useRef(false);
   const navigationGeneration = useRef(0);
+  const agentMentionScopeGeneration = useRef(0);
+  const agentMentionScopeKey = useRef<string | null>(null);
   const directMessageRequestIds = useRef(new Map<string, string>());
   const navigationOwner = useRef("");
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
@@ -371,11 +374,14 @@ export function HostedTeamChannels({
     agent: TeamAgentMention;
     selection: ChatComposerSelection;
     text: string;
+    teamId: string;
+    threadId: string;
     idempotencyKey: string;
     mentionUserIds: string[];
     rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
+  const agentMentionBusyIntent = useRef<string | null>(null);
   const openRequestReview = useCallback(
     async (request: TeamAgentRequest, draft?: string) => {
       try {
@@ -474,6 +480,29 @@ export function HostedTeamChannels({
     activeThread?.kind === "dm" || activeThread?.kind === "group_dm"
       ? activeThread
       : null;
+  const activeDirectMessageParticipants = useMemo(() => {
+    if (!activeDirectMessage) return [];
+    const participants = activeDirectMessage.participants.filter(
+      (participant) => participant.membershipState === "enabled"
+    );
+    return participants.some((participant) => participant.id === user.id)
+      ? participants
+      : [];
+  }, [activeDirectMessage, user.id]);
+  const activeComposerAgentMentions = useMemo(
+    () =>
+      activeDirectMessage
+        ? teamAgentMentionsForParticipants(
+            teamAgentMentions.options,
+            activeDirectMessageParticipants
+          )
+        : teamAgentMentions.options,
+    [
+      activeDirectMessage,
+      activeDirectMessageParticipants,
+      teamAgentMentions.options
+    ]
+  );
   const channelMessages = activeDirectMessage
     ? visibleMessages
     : visibleMessages.filter((message) => message.rootMessageId === null);
@@ -526,6 +555,18 @@ export function HostedTeamChannels({
     openRootMessage.threadId === activeThread?.id
       ? openRootMessage
       : null;
+  const currentAgentMentionScopeKey = JSON.stringify({
+    ownerKey,
+    authorityKey,
+    teamId: team.id,
+    threadId: activeThread?.id ?? "",
+    rootMessageId: visibleOpenRoot?.id ?? ""
+  });
+  useLayoutEffect(() => {
+    if (agentMentionScopeKey.current === currentAgentMentionScopeKey) return;
+    agentMentionScopeKey.current = currentAgentMentionScopeKey;
+    agentMentionScopeGeneration.current += 1;
+  }, [currentAgentMentionScopeKey]);
   const connected =
     browserOnline &&
     navigationReady &&
@@ -2197,6 +2238,25 @@ export function HostedTeamChannels({
     const capturedTeamId = team.id;
     const capturedThreadId = activeThread?.id;
     if (
+      intent.teamId !== capturedTeamId ||
+      intent.threadId !== capturedThreadId
+    ) {
+      setError(
+        "This Agent request belongs to a conversation that is no longer selected."
+      );
+      return false;
+    }
+    if (
+      !activeComposerAgentMentions.some(
+        (candidate) =>
+          candidate.id === intent.agent.id &&
+          candidate.ownerId === intent.agent.ownerId
+      )
+    ) {
+      setError("This Agent is no longer a participant in this conversation.");
+      return false;
+    }
+    if (
       targetRootMessageId &&
       openRootRef.current?.id !== targetRootMessageId
     ) {
@@ -2205,7 +2265,39 @@ export function HostedTeamChannels({
       );
       return false;
     }
+    const capturedAuthorityKey = authorityKey;
+    const capturedNavigationOwner = navigationOwner.current;
+    const capturedAgentMentionScopeGeneration =
+      agentMentionScopeGeneration.current;
+    const capturedScopeKey = teamMentionScopeKey;
+    const capturedRootMessageId = targetRootMessageId;
+    const isCurrentIntent = () =>
+      !revokedRef.current &&
+      mountedRef.current &&
+      Boolean(capturedAuthorityKey) &&
+      navigationOwner.current === capturedNavigationOwner &&
+      capturedNavigationOwner === ownerKey &&
+      authorityKeyRef.current === capturedAuthorityKey &&
+      agentMentionScopeGeneration.current ===
+        capturedAgentMentionScopeGeneration &&
+      selectedThreadRef.current === capturedThreadId &&
+      (!capturedRootMessageId ||
+        (openRootRef.current?.id === capturedRootMessageId &&
+          openRootRef.current.teamId === capturedTeamId &&
+          openRootRef.current.threadId === capturedThreadId));
+    const clearPendingIntent = () => {
+      setPendingAgentMention((current) =>
+        current?.idempotencyKey === intent.idempotencyKey ? null : current
+      );
+      setTeamMentionSelection((current) =>
+        current?.scopeKey === capturedScopeKey &&
+        current.agentId === intent.agent.id
+          ? { ...current, agentId: null }
+          : current
+      );
+    };
     setAgentMentionBusy(true);
+    agentMentionBusyIntent.current = intent.idempotencyKey;
     setError(null);
     try {
       if (intent.agent.kind === "colleague") {
@@ -2225,19 +2317,16 @@ export function HostedTeamChannels({
           agentId: intent.agent.id,
           requestText: intent.text
         });
+        if (!isCurrentIntent()) return false;
         setAgentRequestRevision((revision) => revision + 1);
-        setPendingAgentMention(null);
-        setTeamMentionSelection((selection) =>
-          selection?.scopeKey === teamMentionScopeKey
-            ? { ...selection, agentId: null }
-            : selection
-        );
+        clearPendingIntent();
         return true;
       }
       const connection = await publicSquareClient.getConnection(
         capturedTeamId,
         teamProjectId
       );
+      if (!isCurrentIntent()) return false;
       if (connection.localProjectId === null) {
         setError(
           "Connect this Team Project to a local Project in Public Square before opening your Agent."
@@ -2253,6 +2342,7 @@ export function HostedTeamChannels({
           })
         : await send(intent.text, intent.mentionUserIds);
       if (!sent) return false;
+      if (!isCurrentIntent()) return false;
       if (
         team.id !== capturedTeamId ||
         selectedThreadRef.current !== capturedThreadId
@@ -2267,6 +2357,9 @@ export function HostedTeamChannels({
           draft: buildOwnedAgentHandoffDraft({
             agentName: intent.agent.name,
             channelName: activeThread?.name ?? "channel",
+            conversationLabel: activeDirectMessage
+              ? activeDirectMessageTitle
+              : `#${activeThread?.name ?? "channel"}`,
             typedMessage: intent.text,
             recentMessages: (targetRootMessageId && openRootMessage
               ? [openRootMessage, ...threadReplies]
@@ -2279,14 +2372,10 @@ export function HostedTeamChannels({
           })
         })
       );
-      setPendingAgentMention(null);
-      setTeamMentionSelection((selection) =>
-        selection?.scopeKey === teamMentionScopeKey
-          ? { ...selection, agentId: null }
-          : selection
-      );
+      clearPendingIntent();
       return true;
     } catch (failure) {
+      if (!isCurrentIntent()) return false;
       setError(
         failure instanceof Error
           ? failure.message
@@ -2294,7 +2383,10 @@ export function HostedTeamChannels({
       );
       return false;
     } finally {
-      setAgentMentionBusy(false);
+      if (agentMentionBusyIntent.current === intent.idempotencyKey) {
+        agentMentionBusyIntent.current = null;
+        setAgentMentionBusy(false);
+      }
     }
   };
 
@@ -2311,7 +2403,7 @@ export function HostedTeamChannels({
       });
       return;
     }
-    const agent = teamAgentMentions.options.find(
+    const agent = activeComposerAgentMentions.find(
       (candidate) => candidate.id === selection.agentId
     );
     const root = openRootRef.current;
@@ -2323,6 +2415,8 @@ export function HostedTeamChannels({
       agent,
       selection,
       text,
+      teamId: team.id,
+      threadId: activeThread?.id ?? "",
       idempotencyKey: crypto.randomUUID(),
       mentionUserIds: selection.mentionUserIds ?? [],
       rootMessageId: root.id
@@ -2347,7 +2441,7 @@ export function HostedTeamChannels({
     text: string,
     selection: ChatComposerSelection
   ) => {
-    if (!selection.agentId || activeDirectMessage) {
+    if (!selection.agentId) {
       if (await send(text, selection.mentionUserIds ?? [])) {
         setTeamMentionSelection((current) =>
           current?.scopeKey === teamMentionScopeKey
@@ -2357,7 +2451,7 @@ export function HostedTeamChannels({
       }
       return;
     }
-    const agent = teamAgentMentions.options.find(
+    const agent = activeComposerAgentMentions.find(
       (candidate) => candidate.id === selection.agentId
     );
     if (!agent) {
@@ -2370,6 +2464,8 @@ export function HostedTeamChannels({
       agent,
       selection,
       text,
+      teamId: team.id,
+      threadId: activeThread?.id ?? "",
       idempotencyKey: crypto.randomUUID(),
       mentionUserIds: selection.mentionUserIds ?? []
     };
@@ -2789,7 +2885,7 @@ export function HostedTeamChannels({
                       emptyState={
                         <p className="mx-auto max-w-3xl text-sm text-subtle">
                           {activeDirectMessage
-                            ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
+                            ? `Private to ${activeDirectMessageTitle}. Agents work privately; owners choose what to share here.`
                             : "No messages yet. Start the conversation."}
                         </p>
                       }
@@ -2813,6 +2909,9 @@ export function HostedTeamChannels({
                                 </div>
                               )}
                               {pendingAgentMention &&
+                                pendingAgentMention.teamId === team.id &&
+                                pendingAgentMention.threadId ===
+                                  activeThread?.id &&
                                 !pendingAgentMention.rootMessageId && (
                                   <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
                                     <p className="mb-2 text-xs text-subtle">
@@ -2864,14 +2963,15 @@ export function HostedTeamChannels({
                                 onSend={(text, selection) =>
                                   sendTeamComposer(text, selection)
                                 }
-                                agents={
-                                  activeDirectMessage
-                                    ? []
-                                    : teamAgentMentions.options
-                                }
+                                agents={activeComposerAgentMentions}
                                 teamMembers={
                                   activeDirectMessage
-                                    ? []
+                                    ? activeDirectMessageParticipants.map(
+                                        (participant) => ({
+                                          id: participant.id,
+                                          name: participant.displayName
+                                        })
+                                      )
                                     : people
                                         .filter(
                                           (person) =>
@@ -2894,9 +2994,7 @@ export function HostedTeamChannels({
                                   })
                                 }
                                 showExecutionControls={false}
-                                switchToExecutionControlsOnMention={
-                                  !activeDirectMessage
-                                }
+                                switchToExecutionControlsOnMention={true}
                                 showMetaBar={false}
                                 showFormattingToolbar
                                 sendEnabled={Boolean(
@@ -2909,7 +3007,7 @@ export function HostedTeamChannels({
                                   visiblePendingSend
                                     ? "Resolve the previous send before sending this edit."
                                     : activeDirectMessage
-                                      ? "Direct messages stay among these people."
+                                      ? "@Agent options belong to people in this conversation. Colleague requests go to the owner privately; only an outcome they share appears here."
                                       : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
                                 }
                               />
@@ -2996,7 +3094,7 @@ export function HostedTeamChannels({
                         );
                       }}
                     >
-                      {!activeDirectMessage && activeThread && (
+                      {activeThread && (
                         <TeamChannelAgentRequests
                           teamId={team.id}
                           channelId={activeThread.id}
@@ -3046,15 +3144,24 @@ export function HostedTeamChannels({
                       modelAvailabilityWarning={
                         teamAgentMentions.modelAvailabilityWarning
                       }
-                      agents={teamAgentMentions.options}
-                      teamMembers={people
-                        .filter(
-                          (person) => person.membershipState === "enabled"
-                        )
-                        .map((person) => ({
-                          id: person.id,
-                          name: person.displayName
-                        }))}
+                      agents={activeComposerAgentMentions}
+                      teamMembers={
+                        activeDirectMessage
+                          ? activeDirectMessageParticipants.map(
+                              (participant) => ({
+                                id: participant.id,
+                                name: participant.displayName
+                              })
+                            )
+                          : people
+                              .filter(
+                                (person) => person.membershipState === "enabled"
+                              )
+                              .map((person) => ({
+                                id: person.id,
+                                name: person.displayName
+                              }))
+                      }
                       agentRequests={
                         activeThread &&
                         activeThread.kind !== "dm" &&
@@ -3077,41 +3184,46 @@ export function HostedTeamChannels({
                               onRequestsChanged={setThreadRequests}
                             />
                             {pendingAgentMention?.rootMessageId ===
-                              visibleOpenRoot.id && (
-                              <div className="border-b border-border px-3 py-2">
-                                <p className="mb-2 text-xs text-subtle">
-                                  Choose a Team Project for{" "}
-                                  {pendingAgentMention.agent.name}.
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                  {visibleProjects.map((project) => (
+                              visibleOpenRoot.id &&
+                              pendingAgentMention.teamId === team.id &&
+                              pendingAgentMention.threadId ===
+                                activeThread?.id && (
+                                <div className="border-b border-border px-3 py-2">
+                                  <p className="mb-2 text-xs text-subtle">
+                                    Choose a Team Project for{" "}
+                                    {pendingAgentMention.agent.name}.
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {visibleProjects.map((project) => (
+                                      <button
+                                        key={project.id}
+                                        type="button"
+                                        disabled={agentMentionBusy}
+                                        onClick={() =>
+                                          void completeAgentMention(
+                                            pendingAgentMention,
+                                            project.id,
+                                            visibleOpenRoot.id
+                                          )
+                                        }
+                                        className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                      >
+                                        {project.name}
+                                      </button>
+                                    ))}
                                     <button
-                                      key={project.id}
                                       type="button"
                                       disabled={agentMentionBusy}
                                       onClick={() =>
-                                        void completeAgentMention(
-                                          pendingAgentMention,
-                                          project.id,
-                                          visibleOpenRoot.id
-                                        )
+                                        setPendingAgentMention(null)
                                       }
-                                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                      className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
                                     >
-                                      {project.name}
+                                      Cancel
                                     </button>
-                                  ))}
-                                  <button
-                                    type="button"
-                                    disabled={agentMentionBusy}
-                                    onClick={() => setPendingAgentMention(null)}
-                                    className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
-                                  >
-                                    Cancel
-                                  </button>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              )}
                           </>
                         ) : undefined
                       }

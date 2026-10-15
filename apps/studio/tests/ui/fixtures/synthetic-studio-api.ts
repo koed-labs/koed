@@ -1,5 +1,9 @@
 import type { Page, Route } from "@playwright/test";
-import type { TeamOverviewSnapshot, TeamAgentOffer } from "@koed/shared";
+import type {
+  TeamOverviewSnapshot,
+  TeamAgentOffer,
+  TeamAgentRequest
+} from "@koed/shared";
 import realtimeCursorFixture from "./realtime-cursor.json";
 
 export const ids = {
@@ -8,6 +12,15 @@ export const ids = {
   secondTeam: "16161616-1616-4616-8616-161616161616",
   general: "33333333-3333-4333-8333-333333333333",
   launch: "44444444-4444-4444-8444-444444444444",
+  directMessage: "17171717-1717-4717-8717-171717171717",
+  groupDirectMessage: "18181818-1818-4818-8818-181818181818",
+  otherTeammate: "19191919-1919-4919-8919-191919191919",
+  sharedProject: "20202020-2020-4020-8020-202020202020",
+  sharedProjectThread: "21212121-2121-4121-8121-212121212121",
+  teammateAgent: "22232323-2323-4232-8232-232323232323",
+  otherTeammateAgent: "24242424-2424-4424-8424-242424242424",
+  agentRequestMessage: "25252525-2525-4525-8525-252525252525",
+  agentRequest: "26262626-2626-4626-8626-262626262626",
   root: "55555555-5555-4555-8555-555555555555",
   reply: "66666666-6666-4666-8666-666666666666",
   ownSecond: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -123,6 +136,28 @@ const rawThread = (id: string, name: string, systemKey: string | null) => ({
   archivedAt: null
 });
 
+const rawDirectThread = (
+  id: string,
+  kind: "dm" | "group_dm",
+  participants: Array<{
+    userId: string;
+    displayName: string;
+    membershipState: "enabled" | "disabled";
+  }>
+) => ({
+  ...rawThread(id, "", null),
+  kind,
+  name: null,
+  topic: null,
+  participants
+});
+
+const rawProjectThread = () => ({
+  ...rawThread(ids.sharedProjectThread, "Synthetic launch", null),
+  kind: "team_project_channel",
+  teamProjectId: ids.sharedProject
+});
+
 const rawMessage = (input: {
   id: string;
   threadId: string;
@@ -198,6 +233,8 @@ export class SyntheticStudioApi {
   teamOverviewPage2: TeamOverviewSnapshot | null = null;
   teamOverviewStatus = 200;
   readonly teamOffers = new Map<string, TeamAgentOffer>();
+  readonly teamAgentRequests: TeamAgentRequest[] = [];
+  private readonly teamAgentRequestIdsByKey = new Map<string, string>();
   readonly unexpectedMutations: string[] = [];
   readonly unexpectedReads: string[] = [];
   readonly mutationCounts = new Map<string, number>();
@@ -210,6 +247,8 @@ export class SyntheticStudioApi {
   ];
   private readonly detailHolds = new Map<string, HeldResponse>();
   private readonly jobsPageHolds = new Map<string, HeldResponse>();
+  private readonly projectConnectionHolds = new Map<string, HeldResponse>();
+  private readonly projectConnectionHoldSkips = new Map<string, number>();
   private readonly jobsPageAttempts = new Map<string, number>();
   private readonly seenClientMessages = new Map<
     string,
@@ -273,6 +312,23 @@ export class SyntheticStudioApi {
       release: () => unblock()
     };
     this.jobsPageHolds.set(agentId, held);
+    return held;
+  }
+
+  holdNextProjectConnection(
+    teamProjectId: string,
+    skipRequests = 0
+  ): HeldResponse {
+    let markStarted!: () => void;
+    let unblock!: () => void;
+    const held: HeldResponse = {
+      started: new Promise<void>((resolve) => (markStarted = resolve)),
+      waiting: new Promise<void>((resolve) => (unblock = resolve)),
+      begin: () => markStarted(),
+      release: () => unblock()
+    };
+    this.projectConnectionHolds.set(teamProjectId, held);
+    this.projectConnectionHoldSkips.set(teamProjectId, skipRequests);
     return held;
   }
 
@@ -445,6 +501,11 @@ export class SyntheticStudioApi {
                 {
                   userId: ids.teammate,
                   displayName: "Synthetic teammate",
+                  status: "enabled"
+                },
+                {
+                  userId: ids.otherTeammate,
+                  displayName: "Other teammate",
                   status: "enabled"
                 }
               ],
@@ -785,6 +846,34 @@ export class SyntheticStudioApi {
       return;
     }
     const teamPrefix = `/v1/collaboration/teams/${ids.team}`;
+    const projectConnectionPath = path.match(
+      new RegExp(`^${teamPrefix}/public-square/projects/([^/]+)/connection$`)
+    );
+    if (projectConnectionPath && method === "GET") {
+      const teamProjectId = decodeURIComponent(projectConnectionPath[1]);
+      const held = this.projectConnectionHolds.get(teamProjectId);
+      const skipped = this.projectConnectionHoldSkips.get(teamProjectId) ?? 0;
+      if (held && skipped > 0) {
+        this.projectConnectionHoldSkips.set(teamProjectId, skipped - 1);
+      } else if (held) {
+        this.projectConnectionHolds.delete(teamProjectId);
+        this.projectConnectionHoldSkips.delete(teamProjectId);
+        held.begin();
+        await held.waiting;
+      }
+      await route.fulfill({
+        json: {
+          connection: {
+            teamId: ids.team,
+            teamProjectId,
+            localProjectId: "synthetic-local-project",
+            connectedAt: now,
+            version: 1
+          }
+        }
+      });
+      return;
+    }
     if (path === `${teamPrefix}/channels` && method === "GET") {
       await route.fulfill({
         json: {
@@ -800,21 +889,76 @@ export class SyntheticStudioApi {
       await route.fulfill({
         json: {
           participants: [
-            { userId: ids.user, displayName: "Synthetic user" },
-            { userId: ids.teammate, displayName: "Synthetic teammate" }
+            {
+              userId: ids.user,
+              displayName: "Synthetic user",
+              membershipState: "enabled"
+            },
+            {
+              userId: ids.teammate,
+              displayName: "Synthetic teammate",
+              membershipState: "enabled"
+            },
+            {
+              userId: ids.otherTeammate,
+              displayName: "Other teammate",
+              membershipState: "enabled"
+            }
           ]
         }
       });
       return;
     }
-    if (
-      [`${teamPrefix}/direct-messages`, `${teamPrefix}/projects`].includes(
-        path
-      ) &&
-      method === "GET"
-    ) {
+    if (path === `${teamPrefix}/direct-messages` && method === "GET") {
       await route.fulfill({
-        json: path.endsWith("/projects") ? { projects: [] } : { threads: [] }
+        json: {
+          threads: [
+            rawDirectThread(ids.directMessage, "dm", [
+              {
+                userId: ids.user,
+                displayName: "Synthetic user",
+                membershipState: "enabled"
+              },
+              {
+                userId: ids.teammate,
+                displayName: "Synthetic teammate",
+                membershipState: "enabled"
+              }
+            ]),
+            rawDirectThread(ids.groupDirectMessage, "group_dm", [
+              {
+                userId: ids.user,
+                displayName: "Synthetic user",
+                membershipState: "enabled"
+              },
+              {
+                userId: ids.teammate,
+                displayName: "Synthetic teammate",
+                membershipState: "enabled"
+              },
+              {
+                userId: ids.otherTeammate,
+                displayName: "Other teammate",
+                membershipState: "disabled"
+              }
+            ])
+          ]
+        }
+      });
+      return;
+    }
+    if (path === `${teamPrefix}/projects` && method === "GET") {
+      await route.fulfill({
+        json: {
+          projects: [
+            {
+              id: ids.sharedProject,
+              teamId: ids.team,
+              name: "Synthetic launch context",
+              thread: rawProjectThread()
+            }
+          ]
+        }
       });
       return;
     }
@@ -930,11 +1074,63 @@ export class SyntheticStudioApi {
       });
       return;
     }
+    if (path === `${teamPrefix}/agent-requests` && method === "POST") {
+      const offer = this.teamOffers.get(String(body?.agentId ?? ""));
+      if (!offer || !offer.enabled || offer.ownerId === ids.user) {
+        await route.fulfill({
+          status: 404,
+          json: { error: "Synthetic Agent offer unavailable" }
+        });
+        return;
+      }
+      const key = String(body?.idempotencyKey ?? "");
+      const priorId = this.teamAgentRequestIdsByKey.get(key);
+      const prior = this.teamAgentRequests.find((item) => item.id === priorId);
+      const requestRecord: TeamAgentRequest = prior ?? {
+        id: ids.agentRequest,
+        teamId: ids.team,
+        teamProjectId: String(body?.teamProjectId ?? ""),
+        channelId: String(body?.channelId ?? ""),
+        requestMessageId: ids.agentRequestMessage,
+        originRootMessageId:
+          typeof body?.rootMessageId === "string" ? body.rootMessageId : null,
+        requesterId: ids.user,
+        requesterName: "Synthetic user",
+        ownerId: offer.ownerId,
+        ownerName: offer.ownerName,
+        agentId: offer.agentId,
+        agentName: offer.agentName,
+        status: "awaiting_owner",
+        jobId: null,
+        jobStatus: null,
+        executionStatus: null,
+        outcomeMessageId: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        canWithdraw: true,
+        canReview: false
+      };
+      if (!prior) {
+        this.teamAgentRequests.push(requestRecord);
+        this.teamAgentRequestIdsByKey.set(key, requestRecord.id);
+      }
+      await this.recordMutation(route, `POST ${path}`);
+      await route.fulfill({ json: { request: requestRecord } });
+      return;
+    }
     if (path.startsWith(`${teamPrefix}/agent-requests`) && method === "GET") {
+      const channelId = url.searchParams.get("channelId");
+      const teamProjectId = url.searchParams.get("teamProjectId");
+      const requests = this.teamAgentRequests.filter(
+        (item) =>
+          (!channelId || item.channelId === channelId) &&
+          (!teamProjectId || item.teamProjectId === teamProjectId)
+      );
       await route.fulfill({
         json: {
           teamId: ids.team,
-          requests: [],
+          requests,
           nextCursor: null,
           serverTime: now
         }

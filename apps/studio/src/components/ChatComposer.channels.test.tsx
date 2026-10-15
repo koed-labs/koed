@@ -27,10 +27,14 @@ const models = ["model-a", "model-b"].map((id) => ({
 afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
+  vi.unstubAllGlobals();
 });
 async function mount(
   overrides: Partial<React.ComponentProps<typeof ChatComposer>> = {}
 ) {
+  window.history.replaceState(null, "", "/studio");
+  window.localStorage.clear();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -88,12 +92,11 @@ it("keeps normal controls while typing @ and selecting a human", async () => {
   await click('[aria-label="Send message"]');
   expect(send).toHaveBeenCalledWith(
     expect.stringContaining("@"),
-    expect.objectContaining({ agentId: null, mentionUserIds: ["human-a"] }),
-    undefined
+    expect.objectContaining({ agentId: null, mentionUserIds: ["human-a"] })
   );
 });
 it("enters Agent mode only on selection, retains identity for thread-style uncontrolled composers, and sends the chosen model", async () => {
-  const send = await mount();
+  const send = await mount({ initialModel: "codex:model-a" });
   await type("@Analyst");
   expect(controls()).toBeNull();
   await click('[role="option"]');
@@ -122,8 +125,7 @@ it("enters Agent mode only on selection, retains identity for thread-style uncon
       provider: "codex",
       model: "model-b",
       instanceId: "client-a"
-    }),
-    undefined
+    })
   );
   expect(controls()).toBeNull();
 });
@@ -151,18 +153,31 @@ it("honours handed-off settings ahead of Agent defaults", async () => {
       effort: "high",
       permissionMode: "read",
       instanceId: "client-a"
-    }),
-    undefined
+    })
   );
 });
 it("leaves a colleague Agent's execution settings to its owner", async () => {
-  await mount({ agents: [{ ...agent, teamRequestOnly: true }] });
+  const send = await mount({
+    agents: [{ ...agent, teamRequestOnly: true }],
+    switchToExecutionControlsOnMention: true
+  });
   await type("@Analyst");
   await click('[role="option"]');
   expect(container.textContent).toContain(
     "The Agent owner chooses execution settings."
   );
   expect(controls()).toBeNull();
+  expect(
+    container.querySelector('[aria-label="Message formatting"]')
+  ).toBeNull();
+  await click('[aria-label="Send message"]');
+  expect(send).toHaveBeenCalledWith(
+    expect.stringContaining("@Analyst"),
+    expect.objectContaining({
+      agentId: "agent-a",
+      mentionUserIds: []
+    })
+  );
 });
 
 it("cancels Agent mode while retaining the typed message", async () => {

@@ -860,3 +860,280 @@ test("human @ mentions send selected Team user IDs and edits preserve them", asy
   expect(api.unexpectedMutations).toEqual([]);
   expect(api.unexpectedReads).toEqual([]);
 });
+
+test("direct messages route only current participant Agents and keep human mentions", async ({
+  page
+}) => {
+  const api = await installSyntheticApi(page);
+  const directMessageBodies: Array<Record<string, unknown>> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request
+        .url()
+        .includes(
+          `/v1/collaboration/teams/${ids.team}/threads/${ids.directMessage}/messages`
+        )
+    ) {
+      directMessageBodies.push(
+        JSON.parse(request.postData() ?? "{}") as Record<string, unknown>
+      );
+    }
+  });
+  api.teamOffers.set(ids.teammateAgent, {
+    teamId: ids.team,
+    agentId: ids.teammateAgent,
+    ownerId: ids.teammate,
+    ownerName: "Synthetic teammate",
+    agentName: "Mira Analyst",
+    description: "A teammate-owned Agent.",
+    enabled: true,
+    version: 1,
+    canManage: false
+  });
+  api.teamOffers.set(ids.otherTeammateAgent, {
+    teamId: ids.team,
+    agentId: ids.otherTeammateAgent,
+    ownerId: ids.otherTeammate,
+    ownerName: "Other teammate",
+    agentName: "Excluded Agent",
+    description: "An Agent owned by a former participant.",
+    enabled: true,
+    version: 1,
+    canManage: false
+  });
+
+  await openTeam(page);
+  const teamNavigation = page.getByRole("navigation", {
+    name: "Team navigation"
+  });
+  await teamNavigation
+    .getByRole("button", { name: "Synthetic teammate", exact: true })
+    .click();
+  const composer = page.getByPlaceholder("Message Synthetic teammate", {
+    exact: true
+  });
+  await expect(composer).toBeVisible();
+  await expect(
+    page.getByText(/Agents work privately; owners choose what to share here/)
+  ).toBeVisible();
+
+  await composer.fill("@Mira");
+  const mentions = page.getByRole("listbox", { name: "Mention someone" });
+  const teammateAgentOption = mentions.getByRole("option", {
+    name: /Mira Analyst/
+  });
+  await expect(teammateAgentOption).toBeVisible();
+  await expect(
+    mentions.getByRole("option", { name: /Excluded Agent/ })
+  ).toHaveCount(0);
+  await teammateAgentOption.click();
+  await page.getByRole("button", { name: "Send message" }).last().click();
+  await page.getByRole("button", { name: "Synthetic launch context" }).click();
+  const requests = page.getByRole("region", {
+    name: "Agent requests in this conversation"
+  });
+  await expect(requests).toContainText("Awaiting owner");
+  expect(api.teamAgentRequests).toHaveLength(1);
+  expect(api.teamAgentRequests[0]).toMatchObject({
+    teamProjectId: ids.sharedProject,
+    channelId: ids.directMessage,
+    agentId: ids.teammateAgent,
+    ownerId: ids.teammate,
+    requesterId: ids.user,
+    canReview: false
+  });
+  await expect(
+    requests.getByRole("button", { name: "Review privately" })
+  ).toHaveCount(0);
+  await expect(requests.getByRole("button", { name: "View work" })).toHaveCount(
+    0
+  );
+
+  await composer.fill("@Synthetic");
+  const humanOption = page
+    .getByRole("listbox", { name: "Mention someone" })
+    .getByRole("option", { name: /Synthetic teammate/ });
+  await expect(humanOption).toBeVisible();
+  await humanOption.click();
+  const humanMessage = "A direct human mention";
+  await composer.pressSequentially(` ${humanMessage}`);
+  await composer.press("Enter");
+  await expect.poll(() => directMessageBodies.length).toBe(1);
+  expect(directMessageBodies[0]).toMatchObject({
+    mentionUserIds: [ids.teammate]
+  });
+  expect(directMessageBodies[0]?.bodyText).toContain(humanMessage);
+
+  await teamNavigation
+    .getByRole("button", {
+      name: "Synthetic teammate, Other teammate",
+      exact: true
+    })
+    .click();
+  const groupComposer = page.getByPlaceholder(
+    "Message Synthetic teammate, Other teammate",
+    { exact: true }
+  );
+  await expect(groupComposer).toBeVisible();
+  await groupComposer.fill("@Mira");
+  const groupMentions = page.getByRole("listbox", {
+    name: "Mention someone"
+  });
+  await expect(
+    groupMentions.getByRole("option", { name: /Mira Analyst/ })
+  ).toBeVisible();
+  await expect(
+    groupMentions.getByRole("option", { name: /Excluded Agent/ })
+  ).toHaveCount(0);
+
+  expect(api.unexpectedMutations).toEqual([]);
+  expect(api.unexpectedReads).toEqual([]);
+});
+
+test("a late owned Agent project check cannot post into a newly selected conversation or clear its draft", async ({
+  page
+}) => {
+  const api = await installSyntheticApi(page);
+  const connection = api.holdNextProjectConnection(ids.sharedProject, 1);
+  const messageBodies: Array<{ path: string; body: Record<string, unknown> }> =
+    [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes(`/v1/collaboration/teams/${ids.team}/threads/`) &&
+      request.url().endsWith("/messages")
+    ) {
+      messageBodies.push({
+        path: new URL(request.url()).pathname,
+        body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>
+      });
+    }
+  });
+
+  await openTeam(page);
+  const teamNavigation = page.getByRole("navigation", {
+    name: "Team navigation"
+  });
+  await teamNavigation
+    .getByRole("button", { name: "Synthetic teammate", exact: true })
+    .click();
+  const directComposer = page.getByPlaceholder("Message Synthetic teammate", {
+    exact: true
+  });
+  await expect(directComposer).toBeVisible();
+  await directComposer.fill("@Busy");
+  await page
+    .getByRole("listbox", { name: "Mention someone" })
+    .getByRole("option", { name: /Busy Reviewer/ })
+    .click();
+
+  const modelMenu = page.getByRole("button", {
+    name: "Select model and effort"
+  });
+  await modelMenu.click();
+  const modelDialog = page.getByRole("dialog", {
+    name: "Model and reasoning"
+  });
+  await modelDialog.getByRole("button").first().click();
+  await modelDialog
+    .getByRole("button", { name: "GPT 6 Sol", exact: true })
+    .click();
+  await directComposer.pressSequentially(" owned work captured in room A");
+  await page.getByRole("button", { name: "Send message" }).last().click();
+  const ownedAgentProjectChooser = page
+    .getByText(/Choose a Team Project for Busy Reviewer/)
+    .locator("..");
+  await ownedAgentProjectChooser
+    .getByRole("button", { name: "Synthetic launch context", exact: true })
+    .click();
+  await connection.started;
+
+  await teamNavigation
+    .getByRole("button", {
+      name: "Synthetic teammate, Other teammate",
+      exact: true
+    })
+    .click();
+  const groupComposer = page.getByPlaceholder(
+    "Message Synthetic teammate, Other teammate",
+    { exact: true }
+  );
+  await expect(groupComposer).toBeVisible();
+  const roomBDraft = "Room B draft must survive Room A completion";
+  await groupComposer.fill(roomBDraft);
+
+  const connectionResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname ===
+      `/v1/collaboration/teams/${ids.team}/public-square/projects/${ids.sharedProject}/connection`
+    );
+  });
+  connection.release();
+  await connectionResponse;
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+  );
+  await expect(groupComposer).toHaveValue(roomBDraft);
+  await expect.poll(() => messageBodies.length).toBe(0);
+  await expect(page).toHaveURL(/\/studio\/collaboration/);
+
+  await teamNavigation
+    .getByRole("button", { name: "Synthetic teammate", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Synthetic launch context",
+      exact: true
+    })
+  ).toBeEnabled();
+
+  const retryConnection = api.holdNextProjectConnection(ids.sharedProject);
+  await page
+    .getByRole("button", {
+      name: "Synthetic launch context",
+      exact: true
+    })
+    .click();
+  await retryConnection.started;
+  await teamNavigation
+    .getByRole("button", {
+      name: "Synthetic teammate, Other teammate",
+      exact: true
+    })
+    .click();
+  await teamNavigation
+    .getByRole("button", { name: "Synthetic teammate", exact: true })
+    .click();
+  const retryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname ===
+      `/v1/collaboration/teams/${ids.team}/public-square/projects/${ids.sharedProject}/connection`
+    );
+  });
+  retryConnection.release();
+  await retryResponse;
+  await expect(
+    page.getByRole("button", {
+      name: "Synthetic launch context",
+      exact: true
+    })
+  ).toBeEnabled();
+  await expect(page).toHaveURL(/\/studio\/collaboration/);
+  await expect.poll(() => messageBodies.length).toBe(0);
+
+  await teamNavigation
+    .getByRole("button", {
+      name: "Synthetic teammate, Other teammate",
+      exact: true
+    })
+    .click();
+  await expect(groupComposer).toHaveValue(roomBDraft);
+  expect(api.unexpectedMutations).toEqual([]);
+  expect(api.unexpectedReads).toEqual([]);
+});

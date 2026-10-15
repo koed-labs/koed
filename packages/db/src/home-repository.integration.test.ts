@@ -36,6 +36,9 @@ describe.skipIf(!baseUrl)("Home authority (PostgreSQL)", () => {
     }
   });
 
+  // This disposable PostgreSQL fixture migrates the full schema and exercises
+  // large pagination sets plus native Team/room work, so keep its limit bounded
+  // above the 15s global default without relaxing the suite timeout globally.
   it("pages exact source revisions, shares owner clears, and tracks producer resolution", async () => {
     if (!admin || !pool) throw new Error("Test database URL unavailable");
     await admin.connect();
@@ -988,6 +991,199 @@ describe.skipIf(!baseUrl)("Home authority (PostgreSQL)", () => {
       [teamId, ownerId]
     );
     expect(await home.countNeedsYou(ownerId)).toBe(105);
+
+    // A private-room assignment belongs on the Agent owner's personal Home,
+    // and remains there only while both assignment principals still have
+    // access to the private room. The Home item must not disclose its room or
+    // private text.
+    const thirdId = randomUUID();
+    await pool.query(
+      "insert into users(id,email,display_name) values($1,$2,'Home group member')",
+      [thirdId, `${thirdId}@home.invalid`]
+    );
+    await pool.query(
+      `insert into team_memberships(team_id,user_id,role,status,accepted_at)
+       values($1,$2,'member','enabled',now()),($1,$3,'member','enabled',now())`,
+      [teamId, otherId, thirdId]
+    );
+    const insertAcceptedPrivateRoomRequest = async (
+      kind: "dm" | "group_dm",
+      participantsInput: string[],
+      requesterId: string,
+      agentName: string
+    ) => {
+      const threadId = randomUUID();
+      const requestMessageId = randomUUID();
+      const requestId = randomUUID();
+      const executionId = await insertExecution("running");
+      const commandId = randomUUID();
+      const participants = [...participantsInput].sort();
+      const participantsJson = JSON.stringify({
+        teamId,
+        userIds: participants
+      });
+      const participantKey = createHash("sha256")
+        .update(`koed:collaboration:participants:v1\n${participantsJson}`)
+        .digest("hex");
+      const audienceMembersHash = createHash("sha256")
+        .update(
+          `koed:collaboration:audience-members:v1\n${JSON.stringify(participants)}`
+        )
+        .digest("hex");
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `insert into collaboration_threads(id,scope,kind,team_id,participant_key)
+           values($1,'team',$2,$3,$4)`,
+          [threadId, kind, teamId, participantKey]
+        );
+        await client.query(
+          `insert into collaboration_participants
+           (thread_id,scope,thread_kind,team_id,user_id,ordinal)
+           select $1,'team',$2,$3,participant.user_id,participant.ordinal-1
+             from unnest($4::uuid[]) with ordinality as participant(user_id,ordinal)`,
+          [threadId, kind, teamId, participants]
+        );
+        await client.query(
+          `insert into collaboration_thread_audiences(thread_id,version,member_set_hash)
+           values($1,1,$2)`,
+          [threadId, audienceMembersHash]
+        );
+        await client.query(
+          `insert into collaboration_thread_audience_members(thread_id,audience_version,user_id)
+           select $1,1,member.user_id from unnest($2::uuid[]) as member(user_id)`,
+          [threadId, participants]
+        );
+        await client.query(
+          `insert into collaboration_messages
+           (id,thread_id,thread_sequence,version,audience_version,scope,team_id,sender_kind,
+            body_marker,metadata_marker,provenance_kind,provenance_id,provenance_marker)
+           values($1,$2,1,1,1,'team',$3,'system','[koed encrypted collaboration message]',
+            '[koed encrypted collaboration metadata]','team_agent_request',$4,
+            '[koed encrypted collaboration provenance]')`,
+          [requestMessageId, threadId, teamId, requestId]
+        );
+        await client.query(
+          `insert into managed_conversation_commands
+           (id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,request_digest,
+            execution_generation,state,attempts,created_at,updated_at,completed_at)
+           values($1,$2,$3,$4,1,'start',$5,2,'completed',1,now(),now(),now())`,
+          [
+            commandId,
+            ownerId,
+            executionId,
+            randomUUID(),
+            createHash("sha256").update(commandId).digest("hex")
+          ]
+        );
+        await client.query(
+          `insert into team_agent_requests
+           (id,team_id,team_project_id,channel_id,request_message_id,requester_user_id,owner_user_id,
+            agent_id,agent_version,agent_name,status,managed_execution_id,managed_command_id,
+            idempotency_key_hash,request_hash)
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'accepted',$11,$12,$13,$14)`,
+          [
+            requestId,
+            teamId,
+            teamProjectId,
+            threadId,
+            requestMessageId,
+            requesterId,
+            ownerId,
+            agent.agent.id,
+            agent.agent.currentVersion,
+            agentName,
+            executionId,
+            commandId,
+            createHash("sha256")
+              .update(`${requestId}:idempotency`)
+              .digest("hex"),
+            createHash("sha256").update(`${requestId}:request`).digest("hex")
+          ]
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { threadId, requestId, executionId, agentName };
+    };
+    const directRequest = await insertAcceptedPrivateRoomRequest(
+      "dm",
+      [ownerId, otherId],
+      otherId,
+      "Private Home DM Agent"
+    );
+    const groupRequest = await insertAcceptedPrivateRoomRequest(
+      "group_dm",
+      [ownerId, otherId, thirdId],
+      otherId,
+      "Private Home group Agent"
+    );
+    expect(await home.countNeedsYou(ownerId)).toBe(107);
+    const ownerGroupPage = await home.listSourcePage({
+      ownerUserId: ownerId,
+      source: "native_agent_activity",
+      limit: 10
+    });
+    for (const privateRequest of [directRequest, groupRequest]) {
+      const homeItem = ownerGroupPage.items.find(
+        (item) =>
+          item.sourceEventId === `team-request:${privateRequest.requestId}`
+      );
+      expect(homeItem).toMatchObject({
+        sourceId: privateRequest.requestId,
+        kind: "publication",
+        state: "review",
+        title: `${privateRequest.agentName} finished work; outcome ready to publish`,
+        destination: {
+          kind: "execution",
+          executionId: privateRequest.executionId
+        }
+      });
+      expect(homeItem).not.toHaveProperty("channelId");
+      expect(homeItem).not.toHaveProperty("originRootMessageId");
+      expect(homeItem).not.toHaveProperty("requestText");
+      expect(homeItem).not.toHaveProperty("privateGoal");
+      expect(JSON.stringify(homeItem)).not.toContain(privateRequest.threadId);
+    }
+    const nonOwnerEvents = (
+      await home.listSourcePage({
+        ownerUserId: otherId,
+        source: "native_agent_activity",
+        limit: 10
+      })
+    ).items.map((item) => item.sourceEventId);
+    expect(nonOwnerEvents).not.toContain(
+      `team-request:${directRequest.requestId}`
+    );
+    expect(nonOwnerEvents).not.toContain(
+      `team-request:${groupRequest.requestId}`
+    );
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [teamId, otherId]
+    );
+    expect(await home.countNeedsYou(ownerId)).toBe(105);
+    const ownerEventsAfterDeparture = (
+      await home.listSourcePage({
+        ownerUserId: ownerId,
+        source: "native_agent_activity",
+        limit: 10
+      })
+    ).items.map((item) => item.sourceEventId);
+    expect(ownerEventsAfterDeparture).not.toContain(
+      `team-request:${directRequest.requestId}`
+    );
+    expect(ownerEventsAfterDeparture).not.toContain(
+      `team-request:${groupRequest.requestId}`
+    );
+
     await pool.query(
       `update team_memberships set status='disabled',disabled_at=now()
         where team_id=$1 and user_id=$2`,
@@ -1003,5 +1199,5 @@ describe.skipIf(!baseUrl)("Home authority (PostgreSQL)", () => {
         })
       ).items.map((item) => item.sourceEventId)
     ).not.toContain(`team-request:${teamRequestId}`);
-  });
+  }, 30_000);
 });
