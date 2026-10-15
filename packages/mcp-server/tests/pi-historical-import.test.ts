@@ -85,6 +85,11 @@ describe("Pi historical transcript registration", () => {
         return { artifact };
       },
       async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        expect(input).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: { kind: "unresolved", key: null, root: null }
+          }
+        });
         artifact = {
           id: randomUUID(),
           sessionId: randomUUID(),

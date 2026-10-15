@@ -221,14 +221,16 @@ The User does not need to rerun the automated matrix as a manual milestone.
 
 **Blocked by:** 03: Capture and inspect repository assignments for Codex sessions.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Apply the shared assignment contract to Codex, Claude Code, and Pi historical import producers.
-- [ ] Use trustworthy source-time metadata for eligible newly imported sessions. Current directory contents alone cannot establish historical identity.
-- [ ] Re-imports of an existing logical session preserve its unresolved state, assignment, or User override.
-- [ ] Missing paths, reused paths, ambiguous provenance, and same-path records from another device remain unresolved.
-- [ ] Demonstrate source-time assignment where supported and preservation of a continued or re-imported pre-cutover session.
-- [ ] Keep automatic backfill out of startup and upgrade flows. Document the limitations and add import regression tests.
+- [x] Apply the shared assignment contract to Codex, Claude Code, and Pi historical import producers.
+- [x] Use trustworthy source-time metadata for eligible newly imported sessions. Current directory contents alone cannot establish historical identity.
+- [x] Re-imports of an existing logical session preserve its unresolved state, assignment, or User override.
+- [x] Missing paths, reused paths, ambiguous provenance, and same-path records from another device remain unresolved.
+- [x] Demonstrate source-time assignment where supported and preservation of a continued or re-imported pre-cutover session.
+- [x] Keep automatic backfill out of startup and upgrade flows. Document the limitations and add import regression tests.
+
+**Validation:** All 105 historical producer, source-context, and watcher cases pass. Codex historical candidates and selected journals submit source-time context only after checking eligibility, while path-only, missing, reused, nonportable, and conflicting observations remain unresolved. Claude and Pi submit explicit unresolved observations. Three native integration cases exercise eligibility through database capture for Codex, Claude, and Pi, preserving assignment, logical Session, User override, and pre-cutover unresolved state during re-import. Production and full test typechecking, targeted lint, and formatting pass. Provider, ingestion, and retrieval documentation describe source-time requirements and the absence of startup repair.
 
 ## 08: Recall Personal Memory by effective Project identity
 

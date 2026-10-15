@@ -287,3 +287,11 @@ a pre-cutover unresolved Session stays unresolved until explicit reassignment.
 Historical import identity requires trustworthy source-time context and cannot
 be inferred from the checkout's current contents. Desktop inspection reads the
 same effective assignment used by recall.
+
+### Historical repository limitations
+
+Pi historical Session headers currently provide no supported source-time Git
+anchor. Historical capture explicitly records unresolved repository context,
+including when its cwd currently names a Git repository. A path or branch name
+alone cannot establish historical identity. Re-import, resumed capture, and later
+checkpoints preserve existing assignments, overrides, and unresolved history.

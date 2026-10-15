@@ -422,3 +422,11 @@ replace a User override or resolve a pre-cutover logical Session. A historical
 import does not infer source-time identity from the current checkout; the import
 coverage is handled separately. Desktop inspection shows the effective assignment
 recorded by the API rather than another caller-side identity policy.
+
+### Historical repository limitations
+
+Claude Code historical transcripts currently provide no supported source-time
+repository anchor. Historical registration therefore sends an explicit unresolved
+observation. Neither a recorded cwd nor the current checkout's Git metadata can
+resolve that history. Re-import and later live capture preserve an existing
+assignment, User override, or historical-unresolved state.

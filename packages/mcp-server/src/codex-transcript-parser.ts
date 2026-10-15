@@ -1,3 +1,4 @@
+import { codexSourceTimeRepositoryIdentity } from "./historical-repository-context.js";
 import { createHash } from "node:crypto";
 import { splitCodexIdePrompt } from "@koed/core";
 import { approvalActivityMetadata } from "@koed/shared";
@@ -364,6 +365,9 @@ export const extractTranscriptSessionMetadata = (
       ? "subagent"
       : "conversation";
   const transcriptMetadata: Record<string, unknown> = {};
+  const sourceTimeIdentity = codexSourceTimeRepositoryIdentity(records);
+  if (sourceTimeIdentity)
+    transcriptMetadata.sourceTimeRepositoryIdentity = sourceTimeIdentity;
 
   if (sessionMeta) {
     for (const key of [

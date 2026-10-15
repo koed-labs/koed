@@ -209,3 +209,27 @@ three synthetic encryption providers, stages a recorded Personal repository iden
 applies/resets a fixed review, and compares materialized Team families and decrypted
 representations. It also repeats the fixture's positive and negative access validation.
 It does not replace the later Team Project snapshot or staged release gates.
+
+## Historical import assignments
+
+Historical imports use the recorded assignment contract and never assign from a
+path alone. Codex native `session_meta` records can supply a source-time origin
+URL, timestamp, and branch. Koed normalizes the recorded URL with the shared Git
+remote normalization. The source must include an absolute checkout path and a
+valid timestamp. The checkout must still resolve to the same portable selected
+anchor; this current probe checks eligibility and cannot supply a missing
+historical anchor. Missing, reused, nonportable, or conflicting provenance remains
+unresolved. Only the source-time branch is retained, and conflicting branch
+observations become unknown.
+
+Historical identity carries no checkout root, checkout identifier, or asserted
+originating device. Its explicit unknown-device marker cannot establish a
+device-local match. Claude Code and Pi history currently lack a supported
+source-time repository anchor and therefore register unresolved observations,
+even when the current directory is a Git repository. A copied same-path record
+without a source-time portable anchor remains unresolved.
+
+Re-import, delayed capture, and resumed Conversations preserve the existing logical
+Session, assignment, and User override. A pre-cutover historical-unresolved
+Session cannot resolve from newly observed metadata; explicit reassignment remains
+the repair path. No startup or upgrade backfill is introduced.

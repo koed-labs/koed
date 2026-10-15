@@ -146,6 +146,11 @@ describe("Claude transcript watcher", () => {
         return { artifact };
       },
       async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        expect(input).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: { kind: "unresolved", key: null, root: null }
+          }
+        });
         const componentId = String(input.sourceComponentId);
         const artifact = {
           id: `artifact-${componentId}`,

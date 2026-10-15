@@ -741,3 +741,14 @@ resolve a Session that was already created unresolved. Managed runtime bindings
 supply the target checkout to the shared resolver. Transcript replay and recovery
 reuse the recorded Session assignment; they do not rediscover identity for every
 page or automatically repair historical Sessions.
+
+### Historical repository provenance
+
+Historical producers pass source-time or explicit unresolved repository observations
+through the same Session registration boundary as live capture. Codex candidates
+and selected historical journal capture use recorded native Git metadata rather
+than a cached current Project assignment. Current checkout discovery only checks
+that a recorded portable anchor is still comparable. It never invents an anchor
+from a historical path. Claude Code and Pi historical registration explicitly
+remain unresolved where source-time anchors are unavailable. Re-import and
+Projection reuse the existing Session assignment and preserve unresolved history.

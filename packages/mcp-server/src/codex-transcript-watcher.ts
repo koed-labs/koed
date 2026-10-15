@@ -1,3 +1,5 @@
+import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
+import { repositoryIdentitySchema } from "@koed/shared";
 import {
   discoverProjectMetadata,
   resolveKoedServerPaths
@@ -1198,10 +1200,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
                 );
               },
               context: identity.context,
-              sourceSession: this.sourceSessionRegistration(
+              sourceSession: await this.sourceSessionRegistration(
                 identity,
                 sourceProjectPath,
-                sourceProject
+                sourceProject,
+                true
               ),
               frontierOffset,
               latestActivityAt,
@@ -1305,10 +1308,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             : sourceProject;
         const result = await ingestCodexTranscriptJournal({
           client: this.client,
-          sourceSession: this.sourceSessionRegistration(
+          sourceSession: await this.sourceSessionRegistration(
             identity,
             sourceProjectPath,
-            liveProject
+            liveProject,
+            historicalJournal
           ),
           sourceSessionId: identity.sessionId,
           transcriptPath: readablePath,
@@ -1455,7 +1459,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     return reader;
   }
 
-  private sourceSessionRegistration(
+  private async sourceSessionRegistration(
     identity: { sessionId: string; context: TranscriptContext },
     sourceProjectPath: string | undefined,
     sourceProject:
@@ -1463,16 +1467,29 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           ProjectMetadataV1,
           "localProjectId" | "displayName" | "repository"
         > & { path: { cwd: string; projectRoot: string | null } })
-      | null
+      | null,
+    historical = false
   ) {
+    const sourceTime = repositoryIdentitySchema.safeParse(
+      identity.context.transcriptMetadata.sourceTimeRepositoryIdentity
+    );
     return {
       externalSessionId: identity.sessionId,
       sourceRuntime: "codex-cli" as const,
       captureMethod: "api" as const,
       cwd: sourceProjectPath,
-      ...(sourceProject?.repository
-        ? { repositoryIdentity: sourceProject.repository }
-        : {}),
+      ...(historical
+        ? {
+            repositoryIdentity:
+              await resolveHistoricalCaptureRepositoryIdentity({
+                sourceTime: sourceTime.success ? sourceTime.data : null,
+                cwd: sourceProjectPath,
+                env: { ...process.env, KOED_HOME: this.config.koedHome }
+              })
+          }
+        : sourceProject?.repository
+          ? { repositoryIdentity: sourceProject.repository }
+          : {}),
       idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
       metadata: {
         ...identity.context.transcriptMetadata,

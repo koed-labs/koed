@@ -413,3 +413,14 @@ Failed lookup defers discovery instead of choosing a different repository.
 Local explicit anchor choices retain precedence. Shared selections and conflicts
 can be managed in Desktop's **Shared Project selection** controls without
 Conversation capture; see [Project associations](personal-project-selection.md).
+
+### Historical repository identity
+
+For eligible new imports, native source-time `session_meta.git.repository_url`
+can establish a portable origin fingerprint. Koed requires a recorded absolute
+cwd and timestamp, rejects conflicting observations, and verifies that the
+available checkout still resolves to that fingerprint. Current Git metadata
+only checks eligibility; it does not replace missing historical metadata. A
+missing or reused checkout, path-only record, or ambiguous source stays
+unresolved. Re-imports and continued pre-cutover Sessions preserve their existing
+assignment or unresolved state. No automatic historical repair runs at startup.

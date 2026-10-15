@@ -1,3 +1,4 @@
+import { unresolvedHistoricalRepositoryIdentity } from "./historical-repository-context.js";
 import type { RepositoryIdentity } from "@koed/shared";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
@@ -202,9 +203,11 @@ export const journalClaudeTranscript = async (input: {
         sourceRuntime: "claude-code",
         captureMethod: "api",
         cwd: input.signal.cwd,
-        ...(input.repositoryIdentity
-          ? { repositoryIdentity: input.repositoryIdentity }
-          : {}),
+        ...(input.historicalFrontierOffset !== undefined
+          ? { repositoryIdentity: unresolvedHistoricalRepositoryIdentity() }
+          : input.repositoryIdentity
+            ? { repositoryIdentity: input.repositoryIdentity }
+            : {}),
         idempotencyKey: `claude-code-session:${input.signal.sourceSessionId}`,
         sourceHash: hash({
           provider: "claude-code",

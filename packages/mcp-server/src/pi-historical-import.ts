@@ -1,3 +1,4 @@
+import { unresolvedHistoricalRepositoryIdentity } from "./historical-repository-context.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 
@@ -169,6 +170,7 @@ export const registerPiHistoricalTranscriptSource = async (
           sourceRuntime: "pi",
           captureMethod: "api",
           cwd: identity.cwd,
+          repositoryIdentity: unresolvedHistoricalRepositoryIdentity(),
           idempotencyKey: `pi-session:${identity.id}`,
           sourceHash: hash({ provider: "pi", sessionId: identity.id }),
           metadata: {
