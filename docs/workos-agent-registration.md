@@ -167,24 +167,59 @@ concurrent verifications without an unbounded waiting queue. Validation is
 reused only within one HTTP request; history reads require the same two provider
 calls as other delegated requests, and the next request revalidates credentials.
 
-Before any delegated authentication runs, a shared-store transport-peer limit
-admits at most one quarter of the configured provider request budget as incoming
-JWT-bearing requests per minute (at least one). With the default 120 provider
-calls/minute, one peer can submit 30 such requests, consuming at most 60 provider
-calls. Forged credentials, rotated tokens and different API/MCP routes share
-that peer's limit, and denial includes Retry-After without another provider call.
-The key uses a hash of the server-resolved peer IP, not caller-supplied forwarding
-headers or unvalidated identity claims. Users behind one NAT or reverse proxy
-may share this limit. Internal MCP-to-API dispatch preserves the original peer
-and uses the same bucket rather than a shared loopback identity. This does not
-replace distributed-abuse protection: use shared edge protection and a shared
-rate-limit store for multi-instance deployments.
+Before spending provider API calls, Koed verifies the JWT locally using RS256
+public keys from the configured issuer's fixed `/oauth2/jwks` endpoint. Tokens
+cannot select a key URL or a different algorithm. Signature, issuer, resource
+audience, expiry and not-before checks must pass before linked local identity
+lookup or identity quotas. Unverified claims can only reject a request; they
+cannot select another User's quota. The public key request sends no API key or
+token, forbids redirects, and has the same timeout and response-size limits as
+provider API requests. Key sets have at most 32 unique public RSA keys; private
+key material is rejected. Keys are cached for five minutes, not credentials,
+principals or authorisation decisions.
+
+Signing-key refreshes are single-flight and limited to one attempt every 30
+seconds per API process, including failures. New signing keys may therefore
+require up to 30 seconds to become usable after a preceding refresh. Unknown
+keys fail authentication; unavailable, malformed or timed-out key endpoints
+return a retryable failure rather than accepting stale expired-cache keys.
+Online WorkOS credential validation, verified registration checks and durable
+Koed consent checks still run on every authenticated HTTP request. Local
+signature verification alone does not detect provider-side revocation.
+
+The existing rate-limit store enforces separate per-User and per-registration
+quotas after signature verification and existing local account-link checks,
+before provider API calls. The default is 30 requests per minute for each,
+derived from one quarter of the 120-call provider budget. A request normally
+costs two provider calls. The User key is the local Koed User ID, so rotating
+registrations, linked provider identities, tokens, IPs or API/MCP routes does
+not obtain a new User quota. Registration quotas may be lower than the User
+quota. Denials include Retry-After and do not make another provider API call.
+Distinct Users sharing one IP retain independent normal quotas.
+
+A higher transport-peer limit is an outer guard against unauthenticated floods:
+1200 JWT-bearing requests per minute by default. It uses a hash of the
+server-resolved peer IP, not caller-supplied forwarding headers. Internal
+MCP-to-API dispatch preserves the original peer rather than using a shared
+loopback identity. Users behind a NAT or reverse proxy can still share this
+outer limit. Configure it for the deployment, without using it as identity
+fairness. See the quota variables in [configuration](configuration.md).
+
+Use shared edge abuse protection and the existing Redis rate-limit store for
+multi-instance deployments; in-memory counters are process-local. Redis
+increments and expiry are atomic, and repair a counter missing its TTL.
+Restricted Redis ACLs must allow `EVAL`, `INCR`, `PTTL` and `PEXPIRE` for rate-limit
+keys. Store failures fail closed. The issuer-wide provider budget and eight
+in-flight verifications per process remain final resource ceilings, not a
+guarantee against distributed denial of service.
 
 ## Validation
 
-The automated verifier tests cover signatures through a simulated provider,
+The automated verifier tests use real asymmetric signatures with a simulated provider,
 scope intersection, expiry, audience/issuer mismatch, revocation and upstream
-failures. The database/API integration suite uses the deterministic Team fixture
+failures, key rotation, bounded key refresh, forged identity claims and separate
+User quotas behind one IP. Redis integration tests exercise concurrent counters
+and TTL repair against an actual Redis server. The database/API integration suite uses the deterministic Team fixture
 and a second Team accessible to the same User to exercise credential confinement.
 These tests do not replace a real WorkOS staging claim, token exchange, MCP
 connection and Koed disconnect/reauthorisation check before deployment. Tests

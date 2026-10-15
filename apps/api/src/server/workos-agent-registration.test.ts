@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +30,9 @@ describe.skipIf(!databaseUrl)(
     const url = new URL(databaseUrl ?? "postgresql://localhost/postgres");
     url.pathname = `/${database}`;
     const pool = createDbPool({ connectionString: url.toString() });
-    const signingKey = randomBytes(32);
+    const { privateKey: signingKey, publicKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048
+    });
     let app: Awaited<ReturnType<typeof buildServer>>;
     let createServer: () => ReturnType<typeof buildServer>;
     let repository: ReturnType<typeof createMemorySourceRepository>;
@@ -50,12 +52,23 @@ describe.skipIf(!databaseUrl)(
       workosAgentTestEnvironment.WORKOS_AGENT_REGISTRATION_ISSUER_URL;
     const providerFetch = vi.fn<typeof fetch>(async (input, init) => {
       const endpoint = String(input);
+      if (endpoint === `${issuer}/oauth2/jwks`)
+        return Response.json({
+          keys: [
+            {
+              ...publicKey.export({ format: "jwk" }),
+              kid: "key-one",
+              alg: "RS256",
+              use: "sig"
+            }
+          ]
+        });
       if (endpoint === "https://api.workos.com/agents/credentials/validate") {
         const body = JSON.parse(String(init?.body));
         expect(body.audience).toBe(resource);
         let registrationId: string;
         try {
-          const { payload } = await jwtVerify(body.credential, signingKey, {
+          const { payload } = await jwtVerify(body.credential, publicKey, {
             issuer,
             audience: resource
           });
@@ -69,15 +82,13 @@ describe.skipIf(!databaseUrl)(
         });
       }
       if (
-        ["agent_reg_fixture", "agent_reg_other"].some(
+        ["agent_reg_fixture", "agent_reg_other", "agent_reg_second"].some(
           (id) =>
             endpoint === `https://api.workos.com/agents/registrations/${id}`
         )
       )
         return Response.json({
-          id: endpoint.endsWith("agent_reg_other")
-            ? "agent_reg_other"
-            : "agent_reg_fixture",
+          id: endpoint.split("/").at(-1),
           organization_id: endpoint.endsWith("agent_reg_other")
             ? "org_other"
             : "org_test",
@@ -86,10 +97,18 @@ describe.skipIf(!databaseUrl)(
         });
       throw new Error("Unexpected external request");
     });
-    const issue = (team = true, execution = false, otherOrganization = false) =>
+    const issue = (
+      team = true,
+      execution = false,
+      otherOrganization = false,
+      providerUserId = "user_fixture",
+      registrationId = otherOrganization
+        ? "agent_reg_other"
+        : "agent_reg_fixture"
+    ) =>
       new SignJWT({
-        sub: otherOrganization ? "agent_reg_other" : "agent_reg_fixture",
-        act: { sub: "user_fixture" },
+        sub: registrationId,
+        act: { sub: providerUserId },
         org_id: otherOrganization ? "org_other" : "org_test",
         scope: [
           "koed:memory:read",
@@ -97,7 +116,7 @@ describe.skipIf(!databaseUrl)(
           ...(execution ? ["koed:local-execution"] : [])
         ].join(" ")
       })
-        .setProtectedHeader({ alg: "HS256" })
+        .setProtectedHeader({ alg: "RS256", kid: "key-one" })
         .setIssuer(issuer)
         .setAudience(resource)
         .setExpirationTime("5m")
@@ -225,6 +244,10 @@ describe.skipIf(!databaseUrl)(
         [userId]
       );
       await pool.query(
+        "insert into external_auth_identities(provider,provider_environment,provider_user_id,user_id,email,email_verified,status) select 'workos_authkit','staging','user_second',id,email,true,'linked' from users where id=$1",
+        [fixture.fixtureUsers.bob.id]
+      );
+      await pool.query(
         "insert into external_auth_organizations(provider,provider_environment,provider_organization_id,team_id,status) values('workos_authkit','staging','org_test',$1,'linked')",
         [teamId]
       );
@@ -304,11 +327,16 @@ describe.skipIf(!databaseUrl)(
 
     it("throttles one transport peer before spending the shared provider budget", async () => {
       vi.stubEnv("WORKOS_AGENT_REGISTRATION_REQUESTS_PER_MINUTE", "12");
+      vi.stubEnv("WORKOS_AGENT_REGISTRATION_PEER_REQUESTS_PER_MINUTE", "3");
       const limited = await createServer();
       try {
         const token = await issue();
         const forged = `${token.split(".").slice(0, 2).join(".")}.invalid_signature`;
-        const calls = providerFetch.mock.calls.length;
+        const countProviderCalls = () =>
+          providerFetch.mock.calls.filter(([url]) =>
+            String(url).startsWith("https://api.workos.com/")
+          ).length;
+        const calls = countProviderCalls();
         for (let attempt = 0; attempt < 3; attempt++) {
           const denied = await limited.inject({
             method: "GET",
@@ -318,7 +346,7 @@ describe.skipIf(!databaseUrl)(
           });
           expect(denied.statusCode).toBe(401);
         }
-        expect(providerFetch.mock.calls.length - calls).toBe(3);
+        expect(countProviderCalls() - calls).toBe(0);
         for (const path of ["/v1/access/check", "/mcp"]) {
           const denied = await limited.inject({
             method: "GET",
@@ -332,7 +360,7 @@ describe.skipIf(!databaseUrl)(
           expect(denied.statusCode).toBe(429);
           expect(denied.headers["retry-after"]).toBeDefined();
         }
-        expect(providerFetch.mock.calls.length - calls).toBe(3);
+        expect(countProviderCalls() - calls).toBe(0);
         const allowed = await limited.inject({
           method: "GET",
           url: "/v1/access/check",
@@ -340,10 +368,68 @@ describe.skipIf(!databaseUrl)(
           headers: { authorization: `Bearer ${token}` }
         });
         expect(allowed.statusCode, allowed.body).toBe(200);
-        expect(providerFetch.mock.calls.length - calls).toBe(5);
+        expect(countProviderCalls() - calls).toBe(2);
       } finally {
         await limited.close();
         vi.stubEnv("WORKOS_AGENT_REGISTRATION_REQUESTS_PER_MINUTE", "10000");
+        vi.stubEnv(
+          "WORKOS_AGENT_REGISTRATION_PEER_REQUESTS_PER_MINUTE",
+          undefined
+        );
+      }
+    });
+
+    it("keeps verified Users behind one peer independent and does not charge forged identities", async () => {
+      vi.stubEnv("WORKOS_AGENT_REGISTRATION_USER_REQUESTS_PER_MINUTE", "1");
+      vi.stubEnv(
+        "WORKOS_AGENT_REGISTRATION_REGISTRATION_REQUESTS_PER_MINUTE",
+        "1"
+      );
+      const limited = await createServer();
+      const inject = (token: string) =>
+        limited.inject({
+          method: "GET",
+          url: "/v1/access/check",
+          remoteAddress: "192.0.2.42",
+          headers: { authorization: `Bearer ${token}` }
+        });
+      const countProviderCalls = () =>
+        providerFetch.mock.calls.filter(([url]) =>
+          String(url).startsWith("https://api.workos.com/")
+        ).length;
+      try {
+        const first = await issue();
+        const calls = countProviderCalls();
+        expect((await inject(first)).statusCode).toBe(200);
+        expect((await inject(first)).statusCode).toBe(429);
+        const [header, encoded, signature] = first.split(".");
+        const payload = JSON.parse(
+          Buffer.from(encoded!, "base64url").toString("utf8")
+        );
+        payload.act = { sub: "user_second" };
+        const forged = `${header}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${signature}`;
+        expect((await inject(forged)).statusCode).toBe(401);
+        expect(countProviderCalls() - calls).toBe(2);
+        const second = await issue(
+          true,
+          false,
+          false,
+          "user_second",
+          "agent_reg_second"
+        );
+        const allowed = await inject(second);
+        expect(allowed.statusCode, allowed.body).toBe(200);
+        expect(countProviderCalls() - calls).toBe(4);
+      } finally {
+        await limited.close();
+        vi.stubEnv(
+          "WORKOS_AGENT_REGISTRATION_USER_REQUESTS_PER_MINUTE",
+          undefined
+        );
+        vi.stubEnv(
+          "WORKOS_AGENT_REGISTRATION_REGISTRATION_REQUESTS_PER_MINUTE",
+          undefined
+        );
       }
     });
 

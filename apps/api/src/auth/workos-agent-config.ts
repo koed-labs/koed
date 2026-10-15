@@ -9,6 +9,9 @@ export interface WorkosAgentRegistrationConfig {
   allowedOrganizationIds: readonly string[];
   allowedScopes: readonly (typeof workosAgentScopes)[number][];
   requestsPerMinute: number;
+  userRequestsPerMinute: number;
+  registrationRequestsPerMinute: number;
+  peerRequestsPerMinute: number;
 }
 
 export const resolveWorkosAgentRegistrationConfig = (
@@ -107,11 +110,42 @@ export const resolveWorkosAgentRegistrationConfig = (
     throw new Error(
       "WorkOS Agent Registration request budget must be 1-10000 per minute"
     );
+  const quota = (name: string, fallback: number, maximum: number): number => {
+    const value = environment[name]?.trim() || String(fallback);
+    const parsed = Number(value);
+    if (
+      !/^\d+$/.test(value) ||
+      !Number.isSafeInteger(parsed) ||
+      parsed < 1 ||
+      parsed > maximum
+    )
+      throw new Error(`${name} must be 1-${maximum}`);
+    return parsed;
+  };
+  const userCeiling = Math.max(1, Math.floor(requestsPerMinute / 4));
+  const userRequestsPerMinute = quota(
+    "WORKOS_AGENT_REGISTRATION_USER_REQUESTS_PER_MINUTE",
+    userCeiling,
+    userCeiling
+  );
+  const registrationRequestsPerMinute = quota(
+    "WORKOS_AGENT_REGISTRATION_REGISTRATION_REQUESTS_PER_MINUTE",
+    userRequestsPerMinute,
+    userRequestsPerMinute
+  );
+  const peerRequestsPerMinute = quota(
+    "WORKOS_AGENT_REGISTRATION_PEER_REQUESTS_PER_MINUTE",
+    Math.max(1000, requestsPerMinute * 10),
+    1_000_000
+  );
   return {
     issuer: issuer.origin,
     allowedOrganizationIds,
     allowedScopes:
       allowedScopes as WorkosAgentRegistrationConfig["allowedScopes"],
-    requestsPerMinute
+    requestsPerMinute,
+    userRequestsPerMinute,
+    registrationRequestsPerMinute,
+    peerRequestsPerMinute
   };
 };

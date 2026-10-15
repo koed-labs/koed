@@ -10,6 +10,7 @@ import {
   type RemoteMcpDelegatedPrincipal
 } from "./remote-mcp-oauth.js";
 import type { WorkosAgentRegistrationConfig } from "./workos-agent-config.js";
+import { createWorkosAgentTokenVerifier } from "./workos-agent-jwks.js";
 
 const claimsSchema = z.object({
   iss: z.string(),
@@ -54,10 +55,38 @@ export const createWorkosAgentRegistration = (options: {
   const requestFetch =
     options.requestFetch ?? globalThis.fetch.bind(globalThis);
   const { config } = options;
+  const verifyToken = createWorkosAgentTokenVerifier({
+    issuer: config.issuer,
+    resourceUrl: options.resourceUrl,
+    requestFetch
+  });
   const budgetKey = `workos-agent:${createHash("sha256").update(config.issuer).digest("hex")}`;
   let active = 0;
   const denied = (): never => {
     throw new DelegatedAuthenticationError(401);
+  };
+  const admit = async (
+    kind: "caller" | "user" | "registration",
+    key: string,
+    limit: number
+  ) => {
+    const opaqueKey = createHash("sha256")
+      .update(JSON.stringify([options.providerEnvironment, key]))
+      .digest("hex");
+    let bucket: { count: number; resetAt: number };
+    try {
+      bucket = await options.rateLimitStore.increment(
+        `${budgetKey}:${kind}:${opaqueKey}`,
+        60_000
+      );
+    } catch {
+      throw new DelegatedAuthenticationError(503, 5000);
+    }
+    if (bucket.count > limit)
+      throw new DelegatedAuthenticationError(
+        429,
+        Math.max(1000, bucket.resetAt - Date.now())
+      );
   };
   const json = async (
     path: string,
@@ -100,23 +129,13 @@ export const createWorkosAgentRegistration = (options: {
   return {
     async admitCaller(callerKey: string): Promise<void> {
       // Limit the transport peer before any authentication can spend provider calls.
-      const limit = Math.max(1, Math.floor(config.requestsPerMinute / 4));
-      const bucket = await options.rateLimitStore.increment(
-        `${budgetKey}:caller:${callerKey}`,
-        60_000
-      );
-      if (bucket.count > limit)
-        throw new DelegatedAuthenticationError(
-          429,
-          Math.max(1000, bucket.resetAt - Date.now())
-        );
+      await admit("caller", callerKey, config.peerRequestsPerMinute);
     },
     async resolvePrincipal(
       token: string
     ): Promise<RemoteMcpDelegatedPrincipal> {
       if (token.length > 16_384 || !isWorkosAgentCredential(token)) denied();
-      // Decode only for early rejection; no claim grants authority until the
-      // WorkOS API validates this exact credential against the resource.
+      // Unverified claims only reject cheaply; identity quotas require a valid signature.
       let claims: z.infer<typeof claimsSchema>;
       try {
         claims = claimsSchema.parse(decodeJwt(token));
@@ -137,6 +156,26 @@ export const createWorkosAgentRegistration = (options: {
       if (active >= 8) throw new DelegatedAuthenticationError(503);
       active++;
       try {
+        claims = claimsSchema.parse(await verifyToken(token));
+        const repository = options.requireRepository();
+        const identity = await repository.getExternalAuthIdentity({
+          provider: "workos_authkit",
+          providerEnvironment: options.providerEnvironment,
+          providerUserId: claims.act.sub
+        });
+        if (
+          !identity ||
+          identity.status !== "linked" ||
+          !identity.emailVerified
+        )
+          return denied();
+        if (!(await repository.getUser(identity.userId))) denied();
+        await admit("user", identity.userId, config.userRequestsPerMinute);
+        await admit(
+          "registration",
+          claims.sub,
+          config.registrationRequestsPerMinute
+        );
         const validationResult = await json("/agents/credentials/validate", {
           type: "access_token",
           credential: token,
@@ -168,19 +207,6 @@ export const createWorkosAgentRegistration = (options: {
             : claims.exp
         );
         if (expiresAt <= Date.now() / 1000) denied();
-        const repository = options.requireRepository();
-        const identity = await repository.getExternalAuthIdentity({
-          provider: "workos_authkit",
-          providerEnvironment: options.providerEnvironment,
-          providerUserId: claims.act.sub
-        });
-        if (
-          !identity ||
-          identity.status !== "linked" ||
-          !identity.emailVerified
-        )
-          return denied();
-        if (!(await repository.getUser(identity.userId))) denied();
         const scopes = [...new Set(claims.scope.split(/\s+/))].filter((scope) =>
           (config.allowedScopes as readonly string[]).includes(scope)
         );

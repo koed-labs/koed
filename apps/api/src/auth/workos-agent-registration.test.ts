@@ -1,9 +1,11 @@
-import { randomBytes } from "node:crypto";
-import { SignJWT, jwtVerify } from "jose";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { Redis } from "ioredis";
+import { SignJWT, jwtVerify, type JWTHeaderParameters } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemorySourceRepository } from "@koed/db";
 import {
   MemoryRateLimitStore,
+  RedisRateLimitStore,
   resetMemoryRateLimitStore
 } from "../infra/rate-limit.js";
 import { createAuthHelpers } from "./session.js";
@@ -21,7 +23,15 @@ afterEach(() => {
 });
 
 const fixture = () => {
-  const key = randomBytes(32);
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048
+  });
+  const publicJwk = {
+    ...publicKey.export({ format: "jwk" }),
+    kid: "key-one",
+    alg: "RS256",
+    use: "sig"
+  };
   const config = resolveApiServerConfig(workosAgentTestEnvironment);
   const user = {
     id: "local-owner",
@@ -40,6 +50,7 @@ const fixture = () => {
     getSessionUser: vi.fn().mockResolvedValue(user)
   };
   const state = {
+    signingKey: publicKey,
     revoked: false,
     valid: true,
     status: "verified",
@@ -56,7 +67,7 @@ const fixture = () => {
       };
       let valid = state.valid && !state.revoked;
       try {
-        await jwtVerify(input.credential, key, {
+        await jwtVerify(input.credential, state.signingKey, {
           issuer: config.workos.agentRegistration!.issuer,
           audience: input.audience
         });
@@ -72,12 +83,19 @@ const fixture = () => {
       });
     }
     return Response.json({
-      id: "agent_reg_test",
+      id: String(url).split("/").at(-1),
       status: state.status,
       kind: state.kind,
       organization_id: state.organization
     });
   });
+  const jwksFetch = vi.fn<typeof fetch>(async () =>
+    Response.json({ keys: [publicJwk] })
+  );
+  const transportFetch: typeof fetch = (url, init) =>
+    String(url) === `${config.workos.agentRegistration!.issuer}/oauth2/jwks`
+      ? jwksFetch(url, init)
+      : requestFetch(url, init);
   const resolverOptions = {
     grantStore: {
       resolveExternalGrant: vi
@@ -97,10 +115,14 @@ const fixture = () => {
     providerEnvironment: config.workos.providerEnvironment,
     requireRepository: () => repository as unknown as MemorySourceRepository,
     rateLimitStore: new MemoryRateLimitStore(),
-    requestFetch
+    requestFetch: transportFetch
   };
   const resolver = createWorkosAgentRegistration(resolverOptions);
-  const token = async (overrides: Record<string, unknown> = {}) =>
+  const token = async (
+    overrides: Record<string, unknown> = {},
+    header: JWTHeaderParameters = { alg: "RS256", kid: "key-one" },
+    signingKey: Parameters<SignJWT["sign"]>[0] = privateKey
+  ) =>
     new SignJWT({
       iss: config.workos.agentRegistration!.issuer,
       aud: config.remoteMcp.resourceUrl!,
@@ -111,20 +133,295 @@ const fixture = () => {
       exp: Math.floor(Date.now() / 1000) + 600,
       ...overrides
     })
-      .setProtectedHeader({ alg: "HS256" })
-      .sign(key);
+      .setProtectedHeader(header)
+      .sign(signingKey);
   return {
     resolver,
     resolverOptions,
     token,
     repository,
     requestFetch,
+    jwksFetch,
+    publicJwk,
+    privateKey,
     state,
     user
   };
 };
 
 describe("WorkOS Agent Registration verifier", () => {
+  it("rejects a forged signature before identity lookup or provider-budget spending", async () => {
+    const f = fixture();
+    const attacker = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const token = await f.token(
+      {},
+      { alg: "RS256", kid: "key-one" },
+      attacker.privateKey
+    );
+    await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+      statusCode: 401
+    });
+    expect(f.repository.getExternalAuthIdentity).not.toHaveBeenCalled();
+    expect(f.requestFetch).not.toHaveBeenCalled();
+    expect(f.jwksFetch).toHaveBeenCalledOnce();
+    const headers = new Headers(f.jwksFetch.mock.calls[0]![1]?.headers);
+    expect(headers.has("authorization")).toBe(false);
+  });
+
+  it("rejects symmetric algorithms and caller-supplied key sources without any network request", async () => {
+    const f = fixture();
+    for (const token of [
+      await f.token({}, { alg: "HS256", kid: "key-one" }, randomBytes(32)),
+      await f.token(
+        {},
+        { alg: "RS256", kid: "key-one", jku: "https://attacker.example/keys" }
+      ),
+      await f.token(
+        {},
+        { alg: "RS256", kid: "key-one", x5u: "https://attacker.example/cert" }
+      )
+    ])
+      await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+        statusCode: 401
+      });
+    expect(f.jwksFetch).not.toHaveBeenCalled();
+    expect(f.requestFetch).not.toHaveBeenCalled();
+  });
+
+  it("bounds unknown-key refresh traffic and accepts a provider key rotation after cooldown", async () => {
+    const f = fixture();
+    await f.resolver.resolvePrincipal(await f.token());
+    const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const token = await f.token(
+      {},
+      { alg: "RS256", kid: "key-two" },
+      rotated.privateKey
+    );
+    for (let attempt = 0; attempt < 10; attempt++)
+      await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+        statusCode: 401
+      });
+    expect(f.jwksFetch).toHaveBeenCalledOnce();
+    expect(f.requestFetch).toHaveBeenCalledTimes(2);
+    f.jwksFetch.mockResolvedValueOnce(
+      Response.json({
+        keys: [
+          f.publicJwk,
+          {
+            ...rotated.publicKey.export({ format: "jwk" }),
+            alg: "RS256",
+            kid: "key-two"
+          }
+        ]
+      })
+    );
+    f.state.signingKey = rotated.publicKey;
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 30_001);
+    await expect(f.resolver.resolvePrincipal(token)).resolves.toMatchObject({
+      userId: f.user.id
+    });
+    expect(f.jwksFetch).toHaveBeenCalledTimes(2);
+    expect(f.requestFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("backs off failed signing-key fetches and recovers without spending provider validation budget", async () => {
+    const f = fixture();
+    const token = await f.token();
+    f.jwksFetch.mockResolvedValueOnce(
+      new Response("unavailable", { status: 503 })
+    );
+    for (let attempt = 0; attempt < 10; attempt++)
+      await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+        statusCode: 503,
+        retryAfterMs: expect.any(Number)
+      });
+    expect(f.jwksFetch).toHaveBeenCalledOnce();
+    expect(f.requestFetch).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 30_001);
+    await expect(f.resolver.resolvePrincipal(token)).resolves.toMatchObject({
+      userId: f.user.id
+    });
+    expect(f.jwksFetch).toHaveBeenCalledTimes(2);
+    expect(f.requestFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not authorise using expired cached keys when refresh is unavailable", async () => {
+    const f = fixture();
+    const token = await f.token();
+    await f.resolver.resolvePrincipal(token);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 300_001);
+    f.jwksFetch.mockResolvedValueOnce(
+      new Response("unavailable", { status: 503 })
+    );
+    await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+      statusCode: 503
+    });
+    expect(f.requestFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a stalled signing-key fetch and releases verification capacity", async () => {
+    const f = fixture();
+    const token = await f.token();
+    vi.useFakeTimers();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    f.jwksFetch.mockImplementationOnce(() => {
+      started();
+      return new Promise(() => {});
+    });
+    const result = f.resolver
+      .resolvePrincipal(token)
+      .catch((error: unknown) => error);
+    await fetchStarted;
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(await result).toMatchObject({ statusCode: 503 });
+    expect(f.requestFetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(25_000);
+    await expect(f.resolver.resolvePrincipal(token)).resolves.toMatchObject({
+      userId: f.user.id
+    });
+    expect(f.jwksFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one in-flight key fetch and bounds concurrent verification", async () => {
+    const f = fixture();
+    const token = await f.token();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const keyFetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    f.jwksFetch.mockImplementationOnce(async () => {
+      started();
+      await gate;
+      return Response.json({ keys: [f.publicJwk] });
+    });
+    const pending = Array.from({ length: 8 }, () =>
+      f.resolver.resolvePrincipal(token)
+    );
+    try {
+      await keyFetchStarted;
+      expect(f.jwksFetch).toHaveBeenCalledOnce();
+      await expect(f.resolver.resolvePrincipal(token)).rejects.toMatchObject({
+        statusCode: 503
+      });
+    } finally {
+      release();
+      await Promise.all(pending);
+    }
+    expect(f.jwksFetch).toHaveBeenCalledOnce();
+    expect(f.requestFetch).toHaveBeenCalledTimes(16);
+  });
+
+  it.each(["private-key", "duplicate-key", "empty-set", "oversized"])(
+    "fails closed on unsafe JWKS: %s",
+    async (kind) => {
+      const f = fixture();
+      const response =
+        kind === "oversized"
+          ? new Response("a".repeat(40_000))
+          : Response.json({
+              keys:
+                kind === "empty-set"
+                  ? []
+                  : kind === "duplicate-key"
+                    ? [f.publicJwk, f.publicJwk]
+                    : [{ ...f.publicJwk, d: "private" }]
+            });
+      f.jwksFetch.mockResolvedValueOnce(response);
+      await expect(
+        f.resolver.resolvePrincipal(await f.token())
+      ).rejects.toMatchObject({ statusCode: 503 });
+      expect(f.requestFetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it("enforces a registration quota separately from its User quota", async () => {
+    const f = fixture();
+    const resolver = createWorkosAgentRegistration({
+      ...f.resolverOptions,
+      config: { ...f.resolverOptions.config, registrationRequestsPerMinute: 1 }
+    });
+    const token = await f.token();
+    await resolver.resolvePrincipal(token);
+    await expect(
+      resolver.resolvePrincipal(await f.token({ jti: "rotated-token" }))
+    ).rejects.toMatchObject({ statusCode: 429 });
+    expect(f.requestFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed before provider calls when quota storage is unavailable", async () => {
+    const f = fixture();
+    const resolver = createWorkosAgentRegistration({
+      ...f.resolverOptions,
+      rateLimitStore: {
+        increment: vi.fn().mockRejectedValue(new Error("store unavailable"))
+      }
+    });
+    await expect(
+      resolver.resolvePrincipal(await f.token())
+    ).rejects.toMatchObject({ statusCode: 503, retryAfterMs: 5000 });
+    await expect(resolver.admitCaller("peer")).rejects.toMatchObject({
+      statusCode: 503,
+      retryAfterMs: 5000
+    });
+    expect(f.requestFetch).not.toHaveBeenCalled();
+    expect(
+      f.resolverOptions.grantStore.resolveExternalGrant
+    ).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(!process.env.KOED_TEST_REDIS_URL)(
+    "shares verified User quotas across independent API resolvers with Redis",
+    async () => {
+      const f = fixture();
+      const clients = [
+        new Redis(process.env.KOED_TEST_REDIS_URL!),
+        new Redis(process.env.KOED_TEST_REDIS_URL!)
+      ];
+      const namespace = `workos-auth-test:${randomUUID()}:`;
+      const keys = new Set<string>();
+      const resolvers = clients.map((client) => {
+        const store = new RedisRateLimitStore(client);
+        return createWorkosAgentRegistration({
+          ...f.resolverOptions,
+          config: { ...f.resolverOptions.config, userRequestsPerMinute: 3 },
+          rateLimitStore: {
+            increment: (key, windowMs) => {
+              const scoped = namespace + key;
+              keys.add(`koed:rate-limit:${scoped}`);
+              return store.increment(scoped, windowMs);
+            }
+          }
+        });
+      });
+      try {
+        const token = await f.token();
+        const results = await Promise.allSettled(
+          Array.from({ length: 6 }, (_, i) =>
+            resolvers[i % 2]!.resolvePrincipal(token)
+          )
+        );
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(3);
+        for (const result of results)
+          if (result.status === "rejected")
+            expect(result.reason).toMatchObject({ statusCode: 429 });
+        expect(f.requestFetch).toHaveBeenCalledTimes(6);
+      } finally {
+        if (keys.size) await clients[0]!.del(...keys);
+        for (const client of clients) client.disconnect();
+      }
+    }
+  );
+
   it("requires current Koed consent even when the provider validates a replacement credential", async () => {
     const f = fixture();
     const credential = await f.token();
@@ -393,7 +690,7 @@ describe("WorkOS Agent Registration verifier", () => {
     });
     expect(f.requestFetch).toHaveBeenCalledTimes(2);
   });
-  it("preserves provider capacity for another peer when one caller rotates valid credentials", async () => {
+  it("shares verified User quotas across peers and registrations without penalising another User on the same peer", async () => {
     const f = fixture();
     for (let attempt = 0; attempt < 30; attempt++) {
       await f.resolver.admitCaller("peer-one");
@@ -402,20 +699,32 @@ describe("WorkOS Agent Registration verifier", () => {
       );
     }
     expect(f.requestFetch).toHaveBeenCalledTimes(60);
-    await expect(f.resolver.admitCaller("peer-one")).rejects.toMatchObject({
+    await f.resolver.admitCaller("peer-two");
+    await expect(
+      f.resolver.resolvePrincipal(await f.token({ sub: "agent_reg_rotated" }))
+    ).rejects.toMatchObject({
       statusCode: 429,
       retryAfterMs: expect.any(Number)
     });
     expect(f.requestFetch).toHaveBeenCalledTimes(60);
-    await f.resolver.admitCaller("peer-two");
+    await f.resolver.admitCaller("peer-one");
+    f.repository.getExternalAuthIdentity.mockResolvedValueOnce({
+      userId: "other-owner",
+      status: "linked",
+      emailVerified: true
+    });
+    f.state.validationRegistration = "agent_reg_other";
     await expect(
-      f.resolver.resolvePrincipal(await f.token())
+      f.resolver.resolvePrincipal(
+        await f.token({ sub: "agent_reg_other", act: { sub: "user_other" } })
+      )
     ).resolves.toMatchObject({
-      userId: f.user.id
+      userId: "other-owner"
     });
     expect(f.requestFetch).toHaveBeenCalledTimes(62);
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 60_001);
+    f.state.validationRegistration = "agent_reg_test";
     await f.resolver.admitCaller("peer-one");
     await f.resolver.resolvePrincipal(await f.token());
     expect(f.requestFetch).toHaveBeenCalledTimes(64);
@@ -443,10 +752,18 @@ describe("WorkOS Agent Registration verifier", () => {
     const f = fixture();
     const token = await f.token();
     vi.useFakeTimers();
-    f.requestFetch.mockImplementation(() => new Promise(() => {}));
+    let started!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    f.requestFetch.mockImplementation(() => {
+      started();
+      return new Promise(() => {});
+    });
     const result = f.resolver
       .resolvePrincipal(token)
       .catch((error: unknown) => error);
+    await providerStarted;
     await vi.advanceTimersByTimeAsync(5001);
     expect(await result).toMatchObject({ statusCode: 503 });
   });

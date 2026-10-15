@@ -9,4 +9,6 @@ retain Koed OAuth, and provide hosted-registration discovery with bounded online
 credential validation. Require explicit Operator enablement and entitlement
 confirmation. Add User-owned connection management with durable per-registration
 disconnect, explicit reauthorisation and a 30-day absolute authorisation lifetime
-independent of WorkOS credential renewal.
+independent of WorkOS credential renewal. Verify JWT signatures before upstream
+validation, enforce verified User and registration quotas, and bound public-key
+refreshes. Use atomic shared Redis rate-limit counters for multi-instance limits.
