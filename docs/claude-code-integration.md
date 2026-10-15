@@ -426,18 +426,21 @@ checkout paths. Unavailable Git metadata produces an unresolved observation.
 Duplicate signals, reordered observations, resumed Conversations, and new
 subagent artifacts use the shared recorded-assignment boundary. They cannot
 replace a User override or resolve a pre-cutover logical Session. A historical
-import does not infer source-time identity from the current checkout; the import
-coverage is handled separately. Desktop inspection shows the effective assignment
+import can use current Git in its recorded folder for initial grouping, but this
+does not establish source-time Git provenance. Desktop inspection shows the effective assignment
 recorded by the API rather than another caller-side identity policy.
 
 ### Historical Project assignment
 
 Claude Code historical transcripts currently provide no supported source-time
 Git anchor. Fresh historical registration uses a valid absolute cwd recorded in
-the main transcript to create a local folder Project. Auxiliary components use
-that same assignment. Missing or invalid recorded context stays unresolved.
+the main transcript to discover its current Git Project. The normal anchor
+selection rules apply, and subdirectories resolve to the Git root. Auxiliary
+components use that same assignment. Missing or invalid recorded context stays
+unresolved. A current branch is not attributed to the historical Conversation.
 
-The folder does not need to exist. Koed does not inspect its current Git state
-or use the importing process's cwd. Re-import and later live capture preserve
+If the folder is missing or has no usable Git metadata, the recorded path supplies
+a local folder Project. Git selection conflicts remain unresolved. Koed never
+uses the importing process's cwd. Re-import and later live capture preserve
 existing assignments, User overrides, and the migration's historical-unresolved
 state. These imports do not repair previously captured Sessions.

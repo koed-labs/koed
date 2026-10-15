@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { normalizeGitRemoteUrl, repositoryIdentitySchema } from "@koed/shared";
 import {
   resolveHistoricalCaptureRepositoryIdentity,
@@ -15,11 +15,13 @@ const directories: string[] = [];
 const fixture = () => {
   const parent = path.resolve("scratch/historical-project-imports");
   fs.mkdirSync(parent, { recursive: true });
+  vi.stubEnv("GIT_CEILING_DIRECTORIES", parent);
   const directory = fs.mkdtempSync(path.join(parent, "context-"));
   directories.push(directory);
   return { directory, env: { KOED_HOME: path.join(directory, "koed") } };
 };
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of directories.splice(0))
     fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -92,7 +94,7 @@ it("preserves a recorded Git identity when its folder is missing or reused", asy
   expect(fs.existsSync(env.KOED_HOME)).toBe(false);
 });
 
-it("groups recorded folders consistently across clients without probing their current Git state", async () => {
+it("groups missing or non-Git recorded folders consistently within one profile", async () => {
   const { directory, env } = fixture();
   const cwd = path.join(directory, "missing-checkout");
   const first = await resolveHistoricalCaptureRepositoryIdentity({
@@ -117,12 +119,6 @@ it("groups recorded folders consistently across clients without probing their cu
     })
   ).toEqual(first);
   fs.mkdirSync(cwd);
-  execFileSync("git", ["-C", cwd, "init"], { stdio: "pipe" });
-  execFileSync(
-    "git",
-    ["-C", cwd, "remote", "add", "origin", "https://example.test/current.git"],
-    { stdio: "pipe" }
-  );
   expect(
     await resolveHistoricalCaptureRepositoryIdentity({
       sourceTime: null,
@@ -143,6 +139,89 @@ it("groups recorded folders consistently across clients without probing their cu
   });
   expect(otherProfile.key).not.toBe(first.key);
   expect(otherProfile.originatingDeviceId).not.toBe(first.originatingDeviceId);
+});
+
+it.each([false, true])(
+  "uses current Git at the recorded folder and resolves subdirectories (upstream: %s)",
+  async (upstream) => {
+    const { directory, env } = fixture();
+    const root = path.join(directory, "repository");
+    const cwd = path.join(root, "package");
+    fs.mkdirSync(cwd, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+    git("init");
+    git("remote", "add", "origin", "https://example.test/team/origin.git");
+    if (upstream)
+      git(
+        "remote",
+        "add",
+        "upstream",
+        "https://example.test/team/upstream.git"
+      );
+    const identity = await resolveHistoricalCaptureRepositoryIdentity({
+      sourceTime: null,
+      cwd,
+      env
+    });
+    expect(identity).toMatchObject({
+      kind: "portable_repository",
+      key: normalizeGitRemoteUrl(
+        `https://example.test/team/${upstream ? "upstream" : "origin"}.git`
+      ).fingerprint,
+      root: fs.realpathSync(root),
+      selectedRemote: upstream ? "upstream" : "origin",
+      branch: null
+    });
+    expect(identity.checkoutId).toMatch(/^checkout_/);
+  }
+);
+
+it("keeps conflicting current Git anchors unresolved instead of hiding the conflict behind a folder", async () => {
+  const { directory, env } = fixture();
+  const cwd = path.join(directory, "repository");
+  fs.mkdirSync(cwd);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+  git("init");
+  git("remote", "add", "origin", "https://example.test/team/one.git");
+  git(
+    "remote",
+    "set-url",
+    "--add",
+    "origin",
+    "https://example.test/team/two.git"
+  );
+  expect(
+    await resolveHistoricalCaptureRepositoryIdentity({
+      sourceTime: null,
+      cwd,
+      env
+    })
+  ).toMatchObject({
+    kind: "unresolved",
+    key: null,
+    reason: "selection_conflict",
+    branch: null
+  });
+});
+
+it("retains a local Git identity when the recorded checkout has no remote", async () => {
+  const { directory, env } = fixture();
+  const cwd = path.join(directory, "local-repository");
+  fs.mkdirSync(cwd);
+  execFileSync("git", ["-C", cwd, "init"], { stdio: "pipe" });
+  const identity = await resolveHistoricalCaptureRepositoryIdentity({
+    sourceTime: null,
+    cwd,
+    env
+  });
+  expect(identity).toMatchObject({
+    kind: "device_local_repository",
+    root: fs.realpathSync(cwd),
+    branch: null
+  });
+  expect(identity.key).toMatch(/^dl_/);
 });
 
 it("keeps missing, relative and malformed folders unresolved without a process cwd fallback", async () => {

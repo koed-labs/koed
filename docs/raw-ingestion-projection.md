@@ -768,14 +768,19 @@ page or automatically repair historical Sessions.
 
 Historical producers pass recorded source context through the same Session
 registration boundary as live capture. A fresh import prefers a reliable
-source-time Git anchor, then a valid recorded absolute working folder. Missing
+source-time Git anchor, then current Git discovery in the recorded absolute
+working folder, then a local folder Project. Missing
 or conflicting context produces an unresolved observation. Codex uses native
 Session metadata. Claude Code reads the main transcript's recorded cwd, including
 for auxiliary components. Pi uses the verified Session header's cwd.
 
-Historical assignment never probes today's checkout or substitutes the importing
-process's cwd. A recorded Git anchor remains valid when the folder disappears
-or changes repositories. Folder groups use normalized recorded paths and the
+Historical assignment never substitutes the importing process's cwd. A recorded
+Git anchor remains authoritative when the folder disappears or changes repositories.
+Without a recorded anchor, discovery uses the same current repository selection
+as live capture, including subdirectory resolution and explicit anchor choices.
+The current branch is not recorded as a historical branch. Git selection conflicts
+remain unresolved. Missing folders and folders without usable Git metadata retain
+the recorded path fallback. Folder groups use normalized recorded paths and the
 local profile's Project salt. They claim no current checkout incarnation and
 remain separate from live checkout identities at the same path.
 

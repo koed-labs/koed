@@ -2,6 +2,8 @@ import {
   historicalFolderRepositoryIdentity,
   resolveKoedServerPaths
 } from "@koed-labs/server";
+import path from "node:path";
+import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
 import {
   isPortableGitRemote,
   normalizeGitRemoteUrl,
@@ -100,18 +102,38 @@ export const codexSourceTimeProjectDirectory = (
     : null;
 };
 
-// New imports use source-time context. Existing assignments are retained by the DB.
-export const resolveHistoricalCaptureRepositoryIdentity = (input: {
+// The DB retains existing assignments. Discovery applies only to fresh imports.
+export const resolveHistoricalCaptureRepositoryIdentity = async (input: {
   sourceTime: RepositoryIdentity | null;
   cwd: string | undefined;
   env: NodeJS.ProcessEnv;
 }): Promise<RepositoryIdentity> => {
-  if (input.sourceTime?.kind === "portable_repository")
-    return Promise.resolve(input.sourceTime);
-  return Promise.resolve(
+  if (input.sourceTime?.kind === "portable_repository") return input.sourceTime;
+  const cwd = normalizeRecordedProjectDirectory(input.cwd);
+  if (!cwd) return unresolvedHistoricalRepositoryIdentity();
+  // A foreign recorded path must never resolve relative to this process's cwd.
+  if (
+    path.isAbsolute(cwd) &&
+    (process.platform !== "win32" || path.parse(cwd).root.length > 1)
+  ) {
+    const current = await resolveCaptureRepositoryIdentity({
+      cwd,
+      env: input.env
+    });
+    if (
+      current?.kind === "portable_repository" ||
+      current?.kind === "device_local_repository" ||
+      (current?.kind === "unresolved" &&
+        !["probe_failed", "checkout_unavailable"].includes(current.reason))
+    ) {
+      // This is today's repository identity, not evidence of a historical branch.
+      return { ...current, branch: null };
+    }
+  }
+  return (
     historicalFolderRepositoryIdentity(
       resolveKoedServerPaths(input.env),
-      input.cwd
+      cwd
     ) ?? unresolvedHistoricalRepositoryIdentity()
   );
 };

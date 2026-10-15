@@ -298,13 +298,17 @@ same effective assignment used by recall.
 
 Pi historical Session headers currently provide no supported source-time Git
 anchor. Fresh historical capture uses a valid absolute cwd from the verified
-Session header to create a local folder Project. Missing or invalid recorded
-context stays unresolved. The importing process's cwd never supplies this identity.
+Session header to discover its current Git Project. The normal anchor selection
+rules apply, and subdirectories resolve to the Git root. Missing or invalid
+recorded context stays unresolved. The importing process's cwd never supplies
+this identity, and a current branch is not attributed to historical activity.
 
-Koed does not inspect the folder's current Git state or require it to exist.
-The local folder group claims no current checkout incarnation. Re-import,
+Missing folders and folders without usable Git metadata fall back to a local
+folder Project. Git selection conflicts remain unresolved. A local folder group
+claims no current checkout incarnation. Re-import,
 resumed capture, and later checkpoints preserve existing assignments, overrides,
 and the migration's unresolved history.
+
 ### Memory Answer worker tools and validation
 
 Pi Memory Answer workers run separately from interactive Pi Conversations. Each

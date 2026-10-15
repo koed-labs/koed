@@ -173,14 +173,26 @@ this fixture check. No additional product code change was needed.
 
 ## Fresh historical import assignment follow-up
 
-Fresh imports now prefer recorded Git metadata, then a recorded absolute folder.
+Fresh imports now prefer recorded Git metadata, then current Git discovery in
+the recorded absolute folder, then a local folder Project.
 Focused tests cover Codex, Claude Code, and Pi registration, missing folders,
 reused Git checkouts, conflicting metadata, invalid paths, Windows paths, and
 stable folder grouping within one profile. Claude auxiliary components use the
 main transcript's recorded folder. Caller directories cannot replace missing
 historical context.
 
-Fifteen PostgreSQL assignment regressions cover fresh assignment, replay, manual
+The Git discovery follow-up covers upstream/origin precedence, subdirectory
+resolution, local repositories without remotes, conflicting anchors, missing
+folders, and foreign recorded paths. Recorded source-time Git remains authoritative
+when today's checkout differs. Current branches remain unknown for historical
+activity. Existing recorded folder assignments remain unchanged through replay.
+
+A resolver check against existing Git checkouts with a disposable Koed profile
+returned their expected portable repository identities. The check changed no
+live assignments. The running Desktop process needs a restart to load the change;
+existing imported folder groups still require an explicit move to merge.
+
+Eighteen PostgreSQL assignment regressions cover fresh assignment, replay, manual
 overrides, reset, and invalidated-session re-import. The separate migration 0062
 acceptance test also passed. It preserves the one-time cutoff and prevents
 continued capture from automatically resolving existing history. Tests used

@@ -80,9 +80,7 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
       const captured = await repository.createCapturedSession(actor, input);
       expect(captured.repositoryAssignment?.effective).toEqual(identity);
       expect(captured.repositoryAssignment?.effective?.kind).toBe(
-        sourceRuntime === "codex-cli"
-          ? "portable_repository"
-          : "non_git_project"
+        "portable_repository"
       );
       const other = {
         ...identity,
@@ -138,6 +136,69 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         override: null,
         effective: null
       });
+    }
+  );
+
+  it.each(["codex-cli", "claude-code", "pi"] as const)(
+    "does not replace a recorded %s folder assignment when Git becomes available",
+    async (sourceRuntime) => {
+      const user = await repository.createUser({
+        email: `folder-replay-${randomUUID()}@example.test`
+      });
+      const actor = { userId: user.id };
+      fs.mkdirSync(path.resolve("scratch/historical-project-imports"), {
+        recursive: true
+      });
+      const directory = fs.mkdtempSync(
+        path.resolve("scratch/historical-project-imports/replay-")
+      );
+      directories.push(directory);
+      const cwd = path.join(directory, "checkout");
+      const env = { KOED_HOME: path.join(directory, "koed") };
+      const folderIdentity = await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: null,
+        cwd,
+        env
+      });
+      expect(folderIdentity.kind).toBe("non_git_project");
+      const input = {
+        sourceRuntime,
+        externalSessionId: randomUUID(),
+        cwd,
+        metadata: { sourceTransport: "historical_import" }
+      };
+      const original = await repository.createCapturedSession(actor, {
+        ...input,
+        repositoryIdentity: folderIdentity
+      });
+      fs.mkdirSync(cwd);
+      execFileSync("git", ["-C", cwd, "init"], { stdio: "pipe" });
+      execFileSync(
+        "git",
+        [
+          "-C",
+          cwd,
+          "remote",
+          "add",
+          "origin",
+          "https://example.test/team/available.git"
+        ],
+        { stdio: "pipe" }
+      );
+      const current = await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: null,
+        cwd,
+        env
+      });
+      expect(current.kind).toBe("portable_repository");
+      const replay = await repository.createCapturedSession(actor, {
+        ...input,
+        repositoryIdentity: current
+      });
+      expect(replay.id).toBe(original.id);
+      expect(replay.repositoryAssignment).toEqual(
+        original.repositoryAssignment
+      );
     }
   );
 });

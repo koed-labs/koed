@@ -12,9 +12,10 @@ Projects from their headers. Whole-Project moves also route future captures
 from that source into the destination. Empty Projects can receive unresolved
 history.
 
-Assign fresh historical imports from reliable recorded Git metadata, then the
-recorded working folder. Preserve manual assignments and the existing migration
-cutoff. Historical grouping does not depend on the folder's current contents.
+Assign fresh historical imports from reliable recorded Git metadata, then Git
+discovery in the recorded working folder, then a local folder Project. Preserve
+manual assignments and the existing migration cutoff. Current discovery does not
+attribute today's branch to historical activity.
 
 Bind default recall to the Conversation folder across Codex, Claude Code, and
 Pi, including when an MCP process starts in a different folder. Per-call context

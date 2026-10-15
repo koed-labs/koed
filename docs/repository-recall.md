@@ -89,9 +89,11 @@ explicit matching assignment.
 
 Fresh historical imports record an automatic assignment only when the
 Conversation first enters Koed. A reliable source-time Git anchor takes priority.
-Otherwise, a valid recorded absolute working folder supplies a local folder
-Project. Missing or conflicting source context stays unresolved. The importing
-process's cwd and today's filesystem contents never supply historical identity.
+Otherwise, Koed inspects Git in the recorded absolute working folder and uses
+its current selected repository when available. Without usable Git metadata,
+the recorded path supplies a local
+folder Project. Missing or conflicting source context stays unresolved. The
+importing process's cwd never supplies historical identity.
 
 Historical folder groups use the profile's Project salt and normalized recorded
 path. They have no current checkout identity and do not automatically merge with
@@ -342,26 +344,35 @@ It does not replace the later Team Project snapshot or staged release gates.
 
 ## Historical import assignments
 
-Fresh historical imports prefer recorded source-time Git metadata, then a
-valid recorded absolute working folder. Codex native `session_meta` records can
+Fresh historical imports prefer recorded source-time Git metadata, then Git
+discovery in a valid recorded absolute working folder, then a local folder
+Project. Codex native `session_meta` records can
 supply an origin URL, timestamp, and branch. Koed normalizes the recorded URL
 with the shared Git remote normalization. A Git observation requires an absolute
 recorded cwd and a valid timestamp. It remains valid when that checkout is gone
 or now points to another repository. Conflicting branch observations become
 unknown. Conflicting Git anchors cannot be rescued by a folder fallback.
 
-Portable historical identity carries no checkout root, checkout identifier, or
+Recorded source-time Git identity carries no checkout root, checkout identifier, or
 asserted originating device. Its explicit unknown-device marker cannot establish
 a device-local checkout match. Without a reliable Git anchor, Codex uses a
 consistent native recorded cwd. Claude Code uses the main transcript's cwd,
 and Pi uses its verified Session header. Missing, invalid, or ambiguous source
 context remains unresolved. No producer substitutes its process directory.
 
+When a source-time anchor is absent, Koed uses the normal local Git discovery
+rules in the recorded folder. Subdirectories resolve to the Git root. Explicit
+local anchor choices and the upstream/origin precedence match live capture.
+Current Git discovery is a present-day grouping choice, not proof of historical
+repository contents. Its branch is unknown rather than today's checkout branch.
+Conflicting Git selections remain unresolved. Foreign path syntax cannot resolve
+relative to the importing process's directory.
+
 Folder fallback creates a `non_git_project` identity with the normalized recorded
 path and a profile-salted key. This records an import-local grouping, not proof
 that the source lacked Git. It claims no checkout incarnation and remains separate
-from live checkout identities. Today's files, Git remotes, and checkout choices
-cannot change that identity. Different importing profiles have separate folder
+from live checkout identities. After initial capture, later files, Git remotes,
+and checkout choices cannot change that identity. Different importing profiles have separate folder
 groups, and the folder key cannot establish a portable Team repository match.
 
 Re-import, delayed capture, and resumed Conversations preserve the existing logical
