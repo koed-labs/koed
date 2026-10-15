@@ -324,6 +324,18 @@ export const sessionPreview = (
 
 export { sessionSelectionId } from "@koed/memory-ui";
 
+export const projectForLocalProject = (
+  projects: Iterable<DesktopProject>,
+  localProjectId: string
+): DesktopProject | null =>
+  [...projects].find(
+    (project) =>
+      project.localProjectId === localProjectId ||
+      project.checkouts?.some(
+        (checkout) => checkout.localProjectId === localProjectId
+      )
+  ) ?? null;
+
 export const projectIdForSession = (
   projects: DesktopProjectGroup[],
   selectedSessionId: string

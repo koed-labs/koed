@@ -44,6 +44,7 @@ import {
   Paperclip,
   Pencil,
   Pin,
+  Plus,
   RefreshCw,
   Settings,
   X
@@ -155,6 +156,7 @@ export type PersonalMemoryWorkspaceProps = {
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
+  onCreateProject?: () => Promise<DesktopProject | null>;
   openExternal?: (url: string) => Promise<void>;
   revealLocalProject?: (localProjectId: string) => Promise<void>;
   setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
@@ -453,6 +455,7 @@ function ProjectsPane({
   loading,
   onRetry,
   onSelect,
+  onCreateProject,
   projects,
   selectedProjectId
 }: {
@@ -460,11 +463,14 @@ function ProjectsPane({
   loading: boolean;
   onRetry: () => void;
   onSelect: (projectId: string) => void;
+  onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   projects: readonly DesktopProject[];
   selectedProjectId: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => {
     if (!normalizedQuery) return true;
@@ -480,16 +486,60 @@ function ProjectsPane({
     (project) => !active.some(({ id }) => id === project.id)
   );
 
+  const createProject = async () => {
+    if (!onCreateProject) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      const project = await onCreateProject();
+      if (project) {
+        setQuery("");
+        setShowInactive(true);
+        onSelect(project.id);
+      }
+    } catch (cause) {
+      setCreateError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <aside className="personal-projects-pane" aria-label="Projects">
       <header>
         <h1 data-personal-route-focus="projects" tabIndex={-1}>
           Projects
         </h1>
-        <span aria-label={`${projects.length} Projects`}>
-          {projects.length}
-        </span>
+        <div className="personal-project-header-actions">
+          <span aria-label={`${projects.length} Projects`}>
+            {projects.length}
+          </span>
+          {onCreateProject ? (
+            <button
+              aria-label="Create Project"
+              className="personal-project-create-button"
+              disabled={creating || loading}
+              onClick={() => void createProject()}
+              title="Create Project"
+              type="button"
+            >
+              {creating ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="personal-loading-icon"
+                />
+              ) : (
+                <Plus aria-hidden="true" />
+              )}
+            </button>
+          ) : null}
+        </div>
       </header>
+      {createError ? (
+        <p className="personal-memory-error" role="alert">
+          {createError}
+        </p>
+      ) : null}
       <label className="personal-project-search">
         <span className="sr-only">Search Projects</span>
         <input
@@ -947,7 +997,7 @@ function ProjectDetail({
           <p>
             {hasProjects
               ? "Choose a Project to inspect its Captured Sessions."
-              : "Projects appear after the Supported Capture Hook records a Captured Session."}
+              : "Use + to add a Project folder, or capture a Conversation to get started."}
           </p>
         </div>
       </section>
@@ -3383,12 +3433,14 @@ function ShareAffordance({
 
 function SessionAssignment({
   assign,
+  onCreateProject,
   onAssigned,
   projects,
   store,
   thread
 }: {
   assign?: PersonalDesktopApi["assignSessionProject"];
+  onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   projects: readonly PersonalDesktopProject[];
   store: PersonalMemoryStore;
@@ -3397,6 +3449,7 @@ function SessionAssignment({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  const [targetProjectId, setTargetProjectId] = useState("");
   const requestRef = useRef(0);
   const targets = projects.filter(
     (project) =>
@@ -3410,6 +3463,7 @@ function SessionAssignment({
     requestRef.current += 1;
     setBusy(false);
     setError("");
+    setTargetProjectId("");
     return () => {
       requestRef.current += 1;
     };
@@ -3443,6 +3497,28 @@ function SessionAssignment({
     },
     [assign, onAssigned, store, thread.sessionId]
   );
+
+  const createDestination = async () => {
+    if (!onCreateProject) return;
+    const request = ++requestRef.current;
+    setBusy(true);
+    setError("");
+    try {
+      const project = await onCreateProject();
+      if (request !== requestRef.current) return;
+      if (
+        project &&
+        project.id !== thread.projectId &&
+        project.id !== "unassigned"
+      )
+        setTargetProjectId(project.id);
+    } catch (cause) {
+      if (request === requestRef.current)
+        setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (request === requestRef.current) setBusy(false);
+    }
+  };
 
   if (!assign || !thread.sessionId) return null;
   return (
@@ -3491,7 +3567,10 @@ function SessionAssignment({
           <label className="personal-session-move-control">
             <span>Move to Project:</span>
             <select
-              defaultValue=""
+              value={targetProjectId}
+              onChange={(event) =>
+                setTargetProjectId(event.currentTarget.value)
+              }
               disabled={busy || targets.length === 0}
               name="targetProjectId"
               required
@@ -3506,6 +3585,15 @@ function SessionAssignment({
               ))}
             </select>
           </label>
+          {onCreateProject ? (
+            <button
+              disabled={busy}
+              onClick={() => void createDestination()}
+              type="button"
+            >
+              Create Project…
+            </button>
+          ) : null}
           {error ? (
             <p role="alert" className="personal-memory-error">
               {error}
@@ -3543,6 +3631,7 @@ function SessionAssignment({
 
 function SessionDetail({
   assignSessionProject,
+  onCreateProject,
   authorizeManagedConversationTransfer,
   candidates,
   managedConversationRevision,
@@ -3567,6 +3656,7 @@ function SessionDetail({
   onRetryManagedConversation
 }: {
   assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
+  onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   candidates: readonly WorkspaceShareCandidate[];
   managedConversationRevision: number;
@@ -3735,6 +3825,7 @@ function SessionDetail({
           />
           <SessionAssignment
             assign={assignSessionProject}
+            onCreateProject={onCreateProject}
             onAssigned={onAssigned}
             projects={projects}
             store={store}
@@ -3771,6 +3862,7 @@ function SessionDetail({
 
 export function PersonalMemoryWorkspace({
   assignSessionProject,
+  onCreateProject,
   updateSessionPresentation,
   authorizeManagedConversationTransfer,
   managedConversationRevision = 0,
@@ -3969,6 +4061,7 @@ export function PersonalMemoryWorkspace({
         tabIndex={-1}
       >
         <ProjectsPane
+          onCreateProject={onCreateProject}
           error={snapshot.error}
           loading={!ready || snapshot.loading}
           onRetry={() => void store.loadProjects()}
@@ -3979,6 +4072,7 @@ export function PersonalMemoryWorkspace({
         <main className="personal-memory-detail-pane">
           {effectiveRoute === "session" && selectedProject && selectedThread ? (
             <SessionDetail
+              onCreateProject={onCreateProject}
               key={selectedThread.id}
               assignSessionProject={assignSessionProject}
               authorizeManagedConversationTransfer={

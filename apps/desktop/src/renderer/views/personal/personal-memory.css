@@ -64,6 +64,40 @@
   line-height: 1.5rem;
 }
 
+.personal-project-header-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.personal-project-create-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--muted-foreground);
+  display: inline-flex;
+  justify-content: center;
+  min-height: 2rem;
+  min-width: 2rem;
+  padding: 0.375rem;
+}
+
+.personal-project-create-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-project-create-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.personal-project-create-button svg {
+  height: 1rem;
+  width: 1rem;
+}
+
 .personal-project-search {
   padding: 0 0.75rem 0.75rem;
   position: relative;

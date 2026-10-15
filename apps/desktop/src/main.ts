@@ -408,11 +408,11 @@ const bootstrap = async () => {
     setLaunchAtStartup: (enabled) => launchAtStartup.set(enabled),
     selectProjectDirectory: async () => {
       const options = {
-        buttonLabel: "Open",
+        buttonLabel: "Add Project",
         properties: ["openDirectory", "createDirectory"] as Array<
           "openDirectory" | "createDirectory"
         >,
-        title: "Open a Project"
+        title: "Choose or create a Project folder"
       };
       const selected = mainWindow
         ? await dialog.showOpenDialog(mainWindow, options)
