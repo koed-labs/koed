@@ -23,6 +23,7 @@ import {
   automaticHistoricalAdmission,
   automaticHistoricalPolicyAdmits,
   completeAutomaticHistoricalRun,
+  historicalCompletionOutcome,
   resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates
 } from "./automatic-historical-provider.js";
@@ -328,6 +329,7 @@ export const importSelectedClaudeHistory = async (input: {
     return newRun;
   };
   const results: Array<Record<string, unknown>> = [];
+  const diagnosticCodes: string[] = [];
   let remainingBatches = input.maxBatches ?? Number.POSITIVE_INFINITY;
   let completed = true;
   signalLoop: for (const [signalIndex, signal] of signals.entries()) {
@@ -420,9 +422,10 @@ export const importSelectedClaudeHistory = async (input: {
           "completed"
         );
       } catch (error) {
-        if (!(error instanceof MemoryApiError) || error.status !== 409) {
-          throw error;
-        }
+        const outcome = historicalCompletionOutcome(error);
+        if (!outcome) throw error;
+        if (!outcome.completed && outcome.diagnosticCode)
+          diagnosticCodes.push(outcome.diagnosticCode);
       }
       if (remainingBatches <= 0) {
         const hasMoreSources =
@@ -439,7 +442,8 @@ export const importSelectedClaudeHistory = async (input: {
     runId: newRun?.id ?? [...runIds][0] ?? null,
     runIds: [...runIds],
     sources: results,
-    completed
+    completed,
+    diagnosticCodes
   };
 };
 
@@ -703,10 +707,16 @@ export const createClaudeHistoricalProviderAdapter = (input: {
       });
       const activeRunId =
         typeof result.runId === "string" ? result.runId : runId;
+      const diagnosticCode = Array.isArray(result.diagnosticCodes)
+        ? result.diagnosticCodes.find(
+            (code): code is string => typeof code === "string"
+          )
+        : undefined;
       return {
         state: result.completed === true ? "completed" : "progress",
         selection: currentSelection,
-        ...(activeRunId ? { runId: activeRunId } : {})
+        ...(activeRunId ? { runId: activeRunId } : {}),
+        ...(diagnosticCode ? { diagnosticCode } : {})
       };
     },
     completeRun: (runId) => completeAutomaticHistoricalRun(input.client, runId)

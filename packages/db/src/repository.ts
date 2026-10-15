@@ -1418,6 +1418,28 @@ const projectionHardMaxTokens = (): number =>
     QWEN_OPERATIONAL_MAX_TOKENS
   );
 
+// Source records that complete a turn and seal its pending agent output.
+const turnCompleteSignalSql = (alias: string): string => `
+  (
+    (${alias}.source_adapter_version = 'codex-app-server-conversation-v1'
+      and ${alias}.source_event_type = 'turn/completed')
+    or
+    (${alias}.source_adapter_version = 'codex-transcript-v1'
+      and ${alias}.source_event_type in ('task_complete', 'turn_aborted'))
+    or
+    (${alias}.source_adapter_version = 'codex-hook-signal-v1'
+      and ${alias}.source_event_type = 'turn_completed')
+    or
+    (${alias}.source_adapter_version = 'claude-code-hook-signal-v1'
+      and ${alias}.source_event_type = 'turn_completed')
+    or
+    (${alias}.source_adapter_version = 'pi-session-v1'
+      and coalesce(${alias}.metadata ->> 'semanticControl' = 'turn_completed', false))
+    or
+    (${alias}.source_transport = 'pds_relay'
+      and ${alias}.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
+  )`;
+
 const projectionAgentTurnStaleMs = (): number =>
   nonNegativeIntEnv(
     "MEMORY_AGENT_TURN_STALE_MS",
@@ -4458,44 +4480,8 @@ export const createMemorySourceRepository = (
               'unknown-project'
             ) as boundary_project,
             coalesce(ci.event_time, ci.observed_at) as boundary_order_at,
-            (
-              (ci.source_adapter_version = 'codex-app-server-conversation-v1'
-                and ci.source_event_type = 'turn/completed')
-              or
-              (ci.source_adapter_version = 'codex-transcript-v1'
-                and ci.source_event_type in ('task_complete', 'turn_aborted'))
-              or
-              (ci.source_adapter_version = 'codex-hook-signal-v1'
-                and ci.source_event_type = 'turn_completed')
-              or
-              (ci.source_adapter_version = 'claude-code-hook-signal-v1'
-                and ci.source_event_type = 'turn_completed')
-              or
-              (ci.source_adapter_version = 'pi-session-v1'
-                and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
-              or
-              (ci.source_transport = 'pds_relay'
-                and ci.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
-            ) as is_turn_complete_signal,
-            (
-              (ci.source_adapter_version = 'codex-app-server-conversation-v1'
-                and ci.source_event_type = 'turn/completed')
-              or
-              (ci.source_adapter_version = 'codex-transcript-v1'
-                and ci.source_event_type in ('task_complete', 'turn_aborted'))
-              or
-              (ci.source_adapter_version = 'codex-hook-signal-v1'
-                and ci.source_event_type = 'turn_completed')
-              or
-              (ci.source_adapter_version = 'claude-code-hook-signal-v1'
-                and ci.source_event_type = 'turn_completed')
-              or
-              (ci.source_adapter_version = 'pi-session-v1'
-                and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
-              or
-              (ci.source_transport = 'pds_relay'
-                and ci.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
-            ) as is_semantic_turn_complete_signal
+            ${turnCompleteSignalSql("ci")} as is_turn_complete_signal,
+            ${turnCompleteSignalSql("ci")} as is_semantic_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
           where (
@@ -4639,14 +4625,19 @@ export const createMemorySourceRepository = (
               oldest_id asc
           )
         ), admitted_units as (
+          -- Units are atomic, so the oldest unit is admitted alone even when it
+          -- exceeds the caps; otherwise it would block every later unit.
           select *
           from ranked_units
-          where (
-            ($5::text = 'historical_import_backfill' and selected_row_count <= $2)
-            or
-            ($5::text is distinct from 'historical_import_backfill' and unit_number <= $2)
-          )
-          and ($6::bigint is null or selected_byte_count <= $6)
+          where unit_number = 1
+            or (
+              (
+                ($5::text = 'historical_import_backfill' and selected_row_count <= $2)
+                or
+                ($5::text is distinct from 'historical_import_backfill' and unit_number <= $2)
+              )
+              and ($6::bigint is null or selected_byte_count <= $6)
+            )
         )
         select
           pi.projection_source_table,
@@ -6264,42 +6255,96 @@ export const createMemorySourceRepository = (
     async getConversationProjectionBacklog() {
       const result = await pool.query<{
         live_projection_rows: string;
+        parked_live_projection_rows: string;
         historical_import_rows: string;
         historical_import_bytes: string;
       }>(
         `
+        with backlog_items as (
+          select ci.*
+          from conversation_items ci
+          left join sessions s on s.id = ci.session_id
+          where ci.projection_status in ('pending', 'error')
+            and ci.memory_excluded_at is null
+            and ci.personal_deleted_at is null
+            and (
+              ci.session_id is null
+              or (
+                s.id is not null
+                and s.invalidated_at is null
+                and s.personal_deleted_at is null
+              )
+            )
+        ), open_live_turns as (
+          -- Live rows in a turn with no completion signal and recent activity
+          -- wait for an agent seal; they need no Projection capacity yet.
+          select
+            bi.owner_user_id, bi.visibility, bi.session_id,
+            bi.external_session_id, bi.turn_id, bi.external_turn_id
+          from backlog_items bi
+          where $1::bigint > 0
+            and bi.projection_work_class = 'live_capture_projection'
+            and bi.projection_status = 'pending'
+            and coalesce(bi.turn_id::text, bi.external_turn_id) is not null
+          group by
+            bi.owner_user_id, bi.visibility, bi.session_id,
+            bi.external_session_id, bi.turn_id, bi.external_turn_id
+          having max(coalesce(bi.event_time, bi.observed_at))
+              > now() - $1::bigint * interval '1 millisecond'
+            and not exists (
+              select 1
+              from conversation_items signal
+              where signal.owner_user_id is not distinct from bi.owner_user_id
+                and signal.visibility = bi.visibility
+                and signal.session_id is not distinct from bi.session_id
+                and signal.external_session_id is not distinct from bi.external_session_id
+                and signal.turn_id is not distinct from bi.turn_id
+                and signal.external_turn_id is not distinct from bi.external_turn_id
+                and signal.personal_deleted_at is null
+                and ${turnCompleteSignalSql("signal")}
+            )
+        ), classified_items as (
+          select
+            bi.*,
+            (
+              bi.projection_status = 'pending'
+              and exists (
+                select 1
+                from open_live_turns t
+                where t.owner_user_id is not distinct from bi.owner_user_id
+                  and t.visibility = bi.visibility
+                  and t.session_id is not distinct from bi.session_id
+                  and t.external_session_id is not distinct from bi.external_session_id
+                  and t.turn_id is not distinct from bi.turn_id
+                  and t.external_turn_id is not distinct from bi.external_turn_id
+              )
+            ) as parked
+          from backlog_items bi
+          where bi.projection_work_class = 'live_capture_projection'
+        )
         select
+          (select count(*) filter (where not parked) from classified_items)::text
+            as live_projection_rows,
+          (select count(*) filter (where parked) from classified_items)::text
+            as parked_live_projection_rows,
           count(*) filter (
-            where ci.projection_work_class = 'live_capture_projection'
-          )::text as live_projection_rows,
-          count(*) filter (
-            where ci.projection_work_class = 'historical_import_backfill'
+            where bi.projection_work_class = 'historical_import_backfill'
           )::text as historical_import_rows,
           coalesce(sum(
-            octet_length(ci.raw_json::text)
-            + octet_length(coalesce(ci.raw_text, ''))
-            + octet_length(coalesce(ci.transport_chunk_text, ''))
+            octet_length(bi.raw_json::text)
+            + octet_length(coalesce(bi.raw_text, ''))
+            + octet_length(coalesce(bi.transport_chunk_text, ''))
           ) filter (
-            where ci.projection_work_class = 'historical_import_backfill'
+            where bi.projection_work_class = 'historical_import_backfill'
           ), 0)::text as historical_import_bytes
-        from conversation_items ci
-        left join sessions s on s.id = ci.session_id
-        where ci.projection_status in ('pending', 'error')
-          and ci.memory_excluded_at is null
-          and ci.personal_deleted_at is null
-          and (
-            ci.session_id is null
-            or (
-              s.id is not null
-              and s.invalidated_at is null
-              and s.personal_deleted_at is null
-            )
-          )
-      `
+        from backlog_items bi
+      `,
+        [projectionAgentTurnStaleMs()]
       );
       const row = result.rows[0];
       return {
         liveProjectionRows: Number(row?.live_projection_rows ?? 0),
+        parkedLiveProjectionRows: Number(row?.parked_live_projection_rows ?? 0),
         historicalImportRows: Number(row?.historical_import_rows ?? 0),
         historicalImportBytes: Number(row?.historical_import_bytes ?? 0)
       } satisfies ConversationProjectionBacklog;

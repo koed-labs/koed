@@ -29208,7 +29208,7 @@ describeDb("memory repository visibility", () => {
     );
   });
 
-  it("enforces hard byte caps without changing row-bounded unit admission", async () => {
+  it("admits an oversized oldest unit alone instead of blocking later units", async () => {
     const alice = await repo.createUser({
       email: `alice-oversized-first-${randomUUID()}@example.com`
     });
@@ -29282,10 +29282,158 @@ describeDb("memory repository visibility", () => {
       "select projection_status from conversation_items order by source_sequence"
     );
 
-    expect(byteCappedProjection.rawItemsProjected).toBe(0);
+    // The later unit fits the byte cap but still waits for the next batch.
+    expect(byteCappedProjection.rawItemsProjected).toBe(1);
     expect(byteCappedStatuses.rows.map((row) => row.projection_status)).toEqual(
-      ["pending", "pending"]
+      ["projected", "pending"]
     );
+
+    const nextProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      {
+        workClass: "historical_import_backfill",
+        limit: 100,
+        maxBytes: 1
+      }
+    );
+    expect(nextProjection.rawItemsProjected).toBe(1);
+  });
+
+  it("admits an oldest unit with more rows than the historical row cap", async () => {
+    const alice = await repo.createUser({
+      email: `alice-row-heavy-first-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `row-heavy-first-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `row-heavy-first-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: ["first", "second", "third", "later"].map((text, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: index < 3 ? "row-heavy-turn" : "later-turn",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: index,
+          rawJson: {
+            method: "item/completed",
+            params: { item: { type: "userMessage", text } }
+          },
+          rawText: text,
+          sourceHash: `row-heavy-${index}-${randomUUID()}`,
+          idempotencyKey: `row-heavy-${index}-${randomUUID()}`,
+          metadata: { transcriptType: "user_message" }
+        }))
+      }
+    );
+    await pool.query(
+      "update conversation_items set projection_work_class = 'historical_import_backfill'"
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { workClass: "historical_import_backfill", limit: 2 }
+    );
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(3);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "projected",
+      "projected",
+      "pending"
+    ]);
+  });
+
+  it("leaves live rows waiting for an agent seal out of live projection pressure", async () => {
+    const alice = await repo.createUser({
+      email: `alice-parked-live-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `parked-live-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `parked-live-${randomUUID()}`
+      }
+    );
+    const recent = new Date().toISOString();
+    const stale = new Date(Date.now() - 60 * 60_000).toISOString();
+    const item = (turn: string, index: number, eventTime: string) => ({
+      sessionId: session.id,
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      sourceTransport: "app_server",
+      externalTurnId: turn,
+      sourceRecordType: "app_server_notification",
+      sourceEventType: "item/completed",
+      sourceSequence: index,
+      eventTime,
+      rawJson: { method: "item/completed", params: { index } },
+      rawText: `${turn} ${index}`,
+      sourceHash: `parked-${turn}-${index}-${randomUUID()}`,
+      idempotencyKey: `parked-${turn}-${index}-${randomUUID()}`,
+      metadata: { transcriptType: "agent_message" }
+    });
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          item("open-turn", 0, recent),
+          item("open-turn", 1, recent),
+          item("completed-turn", 2, recent),
+          item("completed-turn", 3, recent),
+          item("stale-turn", 4, stale),
+          item("errored-turn", 5, recent)
+        ]
+      }
+    );
+    await pool.query(
+      `update conversation_items
+       set projection_work_class = 'live_capture_projection',
+         projection_status = case
+           when external_turn_id = 'errored-turn' then 'error'
+           else 'pending'
+         end`
+    );
+    await pool.query(
+      `update conversation_items
+       set source_adapter_version = 'claude-code-hook-signal-v1',
+         source_event_type = 'turn_completed'
+       where source_sequence = 3`
+    );
+
+    await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
+      liveProjectionRows: 4,
+      parkedLiveProjectionRows: 2,
+      historicalImportRows: 0,
+      historicalImportBytes: 0
+    });
+
+    const previousStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
+    process.env.MEMORY_AGENT_TURN_STALE_MS = "0";
+    try {
+      await expect(
+        repo.getConversationProjectionBacklog()
+      ).resolves.toMatchObject({
+        liveProjectionRows: 6,
+        parkedLiveProjectionRows: 0
+      });
+    } finally {
+      if (previousStaleMs === undefined)
+        delete process.env.MEMORY_AGENT_TURN_STALE_MS;
+      else process.env.MEMORY_AGENT_TURN_STALE_MS = previousStaleMs;
+    }
   });
 
   it("checks runtime only before later atomic admission units", async () => {

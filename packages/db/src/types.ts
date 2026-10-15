@@ -1601,7 +1601,10 @@ export interface HistoricalProjectionLease {
 }
 
 export interface ConversationProjectionBacklog {
+  // Live rows the Worker can project now; these pause historical admission.
   liveProjectionRows: number;
+  // Live rows in an open agent turn that are waiting for its seal.
+  parkedLiveProjectionRows: number;
   historicalImportRows: number;
   historicalImportBytes: number;
 }
