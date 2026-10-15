@@ -496,10 +496,11 @@ worker always drains a bounded live Projection pass before considering one
 historical batch. It admits that batch only when live raw-Projection rows and
 pending interactive Memory Questions are at or below configured thresholds, the
 configured API `/ready` endpoint is healthy, queue probing succeeds, and the
-Embedding Service is healthy. Live rows in an open agent turn are left out of
-that count. Such a turn has no completion signal and recent activity within
-`MEMORY_AGENT_TURN_STALE_MS`, so its rows only wait for the agent seal and need
-no Projection capacity. Without this exclusion, continuous agent activity
+Embedding Service is healthy. Agent, subagent and tool rows in an open turn
+are left out of that count. Such a turn has no completion signal and recent
+activity within `MEMORY_AGENT_TURN_STALE_MS`, so those rows only wait for the
+agent seal and need no Projection capacity. User, system and raw-only rows
+still count, and turns are scoped to their owning User. Without this exclusion, continuous agent activity
 would pause history indefinitely. When the turn completes or goes stale, its
 rows count again, and the live pass still runs before every historical batch.
 
