@@ -33,6 +33,9 @@ import {
   markPreCutoverRepositoryAssignmentsUnresolved
 } from "../src/index.js";
 const databaseUrl = process.env.PDS_PROFILE_SOURCE_MIGRATION_TEST_DATABASE_URL;
+// Run against a separate empty database for retained-ACK coverage.
+const oldOutboxState =
+  process.env.PDS_PRE_CUTOVER_OUTBOX_STATE === "acked" ? "acked" : "uploading";
 type CryptoFixture = {
   runtimeInput: Omit<CreatePdsSessionPackageRuntimeContextInput, "now"> & {
     now: string;
@@ -219,6 +222,16 @@ describe.skipIf(!databaseUrl)(
           ...old.sequence,
           group_id: groupDbId
         });
+        const oldOutboxId = randomUUID();
+        await pool.query(
+          "insert into pds_outbox_entries (id,closure_id,idempotency_key,state,attempt_count,transport_id) values ($1,$2,$3,'pending',3,$4)",
+          [
+            oldOutboxId,
+            old.closure.id,
+            `old:${old.manifest.packageId}`,
+            old.encryptedPackage.header.transportId
+          ]
+        );
         await runDbMigrations(pool);
         const client = await pool.connect();
         try {
@@ -241,6 +254,25 @@ describe.skipIf(!databaseUrl)(
           groupId,
           sessionId
         });
+        expect(
+          await local.claimPdsOutbox({ workerId: "current-worker" })
+        ).toEqual([]);
+        await pool.query(
+          "update pds_outbox_entries set state=$2,lease_owner=case when $2='acked' then null else 'old-worker' end,lease_until=case when $2='acked' then null else now()+interval '1 hour' end where id=$1",
+          [oldOutboxId, oldOutboxState]
+        );
+        expect(
+          await local.beginPdsOutboxNetworkAction({
+            workerId: "old-worker",
+            outboxId: oldOutboxId
+          })
+        ).toBe(false);
+        expect(
+          await local.getPdsOutboxEncryptedEnvelope({
+            workerId: "old-worker",
+            outboxId: oldOutboxId
+          })
+        ).toBeNull();
         const runtime = createPdsSessionPackageRuntimeContext({
           ...legacy.runtimeInput,
           now: new Date(legacy.runtimeInput.now)
@@ -335,6 +367,15 @@ describe.skipIf(!databaseUrl)(
         ).rejects.toThrow("upgrade-build-failed");
         expect(
           (
+            await pool.query<{ state: string }>(
+              "select state from pds_outbox_entries where id=$1",
+              [oldOutboxId]
+            )
+          ).rows[0]!.state
+        ).toBe(oldOutboxState);
+
+        expect(
+          (
             await pool.query<{ count: string }>(
               "select count(*) from pds_session_closures where source_session_id=$1",
               [sessionId]
@@ -343,6 +384,58 @@ describe.skipIf(!databaseUrl)(
         ).toBe("1");
         const result = await local.checkpointPdsSourceSession(input);
         expect(result).not.toBeNull();
+        const superseded = (
+          await pool.query<{
+            state: string;
+            superseded_from_state: string;
+            superseded_by_closure_id: string;
+            lease_owner: string | null;
+            transport_id: string;
+            attempt_count: number;
+          }>(
+            "select state,superseded_from_state,superseded_by_closure_id,lease_owner,transport_id,attempt_count from pds_outbox_entries where id=$1",
+            [oldOutboxId]
+          )
+        ).rows[0]!;
+        expect(superseded).toEqual({
+          state: oldOutboxState === "acked" ? "acked" : "superseded",
+          superseded_from_state:
+            oldOutboxState === "acked" ? null : "uploading",
+          superseded_by_closure_id:
+            oldOutboxState === "acked" ? null : result!.id,
+          lease_owner: null,
+          transport_id: old.encryptedPackage.header.transportId,
+          attempt_count: 3
+        });
+        expect(
+          await local.completePdsOutbox({
+            workerId: "old-worker",
+            outboxId: oldOutboxId,
+            state: "acked"
+          })
+        ).toBe(false);
+        if (oldOutboxState !== "acked")
+          await expect(
+            pool.query(
+              "update pds_outbox_entries set state='pending',superseded_by_closure_id=null,superseded_from_state=null,superseded_at=null where id=$1",
+              [oldOutboxId]
+            )
+          ).rejects.toThrow(/history is immutable/);
+        expect(await local.requestPdsOutboxRetry({ userId, groupId })).toBe(0);
+        await local.refreshPdsCheckpointRecipients({ userId, groupId });
+        expect(
+          (
+            await pool.query<{ state: string }>(
+              "select state from pds_outbox_entries where id=$1",
+              [oldOutboxId]
+            )
+          ).rows[0]!.state
+        ).toBe(oldOutboxState === "acked" ? "acked" : "superseded");
+        const claim = await local.claimPdsOutbox({
+          workerId: "current-worker"
+        });
+        expect(claim.map((entry) => entry.closureId)).toEqual([result!.id]);
+
         expect(signed?.rawClosure).toEqual(old.manifest.rawClosure);
         expect(signed?.sourceFingerprint).toBe(old.manifest.sourceFingerprint);
         expect(signed?.logicalMemoryId).toBe(old.manifest.logicalMemoryId);

@@ -13323,6 +13323,12 @@ export const pdsOutboxEntries = pgTable(
       .notNull()
       .references(() => pdsSessionClosures.id, { onDelete: "cascade" }),
     dispatchEpoch: text("dispatch_epoch"),
+    supersededByClosureId: uuid("superseded_by_closure_id").references(
+      () => pdsSessionClosures.id,
+      { onDelete: "no action" }
+    ),
+    supersededFromState: text("superseded_from_state"),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
     state: text("state").notNull().default("pending"),
     idempotencyKey: text("idempotency_key").notNull(),
     leaseOwner: text("lease_owner"),
@@ -13342,7 +13348,11 @@ export const pdsOutboxEntries = pgTable(
     index("pds_outbox_claim_idx").on(table.state, table.retryAt),
     check(
       "pds_outbox_state_check",
-      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined')`
+      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined','superseded')`
+    ),
+    check(
+      "pds_outbox_supersession_check",
+      sql`(${table.state} = 'superseded' and ${table.supersededByClosureId} is not null and ${table.supersededFromState} is not null and ${table.supersededFromState} in ('pending','uploading','committed','paused','failed','quarantined') and ${table.supersededAt} is not null) or (${table.state} <> 'superseded' and ${table.supersededByClosureId} is null and ${table.supersededFromState} is null and ${table.supersededAt} is null)`
     ),
     check("pds_outbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
   ]

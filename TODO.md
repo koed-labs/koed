@@ -130,11 +130,13 @@ children share lineage and must not count as independent corroboration.
   source test verify automatic republication with immutable old provenance.
   Native old-receiver migration validation now proves signed-boundary admission,
   raw-source reuse, stable identity, explicit override preservation, and reset to
-  unresolved history. Audit
-  superseded pre-cutover PDS outbox work so old signed profiles cannot stall
-  delivery after the replacement is published; retain ciphertext and receipt history. Preserve old
-  signed packages and existing logical Session identities; prove continued capture and an offline receiver can establish the
-  new source-profile baseline without a legacy reader or automatic reassignment.
+  unresolved history. Migration 0060 now supersedes pending old-profile PDS
+  outbox work atomically with publication, preserves ACK and transport history,
+  and fences claims, reader access, manual retries, recipient refresh, and wake
+  scheduling. Native fixtures cover in-flight, committed, and acknowledged work.
+  Retain the final integrated two-device rehearsal at release; do not add a legacy
+  reader or automatically resolve historical assignment.
+
 - When integrating the Global branch, use a PDS replica's verified captured branch
   observation for branch preference, alongside the local effective-assignment
   check. Do not infer branch agreement merely from an imported automatic identity.

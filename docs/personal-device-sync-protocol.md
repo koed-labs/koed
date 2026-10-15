@@ -1118,3 +1118,27 @@ replica IDs, preserved ciphertext and source mappings, replay after explicit
 reassignment, reset to unresolved history, and raw-record immutability. The full
 release still requires coordinated queued-delivery transition and integrated
 two-device validation under ticket 16.
+
+### Superseded pre-cutover delivery work
+
+Migration 0060 adds a terminal `superseded` outbox state with the replacement
+closure, prior delivery state, and supersession time. Publishing the signed
+current-profile baseline records these fields atomically for earlier source
+publications that have not been acknowledged. It releases their worker leases
+and retains their package bytes, idempotency keys, attempt counts, transport IDs,
+and relay receipt records. Already acknowledged publications remain acknowledged.
+Supersession records cannot be changed or returned to the delivery queue.
+
+The current publisher claims and opens retained source packages only from the
+current profile epoch. Recipient refresh, expired-transport retry, and wake
+scheduling do not reactivate old profiles. Before the baseline is durable, the
+old queue remains stored and cannot enter the new source reader. A signing
+failure rolls back both publication and supersession. Late relay receipts remain
+in the relay receipt ledger without reopening superseded work.
+
+The native source migration fixtures cover queued claim denial, an in-flight
+checkpoint lease, committed closed-source transport metadata, acknowledged
+history, failed publication rollback, replacement-only claims, manual retry,
+recipient refresh, and the database supersession guard. Directed Captured Session
+Sync has a separate contiguous-sequence transition; PDS supersession does not
+change those sequence rules.

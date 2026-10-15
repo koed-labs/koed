@@ -440,7 +440,7 @@ export const createPersonalDeviceSyncLocalRepository = (
          from pds_outbox_entries o
          join pds_session_closures c on c.id=o.closure_id
          join personal_sync_policies p on p.group_id=c.group_id
-         where o.state in ('pending','uploading')
+         where o.state in ('pending','uploading') and c.source_profile_epoch=1
            and p.enabled=true and p.publication_paused=false
          union all
          select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
@@ -746,7 +746,7 @@ export const createPersonalDeviceSyncLocalRepository = (
          select o.id from pds_outbox_entries o
          join pds_session_closures s on s.id=o.closure_id
          join personal_sync_policies p on p.group_id=s.group_id
-         where o.state in ('pending','uploading') and o.retry_at<=now()
+         where o.state in ('pending','uploading') and o.retry_at<=now() and s.source_profile_epoch=1
            and (o.lease_until is null or o.lease_until<now()) and p.enabled=true
            and p.publication_paused=false
          order by o.retry_at,o.id for update of o,p skip locked limit $1
@@ -786,7 +786,7 @@ export const createPersonalDeviceSyncLocalRepository = (
       `update pds_outbox_entries o set updated_at=now()
        from pds_session_closures c join personal_sync_policies p on p.group_id=c.group_id
        where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now()
-         and o.closure_id=c.id and p.enabled=true and p.publication_paused=false`,
+         and o.closure_id=c.id and o.state='uploading' and c.source_profile_epoch=1 and p.enabled=true and p.publication_paused=false`,
       [input.outboxId, input.workerId]
     );
     return result.rowCount === 1;
@@ -829,7 +829,7 @@ export const createPersonalDeviceSyncLocalRepository = (
        join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id
        where o.id=$1 and o.closure_id=c.id and o.state='committed'
          and o.transport_id=$3 and o.lease_owner=$2 and o.lease_until>=now()
-         and c.publication_kind='checkpoint' and c.state='ready' and r.state='ready'`,
+         and c.publication_kind='checkpoint' and c.source_profile_epoch=1 and c.state='ready' and r.state='ready'`,
       [input.outboxId, input.workerId, input.transportId]
     );
     if (result.rowCount)
@@ -863,7 +863,7 @@ export const createPersonalDeviceSyncLocalRepository = (
        from pds_outbox_entries o join pds_session_closures c on c.id=o.closure_id
        join personal_device_groups g on g.id=c.group_id
        join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id
-       where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now()`,
+       where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now() and o.state='uploading' and c.source_profile_epoch=1`,
       [input.outboxId, input.workerId]
     );
     const row = result.rows[0];
@@ -2252,7 +2252,7 @@ export const createPersonalDeviceSyncLocalRepository = (
          join personal_device_group_members origin on origin.group_id=c.group_id
            and origin.device_id=source_package.origin_device_id and origin.status='active'
          where o.closure_id=c.id and c.group_id=$1
-           and c.publication_kind='checkpoint' and c.state='ready'
+           and c.publication_kind='checkpoint' and c.source_profile_epoch=1 and c.state='ready' and o.state<>'superseded'
            and source_package.state='ready'
            and o.dispatch_epoch is distinct from $2
            and (o.lease_until is null or o.lease_until<=now())`,
@@ -2837,6 +2837,17 @@ async function publishPdsSource(
         checkpointMode ? groupRow.current_epoch : null
       ]
     );
+    if (previous?.source_profile_epoch === 0) {
+      await client.query(
+        `update pds_outbox_entries o
+        set state='superseded',superseded_from_state=o.state,superseded_at=now(),superseded_by_closure_id=$1,
+            lease_owner=null,lease_until=null,updated_at=now()
+        from pds_session_closures c
+        where o.closure_id=c.id and c.group_id=$2 and c.source_session_id=$3
+          and c.source_profile_epoch=0 and o.state not in ('acked','superseded')`,
+        [closureRow.id, groupRow.id, input.sessionId]
+      );
+    }
     await client.query(
       "select pg_notify('koed_pds_local_sync', 'source_closed')"
     );
