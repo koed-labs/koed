@@ -146,6 +146,27 @@ const independentProjectMetadata: PersonalDesktopProjectMetadata = {
   }
 };
 
+const addedProjectMetadata: PersonalDesktopProjectMetadata = {
+  schemaVersion: 1,
+  discoveredAt: timestamp,
+  lastSeenAt: timestamp,
+  localProjectId: `lp_${"2".repeat(32)}`,
+  displayName: "Added Project",
+  path: { cwd: "/private/operator/added", projectRoot: null },
+  repository: {
+    kind: "non_git_project",
+    key: "ng_added",
+    root: "/private/operator/added",
+    branch: null,
+    checkoutId: "checkout_added",
+    originatingDeviceId: "browser_device",
+    reason: "non_git",
+    selectedRemote: null,
+    anchorDisplay: null
+  }
+};
+let addedProject = false;
+
 const richMarkdownFixture = `# Formatting parity
 
 Paragraph with **strong text**, ~~retired text~~, \`inline code\`, a [safe link](https://koed.example/docs), an [unsafe link](javascript:alert(1)), and ![remote image](https://koed.example/image.png).
@@ -373,7 +394,10 @@ const personalMemoryApi: PersonalDesktopApi = {
     }
   }),
   listProjects: async () => [personalProject],
-  listProjectMetadata: async () => [independentProjectMetadata],
+  listProjectMetadata: async () => [
+    independentProjectMetadata,
+    ...(addedProject ? [addedProjectMetadata] : [])
+  ],
   loadEventPage: async () => personalEvents,
   updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
@@ -589,10 +613,15 @@ const managedConversations: ManagedConversationDesktopApi = {
 
 const ValidationApp = () => {
   window.koedDesktop = {
-    invoke: async (command: string) =>
-      command === "ensure_independent_project"
-        ? { project: independentProjectMetadata }
-        : undefined
+    invoke: async (command: string) => {
+      if (command === "ensure_independent_project")
+        return { project: independentProjectMetadata };
+      if (command === "select_project_directory") {
+        addedProject = true;
+        return { canceled: false, result: { project: addedProjectMetadata } };
+      }
+      return undefined;
+    }
   } as typeof window.koedDesktop;
   (
     window as typeof window & {

@@ -5,6 +5,7 @@ import {
   LatestRequestGate,
   mergeProjectSources,
   projectIdForSession,
+  projectForLocalProject,
   projectIsActive,
   projectLatestAt,
   reconcileSelectedProjectId,
@@ -66,6 +67,34 @@ const graphProject = (
 });
 
 describe("repoUrlFromRemoteDisplay", () => {
+  it("finds an opened checkout in its canonical Project, including an already grouped repository", () => {
+    const identity: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_created",
+      originatingDeviceId: "device",
+      checkoutId: "checkout_created",
+      root: "/repo/created",
+      branch: "main",
+      reason: "origin",
+      selectedRemote: "origin",
+      anchorDisplay: "github.com/team/created"
+    };
+    const first = metadata({ repository: identity });
+    const second = metadata({
+      localProjectId: "lp_second",
+      path: { cwd: "/repo/second", projectRoot: "/repo/second" },
+      repository: { ...identity, checkoutId: "checkout_second" }
+    });
+    const projects = mergeProjectSources([], [first, second]);
+    expect(projects).toHaveLength(1);
+    expect(projectForLocalProject(projects, first.localProjectId)?.id).toBe(
+      repositoryScopeId(identity)
+    );
+    expect(projectForLocalProject(projects, second.localProjectId)?.id).toBe(
+      repositoryScopeId(identity)
+    );
+    expect(projectForLocalProject(projects, "missing")).toBeNull();
+  });
   it("presents standalone conversations as one Chats project while preserving their identity", () => {
     const standaloneMetadata = metadata({
       displayName: "Independent",

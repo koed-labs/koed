@@ -14,12 +14,14 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+import { repositoryScopeId } from "@koed/shared";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DesktopApi } from "../../../types.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
+import { projectForLocalProject } from "../../../project-memory-ui.js";
 import type { ManagedConversationRealtimeUpdate } from "../../state/managed-conversation-runtime.js";
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
 import {
@@ -366,6 +368,246 @@ describe("PersonalMemoryWorkspace", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  const createdProject: PersonalDesktopProjectMetadata = {
+    schemaVersion: 1,
+    discoveredAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+    localProjectId: "lp_created",
+    displayName: "Manual Project",
+    path: { cwd: "/tmp/manual-project", projectRoot: null },
+    repository: {
+      kind: "non_git_project",
+      key: "ng_created",
+      root: "/tmp/manual-project",
+      branch: null,
+      checkoutId: "checkout_created",
+      originatingDeviceId: "device",
+      reason: "non_git",
+      selectedRemote: null,
+      anchorDisplay: null
+    }
+  };
+
+  it("adds and opens an empty Project from the header, including while search hides it", async () => {
+    const metadata: PersonalDesktopProjectMetadata[] = [];
+    const store = new PersonalMemoryStore(
+      api({
+        listProjectMetadata: async () => metadata
+      })
+    );
+    const onNavigate = vi.fn();
+    const onCreateProject = vi.fn(async () => {
+      metadata.push(createdProject);
+      const snapshot = await store.loadProjects();
+      return projectForLocalProject(
+        snapshot.projectsById.values(),
+        createdProject.localProjectId
+      );
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onCreateProject={onCreateProject}
+          onNavigate={onNavigate}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const search = container.querySelector<HTMLInputElement>(
+      'input[type="search"]'
+    )!;
+    await act(async () => changeInput(search, "missing"));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Create Project"]')!
+        .click()
+    );
+    const id = repositoryScopeId(createdProject.repository!);
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: id });
+    expect(search.value).toBe("");
+    expect(
+      [...container.querySelectorAll("[data-project-id]")].some(
+        (element) => element.getAttribute("data-project-id") === id
+      )
+    ).toBe(true);
+    await act(async () => {
+      await store.loadProjects();
+    });
+    expect(store.current().projectsById.get(id)?.threads).toEqual([]);
+  });
+
+  it("keeps the current selection when creation is canceled and shows failures for retry", async () => {
+    const store = new PersonalMemoryStore(api());
+    const onNavigate = vi.fn();
+    const onCreateProject = vi
+      .fn<() => Promise<null>>()
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("Project folder is unavailable."));
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onCreateProject={onCreateProject}
+          onNavigate={onNavigate}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const create = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Create Project"]'
+    )!;
+    await act(async () => create.click());
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => create.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Project folder is unavailable."
+    );
+    expect(create.disabled).toBe(false);
+  });
+
+  it("creates an empty destination for unresolved history, moves explicitly, then resets to unresolved", async () => {
+    const id = repositoryScopeId(createdProject.repository!);
+    const metadata: PersonalDesktopProjectMetadata[] = [];
+    const historical = thread(1, {
+      projectId: "unassigned",
+      projectName: "Unresolved history",
+      repositoryAssignment: {
+        state: "historical_unresolved",
+        version: 1,
+        automatic: null,
+        override: null,
+        effective: null
+      }
+    });
+    let current = historical;
+    const assignSessionProject = vi.fn<
+      PersonalDesktopApi["assignSessionProject"]
+    >(async (input) => {
+      current =
+        input.action === "move"
+          ? {
+              ...historical,
+              projectId: id,
+              projectName: createdProject.displayName,
+              projectAssignmentSource: "user_override",
+              repositoryAssignment: {
+                state: "historical_unresolved",
+                version: 2,
+                automatic: null,
+                override: createdProject.repository!,
+                effective: createdProject.repository!
+              }
+            }
+          : {
+              ...historical,
+              repositoryAssignment: {
+                ...historical.repositoryAssignment!,
+                version: 3
+              }
+            };
+      return { projectId: current.projectId };
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => [
+          {
+            ...project([current]),
+            id: current.projectId,
+            name: current.projectName
+          }
+        ],
+        listProjectMetadata: async () => metadata,
+        loadEventPage: async () => []
+      })
+    );
+    const onCreateProject = vi.fn(async () => {
+      metadata.push(createdProject);
+      const snapshot = await store.loadProjects();
+      return projectForLocalProject(
+        snapshot.projectsById.values(),
+        createdProject.localProjectId
+      );
+    });
+    await act(async () =>
+      root.render(
+        <Harness
+          initialRoute={{ kind: "session", projectId: "unassigned", sessionId }}
+        >
+          {({ route, onNavigate }) => (
+            <PersonalMemoryWorkspace
+              assignSessionProject={assignSessionProject}
+              onCreateProject={onCreateProject}
+              onNavigate={onNavigate}
+              onSessionProjectAssigned={({ projectId }) =>
+                onNavigate({
+                  kind: "session",
+                  projectId: projectId!,
+                  sessionId
+                })
+              }
+              route={route}
+              store={store}
+            />
+          )}
+        </Harness>
+      )
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Manage Captured Session"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Create Project…")!
+        .click()
+    );
+    expect(assignSessionProject).not.toHaveBeenCalled();
+    expect(current.repositoryAssignment?.effective).toBeNull();
+    expect(
+      document.querySelector<HTMLSelectElement>(
+        'select[name="targetProjectId"]'
+      )?.value
+    ).toBe(id);
+    await act(async () =>
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    expect(assignSessionProject).toHaveBeenLastCalledWith({
+      action: "move",
+      sessionId,
+      targetProjectId: id,
+      expectedVersion: 1
+    });
+    expect(store.current().projectsById.get(id)?.threads).toHaveLength(1);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Manage Captured Session"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Reset to automatic")!
+        .click()
+    );
+    expect(assignSessionProject).toHaveBeenLastCalledWith({
+      action: "reset",
+      sessionId,
+      expectedVersion: 2
+    });
+    expect(
+      store.current().projectsById.get("unassigned")?.threads
+    ).toHaveLength(1);
+    expect(store.current().projectsById.get(id)?.threads).toEqual([]);
   });
 
   it("clears execution context attachments when navigating to another Conversation", async () => {
@@ -777,7 +1019,7 @@ describe("PersonalMemoryWorkspace", () => {
     const detail = container.querySelector(".personal-memory-detail-pane");
     const list = container.querySelector(".personal-project-list");
     expect(detail?.textContent).toContain(
-      "Projects appear after the Supported Capture Hook records a Captured Session."
+      "Use + to add a Project folder, or capture a Conversation to get started."
     );
     expect(list?.textContent).not.toContain("No Projects yet");
     expect(

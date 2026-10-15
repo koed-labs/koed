@@ -6,6 +6,8 @@ Use one selected repository anchor to group Projects and recall their Memory
 across checkouts. Capture records repository assignments for Codex, Claude Code,
 Pi, managed Conversations, and historical imports. Desktop supports individual
 reassignment, bounded bulk review, and explicit shared anchor selection.
+Add Projects from the Projects header or while assigning a Captured Session.
+New Projects can receive unresolved history before they have any captures.
 
 Preserve assignments through Personal Device Sync and use separate Project
 snapshots for Team Share Grants. Existing Sessions become unresolved once during

@@ -2474,7 +2474,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     );
   });
 
-  it("derives the exact assignment body from the main-owned Project graph", async () => {
+  it("assigns unresolved history to an empty Project from the main-owned local catalog", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     writeFileSync(
@@ -2528,16 +2528,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            projects: [
-              {
-                id: targetId,
-                name: "Project Two",
-                path: "/work/project-two",
-                eventCount: 0,
-                threads: [],
-                ignoredRemoteAuthority: "https://remote.example.test"
-              }
-            ]
+            projects: []
           })
         )
       )

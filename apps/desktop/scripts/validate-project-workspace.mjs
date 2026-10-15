@@ -505,6 +505,26 @@ const run = async () => {
       "Personal Memory workspace"
     );
     await window.webContents.executeJavaScript(
+      `document.querySelector('button[aria-label="Create Project"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.personal-project-detail h2')?.textContent === 'Added Project'`,
+      "empty Project added and opened by canonical identity"
+    );
+    const createdProject = await window.webContents.executeJavaScript(`(() => {
+      const row = [...document.querySelectorAll('[data-project-id]')]
+        .find((candidate) => candidate.textContent.includes('Added Project'));
+      const action = document.querySelector('button[aria-label="Create Project"]');
+      return { id: row?.getAttribute('data-project-id'), visible: Boolean(row?.getBoundingClientRect().height), enabled: !action?.disabled };
+    })()`);
+    assert.ok(
+      createdProject.id?.startsWith("repository:"),
+      JSON.stringify(createdProject)
+    );
+    assert.equal(createdProject.visible, true);
+    assert.equal(createdProject.enabled, true);
+    await window.webContents.executeJavaScript(
       `document.querySelector('[data-project-id="browser-project"]')?.click()`
     );
     await delay(50);

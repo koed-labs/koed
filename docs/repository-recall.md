@@ -162,6 +162,19 @@ they validate boundaries, not model answer quality.
 
 ## Desktop Groups and Single-Session Assignment
 
+Use **+** in the Projects header to add a Project. The native folder picker
+can select an existing folder or create a folder. Koed discovers its repository
+identity and stores it in the local Project catalog. A folder in an existing
+repository opens that repository's Project. Empty Projects remain available
+before any Captured Sessions exist.
+
+Open a Captured Session and choose **Manage Captured Session** to assign it.
+Choose a destination and select **Move**. **Create Project…** opens the same
+folder picker and selects the added Project as a destination. Creating a Project
+does not move history; the User must select **Move**. **Reset to automatic**
+restores the recorded capture assignment. For legacy Sessions, reset returns
+them to unresolved history. Adding a Project never backfills legacy assignments.
+
 Desktop groups Captured Sessions by the same effective identity that recall uses.
 Current catalogue entries with that identity join the group, even when their
 checkout paths differ. Each local checkout retains its opaque local Project id,

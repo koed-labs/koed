@@ -109,6 +109,22 @@ durable task tests pass 15 cases, including encrypted known and explicit-null
 Global context. Workspace compilation, test typechecking, lint, and formatting
 also pass after integration.
 
+## Project creation follow-up
+
+The Projects header and Captured Session assignment dialog use the native
+folder picker to add Projects. The catalog retains empty Projects as assignment
+destinations. Opening a checkout resolves its canonical Project across existing
+repository groups. Creating a Project leaves historical assignments unresolved.
+An explicit move selects the destination before refreshing the index; reset
+keeps the Session open in unresolved history.
+
+Focused Desktop regressions cover creation, cancellation, errors, empty
+destinations, canonical identity lookup, and the complete App move/reset flow
+while other unresolved Sessions remain. The isolated Electron workspace check
+adds and opens an empty Project. Native assignment and recall suites pass all
+15 cases. Desktop compilation, test typechecking, formatting, and targeted lint
+checks pass. These checks use disposable profiles and databases.
+
 ## Release boundary
 
 The Project cutover and dependent Global work are locally integrated and

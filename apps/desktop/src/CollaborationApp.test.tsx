@@ -4,6 +4,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  repositoryScopeId,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationMessage,
@@ -14,6 +15,8 @@ import {
   type PendingShare,
   type PersonalDesktopApi,
   type PersonalDesktopNote,
+  type PersonalDesktopProjectThread,
+  type RepositoryIdentity,
   type SharedMemoryGrant,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
@@ -1295,6 +1298,180 @@ describe("CollaborationApp", () => {
     expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
     return client;
   };
+
+  it("keeps a moved Captured Session open when unresolved history still has other Sessions", async () => {
+    const identity: RepositoryIdentity = {
+      kind: "non_git_project",
+      key: "ng_destination",
+      root: "/tmp/destination",
+      branch: null,
+      checkoutId: "checkout_destination",
+      originatingDeviceId: "device",
+      reason: "non_git",
+      selectedRemote: null,
+      anchorDisplay: null
+    };
+    const destinationId = repositoryScopeId(identity);
+    let moved = false;
+    const history: PersonalDesktopProjectThread = {
+      id: "history-a",
+      sessionId: uuid(901),
+      sourceAiClient: "codex",
+      presentation: null,
+      name: "History A",
+      projectId: "unassigned",
+      projectName: "Unresolved history",
+      projectPath: "/tmp/old",
+      projectAssignmentSource: "detected",
+      eventCount: 1,
+      invalidatedCount: 0,
+      latestAt: new Date().toISOString(),
+      sample: "History",
+      repositoryAssignment: {
+        state: "historical_unresolved",
+        version: 1,
+        automatic: null,
+        override: null,
+        effective: null
+      }
+    };
+    const other = {
+      ...history,
+      id: "history-b",
+      sessionId: uuid(902),
+      name: "History B"
+    };
+    const api = createPersonalMemoryApi();
+    api.listProjectMetadata = async () => [
+      {
+        schemaVersion: 1,
+        discoveredAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        localProjectId: "lp_destination",
+        displayName: "Destination",
+        path: { cwd: identity.root!, projectRoot: null },
+        repository: identity
+      }
+    ];
+    api.listProjects = async () => [
+      {
+        id: "unassigned",
+        name: "Unresolved history",
+        path: "/tmp/old",
+        eventCount: moved ? 1 : 2,
+        threads: moved ? [other] : [history, other]
+      },
+      ...(moved
+        ? [
+            {
+              id: destinationId,
+              name: "Destination",
+              path: identity.root,
+              eventCount: 1,
+              threads: [
+                {
+                  ...history,
+                  projectId: destinationId,
+                  projectName: "Destination",
+                  projectAssignmentSource: "user_override" as const,
+                  repositoryAssignment: {
+                    state: "historical_unresolved" as const,
+                    version: 2,
+                    automatic: null,
+                    override: identity,
+                    effective: identity
+                  }
+                }
+              ]
+            }
+          ]
+        : [])
+    ];
+    api.assignSessionProject = vi.fn(async (input) => {
+      moved = input.action === "move";
+      return { projectId: moved ? destinationId : null };
+    });
+    await render(createClient(), api);
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Projects")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[data-project-id="unassigned"]')
+      ).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[data-project-id="unassigned"]')!
+        .click()
+    );
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".personal-session-row-select"
+        )
+      ]
+        .find((button) => button.textContent?.includes("History A"))!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Manage Captured Session"]'
+        )!
+        .click()
+    );
+    await act(async () => {
+      const select = document.querySelector<HTMLSelectElement>(
+        'select[name="targetProjectId"]'
+      )!;
+      select.value = destinationId;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () =>
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".personal-session-detail h2")?.textContent
+      ).toBe("History A")
+    );
+    expect(
+      container.querySelector(".desktop-breadcrumb")?.textContent
+    ).toContain("Destination");
+    expect(
+      container.querySelector('[data-project-id="unassigned"]')
+    ).not.toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Manage Captured Session"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Reset to automatic")!
+        .click()
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".desktop-breadcrumb")?.textContent
+      ).toContain("Unresolved history")
+    );
+    expect(
+      container.querySelector(".personal-session-detail h2")?.textContent
+    ).toBe("History A");
+    expect(api.assignSessionProject).toHaveBeenLastCalledWith({
+      action: "reset",
+      sessionId: history.sessionId,
+      expectedVersion: 2
+    });
+  });
 
   it("reloads both recent lists when the Personal owner changes with the same API", async () => {
     const api = createPersonalMemoryApi();

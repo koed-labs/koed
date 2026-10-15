@@ -3481,13 +3481,14 @@ function SessionAssignment({
         store.purge(
           ({ thread: cached }) => cached.sessionId === thread.sessionId
         );
-        await store.loadProjects();
-        if (request !== requestRef.current) return;
+        // Navigate before reloading: removing this Session from its old group
+        // can unmount these controls, which fences later selection callbacks.
+        setOpen(false);
         onAssigned?.({
           projectId: result.projectId,
           sessionId: thread.sessionId
         });
-        setOpen(false);
+        await store.loadProjects();
       } catch (cause) {
         if (request !== requestRef.current) return;
         setError(cause instanceof Error ? cause.message : String(cause));
