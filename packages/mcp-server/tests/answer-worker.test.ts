@@ -14,6 +14,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
   query: sdk.query
 }));
+import { countTokensForModel } from "@koed/core";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
@@ -122,7 +123,9 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "scanOnlyNotFound"
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
+    capturePromptsPath?: string;
     requiredPromptSnippets?: string[];
+    retryPromptSnippets?: string[];
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -144,6 +147,8 @@ import readline from "node:readline";
 const useTools = ${options.useTools === false ? "false" : "true"};
 const mode = ${JSON.stringify(options.mode ?? "happy")};
 const requiredPromptSnippets = ${JSON.stringify(options.requiredPromptSnippets ?? [])};
+const retryPromptSnippets = ${JSON.stringify(options.retryPromptSnippets ?? [])};
+const capturePromptsPath = ${JSON.stringify(options.capturePromptsPath ?? null)};
 const attemptFile = ${JSON.stringify(attemptFile)};
 const answer = ${JSON.stringify(
       options.answer ?? {
@@ -203,7 +208,8 @@ lineReader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const promptText = message.params?.input?.[0]?.text ?? "";
-    for (const snippet of requiredPromptSnippets) {
+    if (capturePromptsPath) fs.appendFileSync(capturePromptsPath, JSON.stringify(promptText) + "\\n");
+    for (const snippet of [...requiredPromptSnippets, ...(attempt > 1 ? retryPromptSnippets : [])]) {
       if (!promptText.includes(snippet)) {
         console.error("missing prompt snippet: " + snippet);
         process.exit(67);
@@ -284,7 +290,7 @@ lineReader.on("line", (line) => {
       process.exit(64);
     }
     if (mode === "invalidThenValid" && attempt === 1) {
-      sendFinal("This is not JSON");
+      sendFinal({ ...answer, relevant_memory_found: false });
       return;
     }
     sendFinal(answer);
@@ -323,6 +329,88 @@ const resolveMemoryAnswerWorkerTestConfig = (
     KOED_HOME: path.join(directory, "koed-home"),
     CODEX_HOME: path.join(directory, "codex-home")
   });
+
+const promptBudgetRegressionModel = "gpt-5.6-luna";
+
+const createPromptBudgetRegressionClient = (): MemoryAnswerRetrievalClient => ({
+  async search(input) {
+    if (input.retrieval_stage === "score_scan") {
+      return {
+        retrieval: {
+          stages: [
+            { name: "leaf_search", countAboveThreshold: 2, maxAllowed: 2 }
+          ]
+        }
+      };
+    }
+    return {
+      hits: ["A", "B"].map((id) => ({
+        nodeId: `node-${id}`,
+        sourceId: `event-${id}`,
+        visibility: "personal",
+        summaryText: `KOE144_DYNAMIC_TOOL_EVIDENCE PROMPT_BUDGET_EVIDENCE_${id} ${"deployment evidence ".repeat(100)}`,
+        citation: { nodeId: `node-${id}`, visibility: "personal" }
+      })),
+      retrieval: { stage: input.retrieval_stage }
+    };
+  },
+  async expand() {
+    throw new Error("expand should not be required for direct evidence");
+  }
+});
+
+const runPromptBudgetRegression = (
+  directory: string,
+  maxPromptTokens: number,
+  capturePromptsPath: string
+) =>
+  answerWithMemoryWorker(
+    {
+      evidenceBundle: {
+        query: "What deployment did we choose?",
+        evidence: [],
+        retrieval: { mode: "app_server_dynamic_tools" }
+      }
+    },
+    {
+      client: createPromptBudgetRegressionClient(),
+      retrievalScope: "personal",
+      searchDomain: "project",
+      projectId: "workspace-1",
+      responseDetail: "internal",
+      config: resolveMemoryAnswerWorkerTestConfig(directory, {
+        MEMORY_ANSWER_PROVIDER: "codex",
+        MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
+        MEMORY_ANSWER_MAX_ATTEMPTS: "2",
+        MEMORY_ANSWER_MAX_PROMPT_TOKENS: String(maxPromptTokens),
+        MEMORY_CODEX_APP_SERVER_BINARY: writeFakeDynamicMemoryAnswerAppServer(
+          directory,
+          {
+            mode: "invalidThenValid",
+            answer: {
+              ...answerObject(
+                "Available evidence suggests Docker, but does not confirm the final deployment choice.",
+                "insufficient"
+              ),
+              relevant_memory_found: true,
+              evidence: [
+                {
+                  evidence_index: 0,
+                  relevance: "partial deployment evidence",
+                  support: "KOE144_DYNAMIC_TOOL_EVIDENCE"
+                }
+              ],
+              missing_evidence: ["confirmation of the final deployment choice"]
+            },
+            capturePromptsPath,
+            retryPromptSnippets: [
+              "The previous answer failed validation. Correct this before finishing:"
+            ]
+          }
+        )
+      })
+    }
+  );
 
 describe("memory answer worker", () => {
   it.each([
@@ -744,6 +832,22 @@ process.stdin.once("data", () => {
         ...insufficient,
         evidence: [{ evidence_index: 0 }]
       })
+    ).toThrow(/insufficient requires/);
+  });
+
+  it("preserves relevant partial evidence in insufficient answers", () => {
+    const answer = {
+      ...answerObject("A partial supported answer", "found"),
+      memory_status: "insufficient",
+      missing: ["the remaining decision"]
+    };
+    expect(parseStructuredMemoryAnswer(answer)).toMatchObject({
+      memory_status: "insufficient",
+      relevant_memory_found: true,
+      evidence: [{ evidence_index: 0 }]
+    });
+    expect(() =>
+      parseStructuredMemoryAnswer({ ...answer, evidence: [] })
     ).toThrow(/insufficient requires/);
   });
 
@@ -1746,11 +1850,14 @@ process.stdin.once("data", () => {
     }
   });
 
-  it("retries malformed structured worker output before falling back", async () => {
+  it("retries semantically invalid Codex output with validation feedback", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
-        mode: "invalidThenValid"
+        mode: "invalidThenValid",
+        retryPromptSnippets: [
+          "The previous answer failed validation. Correct this before finishing:"
+        ]
       });
       const searches: Record<string, unknown>[] = [];
       const client: MemoryAnswerRetrievalClient = {
@@ -1814,13 +1921,16 @@ process.stdin.once("data", () => {
       expect(response.localMemoryWorker.usedFallback).toBe(false);
       expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
       expect(
+        response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+      ).toContain("relevant_memory_found");
+      expect(
         response.localMemoryWorker.appServerExecutions?.map(
           (execution) => execution.status
         )
       ).toEqual(["failed", "succeeded"]);
       expect(
         response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
-      ).toContain("JSON");
+      ).toContain("relevant_memory_found");
       const retryTrace = (
         response.evidenceBundle?.retrieval as {
           trace?: {
@@ -1850,6 +1960,150 @@ process.stdin.once("data", () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("trims evidence to fit retry validation feedback within remaining prompt budget", async () => {
+    const calibrationDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-budget-calibration-")
+    );
+    const constrainedDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-budget-constrained-")
+    );
+    try {
+      const calibrationPath = path.join(calibrationDirectory, "prompts.jsonl");
+      const calibration = await runPromptBudgetRegression(
+        calibrationDirectory,
+        24_000,
+        calibrationPath
+      );
+      expect(calibration.localMemoryWorker.usedFallback).toBe(false);
+      const calibrationPrompts = fs
+        .readFileSync(calibrationPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      expect(calibrationPrompts).toHaveLength(2);
+
+      const retryPrompt = calibrationPrompts[1] ?? "";
+      const feedbackMarker =
+        "\nThe previous answer failed validation. Correct this before finishing:\n";
+      const feedbackOffset = retryPrompt.indexOf(feedbackMarker);
+      expect(feedbackOffset).toBeGreaterThan(0);
+      const baseRetryPrompt = retryPrompt.slice(0, feedbackOffset);
+      const firstPromptTokens = countTokensForModel(
+        calibrationPrompts[0] ?? "",
+        { model: promptBudgetRegressionModel }
+      ).tokens;
+      const retryTokens = countTokensForModel(retryPrompt, {
+        model: promptBudgetRegressionModel
+      }).tokens;
+      const constrainedBudget = firstPromptTokens + retryTokens - 5;
+      const constrainedPath = path.join(constrainedDirectory, "prompts.jsonl");
+      const constrained = await runPromptBudgetRegression(
+        constrainedDirectory,
+        constrainedBudget,
+        constrainedPath
+      );
+
+      const constrainedPrompts = fs
+        .readFileSync(constrainedPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      const constrainedPromptTokenCounts = constrainedPrompts.map(
+        (prompt) =>
+          countTokensForModel(prompt, { model: promptBudgetRegressionModel })
+            .tokens
+      );
+      expect(
+        constrained.localMemoryWorker.usedFallback,
+        `Worker failure: ${constrained.localMemoryWorker.errorMessage}; prompt token counts: ${constrainedPromptTokenCounts.join(", ")}`
+      ).toBe(false);
+      expect(constrainedPrompts).toHaveLength(2);
+      const remainingPromptTokens =
+        constrainedBudget - (constrainedPromptTokenCounts[0] ?? 0);
+      expect(remainingPromptTokens).toBeLessThan(retryTokens);
+      expect(constrainedPromptTokenCounts[1] ?? 0).toBeLessThanOrEqual(
+        remainingPromptTokens
+      );
+      const constrainedRetry = constrainedPrompts[1] ?? "";
+      const retainedA = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_A");
+      const retainedB = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_B");
+      expect(retainedA).not.toBe(retainedB);
+      expect(constrainedRetry).toContain(feedbackMarker.trim());
+      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_A");
+      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_B");
+    } finally {
+      fs.rmSync(calibrationDirectory, { recursive: true, force: true });
+      fs.rmSync(constrainedDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("retries semantically invalid Claude output with shared validation feedback", async () => {
+    const prompts: string[] = [];
+    let attempt = 0;
+    sdk.query.mockImplementation(({ prompt }: { prompt?: string }) => {
+      prompts.push(typeof prompt === "string" ? prompt : "");
+      attempt += 1;
+      const structuredOutput =
+        attempt === 1
+          ? {
+              ...answerObject("Unsupported answer"),
+              relevant_memory_found: false
+            }
+          : {
+              ...answerObject(
+                "No complete evidence is available.",
+                "pending_summary"
+              ),
+              missing: ["a completed summary"]
+            };
+      async function* resultStream(): AsyncGenerator<SDKMessage, void> {
+        yield {
+          type: "result",
+          subtype: "success",
+          structured_output: structuredOutput,
+          result: JSON.stringify(structuredOutput),
+          modelUsage: {},
+          usage: {}
+        } as SDKMessage;
+      }
+      return resultStream() as Query;
+    });
+
+    const response = await answerWithMemoryWorker(
+      { evidenceBundle: { query: "What is available?", evidence: [] } },
+      {
+        client: {
+          async search() {
+            throw new Error("pending summary should not retrieve");
+          },
+          async expand() {
+            throw new Error("pending summary should not expand");
+          }
+        },
+        responseDetail: "internal",
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({}),
+          provider: "claude",
+          aiClientInstanceId: "claude.work",
+          executablePath: process.execPath,
+          maxAttempts: 2
+        }
+      }
+    );
+
+    expect(response.localMemoryWorker.usedFallback).toBe(false);
+    expect(response.localMemoryWorker.memoryStatus).toBe("pending_summary");
+    expect(attempt).toBe(2);
+    expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
+    expect(
+      response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+    ).toContain("relevant_memory_found");
+    expect(prompts[1]).toContain(
+      "The previous answer failed validation. Correct this before finishing:"
+    );
+    expect(prompts[1]).toContain("relevant_memory_found");
   });
 
   it("returns insufficient when the request-wide prompt-token budget cannot start an attempt", async () => {
@@ -2144,7 +2398,7 @@ process.stdin.once("data", () => {
         expect(response.localMemoryWorker.usedFallback).toBe(true);
         if (responseDetail === "internal") {
           expect(response.localMemoryWorker.errorMessage).toContain(
-            "insufficient requires relevant_memory_found=false"
+            "insufficient requires relevant_memory_found to match selected partial evidence"
           );
         }
         expect(response.markdown).toBe(
@@ -2170,7 +2424,7 @@ process.stdin.once("data", () => {
     }
   );
 
-  it("rejects clean insufficient answers without selected partial evidence", async () => {
+  it("accepts insufficient answers that identify missing evidence after clean retrieval", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const response = await answerWithMemoryWorker(
@@ -2206,10 +2460,8 @@ process.stdin.once("data", () => {
         }
       );
 
-      expect(response.localMemoryWorker.usedFallback).toBe(true);
-      expect(response.localMemoryWorker.errorMessage).toContain(
-        "returned insufficient after complete retrieval without selected partial evidence"
-      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.structuredAnswer?.memory_status).toBe("insufficient");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
