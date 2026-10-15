@@ -93,6 +93,8 @@ that mapping, Team Membership, Workspace Access, Share Grants or entitlements.
 A WorkOS credential cannot access another Team merely because its User belongs
 to both. That ceiling applies to Workspace discovery, retrieval, queued answer
 admission and collection, helper claims, cancellation, history and cleanup.
+Shared Memory node expansion uses the same bounded actor and checks the mapped
+Team before decrypting the candidate, even when the User belongs to other Teams.
 The existing repository authorization still checks membership and current
 Shared Memory authority. Missing or disabled links fail closed. Existing Koed
 OAuth grants retain their existing User-wide Team authorization behavior.
@@ -161,8 +163,22 @@ it as an operational control.
 Upstream calls use a fixed WorkOS API destination, five-second timeouts,
 32-KiB response limits and no redirects or automatic retries. The existing
 rate-limit store bounds request volume, and each API process permits eight
-concurrent verifications without an unbounded waiting queue. Use shared edge
-protection and a shared rate-limit store for multi-instance deployments.
+concurrent verifications without an unbounded waiting queue. Validation is
+reused only within one HTTP request; history reads require the same two provider
+calls as other delegated requests, and the next request revalidates credentials.
+
+Before any delegated authentication runs, a shared-store transport-peer limit
+admits at most one quarter of the configured provider request budget as incoming
+JWT-bearing requests per minute (at least one). With the default 120 provider
+calls/minute, one peer can submit 30 such requests, consuming at most 60 provider
+calls. Forged credentials, rotated tokens and different API/MCP routes share
+that peer's limit, and denial includes Retry-After without another provider call.
+The key uses a hash of the server-resolved peer IP, not caller-supplied forwarding
+headers or unvalidated identity claims. Users behind one NAT or reverse proxy
+may share this limit. Internal MCP-to-API dispatch preserves the original peer
+and uses the same bucket rather than a shared loopback identity. This does not
+replace distributed-abuse protection: use shared edge protection and a shared
+rate-limit store for multi-instance deployments.
 
 ## Validation
 

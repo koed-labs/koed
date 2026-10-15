@@ -32,6 +32,7 @@ describe.skipIf(!databaseUrl)(
     const pool = createDbPool({ connectionString: url.toString() });
     const signingKey = randomBytes(32);
     let app: Awaited<ReturnType<typeof buildServer>>;
+    let createServer: () => ReturnType<typeof buildServer>;
     let repository: ReturnType<typeof createMemorySourceRepository>;
     let home: string;
     let origin: string;
@@ -41,6 +42,8 @@ describe.skipIf(!databaseUrl)(
     let otherTeamId: string;
     let otherWorkspaceId: string;
     let decrypt: ReturnType<typeof vi.spyOn>;
+    let teamDecrypt: ReturnType<typeof vi.spyOn>;
+    let candidateId: string;
     let revoked = false;
     const resource = workosAgentTestEnvironment.KOED_REMOTE_MCP_PUBLIC_URL;
     const issuer =
@@ -50,32 +53,44 @@ describe.skipIf(!databaseUrl)(
       if (endpoint === "https://api.workos.com/agents/credentials/validate") {
         const body = JSON.parse(String(init?.body));
         expect(body.audience).toBe(resource);
-        await jwtVerify(body.credential, signingKey, {
-          issuer,
-          audience: resource
-        });
+        let registrationId: string;
+        try {
+          const { payload } = await jwtVerify(body.credential, signingKey, {
+            issuer,
+            audience: resource
+          });
+          registrationId = payload.sub!;
+        } catch {
+          return Response.json({ valid: false });
+        }
         return Response.json({
           valid: !revoked,
-          registration_id: "agent_reg_fixture"
+          registration_id: registrationId
         });
       }
       if (
-        endpoint ===
-        "https://api.workos.com/agents/registrations/agent_reg_fixture"
+        ["agent_reg_fixture", "agent_reg_other"].some(
+          (id) =>
+            endpoint === `https://api.workos.com/agents/registrations/${id}`
+        )
       )
         return Response.json({
-          id: "agent_reg_fixture",
-          organization_id: "org_test",
+          id: endpoint.endsWith("agent_reg_other")
+            ? "agent_reg_other"
+            : "agent_reg_fixture",
+          organization_id: endpoint.endsWith("agent_reg_other")
+            ? "org_other"
+            : "org_test",
           status: "verified",
           kind: "service_auth"
         });
       throw new Error("Unexpected external request");
     });
-    const issue = (team = true, execution = false) =>
+    const issue = (team = true, execution = false, otherOrganization = false) =>
       new SignJWT({
-        sub: "agent_reg_fixture",
+        sub: otherOrganization ? "agent_reg_other" : "agent_reg_fixture",
         act: { sub: "user_fixture" },
-        org_id: "org_test",
+        org_id: otherOrganization ? "org_other" : "org_test",
         scope: [
           "koed:memory:read",
           ...(team ? ["koed:team:read"] : []),
@@ -137,6 +152,10 @@ describe.skipIf(!databaseUrl)(
         "koed:memory:read,koed:team:read,koed:local-execution"
       );
       vi.stubEnv("WORKOS_AGENT_REGISTRATION_REQUESTS_PER_MINUTE", "10000");
+      vi.stubEnv(
+        "WORKOS_AGENT_REGISTRATION_ALLOWED_ORGANIZATIONS",
+        "org_test,org_other"
+      );
       await admin.query(`create database ${database}`);
       await runDbMigrations(pool);
       const fixture = await import(
@@ -150,6 +169,31 @@ describe.skipIf(!databaseUrl)(
       });
       await fixture.seedFixture(pool, runtime);
       await fixture.validateFixture(pool, runtime);
+      const pending =
+        await runtime.sharedMemoryRepository.listPendingSharedMemorySemanticItems(
+          {
+            limit: 200,
+            model: "qwen3-0.6b",
+            dimensions: 1024,
+            version: "workos-fixture"
+          }
+        );
+      expect(pending.length).toBeGreaterThan(0);
+      const vector = Array<number>(1024).fill(0);
+      vector[0] = 1;
+      for (const item of pending)
+        expect(
+          await runtime.sharedMemoryRepository.storeSharedMemorySemanticEmbedding(
+            {
+              semanticItemId: item.semanticItemId,
+              contentHash: item.contentHash,
+              model: "qwen3-0.6b",
+              dimensions: 1024,
+              version: "workos-fixture",
+              vector
+            }
+          )
+        ).toBe(true);
       userId = fixture.fixtureUsers.alice.id;
       workspaceId = fixture.fixtureWorkspaces.cloud.id;
       teamId = (
@@ -184,28 +228,41 @@ describe.skipIf(!databaseUrl)(
         "insert into external_auth_organizations(provider,provider_environment,provider_organization_id,team_id,status) values('workos_authkit','staging','org_test',$1,'linked')",
         [teamId]
       );
+      await pool.query(
+        "insert into external_auth_organizations(provider,provider_environment,provider_organization_id,team_id,status) values('workos_authkit','staging','org_other',$1,'linked')",
+        [otherTeamId]
+      );
+      candidateId = (
+        await pool.query(
+          "select id from team_memory_semantic_items where team_workspace_id=$1 and embedding_state='embedded' order by id limit 1",
+          [workspaceId]
+        )
+      ).rows[0].id;
       repository = createMemorySourceRepository(pool, {
         envelopeEncryptionProvider: runtime.personalProvider,
         teamEnvelopeEncryptionProvider: runtime.teamProvider,
         ownerPrivateReplicaEnvelopeEncryptionProvider: runtime.ownerProvider
       });
       decrypt = vi.spyOn(runtime.personalProvider, "decrypt");
-      app = await buildServer({
-        repository,
-        remoteMcpOAuthStore: createRemoteMcpOAuthRepository(pool),
-        envelopeEncryptionProvider: runtime.personalProvider,
-        teamEnvelopeEncryptionProvider: runtime.teamProvider,
-        ownerPrivateReplicaEnvelopeEncryptionProvider: runtime.ownerProvider,
-        fetch: providerFetch,
-        inspectDeploymentIdentity: () => ({
-          health: "healthy",
-          deploymentId: randomUUID(),
-          deviceInstanceId: randomUUID(),
-          remoteOperationsAllowed: true,
-          message: "Synthetic test deployment",
-          platformProtection: "verified"
-        })
-      });
+      teamDecrypt = vi.spyOn(runtime.teamProvider, "decrypt");
+      createServer = () =>
+        buildServer({
+          repository,
+          remoteMcpOAuthStore: createRemoteMcpOAuthRepository(pool),
+          envelopeEncryptionProvider: runtime.personalProvider,
+          teamEnvelopeEncryptionProvider: runtime.teamProvider,
+          ownerPrivateReplicaEnvelopeEncryptionProvider: runtime.ownerProvider,
+          fetch: providerFetch,
+          inspectDeploymentIdentity: () => ({
+            health: "healthy",
+            deploymentId: randomUUID(),
+            deviceInstanceId: randomUUID(),
+            remoteOperationsAllowed: true,
+            message: "Synthetic test deployment",
+            platformProtection: "verified"
+          })
+        });
+      app = await createServer();
       origin = await app.listen({ host: "127.0.0.1", port: 0 });
       expect(
         (await request(await issue(true, true), "/v1/access/check")).statusCode
@@ -233,6 +290,77 @@ describe.skipIf(!databaseUrl)(
       expect(metadata.statusCode, metadata.body).toBe(200);
       expect(metadata.json().authorization_servers).toContain(issuer);
       expect(metadata.json().authorization_servers).toHaveLength(2);
+      const authorizationMetadata = await request(
+        "",
+        "/.well-known/oauth-authorization-server"
+      );
+      expect(metadata.json().authorization_servers[0]).toBe(
+        authorizationMetadata.json().issuer
+      );
+      expect(metadata.json().authorization_servers[0]).toBe(
+        new URL("/", resource).href
+      );
+    });
+
+    it("throttles one transport peer before spending the shared provider budget", async () => {
+      vi.stubEnv("WORKOS_AGENT_REGISTRATION_REQUESTS_PER_MINUTE", "12");
+      const limited = await createServer();
+      try {
+        const token = await issue();
+        const forged = `${token.split(".").slice(0, 2).join(".")}.invalid_signature`;
+        const calls = providerFetch.mock.calls.length;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const denied = await limited.inject({
+            method: "GET",
+            url: "/v1/access/check",
+            remoteAddress: "192.0.2.10",
+            headers: { authorization: `Bearer ${forged}` }
+          });
+          expect(denied.statusCode).toBe(401);
+        }
+        expect(providerFetch.mock.calls.length - calls).toBe(3);
+        for (const path of ["/v1/access/check", "/mcp"]) {
+          const denied = await limited.inject({
+            method: "GET",
+            url: path,
+            remoteAddress: "192.0.2.10",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "x-forwarded-for": "198.51.100.20"
+            }
+          });
+          expect(denied.statusCode).toBe(429);
+          expect(denied.headers["retry-after"]).toBeDefined();
+        }
+        expect(providerFetch.mock.calls.length - calls).toBe(3);
+        const allowed = await limited.inject({
+          method: "GET",
+          url: "/v1/access/check",
+          remoteAddress: "192.0.2.11",
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(allowed.statusCode, allowed.body).toBe(200);
+        expect(providerFetch.mock.calls.length - calls).toBe(5);
+      } finally {
+        await limited.close();
+        vi.stubEnv("WORKOS_AGENT_REGISTRATION_REQUESTS_PER_MINUTE", "10000");
+      }
+    });
+
+    it("expands Shared Memory only within the credential's mapped Team", async () => {
+      const path = `/v1/memory/nodes/${candidateId}/expand?${new URLSearchParams({ team_workspace_id: workspaceId, search_domain: "global" })}`;
+      const allowed = await request(await issue(), path);
+      expect(allowed.statusCode, allowed.body).toBe(200);
+      expect(allowed.json().expanded).not.toBeNull();
+      expect(
+        await repository.getTeamWorkspaceContext({ userId }, workspaceId)
+      ).not.toBeNull();
+      const otherToken = await issue(true, false, true);
+      teamDecrypt.mockClear();
+      const denied = await request(otherToken, path);
+      expect(denied.statusCode, denied.body).toBe(200);
+      expect(denied.json().expanded).toBeNull();
+      expect(teamDecrypt).not.toHaveBeenCalled();
     });
 
     it("retains Personal task access and requires explicit Team consent", async () => {
@@ -384,12 +512,18 @@ describe.skipIf(!databaseUrl)(
         (await request(personalOnly, `/v1/memory/questions/${question.id}`))
           .statusCode
       ).toBe(403);
+      const historyCalls = providerFetch.mock.calls.length;
       const personalHistory = await request(
         personalOnly,
         "/v1/memory/questions"
       );
       expect(personalHistory.statusCode).toBe(200);
       expect(personalHistory.body).not.toContain("Other Team private answer");
+      expect(providerFetch.mock.calls.length - historyCalls).toBe(2);
+      expect(
+        (await request(personalOnly, "/v1/memory/questions")).statusCode
+      ).toBe(200);
+      expect(providerFetch.mock.calls.length - historyCalls).toBe(4);
       await expect(
         repository.createFinalMemoryQuestion(scoped, {
           idempotencyKey: randomUUID(),

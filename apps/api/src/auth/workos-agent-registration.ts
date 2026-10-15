@@ -98,6 +98,19 @@ export const createWorkosAgentRegistration = (options: {
   };
 
   return {
+    async admitCaller(callerKey: string): Promise<void> {
+      // Limit the transport peer before any authentication can spend provider calls.
+      const limit = Math.max(1, Math.floor(config.requestsPerMinute / 4));
+      const bucket = await options.rateLimitStore.increment(
+        `${budgetKey}:caller:${callerKey}`,
+        60_000
+      );
+      if (bucket.count > limit)
+        throw new DelegatedAuthenticationError(
+          429,
+          Math.max(1000, bucket.resetAt - Date.now())
+        );
+    },
     async resolvePrincipal(
       token: string
     ): Promise<RemoteMcpDelegatedPrincipal> {

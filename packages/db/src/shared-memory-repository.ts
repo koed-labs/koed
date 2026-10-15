@@ -18348,6 +18348,7 @@ export const createSharedMemoryRepository = (
     },
 
     async expandAuthorizedSharedMemorySemanticItem(actor, input) {
+      if (actor.teamBoundaryId === null) return null;
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       assertUuid(input.candidateId, "candidateId");
       const row = await pool.query<Row>(
@@ -18399,6 +18400,7 @@ export const createSharedMemoryRepository = (
            left join sessions source_session on source_session.id=local_memory.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.id=$1 and smi.team_workspace_id=$2 and smi.embedding_state='embedded'
+            and ($17::uuid is null or g.team_id=$17)
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
                 and local_memory.local_session_id is not null and source_session.id is not null)
@@ -18451,7 +18453,8 @@ export const createSharedMemoryRepository = (
           input.authorizationBoundary?.workspaceVersion ?? null,
           input.authorizationBoundary?.membershipVersion ?? null,
           input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
+          input.authorizationBoundary?.userRowVersion ?? null,
+          actor.teamBoundaryId ?? null
         ]
       );
       const candidate = row.rows[0];

@@ -393,6 +393,33 @@ describe("WorkOS Agent Registration verifier", () => {
     });
     expect(f.requestFetch).toHaveBeenCalledTimes(2);
   });
+  it("preserves provider capacity for another peer when one caller rotates valid credentials", async () => {
+    const f = fixture();
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await f.resolver.admitCaller("peer-one");
+      await f.resolver.resolvePrincipal(
+        await f.token({ jti: String(attempt) })
+      );
+    }
+    expect(f.requestFetch).toHaveBeenCalledTimes(60);
+    await expect(f.resolver.admitCaller("peer-one")).rejects.toMatchObject({
+      statusCode: 429,
+      retryAfterMs: expect.any(Number)
+    });
+    expect(f.requestFetch).toHaveBeenCalledTimes(60);
+    await f.resolver.admitCaller("peer-two");
+    await expect(
+      f.resolver.resolvePrincipal(await f.token())
+    ).resolves.toMatchObject({
+      userId: f.user.id
+    });
+    expect(f.requestFetch).toHaveBeenCalledTimes(62);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 60_001);
+    await f.resolver.admitCaller("peer-one");
+    await f.resolver.resolvePrincipal(await f.token());
+    expect(f.requestFetch).toHaveBeenCalledTimes(64);
+  });
   it.each([429, 503])(
     "preserves HTTP %i as a transient failure without provider details",
     async (status) => {

@@ -36,9 +36,7 @@ export const registerQuestionRoutes = (
   ): Promise<MemoryQuestionActorContext> => {
     const kind = context.auth.authenticatedCredentialKind(request);
     if (kind === "oauth_delegated") {
-      const principal = await context.auth.resolveDelegatedPrincipal(request, {
-        fresh: true
-      });
+      const principal = await context.auth.resolveDelegatedPrincipal(request);
       return {
         userId,
         ...(principal && principal.teamBoundaryId !== undefined

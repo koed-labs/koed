@@ -255,9 +255,8 @@ describe("Memory Question history credential boundaries", () => {
     }
   );
 
-  it("refreshes delegated consent before history access and does not fall back to a browser session after revocation", async () => {
+  it("revalidates each history request and does not fall back to a browser session after revocation", async () => {
     const test = await fixture("oauth", ["koed:memory:read", "koed:team:read"]);
-    // Authentication succeeds once, but the history-specific fresh lookup fails.
     test.resolveDelegatedPrincipal.mockResolvedValueOnce({
       userId: test.user.id,
       grantId: randomUUID(),
@@ -267,6 +266,15 @@ describe("Memory Question history credential boundaries", () => {
       expiresAt: Date.now() + 60_000
     });
     test.resolveDelegatedPrincipal.mockRejectedValueOnce(new Error("revoked"));
+    const allowed = await test.app.inject({
+      method: "GET",
+      url: `/v1/memory/questions/${test.protectedTeam.id}`,
+      headers: { ...test.headers, cookie: "cm_session=browser-session" }
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().question).toEqual(test.protectedTeam);
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(1);
+    test.getMemoryQuestion.mockClear();
     const denied = await test.app.inject({
       method: "GET",
       url: `/v1/memory/questions/${test.protectedTeam.id}`,
@@ -278,7 +286,7 @@ describe("Memory Question history credential boundaries", () => {
     expect(test.getMemoryQuestion).not.toHaveBeenCalled();
   });
 
-  it("uses the refreshed delegated scopes when Team consent is removed", async () => {
+  it("uses current delegated scopes on the next request when Team consent is removed", async () => {
     const test = await fixture("oauth", ["koed:memory:read", "koed:team:read"]);
     const principal = {
       userId: test.user.id,
@@ -291,13 +299,23 @@ describe("Memory Question history credential boundaries", () => {
     test.resolveDelegatedPrincipal
       .mockResolvedValueOnce(principal)
       .mockResolvedValueOnce({ ...principal, scopes: ["koed:memory:read"] });
+    const before = await test.app.inject({
+      method: "GET",
+      url: "/v1/memory/questions",
+      headers: test.headers
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().questions).toContainEqual(test.protectedTeam);
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(1);
+    test.expandTeam.mockClear();
     const listed = await test.app.inject({
       method: "GET",
       url: "/v1/memory/questions",
       headers: test.headers
     });
     expect(listed.statusCode).toBe(200);
-    expect(test.listMemoryQuestions.mock.calls[0]![0]).toEqual({
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(2);
+    expect(test.listMemoryQuestions.mock.calls[1]![0]).toEqual({
       userId: test.user.id,
       allowTeam: false
     });

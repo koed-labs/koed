@@ -80,8 +80,14 @@ export const registerRemoteMcpOAuthRoutes = (
           json({
             ...metadata,
             authorization_servers: [
-              options.issuerUrl.origin,
-              ...options.additionalAuthorizationServers!
+              ...new Set([
+                ...(Array.isArray(metadata.authorization_servers)
+                  ? metadata.authorization_servers.filter(
+                      (issuer): issuer is string => typeof issuer === "string"
+                    )
+                  : [options.issuerUrl.toString()]),
+                ...options.additionalAuthorizationServers!
+              ])
             ]
           });
         next();
