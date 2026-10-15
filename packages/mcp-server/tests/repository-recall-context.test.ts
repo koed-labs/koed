@@ -2,13 +2,82 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   discoverProjectMetadata,
+  createNamedProject,
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import { repositoryScopeId } from "@koed/shared";
 import { pinRepositoryRecallContext } from "../src/repository-recall-context.js";
+import { resolveRequestedProjectRoot } from "../src/repository-recall-context.js";
+
+it("uses a saved move for new recall requests and keeps an accepted context pinned", async () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-routed-recall-")
+  );
+  try {
+    const cwd = path.join(directory, "source");
+    fs.mkdirSync(cwd);
+    const environment = { KOED_HOME: path.join(directory, "profile") };
+    const named = createNamedProject(
+      resolveKoedServerPaths(environment),
+      "Planning"
+    );
+    const resolveRouting = vi.fn(async () => named.repository);
+    const pinned = await pinRepositoryRecallContext(
+      { search_domain: "project", project_id: undefined as string | undefined },
+      { cwd },
+      environment,
+      resolveRouting
+    );
+    expect(pinned.repository_context).toEqual(named.repository);
+    expect(pinned.project_id).toBe(repositoryScopeId(named.repository));
+    expect(resolveRouting).toHaveBeenCalledOnce();
+    expect(
+      await pinRepositoryRecallContext(
+        pinned,
+        { cwd: "/missing" },
+        environment,
+        resolveRouting
+      )
+    ).toEqual(pinned);
+    expect(resolveRouting).toHaveBeenCalledOnce();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("pins a named local Project without requiring a directory or inheriting cwd Team routing", async () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-named-recall-")
+  );
+  try {
+    const environment = { KOED_HOME: directory };
+    const named = createNamedProject(
+      resolveKoedServerPaths(environment),
+      "Planning"
+    );
+    const caller = { cwd: "/unavailable/checkout" };
+    const scope = repositoryScopeId(named.repository);
+    for (const project_id of [named.id, scope]) {
+      const pinned = await pinRepositoryRecallContext(
+        { search_domain: "project", project_id },
+        caller,
+        environment
+      );
+      expect(pinned).toMatchObject({
+        project_id: scope,
+        repository_context: named.repository
+      });
+      expect(
+        resolveRequestedProjectRoot(pinned, caller, environment)
+      ).toBeUndefined();
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 it("pins the requested Project before acceptance and preserves it through cwd, anchor and branch changes", async () => {
   const directory = fs.realpathSync(

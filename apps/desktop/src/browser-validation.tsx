@@ -1,3 +1,4 @@
+import { repositoryScopeId } from "@koed/shared/repository-recall";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
@@ -146,26 +147,26 @@ const independentProjectMetadata: PersonalDesktopProjectMetadata = {
   }
 };
 
-const addedProjectMetadata: PersonalDesktopProjectMetadata = {
-  schemaVersion: 1,
-  discoveredAt: timestamp,
-  lastSeenAt: timestamp,
-  localProjectId: `lp_${"2".repeat(32)}`,
-  displayName: "Added Project",
-  path: { cwd: "/private/operator/added", projectRoot: null },
-  repository: {
-    kind: "non_git_project",
-    key: "ng_added",
-    root: "/private/operator/added",
-    branch: null,
-    checkoutId: "checkout_added",
-    originatingDeviceId: "browser_device",
-    reason: "non_git",
-    selectedRemote: null,
-    anchorDisplay: null
-  }
+const namedProjectIdentity = {
+  kind: "local_project" as const,
+  key: "project_added",
+  root: null,
+  branch: null,
+  checkoutId: null,
+  originatingDeviceId: "browser_device",
+  reason: "manual" as const,
+  selectedRemote: null,
+  anchorDisplay: null
+};
+const addedPersonalProject: PersonalDesktopProject = {
+  id: repositoryScopeId(namedProjectIdentity),
+  name: "Added Project",
+  path: null,
+  eventCount: 0,
+  threads: []
 };
 let addedProject = false;
+let projectMoved = false;
 
 const richMarkdownFixture = `# Formatting parity
 
@@ -382,6 +383,18 @@ const personalEvents: PersonalDesktopConversationEvent[] = [
 ];
 
 const personalMemoryApi: PersonalDesktopApi = {
+  createProject: async ({ name }) => {
+    addedPersonalProject.name = name;
+    addedProject = true;
+    return { projectId: addedPersonalProject.id };
+  },
+  moveProject: async () => {
+    projectMoved = true;
+    return {
+      projectId: addedPersonalProject.id,
+      movedCount: personalProject.threads.length
+    };
+  },
   assignSessionProject: async () => ({ projectId: personalProject.id }),
   updateSessionPresentation: async () => ({
     presentation: {
@@ -393,11 +406,29 @@ const personalMemoryApi: PersonalDesktopApi = {
       updatedAt: timestamp
     }
   }),
-  listProjects: async () => [personalProject],
-  listProjectMetadata: async () => [
-    independentProjectMetadata,
-    ...(addedProject ? [addedProjectMetadata] : [])
-  ],
+  listProjects: async () =>
+    projectMoved
+      ? [
+          {
+            ...addedPersonalProject,
+            eventCount: personalProject.eventCount,
+            threads: personalProject.threads.map((thread) => ({
+              ...thread,
+              projectId: addedPersonalProject.id,
+              projectName: addedPersonalProject.name,
+              projectPath: null,
+              repositoryAssignment: {
+                state: "historical_unresolved" as const,
+                version: 2,
+                automatic: null,
+                override: namedProjectIdentity,
+                effective: namedProjectIdentity
+              }
+            }))
+          }
+        ]
+      : [personalProject, ...(addedProject ? [addedPersonalProject] : [])],
+  listProjectMetadata: async () => [independentProjectMetadata],
   loadEventPage: async () => personalEvents,
   updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
@@ -616,10 +647,6 @@ const ValidationApp = () => {
     invoke: async (command: string) => {
       if (command === "ensure_independent_project")
         return { project: independentProjectMetadata };
-      if (command === "select_project_directory") {
-        addedProject = true;
-        return { canceled: false, result: { project: addedProjectMetadata } };
-      }
       return undefined;
     }
   } as typeof window.koedDesktop;

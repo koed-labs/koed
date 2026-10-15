@@ -509,9 +509,29 @@ const run = async () => {
     );
     await waitFor(
       window,
+      `Boolean(document.querySelector('.personal-project-create-dialog input'))`,
+      "named Project creation dialog"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.personal-project-create-dialog input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Added Project');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-project-create-dialog button[type="submit"]:not(:disabled)'))`,
+      "enabled Create action"
+    );
+    await captureValidationScreenshot(window, "project-create-dialog");
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.personal-project-create-dialog form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))`
+    );
+    await waitFor(
+      window,
       `document.querySelector('.personal-project-detail h2')?.textContent === 'Added Project'`,
       "empty Project added and opened by canonical identity"
     );
+    await captureValidationScreenshot(window, "named-project-empty");
     const createdProject = await window.webContents.executeJavaScript(`(() => {
       const row = [...document.querySelectorAll('[data-project-id]')]
         .find((candidate) => candidate.textContent.includes('Added Project'));
@@ -984,6 +1004,53 @@ const run = async () => {
       window,
       `document.querySelector('.personal-memory-workspace')?.classList.contains('route-projects')`,
       "top-bar breadcrumb navigation"
+    );
+
+    await setEmulatedViewport(window, 1440, 900);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-project-detail-actions [aria-label="Move Project"]'))`,
+      "Project header Move action"
+    );
+    await captureValidationScreenshot(window, "project-move-header");
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Move Project"]').click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-project-move-dialog select'))`,
+      "Project destination dialog"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const select = document.querySelector('.personal-project-move-dialog select');
+      select.value = [...select.options].find((option) => option.text === 'Added Project').value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-project-move-dialog button[type="submit"]:not(:disabled)'))`,
+      "enabled Move action"
+    );
+    const moveLayout = await window.webContents.executeJavaScript(`(() => {
+      const dialog = document.querySelector('.personal-project-move-dialog');
+      const select = dialog.querySelector('select').getBoundingClientRect();
+      const plus = dialog.querySelector('[aria-label="Create Project"]').getBoundingClientRect();
+      return { plusToRight: plus.left > select.right, aligned: Math.abs(plus.top - select.top) <= 1 && Math.abs(plus.height - select.height) <= 1, label: dialog.querySelector('button[type="submit"]').textContent };
+    })()`);
+    assert.equal(moveLayout.plusToRight, true, JSON.stringify(moveLayout));
+    assert.equal(moveLayout.aligned, true, JSON.stringify(moveLayout));
+    assert.equal(moveLayout.label, "Move");
+    await captureValidationScreenshot(window, "project-move-dialog");
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.personal-project-move-dialog form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.personal-project-detail h2')?.textContent === 'Added Project' && document.querySelectorAll('.personal-session-row').length === 4`,
+      "all existing Conversations in the named Project"
     );
 
     await setEmulatedViewport(window, 1440, 900);

@@ -6,6 +6,12 @@ Pi uses the [durable Personal Memory Answer path](durable-memory-answer.md) and
 waits for its terminal tool body. Detached message injection remains disabled
 until Pi ordering, provenance, and restart recovery can be proven.
 
+Default Project recall uses the current Conversation's `ctx.cwd` on each call,
+for both blocking and non-blocking delivery. It does not use the Local AI
+Runtime's working directory. Concurrent Conversations carry separate context;
+an explicit Project target overrides the folder-derived default. See
+[Project recall context](repository-recall.md#resolve-before-accepting-work).
+
 ## Requirements
 
 - Pi `0.84.2` or newer

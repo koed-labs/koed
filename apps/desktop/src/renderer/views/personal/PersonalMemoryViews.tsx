@@ -1,3 +1,4 @@
+import { CreateProjectDialog, MoveProjectDialog } from "./ProjectActions.js";
 import { RepositoryAnchorPanel } from "./RepositoryAnchorPanel.js";
 import type { RendererPlatform } from "../../services/platform.js";
 import {
@@ -33,6 +34,7 @@ import {
   ChevronDown,
   CircleAlert,
   Folder,
+  FolderInput,
   Github,
   CirclePlay,
   Clock3,
@@ -44,9 +46,7 @@ import {
   Paperclip,
   Pencil,
   Pin,
-  Plus,
   RefreshCw,
-  Settings,
   X
 } from "lucide-react";
 import {
@@ -156,7 +156,8 @@ export type PersonalMemoryWorkspaceProps = {
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
-  onCreateProject?: () => Promise<DesktopProject | null>;
+  onCreateProject?: (name: string) => Promise<DesktopProject | null>;
+  moveProject?: PersonalDesktopApi["moveProject"];
   openExternal?: (url: string) => Promise<void>;
   revealLocalProject?: (localProjectId: string) => Promise<void>;
   setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
@@ -469,8 +470,6 @@ function ProjectsPane({
 }) {
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => {
     if (!normalizedQuery) return true;
@@ -486,24 +485,6 @@ function ProjectsPane({
     (project) => !active.some(({ id }) => id === project.id)
   );
 
-  const createProject = async () => {
-    if (!onCreateProject) return;
-    setCreating(true);
-    setCreateError("");
-    try {
-      const project = await onCreateProject();
-      if (project) {
-        setQuery("");
-        setShowInactive(true);
-        onSelect(project.id);
-      }
-    } catch (cause) {
-      setCreateError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setCreating(false);
-    }
-  };
-
   return (
     <aside className="personal-projects-pane" aria-label="Projects">
       <header>
@@ -515,31 +496,19 @@ function ProjectsPane({
             {projects.length}
           </span>
           {onCreateProject ? (
-            <button
-              aria-label="Create Project"
-              className="personal-project-create-button"
-              disabled={creating || loading}
-              onClick={() => void createProject()}
-              title="Create Project"
-              type="button"
-            >
-              {creating ? (
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="personal-loading-icon"
-                />
-              ) : (
-                <Plus aria-hidden="true" />
-              )}
-            </button>
+            <CreateProjectDialog
+              create={onCreateProject}
+              disabled={loading}
+              iconOnly
+              onCreated={(project) => {
+                setQuery("");
+                setShowInactive(true);
+                onSelect(project.id);
+              }}
+            />
           ) : null}
         </div>
       </header>
-      {createError ? (
-        <p className="personal-memory-error" role="alert">
-          {createError}
-        </p>
-      ) : null}
       <label className="personal-project-search">
         <span className="sr-only">Search Projects</span>
         <input
@@ -821,6 +790,7 @@ const launchReady = (
   );
 
 function ProjectDetail({
+  moveAction,
   localAiClients,
   error,
   hasProjects,
@@ -867,6 +837,7 @@ function ProjectDetail({
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
+  moveAction?: ReactNode;
 }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -997,7 +968,7 @@ function ProjectDetail({
           <p>
             {hasProjects
               ? "Choose a Project to inspect its Captured Sessions."
-              : "Use + to add a Project folder, or capture a Conversation to get started."}
+              : "Use + to create a Project, or capture a Conversation to get started."}
           </p>
         </div>
       </section>
@@ -1181,15 +1152,18 @@ function ProjectDetail({
             sessionCount={project.threads.length}
           />
         </div>
-        <button
-          className="personal-new-conversation personal-new-conversation-standalone"
-          type="button"
-          disabled={!managedConversations || !project.path || !launchOptions}
-          aria-expanded={launchOpen}
-          onClick={() => setLaunchOpen((open) => !open)}
-        >
-          New
-        </button>
+        <div className="personal-project-detail-actions">
+          {moveAction}
+          <button
+            className="personal-new-conversation personal-new-conversation-standalone"
+            type="button"
+            disabled={!managedConversations || !project.path || !launchOptions}
+            aria-expanded={launchOpen}
+            onClick={() => setLaunchOpen((open) => !open)}
+          >
+            New
+          </button>
+        </div>
       </header>
       {launchError ? (
         <p className="personal-managed-error" role="alert">
@@ -1245,8 +1219,9 @@ function ProjectDetail({
               <BookText aria-hidden="true" className="personal-empty-icon" />
               <h2>No Captured Sessions yet</h2>
               <p>
-                Sessions appear after the Supported Capture Hook records
-                activity in this Project.
+                {project.path
+                  ? "Sessions appear after the Supported Capture Hook records activity in this Project."
+                  : "Move existing Conversations or a Project into this Project to get started."}
               </p>
             </div>
           </div>
@@ -3499,43 +3474,22 @@ function SessionAssignment({
     [assign, onAssigned, store, thread.sessionId]
   );
 
-  const createDestination = async () => {
-    if (!onCreateProject) return;
-    const request = ++requestRef.current;
-    setBusy(true);
-    setError("");
-    try {
-      const project = await onCreateProject();
-      if (request !== requestRef.current) return;
-      if (
-        project &&
-        project.id !== thread.projectId &&
-        project.id !== "unassigned"
-      )
-        setTargetProjectId(project.id);
-    } catch (cause) {
-      if (request === requestRef.current)
-        setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (request === requestRef.current) setBusy(false);
-    }
-  };
-
   if (!assign || !thread.sessionId) return null;
   return (
     <Dialog onOpenChange={setOpen} open={open}>
       <button
-        aria-label="Manage Captured Session"
+        aria-label="Move Conversation"
         className="personal-session-manage-button"
         onClick={() => setOpen(true)}
-        title="Manage Captured Session"
+        title="Move Conversation"
         type="button"
       >
-        <Settings aria-hidden="true" />
+        <FolderInput aria-hidden="true" />
+        <span>Move</span>
       </button>
       <DialogPopup className="personal-session-assignment-dialog">
         <DialogHeader>
-          <DialogTitle>Manage Captured Session</DialogTitle>
+          <DialogTitle>Move Conversation</DialogTitle>
           <DialogDescription>
             Move this session to another Project. Reset restores its recorded
             capture assignment, including unresolved history.
@@ -3587,13 +3541,17 @@ function SessionAssignment({
             </select>
           </label>
           {onCreateProject ? (
-            <button
+            <CreateProjectDialog
+              create={onCreateProject}
               disabled={busy}
-              onClick={() => void createDestination()}
-              type="button"
-            >
-              Create Project…
-            </button>
+              onCreated={(project) => {
+                if (
+                  project.id !== thread.projectId &&
+                  project.id !== "unassigned"
+                )
+                  setTargetProjectId(project.id);
+              }}
+            />
           ) : null}
           {error ? (
             <p role="alert" className="personal-memory-error">
@@ -3864,6 +3822,7 @@ function SessionDetail({
 export function PersonalMemoryWorkspace({
   assignSessionProject,
   onCreateProject,
+  moveProject,
   updateSessionPresentation,
   authorizeManagedConversationTransfer,
   managedConversationRevision = 0,
@@ -4113,6 +4072,21 @@ export function PersonalMemoryWorkspace({
             />
           ) : (
             <ProjectDetail
+              moveAction={
+                selectedProject && moveProject ? (
+                  <MoveProjectDialog
+                    key={selectedProject.id}
+                    project={selectedProject}
+                    projects={projects}
+                    move={moveProject}
+                    create={onCreateProject}
+                    store={store}
+                    onMoved={(projectId) =>
+                      onNavigate({ kind: "project", projectId })
+                    }
+                  />
+                ) : undefined
+              }
               localAiClients={localAiClients}
               launchSelection={launchSelection}
               setLaunchSelection={setLaunchSelection}

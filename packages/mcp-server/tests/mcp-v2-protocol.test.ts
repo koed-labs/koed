@@ -521,6 +521,136 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     );
   });
 
+  it("uses each Conversation directory independently of the adapter launch directory", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const { client } = await connect({
+      callTool,
+      environment: { KOED_MCP_CWD: "/managed/initial" }
+    });
+    await Promise.all(
+      ["/work/project-a", "/work/project-b/package"].map((cwd) =>
+        client.callTool({
+          name: "memory_answer",
+          arguments: {
+            query: cwd,
+            conversation_cwd: cwd,
+            project_id: "explicit-project"
+          }
+        })
+      )
+    );
+    for (const [, input, caller] of vi.mocked(
+      callTool as LocalAiRuntimeClient["callTool"]
+    ).mock.calls) {
+      expect(caller.cwd).toBe(input.query);
+      expect(input.project_id).toBe("explicit-project");
+      expect(input).not.toHaveProperty("conversation_cwd");
+    }
+    await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "A later call does not inherit either folder" }
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.any(Object),
+      expect.objectContaining({ cwd: "/managed/initial" }),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
+  });
+
+  it.each(["", "relative/folder", "/nul\0path"])(
+    "does not fall back to the process directory for invalid Conversation context (%s)",
+    async (conversation_cwd) => {
+      const { client, callTool } = await connect();
+      await expect(
+        client.callTool({
+          name: "memory_answer",
+          arguments: { query: "decision", conversation_cwd }
+        })
+      ).resolves.toMatchObject({ isError: true });
+      expect(callTool).not.toHaveBeenCalled();
+    }
+  );
+
+  it("uses Codex's per-request workspace when an IDE has not run the hook", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const { client } = await connect({ callTool });
+    await Promise.all(
+      ["/repo/alpha", "/repo/beta"].map((root) =>
+        client.callTool({
+          name: "memory_answer",
+          arguments: { query: root },
+          _meta: { "x-codex-turn-metadata": { workspaces: { [root]: {} } } }
+        })
+      )
+    );
+    for (const [, input, caller] of vi.mocked(
+      callTool as LocalAiRuntimeClient["callTool"]
+    ).mock.calls)
+      expect(caller.cwd).toBe(input.query);
+  });
+
+  it("requires a Project target for ambiguous Codex workspaces and keeps Global available", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const { client } = await connect({ callTool });
+    const _meta = {
+      "x-codex-turn-metadata": {
+        workspaces: { "/repo/alpha": {}, "/repo/beta": {} }
+      }
+    };
+    const unknown = await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "decision" },
+      _meta
+    });
+    expect(unknown).toMatchObject({ isError: true });
+    expect(JSON.stringify(unknown.content)).toContain("explicit project_id");
+    expect(callTool).not.toHaveBeenCalled();
+    await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "global decision", search_domain: "global" },
+      _meta
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.objectContaining({
+        repository_context: null,
+        search_domain: "global"
+      }),
+      expect.any(Object),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "explicit decision", project_id: "/repo/beta" },
+      _meta
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.objectContaining({ project_id: "/repo/beta" }),
+      expect.any(Object),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "hook identifies active folder",
+        conversation_cwd: "/repo/alpha/package"
+      },
+      _meta
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.any(Object),
+      expect.objectContaining({ cwd: "/repo/alpha/package" }),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
+  });
+
   it("allows a trusted transport to bind caller cwd without losing protocol metadata", async () => {
     const callTool = vi.fn(
       async (
@@ -539,7 +669,10 @@ describe("Koed MCP 2026-07-28 protocol", () => {
 
     const result = await client.callTool({
       name: "memory_answer",
-      arguments: { query: "Use the trial Project." }
+      arguments: {
+        query: "Use the trial Project.",
+        conversation_cwd: "/ignored/by/trusted/transport"
+      }
     });
 
     expect(callTool.mock.calls[0]![2]).toMatchObject({

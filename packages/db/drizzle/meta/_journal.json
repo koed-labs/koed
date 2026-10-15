@@ -442,6 +442,13 @@
       "when": 1792031178786,
       "tag": "0062_project_assignment_cutover",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792031178787,
+      "tag": "0063_named_local_projects",
+      "breakpoints": true
     }
   ]
 }

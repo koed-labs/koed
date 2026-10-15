@@ -145,11 +145,14 @@ const hookCommand = [
   "--source",
   "claude",
   "--koed-home",
-  koedHome
+  koedHome,
+  "--memory-tool",
+  `mcp__${mcpName}__memory_answer`
 ]
   .map((value) => JSON.stringify(value))
   .join(" ");
 const hookEvents = [
+  "PreToolUse",
   "SessionStart",
   "UserPromptSubmit",
   "PostToolUse",
@@ -414,6 +417,9 @@ for (const eventName of hookEvents) {
   settings.hooks[eventName] = [
     ...withoutKoed,
     {
+      ...(eventName === "PreToolUse"
+        ? { matcher: `mcp__${mcpName}__memory_answer` }
+        : {}),
       hooks: [
         {
           type: "command",

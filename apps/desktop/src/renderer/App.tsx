@@ -1823,7 +1823,33 @@ export function App({
           }
         >
           <PersonalMemoryWorkspace
-            onCreateProject={openPersonalProject}
+            onCreateProject={
+              personalMemoryApi.createProject
+                ? async (name) => {
+                    const { projectId } =
+                      await personalMemoryApi.createProject!({ name });
+                    const refreshed = await personalMemoryStore.loadProjects({
+                      silent: true
+                    });
+                    if (refreshed.error) throw new Error(refreshed.error);
+                    const project = refreshed.projectsById.get(projectId);
+                    if (!project)
+                      throw new Error(
+                        "The Project could not be loaded. Try again."
+                      );
+                    return project;
+                  }
+                : undefined
+            }
+            moveProject={
+              personalMemoryApi.moveProject
+                ? async (input) => {
+                    const result = await personalMemoryApi.moveProject!(input);
+                    scheduleConversationRecentsRefresh();
+                    return result;
+                  }
+                : undefined
+            }
             localAiClients={window.koedDesktop?.localAiClients}
             assignSessionProject={personalMemoryApi.assignSessionProject}
             updateSessionPresentation={async (input) => {

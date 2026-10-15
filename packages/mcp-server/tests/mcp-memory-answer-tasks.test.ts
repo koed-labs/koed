@@ -91,6 +91,24 @@ const collect = (client: Client, id: string) =>
   client.callTool({ name: "memory_answer_result", arguments: { task_id: id } });
 
 describe("ordinary MCP non-blocking Memory Answer", () => {
+  it("passes the per-call Conversation directory to task acceptance and leaves collection independent", async () => {
+    const { client, runtime, current } = await connect();
+    await submit(client, { conversation_cwd: "/work/current-conversation" });
+    const [submitted] = vi.mocked(runtime.startMemoryAnswerTask).mock.calls;
+    expect(submitted?.[0]).not.toHaveProperty("conversation_cwd");
+    expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ cwd: "/work/current-conversation" }),
+      expect.any(String),
+      expect.any(AbortSignal)
+    );
+    await collect(client, current.id);
+    expect(runtime.startMemoryAnswerTask).toHaveBeenCalledTimes(1);
+    expect(runtime.getMemoryAnswerTask).toHaveBeenCalledWith(
+      current.id,
+      expect.any(AbortSignal)
+    );
+  });
   it("accepts before a gated worker finishes, and collection never waits", async () => {
     let finish!: () => void;
     const workerGate = new Promise<void>((resolve) => {

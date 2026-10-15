@@ -6,6 +6,7 @@ export const repositoryIdentitySchema = z
       "portable_repository",
       "device_local_repository",
       "non_git_project",
+      "local_project",
       "unresolved"
     ]),
     key: z.string().min(1).max(512).nullable(),
@@ -18,6 +19,7 @@ export const repositoryIdentitySchema = z
       "origin",
       "local_fallback",
       "non_git",
+      "manual",
       "probe_failed",
       "probe_ambiguous",
       "checkout_unavailable",
@@ -33,6 +35,21 @@ export const repositoryIdentitySchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (
+      value.kind === "local_project" &&
+      (value.reason !== "manual" ||
+        value.root !== null ||
+        value.branch !== null ||
+        value.checkoutId !== null ||
+        value.selectedRemote !== null ||
+        value.anchorDisplay !== null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Named local Projects have no filesystem or repository context."
+      });
+    }
     if ((value.kind === "unresolved") !== (value.key === null)) {
       ctx.addIssue({
         code: "custom",

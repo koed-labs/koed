@@ -63,6 +63,12 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
         JSON.stringify({ ...journal, entries: prior })
       );
       await runDbMigrations(pool, { migrationsFolder: folder });
+      // The current capture adapter expects the later routing catalog. Keep
+      // that catalog empty and temporary while preparing pre-cutover rows.
+      await pool.query(`create table personal_project_routes (
+        owner_user_id uuid,source_project_id text,target_project_id text,
+        target_name text,target_path text,target_identity jsonb
+      )`);
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `cutover-${randomUUID()}@example.test`
@@ -126,6 +132,7 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
           "select to_jsonb(o) as row from session_repository_observations o order by id"
         )
       ).rows;
+      await pool.query("drop table personal_project_routes");
       await runDbMigrations(pool);
       const after = (
         await pool.query<{ id: string; row: Record<string, unknown> }>(

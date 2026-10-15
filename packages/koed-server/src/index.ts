@@ -87,7 +87,10 @@ export {
   setProjectAssociationLookup,
   refreshProjectAssociations,
   setProjectRepositoryAnchor,
-  listProjectMetadata
+  listProjectMetadata,
+  listNamedProjects,
+  createNamedProject,
+  type NamedProject
 } from "./project-metadata.js";
 export { loadRepoEnv } from "./env-file.js";
 export {

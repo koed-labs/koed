@@ -23,6 +23,8 @@ import {
   graphSessionParamsSchema,
   graphSessionPresentationPatchSchema,
   graphSessionProjectPatchSchema,
+  graphProjectMoveSchema,
+  graphProjectResolveSchema,
   graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
   graphQuerySchema,
@@ -362,6 +364,40 @@ export const registerGraphRoutes = (
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };
+    }
+  );
+
+  app.get(
+    "/v1/memory/graph/projects/resolve",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const user = await authenticate(request);
+      const input = graphProjectResolveSchema.parse(request.query);
+      return {
+        project: await requireRepository().resolveProjectRouting(
+          { userId: user.id },
+          input.projectId
+        )
+      };
+    }
+  );
+
+  app.post(
+    "/v1/memory/graph/projects/move",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const user = await authenticate(request);
+      const input = graphProjectMoveSchema.parse(request.body);
+      const result = await requireRepository().moveProjectConversations(
+        { userId: user.id },
+        input
+      );
+      if (!result.movedCount)
+        return reply
+          .status(404)
+          .send({ error: "Project has no Conversations available to move" });
+      await cacheProvider.deleteByPrefix("koed:graph:");
+      return result;
     }
   );
 

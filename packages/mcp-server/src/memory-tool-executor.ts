@@ -316,7 +316,8 @@ export class MemoryToolExecutor {
                     project_id: input.source_project_id
                   },
                   caller,
-                  this.environment
+                  this.environment,
+                  this.client.resolveProjectRouting?.bind(this.client)
                 )
               ).project_id;
         const result = await this.client.proposeCuratedMemory({
@@ -333,7 +334,8 @@ export class MemoryToolExecutor {
         const pinned = await pinRepositoryRecallContext(
           input,
           caller,
-          this.environment
+          this.environment,
+          this.client.resolveProjectRouting?.bind(this.client)
         );
         const { repository_context: _context, ...search } = input;
         void _context;
@@ -349,7 +351,8 @@ export class MemoryToolExecutor {
         const pinned = await pinRepositoryRecallContext(
           input,
           caller,
-          this.environment
+          this.environment,
+          this.client.resolveProjectRouting?.bind(this.client)
         );
         return await this.client.expand(input.nodeId, {
           searchDomain: input.search_domain,
@@ -476,7 +479,12 @@ export class MemoryToolExecutor {
             retryable: false
           }
         );
-      input = await pinRepositoryRecallContext(input, caller, this.environment);
+      input = await pinRepositoryRecallContext(
+        input,
+        caller,
+        this.environment,
+        this.client.resolveProjectRouting?.bind(this.client)
+      );
     }
     const requestedResponseDetail: MemoryAnswerResponseDetail =
       input.include_evidence ? "with_evidence" : input.response_detail;

@@ -14313,3 +14313,28 @@ export const repositoryAssignmentReviews = pgTable(
     )
   ]
 );
+
+export const personalProjectRoutes = pgTable(
+  "personal_project_routes",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceProjectId: text("source_project_id").notNull(),
+    targetProjectId: text("target_project_id").notNull(),
+    targetName: text("target_name").notNull(),
+    targetPath: text("target_path"),
+    targetIdentity: jsonb("target_identity")
+      .$type<RepositoryIdentity>()
+      .notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.sourceProjectId] }),
+    check(
+      "personal_project_routes_distinct_check",
+      sql`${table.sourceProjectId} <> ${table.targetProjectId} and ${table.sourceProjectId} <> 'unassigned'`
+    )
+  ]
+);

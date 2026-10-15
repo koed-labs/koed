@@ -1418,9 +1418,7 @@ describe("CollaborationApp", () => {
     );
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Manage Captured Session"]'
-        )!
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
         .click()
     );
     await act(async () => {
@@ -1448,9 +1446,7 @@ describe("CollaborationApp", () => {
     ).not.toBeNull();
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Manage Captured Session"]'
-        )!
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
         .click()
     );
     await act(async () =>

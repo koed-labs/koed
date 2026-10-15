@@ -365,7 +365,7 @@ describe("ClaudeManagedConversationSession", () => {
       type: "stdio",
       command: process.execPath,
       args: [expect.stringMatching(/\/cli\.js$/)],
-      env: { KOED_HOME: cwd }
+      env: { KOED_HOME: cwd, KOED_MCP_CWD: fs.realpathSync(cwd) }
     });
     session.close();
   });

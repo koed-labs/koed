@@ -1,7 +1,10 @@
 import { fileURLToPath } from "node:url";
 
 /** Launch-scoped recall connection; credentials remain in the local runtime. */
-export const managedKoedMcpServer = (environment: NodeJS.ProcessEnv) => {
+export const managedKoedMcpServer = (
+  environment: NodeJS.ProcessEnv,
+  cwd?: string
+) => {
   const koedHome = environment.KOED_HOME?.trim();
   if (!koedHome) return undefined;
   return {
@@ -10,6 +13,7 @@ export const managedKoedMcpServer = (environment: NodeJS.ProcessEnv) => {
     args: [fileURLToPath(new URL("./cli.js", import.meta.url))],
     env: {
       KOED_HOME: koedHome,
+      ...(cwd ? { KOED_MCP_CWD: cwd } : {}),
       ...(environment.ELECTRON_RUN_AS_NODE === "1"
         ? { ELECTRON_RUN_AS_NODE: "1" }
         : {})

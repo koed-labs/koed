@@ -193,7 +193,8 @@ _Avoid_: Agent status, read receipt, exact activity log
 
 **Project**:
 A local AI-client or code context such as a repository, working directory,
-filepath, ref, branch, or cwd.
+filepath, ref, branch, or cwd, or a named local grouping of Conversations
+created by the User. A named Project does not require a folder.
 _Avoid_: Workspace, stable shared memory ID
 
 **Projection**:

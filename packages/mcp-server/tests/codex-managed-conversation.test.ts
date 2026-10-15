@@ -876,6 +876,12 @@ describe("Codex managed conversation coordinator", () => {
     expect(overrides[0]).toContain("enabled=true");
     expect(overrides[0]).toContain("required=true");
     expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
+    expect(
+      managedConversationKoedMcpConfigOverrides(
+        { KOED_HOME: "/tmp/koed home" },
+        "/work/conversation"
+      )[0]
+    ).toContain('KOED_MCP_CWD="/work/conversation"');
   });
 
   it.each([false, true])(

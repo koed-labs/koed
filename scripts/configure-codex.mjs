@@ -125,10 +125,18 @@ const koedHome =
         configuredKoedHome.startsWith("~\\")
       ? resolve(homedir(), configuredKoedHome.slice(2))
       : resolve(configuredKoedHome);
-const hookCommand = [nodeCommand, captureHookPath, "--koed-home", koedHome]
+const hookCommand = [
+  nodeCommand,
+  captureHookPath,
+  "--koed-home",
+  koedHome,
+  "--memory-tool",
+  `mcp__${mcpName}__memory_answer`
+]
   .map((value) => JSON.stringify(value))
   .join(" ");
 const hookEvents = [
+  ["PreToolUse", 10],
   ["SessionStart", 10],
   ["UserPromptSubmit", 10],
   ["PostToolUse", 10],
@@ -139,7 +147,7 @@ const hookEvents = [
 const hookBlocks = hookEvents
   .map(
     ([eventName, timeout]) => `[[hooks.${eventName}]]
-[[hooks.${eventName}.hooks]]
+${eventName === "PreToolUse" ? `matcher = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : ""}[[hooks.${eventName}.hooks]]
 type = "command"
 command = ${JSON.stringify(hookCommand)}
 timeout = ${timeout}`

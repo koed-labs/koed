@@ -111,19 +111,40 @@ also pass after integration.
 
 ## Project creation follow-up
 
-The Projects header and Captured Session assignment dialog use the native
-folder picker to add Projects. The catalog retains empty Projects as assignment
-destinations. Opening a checkout resolves its canonical Project across existing
-repository groups. Creating a Project leaves historical assignments unresolved.
-An explicit move selects the destination before refreshing the index; reset
-keeps the Session open in unresolved history.
+The Projects header creates named local Projects without selecting or creating
+folders. Empty Projects remain assignment destinations. Both Conversation and
+Project headers expose **Move**. A whole-Project move includes all current
+owner-visible Sessions and routes later captures to the same destination.
+Automatic capture identity and the legacy unresolved cutoff remain intact.
 
-Focused Desktop regressions cover creation, cancellation, errors, empty
-destinations, canonical identity lookup, and the complete App move/reset flow
-while other unresolved Sessions remain. The isolated Electron workspace check
-adds and opens an empty Project. Native assignment and recall suites pass all
-15 cases. Desktop compilation, test typechecking, formatting, and targeted lint
-checks pass. These checks use disposable profiles and databases.
+Focused Desktop regressions cover named creation, cancellation, errors, empty
+destinations, individual moves, whole-Project moves, and reset navigation. The
+isolated Electron check creates an empty named Project and moves an existing
+Project into it. Native tests cover more than 500 Sessions, owner isolation,
+transaction rollback, future routing, route flattening, cycle rejection, and
+continued legacy history. MCP tests cover rootless Project recall and pinned
+routing context. These checks use disposable profiles and databases.
+
+## Conversation folder recall follow-up
+
+The supported integrations now pass the Conversation folder independently of
+the MCP process's startup directory. Regressions cover native hook rewrites,
+concurrent folders, both delivery modes, invalid paths, explicit Project
+targets, Global scope, managed adapters, and remote transport authority. Setup
+and repair tests cover both packaged and contributor hook installation.
+
+Native checks used Codex CLI 0.162.1, Claude Code 2.1.267, and the Pi 1.1.0 SDK
+with isolated profiles and a recording local recall service. Codex and Claude
+passed their real native hook inputs through the stdio adapter. Claude used a
+deterministic local model endpoint. Pi executed its installed extension through
+the native SDK in both blocking and non-blocking modes. Each resolved a Git
+subdirectory to the expected repository Project.
+
+The Codex app-server check deliberately starts both its process and MCP adapter
+outside the Conversation folder. Its untrusted hook is skipped, so the adapter
+uses the request's single native workspace root. Ambiguous roots require an
+explicit target or trusted hook. These checks verify transport and Project
+resolution, not answer quality, and do not constitute a VS Code UI test.
 
 ## Release boundary
 

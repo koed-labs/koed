@@ -1,3 +1,4 @@
+import { isConversationDirectory } from "./conversation-directory.js";
 import {
   repositoryIdentitySchema,
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE
@@ -78,6 +79,17 @@ export const memoryAnswerInputSchema = z
 // The runtime and durable worker retain the strict execution schema above.
 export const memoryAnswerAdapterInputSchema =
   memoryAnswerInputSchema.safeExtend({
+    conversation_cwd: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine(isConversationDirectory, {
+        message: "conversation_cwd must be an absolute conversation directory"
+      })
+      .optional()
+      .describe(
+        "Current conversation directory, supplied automatically by the client integration. Overrides the MCP process directory, without changing an explicit Project target."
+      ),
     delivery_mode: z
       .enum(MEMORY_ANSWER_DELIVERY_MODES)
       .optional()

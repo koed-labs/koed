@@ -64,6 +64,86 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
     await app.close();
     await pool.end();
   });
+  it("moves a whole owner Project, retains future routing, and keeps the rule private", async () => {
+    const actor = { userId: ownerId };
+    const source: RepositoryIdentity = {
+      kind: "non_git_project",
+      key: `ng_${randomUUID()}`,
+      root: "/fixture/fallback",
+      branch: null,
+      checkoutId: "fallback",
+      originatingDeviceId: "device",
+      selectedRemote: null,
+      anchorDisplay: null,
+      reason: "non_git"
+    };
+    const destination: RepositoryIdentity = {
+      kind: "local_project",
+      key: `project_${randomUUID()}`,
+      root: null,
+      branch: null,
+      checkoutId: null,
+      originatingDeviceId: "device",
+      selectedRemote: null,
+      anchorDisplay: null,
+      reason: "manual"
+    };
+    const first = await repo.createCapturedSession(actor, {
+      repositoryIdentity: source
+    });
+    await repo.createCapturedSession(actor, { repositoryIdentity: source });
+    const payload = {
+      sourceProjectId: repositoryScopeId(source),
+      project: {
+        id: repositoryScopeId(destination),
+        name: "Planning",
+        path: null,
+        repositoryIdentity: destination
+      }
+    };
+    const denied = await app.inject({
+      method: "POST",
+      url: "/v1/memory/graph/projects/move",
+      payload,
+      headers: { "x-fixture-owner": "other" }
+    });
+    expect(denied.statusCode).toBe(404);
+    expect(
+      (await repo.getCapturedSession(actor, first.id))?.repositoryAssignment
+        ?.version
+    ).toBe(1);
+    const moved = await app.inject({
+      method: "POST",
+      url: "/v1/memory/graph/projects/move",
+      payload
+    });
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(moved.json()).toEqual({
+      movedCount: 2,
+      projectId: repositoryScopeId(destination)
+    });
+    const url = `/v1/memory/graph/projects/resolve?${new URLSearchParams({ projectId: payload.sourceProjectId })}`;
+    expect(
+      (await app.inject({ method: "GET", url })).json().project
+    ).toMatchObject({ repositoryIdentity: destination });
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url,
+          headers: { "x-fixture-owner": "other" }
+        })
+      ).json()
+    ).toEqual({ project: null });
+    const later = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: source
+    });
+    expect(later.repositoryAssignment).toMatchObject({
+      automatic: source,
+      effective: destination
+    });
+  });
   it("returns the same effective groups as recall and rejects stale or other-owner moves", async () => {
     const identity = (name: string): RepositoryIdentity => ({
       kind: "portable_repository",

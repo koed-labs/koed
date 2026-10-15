@@ -362,6 +362,19 @@ retrieval hints can seed exact checks, semantic reformulations, entities, and
 temporal intent. The Local AI Runtime treats them as untrusted suggestions and
 cannot use them to broaden authorization or the selected Search Domain.
 
+Koed's `PreToolUse` hook binds each `memory_answer` call to the native
+Conversation cwd through the adapter-only `conversation_cwd` argument. This
+avoids selecting the MCP process's startup folder when the CLI, desktop, or
+VS Code extension uses a different Conversation folder. Explicit Project targets
+remain authoritative. Repair the integration after upgrading, then restart
+Codex and review updated hooks if prompted. See [Project recall context](repository-recall.md#resolve-before-accepting-work).
+
+If an app-server client skips an untrusted hook, a single native per-request
+workspace root still selects the correct Project. With multiple or missing
+roots, default Project recall asks for a trusted hook or an explicit Project
+target. It never guesses from the MCP startup directory. Global recall can
+continue with unknown current-Project provenance.
+
 Koed's generated Codex configuration pre-approves `memory_answer`, `memory_answer_result`,
 `memory_answer_cancel`, and `memory_workspaces`, so read-only
 recall does not require a separate tool approval. This rule does not pre-approve

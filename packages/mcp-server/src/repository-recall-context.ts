@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   discoverProjectMetadata,
   listProjectMetadata,
+  listNamedProjects,
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import {
@@ -21,7 +22,8 @@ export const pinRepositoryRecallContext = async <
 >(
   input: Input,
   caller: { cwd: string },
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  resolveRouting?: (scope: string) => Promise<RepositoryIdentity | null>
 ): Promise<Input & { repository_context?: RepositoryIdentity | null }> => {
   if (input.search_domain === "global") {
     // Null is an explicit, durable unknown context; retries must not discover the worker cwd.
@@ -37,7 +39,8 @@ export const pinRepositoryRecallContext = async <
       const pinned = await pinRepositoryRecallContext(
         { ...input, search_domain: "project", repository_context: undefined },
         caller,
-        environment
+        environment,
+        resolveRouting
       );
       return {
         ...input,
@@ -77,9 +80,22 @@ export const pinRepositoryRecallContext = async <
     return { ...input, project_id: scope, repository_context: context };
   }
   const paths = resolveKoedServerPaths(environment);
+  const named = input.project_id
+    ? listNamedProjects(paths).find(
+        (project) =>
+          project.id === input.project_id ||
+          repositoryScopeId(project.repository) === input.project_id
+      )
+    : undefined;
+  if (named)
+    return {
+      ...input,
+      project_id: repositoryScopeId(named.repository),
+      repository_context: named.repository
+    };
   const target = resolveRequestedProjectRoot(input, caller, environment);
   try {
-    if (!statSync(target).isDirectory())
+    if (!target || !statSync(target).isDirectory())
       throw new Error("Project target is not a directory");
   } catch {
     throw Object.assign(
@@ -91,7 +107,7 @@ export const pinRepositoryRecallContext = async <
       }
     );
   }
-  const context = (await discoverProjectMetadata(paths, { cwd: target }))
+  const context = (await discoverProjectMetadata(paths, { cwd: target! }))
     .project?.repository;
   if (!context || context.kind === "unresolved" || !context.key)
     throw Object.assign(
@@ -104,10 +120,13 @@ export const pinRepositoryRecallContext = async <
         retryable: false
       }
     );
+  const effective = resolveRouting
+    ? ((await resolveRouting(repositoryScopeId(context))) ?? context)
+    : context;
   return {
     ...input,
-    project_id: repositoryScopeId(context),
-    repository_context: context
+    project_id: repositoryScopeId(effective),
+    repository_context: effective
   };
 };
 
@@ -118,9 +137,20 @@ export const resolveRequestedProjectRoot = (
   },
   caller: { cwd: string },
   environment: NodeJS.ProcessEnv
-): string => {
+): string | undefined => {
+  // A named Project has no root and must not inherit a cwd-to-Team mapping.
+  if (input.repository_context?.kind === "local_project") return undefined;
   if (input.repository_context?.root) return input.repository_context.root;
   const paths = resolveKoedServerPaths(environment);
+  if (
+    input.project_id &&
+    listNamedProjects(paths).some(
+      (project) =>
+        project.id === input.project_id ||
+        repositoryScopeId(project.repository) === input.project_id
+    )
+  )
+    return undefined;
   let target = input.project_id ?? caller.cwd;
   if (
     input.project_id &&

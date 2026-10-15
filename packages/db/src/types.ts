@@ -1,5 +1,6 @@
 import type { RepositoryReviewRepository } from "./repository-review-repository.js";
 import type { RepositoryAssignment } from "@koed/shared";
+import type { ProjectRoutingRepository } from "./project-routing-repository.js";
 import type {
   LcmSourceItem,
   MemoryActor,
@@ -1946,6 +1947,7 @@ export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
     RepositoryReviewRepository,
+    ProjectRoutingRepository,
     CapturedSessionRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,

@@ -91,6 +91,137 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("creates folderless Projects and derives individual and whole-Project moves from their local identities", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-named-desktop-"));
+    try {
+      mkdirSync(resolve(koedHome, "config"));
+      writeFileSync(
+        resolve(koedHome, "config/local-app-credential.json"),
+        JSON.stringify({ apiToken: "main_only_token" })
+      );
+      const personalMemoryFetch = vi
+        .fn<typeof fetch>()
+        .mockImplementation(async (url, init) => {
+          if (String(url).includes("/projects/move")) {
+            const body = JSON.parse(String(init?.body)) as {
+              project: { id: string };
+            };
+            return new Response(
+              JSON.stringify({ movedCount: 503, projectId: body.project.id })
+            );
+          }
+          if (init?.method === "PATCH") {
+            const body = JSON.parse(String(init.body)) as {
+              project: { id: string; repositoryIdentity: RepositoryIdentity };
+            };
+            return new Response(
+              JSON.stringify({
+                session: {
+                  project: { id: body.project.id },
+                  repositoryAssignment: {
+                    state: "historical_unresolved",
+                    version: 2,
+                    automatic: null,
+                    override: body.project.repositoryIdentity,
+                    effective: body.project.repositoryIdentity
+                  }
+                }
+              })
+            );
+          }
+          return new Response(JSON.stringify({ projects: [] }));
+        });
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) =>
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              api: { state: "healthy", url: "http://localhost:4170" }
+            }),
+            ""
+          ),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        personalMemoryFetch
+      });
+      const created = await manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.create",
+        input: { name: "  Planning  " }
+      });
+      expect(created).toMatchObject({
+        ok: true,
+        data: { projectId: expect.stringContaining('"kind":"local_project"') }
+      });
+      if (!created.ok || created.operation !== "personal.projects.create")
+        throw new Error("creation failed");
+      const targetProjectId = created.data.projectId;
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.list",
+          input: {}
+        })
+      ).toMatchObject({
+        ok: true,
+        data: {
+          projects: [
+            { id: targetProjectId, name: "Planning", path: null, threads: [] }
+          ]
+        }
+      });
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.assign_project",
+          input: {
+            action: "move",
+            targetProjectId,
+            sessionId: "11111111-1111-4111-8111-111111111111",
+            expectedVersion: 1
+          }
+        })
+      ).toMatchObject({ ok: true, data: { projectId: targetProjectId } });
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.move",
+          input: { sourceProjectId: "unassigned", targetProjectId }
+        })
+      ).toMatchObject({
+        ok: true,
+        data: { projectId: targetProjectId, movedCount: 503 }
+      });
+      const moveBody = JSON.parse(
+        String(personalMemoryFetch.mock.calls.at(-1)?.[1]?.body)
+      ) as {
+        project: { path: unknown; repositoryIdentity: RepositoryIdentity };
+      };
+      expect(moveBody.project).toMatchObject({
+        path: null,
+        repositoryIdentity: {
+          kind: "local_project",
+          root: null,
+          checkoutId: null
+        }
+      });
+      expect(
+        readFileSync(resolve(koedHome, "config/projects.json"), "utf8")
+      ).not.toContain("/repo");
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
   it("submits Personal Ask through the fixed local runtime operation", async () => {
     const question = {
       id: "11111111-1111-4111-8111-111111111111",

@@ -94,6 +94,41 @@ catalogued local Project id resolves that requested Project only. An unknown
 Project, missing checkout, invalid selected anchor, or failed probe returns a
 resolution error. It does not substitute the caller's repository or Global scope.
 
+Supported client integrations bind that cwd to the Conversation, independently
+of the MCP process's startup directory. Codex (CLI, desktop, and IDE extension)
+and Claude Code install a `PreToolUse` hook for Koed's `memory_answer` tool.
+The hook copies its native `cwd` into the adapter-only `conversation_cwd`
+argument on every call, including calls from concurrent Conversations. The
+adapter validates the absolute path, passes it as caller context, and removes
+the argument before submitting blocking or non-blocking work. Missing or invalid
+native cwd stops the recall call instead of selecting the adapter's Project.
+An explicit `project_id` or pinned `repository_context` still selects the
+requested Project; Global and Session search keep their original scopes.
+
+Codex also supplies per-request workspace roots in its native MCP metadata.
+When no hook observation or private managed directory is available, a single
+absolute workspace root selects that Project. This covers app-server clients
+that skip an untrusted hook. Missing or multiple workspace roots require an
+explicit Project target or a trusted hook; Koed does not choose one arbitrarily
+or use the MCP startup folder. Global recall remains available with unknown
+current-Project provenance. The adapter uses only the local root for discovery,
+not remote URLs or other identity claims from that metadata.
+
+Pi's native extension passes `ctx.cwd` directly for both delivery modes. Managed
+Codex and Claude Conversations also supply a launch-scoped `KOED_MCP_CWD` to
+their private adapter; a per-call hook observation takes precedence. No shared
+last-active folder is stored. Remote transports still control caller context
+and cannot inherit the serving host's directory.
+
+After upgrading, repair the Codex and Claude integrations and restart those
+clients so they load the added hook and adapter schema. Review and trust changed
+Codex hooks through the client's normal hook review flow. Older MCP-only setups
+can pass an explicit Project path. Other stdio clients retain startup-directory
+compatibility, but Codex without sufficient native context requires an explicit
+target. Moving a whole Project continues to
+route newly resolved source folders to its saved named destination before task
+acceptance.
+
 The accepted task's encrypted request stores `repository_context`: root, identity
 kind/key, branch observation, resolution reason, and checkout/device provenance.
 Its `project_id` is an opaque scope value derived from kind, key, and the
@@ -162,18 +197,46 @@ they validate boundaries, not model answer quality.
 
 ## Desktop Groups and Single-Session Assignment
 
-Use **+** in the Projects header to add a Project. The native folder picker
-can select an existing folder or create a folder. Koed discovers its repository
-identity and stores it in the local Project catalog. A folder in an existing
-repository opens that repository's Project. Empty Projects remain available
-before any Captured Sessions exist.
+Use **+** in the Projects header to create a named local Project. Enter a name;
+no folder is selected or created. The local catalog retains its stable identity,
+name, and creation time in `config/projects.json`, separately from discovered
+checkout metadata. Empty Projects remain available as assignment destinations.
+Ingestion continues to discover Git repositories and fallback folders.
 
-Open a Captured Session and choose **Manage Captured Session** to assign it.
-Choose a destination and select **Move**. **Create Project…** opens the same
-folder picker and selects the added Project as a destination. Creating a Project
-does not move history; the User must select **Move**. **Reset to automatic**
-restores the recorded capture assignment. For legacy Sessions, reset returns
-them to unresolved history. Adding a Project never backfills legacy assignments.
+Use **Move** on the right side of a Conversation header to assign that Conversation.
+Choose a destination and select **Move**. **Create Project…** opens the name dialog
+and selects the new Project as a destination. Creating a Project does not move
+history. **Reset to automatic** restores the recorded capture assignment,
+including unresolved history for legacy Conversations.
+
+Use **Move** on the right side of a Project header to move all of its existing
+Conversations. The API selects every current owner-visible Session in the source
+Project, including Sessions beyond Desktop's loaded page and hidden subagents.
+One transaction updates their overrides and saves an owner-specific routing rule
+in `personal_project_routes`. It preserves automatic identities and capture
+provenance. A failed update rolls back both the assignments and the rule.
+
+New captures from that source also use the destination. Capture takes a shared
+owner routing lock; a Project move takes the exclusive lock. Captures that finish
+before the move are included, and captures that start afterward use its saved
+rule. Repeated moves flatten incoming rules and reject cycles. A continued
+Conversation, inherited lineage assignment, or verified PDS assignment keeps its
+existing assignment. Individual moves do not create routing rules. Resetting an
+individual override restores that Conversation's recorded identity; it does not
+remove the rule for later new captures.
+
+Migration `0063_named_local_projects` adds the routing table and recognizes
+`local_project` identities in the common SQL scope functions. Named identities
+have no root, branch, remote, or checkout and retain originating-device scope.
+They are not portable Team repository fingerprints. Project recall accepts a
+named catalog identity without filesystem discovery. For a discovered source,
+the authenticated Personal API resolves its saved route before new work is
+accepted. The resulting context remains pinned for that request.
+
+The historical cutoff remains unchanged. New observations and routing rules do
+not resolve legacy Sessions. Moving **Unresolved history** explicitly assigns
+its existing Conversations but creates no rule for unidentified future captures.
+Adding a Project never backfills legacy assignments.
 
 Desktop groups Captured Sessions by the same effective identity that recall uses.
 Current catalogue entries with that identity join the group, even when their
@@ -186,17 +249,17 @@ without moving its recorded sessions into the new group.
 Unresolved history remains visible in its own owner group. Catalogue metadata at
 the same path does not resolve or absorb it. The source inspector retains the
 recorded automatic assignment and original cwd/root separately from the effective
-User assignment. An override can be portable, device-local, non-Git, or explicitly
-unresolved. It replaces the automatic identity rather than adding a matching value.
+User assignment. An override can be portable, device-local, non-Git, a named local Project, or
+explicitly unresolved. It replaces the automatic identity rather than adding a matching value.
 
-**Manage Captured Session** moves one session or resets its override. Each request
+**Move Conversation** moves one Session or resets its override. Each request
 includes the assignment version the User inspected. The API atomically compares
 that version and updates both the override and version. Stale owner requests
 return 409; missing or other-owner sessions return 404. Capture observations do
 not overwrite this state. Reset restores the original automatic identity, or
 unresolved history when no automatic identity was recorded.
 
-The Desktop Personal contract is version 9. Graph thread responses carry the
+The Desktop Personal contract is version 10. Graph thread responses carry the
 assignment state and version through the API and main process so subsequent edits
 use fresh versions. Successful moves invalidate graph caches and reload the
 Project index. A move changes grouping and subsequent Project recall immediately;

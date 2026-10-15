@@ -17,6 +17,7 @@ import {
   hmacProjectValue,
   mergeGitRemoteAliases,
   normalizeProjectDisplayName,
+  repositoryIdentitySchema,
   type AssociatedRepositorySelection,
   type NormalizedGitRemote,
   type ProjectMetadataV1,
@@ -36,6 +37,7 @@ export interface ProjectMetadataStore {
   updatedAt: string;
   deviceSaltId: string;
   projects: ProjectMetadataV1[];
+  namedProjects: NamedProject[];
   repositoryChanges: RepositoryChangeInput[];
   checkouts: Array<{
     id: string;
@@ -45,6 +47,13 @@ export interface ProjectMetadataStore {
     repositoryRevision?: number;
     associationLookupRequired?: boolean;
   }>;
+}
+
+export interface NamedProject {
+  id: string;
+  name: string;
+  createdAt: string;
+  repository: import("@koed/shared").RepositoryIdentity;
 }
 
 export interface ProjectMetadataResult {
@@ -100,6 +109,7 @@ const defaultStore = (
   deviceSaltId: `pms_${deps.randomId()}`,
   repositoryChanges: [],
   checkouts: [],
+  namedProjects: [],
   projects: []
 });
 
@@ -143,6 +153,30 @@ const readStore = (
         ? parsed.projects
             .filter(isProjectMetadata)
             .map(normalizeProjectMetadata)
+        : [],
+      namedProjects: Array.isArray(parsed.namedProjects)
+        ? parsed.namedProjects.map((project) => {
+            if (
+              !project ||
+              typeof project.id !== "string" ||
+              typeof project.name !== "string" ||
+              !project.name.trim() ||
+              project.name.length > 160 ||
+              typeof project.createdAt !== "string"
+            )
+              throw new Error("Invalid named Project");
+            const repository = repositoryIdentitySchema.parse(
+              project.repository
+            );
+            if (repository.kind !== "local_project")
+              throw new Error("Invalid named Project identity");
+            return {
+              id: project.id,
+              name: project.name,
+              createdAt: project.createdAt,
+              repository
+            };
+          })
         : []
     };
     if (
@@ -512,6 +546,53 @@ export const listProjectMetadata = (
     message: `Found ${store.projects.length} Project metadata record(s).`,
     projects: store.projects
   };
+};
+
+export const listNamedProjects = (
+  paths: KoedServerPaths,
+  depsInput: ProjectMetadataDeps = {}
+): NamedProject[] =>
+  readStore(paths, depsWithDefaults(depsInput)).namedProjects;
+
+export const createNamedProject = (
+  paths: KoedServerPaths,
+  name: string,
+  depsInput: ProjectMetadataDeps = {}
+): NamedProject => {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 160)
+    throw new Error("Enter a Project name of 1 to 160 characters.");
+  const deps = depsWithDefaults(depsInput);
+  const store = readStore(paths, deps);
+  if (store.namedProjects.length >= 500)
+    throw new Error("The local Project catalog is full.");
+  const id = `project_${deps.randomId()}`;
+  const project: NamedProject = {
+    id,
+    name: trimmed,
+    createdAt: deps.now().toISOString(),
+    repository: {
+      kind: "local_project",
+      key: id,
+      reason: "manual",
+      originatingDeviceId: store.deviceSaltId,
+      root: null,
+      branch: null,
+      checkoutId: null,
+      selectedRemote: null,
+      anchorDisplay: null
+    }
+  };
+  writeStore(
+    paths,
+    {
+      ...store,
+      updatedAt: project.createdAt,
+      namedProjects: [...store.namedProjects, project]
+    },
+    deps
+  );
+  return project;
 };
 
 export const getProjectMetadataForCwd = (

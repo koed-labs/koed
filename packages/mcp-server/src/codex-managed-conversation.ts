@@ -100,9 +100,10 @@ export interface CodexManagedConversationStartResult {
 }
 
 export const managedConversationKoedMcpConfigOverrides = (
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  cwd?: string
 ): string[] => {
-  const server = managedKoedMcpServer(env);
+  const server = managedKoedMcpServer(env, cwd);
   if (!server) return [];
   const environment = Object.entries(server.env)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
@@ -517,8 +518,10 @@ export class CodexManagedConversationSession {
           maxTurnStates: this.config.maxTurnStates,
           maxTurnBytes: this.config.maxTurnBytes,
           maxLineBytes: this.config.maxLineBytes,
-          configOverrides:
-            managedConversationKoedMcpConfigOverrides(appServerEnv),
+          configOverrides: managedConversationKoedMcpConfigOverrides(
+            appServerEnv,
+            this.config.appServer.cwd
+          ),
           transientEventHandler: (event) => this.handleTransientEvent(event),
           onExit: (exit) => this.handleClientExit(createdClient, exit)
         }

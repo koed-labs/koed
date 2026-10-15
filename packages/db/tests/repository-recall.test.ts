@@ -76,6 +76,310 @@ describe.skipIf(!databaseUrl)(
       );
     });
 
+    it("moves a whole fallback Project beyond the Desktop page limit into a rootless identity", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `named-project-${randomUUID()}@example.test`
+      });
+      const other = await repo.createUser({
+        email: `named-project-other-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id };
+      const source: RepositoryIdentity = {
+        ...identity(randomUUID()),
+        kind: "non_git_project",
+        reason: "non_git"
+      };
+      const named: RepositoryIdentity = {
+        kind: "local_project",
+        key: `project_${randomUUID()}`,
+        originatingDeviceId: "fixture_device",
+        root: null,
+        branch: null,
+        checkoutId: null,
+        selectedRemote: null,
+        anchorDisplay: null,
+        reason: "manual"
+      };
+      const captured = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        cwd: source.root!,
+        repositoryIdentity: source
+      });
+      const event = await repo.createMemoryEvent(actor, {
+        sessionId: captured.id,
+        actor: "user",
+        visibility: "personal",
+        eventType: "captured",
+        content: "Cobalt named Project checklist",
+        projectId: repositoryScopeId(source),
+        rawEventType: "user_message",
+        idempotencyKey: randomUUID()
+      });
+      const inserted = await pool.query<{ id: string }>(
+        `insert into sessions (owner_user_id, source_runtime, capture_method, repository_automatic_identity, repository_assignment_state) select $1, 'codex', 'transcript', $2::jsonb, 'recorded' from generate_series(1,505) returning id`,
+        [owner.id, source]
+      );
+      await pool.query("update sessions set invalidated_at=now() where id=$1", [
+        inserted.rows[0]!.id
+      ]);
+      await pool.query(
+        "update sessions set personal_deleted_at=now() where id=$1",
+        [inserted.rows[1]!.id]
+      );
+      await updateSessionRepositoryOverride(pool, {
+        ownerUserId: owner.id,
+        sessionId: inserted.rows[2]!.id,
+        expectedVersion: 1,
+        identity: identity("already-moved")
+      });
+      const otherSession = await repo.createCapturedSession(
+        { userId: other.id },
+        { repositoryIdentity: source }
+      );
+      const project = {
+        id: repositoryScopeId(named),
+        name: "Planning",
+        path: null,
+        repositoryIdentity: named
+      };
+      expect(
+        await repo.moveProjectConversations(actor, {
+          sourceProjectId: repositoryScopeId(source),
+          project
+        })
+      ).toEqual({ movedCount: 503, projectId: project.id });
+      const counts = await pool.query<{ count: number }>(
+        "select count(*)::int as count from sessions where owner_user_id=$1 and repository_scope_matches(repository_override_identity,$2)",
+        [owner.id, project.id]
+      );
+      expect(counts.rows[0]?.count).toBe(503);
+      expect(
+        (await repo.listLcmGraphThreads(actor, { projectId: project.id }))[0]
+          ?.path
+      ).toBeNull();
+      expect(
+        (await repo.getCapturedSession({ userId: other.id }, otherSession.id))
+          ?.repositoryAssignment?.effective
+      ).toEqual(source);
+      expect(
+        (await repo.getCapturedSession(actor, captured.id))
+          ?.repositoryAssignment
+      ).toMatchObject({ automatic: source, effective: named, version: 2 });
+      expect(
+        (
+          await repo.getLatestCapturedSessionForProject(actor, {
+            projectId: project.id
+          })
+        )?.repositoryAssignment?.effective
+      ).toEqual(named);
+      expect(
+        await repo.getLatestCapturedSessionForProject(actor, {
+          projectId: repositoryScopeId(source)
+        })
+      ).toBeNull();
+      expect(
+        (
+          await pool.query("select id from memory_events where id=$1", [
+            event.id
+          ])
+        ).rowCount
+      ).toBe(1);
+      expect(
+        await repo.moveProjectConversations(actor, {
+          sourceProjectId: repositoryScopeId(source),
+          project
+        })
+      ).toEqual({ movedCount: 0, projectId: project.id });
+      expect(
+        (await repo.resetCapturedSessionProject(actor, captured.id, 2))
+          ?.repositoryAssignment
+      ).toMatchObject({ effective: source, version: 3 });
+      const later = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: source
+      });
+      expect(later.repositoryAssignment).toMatchObject({
+        automatic: source,
+        effective: named,
+        version: 2
+      });
+      const localScope = repositoryScopeId(named);
+      expect(
+        (
+          await pool.query<{ matches: boolean }>(
+            "select repository_scope_matches($1,$2) as matches",
+            [{ ...named, originatingDeviceId: "other_device" }, localScope]
+          )
+        ).rows[0]?.matches
+      ).toBe(false);
+    }, 30_000);
+
+    it("serializes a Project move with concurrent capture so no new Conversation escapes its route", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `project-routing-race-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id },
+        source = identity(randomUUID()),
+        target = identity(randomUUID());
+      await repo.createCapturedSession(actor, { repositoryIdentity: source });
+      const captures = Array.from({ length: 12 }, () =>
+        repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity: source
+        })
+      );
+      const move = repo.moveProjectConversations(actor, {
+        sourceProjectId: repositoryScopeId(source),
+        project: {
+          id: repositoryScopeId(target),
+          name: "Destination",
+          path: target.root,
+          repositoryIdentity: target
+        }
+      });
+      const completed = await Promise.all(captures);
+      await move;
+      for (const session of completed)
+        expect(
+          (await repo.getCapturedSession(actor, session.id))
+            ?.repositoryAssignment
+        ).toMatchObject({ automatic: source, effective: target });
+    });
+
+    it("flattens future routing and preserves explicit resets and unresolved history", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `project-routes-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id },
+        source = identity(randomUUID());
+      const named = (name: string): RepositoryIdentity => ({
+        kind: "local_project",
+        key: name,
+        reason: "manual",
+        root: null,
+        branch: null,
+        checkoutId: null,
+        selectedRemote: null,
+        anchorDisplay: null,
+        originatingDeviceId: "fixture"
+      });
+      const b = named("project_b"),
+        c = named("project_c");
+      const target = (value: RepositoryIdentity) => ({
+        id: repositoryScopeId(value),
+        name: value.key!,
+        path: value.root,
+        repositoryIdentity: value
+      });
+      await repo.createCapturedSession(actor, { repositoryIdentity: source });
+      await repo.moveProjectConversations(actor, {
+        sourceProjectId: repositoryScopeId(source),
+        project: target(b)
+      });
+      await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: source
+      });
+      expect(
+        await repo.moveProjectConversations(actor, {
+          sourceProjectId: repositoryScopeId(b),
+          project: target(c)
+        })
+      ).toMatchObject({ movedCount: 2, projectId: repositoryScopeId(c) });
+      expect(
+        await repo.resolveProjectRouting(actor, repositoryScopeId(source))
+      ).toMatchObject({ repositoryIdentity: c });
+      await expect(
+        repo.moveProjectConversations(actor, {
+          sourceProjectId: repositoryScopeId(c),
+          project: target(source)
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+      const next = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: source
+      });
+      expect(next.repositoryAssignment).toMatchObject({
+        automatic: source,
+        effective: c
+      });
+      await repo.resetCapturedSessionProject(actor, next.id, 2);
+      const continued = await repo.createCapturedSession(actor, {
+        externalSessionId: next.externalSessionId!,
+        repositoryIdentity: source
+      });
+      expect(continued.repositoryAssignment).toMatchObject({
+        override: null,
+        effective: source,
+        version: 3
+      });
+      const old = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID()
+      });
+      await pool.query(
+        "update sessions set repository_assignment_state='historical_unresolved', repository_automatic_identity=null where id=$1",
+        [old.id]
+      );
+      const historical = await repo.createCapturedSession(actor, {
+        externalSessionId: old.externalSessionId!,
+        repositoryIdentity: source
+      });
+      expect(historical.repositoryAssignment?.effective).toBeNull();
+      await repo.moveProjectConversations(actor, {
+        sourceProjectId: "unassigned",
+        project: target(c)
+      });
+      expect(await repo.resolveProjectRouting(actor, "unassigned")).toBeNull();
+      expect(
+        (await repo.resetCapturedSessionProject(actor, old.id, 2))
+          ?.repositoryAssignment?.effective
+      ).toBeNull();
+    });
+
+    it("rolls back a whole Project move if any member cannot advance its version", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `atomic-project-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id },
+        source = identity(randomUUID()),
+        target = identity(randomUUID());
+      const first = await repo.createCapturedSession(actor, {
+        repositoryIdentity: source
+      });
+      const second = await repo.createCapturedSession(actor, {
+        repositoryIdentity: source
+      });
+      await pool.query(
+        "update sessions set repository_assignment_version=2147483647 where id=$1",
+        [second.id]
+      );
+      await expect(
+        repo.moveProjectConversations(actor, {
+          sourceProjectId: repositoryScopeId(source),
+          project: {
+            id: repositoryScopeId(target),
+            name: "Destination",
+            path: target.root,
+            repositoryIdentity: target
+          }
+        })
+      ).rejects.toThrow();
+      expect(
+        (await repo.getCapturedSession(actor, first.id))?.repositoryAssignment
+      ).toMatchObject({ effective: source, version: 1 });
+      expect(
+        (await repo.getCapturedSession(actor, second.id))?.repositoryAssignment
+          ?.effective
+      ).toEqual(source);
+      expect(
+        await repo.resolveProjectRouting(actor, repositoryScopeId(source))
+      ).toBeNull();
+    });
+
     it("filters raw search, nodes, graph, curated search and expansion using current assignments", async () => {
       const repo = createMemorySourceRepository(pool);
       const user = await repo.createUser({

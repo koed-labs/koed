@@ -3,7 +3,7 @@ import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 9;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 10;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -475,6 +475,20 @@ export const personalDesktopSessionTitleInputSchema = z
   })
   .strict();
 
+export const personalDesktopProjectCreateInputSchema = z
+  .object({ name: z.string().trim().min(1).max(160) })
+  .strict();
+export const personalDesktopProjectMoveInputSchema = z
+  .object({
+    sourceProjectId: identifierSchema,
+    targetProjectId: identifierSchema
+  })
+  .strict()
+  .refine(
+    (input) => input.sourceProjectId !== input.targetProjectId,
+    "Choose a different Project"
+  );
+
 export const personalDesktopAskTurnSchema = z
   .object({
     id: z.uuid(),
@@ -599,6 +613,20 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.create"),
+      input: personalDesktopProjectCreateInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.move"),
+      input: personalDesktopProjectMoveInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.list"),
       input: z.object({}).strict()
     })
@@ -705,7 +733,9 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
 
 export const personalDesktopProjectsDataSchema = z
   .object({
-    projects: z.array(personalDesktopProjectSchema).max(500)
+    // The API graph contains at most 500 groups; the local named catalog adds
+    // up to 500 empty destinations without adding any Conversation payloads.
+    projects: z.array(personalDesktopProjectSchema).max(1000)
   })
   .strict();
 
@@ -732,6 +762,16 @@ export const personalDesktopSessionProjectDataSchema = z
   .object({
     projectId: identifierSchema.nullable()
   })
+  .strict();
+
+export const personalDesktopProjectMoveDataSchema = z
+  .object({
+    projectId: identifierSchema,
+    movedCount: z.number().int().safe().positive()
+  })
+  .strict();
+export const personalDesktopProjectCreateDataSchema = z
+  .object({ projectId: identifierSchema })
   .strict();
 
 export const personalDesktopSessionTitleDataSchema = z
@@ -805,6 +845,24 @@ const failedResult = <Operation extends string>(operation: Operation) =>
     .strict();
 
 export const personalDesktopResultSchema = z.union([
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.create"),
+      ok: z.literal(true),
+      data: personalDesktopProjectCreateDataSchema
+    })
+    .strict(),
+  failedResult("personal.projects.create"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.move"),
+      ok: z.literal(true),
+      data: personalDesktopProjectMoveDataSchema
+    })
+    .strict(),
+  failedResult("personal.projects.move"),
   z
     .object({
       ...resultBase,
@@ -1093,6 +1151,12 @@ export const conversationToolKindAndLabel = (
 };
 
 export interface PersonalDesktopApi {
+  createProject?: (
+    input: z.infer<typeof personalDesktopProjectCreateInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopProjectCreateDataSchema>>;
+  moveProject?: (
+    input: z.infer<typeof personalDesktopProjectMoveInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopProjectMoveDataSchema>>;
   listProjects: () => Promise<PersonalDesktopProject[]>;
   listRecentConversations?: (
     input: PersonalDesktopConversationRecentListInput

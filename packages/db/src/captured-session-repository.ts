@@ -1,3 +1,8 @@
+import { effectiveProjectPathSql } from "./project-scope-sql.js";
+import {
+  lockProjectRouting,
+  moveProjectConversations
+} from "./project-routing-repository.js";
 import {
   repositoryAssignmentSchema,
   type RepositoryAssignment
@@ -79,6 +84,10 @@ export interface CapturedSessionRepository {
     sessionId: string,
     project: PersonalProjectReference
   ): Promise<CapturedSessionRecord | null>;
+  moveProjectConversations(
+    actor: ActorContext,
+    input: { sourceProjectId: string; project: PersonalProjectReference }
+  ): Promise<{ movedCount: number; projectId: string }>;
   resetCapturedSessionProject(
     actor: ActorContext,
     sessionId: string,
@@ -124,6 +133,7 @@ export interface CapturedSessionSummaryRecord {
 
 type CapturedSessionRow = RepositoryAssignmentRow & {
   capture_inserted?: boolean;
+  repository_assignment_inherited?: boolean;
   id: string;
   logical_session_id: string;
   owner_user_id: string | null;
@@ -536,6 +546,7 @@ export const createCapturedSessionRepository = (
       if (ownsTransaction) {
         await client.query("begin");
       }
+      await lockProjectRouting(client, actor.userId, true);
       if (input.externalSessionId) {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -928,6 +939,29 @@ export const createCapturedSessionRepository = (
         repositoryIdentity,
         input.cwd
       );
+      if (
+        row.capture_inserted &&
+        !row.repository_assignment_inherited &&
+        !replicatedAssignment
+      ) {
+        const routed = await client.query<CapturedSessionRow>(
+          `
+          update sessions s set repository_override_identity=r.target_identity,
+            repository_assignment_version=s.repository_assignment_version+1,
+            project_override_id=r.target_project_id,project_override_name=r.target_name,project_override_path=r.target_path,
+            project_override_at=now(),project_override_by_user_id=$2,updated_at=now()
+          from personal_project_routes r where s.id=$1 and s.owner_user_id=$2
+            and r.owner_user_id=s.owner_user_id and r.source_project_id=repository_scope_id(s.repository_automatic_identity)
+            and s.repository_assignment_state='recorded' and s.repository_override_identity is null
+          returning ${capturedSessionColumns
+            .split(",")
+            .map((column) => `s.${column.trim()}`)
+            .join(",")}
+        `,
+          [row.id, actor.userId]
+        );
+        if (routed.rows[0]) Object.assign(row, routed.rows[0]);
+      }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
         await client.query("commit");
@@ -1015,6 +1049,10 @@ export const createCapturedSessionRepository = (
       ]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  moveProjectConversations(actor, input) {
+    return moveProjectConversations(pool, actor.userId, input);
   },
 
   async resetCapturedSessionProject(
@@ -1190,7 +1228,7 @@ export const createCapturedSessionRepository = (
             s.id,
             s.external_session_id,
             coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            ${effectiveProjectPathSql("s")} as project_path,
             s.metadata ->> 'threadName' as current_title,
             count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,
             max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at

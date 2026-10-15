@@ -35,6 +35,7 @@ export const recordRepositoryObservation = async (
     logical_session_id: string;
     external_session_id: string | null;
     capture_inserted?: boolean;
+    repository_assignment_inherited?: boolean;
   },
   identity: RepositoryIdentity | undefined,
   cwd: string | undefined
@@ -72,7 +73,7 @@ export const recordRepositoryObservation = async (
           retained.repository_override_identity
         ]
       );
-      Object.assign(row, retained);
+      Object.assign(row, retained, { repository_assignment_inherited: true });
     }
   }
   if (!identity) return;

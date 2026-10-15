@@ -10,6 +10,13 @@ use the same [durable Personal Memory Answer path](durable-memory-answer.md).
 Both AI Clients may connect to the same local Koed deployment, but neither
 installation is used as a fallback for the other.
 
+The installed `PreToolUse` hook passes the native Conversation cwd on every
+`memory_answer` call. Koed uses this folder for default Project recall instead
+of the MCP process's startup folder. Explicit Project targets still take
+precedence. Repair the integration and restart Claude Code after upgrading to
+load the added hook. Managed Conversations also bind their adapter to the
+configured Conversation folder. See [Project recall context](repository-recall.md#resolve-before-accepting-work).
+
 The MCP tools expose explicit task collection. Omitted, `auto`, and `blocking`
 `delivery_mode` values return the completed Memory Answer through the ordinary
 MCP result path. Explicit `non_blocking` returns a pending task receipt promptly.

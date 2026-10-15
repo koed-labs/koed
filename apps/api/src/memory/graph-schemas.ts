@@ -225,6 +225,17 @@ export const graphSessionProjectPatchSchema = z.discriminatedUnion("action", [
     .strict()
 ]);
 
+export const graphProjectMoveSchema = z
+  .object({
+    sourceProjectId: z.string().trim().min(1).max(512),
+    project: personalProjectReferenceSchema
+  })
+  .strict();
+
+export const graphProjectResolveSchema = z
+  .object({ projectId: z.string().trim().min(1).max(512) })
+  .strict();
+
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 
 export const expandMemoryNodeQuerySchema = z

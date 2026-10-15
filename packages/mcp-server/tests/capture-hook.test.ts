@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   captureHookEnvironment,
+  recallHookOutput,
   signalCaptureHook
 } from "../src/capture-hook.js";
 import {
@@ -15,6 +16,96 @@ import {
 import { claudeWatcherSignalDirectory } from "../src/claude-transcript-watcher-signal.js";
 
 const temporaryDirectories: string[] = [];
+
+describe("Conversation recall context hook", () => {
+  it.each(["codex", "claude"] as const)(
+    "binds %s recall to each hook invocation without changing explicit search targets",
+    (source) => {
+      for (const search_domain of [undefined, "project", "global", "session"]) {
+        const toolInput = {
+          query: "decision",
+          ...(search_domain ? { search_domain } : {}),
+          project_id: "explicit-project",
+          conversation_cwd: "/stale/process"
+        };
+        for (const cwd of ["/work/project-a", "/work/project-b/package"]) {
+          expect(
+            recallHookOutput(
+              {
+                hookEventName: "PreToolUse",
+                toolName: "mcp__koed__memory_answer",
+                cwd,
+                toolInput
+              },
+              undefined,
+              source
+            )
+          ).toMatchObject({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              ...(source === "codex" ? { permissionDecision: "allow" } : {}),
+              updatedInput: { ...toolInput, conversation_cwd: cwd }
+            }
+          });
+          if (source === "claude")
+            expect(
+              recallHookOutput(
+                {
+                  hookEventName: "PreToolUse",
+                  toolName: "mcp__koed__memory_answer",
+                  cwd,
+                  toolInput
+                },
+                undefined,
+                source
+              ).hookSpecificOutput
+            ).not.toHaveProperty("permissionDecision");
+        }
+        expect(toolInput.conversation_cwd).toBe("/stale/process");
+      }
+    }
+  );
+
+  it("matches only the configured recall tool and leaves capture signals alone", () => {
+    const metadata = {
+      hookEventName: "PreToolUse",
+      toolName: "mcp__memory-local__memory_answer",
+      cwd: "/work/repo",
+      toolInput: { query: "decision" }
+    };
+    expect(recallHookOutput(metadata)).toEqual({});
+    expect(
+      recallHookOutput(metadata, "mcp__memory-local__memory_answer")
+    ).toMatchObject({
+      hookSpecificOutput: {
+        updatedInput: { conversation_cwd: "/work/repo" }
+      }
+    });
+    expect(
+      recallHookOutput({ ...metadata, hookEventName: "PostToolUse" })
+    ).toEqual({});
+    // A PreToolUse call does not wake ingestion, even with an unwritable home.
+    expect(() =>
+      signalCaptureHook({ KOED_HOME: "/unavailable" }, metadata)
+    ).not.toThrow();
+  });
+
+  it.each([undefined, "", "relative/folder", "/nul\0path"])(
+    "rejects missing or invalid conversation context (%s)",
+    (cwd) => {
+      expect(
+        recallHookOutput({
+          hookEventName: "PreToolUse",
+          toolName: "mcp__koed__memory_answer",
+          cwd,
+          toolInput: { query: "decision" }
+        })
+      ).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "deny" }
+      });
+    }
+  );
+});
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
