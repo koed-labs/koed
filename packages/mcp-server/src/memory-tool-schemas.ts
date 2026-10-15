@@ -70,7 +70,7 @@ export const memoryAnswerAdapterInputSchema =
       .enum(MEMORY_ANSWER_DELIVERY_MODES)
       .optional()
       .describe(
-        "Delivery preference for this call: auto preserves the calling integration default; blocking waits for the result; non_blocking uses eligible deferred delivery with blocking fallback. Select from the next planned action's dependency on recalled memory."
+        "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
       )
   });
 

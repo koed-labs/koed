@@ -20,7 +20,6 @@ import {
   createEncryptedJsonPackage,
   redactEnvelopeEncryptionProviderStatus,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig,
   type EnvelopeEncryptionProvider,
   type EnvelopeEncryptionProviderStatus,
   type KoedJobQueue,
@@ -1087,9 +1086,7 @@ export const registerOperationalRoutes = (
         embeddingModel: config.embeddingModel ?? embedding.model,
         embeddingDimensions: resolveSupportedEmbeddingModelConfig(
           config.embeddingModel ?? embedding.model ?? undefined
-        ).dimensions,
-        rerankingEnabled:
-          resolveSupportedRerankerModelConfig(config.rerankerKey) !== null
+        ).dimensions
       }
     };
   });

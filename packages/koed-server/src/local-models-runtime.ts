@@ -13,7 +13,7 @@ import { pipeline } from "node:stream/promises";
 import { basename, dirname, resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 
-export type LocalModelKind = "embedding" | "reranker";
+export type LocalModelKind = "embedding";
 export type LocalModelState =
   | "installed"
   | "missing"
@@ -81,17 +81,10 @@ const MODEL_DEFINITIONS: Record<
       "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
     defaultSha256:
       "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
-  },
-  reranker: {
-    key: "qwen3-reranker-0.6b",
-    filename: "Qwen3-Reranker-0.6B-Q4_K_M.gguf",
-    urlEnv: "KOED_RERANKER_MODEL_URL",
-    sha256Env: "KOED_RERANKER_MODEL_SHA256",
-    pathEnv: "KOED_RERANKER_MODEL_PATH"
   }
 };
 
-export const localModelKinds: LocalModelKind[] = ["embedding", "reranker"];
+export const localModelKinds: LocalModelKind[] = ["embedding"];
 
 const trimEnv = (
   environment: NodeJS.ProcessEnv,

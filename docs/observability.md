@@ -217,7 +217,7 @@ Keep the setting off by default, and do not share logs written with it.
 
 Embedding logs use `schema_version: "embedding_service_log_v1"` and
 `service: "koed-embedding-service"`. `EMBEDDING_LOG_LEVEL` maps to service-local
-`LOG_LEVEL`. Info covers model/reranker lifecycle and completion/failure; debug
+`LOG_LEVEL`. Info covers model lifecycle and completion/failure; debug
 adds scheduler, chunk/token, batch, fallback, and score counts. Input/query
 text, chunks, vectors, credentials, headers, cookies, bodies, and raw traces are
 prohibited.

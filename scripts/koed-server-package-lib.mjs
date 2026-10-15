@@ -369,8 +369,7 @@ export const buildPackageManifest = ({
       requires: ["postgresql@17", "pgvector", "llama-server"]
     },
     models: {
-      embedding: "qwen3-0.6b",
-      reranker: "qwen3-reranker-0.6b"
+      embedding: "qwen3-0.6b"
     },
     provenance: {
       sourceRepository:

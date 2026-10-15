@@ -469,9 +469,7 @@ export const withTemporaryEmbeddingEnv = <T>(
     EMBEDDING_SERVICE_TOKEN: process.env.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
     EMBEDDING_QUERY_INSTRUCTION_ENABLED:
-      process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED,
-    EMBEDDING_RERANKER_KEY: process.env.EMBEDDING_RERANKER_KEY,
-    RERANKER_KEY: process.env.RERANKER_KEY
+      process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED
   };
   process.env.EMBEDDING_SERVICE_URL = embeddingUrl;
   process.env.EMBEDDING_SERVICE_TOKEN = embeddingToken;
@@ -481,8 +479,6 @@ export const withTemporaryEmbeddingEnv = <T>(
   } else if (queryInstruction === "disabled") {
     process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED = "false";
   }
-  delete process.env.EMBEDDING_RERANKER_KEY;
-  delete process.env.RERANKER_KEY;
 
   return callback().finally(() => {
     for (const [key, value] of Object.entries(previous)) {

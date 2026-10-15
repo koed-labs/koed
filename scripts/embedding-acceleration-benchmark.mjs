@@ -202,8 +202,7 @@ const stopChild = async (child) => {
 };
 
 const runBackend = async (backend, options) => {
-  const [servicePort, embeddingPort, rerankerPort] = await Promise.all([
-    freePort(),
+  const [servicePort, embeddingPort] = await Promise.all([
     freePort(),
     freePort()
   ]);
@@ -221,7 +220,6 @@ const runBackend = async (backend, options) => {
       KOED_EMBEDDING_HOST: "127.0.0.1",
       KOED_EMBEDDING_PORT: String(servicePort),
       LLAMA_EMBEDDING_SERVER_PORT: String(embeddingPort),
-      LLAMA_RERANKER_SERVER_PORT: String(rerankerPort),
       EMBEDDING_SERVICE_TOKEN: serviceToken,
       KOED_EMBEDDING_RUNTIME_VERSION: `sha256:${options.runtimeSha256}`,
       LOG_LEVEL: "warning"

@@ -360,20 +360,11 @@ const localServiceEnv = (
     "embedding",
     modelEnvironment
   );
-  const rerankerModel = resolveLocalModelManifest(
-    paths,
-    "reranker",
-    modelEnvironment
+  const installedModelPaths = [embeddingModel.modelPath].filter((modelPath) =>
+    existsSync(modelPath)
   );
-  const installedModelPaths = [
-    embeddingModel.modelPath,
-    rerankerModel.modelPath
-  ].filter((modelPath) => existsSync(modelPath));
   const localEmbeddingModelPath = existsSync(embeddingModel.modelPath)
     ? embeddingModel.modelPath
-    : undefined;
-  const localRerankerModelPath = existsSync(rerankerModel.modelPath)
-    ? rerankerModel.modelPath
     : undefined;
   const modelsDir = installedModelPaths[0]
     ? dirname(installedModelPaths[0])
@@ -644,22 +635,6 @@ const localServiceEnv = (
       serverConfig.dependencyMode === "bundled-local"
         ? localEmbeddingModelPath
         : (environment.EMBEDDING_MODEL_PATH ?? environment.MODEL_PATH),
-    RERANKER_KEY:
-      environment.EMBEDDING_RERANKER_KEY ??
-      environment.RERANKER_KEY ??
-      repoEnv.EMBEDDING_RERANKER_KEY,
-    EMBEDDING_RERANKER_MODEL_PATH:
-      serverConfig.dependencyMode === "bundled-local"
-        ? localRerankerModelPath
-        : (environment.EMBEDDING_RERANKER_MODEL_PATH ??
-          repoEnv.EMBEDDING_RERANKER_MODEL_PATH),
-    RERANKER_MODEL_PATH:
-      serverConfig.dependencyMode === "bundled-local"
-        ? localRerankerModelPath
-        : (environment.EMBEDDING_RERANKER_MODEL_PATH ??
-          environment.RERANKER_MODEL_PATH ??
-          repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
-          repoEnv.RERANKER_MODEL_PATH),
     LLAMA_SERVER_BINARY:
       environment.LLAMA_SERVER_BINARY ??
       repoEnv.EMBEDDING_LLAMA_SERVER_BINARY ??
@@ -696,42 +671,6 @@ const localServiceEnv = (
       environment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
       environment.LLAMA_EMBEDDING_SERVER_PORT ??
       repoEnv.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
-    RERANKER_BATCH_LIMIT:
-      environment.EMBEDDING_RERANKER_BATCH_LIMIT ??
-      environment.RERANKER_BATCH_LIMIT ??
-      repoEnv.EMBEDDING_RERANKER_BATCH_LIMIT,
-    RERANKER_CONTEXT_PER_SLOT:
-      environment.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
-      environment.RERANKER_CONTEXT_PER_SLOT ??
-      repoEnv.EMBEDDING_RERANKER_CONTEXT_PER_SLOT,
-    LLAMA_RERANKER_SERVER_PORT:
-      environment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
-      environment.LLAMA_RERANKER_SERVER_PORT ??
-      repoEnv.EMBEDDING_LLAMA_RERANKER_SERVER_PORT,
-    RERANKER_LLAMA_N_CTX:
-      environment.EMBEDDING_RERANKER_LLAMA_N_CTX ??
-      environment.RERANKER_LLAMA_N_CTX ??
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_CTX,
-    RERANKER_LLAMA_N_THREADS:
-      environment.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
-      environment.RERANKER_LLAMA_N_THREADS ??
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_THREADS,
-    RERANKER_LLAMA_N_BATCH:
-      environment.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
-      environment.RERANKER_LLAMA_N_BATCH ??
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_BATCH,
-    RERANKER_LLAMA_N_UBATCH:
-      environment.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
-      environment.RERANKER_LLAMA_N_UBATCH ??
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_UBATCH,
-    RERANKER_PARALLEL:
-      environment.EMBEDDING_RERANKER_PARALLEL ??
-      environment.RERANKER_PARALLEL ??
-      repoEnv.EMBEDDING_RERANKER_PARALLEL,
-    RERANKER_PROMPT_CACHE_ENABLED:
-      environment.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
-      environment.RERANKER_PROMPT_CACHE_ENABLED ??
-      repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED,
     CORS_ORIGINS: corsOrigins(environment, repoEnv),
     COOKIE_SECURE: prefixedApiEnv(environment, repoEnv, "COOKIE_SECURE"),
     BROWSER_PUBLIC_URL: prefixedApiEnv(
@@ -1003,8 +942,7 @@ export const startKoedServer = async ({
         "POSTGRES_HOST_PORT",
         "EMBEDDING_SERVICE_HOST_PORT",
         "PRIVACY_SERVICE_PORT",
-        "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
-        "EMBEDDING_LLAMA_RERANKER_SERVER_PORT"
+        "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT"
       ]) {
         if (!requestedEnvironment[key]?.trim())
           delete portAllocationEnvironment[key];
@@ -1028,9 +966,7 @@ export const startKoedServer = async ({
         allocatedPortEnvironment.EMBEDDING_SERVICE_HOST_PORT,
       PRIVACY_SERVICE_PORT: allocatedPortEnvironment.PRIVACY_SERVICE_PORT,
       EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT:
-        allocatedPortEnvironment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
-      EMBEDDING_LLAMA_RERANKER_SERVER_PORT:
-        allocatedPortEnvironment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT
+        allocatedPortEnvironment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT
     };
 
     startupPhase = "repository environment and credentials";

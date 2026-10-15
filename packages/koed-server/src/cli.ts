@@ -48,8 +48,8 @@ const lightweightStatus = async (
   if (command === "models" && subcommand === "status") {
     const kindFlag = args.indexOf("--kind");
     const kind = kindFlag < 0 ? "embedding" : args[kindFlag + 1];
-    if (kind !== "embedding" && kind !== "reranker" && kind !== "privacy")
-      throw new Error("--kind must be embedding, reranker, or privacy.");
+    if (kind !== "embedding" && kind !== "privacy")
+      throw new Error("--kind must be embedding or privacy.");
     const [
       { collectLocalModelStatus },
       { collectPrivacyModelStatus },

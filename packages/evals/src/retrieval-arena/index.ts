@@ -168,19 +168,13 @@ const main = async (): Promise<void> => {
     process.env.KOED_EVAL_OUTPUT_PRICE_PER_MILLION_USD
   );
   const modelPricing = resolveArenaModelPricing(process.env);
-  const retrievalLayerSelected =
-    selectedLayers.length === 0 ||
-    selectedLayers.some((layer) => layer !== "product");
-  const rerankerSelected =
-    retrievalLayerSelected &&
-    (selectedArms.length === 0 || selectedArms.includes("qwen-0.6b-reranked"));
+
   const embeddingReproducibility = embeddingBaseUrl
     ? await resolveKoedEmbeddingServiceReproducibility({
         baseUrl: embeddingBaseUrl,
         token: process.env.EMBEDDING_SERVICE_TOKEN,
         model: process.env.KOED_EVAL_EMBEDDING_MODEL,
-        strict: has("strict-providers"),
-        requireReranker: rerankerSelected
+        strict: has("strict-providers")
       })
     : undefined;
   const embeddingProvider = embeddingBaseUrl
@@ -189,8 +183,7 @@ const main = async (): Promise<void> => {
         token: process.env.EMBEDDING_SERVICE_TOKEN,
         model: process.env.KOED_EVAL_EMBEDDING_MODEL,
         dimensions: optionalNumber(process.env.KOED_EVAL_EMBEDDING_DIMENSIONS),
-        batchLimit: embeddingReproducibility?.batchLimit,
-        reranker: embeddingReproducibility?.reranker
+        batchLimit: embeddingReproducibility?.batchLimit
       })
     : undefined;
   const descriptor = (
@@ -295,28 +288,7 @@ const main = async (): Promise<void> => {
               tokenizer: embeddingReproducibility!.tokenizer,
               tokenizerRevision: embeddingReproducibility!.tokenizerRevision,
               acceleration: embeddingReproducibility!.acceleration
-            },
-            ...(embeddingReproducibility?.reranker
-              ? {
-                  reranker: {
-                    ...descriptor(
-                      "koed-embedding-service",
-                      {
-                        ...rewriteConfig,
-                        model:
-                          embeddingReproducibility.reranker.model ?? "unknown",
-                        reasoningEffort: "none"
-                      },
-                      "KOED_EVAL_RERANKER",
-                      {}
-                    ),
-                    artifact: embeddingReproducibility.reranker.artifact,
-                    artifactRevision:
-                      embeddingReproducibility.reranker.artifactRevision,
-                    artifactHash: embeddingReproducibility.reranker.artifactHash
-                  }
-                }
-              : {})
+            }
           }
         : {}),
       ...(productBaseUrl

@@ -131,7 +131,7 @@ describe.skipIf(!databaseUrl)(
         vi.stubEnv("API_TOKEN_PEPPER", "synthetic-pagination-test-pepper");
         vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.fixture");
         vi.stubEnv("EMBEDDING_MODEL", "qwen3-0.6b");
-        vi.stubEnv("RERANKER_KEY", "");
+
         const provider = encrypted
           ? createLocalTestKeyEnvelopeEncryptionProvider(
               Buffer.alloc(32, 27).toString("base64")

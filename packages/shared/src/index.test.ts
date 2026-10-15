@@ -6,9 +6,7 @@ import {
   metadataWithStorageSanitization,
   requireEnv,
   resolveKoedQueueBackend,
-  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig,
   sanitizeForPostgresStorage,
   workerQueueNames
 } from "./index.js";
@@ -164,54 +162,5 @@ describe("resolveSupportedEmbeddingModelConfig", () => {
     expect(() => resolveSupportedEmbeddingModelConfig("unknown")).toThrow(
       "Unsupported embedding model key"
     );
-  });
-});
-
-describe("resolveSupportedRerankerModelConfig", () => {
-  it("resolves supported reranker model metadata", () => {
-    expect(resolveSupportedRerankerModelConfig("qwen3-reranker-0.6b")).toEqual({
-      key: "qwen3-reranker-0.6b",
-      model:
-        "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp:Qwen3-Reranker-0.6B-Q4_K_M.gguf"
-    });
-  });
-
-  it("treats a blank reranker key as disabled", () => {
-    expect(resolveSupportedRerankerModelConfig("")).toBeNull();
-    expect(resolveSupportedRerankerModelConfig(undefined)).toBeNull();
-  });
-
-  it("rejects unsupported reranker model keys", () => {
-    expect(() => resolveSupportedRerankerModelConfig("unknown")).toThrow(
-      "Unsupported reranker model key"
-    );
-  });
-});
-
-describe("resolveRerankerKeyFromEnv", () => {
-  it("uses the documented root reranker key when the app-local key is absent", () => {
-    expect(
-      resolveRerankerKeyFromEnv({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
-      })
-    ).toBe("qwen3-reranker-0.6b");
-  });
-
-  it("lets the app-local reranker key override the generated root key", () => {
-    expect(
-      resolveRerankerKeyFromEnv({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_KEY: "app-local"
-      })
-    ).toBe("app-local");
-  });
-
-  it("lets a blank app-local reranker key disable a generated root key", () => {
-    expect(
-      resolveRerankerKeyFromEnv({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_KEY: ""
-      })
-    ).toBe("");
   });
 });

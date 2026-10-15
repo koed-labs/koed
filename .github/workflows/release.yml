@@ -119,7 +119,7 @@ jobs:
           - Standalone Koed distribution: independently hashed base and optional privacy component archives with component manifests; official promotion requires external signatures trusted by approved production roots.
           - Desktop package: Koed Desktop control-plane assets.
           - Native runtime assets: separate, checksum-pinned Postgres, pgvector, and llama-server runtime archives. Linux x64 includes CPU and CUDA payloads; models remain separate.
-          - Model artifacts: separate embedding and reranker assets installed under `KOED_HOME/models`; not embedded in Koed component archives.
+          - Model artifacts: separate embedding model assets installed under `KOED_HOME/models`; not embedded in Koed component archives.
           EOF
 
       - name: Mark Desktop release assets enabled

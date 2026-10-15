@@ -85,54 +85,42 @@ The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 
 ## AI Client Delivery
 
-Every route below uses the same durable task and the shared delivery lifecycle
-described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
-of them exposes native MCP Tasks or a status tool to the model.
+Every route below uses the same durable task and the explicit submit-and-collect
+contract described in
+[asynchronous Memory Answer collection](async-memory-answer.md). None of them
+exposes native MCP Tasks to the model, and none pushes a later message into an
+idle Conversation.
 
 The public MCP request can select `delivery_mode=blocking` or
-`delivery_mode=non_blocking` per call. Omitted and `auto` retain configured
-defaults. This preference belongs to presentation and is removed before the
-canonical execution request reaches the Local AI Runtime. Blocking Personal
-recall retains its runtime observer and the same durable task path; it creates
-no deferred adapter receipt. Requested mode does not change execution priority,
-authority, synthesis assignment, or capacity. See
-[per-call delivery selection](async-memory-answer.md#per-call-delivery-selection).
+`delivery_mode=non_blocking` per call. Omitted, `auto` and `blocking` wait for
+the completed answer. Explicit `non_blocking` returns a task receipt promptly;
+the model collects it with `memory_answer_result` and can cancel it with
+`memory_answer_cancel`. This preference belongs to presentation and is removed
+before the canonical execution request reaches the Local AI Runtime. Requested
+mode does not change execution priority, authority, synthesis assignment,
+capacity or the `response_detail` and `include_evidence` options. See
+[choosing a mode](async-memory-answer.md#choosing-a-mode) and
+[submit, collect and cancel](async-memory-answer.md#submit-collect-and-cancel).
 
-- **Codex:** recall is deferred by default, except on Windows. Setup installs
-  native Codex hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
-  Desktop app were each tested separately; see
-  [Codex integration](codex-integration.md#deferred-recall-in-the-native-cli).
-  A PreToolUse hook binds a one-use receipt to the exact
-  session, turn and tool call. `memory_answer` then returns a pending receipt,
-  and the Stop hook waits outside the model loop and supplies the result to
-  that same turn. This keeps the original turn active; it does not wake an
-  idle Conversation. Pending delivery after a backend loss, Local AI Runtime
-  restart or session exit is unsupported. A known upstream race can admit a
-  late hook prompt into an interrupted turn. Responses API asynchronous
-  function calling still requires an upstream Codex bridge that keeps the
-  original `call_id`.
-- **Claude Code:** Koed returns the ordinary blocking MCP result. The opt-in
+- **Codex:** uses the ordinary MCP tools. Setup installs approval rules for
+  submission, collection and cancellation, and replaces older Memory Answer
+  Stop-hook delivery. The legacy `--deferred-recall` and `--blocking-recall`
+  setup flags are accepted but deprecated; see
+  [Codex integration](codex-integration.md#memory-answer-setup).
+- **Claude Code:** uses the same ordinary MCP tools. The separate opt-in
   `setup claude --background-recall` option sets Claude's host backgrounding
-  threshold, so interactive Claude Code can release the main Conversation
-  while the call is pending and deliver the result through a native
-  notification. The threshold applies to every MCP Server, not only Koed.
-- **Pi:** in a persistent Conversation, `memory_answer` returns an attributed
-  receipt promptly. The extension observes the task and delivers the result as
-  a follow-up message that starts a turn. Matching pending receipts recover
-  when the same Conversation reopens. Ephemeral sessions, single-shot print
-  and JSON runs, Koed Desktop-managed Pi Conversations, clients without the
-  required Pi APIs, and
-  `KOED_PI_MEMORY_ANSWER_MODE=blocking` use blocking recall. A completion that
-  arrives during `/tree` navigation can be saved on the destination branch; see
-  [asynchronous Memory Answer delivery](async-memory-answer.md#recovery-and-limits).
+  threshold for blocking MCP calls. It applies to every MCP Server, not only
+  Koed, and is independent of Koed's explicit non-blocking mode.
+- **Pi:** the extension exposes the same submit-and-collect interaction in
+  every session type. The former `KOED_PI_MEMORY_ANSWER_MODE` setting no longer
+  selects automatic follow-up delivery; see [Pi integration](pi-integration.md#recall).
 - **ACP:** no ACP runtime is added. A future adapter can map its native task
   behavior to the same start, state, cancel, and terminal-event semantics after
   conformance testing.
 
 AI Client capability snapshots still report host task notification and model
 continuation as `unsupported` for Claude Code and `requires_bridge` for Codex
-and Pi. They do not yet reflect the opt-in Claude route or the default
-deferred delivery for Codex and Pi.
+and Pi. Explicit collection does not depend on either capability.
 
 ## Team Workspace Execution
 

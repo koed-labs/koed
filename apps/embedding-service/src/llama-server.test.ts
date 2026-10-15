@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
-  extractRerankScores,
   LlamaServerClient,
   llamaServerArgs,
   llamaServerEnvironment,
@@ -52,7 +51,7 @@ describe("llama-server adapter helpers", () => {
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: config.llamaNCtx,
         nThreads: config.llamaNThreads,
         nBatch: config.llamaNBatch,
@@ -79,7 +78,7 @@ describe("llama-server adapter helpers", () => {
       port: config.embeddingServerPort,
       pooling: "last" as const,
       embedding: true,
-      reranking: false,
+
       nCtx: config.llamaNCtx,
       nThreads: config.llamaNThreads,
       nBatch: config.llamaNBatch,
@@ -100,65 +99,6 @@ describe("llama-server adapter helpers", () => {
     expect(
       llamaServerArgs({ ...options, gpuIdleUnloadSeconds: 0 }, cuda)
     ).not.toContain("--sleep-idle-seconds");
-  });
-
-  it("extracts rerank scores in original document order", () => {
-    expect(
-      extractRerankScores(
-        {
-          results: [
-            { index: 1, relevance_score: 0.9 },
-            { index: 0, relevance_score: 0.2 }
-          ]
-        },
-        2
-      )
-    ).toEqual([0.2, 0.9]);
-
-    expect(extractRerankScores({ scores: [0.1, 0.3] }, 2)).toEqual([0.1, 0.3]);
-  });
-
-  it("rejects incomplete rerank payloads", () => {
-    expect(() =>
-      extractRerankScores({ results: [{ index: 1, score: 0.5 }] }, 2)
-    ).toThrow("incomplete rerank scores");
-  });
-
-  it("retains llama-server measured reranker prompt tokens", async () => {
-    const config = testConfig({ rerankerKey: "qwen3-reranker-0.6b" });
-    const client = new LlamaServerClient(
-      config,
-      testLogger(),
-      {
-        name: "reranker",
-        modelPath: "/models/reranker.gguf",
-        port: config.rerankerServerPort,
-        pooling: "rank",
-        embedding: true,
-        reranking: true,
-        nCtx: config.rerankerNCtx,
-        nThreads: config.rerankerNThreads,
-        nBatch: config.rerankerNBatch,
-        nUbatch: config.rerankerNUbatch,
-        parallel: config.rerankerParallel,
-        promptCacheEnabled: true,
-        accelerationPolicy: "cpu",
-        accelerationDevice: null
-      },
-      async () =>
-        new Response(
-          JSON.stringify({
-            results: [{ index: 0, relevance_score: 0.8 }],
-            usage: { prompt_tokens: 41, total_tokens: 41 }
-          }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-    );
-
-    await expect(client.rerank("query", ["document"])).resolves.toEqual({
-      scores: [0.8],
-      measuredTokens: 41
-    });
   });
 
   it("waits for the llama-server child to exit during shutdown", async () => {
@@ -188,7 +128,7 @@ describe("llama-server adapter helpers", () => {
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: config.llamaNCtx,
         nThreads: config.llamaNThreads,
         nBatch: config.llamaNBatch,
@@ -238,7 +178,7 @@ describe("llama-server adapter helpers", () => {
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: config.llamaNCtx,
         nThreads: config.llamaNThreads,
         nBatch: config.llamaNBatch,
@@ -293,7 +233,7 @@ describe("llama-server adapter helpers", () => {
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: config.llamaNCtx,
         nThreads: config.llamaNThreads,
         nBatch: config.llamaNBatch,
@@ -345,7 +285,7 @@ describe("llama-server adapter helpers", () => {
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
-        reranking: false,
+
         nCtx: config.llamaNCtx,
         nThreads: config.llamaNThreads,
         nBatch: config.llamaNBatch,
@@ -379,62 +319,6 @@ describe("llama-server adapter helpers", () => {
     expect(client.acceleration()).toMatchObject({
       backend: "cpu",
       fallbackReason: "cuda_startup_failed"
-    });
-    await client.stop();
-  });
-
-  it("discovers a CUDA reranker independently from CPU embedding", async () => {
-    const child = Object.assign(new EventEmitter(), {
-      exitCode: null as number | null,
-      signalCode: null as NodeJS.Signals | null,
-      stdout: null,
-      stderr: null,
-      kill: vi.fn((signal: NodeJS.Signals) => {
-        child.signalCode = signal;
-        child.emit("exit", null, signal);
-        return true;
-      })
-    });
-    const config = testConfig({ embeddingAccelerationPolicy: "cpu" });
-    const listDevices = vi.fn(async (_binary: string, policy?: string) => {
-      expect(policy).toBe("cuda");
-      return {
-        listing: "Available devices:\n  CUDA0: test GPU",
-        devices: [{ id: "CUDA0", backend: "cuda" as const }]
-      };
-    });
-    const client = new LlamaServerClient(
-      config,
-      testLogger(),
-      {
-        name: "reranker",
-        modelPath: config.modelPath!,
-        port: config.rerankerServerPort,
-        pooling: "rank",
-        embedding: true,
-        reranking: true,
-        nCtx: config.rerankerNCtx,
-        nThreads: config.rerankerNThreads,
-        nBatch: config.rerankerNBatch,
-        nUbatch: config.rerankerNUbatch,
-        parallel: config.rerankerParallel,
-        promptCacheEnabled: config.rerankerPromptCacheEnabled,
-        accelerationPolicy: "cuda",
-        accelerationDevice: null
-      },
-      async () =>
-        new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
-      (() => child) as unknown as typeof import("node:child_process").spawn,
-      listDevices,
-      { platform: "linux", arch: "x64" }
-    );
-
-    await client.start();
-
-    expect(listDevices).toHaveBeenCalledWith(config.llamaServerBinary, "cuda");
-    expect(client.acceleration()).toMatchObject({
-      backend: "cuda",
-      device: "CUDA0"
     });
     await client.stop();
   });

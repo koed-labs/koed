@@ -10,11 +10,9 @@ import {
   boolEnv,
   intEnv,
   loadEmbeddingServiceEnv,
-  rerankerModel,
   resolveEnv,
   strEnv,
-  verifyEmbeddingModelArtifact,
-  verifyRerankerModelArtifact
+  verifyEmbeddingModelArtifact
 } from "./env-config.js";
 
 describe("Embedding Service env config", () => {
@@ -45,30 +43,6 @@ describe("Embedding Service env config", () => {
     }
   });
 
-  it("returns reranker provenance only after verifying the exact artifact", async () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "koed-reranker-model-"));
-    const modelPath = resolve(directory, "reranker.gguf");
-    writeFileSync(modelPath, "reranker fixture");
-    const rerankerArtifactSha256 = createHash("sha256")
-      .update("reranker fixture")
-      .digest("hex");
-    try {
-      await expect(
-        verifyRerankerModelArtifact({
-          rerankerModelPath: modelPath,
-          rerankerArtifactSha256
-        })
-      ).resolves.toBe(rerankerArtifactSha256);
-      await expect(
-        verifyRerankerModelArtifact({
-          rerankerModelPath: modelPath,
-          rerankerArtifactSha256: "0".repeat(64)
-        })
-      ).rejects.toThrow("reranker model artifact SHA-256 mismatch");
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
   it("uses positive integer, bool, and trimmed string helpers", () => {
     expect(intEnv({ COUNT: "12" }, "COUNT", 3)).toBe(12);
     expect(intEnv({ COUNT: "0" }, "COUNT", 3)).toBe(3);
@@ -125,9 +99,7 @@ describe("Embedding Service env config", () => {
     expect(config.embeddingAccelerationPolicy).toBe("auto");
     expect(config.embeddingAccelerationDevice).toBeNull();
     expect(config.embeddingGpuIdleUnloadSeconds).toBe(300);
-    expect(config.rerankerAccelerationPolicy).toBe("cpu");
-    expect(config.rerankerAccelerationDevice).toBeNull();
-    expect(config.rerankerGpuIdleUnloadSeconds).toBe(300);
+
     expect(config.expectedDimensions).toBe(1024);
     expect(config.llamaNCtx).toBe(4096);
     expect(config.embeddingMaxTokens).toBe(4096);
@@ -140,42 +112,15 @@ describe("Embedding Service env config", () => {
     expect(config.llamaServerBinary).toBe("/custom/llama-server");
     expect(config.modelPath).toBe("/models/embedding.gguf");
     expect(config.embeddingServerPort).toBe(18080);
-    expect(config.rerankerContextPerSlot).toBe(8192);
-    expect(config.rerankerNCtx).toBe(32768);
-    expect(config.rerankerNBatch).toBe(8192);
-    expect(config.rerankerNUbatch).toBe(512);
-    expect(config.rerankerParallel).toBe(4);
-    expect(config.rerankerPromptCacheEnabled).toBe(true);
-    expect(config.rerankerKey).toBeNull();
-    expect(config.rerankerModelPath).toBeNull();
-    expect(config.rerankerArtifact).toBeNull();
-    expect(config.rerankerArtifactSha256).toBeNull();
-  });
-
-  it("keeps embedding and reranker acceleration policies independent", () => {
-    const config = resolveEnv({
-      KOED_EMBEDDING_ACCELERATION: "cuda",
-      KOED_EMBEDDING_DEVICE: "CUDA1",
-      KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "120",
-      KOED_RERANKER_ACCELERATION: "cpu",
-      KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "0"
-    });
-
-    expect(config.embeddingAccelerationPolicy).toBe("cuda");
-    expect(config.embeddingAccelerationDevice).toBe("CUDA1");
-    expect(config.embeddingGpuIdleUnloadSeconds).toBe(120);
-    expect(config.rerankerAccelerationPolicy).toBe("cpu");
-    expect(config.rerankerGpuIdleUnloadSeconds).toBe(0);
   });
 
   it("keeps the safe acceleration defaults when values are blank", () => {
     const config = resolveEnv({
-      KOED_EMBEDDING_ACCELERATION: "",
-      KOED_RERANKER_ACCELERATION: ""
+      KOED_EMBEDDING_ACCELERATION: ""
     });
 
     expect(config.embeddingAccelerationPolicy).toBe("auto");
-    expect(config.rerankerAccelerationPolicy).toBe("cpu");
+
     expect(config.llamaNCtx).toBe(DEFAULT_LLAMA_N_CTX);
     expect(config.llamaNBatch).toBe(8192);
     expect(config.llamaNUbatch).toBe(512);
@@ -193,11 +138,6 @@ describe("Embedding Service env config", () => {
       resolveEnv({ KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "-1" })
     ).toThrow(
       "KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
-    );
-    expect(() =>
-      resolveEnv({ KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "1.5" })
-    ).toThrow(
-      "KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
     );
   });
 
@@ -248,60 +188,11 @@ describe("Embedding Service env config", () => {
     ).toBe(1);
   });
 
-  it("resolves and validates reranker settings", () => {
-    const config = resolveEnv({
-      EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-      EMBEDDING_RERANKER_MODEL_PATH: "/models/reranker.gguf",
-      KOED_RERANKER_MODEL_SHA256: "a".repeat(64),
-      EMBEDDING_RERANKER_CONTEXT_PER_SLOT: "2048",
-      EMBEDDING_RERANKER_PARALLEL: "3",
-      EMBEDDING_RERANKER_LLAMA_N_THREADS: "7",
-      EMBEDDING_RERANKER_LLAMA_N_BATCH: "2048",
-      EMBEDDING_RERANKER_LLAMA_N_UBATCH: "1024",
-      EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED: "false"
-    });
-
-    expect(config.rerankerKey).toBe("qwen3-reranker-0.6b");
-    expect(config.rerankerRepo).toBe(
-      "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp"
-    );
-    expect(config.rerankerFile).toBe("Qwen3-Reranker-0.6B-Q4_K_M.gguf");
-    expect(config.rerankerArtifact).toBe(
-      "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp:Qwen3-Reranker-0.6B-Q4_K_M.gguf"
-    );
-    expect(config.rerankerArtifactSha256).toBe("a".repeat(64));
-    expect(rerankerModel(config)).toBe("/models/reranker.gguf");
-    expect(config.rerankerContextPerSlot).toBe(2048);
-    expect(config.rerankerNCtx).toBe(6144);
-    expect(config.rerankerNThreads).toBe(7);
-    expect(config.rerankerNBatch).toBe(2048);
-    expect(config.rerankerNUbatch).toBe(1024);
-    expect(config.rerankerParallel).toBe(3);
-    expect(config.rerankerPromptCacheEnabled).toBe(false);
-  });
-
-  it("rejects unsupported keys and port collisions", () => {
+  it("rejects unsupported keys and invalid limits", () => {
     expect(() => resolveEnv({ MODEL_KEY: "unsupported" })).toThrow(
       "Unsupported MODEL_KEY"
     );
-    expect(() => resolveEnv({ RERANKER_KEY: "unsupported" })).toThrow(
-      "Unsupported RERANKER_KEY"
-    );
-    expect(() =>
-      resolveEnv({ RERANKER_MODEL_PATH: "/models/reranker.gguf" })
-    ).toThrow("RERANKER_MODEL_PATH requires");
-    expect(() =>
-      resolveEnv({
-        RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_MODEL_PATH: "/models/reranker.gguf"
-      })
-    ).toThrow("requires KOED_RERANKER_MODEL_SHA256");
-    expect(() =>
-      resolveEnv({
-        LLAMA_EMBEDDING_SERVER_PORT: "18080",
-        LLAMA_RERANKER_SERVER_PORT: "18080"
-      })
-    ).toThrow("must differ");
+
     expect(() =>
       resolveEnv({ KOED_EMBEDDING_MODEL_SHA256: "not-a-sha" })
     ).toThrow("artifact SHA-256");

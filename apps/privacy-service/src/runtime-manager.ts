@@ -183,6 +183,13 @@ export interface PrivacyValidationCache {
 }
 
 export interface PrivacyRuntimeManagerOptions {
+  onStartupProgress?: (
+    stage:
+      | "cpu_load_started"
+      | "cpu_load_complete"
+      | "cpu_parity_complete"
+      | "provider_selection_complete"
+  ) => void;
   validationCache?: PrivacyValidationCache;
   preference: PrivacyRuntimePreference;
   factory: PrivacyRuntimeFactory;
@@ -267,7 +274,9 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       setTimeout: options.setTimeout ?? globalThis.setTimeout,
       clearTimeout: options.clearTimeout ?? globalThis.clearTimeout
     };
+    options.onStartupProgress?.("cpu_load_started");
     const cpu = await loadCandidate(resolved.factory, "cpu");
+    options.onStartupProgress?.("cpu_load_complete");
     const cached = await options.validationCache
       ?.read(cpu)
       .catch(() => undefined);
@@ -275,6 +284,7 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     let cacheMatches: boolean;
     try {
       parityBaseline = await parityOutput(cpu);
+      options.onStartupProgress?.("cpu_parity_complete");
       cacheMatches =
         cached !== undefined &&
         JSON.stringify(parityBaseline) === JSON.stringify(cached.baseline);
@@ -299,6 +309,7 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
         throw error;
       }
     }
+    options.onStartupProgress?.("provider_selection_complete");
     manager.scheduleIdleUnload();
     manager.scheduleAutoCalibration();
     return manager;

@@ -1398,6 +1398,7 @@ export const mergeMemoryAnswerCandidateLists = (
       ledger.set(key, {
         ...(current ?? {}),
         ...normalized,
+        ...observedReferenceLineage(current, normalized),
         retrievalContributions: contributions,
         fusedScore: contributions.reduce<number>((sum, entry) => {
           const rank = recordFromUnknown(entry).rank;
@@ -1503,6 +1504,27 @@ const evidenceMatchesSelection = (
   return true;
 };
 
+const evidenceMatchesObservedSelection = (
+  candidate: unknown,
+  selection: unknown
+): boolean => {
+  if (evidenceMatchesSelection(candidate, selection)) return true;
+  const record = recordFromUnknown(candidate);
+  const references = Array.isArray(record.observedReferences)
+    ? (record.observedReferences as unknown[])
+    : [];
+  // A reference cannot broaden the visibility of the admitted candidate.
+  const visibility = stringField(recordFromUnknown(selection), ["visibility"]);
+  if (visibility && visibility !== stringField(record, ["visibility"]))
+    return false;
+  return references.some(
+    (reference) =>
+      sourceKey(reference) === sourceKey(candidate) &&
+      recordFromUnknown(reference).visibility === record.visibility &&
+      evidenceMatchesSelection(reference, selection)
+  );
+};
+
 export const resolveMemoryAnswerSearchDomain = (
   requested: "global" | "project" | "session" | undefined,
   args: Record<string, unknown>,
@@ -1547,7 +1569,51 @@ export const resolveMemoryAnswerSearchDomain = (
   return { searchDomain: "global" };
 };
 
-const appendEvidence = (
+// Aliases come only from admitted candidates with the same canonical source.
+// Preserve complete references rather than combining fields from different observations.
+const observedReferenceLineage = (
+  existing: unknown,
+  incoming: unknown
+): Record<string, unknown> => {
+  if (
+    !existing ||
+    existing === incoming ||
+    sourceKey(existing) !== sourceKey(incoming)
+  )
+    return {};
+  const references = [existing, incoming].flatMap((item) => {
+    const record = recordFromUnknown(item);
+    return [
+      ...(Array.isArray(record.observedReferences)
+        ? (record.observedReferences as unknown[])
+        : []),
+      {
+        nodeId: record.nodeId,
+        sourceType: record.sourceType,
+        sourceId: record.sourceId,
+        sourceChunkIndex: record.sourceChunkIndex,
+        visibility: record.visibility
+      }
+    ];
+  });
+  return {
+    observedReferences: [
+      ...new Map(references.map((ref) => [JSON.stringify(ref), ref])).values()
+    ],
+    parentNodeIds: [
+      ...new Set(
+        [existing, incoming].flatMap((item) => {
+          const record = recordFromUnknown(item);
+          return Array.isArray(record.parentNodeIds)
+            ? (record.parentNodeIds as unknown[])
+            : [];
+        })
+      )
+    ]
+  };
+};
+
+const appendCitations = (
   existing: unknown[],
   incoming: unknown[]
 ): unknown[] => {
@@ -1558,6 +1624,28 @@ const appendEvidence = (
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(item);
+    }
+  }
+  return merged;
+};
+
+const appendEvidence = (
+  existing: unknown[],
+  incoming: unknown[]
+): unknown[] => {
+  const seen = new Map(existing.map((item, index) => [sourceKey(item), index]));
+  const merged = [...existing];
+  for (const item of incoming) {
+    const key = sourceKey(item);
+    if (!seen.has(key)) {
+      seen.set(key, merged.length);
+      merged.push(item);
+    } else {
+      const index = seen.get(key)!;
+      merged[index] = {
+        ...recordFromUnknown(merged[index]),
+        ...observedReferenceLineage(merged[index], item)
+      };
     }
   }
   return merged;
@@ -1711,43 +1799,40 @@ export const evidenceSelectedByAnswer = (
     // A complete source identity remains authoritative as that list grows.
     const matches = hasSourceIdentity
       ? evidence.filter((candidate) =>
-          evidenceMatchesSelection(candidate, selection)
+          evidenceMatchesObservedSelection(candidate, selection)
         )
       : Number.isInteger(selection.evidence_index) &&
           selection.evidence_index! >= 0 &&
-          evidenceMatchesSelection(
+          evidenceMatchesObservedSelection(
             evidence[selection.evidence_index!],
             selection
           )
         ? [evidence[selection.evidence_index!]]
         : [];
-    if (matches.length === 0) {
+    // Exact duplicates are one source; differing visibility stays ambiguous.
+    const distinct = [
+      ...new Map(
+        matches.map((candidate) => [
+          `${sourceKey(candidate)}|${stringField(recordFromUnknown(candidate), ["visibility"]) ?? ""}`,
+          candidate
+        ])
+      ).values()
+    ];
+    if (distinct.length !== 1) {
       throw new Error(
         "Memory answer worker returned without resolvable supporting evidence for a selection"
       );
     }
-    return matches;
+    return distinct;
   });
-  const selected = appendEvidence([], resolved);
-  const expandedParentIds = new Set(
-    selected
-      .map((item) =>
-        stringField(recordFromUnknown(item), [
-          "expandedFromNodeId",
-          "expanded_from_node_id"
-        ])
+  // Observed references only serve resolution; keep them out of the bundle.
+  return appendEvidence([], resolved).map((item) =>
+    Object.fromEntries(
+      Object.entries(recordFromUnknown(item)).filter(
+        ([key]) => key !== "observedReferences"
       )
-      .filter((value): value is string => Boolean(value))
+    )
   );
-  return selected.filter((item) => {
-    const record = recordFromUnknown(item);
-    const nodeId = stringField(record, ["nodeId", "node_id"]);
-    return !(
-      nodeId &&
-      expandedParentIds.has(nodeId) &&
-      !stringField(record, ["expandedFromNodeId", "expanded_from_node_id"])
-    );
-  });
 };
 
 const retrievalsHaveAvailableCandidates = (retrievals: unknown[]): boolean =>
@@ -2231,7 +2316,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(hits)
         );
@@ -2339,7 +2424,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(expandedEvidence)
         );
@@ -3685,7 +3770,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   });
   return {
     evidence,
-    citations: appendEvidence([], citationsFromHits(evidence)),
+    citations: appendCitations([], citationsFromHits(evidence)),
     retrievals: [
       ...scans.flatMap((scan) =>
         scan.retrieval ? [sanitizeRetrievalDiagnostic(scan.retrieval)] : []
@@ -3825,7 +3910,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
-    citations: appendEvidence(
+    citations: appendCitations(
       citationsFromPayload(payload),
       firstPass.citations
     ),
@@ -4056,17 +4141,23 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned without using Koed RAG tools"
       );
     }
-    const curatedEvidence = evidenceSelectedByAnswer(
+    const selectedEvidence = evidenceSelectedByAnswer(
       state.evidence,
       structuredAnswer
-    ).slice(
-      0,
-      Math.min(
-        state.limit,
-        options.config.maxCandidates,
-        options.config.maxEvidenceItems
-      )
     );
+    const selectedEvidenceLimit = Math.min(
+      state.limit,
+      options.config.maxCandidates,
+      options.config.maxEvidenceItems
+    );
+    // Dropping selected support would leave a found answer only partly grounded.
+    if (selectedEvidence.length > selectedEvidenceLimit) {
+      markBudgetExhausted(state.ledger, "evidence_items");
+      if (structuredAnswer.memory_status !== "insufficient") {
+        throw new Error("Memory answer budget exhausted: evidence_items");
+      }
+    }
+    const curatedEvidence = selectedEvidence.slice(0, selectedEvidenceLimit);
     if (
       structuredAnswer.memory_status === "insufficient" &&
       curatedEvidence.length === 0 &&

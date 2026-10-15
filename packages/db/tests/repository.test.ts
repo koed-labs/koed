@@ -79,7 +79,6 @@ const originalAgentTurnStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
 const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
 const originalEmbeddingModel = process.env.EMBEDDING_MODEL;
 const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-const originalRerankerKey = process.env.RERANKER_KEY;
 const originalEmbeddingQueryInstructionEnabled =
   process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
 const originalEmbeddingQueryInstruction =
@@ -338,35 +337,16 @@ describeDb("memory repository visibility", () => {
     const vector = Array.from({ length: dimensions }, (_, index) =>
       index === 0 ? 1 : 0
     );
-    return vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url, init) => {
-        const endpoint = String(url);
-        if (endpoint.endsWith("/rerank")) {
-          const body =
-            typeof init?.body === "string"
-              ? (JSON.parse(init.body) as { documents?: unknown[] })
-              : {};
-          const count = Array.isArray(body.documents)
-            ? body.documents.length
-            : 1;
-          return new Response(
-            JSON.stringify({
-              model: process.env.RERANKER_KEY ?? "qwen3-reranker-0.6b",
-              scores: Array.from({ length: count }, () => 1)
-            }),
-            { status: 200 }
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
-            dimensions,
-            vectors: [vector]
-          }),
-          { status: 200 }
-        );
-      });
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return new Response(
+        JSON.stringify({
+          model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+          dimensions,
+          vectors: [vector]
+        }),
+        { status: 200 }
+      );
+    });
   };
 
   const withPaidManagedCloudProfile = async <T>(
@@ -4988,11 +4968,7 @@ describeDb("memory repository visibility", () => {
     } else {
       process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
     }
-    if (originalRerankerKey === undefined) {
-      delete process.env.RERANKER_KEY;
-    } else {
-      process.env.RERANKER_KEY = originalRerankerKey;
-    }
+
     if (originalEmbeddingQueryInstructionEnabled === undefined) {
       delete process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
     } else {
@@ -16663,7 +16639,6 @@ describeDb("memory repository visibility", () => {
     process.env.EMBEDDING_MODEL = "qwen3-0.6b";
     process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED = "true";
     delete process.env.EMBEDDING_QUERY_INSTRUCTION;
-    delete process.env.RERANKER_KEY;
 
     const alice = await repo.createUser({
       email: `alice-query-instruction-${randomUUID()}@example.com`
@@ -16735,7 +16710,6 @@ describeDb("memory repository visibility", () => {
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
     process.env.EMBEDDING_MODEL = "qwen3-0.6b";
     process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED = "false";
-    delete process.env.RERANKER_KEY;
 
     const alice = await repo.createUser({
       email: `alice-query-instruction-disabled-${randomUUID()}@example.com`
@@ -17306,12 +17280,10 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("keeps non-rerankable vector hits when summary reranking is requested", async () => {
+  it("returns semantic summaries and fresh events without reranker requests", async () => {
     const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-    const originalRerankerKey = process.env.RERANKER_KEY;
     const originalEmbeddingServiceToken = process.env.EMBEDDING_SERVICE_TOKEN;
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
-    process.env.RERANKER_KEY = "qwen3-reranker-0.6b";
     process.env.EMBEDDING_SERVICE_TOKEN = "test-embedding-token";
 
     try {
@@ -17339,27 +17311,7 @@ describeDb("memory repository visibility", () => {
             }
           );
         }
-        if (endpoint.endsWith("/rerank")) {
-          expect(new Headers(init?.headers).get("x-koed-embedding-token")).toBe(
-            "test-embedding-token"
-          );
-          const request = JSON.parse(String(init?.body ?? "{}")) as {
-            documents?: string[];
-          };
-          return new Response(
-            JSON.stringify({
-              model: "test-reranker",
-              scores: Array.from(
-                { length: request.documents?.length ?? 0 },
-                () => 0.1
-              )
-            }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" }
-            }
-          );
-        }
+
         return new Response(JSON.stringify({ detail: "unexpected endpoint" }), {
           status: 500,
           headers: { "content-type": "application/json" }
@@ -17367,7 +17319,7 @@ describeDb("memory repository visibility", () => {
       });
 
       const alice = await repo.createUser({
-        email: `alice-rerank-${randomUUID()}@example.com`
+        email: `alice-semantic-${randomUUID()}@example.com`
       });
       const engine = createMemoryEngine(repo);
       const completedNode = await repo.createMemoryNode(
@@ -17393,7 +17345,7 @@ describeDb("memory repository visibility", () => {
         summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
       });
       const freshEvent = await captureUserEvent(engine, alice.id, {
-        projectId: "workspace-rerank",
+        projectId: "workspace-semantic",
         content:
           "Fresh raw event says the favourite footballer is Paul McGrath."
       });
@@ -17435,7 +17387,11 @@ describeDb("memory repository visibility", () => {
       });
 
       expect(search.metadata.retrievalMode).toBe("semantic_vector");
-      expect(search.metadata.rerankingEnabled).toBe(true);
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(([url]) => String(url).endsWith("/rerank"))
+      ).toHaveLength(0);
       expect(search.results.map((result) => result.sourceType)).toContain(
         "memory_event"
       );
@@ -17448,11 +17404,7 @@ describeDb("memory repository visibility", () => {
       } else {
         process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
       }
-      if (originalRerankerKey === undefined) {
-        delete process.env.RERANKER_KEY;
-      } else {
-        process.env.RERANKER_KEY = originalRerankerKey;
-      }
+
       if (originalEmbeddingServiceToken === undefined) {
         delete process.env.EMBEDDING_SERVICE_TOKEN;
       } else {
@@ -18889,7 +18841,7 @@ describeDb("memory repository visibility", () => {
           ],
           retrieval: {
             query: "obsidian retrieval plan",
-            stages: ["vector_search", "rerank"],
+            stages: ["vector_search"],
             trace: { retrievalHints: { exact: [hintSentinel] } }
           },
           localMemoryWorker: {
@@ -30561,7 +30513,6 @@ describeDb("memory repository visibility", () => {
     );
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
     process.env.EMBEDDING_MODEL = "qwen3-0.6b";
-    delete process.env.RERANKER_KEY;
     const assignmentVector = Array.from({ length: 1024 }, (_, index) =>
       index === 0 ? 1 : 0
     );
@@ -35235,7 +35186,6 @@ describeDb("memory repository visibility", () => {
   it("ranks a strong semantic leaf above a weaker canonical Curated Memory vector", async () => {
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
     process.env.EMBEDDING_MODEL = "qwen3-0.6b";
-    delete process.env.RERANKER_KEY;
     const owner = await repo.createUser({
       email: `curated-ranking-${randomUUID()}@example.com`
     });

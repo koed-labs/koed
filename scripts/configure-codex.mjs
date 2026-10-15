@@ -39,10 +39,6 @@ const captureHookPath = resolve(
   repoRoot,
   "packages/mcp-server/dist/capture-hook.js"
 );
-const memoryHookPath = resolve(
-  repoRoot,
-  "packages/mcp-server/dist/codex-memory-hook.js"
-);
 const guidancePath = resolve(
   repoRoot,
   "prompts/codex-global-agent-guidance.md"
@@ -149,7 +145,7 @@ command = ${JSON.stringify(hookCommand)}
 timeout = ${timeout}`
   )
   .join("\n\n");
-const makeKoedBlock = (deferredRecall, deliveryHooks) => `${markerStart}
+const makeKoedBlock = () => `${markerStart}
 [mcp_servers.${mcpName}]
 command = "${nodeCommand}"
 args = ["${mcpCliPath}"]
@@ -158,15 +154,19 @@ enabled = true
 [mcp_servers.${mcpName}.tools.memory_answer]
 approval_mode = "approve"
 
+[mcp_servers.${mcpName}.tools.memory_answer_result]
+approval_mode = "approve"
+
+[mcp_servers.${mcpName}.tools.memory_answer_cancel]
+approval_mode = "approve"
+
 [mcp_servers.${mcpName}.tools.memory_workspaces]
 approval_mode = "approve"
 
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${JSON.stringify(koedHome)}
-${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : `KOED_CODEX_STOP_DELIVERY = "0"\n`}
 
 ${hookBlocks}
-${deliveryHooks}
 ${markerEnd}
 `;
 
@@ -196,67 +196,7 @@ const existing = existsSync(codexConfigPath)
   ? readFileSync(codexConfigPath, "utf8")
   : "";
 const withoutPrevious = stripOwnedBlock(existing);
-const ownedContent = existing.slice(
-  existing.indexOf(markerStart),
-  existing.indexOf(markerEnd)
-);
-// An explicit selection wins, then the recorded choice. Otherwise deferred
-// recall is the default, except on Windows where the Stop-hook route is untested.
-const recordedRecall = /^KOED_CODEX_STOP_DELIVERY\s*=\s*"([01])"\s*$/m.exec(
-  ownedContent
-)?.[1];
-const deferredRecall = process.argv.includes("--blocking-recall")
-  ? false
-  : process.argv.includes("--deferred-recall")
-    ? true
-    : process.env.KOED_CODEX_STOP_DELIVERY === "0"
-      ? false
-      : process.env.KOED_CODEX_STOP_DELIVERY === "1"
-        ? true
-        : recordedRecall !== undefined
-          ? recordedRecall === "1"
-          : process.platform !== "win32";
-if (mode !== "remove" && deferredRecall && !existsSync(memoryHookPath)) {
-  throw new Error(
-    `${memoryHookPath} does not exist. Build @koed/mcp-server before configuring deferred recall.`
-  );
-}
-const memoryTool = `mcp__${mcpName}__memory_answer`;
-const quoteDeliveryArgument = (value) =>
-  process.platform === "win32"
-    ? JSON.stringify(value)
-    : `'${value.replaceAll("'", "'\\''")}'`;
-const memoryCommand = [
-  nodeCommand,
-  memoryHookPath,
-  "--koed-home",
-  koedHome,
-  "--memory-tool",
-  memoryTool,
-  "--wait-ms",
-  "300000"
-]
-  .map(quoteDeliveryArgument)
-  .join(" ");
-const memoryMatcher = `^${memoryTool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
-const deliveryHooks = deferredRecall
-  ? [
-      ["PreToolUse", 10, memoryMatcher],
-      ["PostToolUse", 10, memoryMatcher],
-      ["Stop", 305],
-      ["SessionEnd", 10],
-      ["Interrupt", 3]
-    ]
-      .map(
-        ([eventName, timeout, matcher]) => `[[hooks.${eventName}]]
-${matcher ? `matcher = ${JSON.stringify(matcher)}\n` : ""}[[hooks.${eventName}.hooks]]
-type = "command"
-command = ${JSON.stringify(memoryCommand)}
-timeout = ${timeout}`
-      )
-      .join("\n\n")
-  : "";
-const koedBlock = makeKoedBlock(deferredRecall, deliveryHooks);
+const koedBlock = makeKoedBlock();
 const existingInstructions = existsSync(codexInstructionsPath)
   ? readFileSync(codexInstructionsPath, "utf8")
   : "";
@@ -277,9 +217,7 @@ if (mode === "check") {
     );
     process.exit(1);
   }
-  console.log(
-    `Codex integration matches (${deferredRecall ? "deferred" : "blocking"} recall).`
-  );
+  console.log("Codex integration matches (explicit task collection).");
   process.exit(0);
 }
 if (nextConfig !== existing) {
@@ -298,8 +236,16 @@ console.log(
 );
 if (mode === "remove") process.exit(0);
 console.log(
-  `Memory Answer delivery: ${deferredRecall ? "deferred native Stop hook" : "blocking"}.`
+  "Memory Answer delivery: blocking by default; explicit non-blocking task collection."
 );
+if (
+  process.argv.includes("--deferred-recall") ||
+  process.argv.includes("--blocking-recall")
+) {
+  console.log(
+    "Legacy recall flags are deprecated; select delivery_mode on memory_answer instead."
+  );
+}
 console.log(`Detected Node command: ${nodeCommand}`);
 console.log(`Detected Koed home: ${koedHome}`);
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
