@@ -5,7 +5,7 @@ See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–
 ## Current open tickets
 
 The [separate Personal and Collaboration tables](docs/studio-ui-integration-plan.md) replace the earlier five-ticket count.
-There are 12 distinct open tickets. Five contain implementation, rewiring or scope assessment. Seven contain testing/release acceptance.
+There are 12 distinct open tickets. Five contain implementation, rewiring or a gated rollout. Seven contain testing/release acceptance.
 
 | Area          | Open ticket IDs    | Count |
 | ------------- | ------------------ | ----- |
@@ -14,7 +14,7 @@ There are 12 distinct open tickets. Five contain implementation, rewiring or sco
 | Shared        | 03, 22, 29, 30     | 4     |
 
 Ticket 16 now stores native review completion and shared bounded discovery. Ticket 19 reads native Agent activity with shared reminder state and retained legacy history; live acceptance remains open. Ticket 20 now reads native Team Agent activity and retains legacy history, with independent Team reminders and refreshed pagination; live acceptance remains open. Tickets 12 and 13 now use native Public Square publication and channel execution; focused automated checks pass, while live native/hosted and deployed Team acceptance remain open.
-Ticket 04 needs scope reconciliation before adding code. Existing human messaging remains implemented.
+Ticket 04 assessment is complete: local catalogue and accepted Codex context are wired. Claude root-instruction loading is implemented behind a default-off gate; live Claude checks still gate enablement; selected skills and fork/device transfer are explicitly unavailable; the hosted catalogue and live-review deferrals remain open. See [the assessment](docs/studio-project-chat-assessment.md). Existing human messaging remains implemented.
 Keep original acceptance records and explicit deferrals. Do not count superseded tickets or repeated tests twice.
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.
 
@@ -30,7 +30,7 @@ Plan: [persistent identities, conversation participation and runtime context](do
 - Completed: role-template catalogue with Git-managed source, immutable database publication, Role autosuggest and explicit editable-copy selection. Activated locally on September 23; existing agents are not updated automatically.
 - Completed for Personal standalone New Chat: durable conversation participants, `@Agent` mentions, active respondent, actual model/effort defaults and attributable outputs.
 - Implemented: [multiple Agents in one Personal conversation](docs/studio-multi-agent-conversations.md), using the same or different AI Clients, sequential durable deliveries, separate native sessions, per-participant settings and bounded incremental public context. Automated checks cover restart/reopen, uncertain-delivery blocking, shared checkout identity and one Project/sidebar conversation. Manual follow-up: exercise live Codex and Claude Code replies in the updated desktop app.
-- Completed: live New Chat selects Project IDs from the authorized Home snapshot and passes the selected Project to managed execution. Still add a complete Project catalogue and Project-instruction context before calling Project chat complete.
+- Assessed under Ticket 04: local New Chat uses registered Projects independently of captured history, and accepted local Codex tests verify Project instructions. Ordinary Claude instruction loading is disabled by SDK settings isolation; the instruction-only reader and same-home recovery are now implemented behind a default-off gate; live provider and transfer acceptance remain open. Hosted empty registered Projects need a device-scoped catalogue contract within the existing deferral. See [the assessment](docs/studio-project-chat-assessment.md).
 - Remaining: make the shared `@Agent` contract work in every chat mechanism. PR Chat needs a PR-specific, owner-authenticated Agent turn adapter that resolves immutable identity/version and authorized Personal Memory, binds verified repository/PR/base/head context, preserves its isolated read-only runner, and records author/model attribution. Do not route it through normal managed execution until that path can preserve read-only mode. Collaborative channels, rooms and direct/group chats need explicit User-versus-Team identity, audience and memory authorization before invocation is enabled.
 - Completion gate: use the chat-surface matrix in `docs/studio-personal-agents-plan.md`; no chat mechanism is complete from mention suggestions alone.
 - Completed: managed runtime assembles immutable identity and authorized Personal Memory; the context builder accepts a verified Project scope. Live Studio passes selected Project scope. Each other chat adapter must supply its own verified context.

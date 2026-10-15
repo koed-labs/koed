@@ -66,11 +66,13 @@ import {
   forkClaudeTranscript,
   formatManagedConversationPrompt,
   formatPersonalAgentManagedPrompt,
+  managedClaudeInstructionHomeVersion,
   managedPromptPersonalAgentContext,
   MemoryApiClient,
   MemoryApiError,
   prepareManagedClaudeHome,
   processClaudeTranscriptSignal,
+  releaseManagedClaudeHomeLease,
   retainManagedClaudeHome,
   resolveClaudeManagedConversationSource,
   localAiClientInstanceConfigIdentity,
@@ -122,6 +124,10 @@ import {
 } from "./development-workspace-snapshot.js";
 import { discoverManagedConversationRuntime } from "./managed-conversation-runtime-discovery.js";
 import { captureManagedPiTurn } from "./managed-pi-runtime.js";
+import {
+  assertManagedClaudeInstructionTransferSupported,
+  managedClaudeInstructionContext
+} from "./managed-claude-instruction-context.js";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
 import { RetainedWorkspaceCatalog } from "@koed/koed-server/retained-workspace-catalog";
 import {
@@ -964,6 +970,11 @@ export const managedConversationFailureCode = (error: unknown): string => {
       return `ManagedConversationMemoryApi${current.status}Error`;
     }
     if (current instanceof Error) {
+      if (
+        current.name === "ClaudeManagedConversationInstructionIsolationError"
+      ) {
+        return "ManagedConversationInstructionSkillsUnavailableError";
+      }
       if (current.name === "CodexAppServerTurnError") {
         return codexAppServerTurnStatus(current) === "interrupted"
           ? "ManagedConversationTurnInterruptedError"
@@ -1286,6 +1297,8 @@ const terminalExecutionCheckoutPreparationErrors = new Set([
 ]);
 
 const terminalRunnerStartPreparationErrors = new Set([
+  "ManagedConversationProjectInstructionsReadError",
+  "ManagedConversationProjectInstructionsSnapshotError",
   ...terminalExecutionCheckoutPreparationErrors,
   "ManagedConversationIndependentRuntimeBindingUnavailableError",
   "ManagedConversationExecutionCheckoutUnavailableError",
@@ -3198,7 +3211,7 @@ export const createManagedConversationService = (options: {
     });
   };
 
-  const createClaudeSession = (
+  const createClaudeSession = async (
     execution: ManagedConversationExecutionRecord,
     binding: ManagedConversationRuntimeBindingRecord,
     override?: {
@@ -3206,8 +3219,10 @@ export const createManagedConversationService = (options: {
       sessionId?: string;
       resumeSessionId?: string;
       managedHome?: string;
+      initializeProjectInstructions?: boolean;
+      releaseManagedHomeOnFailure?: boolean;
     }
-  ): ClaudeManagedConversationSession => {
+  ): Promise<ClaudeManagedConversationSession> => {
     if (
       execution.provider !== "claude" ||
       execution.runnerKind !== "local_device"
@@ -3241,192 +3256,237 @@ export const createManagedConversationService = (options: {
     if (!exactHome) {
       throw new Error("ManagedConversationClaudeSessionStoreMissingError");
     }
-    return new ClaudeManagedConversationSession({
-      cwd: override?.projectPath ?? binding.projectPath,
-      model: execution.model,
-      ...(execution.reasoningEffort
-        ? { reasoningEffort: execution.reasoningEffort }
-        : {}),
-      permissionMode: permission.permissionMode,
-      onTextDelta: (delta, turnId) =>
-        queueProviderText(execution, turnId, delta),
-      onUserFacingProgress: (event) =>
-        recordPublicProgress(execution.id, event),
-      executionPolicy: () => {
-        const activeCommand = activePersonalAgentCommandByExecution.get(
-          execution.id
-        );
-        if (activeCommand && isSummaryDraftCommand(activeCommand))
-          return "summary";
-        if (activeCommand && isReadOnlyPullRequest(execution.id))
-          return "review";
-        if (activeCommand && isPendingTeamReviewCommand(activeCommand))
-          return "planning";
-        return "work";
-      },
-      canUseTool: async (toolName, input, callback) => {
-        const activeCommand = activePersonalAgentCommandByExecution.get(
-          execution.id
-        );
-        if (activeCommand && isSummaryDraftCommand(activeCommand)) {
-          return {
-            behavior: "deny",
-            message:
-              "Summary drafting is discussion only and cannot use execution tools."
-          };
-        }
-        if (
-          activeCommand &&
-          (isPendingTeamReviewCommand(activeCommand) ||
-            isReadOnlyPullRequest(execution.id)) &&
-          !["Read", "Glob", "Grep", "LS", "AskUserQuestion"].includes(toolName)
-        ) {
-          return {
-            behavior: "deny",
-            message:
-              "This private Team request is awaiting owner acceptance. You may discuss or inspect context, but cannot perform work yet."
-          };
-        }
-        if (
-          activeCommand &&
-          isReadOnlyPullRequest(execution.id) &&
-          ["Read", "Glob", "Grep", "LS"].includes(toolName) &&
-          !(await pullRequestReadToolAllowed(
-            override?.projectPath ?? binding.projectPath,
-            toolName,
-            input
-          ))
-        ) {
-          return {
-            behavior: "deny",
-            message:
-              "PR review may inspect only files in its isolated checkout."
-          };
-        }
-        const isQuestion = toolName === "AskUserQuestion";
-        if (!isQuestion && permission.permissionMode === "bypassPermissions") {
-          return { behavior: "allow", updatedInput: input };
-        }
-        const questions =
-          isQuestion && Array.isArray(input.questions)
-            ? input.questions.map((question, index) => ({
-                ...record(question),
-                id: String(index)
-              }))
-            : [];
-        const item = await options.repository.putManagedConversationRuntimeItem(
-          { userId: execution.ownerUserId },
-          {
-            executionId: execution.id,
-            executionGeneration: execution.executionGeneration,
-            providerRequestId: `claude:${callback.toolUseID}:${randomUUID()}`,
-            providerItemId: callback.toolUseID,
-            itemKind: isQuestion ? "user_input" : "command_approval",
-            payload: boundedRuntimePayload(
-              isQuestion
-                ? { questions }
-                : {
-                    toolName,
-                    input,
-                    command: toolName,
-                    reason: JSON.stringify(input),
-                    supportsSessionApproval: true
-                  }
-            )
-          }
-        );
-        let resolved = false;
-        try {
-          const response = await waitForRuntimeResponse(
-            execution.ownerUserId,
-            item.id,
-            execution.executionGeneration,
-            callback.signal
+    const sessionId =
+      override?.resumeSessionId ??
+      override?.sessionId ??
+      binding.providerThreadId ??
+      randomUUID();
+    try {
+      const projectInstructions = await managedClaudeInstructionContext({
+        managedHome: exactHome,
+        sessionId,
+        projectPath: execution.projectId
+          ? (override?.projectPath ?? binding.projectPath)
+          : null,
+        newSession: override?.initializeProjectInstructions
+      });
+      return new ClaudeManagedConversationSession({
+        cwd: override?.projectPath ?? binding.projectPath,
+        model: execution.model,
+        ...(execution.reasoningEffort
+          ? { reasoningEffort: execution.reasoningEffort }
+          : {}),
+        permissionMode: permission.permissionMode,
+        onTextDelta: (delta, turnId) =>
+          queueProviderText(execution, turnId, delta),
+        onUserFacingProgress: (event) =>
+          recordPublicProgress(execution.id, event),
+        executionPolicy: () => {
+          const activeCommand = activePersonalAgentCommandByExecution.get(
+            execution.id
           );
-          if (callback.signal.aborted)
-            return { behavior: "deny", message: "Request canceled." };
-          resolved = true;
-          if (isQuestion) {
-            const answers = record(response.answers);
+          if (activeCommand && isSummaryDraftCommand(activeCommand))
+            return "summary";
+          if (activeCommand && isReadOnlyPullRequest(execution.id))
+            return "review";
+          if (activeCommand && isPendingTeamReviewCommand(activeCommand))
+            return "planning";
+          return "work";
+        },
+        canUseTool: async (toolName, input, callback) => {
+          const activeCommand = activePersonalAgentCommandByExecution.get(
+            execution.id
+          );
+          if (activeCommand && isSummaryDraftCommand(activeCommand)) {
             return {
-              behavior: "allow",
-              updatedInput: {
-                ...input,
-                answers: Object.fromEntries(
-                  questions.map((question) => [
-                    typeof record(question).question === "string"
-                      ? (record(question).question as string)
-                      : "",
-                    stringArray(answers[question.id]).join(", ")
-                  ])
-                )
-              }
+              behavior: "deny",
+              message:
+                "Summary drafting is discussion only and cannot use execution tools."
             };
           }
           if (
-            response.decision === "accept" ||
-            response.decision === "acceptForSession"
+            activeCommand &&
+            (isPendingTeamReviewCommand(activeCommand) ||
+              isReadOnlyPullRequest(execution.id)) &&
+            !["Read", "Glob", "Grep", "LS", "AskUserQuestion"].includes(
+              toolName
+            )
           ) {
             return {
-              behavior: "allow",
-              updatedInput: input,
-              ...(response.decision === "acceptForSession"
-                ? {
-                    updatedPermissions: callback.suggestions?.length
-                      ? callback.suggestions.map((suggestion) => ({
-                          ...suggestion,
-                          destination: "session" as const
-                        }))
-                      : [
-                          {
-                            type: "addRules" as const,
-                            rules: [{ toolName }],
-                            behavior: "allow" as const,
-                            destination: "session" as const
-                          }
-                        ]
-                  }
-                : {})
+              behavior: "deny",
+              message:
+                "This private Team request is awaiting owner acceptance. You may discuss or inspect context, but cannot perform work yet."
             };
           }
-          return { behavior: "deny", message: "User declined tool execution." };
-        } catch (error) {
-          if (callback.signal.aborted)
-            return { behavior: "deny", message: "Request canceled." };
-          throw error;
-        } finally {
-          await options.repository.resolveManagedConversationRuntimeItem(
-            { userId: execution.ownerUserId },
-            {
-              itemId: item.id,
-              executionGeneration: execution.executionGeneration,
-              state: resolved ? "resolved" : "canceled"
+          if (
+            activeCommand &&
+            isReadOnlyPullRequest(execution.id) &&
+            ["Read", "Glob", "Grep", "LS"].includes(toolName) &&
+            !(await pullRequestReadToolAllowed(
+              override?.projectPath ?? binding.projectPath,
+              toolName,
+              input
+            ))
+          ) {
+            return {
+              behavior: "deny",
+              message:
+                "PR review may inspect only files in its isolated checkout."
+            };
+          }
+          const isQuestion = toolName === "AskUserQuestion";
+          if (
+            !isQuestion &&
+            permission.permissionMode === "bypassPermissions"
+          ) {
+            return { behavior: "allow", updatedInput: input };
+          }
+          const questions =
+            isQuestion && Array.isArray(input.questions)
+              ? input.questions.map((question, index) => ({
+                  ...record(question),
+                  id: String(index)
+                }))
+              : [];
+          const item =
+            await options.repository.putManagedConversationRuntimeItem(
+              { userId: execution.ownerUserId },
+              {
+                executionId: execution.id,
+                executionGeneration: execution.executionGeneration,
+                providerRequestId: `claude:${callback.toolUseID}:${randomUUID()}`,
+                providerItemId: callback.toolUseID,
+                itemKind: isQuestion ? "user_input" : "command_approval",
+                payload: boundedRuntimePayload(
+                  isQuestion
+                    ? { questions }
+                    : {
+                        toolName,
+                        input,
+                        command: toolName,
+                        reason: JSON.stringify(input),
+                        supportsSessionApproval: true
+                      }
+                )
+              }
+            );
+          let resolved = false;
+          try {
+            const response = await waitForRuntimeResponse(
+              execution.ownerUserId,
+              item.id,
+              execution.executionGeneration,
+              callback.signal
+            );
+            if (callback.signal.aborted)
+              return { behavior: "deny", message: "Request canceled." };
+            resolved = true;
+            if (isQuestion) {
+              const answers = record(response.answers);
+              return {
+                behavior: "allow",
+                updatedInput: {
+                  ...input,
+                  answers: Object.fromEntries(
+                    questions.map((question) => [
+                      typeof record(question).question === "string"
+                        ? (record(question).question as string)
+                        : "",
+                      stringArray(answers[question.id]).join(", ")
+                    ])
+                  )
+                }
+              };
             }
-          );
+            if (
+              response.decision === "accept" ||
+              response.decision === "acceptForSession"
+            ) {
+              return {
+                behavior: "allow",
+                updatedInput: input,
+                ...(response.decision === "acceptForSession"
+                  ? {
+                      updatedPermissions: callback.suggestions?.length
+                        ? callback.suggestions.map((suggestion) => ({
+                            ...suggestion,
+                            destination: "session" as const
+                          }))
+                        : [
+                            {
+                              type: "addRules" as const,
+                              rules: [{ toolName }],
+                              behavior: "allow" as const,
+                              destination: "session" as const
+                            }
+                          ]
+                    }
+                  : {})
+              };
+            }
+            return {
+              behavior: "deny",
+              message: "User declined tool execution."
+            };
+          } catch (error) {
+            if (callback.signal.aborted)
+              return { behavior: "deny", message: "Request canceled." };
+            throw error;
+          } finally {
+            await options.repository.resolveManagedConversationRuntimeItem(
+              { userId: execution.ownerUserId },
+              {
+                itemId: item.id,
+                executionGeneration: execution.executionGeneration,
+                state: resolved ? "resolved" : "canceled"
+              }
+            );
+          }
+        },
+        env: pullRequestAgentEnvironment(execution.id, runtimeEnvironment),
+        managedHome: exactHome,
+        clientName: "koed-server-managed-conversation",
+        tools: { type: "preset", preset: "claude_code" },
+        settingSources: [],
+        ...(projectInstructions
+          ? {
+              instructionOnly: true as const,
+              projectInstructionStatus: projectInstructions.status
+            }
+          : {}),
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: [
+            "You are Claude Code working with the user in the selected Koed Project.",
+            projectInstructions?.append
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        },
+        maxTurns: 100,
+        ...(override?.resumeSessionId
+          ? { resumeSessionId: override.resumeSessionId }
+          : override?.sessionId
+            ? { sessionId: override.sessionId }
+            : binding.providerThreadId
+              ? binding.transcriptPath
+                ? { resumeSessionId: binding.providerThreadId }
+                : { sessionId: binding.providerThreadId }
+              : { sessionId })
+      });
+    } catch (error) {
+      // Fresh-home callers own destruction. Lazy same-home recovery must not
+      // retain a lease when no provider session could be constructed.
+      if (override?.releaseManagedHomeOnFailure ?? !override?.managedHome) {
+        try {
+          releaseManagedClaudeHomeLease(exactHome, process.env);
+        } catch {
+          // Preserve the instruction/identity failure; never delete native data.
         }
-      },
-      env: pullRequestAgentEnvironment(execution.id, runtimeEnvironment),
-      managedHome: exactHome,
-      clientName: "koed-server-managed-conversation",
-      tools: { type: "preset", preset: "claude_code" },
-      settingSources: [],
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append:
-          "You are Claude Code working with the user in the selected Koed Project."
-      },
-      maxTurns: 100,
-      ...(override?.resumeSessionId
-        ? { resumeSessionId: override.resumeSessionId }
-        : override?.sessionId
-          ? { sessionId: override.sessionId }
-          : binding.providerThreadId
-            ? binding.transcriptPath
-              ? { resumeSessionId: binding.providerThreadId }
-              : { sessionId: binding.providerThreadId }
-            : {})
-    });
+      }
+      throw error;
+    }
   };
 
   const createPiSession = (
@@ -6726,7 +6786,7 @@ export const createManagedConversationService = (options: {
             relativePath: input.providerArtifactRelativePath,
             bytes: transcript.bytes
           });
-          resumed = createClaudeSession(execution, binding, {
+          resumed = await createClaudeSession(execution, binding, {
             projectPath: binding.projectPath,
             resumeSessionId: source.threadId,
             managedHome
@@ -6938,6 +6998,9 @@ export const createManagedConversationService = (options: {
         throw new Error("ManagedConversationForkParentMissingError");
       }
       const binding = await runtimeBindingFor(execution, command.ownerUserId);
+      if (execution.provider === "claude") {
+        assertManagedClaudeInstructionTransferSupported(binding);
+      }
       let source: ForkSourceBoundary;
       if (
         execution.state === "running" ||
@@ -7584,11 +7647,13 @@ export const createManagedConversationService = (options: {
           );
         }
         const managedHome = prepareManagedClaudeHome(clientEnvironment);
-        const session = createClaudeSession(command.execution, binding, {
-          managedHome
-        });
+        let session: ClaudeManagedConversationSession | undefined;
         let managedHomeRetained = false;
         try {
+          session = await createClaudeSession(command.execution, binding, {
+            managedHome,
+            initializeProjectInstructions: true
+          });
           const started = await withClaudeLease(
             command,
             (managed) => managed.start(),
@@ -7624,7 +7689,13 @@ export const createManagedConversationService = (options: {
                   managedConversation: true,
                   externalThreadId: started.identity.sessionId,
                   aiClientProvider: "claude",
-                  cliVersion: availability.version
+                  cliVersion: availability.version,
+                  ...(managedClaudeInstructionHomeVersion(
+                    managedHome,
+                    clientEnvironment
+                  ) === 1
+                    ? { claudeProjectInstructionsVersion: 1 }
+                    : {})
                 }
               }
             );
@@ -7676,7 +7747,7 @@ export const createManagedConversationService = (options: {
           });
           return;
         } catch (error) {
-          await session.closeAndWait().catch(() => undefined);
+          await session?.closeAndWait().catch(() => undefined);
           if (!managedHomeRetained) {
             destroyManagedClaudeHome(managedHome, clientEnvironment);
           }
@@ -8712,13 +8783,14 @@ export const createManagedConversationService = (options: {
             })()
           : isClaudeRestore
             ? await (async () => {
-                claudeSession = createClaudeSession(
+                claudeSession = await createClaudeSession(
                   command.execution,
                   runtimeBinding,
                   {
                     projectPath: target.path,
                     resumeSessionId: certificate.manifest.providerThreadId,
-                    managedHome
+                    managedHome,
+                    releaseManagedHomeOnFailure: Boolean(reusableBinding)
                   }
                 );
                 const value = await withClaudeLease(
@@ -9028,7 +9100,7 @@ export const createManagedConversationService = (options: {
             relativePath: childRelativePath,
             bytes: claudeFork.bytes
           });
-          claudeSession = createClaudeSession(
+          claudeSession = await createClaudeSession(
             prepared.childExecution,
             binding,
             {
@@ -9360,6 +9432,18 @@ export const createManagedConversationService = (options: {
       return;
     }
     if (command.commandKind === "quiesce") {
+      if (command.execution.provider === "claude") {
+        const pendingHandoff =
+          await options.repository.getActiveManagedConversationHandoffForExecution(
+            { userId: command.ownerUserId },
+            command.executionId
+          );
+        if (pendingHandoff) {
+          assertManagedClaudeInstructionTransferSupported(
+            await runtimeBindingFor(command.execution, command.ownerUserId)
+          );
+        }
+      }
       let sealedSources: CodexManagedConversationSealedSource[];
       let next = command.execution;
       if (command.execution.state === "quiesced") {
@@ -9446,6 +9530,9 @@ export const createManagedConversationService = (options: {
           command.execution,
           command.ownerUserId
         );
+        if (command.execution.provider === "claude") {
+          assertManagedClaudeInstructionTransferSupported(binding);
+        }
         const signer = createDeviceBoundSourceSigner({
           koedHome: options.koedHome,
           sourceGenerationId: source.sourceGenerationId,
@@ -10802,7 +10889,12 @@ export const createManagedConversationService = (options: {
         }
         const settingsRejected =
           isPrompt &&
-          errorCode(error) === "ManagedConversationSettingsUnavailableError";
+          [
+            "ManagedConversationSettingsUnavailableError",
+            "ManagedConversationInstructionSkillsUnavailableError",
+            "ManagedConversationProjectInstructionsReadError",
+            "ManagedConversationProjectInstructionsSnapshotError"
+          ].includes(errorCode(error));
         const providerThreadOpenFailedBeforeTurn =
           isPrompt &&
           command.execution.provider === "codex" &&

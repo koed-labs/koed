@@ -41,6 +41,8 @@ export interface ClaudeManagedConversationConfig {
   model: string;
   reasoningEffort?: string;
   permissionMode: ManagedPermissionMode;
+  instructionOnly?: true;
+  projectInstructionStatus?: "loaded" | "absent" | "standalone";
   env?: NodeJS.ProcessEnv;
   managedHome: string;
   clientName?: string;
@@ -111,6 +113,15 @@ export class ClaudeManagedConversationCancelledError extends Error {
   }
 }
 
+export class ClaudeManagedConversationInstructionIsolationError extends Error {
+  constructor() {
+    super(
+      "Selected skills cannot run with instruction-only isolation because the pinned Claude SDK has not verified skill loading with filesystem settings disabled."
+    );
+    this.name = "ClaudeManagedConversationInstructionIsolationError";
+  }
+}
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MANAGED_PERMISSION_MODES = new Set<ManagedPermissionMode>([
@@ -121,6 +132,13 @@ const MANAGED_PERMISSION_MODES = new Set<ManagedPermissionMode>([
   "dontAsk",
   "auto"
 ]);
+
+const PROJECT_INSTRUCTION_STATUS_TITLES = {
+  loaded:
+    "Loaded the root CLAUDE.md snapshot only; imports and nested rules were not loaded",
+  absent: "No root CLAUDE.md snapshot was found",
+  standalone: "Standalone Conversation; no Project instructions were loaded"
+} as const;
 
 const assertSessionId = (sessionId: string, label: string): void => {
   if (!UUID_PATTERN.test(sessionId)) {
@@ -193,6 +211,7 @@ interface ManagedClaudeLeaseIdentity {
 }
 
 interface ManagedClaudeMarker extends ManagedClaudeLeaseIdentity {
+  projectInstructionsVersion?: 1;
   signature: string;
 }
 
@@ -228,6 +247,20 @@ const leaseSignature = (
     .update(leaseIdentityJson(identity))
     .update(heartbeatAt === undefined ? "" : `\n${heartbeatAt}`)
     .digest("hex");
+
+const managedClaudeMarkerSignature = (
+  key: Buffer,
+  identity: ManagedClaudeLeaseIdentity,
+  projectInstructionsVersion?: 1
+): string => {
+  if (projectInstructionsVersion === undefined) {
+    return leaseSignature(key, identity);
+  }
+  return createHmac("sha256", key)
+    .update(leaseIdentityJson(identity))
+    .update(`\nprojectInstructionsVersion=${projectInstructionsVersion}`)
+    .digest("hex");
+};
 
 const signatureMatches = (actual: unknown, expected: string): boolean => {
   if (typeof actual !== "string" || !/^[0-9a-f]{64}$/.test(actual)) {
@@ -291,10 +324,18 @@ const atomicWriteJson = (target: string, value: unknown): void => {
 
 const signedMarker = (
   key: Buffer,
-  identity: ManagedClaudeLeaseIdentity
+  identity: ManagedClaudeLeaseIdentity,
+  projectInstructionsVersion?: 1
 ): ManagedClaudeMarker => ({
   ...identity,
-  signature: leaseSignature(key, identity)
+  ...(projectInstructionsVersion === undefined
+    ? {}
+    : { projectInstructionsVersion }),
+  signature: managedClaudeMarkerSignature(
+    key,
+    identity,
+    projectInstructionsVersion
+  )
 });
 
 const signedLease = (
@@ -328,7 +369,15 @@ const parseLeaseIdentity = (
   ) {
     return null;
   }
-  return candidate as unknown as ManagedClaudeLeaseIdentity;
+  return {
+    version: MANAGED_CLAUDE_LEASE_VERSION,
+    kind: "koed-managed-claude-home",
+    homeId: candidate.homeId as string,
+    ownerId: candidate.ownerId as string,
+    ownerPid: candidate.ownerPid as number,
+    createdAt: candidate.createdAt as string,
+    state: candidate.state as ManagedClaudeLeaseState
+  };
 };
 
 const verifiedManagedClaudeLease = (
@@ -343,6 +392,7 @@ const verifiedManagedClaudeLease = (
   resolved: string;
   identity: ManagedClaudeLeaseIdentity;
   lease: ManagedClaudeLease;
+  projectInstructionsVersion?: 1;
 } => {
   const resolved = fs.realpathSync(target);
   if (!resolved.startsWith(`${root}${path.sep}`)) {
@@ -354,8 +404,25 @@ const verifiedManagedClaudeLease = (
   const markerIdentity = parseLeaseIdentity(markerValue);
   if (!markerIdentity) throw new Error("Managed Claude home marker is invalid");
   const marker = markerValue as ManagedClaudeMarker;
+  const markerInstructionVersion = (markerValue as Record<string, unknown>)
+    .projectInstructionsVersion;
   if (
-    !signatureMatches(marker.signature, leaseSignature(key, markerIdentity))
+    markerInstructionVersion !== undefined &&
+    markerInstructionVersion !== 1
+  ) {
+    throw new Error("Managed Claude home marker is invalid");
+  }
+  const projectInstructionsVersion =
+    markerInstructionVersion === 1 ? 1 : undefined;
+  if (
+    !signatureMatches(
+      marker.signature,
+      managedClaudeMarkerSignature(
+        key,
+        markerIdentity,
+        projectInstructionsVersion
+      )
+    )
   ) {
     throw new Error("Managed Claude home marker signature is invalid");
   }
@@ -377,7 +444,14 @@ const verifiedManagedClaudeLease = (
   ) {
     throw new Error("Managed Claude home lease is invalid");
   }
-  return { resolved, identity: markerIdentity, lease };
+  return {
+    resolved,
+    identity: markerIdentity,
+    lease,
+    ...(projectInstructionsVersion === undefined
+      ? {}
+      : { projectInstructionsVersion })
+  };
 };
 
 const processIsAlive = (pid: number): boolean => {
@@ -536,6 +610,44 @@ export const prepareManagedClaudeHome = (
   }
 };
 
+export const managedClaudeInstructionHomeVersion = (
+  target: string,
+  env: NodeJS.ProcessEnv = process.env
+): 1 | undefined => {
+  const { root, key } = initializeManagedClaudeRoot(env);
+  return verifiedManagedClaudeLease(target, root, key)
+    .projectInstructionsVersion;
+};
+
+export const markManagedClaudeInstructionHome = (
+  target: string,
+  env: NodeJS.ProcessEnv = process.env
+): string => {
+  const { root, key } = initializeManagedClaudeRoot(env);
+  const verified = verifiedManagedClaudeLease(target, root, key);
+  const active = activeManagedClaudeLeases.get(verified.resolved);
+  if (
+    active?.identity.ownerId !== verified.identity.ownerId ||
+    verified.identity.state !== "preparing"
+  ) {
+    throw new Error(
+      "Refusing to mark a managed Claude home that is not a new preparing home owned by this process"
+    );
+  }
+  if (verified.projectInstructionsVersion === 1) return verified.resolved;
+  atomicWriteJson(
+    path.join(verified.resolved, MANAGED_CLAUDE_MARKER),
+    signedMarker(key, verified.identity, 1)
+  );
+  if (
+    verifiedManagedClaudeLease(target, root, key).projectInstructionsVersion !==
+    1
+  ) {
+    throw new Error("Managed Claude instruction marker could not be verified");
+  }
+  return verified.resolved;
+};
+
 export const destroyManagedClaudeHome = (
   target: string,
   env: NodeJS.ProcessEnv = process.env
@@ -571,7 +683,7 @@ export const retainManagedClaudeHome = (
   const identity = { ...verified.identity, state: "retained" as const };
   atomicWriteJson(
     path.join(verified.resolved, MANAGED_CLAUDE_MARKER),
-    signedMarker(key, identity)
+    signedMarker(key, identity, verified.projectInstructionsVersion)
   );
   atomicWriteJson(
     managedClaudeLeasePath(root, identity.homeId),
@@ -620,7 +732,7 @@ export const reuseManagedClaudeHome = (
   };
   atomicWriteJson(
     path.join(verified.resolved, MANAGED_CLAUDE_MARKER),
-    signedMarker(key, identity)
+    signedMarker(key, identity, verified.projectInstructionsVersion)
   );
   atomicWriteJson(
     managedClaudeLeasePath(root, identity.homeId),
@@ -1060,6 +1172,20 @@ export class ClaudeManagedConversationSession {
     selectedSkills: readonly string[]
   ): Promise<ClaudeManagedConversationResult> {
     this.assertOpen();
+    if (this.config.instructionOnly && selectedSkills.length > 0) {
+      throw new ClaudeManagedConversationInstructionIsolationError();
+    }
+    const turnId = randomUUID();
+    const projectInstructionStatus = this.config.instructionOnly
+      ? this.config.projectInstructionStatus
+      : undefined;
+    if (projectInstructionStatus) {
+      this.config.onUserFacingProgress?.({
+        turnId,
+        id: `project-instructions-${turnId}`,
+        title: PROJECT_INSTRUCTION_STATUS_TITLES[projectInstructionStatus]
+      });
+    }
     const abortController = new AbortController();
     const shouldResume = this.resumed || this.submittedQuery;
     let stream: Query;
@@ -1108,8 +1234,9 @@ export class ClaudeManagedConversationSession {
             ...(koedMcp ? { koed: koedMcp } : {})
           },
           strictMcpConfig: true,
-          settingSources:
-            selectedSkills.length > 0
+          settingSources: this.config.instructionOnly
+            ? []
+            : selectedSkills.length > 0
               ? (["user", "project"] as SettingSource[])
               : (this.config.settingSources ?? []),
           ...(selectedSkills.length > 0 ? { skills: [...selectedSkills] } : {}),
@@ -1138,7 +1265,6 @@ export class ClaudeManagedConversationSession {
     this.activeQuery = stream;
     const providerEvents: SDKMessage[] = [];
     const observedCommands = new Map<string, string>();
-    const turnId = randomUUID();
     let result: SDKResultMessage | undefined;
     try {
       for await (const message of stream) {

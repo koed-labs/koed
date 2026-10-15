@@ -5184,6 +5184,21 @@ describe("Managed Conversation source identity", () => {
 });
 
 describe("Managed Conversation failure codes", () => {
+  it("keeps instruction failures actionable without exposing local file contents", () => {
+    for (const code of [
+      "ManagedConversationProjectInstructionsReadError",
+      "ManagedConversationProjectInstructionsSnapshotError"
+    ]) {
+      expect(managedConversationFailureCode(new Error(code))).toBe(code);
+    }
+    expect(
+      managedConversationFailureCode(
+        Object.assign(new Error("private skill diagnostic"), {
+          name: "ClaudeManagedConversationInstructionIsolationError"
+        })
+      )
+    ).toBe("ManagedConversationInstructionSkillsUnavailableError");
+  });
   it("preserves bounded semantic error messages from local guards", () => {
     expect(
       managedConversationFailureCode(

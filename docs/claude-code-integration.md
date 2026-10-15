@@ -255,3 +255,9 @@ Installing one integration neither configures nor disables the other.
   must select `claude`, its explicit instance, and an exposed Claude model for each
   flow it wants Claude Code to run. Resetting one flow leaves other assignments
   unchanged.
+
+## Studio Project instruction validation
+
+Ticket 04 adds a default-off instruction-only path for new managed Studio chats. It reads only the selected registered Project's root `CLAUDE.md` (UTF-8, maximum 64 KiB) on the assigned computer and appends a private immutable session snapshot to Claude's existing system prompt. It leaves filesystem settings disabled, preserves Koed's permissions and explicit MCP configuration, and does not inject the text as a User message or a new Memory source. Existing sessions retain their earlier behavior.
+
+The contributor flag `KOED_CLAUDE_PROJECT_INSTRUCTIONS=1` is for isolated validation. It does not certify live Claude resume, skill execution, fork or device transfer. Selected skills are rejected before provider submission in opted-in sessions until their isolation is verified. The default remains off because a supported signed-in Claude executable was unavailable for the required live checks, and instruction-enabled sessions reject fork/device transfer before authority state changes. See [the design and validation script](studio-claude-project-instructions.md) for exact scope, errors, recovery and enablement gates.

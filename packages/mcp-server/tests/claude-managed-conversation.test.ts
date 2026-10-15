@@ -35,14 +35,18 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
 
 import {
   ClaudeManagedConversationCancelledError,
+  ClaudeManagedConversationInstructionIsolationError,
   ClaudeManagedConversationSession,
   cleanupAbandonedManagedClaudeHomes,
   createManagedClaudeSessionStore,
   destroyManagedClaudeHome,
   forkClaudeTranscript,
+  managedClaudeInstructionHomeVersion,
+  markManagedClaudeInstructionHome,
   prepareManagedClaudeHome,
   releaseManagedClaudeHomeLease,
   retainManagedClaudeHome,
+  reuseManagedClaudeHome,
   resolveClaudeManagedConversationSource
 } from "../src/claude-managed-conversation.js";
 
@@ -242,6 +246,177 @@ describe("ClaudeManagedConversationSession", () => {
       await session.closeAndWait();
     }
   });
+
+  it("isolates instruction-only prompts while preserving permissions, tools, prompt, and response identity", async () => {
+    const { config, cwd } = fixture();
+    const userHome = path.join(cwd, "user-home");
+    fs.mkdirSync(path.join(userHome, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(userHome, ".claude", "settings.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash"], defaultMode: "bypassPermissions" },
+        hooks: { PreToolUse: [{ command: "must-not-run" }] }
+      })
+    );
+    fs.writeFileSync(
+      path.join(cwd, ".claude", "settings.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash"], defaultMode: "bypassPermissions" },
+        hooks: { PreToolUse: [{ command: "must-not-run" }] }
+      })
+    );
+    const publicPrompt = "Keep this exact public prompt";
+    const systemPrompt = {
+      type: "preset",
+      preset: "claude_code",
+      append: "Project guidance snapshot"
+    } as const;
+    const tools = ["Read", "Grep"] as Options["tools"];
+    const allowedTools = ["Read"];
+    const canUseTool = vi.fn() as unknown as NonNullable<Options["canUseTool"]>;
+    const configuredMcpServers = {
+      allowed_runtime: { command: "/koed/test-runtime", args: [] }
+    };
+    const progress: Array<{ turnId: string; id: string; title: string }> = [];
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "reply")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      env: { ...config.env, HOME: userHome },
+      instructionOnly: true,
+      projectInstructionStatus: "loaded",
+      settingSources: ["user", "project"],
+      tools,
+      allowedTools,
+      canUseTool,
+      mcpServers: configuredMcpServers,
+      systemPrompt,
+      onUserFacingProgress: (event) => progress.push(event)
+    });
+
+    try {
+      const started = await session.start(publicPrompt);
+      const result = started.initialResult;
+      const options = queryOptions();
+      const invocation = sdk.query.mock.calls[0]?.[0] as { prompt: string };
+
+      expect(invocation.prompt).toBe(publicPrompt);
+      expect(options.systemPrompt).toBe(systemPrompt);
+      expect(options.settingSources).toEqual([]);
+      expect(options.permissionMode).toBe("dontAsk");
+      expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+      expect(options.tools).toEqual(tools);
+      expect(options.allowedTools).toEqual(allowedTools);
+      expect(options.canUseTool).toBe(canUseTool);
+      expect(options.mcpServers).toMatchObject(configuredMcpServers);
+      expect(options.strictMcpConfig).toBe(true);
+      expect(result).toMatchObject({
+        provider: "claude",
+        sessionId: started.identity.sessionId,
+        model: "claude-result-model",
+        text: "reply"
+      });
+      expect(progress).toHaveLength(1);
+      expect(progress[0]).toMatchObject({
+        title:
+          "Loaded the root CLAUDE.md snapshot only; imports and nested rules were not loaded"
+      });
+      expect(progress[0]?.id).toBe(
+        `project-instructions-${progress[0]?.turnId}`
+      );
+      expect(progress[0]?.title).not.toContain(cwd);
+      expect(progress[0]?.title).not.toContain("Project guidance snapshot");
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("fails before SDK submission when instruction-only isolation has selected skills", async () => {
+    const { config } = fixture();
+    const progress = vi.fn();
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      instructionOnly: true,
+      projectInstructionStatus: "loaded",
+      settingSources: ["user", "project"],
+      onUserFacingProgress: progress
+    });
+
+    try {
+      const failure = await session
+        .prompt("Run the selected skill", ["project:skill"])
+        .then(
+          () => undefined,
+          (error: unknown) => error as Error
+        );
+      expect(failure).toBeInstanceOf(
+        ClaudeManagedConversationInstructionIsolationError
+      );
+      expect(failure?.message).toContain(
+        "Selected skills cannot run with instruction-only isolation"
+      );
+      expect(failure?.message.length).toBeLessThan(200);
+      expect(failure?.message).not.toContain("project:skill");
+      expect(sdk.query).not.toHaveBeenCalled();
+      expect(progress).not.toHaveBeenCalled();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("preserves the legacy selected-skill settings branch when instruction-only isolation is absent", async () => {
+    const { config } = fixture();
+    const progress = vi.fn();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onUserFacingProgress: progress
+    });
+
+    try {
+      await session.prompt("Use the selected skill", ["project:skill"]);
+      expect(queryOptions().settingSources).toEqual(["user", "project"]);
+      expect(queryOptions().skills).toEqual(["project:skill"]);
+      expect(progress).not.toHaveBeenCalled();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it.each([
+    ["absent", "No root CLAUDE.md snapshot was found"],
+    [
+      "standalone",
+      "Standalone Conversation; no Project instructions were loaded"
+    ]
+  ] as const)(
+    "shows the bounded %s instruction status",
+    async (status, expectedTitle) => {
+      const { config, cwd } = fixture();
+      const progress: Array<{ turnId: string; id: string; title: string }> = [];
+      sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+        queryFrom([successResult(options?.sessionId as string, "hello")])
+      );
+      const session = new ClaudeManagedConversationSession({
+        ...config,
+        instructionOnly: true,
+        projectInstructionStatus: status,
+        onUserFacingProgress: (event) => progress.push(event)
+      });
+
+      try {
+        await session.start("Hello");
+        expect(progress).toHaveLength(1);
+        expect(progress[0]?.title).toBe(expectedTitle);
+        expect(progress[0]?.title).not.toContain(cwd);
+      } finally {
+        await session.closeAndWait();
+      }
+    }
+  );
 
   it("retains main and child transcripts for exact managed resume and capture", async () => {
     const { managedHome } = fixture();
@@ -917,6 +1092,39 @@ describe("managed Claude home leases", () => {
     expect(fs.existsSync(managedHome)).toBe(true);
 
     destroyManagedClaudeHome(managedHome, env);
+  });
+
+  it("marks new instruction homes in the signed marker and preserves legacy homes", () => {
+    const { env } = managedHomeFixture();
+    const managedHome = prepareManagedClaudeHome(env);
+
+    expect(
+      managedClaudeInstructionHomeVersion(managedHome, env)
+    ).toBeUndefined();
+    expect(markManagedClaudeInstructionHome(managedHome, env)).toBe(
+      managedHome
+    );
+    expect(managedClaudeInstructionHomeVersion(managedHome, env)).toBe(1);
+
+    retainManagedClaudeHome(managedHome, env);
+    expect(managedClaudeInstructionHomeVersion(managedHome, env)).toBe(1);
+    releaseManagedClaudeHomeLease(managedHome, env);
+    expect(reuseManagedClaudeHome(managedHome, env)).toBe(managedHome);
+    expect(managedClaudeInstructionHomeVersion(managedHome, env)).toBe(1);
+    destroyManagedClaudeHome(managedHome, env);
+  });
+
+  it("refuses to mark a home that is no longer actively owned by this process", () => {
+    const { env } = managedHomeFixture();
+    const managedHome = prepareManagedClaudeHome(env);
+    releaseManagedClaudeHomeLease(managedHome, env);
+
+    expect(() => markManagedClaudeInstructionHome(managedHome, env)).toThrow(
+      "not a new preparing home owned by this process"
+    );
+    expect(
+      managedClaudeInstructionHomeVersion(managedHome, env)
+    ).toBeUndefined();
   });
 
   it("removes a verified stale preparing home after its owner lease is abandoned", () => {

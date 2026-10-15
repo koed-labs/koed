@@ -187,6 +187,38 @@ function failedSnapshot(): RuntimeSnapshot {
     }
   };
 }
+it("shows a rejected isolated Claude skill turn while keeping its draft and chat usable", async () => {
+  const base = failedSnapshot();
+  mocks.request.mockImplementation(async (path) =>
+    path.endsWith("/agent-state")
+      ? { executionGeneration: 1, messages: [] }
+      : {}
+  );
+  mocks.snapshot = {
+    ...base,
+    execution: {
+      ...base.execution,
+      provider: "claude",
+      state: "running",
+      lastErrorCode: null
+    },
+    latestCommand: {
+      ...base.latestCommand!,
+      lastErrorCode: "ManagedConversationInstructionSkillsUnavailableError"
+    }
+  };
+  await mount(undefined, base.execution.id);
+  const view = mocks.view.mock.lastCall?.[0];
+  expect(view.runtime.error).toContain(
+    "Remove the skill selection and send again"
+  );
+  expect(view.runtime.error).not.toContain("ManagedConversation");
+  expect(view.initialDraft).toBe("Retained prompt");
+  expect(container.textContent).not.toContain("Reconnect conversation");
+  expect(
+    mocks.request.mock.calls.some(([path]) => path.endsWith("/prompts"))
+  ).toBe(false);
+});
 it("recovers a confirmed failed conversation without sending a prompt or changing its identity", async () => {
   mocks.snapshot = failedSnapshot();
   const id = mocks.snapshot.execution.id;

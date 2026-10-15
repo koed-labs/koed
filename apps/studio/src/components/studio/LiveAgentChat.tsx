@@ -1,6 +1,7 @@
 "use client";
 
 import { resolvePersonalChatRecipients } from "@/lib/personal-conversation-launch";
+import { managedInstructionFailureMessage } from "@/lib/managed-instruction-failure";
 import { conversationTitleFromPrompt } from "@koed/shared/conversation-title";
 import type { HomeExecution } from "@/lib/studio-contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -991,7 +992,8 @@ export function LiveAgentChat({
       );
       if (command && ["failed", "indeterminate"].includes(command.state))
         setError(
-          `The last task ${command.state === "indeterminate" ? "needs recovery" : "failed"}. ${command.lastErrorCode ?? "Check the runtime before retrying."}`
+          managedInstructionFailureMessage(command.lastErrorCode) ??
+            `The last task ${command.state === "indeterminate" ? "needs recovery" : "failed"}. ${command.lastErrorCode ?? "Check the runtime before retrying."}`
         );
       const pendingRecovery = recoveryStore.current?.read()?.pendingOperation;
       if (
@@ -1026,7 +1028,11 @@ export function LiveAgentChat({
           setStatus(
             `The previous continuation ${disposition}. Its draft is retained.`
           );
-          setError(null);
+          setError(
+            disposition === "failed"
+              ? managedInstructionFailureMessage(command.lastErrorCode)
+              : null
+          );
         } else {
           settleRecoveredSend(pendingRecovery.prompt);
           setRecoveryBlocked(false);

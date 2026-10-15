@@ -112,6 +112,8 @@ export {
   createManagedClaudeSessionStore,
   destroyManagedClaudeHome,
   forkClaudeTranscript,
+  managedClaudeInstructionHomeVersion,
+  markManagedClaudeInstructionHome,
   prepareManagedClaudeHome,
   releaseManagedClaudeHomeLease,
   retainManagedClaudeHome,

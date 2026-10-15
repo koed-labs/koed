@@ -14,6 +14,7 @@ import type pg from "pg";
 
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { managedConversationEventMutationId } from "./managed-conversation-event.js";
+import { assertManagedClaudeProjectInstructionsTransferSupported } from "./managed-conversation-instruction-transfer.js";
 import type { ManagedConversationExecutionRecord } from "./managed-conversation-repository.js";
 import type { ActorContext } from "./types.js";
 
@@ -476,6 +477,11 @@ export const createManagedConversationForkRepository = (
           "managed_conversation_fork_source_not_writable"
         );
       }
+      await assertManagedClaudeProjectInstructionsTransferSupported(client, {
+        ownerUserId: actor.userId,
+        provider: parent.provider,
+        logicalSessionId: parent.logical_session_id
+      });
       const unsettled = await client.query<{ exists: boolean }>(
         `select exists (
            select 1 from managed_conversation_commands

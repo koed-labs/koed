@@ -31,6 +31,7 @@ import type pg from "pg";
 
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { managedConversationEventMutationId } from "./managed-conversation-event.js";
+import { assertManagedClaudeProjectInstructionsTransferSupported } from "./managed-conversation-instruction-transfer.js";
 import type { ActorContext } from "./types.js";
 
 export interface ManagedConversationHandoffRecord {
@@ -484,11 +485,13 @@ export const createManagedConversationTransferRepository = (
           state_version: number;
           state: string;
           provider: string;
+          logical_session_id: string | null;
           runner_id: string | null;
           runner_deployment_id: string;
           runner_device_id: string;
         }>(
-          `select execution_generation, state_version, state, runner_id,
+          `select execution_generation, state_version, state, provider,
+                  logical_session_id, runner_id,
                   runner_deployment_id, runner_device_id
              from managed_conversation_executions
             where id = $2 and owner_user_id = $1
@@ -508,6 +511,11 @@ export const createManagedConversationTransferRepository = (
             "managed_conversation_handoff_source_not_writable"
           );
         }
+        await assertManagedClaudeProjectInstructionsTransferSupported(client, {
+          ownerUserId: actor.userId,
+          provider: current.provider,
+          logicalSessionId: current.logical_session_id
+        });
         const unsettled = await client.query<{ exists: boolean }>(
           `select exists (
              select 1

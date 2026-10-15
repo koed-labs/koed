@@ -1155,6 +1155,95 @@ describeDb("memory repository visibility", () => {
     await runDbMigrations(pool);
   });
 
+  const createRunningClaudeTransferFixture = async (
+    metadata: Record<string, unknown> = {}
+  ) => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 48).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-claude-transfer-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-claude-transfer-${randomUUID()}`;
+    const logicalSessionId = randomUUID();
+    const providerThreadId = randomUUID();
+    await protectedRepo.createCapturedSession(actor, {
+      logicalSessionId,
+      externalSessionId: providerThreadId,
+      sourceRuntime: "claude-code",
+      captureMethod: "api",
+      metadata: { managedConversation: true, ...metadata }
+    });
+    const managed = await protectedRepo.createManagedConversation(actor, {
+      provider: "claude",
+      aiClientInstanceId: "claude.default",
+      model: "claude-test",
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      projectId: `managed-claude-transfer-${randomUUID()}`,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      idempotencyKey: randomUUID()
+    });
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await protectedRepo.bindManagedConversationRuntime(actor, {
+      executionId: managed.execution.id,
+      expectedStateVersion: start!.execution.stateVersion,
+      executionGeneration: start!.executionGeneration,
+      runnerId,
+      logicalSessionId,
+      providerThreadId,
+      providerCliVersion: "test"
+    });
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    return {
+      protectedRepo,
+      owner,
+      actor,
+      running,
+      deploymentId,
+      deviceId,
+      logicalSessionId
+    };
+  };
+
+  const managedTransferMutationSnapshot = async (executionId: string) => {
+    const result = await pool.query<{
+      state: string;
+      state_version: number;
+      command_count: number;
+      handoff_count: number;
+      fork_count: number;
+    }>(
+      `select execution.state, execution.state_version,
+              (select count(*)::int from managed_conversation_commands
+                where execution_id = execution.id) as command_count,
+              (select count(*)::int from managed_conversation_handoffs
+                where execution_id = execution.id) as handoff_count,
+              (select count(*)::int from managed_conversation_forks
+                where parent_execution_id = execution.id) as fork_count
+         from managed_conversation_executions execution
+        where execution.id = $1`,
+      [executionId]
+    );
+    return result.rows[0];
+  };
+
   it("reports current-generation indeterminate prompts behind later commands", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
@@ -1210,13 +1299,14 @@ describeDb("memory repository visibility", () => {
       clientUserMessageId: randomUUID(),
       prompt: "An accepted prompt with an unknown outcome"
     });
-    const [claimedPrompt] = await encryptedRepo.claimManagedConversationCommands({
-      ownerUserId: owner.id,
-      runnerId,
-      deploymentId,
-      deviceId,
-      leaseMs: 60_000
-    });
+    const [claimedPrompt] =
+      await encryptedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
     expect(claimedPrompt?.id).toBe(prompt.id);
     await encryptedRepo.failManagedConversationCommand({
       commandId: prompt.id,
@@ -1250,12 +1340,15 @@ describeDb("memory repository visibility", () => {
       })
     ).resolves.toBe(false);
 
-    const interrupt = await encryptedRepo.enqueueManagedConversationControl(actor, {
-      executionId: running.id,
-      executionGeneration: 1,
-      idempotencyKey: randomUUID(),
-      commandKind: "interrupt"
-    });
+    const interrupt = await encryptedRepo.enqueueManagedConversationControl(
+      actor,
+      {
+        executionId: running.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        commandKind: "interrupt"
+      }
+    );
     const [claimedInterrupt] =
       await encryptedRepo.claimManagedConversationControlCommands({
         ownerUserId: owner.id,
@@ -1271,7 +1364,10 @@ describeDb("memory repository visibility", () => {
       result: { interrupted: false }
     });
     await expect(
-      encryptedRepo.getLatestManagedConversationCommandForExecution(actor, running.id)
+      encryptedRepo.getLatestManagedConversationCommandForExecution(
+        actor,
+        running.id
+      )
     ).resolves.toMatchObject({ commandKind: "interrupt", state: "completed" });
     await expect(
       encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
@@ -2472,37 +2568,125 @@ describeDb("memory repository visibility", () => {
 
   it("atomically dispatches a hosted initial prompt and preserves encrypted generic history", async () => {
     const managedRepo = createMemorySourceRepository(pool, {
-      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(Buffer.alloc(32, 47).toString("base64"))
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 47).toString("base64")
+      )
     });
-    const owner = await managedRepo.createUser({ email: `generic-history-${randomUUID()}@example.com` });
-    const foreign = await managedRepo.createUser({ email: `generic-history-foreign-${randomUUID()}@example.com` });
-    const deploymentId = randomUUID(); const deviceId = randomUUID();
-    const runnerId = "generic-history-runner"; const messageId = randomUUID();
-    const start = await managedRepo.createManagedConversation({ userId: owner.id }, {
-      provider: "codex", aiClientInstanceId: "codex.default", model: "gpt-test",
-      permissionMode: "supervised", runnerKind: "local_device", projectId: "generic-history-project",
-      runnerDeploymentId: deploymentId, runnerDeviceId: deviceId, idempotencyKey: randomUUID(),
-      initialPrompt: "Private hosted initial prompt", initialPromptClientUserMessageId: messageId
+    const owner = await managedRepo.createUser({
+      email: `generic-history-${randomUUID()}@example.com`
     });
-    const [claimed] = await managedRepo.claimManagedConversationCommands({ ownerUserId: owner.id, runnerId, deploymentId, deviceId, leaseMs: 60_000 });
+    const foreign = await managedRepo.createUser({
+      email: `generic-history-foreign-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "generic-history-runner";
+    const messageId = randomUUID();
+    const start = await managedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "generic-history-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        initialPrompt: "Private hosted initial prompt",
+        initialPromptClientUserMessageId: messageId
+      }
+    );
+    const [claimed] = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
     expect(claimed!.commandKind).toBe("start");
-    await managedRepo.bindManagedConversationRuntime({ userId: owner.id }, {
-      executionId: start.execution.id, expectedStateVersion: claimed!.execution.stateVersion,
-      executionGeneration: 1, runnerId, logicalSessionId: randomUUID(), providerThreadId: randomUUID(), providerCliVersion: "test"
+    await managedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: start.execution.id,
+        expectedStateVersion: claimed!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    expect(
+      await managedRepo.completeManagedConversationCommand({
+        commandId: claimed!.id,
+        leaseToken: claimed!.leaseToken!
+      })
+    ).toBe(true);
+    expect(
+      await managedRepo.completeManagedConversationCommand({
+        commandId: claimed!.id,
+        leaseToken: claimed!.leaseToken!
+      })
+    ).toBe(false);
+    const [prompt] = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
     });
-    expect(await managedRepo.completeManagedConversationCommand({ commandId: claimed!.id, leaseToken: claimed!.leaseToken! })).toBe(true);
-    expect(await managedRepo.completeManagedConversationCommand({ commandId: claimed!.id, leaseToken: claimed!.leaseToken! })).toBe(false);
-    const [prompt] = await managedRepo.claimManagedConversationCommands({ ownerUserId: owner.id, runnerId, deploymentId, deviceId, leaseMs: 60_000 });
-    expect(prompt).toMatchObject({ commandKind: "prompt", clientUserMessageId: messageId, payload: { prompt: "Private hosted initial prompt" } });
-    expect(await managedRepo.completeManagedConversationCommand({ commandId: prompt!.id, leaseToken: prompt!.leaseToken!, result: { turnId: "turn" }, assistantOutput: { text: "Private hosted final answer", truncated: false } })).toBe(true);
-    const history = await managedRepo.listManagedConversationPromptHistory({ userId: owner.id }, { executionId: start.execution.id });
+    expect(prompt).toMatchObject({
+      commandKind: "prompt",
+      clientUserMessageId: messageId,
+      payload: { prompt: "Private hosted initial prompt" }
+    });
+    expect(
+      await managedRepo.completeManagedConversationCommand({
+        commandId: prompt!.id,
+        leaseToken: prompt!.leaseToken!,
+        result: { turnId: "turn" },
+        assistantOutput: {
+          text: "Private hosted final answer",
+          truncated: false
+        }
+      })
+    ).toBe(true);
+    const history = await managedRepo.listManagedConversationPromptHistory(
+      { userId: owner.id },
+      { executionId: start.execution.id }
+    );
     expect(history.turns).toHaveLength(1);
-    expect(history.turns[0]).toMatchObject({ commandId: prompt!.id, clientUserMessageId: messageId, prompt: "Private hosted initial prompt", assistantOutput: { text: "Private hosted final answer", truncated: false } });
-    expect((await managedRepo.listManagedConversationPromptHistory({ userId: foreign.id }, { executionId: start.execution.id })).turns).toEqual([]);
-    expect((await managedRepo.getManagedConversationCommand({ userId: owner.id }, prompt!.id))!.payload).not.toHaveProperty("assistantOutput");
-    const raw = await pool.query("select encrypted_payload, result from managed_conversation_commands where id = $1", [prompt!.id]);
+    expect(history.turns[0]).toMatchObject({
+      commandId: prompt!.id,
+      clientUserMessageId: messageId,
+      prompt: "Private hosted initial prompt",
+      assistantOutput: { text: "Private hosted final answer", truncated: false }
+    });
+    expect(
+      (
+        await managedRepo.listManagedConversationPromptHistory(
+          { userId: foreign.id },
+          { executionId: start.execution.id }
+        )
+      ).turns
+    ).toEqual([]);
+    expect(
+      (await managedRepo.getManagedConversationCommand(
+        { userId: owner.id },
+        prompt!.id
+      ))!.payload
+    ).not.toHaveProperty("assistantOutput");
+    const raw = await pool.query(
+      "select encrypted_payload, result from managed_conversation_commands where id = $1",
+      [prompt!.id]
+    );
     expect(JSON.stringify(raw.rows)).not.toContain("Private hosted");
-    const count = await pool.query("select count(*)::int as count from managed_conversation_commands where execution_id = $1 and command_kind = 'prompt'", [start.execution.id]);
+    const count = await pool.query(
+      "select count(*)::int as count from managed_conversation_commands where execution_id = $1 and command_kind = 'prompt'",
+      [start.execution.id]
+    );
     expect(count.rows[0].count).toBe(1);
   });
 
@@ -2773,13 +2957,15 @@ describeDb("memory repository visibility", () => {
     ]);
 
     const checkpointRecovery = await createQueuedPrompt("checkpoint-recovery");
-    const [checkpointClaim] = await repository.claimManagedConversationCommands({
-      ownerUserId: owner.id,
-      runnerId,
-      deploymentId,
-      deviceId,
-      leaseMs: 60_000
-    });
+    const [checkpointClaim] = await repository.claimManagedConversationCommands(
+      {
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      }
+    );
     expect(checkpointClaim).toMatchObject({
       id: checkpointRecovery.commandId,
       state: "dispatching",
@@ -3941,9 +4127,9 @@ describeDb("memory repository visibility", () => {
       `select encrypted_payload from managed_conversation_runtime_items where id = $1`,
       [firstTransient.id]
     );
-    expect(JSON.stringify(retainedTransient.rows[0]?.encrypted_payload)).not.toContain(
-      "first and second"
-    );
+    expect(
+      JSON.stringify(retainedTransient.rows[0]?.encrypted_payload)
+    ).not.toContain("first and second");
     await expect(
       protectedRepo.cancelManagedConversationRuntimeItems(
         { userId: owner.id },
@@ -4729,6 +4915,130 @@ describeDb("memory repository visibility", () => {
         last_error_code: "ManagedConversationForkPreparationError"
       }
     ]);
+  });
+
+  it("rejects handoff of instruction-marked Claude sessions before source mutation", async () => {
+    const fixture = await createRunningClaudeTransferFixture({
+      claudeProjectInstructionsVersion: 1
+    });
+    const before = await managedTransferMutationSnapshot(fixture.running.id);
+
+    await expect(
+      fixture.protectedRepo.requestManagedConversationHandoff(fixture.actor, {
+        executionId: fixture.running.id,
+        operationId: randomUUID(),
+        sourceDeploymentId: fixture.deploymentId,
+        sourceDeviceId: fixture.deviceId,
+        targetDeploymentId: randomUUID(),
+        targetDeviceId: randomUUID()
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationProjectInstructionsTransferError",
+      statusCode: 409,
+      code: "managed_conversation_project_instructions_transfer_unsupported"
+    });
+
+    expect(await managedTransferMutationSnapshot(fixture.running.id)).toEqual(
+      before
+    );
+    expect(before).toMatchObject({ state: "running", handoff_count: 0 });
+  });
+
+  it("rejects fork of instruction-marked Claude sessions before source mutation", async () => {
+    const fixture = await createRunningClaudeTransferFixture({
+      claudeProjectInstructionsVersion: 1
+    });
+    const before = await managedTransferMutationSnapshot(fixture.running.id);
+
+    await expect(
+      fixture.protectedRepo.requestManagedConversationFork(fixture.actor, {
+        parentExecutionId: fixture.running.id,
+        operationId: randomUUID(),
+        reason: "user_requested",
+        sourceDeploymentId: fixture.deploymentId,
+        sourceDeviceId: fixture.deviceId,
+        targetDeploymentId: randomUUID(),
+        targetDeviceId: randomUUID()
+      })
+    ).rejects.toMatchObject({
+      name: "ManagedConversationProjectInstructionsTransferError",
+      statusCode: 409,
+      code: "managed_conversation_project_instructions_transfer_unsupported"
+    });
+
+    expect(await managedTransferMutationSnapshot(fixture.running.id)).toEqual(
+      before
+    );
+    expect(before).toMatchObject({ state: "running", fork_count: 0 });
+  });
+
+  it("keeps legacy Claude transfer behavior unless the marker is numeric one", async () => {
+    const unmarked = await createRunningClaudeTransferFixture();
+    const otherOwner = await unmarked.protectedRepo.createUser({
+      email: `managed-claude-transfer-other-${randomUUID()}@example.com`
+    });
+    await unmarked.protectedRepo.createCapturedSession(
+      { userId: otherOwner.id },
+      {
+        logicalSessionId: unmarked.logicalSessionId,
+        externalSessionId: randomUUID(),
+        sourceRuntime: "claude-code",
+        captureMethod: "api",
+        metadata: { claudeProjectInstructionsVersion: 1 }
+      }
+    );
+    const handoffRequest = {
+      executionId: unmarked.running.id,
+      operationId: randomUUID(),
+      sourceDeploymentId: unmarked.deploymentId,
+      sourceDeviceId: unmarked.deviceId,
+      targetDeploymentId: randomUUID(),
+      targetDeviceId: randomUUID()
+    };
+    const handoff =
+      await unmarked.protectedRepo.requestManagedConversationHandoff(
+        unmarked.actor,
+        handoffRequest
+      );
+    expect(handoff.state).toBe("quiesce_requested");
+    await pool.query(
+      `update sessions
+          set metadata = metadata || jsonb_build_object(
+            'claudeProjectInstructionsVersion', 1
+          )
+        where owner_user_id = $1 and logical_session_id = $2`,
+      [unmarked.owner.id, unmarked.logicalSessionId]
+    );
+    const acceptedState = await managedTransferMutationSnapshot(
+      unmarked.running.id
+    );
+    await expect(
+      unmarked.protectedRepo.requestManagedConversationHandoff(
+        unmarked.actor,
+        handoffRequest
+      )
+    ).resolves.toMatchObject({ id: handoff.id, state: handoff.state });
+    expect(await managedTransferMutationSnapshot(unmarked.running.id)).toEqual(
+      acceptedState
+    );
+
+    const stringMarker = await createRunningClaudeTransferFixture({
+      claudeProjectInstructionsVersion: "1"
+    });
+    const fork =
+      await stringMarker.protectedRepo.requestManagedConversationFork(
+        stringMarker.actor,
+        {
+          parentExecutionId: stringMarker.running.id,
+          operationId: randomUUID(),
+          reason: "user_requested",
+          sourceDeploymentId: stringMarker.deploymentId,
+          sourceDeviceId: stringMarker.deviceId,
+          targetDeploymentId: randomUUID(),
+          targetDeviceId: randomUUID()
+        }
+      );
+    expect(fork.state).toBe("requested");
   });
 
   it("starts handoff for an idle running execution on its durable source device", async () => {
@@ -26652,7 +26962,9 @@ describeDb("memory repository visibility", () => {
     const lastKnown = await repo.listCurrentAiClientCapabilitySnapshots(actor, {
       includeExpired: true
     });
-    expect(lastKnown.filter((item) => item.instanceId === "codex.work")).toEqual([
+    expect(
+      lastKnown.filter((item) => item.instanceId === "codex.work")
+    ).toEqual([
       expect.objectContaining({
         installationIdentityHash: "b".repeat(64),
         healthState: "unavailable"

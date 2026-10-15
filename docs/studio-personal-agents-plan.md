@@ -1,5 +1,7 @@
 > Current direction — 2026-10-14: [tickets 24–30](studio-ui-integration-plan.md) supersede the instruction-bearing Agent, role-template, extra Job lifecycle and eager recall designs described below. Agents now retain name, optional free-text job title and Pixelkin appearance; execution settings belong to chats. Existing encrypted history is retained. New Agent writes do not store soul text or template associations. The role-template endpoint is retired (410). The remaining document is historical implementation context, not current acceptance criteria.
 
+> Ticket 04 reconciliation — 2026-10-15: the historical catalogue/instruction follow-ups below are superseded by the [Project chat assessment](studio-project-chat-assessment.md). Local registered-Project selection and accepted Codex context are implemented. Claude instruction loading needs the chosen instruction-only path with permission isolation; the hosted catalogue limitation remains explicitly deferred. Do not infer a general Project-instructions failure from this historical plan.
+
 # Studio Personal Agents implementation plan
 
 ## Purpose and scope

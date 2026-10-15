@@ -1,5 +1,7 @@
 "use client";
 
+import { managedInstructionFailureMessage } from "@/lib/managed-instruction-failure";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
@@ -1374,6 +1376,16 @@ export function HostedManagedChats({
               controller.signal
             );
           }
+        }
+        if (
+          !controller.signal.aborted &&
+          selectedIdRef.current === selectedId &&
+          command?.state === "failed"
+        ) {
+          const instructionFailure = managedInstructionFailureMessage(
+            command.lastErrorCode
+          );
+          if (instructionFailure) setError(instructionFailure);
         }
       } catch (cause) {
         if (!controller.signal.aborted && selectedIdRef.current === selectedId)
