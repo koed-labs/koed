@@ -1,5 +1,6 @@
 import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -8821,6 +8822,55 @@ describeDb("Shared Memory repository", () => {
     const second = await share(secondFixture);
     expect(first.repositorySnapshot?.fingerprint).toBe("gr_original");
     expect(second.repositorySnapshot?.fingerprint).toBe("gr_reassigned");
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const grantsBefore = await client.query<{ row: unknown }>(
+        "select to_jsonb(g) as row from team_memory_share_grants g where id=any($1::uuid[]) order by id",
+        [[first.id, second.id]]
+      );
+      const sessionBefore = await client.query<{
+        row: Record<string, unknown>;
+      }>("select to_jsonb(s) as row from sessions s where id=$1", [
+        source.localSessionId
+      ]);
+      await client.query(
+        await readFile(
+          new URL(
+            "../drizzle/0062_project_assignment_cutover.sql",
+            import.meta.url
+          ),
+          "utf8"
+        )
+      );
+      expect(
+        (
+          await client.query<{ row: unknown }>(
+            "select to_jsonb(g) as row from team_memory_share_grants g where id=any($1::uuid[]) order by id",
+            [[first.id, second.id]]
+          )
+        ).rows
+      ).toEqual(grantsBefore.rows);
+      expect(
+        (
+          await client.query<{ row: Record<string, unknown> }>(
+            "select to_jsonb(s) as row from sessions s where id=$1",
+            [source.localSessionId]
+          )
+        ).rows[0]!.row
+      ).toEqual({
+        ...sessionBefore.rows[0]!.row,
+        repository_assignment_state: "historical_unresolved",
+        repository_automatic_identity: null,
+        repository_override_identity: null,
+        repository_assignment_version:
+          Number(sessionBefore.rows[0]!.row.repository_assignment_version) + 1
+      });
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+
     await ensureSourceRevision(fixture, source, 2, "continued-capture");
     await repository.advanceContinuousGrantRepresentations({
       remoteReplicaId: source.remoteReplicaId,

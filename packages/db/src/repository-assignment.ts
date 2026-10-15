@@ -138,25 +138,3 @@ export const updateSessionRepositoryOverride = async (
   );
   return result.rows[0] ? mapRepositoryAssignment(result.rows[0]) : null;
 };
-
-// Prepared for ticket 16. No startup, migration, or capture path invokes this.
-// The cutover caller must use its release transaction and fixed cutoff.
-export const markPreCutoverRepositoryAssignmentsUnresolved = async (
-  client: pg.PoolClient,
-  cutoff: string
-): Promise<number> => {
-  await client.query(
-    "select set_config('koed.repository_assignment_cutover','1',true)"
-  );
-  const result = await client.query(
-    `update sessions set repository_assignment_state = 'historical_unresolved',
-    repository_automatic_identity = null, repository_override_identity = null,
-    repository_assignment_version = repository_assignment_version + 1
-    where created_at <= $1::timestamptz and visibility = 'personal'`,
-    [cutoff]
-  );
-  await client.query(
-    "select set_config('koed.repository_assignment_cutover','',true)"
-  );
-  return result.rowCount ?? 0;
-};

@@ -122,7 +122,7 @@ children share lineage and must not count as independent corroboration.
   partial, and acknowledgement-lost packages. The rehearsals preserve old
   ciphertext and raw memory, consume the old sequence, and complete V2 at the
   next sequence with unresolved history. The API chunk schema now requires V2
-  metadata. The final assignment migration and wider integration audit remain open.
+  metadata. Migration 0062 now activates the one-time assignment transition. Native tests cover migration replay, capture continuation, reassignment/reset, preserved Team snapshots, and retained PDS source/receiver upgrades. The wider integration audit remains open.
 
 - Coordinate the directed Captured Session Sync snapshot extension across every
   producer, consumer, admission schema, and fixture before activation. Make the

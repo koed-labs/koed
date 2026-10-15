@@ -454,10 +454,7 @@ export {
   type VerifiedManagedJournalTerminal
 } from "./managed-journal-terminal.js";
 
-export {
-  updateSessionRepositoryOverride,
-  markPreCutoverRepositoryAssignmentsUnresolved
-} from "./repository-assignment.js";
+export { updateSessionRepositoryOverride } from "./repository-assignment.js";
 
 export * from "./repository-review-repository.js";
 

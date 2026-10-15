@@ -435,6 +435,13 @@
       "when": 1792027576586,
       "tag": "0061_directed_sync_profile_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1792031178786,
+      "tag": "0062_project_assignment_cutover",
+      "breakpoints": true
     }
   ]
 }

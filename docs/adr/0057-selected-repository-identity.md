@@ -64,7 +64,13 @@ independently of Conversation capture.
 Forks match only when their selected anchors match. Custom remote names need
 explicit selection. Worktrees keep separate checkout provenance while sharing
 one repository identity. Branch is an observation, not an identity component.
-Historical sessions remain unresolved until explicitly reassigned at cutover.
+Migration 0062 marks every existing Personal Session unresolved once, including
+Sessions captured during additive preparation. It clears automatic and User
+override assignments and increments versions. It preserves raw memory,
+provenance, and existing Team Share Grant snapshots. Continued capture cannot
+resolve this history. Explicit reassignment resolves it, and reset restores
+unresolved state. The migration journal prevents repeated startup from clearing
+later assignments.
 
 Personal Device Sync must carry one selected anchor through its existing
 verified, encrypted, group-keyed boundary. Unsalted Personal fingerprints and

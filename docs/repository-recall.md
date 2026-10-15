@@ -51,6 +51,26 @@ repository identity. The complete release is gated by ticket 16. Team matching
 and Personal Device Sync assignment transport are implemented by their later
 tickets; repository identity never chooses or authorizes a Workspace.
 
+## One-time historical assignment transition
+
+Migration `0062_project_assignment_cutover` marks every existing Personal Session
+as `historical_unresolved`. This includes Sessions captured during additive
+preparation, invalidated rows, and Personal Device Sync replicas. The migration
+clears automatic and User override assignments and increments assignment versions.
+Stale assignment writes therefore fail their version check.
+
+The migration preserves raw memory, lineage, captured provenance, retained sync
+packages, and existing Team Share Grant snapshots. It locks Session writes for
+the transition and runs once through the migration journal. Repeated startup does
+not clear assignments created after the transition. Fresh Sessions record their
+normal capture-time assignment.
+
+Later turns, duplicate ingestion, and imports do not resolve historical Sessions.
+An explicit User reassignment supplies the effective identity. Resetting that
+override returns the Session to unresolved history. Global and Session recall
+continue to expose authorized unresolved memory. Project recall requires an
+explicit matching assignment.
+
 ## Resolve Before Accepting Work
 
 For Project scope, the local adapter resolves the caller's cwd through shared

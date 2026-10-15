@@ -22,8 +22,7 @@ import {
 import {
   createDbPool,
   createMemorySourceRepository,
-  runDbMigrations,
-  markPreCutoverRepositoryAssignmentsUnresolved
+  runDbMigrations
 } from "../src/index.js";
 import { uploadChunkSchema } from "../../../apps/api/src/cross-identity-sync/schemas.js";
 import { buildServer } from "../../../apps/api/src/server/build-server.js";
@@ -164,20 +163,6 @@ describe.skipIf(!sourceUrl || !targetUrl)(
             seedClient.release();
           }
           await runDbMigrations(pool);
-          const client = await pool.connect();
-          try {
-            await client.query("begin");
-            await markPreCutoverRepositoryAssignmentsUnresolved(
-              client,
-              new Date().toISOString()
-            );
-            await client.query("commit");
-          } catch (error) {
-            await client.query("rollback");
-            throw error;
-          } finally {
-            client.release();
-          }
         }
         const sourceRoot = createLocalTestKeyEnvelopeEncryptionProvider(
           fixture.sourceRootKey

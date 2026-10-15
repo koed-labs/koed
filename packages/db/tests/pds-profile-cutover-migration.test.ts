@@ -7,7 +7,6 @@ import {
   rm,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -54,7 +53,9 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
   it("preserves signed V3 bytes, ledger, Session and unresolved assignment through a V4 baseline", async () => {
     const pool = createDbPool({ connectionString: databaseUrl });
     const folder = await mkdtemp(
-      join(tmpdir(), "koed-pds-profile-migrations-")
+      fileURLToPath(
+        new URL("../../../scratch/pds-profile-migrations-", import.meta.url)
+      )
     );
     try {
       expect(
@@ -478,7 +479,7 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
       expect(
         (await memory.getCapturedSession({ userId }, session.id))
           ?.repositoryAssignment
-      ).toMatchObject(historical);
+      ).toMatchObject({ ...historical, version: historical.version + 1 });
       const persisted = await pool.query<{ encrypted_envelope: unknown }>(
         "select encrypted_envelope from pds_retained_packages where id=$1",
         [retainedId]

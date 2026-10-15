@@ -6,8 +6,7 @@ import {
   createDbPool,
   runDbMigrations,
   createMemorySourceRepository,
-  updateSessionRepositoryOverride,
-  markPreCutoverRepositoryAssignmentsUnresolved
+  updateSessionRepositoryOverride
 } from "../src/index.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -133,32 +132,6 @@ describe
         externalSessionId: randomUUID(),
         repositoryIdentity: identity("a")
       });
-      // Exercise the prepared cutover inside a rollback: normal capture never calls it.
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        expect(
-          await markPreCutoverRepositoryAssignmentsUnresolved(
-            client,
-            new Date().toISOString()
-          )
-        ).toBeGreaterThan(0);
-        const snapshot = await client.query<{
-          repository_assignment_state: string;
-        }>("select repository_assignment_state from sessions where id = $1", [
-          original.id
-        ]);
-        expect(snapshot.rows[0]?.repository_assignment_state).toBe(
-          "historical_unresolved"
-        );
-        await client.query("rollback");
-      } finally {
-        client.release();
-      }
-      expect(
-        (await repo.getCapturedSession(actor, original.id))
-          ?.repositoryAssignment?.state
-      ).toBe("recorded");
       // Model an existing pre-cutover row without assigning it from today's checkout.
       await pool.query(
         "update sessions set repository_assignment_state = 'historical_unresolved', repository_automatic_identity = null where id = $1",

@@ -29,8 +29,7 @@ import {
   createMemorySourceRepository,
   createPersonalDeviceSyncLocalRepository,
   createPersonalDeviceSyncRepository,
-  runDbMigrations,
-  markPreCutoverRepositoryAssignmentsUnresolved
+  runDbMigrations
 } from "../src/index.js";
 const databaseUrl = process.env.PDS_PROFILE_SOURCE_MIGRATION_TEST_DATABASE_URL;
 // Run against a separate empty database for retained-ACK coverage.
@@ -233,20 +232,7 @@ describe.skipIf(!databaseUrl)(
           ]
         );
         await runDbMigrations(pool);
-        const client = await pool.connect();
-        try {
-          await client.query("begin");
-          await markPreCutoverRepositoryAssignmentsUnresolved(
-            client,
-            new Date().toISOString()
-          );
-          await client.query("commit");
-        } catch (error) {
-          await client.query("rollback");
-          throw error;
-        } finally {
-          client.release();
-        }
+
         const local = createPersonalDeviceSyncLocalRepository(pool);
         const sessionId = String(old.session.id);
         expect(await local.listPdsCheckpointCandidates()).toContainEqual({
