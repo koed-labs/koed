@@ -515,6 +515,12 @@ before metadata reconciliation can run.
 Routine housekeeping retains unreconciled V1 uploads and queue history for active
 or resumable relationships. Normal retention resumes after reconciliation;
 explicit Owner deletion and revocation keep their existing authority. Native
-metadata and worker tests cover these transitions. A full rehearsal using genuine
-retained V1 packages remains a ticket 16 release gate. See
+metadata and worker tests cover these transitions. Genuine pre-cutover V1 fixtures
+also pass source/target worker rehearsals through the authenticated API. The cases
+cover queued uploads, partial uploads, and applied uploads with a lost
+acknowledgement. They preserve old ciphertext and raw memory, then complete V2
+synchronization with unresolved historical assignments. The upload API requires V2
+chunk metadata and rejects V1 bodies. These rehearsals exercise transport and
+storage. They use a stub embedding workflow and do not prove semantic retrieval.
+See
 [ADR 0059](adr/0059-authenticated-directed-sync-profile-transitions.md).

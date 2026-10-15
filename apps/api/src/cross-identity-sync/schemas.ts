@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { teamRepositorySnapshotSchema } from "@koed/shared";
 import {
+  CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CHUNKS,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
@@ -73,7 +74,7 @@ const syncPackageManifestSchema = z
       .strict(),
     metadata: z
       .object({
-        formatVersion: z.literal(1),
+        formatVersion: z.literal(CAPTURED_SESSION_SYNC_FORMAT_VERSION),
         chunkIndex: safeIntegerSchema.nonnegative(),
         chunkCount: safeIntegerSchema
           .positive()

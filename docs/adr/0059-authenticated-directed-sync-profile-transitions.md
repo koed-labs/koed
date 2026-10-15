@@ -62,5 +62,13 @@ Worker tests cover both receipt outcomes, request substitution, and lost leases.
 
 The target native metadata fixture exercises absent, partial, and completed
 uploads, replay and conflicts, retained chunks, queue fencing, credential denial,
-and next-sequence V2 admission. It does not substitute for the final source/target
-worker rehearsal with retained V1 packages.
+and next-sequence V2 admission.
+
+Genuine retained V1 fixtures now pass native source/target worker rehearsals
+through the authenticated target API. Queued and partial uploads receive a
+superseded receipt. Applied uploads with a lost acknowledgement receive an
+applied receipt. All cases preserve old encrypted bytes and raw memory, then
+complete V2 synchronization at the next sequence with unresolved assignments.
+The current API accepts V2 chunk metadata and rejects V1 bodies. These transport
+and storage rehearsals use a stub embedding workflow. Semantic retrieval remains
+part of the wider integration assessment.

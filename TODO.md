@@ -117,7 +117,12 @@ children share lineage and must not count as independent corroboration.
   applied metadata cases and API authorization tests. Source metadata adoption and
   worker dispatch now preserve cursors, fence claims, discover exhausted queues,
   hold unresolved staging against housekeeping, and schedule V2 snapshots. Native
-  metadata and worker tests pass; genuine retained-package rehearsal remains open.
+  metadata and worker tests pass. Genuine pre-cutover V1 fixtures now pass native
+  source/target worker rehearsals through the authenticated API for queued,
+  partial, and acknowledgement-lost packages. The rehearsals preserve old
+  ciphertext and raw memory, consume the old sequence, and complete V2 at the
+  next sequence with unresolved history. The API chunk schema now requires V2
+  metadata. The final assignment migration and wider integration audit remain open.
 
 - Coordinate the directed Captured Session Sync snapshot extension across every
   producer, consumer, admission schema, and fixture before activation. Make the
