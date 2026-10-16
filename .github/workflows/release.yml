@@ -6,6 +6,7 @@ on:
       - main
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -66,6 +67,16 @@ jobs:
           commit: "ci: version koed"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pull requests opened or updated with GITHUB_TOKEN do not start pull_request
+      # workflows, so the release pull request would never run CI required.
+      # workflow_dispatch is exempt from that rule; checks from the dispatched run
+      # attach to the branch head commit and satisfy the required status.
+      - name: Dispatch release-candidate CI for the version branch
+        if: steps.changesets.outputs.hasChangesets == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ci.yml --ref changeset-release/main -f validation_level=full
 
       - name: Read product version
         id: product

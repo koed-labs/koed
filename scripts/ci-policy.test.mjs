@@ -82,6 +82,31 @@ test("backend workspace source alone does not select packaged smoke", () => {
   );
 });
 
+test("release workflow dispatches full CI for the generated version branch", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  const step = release
+    .split("- name: Dispatch release-candidate CI for the version branch")[1]
+    .split("- name: Read product version")[0];
+
+  assert.match(release, /permissions:\n  actions: write/);
+  assert.match(step, /steps\.changesets\.outputs\.hasChangesets == 'true'/);
+  assert.match(
+    step,
+    /gh workflow run ci\.yml --ref changeset-release\/main -f validation_level=full/
+  );
+  assert.deepEqual(
+    evaluateCiPolicy({
+      eventName: "workflow_dispatch",
+      event: { inputs: { validation_level: "full" } },
+      changedFiles: []
+    }).run_full_validation,
+    "true"
+  );
+});
+
 test("unknown paths fail closed into packaged validation", () => {
   assert.equal(fileAffectsPackaging("new-runtime-area/config.json"), true);
 });
