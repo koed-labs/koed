@@ -151,11 +151,13 @@ updated hooks if prompted before expecting new captures.
 Packaged Desktop uses `Koed` app metadata, `assets/icon.icns`, and
 `assets/koed-icon.png` for branding. First run starts bundled-local
 `koed-server`, allocates ports, and verifies runtime/model assets under
-`KOED_HOME` before the main window reports healthy. Packaged release
-signing/notarization is not turned on in this repo yet; `desktop:package` and
-`desktop:package:smoke:mac` are unsigned local smoke builds, and
-`desktop:package:release` still needs local Developer ID credentials and
-release setup. Native Windows packaged app support is not shipped here;
+`KOED_HOME` before the main window reports healthy. Production release signing
+uses electron-builder's built-in Developer ID Application and notarization flow
+in `release.yml`, gated by protected `desktop-release` environment approval.
+Administrator credential/environment setup and first-release clean-Mac acceptance
+remain operational prerequisites; see `docs/desktop-notarization.md`.
+`desktop:package` and `desktop:package:smoke:mac` remain unsigned/ad-hoc local smoke
+builds for iteration. Native Windows packaged app support is not shipped here;
 Linux/WSL use is limited to smoke and unpacked-artifact testing.
 
 Packaged builds expose **Launch Koed at startup** in General settings. When
@@ -173,7 +175,9 @@ packaging, signing, runtime distribution, or packaged smoke support.
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
-  `electron-builder --mac dir` and disables signing/notarization.
+  `electron-builder --mac dir`. Local builds use ad-hoc integrity signing rather
+  than Developer ID/notarization; the normal `release.yml` pipeline uses
+  `desktop:package:release` for signed DMG/ZIP output.
 - `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
   can run without checkout overrides. The smoke launches the real packaged
@@ -204,14 +208,15 @@ packaging, signing, runtime distribution, or packaged smoke support.
   available.
 - `desktop:package:internal:mac` builds unsigned macOS `dmg` and `zip`
   artifacts for internal testing, including packaged native runtime assets when
-  `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. CI uploads these artifacts from the
-  manual native-runtime workflow; see `docs/desktop-internal-artifacts.md` for
-  download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup
-  steps.
-- `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
-  release packaging config. Signing/notarization requires a local Developer ID
-  identity and release credentials; use `desktop:package` for unsigned local
-  smoke builds.
+  `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. CI may build these candidates for
+  validation but does not publish them as signed releases; see
+  `docs/desktop-internal-artifacts.md` for internal install/open, Gatekeeper-warning,
+  runtime status/doctor, and cleanup steps.
+- Release DMG/ZIP packaging uses one approved-main path and electron-builder's
+  built-in signing/notarization/stapling flow; see `docs/desktop-notarization.md`.
+  Signature/staple verification, packaged smoke, composition policy, and checksums
+  gate release upload/publication. Manual asset recovery is disabled; old rebuilds
+  require patch releases.
 - macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
