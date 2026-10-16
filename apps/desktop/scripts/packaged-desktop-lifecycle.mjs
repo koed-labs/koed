@@ -2,6 +2,13 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+export const createPackagedDesktopEnvironment = (environment) => {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.ELECTRON_RUN_AS_NODE;
+  delete childEnvironment.KOED_PACKAGED_RESOURCES_PATH;
+  return childEnvironment;
+};
+
 // Launch normal packaged main, never an Electron-as-Node supervisor impersonator.
 export const launchPackagedDesktop = ({
   executable,
@@ -9,8 +16,7 @@ export const launchPackagedDesktop = ({
   koedHome,
   timeoutMs = 180_000
 }) => {
-  const childEnv = { ...env };
-  delete childEnv.ELECTRON_RUN_AS_NODE;
+  const childEnv = createPackagedDesktopEnvironment(env);
   const child = spawn(
     executable,
     [
