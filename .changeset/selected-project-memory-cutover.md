@@ -54,3 +54,7 @@ Derive Session and graph Project details from the same repository assignment,
 including after Personal Device Sync updates. Make identity variants and effective
 assignment invariants explicit, separate Desktop Project commands by credential
 boundary, and keep durable-task request validation outside queue orchestration.
+
+Upgrade databases from either the recall branch or main without skipping concurrent
+schema migrations or replaying the Project assignment cutover. Preserve applied
+migration ledger rows and roll back failed migration-gap repairs atomically.

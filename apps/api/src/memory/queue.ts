@@ -44,15 +44,13 @@ const getBullmqJobCounts = async (
 
 const getLocalJobCounts = async (
   repository: LocalWorkQueueRepository,
+  queueName: string,
   statuses: string[]
 ): Promise<Record<string, number>> => {
-  const localCounts = await repository.getJobCounts([
-    "pending",
-    "active",
-    "delayed",
-    "completed",
-    "failed"
-  ]);
+  const localCounts = await repository.getJobCounts(
+    ["pending", "active", "delayed", "completed", "failed"],
+    queueName
+  );
   return Object.fromEntries(
     statuses.map((status) => [
       status,
@@ -85,7 +83,8 @@ export const createMemoryJobQueue = <TJobData>(
           maxAttempts: jobOptions?.attempts,
           backoffMs: jobOptions?.backoff?.delay
         }),
-      getJobCounts: (...statuses) => getLocalJobCounts(repository, statuses),
+      getJobCounts: (...statuses) =>
+        getLocalJobCounts(repository, name, statuses),
       getOldestPendingAgeMs: () => repository.getOldestPendingAgeMs(name),
       close: () => Promise.resolve()
     };

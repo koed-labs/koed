@@ -136,6 +136,13 @@ describe("createMemoryJobQueue", () => {
     });
 
     await expect(local?.getOldestPendingAgeMs?.()).resolves.toBe(300);
+    await expect(local?.getJobCounts("waiting")).resolves.toEqual({
+      waiting: 1
+    });
+    expect(repository.getJobCounts).toHaveBeenCalledWith(
+      ["pending", "active", "delayed", "completed", "failed"],
+      "memory-embed"
+    );
     await expect(
       bullmq?.getOldestPendingAgeMs?.()
     ).resolves.toBeGreaterThanOrEqual(600);

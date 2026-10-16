@@ -1459,52 +1459,6 @@ const turnCompleteSignalSql = (alias: string): string => `
       and ${alias}.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
   )`;
 
-// SQL mirror of actorFromConversationItem, true for actors whose items join an
-// agent_turn bundle (agent, subagent, tool) and therefore wait for its seal.
-// Keep both in sync.
-const agentTurnActorSql = (alias: string): string => {
-  const container = `case
-      when jsonb_typeof(${alias}.raw_json -> 'payload') = 'object'
-        then ${alias}.raw_json -> 'payload'
-      when jsonb_typeof(${alias}.raw_json -> 'params') = 'object'
-        then ${alias}.raw_json -> 'params'
-      else ${alias}.raw_json
-    end`;
-  const item = `case
-      when jsonb_typeof((${container}) -> 'item') = 'object'
-        then (${container}) -> 'item'
-      else (${container})
-    end`;
-  const role = `lower(coalesce(
-      nullif((${item}) ->> 'role', ''),
-      nullif((${item}) -> 'message' ->> 'role', '')
-    ))`;
-  const transcriptType = `coalesce(
-      nullif(${alias}.metadata ->> 'transcriptType', ''),
-      ${alias}.source_event_type,
-      ${alias}.source_record_type
-    )`;
-  return `(case
-    when ${role} in ('developer', 'system') then false
-    when ${role} = 'user'
-      then coalesce(${alias}.metadata ->> 'threadKind' = 'subagent', false)
-    when ${role} = 'assistant' then true
-    when ${transcriptType}
-      ~* 'developer|instruction|rolling[_ -]?context|context[_ -]?summary'
-      then false
-    when ${transcriptType} ~* 'user' then false
-    when ${transcriptType} ~* 'subagent|agent|assistant|reasoning|thought'
-      then true
-    when ${transcriptType}
-      ~* '^(plan|filechange|websearch|imageview|imagegeneration|contextcompaction|subagentactivity)$'
-      then true
-    when ${transcriptType} ~* 'tool|function_call|custom_tool' then true
-    when ${transcriptType} ~* 'filechange|websearch|imageview|imagegeneration|plan'
-      then true
-    else false
-  end)`;
-};
-
 const projectionAgentTurnStaleMs = (): number =>
   nonNegativeIntEnv(
     "MEMORY_AGENT_TURN_STALE_MS",
@@ -4852,7 +4806,8 @@ export const createMemorySourceRepository = (
               projection_version = $2,
               projection_policy_revision = $3,
               projection_error = null,
-              projected_at = now()
+              projected_at = now(),
+              agent_seal_waiting_at = null
           where id = any($1::uuid[])
         `,
             [
@@ -4912,7 +4867,8 @@ export const createMemorySourceRepository = (
             `
           update conversation_items
           set projection_status = 'error',
-              projection_error = $2
+              projection_error = $2,
+              agent_seal_waiting_at = null
           where id = any($1::uuid[])
         `,
             [pendingIds, error instanceof Error ? error.message : String(error)]
@@ -6100,9 +6056,34 @@ export const createMemorySourceRepository = (
           }
         }
         if (!presentationOnly) await flushStaleAgentBundles();
-        result.rawItemsWaitingForAgentSeal = [
-          ...waitingForAgentSealSourceIds
-        ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
+        const waitingSourceIds = [...waitingForAgentSealSourceIds].filter(
+          (sourceId) => !projectedStatusSourceIds.has(sourceId)
+        );
+        result.rawItemsWaitingForAgentSeal = waitingSourceIds.length;
+        if (!presentationOnly) {
+          // Record this pass's outcome for live-pressure accounting: only
+          // rows Projection actually left waiting for a seal are marked.
+          await pool.query(
+            `
+            update conversation_items
+            set agent_seal_waiting_at = case
+              when id = any($1::uuid[])
+                then coalesce(agent_seal_waiting_at, now())
+              else null
+            end
+            where id = any($2::uuid[])
+              and projection_status = 'pending'
+              and (agent_seal_waiting_at is null) = (id = any($1::uuid[]))
+          `,
+            [
+              waitingSourceIds,
+              uniqueOrderedStrings([
+                ...rows.rows.map((row) => row.id),
+                ...waitingSourceIds
+              ])
+            ]
+          );
+        }
         const finalPolicyState = await projectionCoordinatorClient.query<{
           revision: string;
         }>(
@@ -6341,7 +6322,7 @@ export const createMemorySourceRepository = (
             coalesce(ci.event_time, ci.observed_at) as activity_at,
             (
               ci.projection_work_class = 'live_capture_projection'
-              and ${agentTurnActorSql("ci")}
+              and ci.agent_seal_waiting_at is not null
             ) as waits_for_agent_seal,
             case
               when ci.projection_work_class = 'historical_import_backfill'
@@ -6364,8 +6345,8 @@ export const createMemorySourceRepository = (
               )
             )
         ), open_live_turns as materialized (
-          -- Agent rows in a turn with no completion signal and recent activity
-          -- wait for its seal; they need no Projection capacity yet.
+          -- Rows Projection left waiting for an agent seal, in a turn with no
+          -- completion signal and recent activity, need no capacity yet.
           select
             bi.owner_user_id, bi.visibility,
             bi.boundary_session, bi.boundary_turn

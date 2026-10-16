@@ -449,6 +449,13 @@
       "when": 1792031178787,
       "tag": "0063_named_local_projects",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792075334482,
+      "tag": "0064_agent_seal_waiting_marker",
+      "breakpoints": true
     }
   ]
 }

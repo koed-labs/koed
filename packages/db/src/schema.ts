@@ -5923,6 +5923,10 @@ export const conversationItems = pgTable(
       mode: "number"
     }),
     projectedAt: timestamp("projected_at", { withTimezone: true }),
+    // Set by Projection on pending rows it left waiting for an agent seal.
+    agentSealWaitingAt: timestamp("agent_seal_waiting_at", {
+      withTimezone: true
+    }),
     projectionError: text("projection_error"),
     memoryExcludedAt: timestamp("memory_excluded_at", { withTimezone: true }),
     memoryExclusionReason: text("memory_exclusion_reason"),

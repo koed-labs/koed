@@ -71,9 +71,10 @@ const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
-const expectedLatestMigrationTag = "0044_memory_answer_team_authority";
+const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
+const expectedLatestMigrationTag = "0064_agent_seal_waiting_marker";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 44;
+const expectedLatestMigrationIndex = 64;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -172,6 +173,7 @@ const assertAlphaMigrationContract = async () => {
   if (
     journal.entries[42]?.tag !== "0042_owner_scoped_projection_identity" ||
     journal.entries[43]?.tag !== expectedRemoteMcpOAuthTag ||
+    journal.entries[44]?.tag !== expectedTeamAuthorityTag ||
     journal.entries.at(-1)?.idx !== expectedLatestMigrationIndex ||
     journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
   ) {
@@ -756,7 +758,10 @@ const assertLatestSchema = async (pool) => {
       ["team_workspace_id", "uuid", "YES"],
       ["team_authorization", "jsonb", "YES"]
     ],
-    memory_questions: [["team_authorization", "jsonb", "YES"]]
+    memory_questions: [["team_authorization", "jsonb", "YES"]],
+    conversation_items: [
+      ["agent_seal_waiting_at", "timestamp with time zone", "YES"]
+    ]
   };
   const expectedColumns = Object.entries(columnsByTable)
     .flatMap(([table_name, columns]) =>

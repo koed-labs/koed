@@ -46,16 +46,19 @@ export const checkDatabase = async (pool: pg.Pool): Promise<boolean> => {
 
 export const checkDatabaseMigrated = async (
   pool: pg.Pool,
-  expectedLatestMigrationTimestamp?: number
+  expectedLatestMigrationTimestamp?: number,
+  expectedMigrationHashes?: string[]
 ): Promise<boolean> => {
   try {
     if (expectedLatestMigrationTimestamp !== undefined) {
       const result = await pool.query<{ migrated: boolean }>(
         `
-          select coalesce(max(created_at), 0)::bigint >= $1::bigint as migrated
+          select coalesce(max(created_at), 0)::bigint >= $1::bigint
+            and ($2::text[] is null or
+              count(distinct hash) filter (where hash = any($2::text[])) = cardinality($2::text[])) as migrated
           from drizzle.__drizzle_migrations
         `,
-        [expectedLatestMigrationTimestamp]
+        [expectedLatestMigrationTimestamp, expectedMigrationHashes ?? null]
       );
       return result.rows[0]?.migrated === true;
     }
@@ -133,6 +136,7 @@ export interface WaitForDbMigrationsOptions {
   timeoutMs?: number;
   intervalMs?: number;
   expectedLatestMigrationTimestamp?: number;
+  expectedMigrationHashes?: string[];
 }
 
 export const waitForDbMigrations = async (
@@ -148,7 +152,8 @@ export const waitForDbMigrations = async (
       if (
         await checkDatabaseMigrated(
           pool,
-          options.expectedLatestMigrationTimestamp
+          options.expectedLatestMigrationTimestamp,
+          options.expectedMigrationHashes
         )
       ) {
         return;

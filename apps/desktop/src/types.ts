@@ -3,6 +3,7 @@ import type {
   CollaborationRendererCommand,
   AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
+  EmbeddingStateSnapshot,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
@@ -85,6 +86,7 @@ export interface KoedServerStatus {
   aiClientInstances?: Record<string, AiClientReadiness>;
   aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
+  embeddingState?: EmbeddingStateSnapshot | null;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {
     registered: number;

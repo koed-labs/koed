@@ -41,6 +41,16 @@ databases. The server must have the `vector` extension available. Matching
 `PG_RESTORE_BIN` to select explicit binaries. Every disposable database is
 force-dropped in cleanup, including on failure.
 
+When branches add migrations independently, preserve applied SQL and timestamps.
+The merged journal keeps the recall migrations at `0045`–`0063` and appends
+main's agent-seal marker at `0064`, retaining its original SQL hash and timestamp.
+Migration startup serializes upgrades and checks applied hashes before Drizzle's
+timestamp cursor runs. Missing migrations below that cursor run in one transaction;
+existing ledger rows stay unchanged. This lets databases from either branch
+upgrade without skipping schema changes or replaying the Project assignment cutover.
+Workers wait for every expected migration hash, so an upstream timestamp cannot
+make a database with missing recall migrations appear ready.
+
 Do not add new migrations under `packages/db/src/migrations/`; that directory
 was replaced by the Drizzle migration folder.
 

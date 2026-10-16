@@ -138,6 +138,12 @@ export const MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS = 1_800_000;
 export const MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS = 30_000;
 
 export {
+  deriveEmbeddingActivity,
+  type EmbeddingActivity,
+  type EmbeddingQueueCounts,
+  type EmbeddingStateSnapshot
+} from "./embedding-state.js";
+export {
   decideHistoricalAdmission,
   type HistoricalAdmissionDecision,
   type HistoricalAdmissionInput,

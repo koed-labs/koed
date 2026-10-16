@@ -496,11 +496,13 @@ worker always drains a bounded live Projection pass before considering one
 historical batch. It admits that batch only when live raw-Projection rows and
 pending interactive Memory Questions are at or below configured thresholds, the
 configured API `/ready` endpoint is healthy, queue probing succeeds, and the
-Embedding Service is healthy. Agent, subagent and tool rows in an open turn
-are left out of that count. Such a turn has no completion signal and recent
-activity within `MEMORY_AGENT_TURN_STALE_MS`, so those rows only wait for the
-agent seal and need no Projection capacity. User, system and raw-only rows
-still count, and turns are scoped to their owning User. Without this exclusion, continuous agent activity
+Embedding Service is healthy. Live rows that a Projection pass left waiting for
+an agent seal are left out of that count while their turn stays open. Projection
+records this on each row (`agent_seal_waiting_at`) and clears it when the row is
+projected or fails. An open turn has no completion signal and recent activity
+within `MEMORY_AGENT_TURN_STALE_MS`. Such rows need no Projection capacity.
+Rows that Projection has not scanned yet still count, including user, system
+and raw-only rows, and turns are scoped to their owning User. Without this exclusion, continuous agent activity
 would pause history indefinitely. When the turn completes or goes stale, its
 rows count again, and the live pass still runs before every historical batch.
 
@@ -517,6 +519,20 @@ capacity. The runtime neither calls Operator-only `/ops/status` nor probes the
 Embedding Service or reconstructs Worker policy itself. A denied decision
 pauses only new historical production; it does not make `/ready` fail or stop
 live capture.
+
+The authenticated, local-only `GET /v1/embedding-state` contract reports the
+same signals as content-free Diagnostic Status. It returns Embedding Service
+health, pending embedding counts and estimated tokens, the 15-minute
+throughput, the calibrated capacity, a drain estimate, embedding queue counts,
+the live and historical Projection backlog, and the current historical
+admission decision. Live rows waiting for an open agent turn are reported as
+`waitingForAgentTurnRows`. The counts are deployment-wide, so the route
+returns 403 when the deployment has more than one User. `activity` is
+`unknown` when backlog telemetry is missing and no queue shows work.
+`koed status` includes this snapshot as `embeddingState`, `null` when the API
+cannot report it, or leaves it out when the deployment does not offer it. Koed
+Desktop shows it under **Preferences → Services** only when it is offered. It
+is not a health gate, so it never changes the service health count.
 
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.
