@@ -458,6 +458,83 @@ describe.skipIf(!databaseUrl)(
       );
     });
 
+    it.each(["answered", "error"] as const)(
+      "creates and hydrates a Team final question with status %s and preserves idempotency",
+      async (status) => {
+        const token = await issue(true, true);
+        const input = {
+          idempotency_key: randomUUID(),
+          origin: "mcp_memory_answer",
+          query: "Mapped Team final question",
+          team_workspace_id: workspaceId,
+          search_domain: "global",
+          status,
+          ...(status === "answered"
+            ? { answer_markdown: "Mapped Team answer" }
+            : { error_message: "Mapped Team synthesis failed" })
+        };
+        const created = await request(
+          token,
+          "/v1/memory/questions/final",
+          input
+        );
+        expect(created.statusCode, created.body).toBe(200);
+        const question = created.json().question;
+        expect(question).toMatchObject({
+          query: input.query,
+          teamWorkspaceId: workspaceId,
+          status,
+          ...("answer_markdown" in input
+            ? { answerMarkdown: input.answer_markdown }
+            : { errorMessage: input.error_message })
+        });
+        const retried = await request(
+          token,
+          "/v1/memory/questions/final",
+          input
+        );
+        expect(retried.statusCode, retried.body).toBe(200);
+        expect(retried.json().question.id).toBe(question.id);
+        const read = await request(
+          token,
+          `/v1/memory/questions/${question.id}`
+        );
+        expect(read.statusCode, read.body).toBe(200);
+        expect(read.json().question).toEqual(question);
+        const persisted = await pool.query(
+          "select id from memory_questions where owner_user_id=$1 and idempotency_key=$2",
+          [userId, input.idempotency_key]
+        );
+        expect(persisted.rows).toEqual([{ id: question.id }]);
+      }
+    );
+
+    it.each(["personal-only", "other-Team", "read-only"])(
+      "denies %s final-question creation without persisting a question",
+      async (kind) => {
+        const token = await issue(
+          kind !== "personal-only",
+          kind !== "read-only"
+        );
+        const key = randomUUID();
+        const response = await request(token, "/v1/memory/questions/final", {
+          idempotency_key: key,
+          origin: "mcp_memory_answer",
+          query: "Denied Team final question",
+          team_workspace_id:
+            kind === "other-Team" ? otherWorkspaceId : workspaceId,
+          status: "answered",
+          answer_markdown: "Must not persist"
+        });
+        expect(response.statusCode, response.body).toBe(403);
+        const persisted = await pool.query(
+          "select id from memory_questions where owner_user_id=$1 and idempotency_key=$2",
+          [userId, key]
+        );
+        expect(persisted.rows).toEqual([]);
+      }
+    );
+
     it("limits discovery and admission even when the User belongs to both Teams", async () => {
       const token = await issue();
       const contexts = await request(token, "/v1/team-context");

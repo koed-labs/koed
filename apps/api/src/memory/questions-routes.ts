@@ -220,7 +220,15 @@ export const registerQuestionRoutes = (
           )
         : await authenticateApiToken(request);
       const question = await repo.createFinalMemoryQuestion(
-        await actorForAuthenticatedRequest(context.auth, request, user.id),
+        {
+          ...(await actorForAuthenticatedRequest(
+            context.auth,
+            request,
+            user.id
+          )),
+          // Team read was checked above; preserve it for response hydration.
+          allowTeam: input.team_workspace_id !== undefined
+        },
         input.status === "answered"
           ? {
               idempotencyKey: input.idempotency_key,
