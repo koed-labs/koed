@@ -6,20 +6,29 @@ import {
   runDbMigrations,
   createMemorySourceRepository
 } from "@koed/db";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import {
+  crossIdentitySyncDeterministicUuid,
+  repositoryScopeId,
+  type RepositoryIdentity
+} from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerGraphRoutes } from "./graph-routes.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
-  const pool = createDbPool({
+  const admin = createDbPool({
     connectionString: databaseUrl ?? "postgresql://localhost/postgres"
   });
+  const databaseName = `project_assignment_${randomUUID().replaceAll("-", "")}`;
+  const url = new URL(databaseUrl ?? "postgresql://localhost/postgres");
+  url.pathname = `/${databaseName}`;
+  const pool = createDbPool({ connectionString: url.toString() });
   const repo = createMemorySourceRepository(pool);
   const app = Fastify();
   let ownerId: string;
   let otherId: string;
   beforeAll(async () => {
+    await admin.query(`create database "${databaseName}"`);
     await runDbMigrations(pool);
     ownerId = (
       await repo.createUser({
@@ -63,6 +72,124 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
   afterAll(async () => {
     await app.close();
     await pool.end();
+    await admin.query(`drop database if exists "${databaseName}" with (force)`);
+    await admin.end();
+  });
+  it("preserves a legacy logical Memory binding through capture and sharing", async () => {
+    const deployment =
+      (await repo.getLocalSyncDeployment()) ??
+      (await repo.ensureLocalSyncDeployment({
+        profile: "local_personal",
+        protocolDeploymentId: randomUUID()
+      }));
+    const externalId = randomUUID();
+    // Reproduce a Session and its persisted v1 identity before this upgrade.
+    const session = (
+      await pool.query<{ id: string }>(
+        `insert into sessions (owner_user_id, visibility, source_runtime,
+        capture_method, external_session_id, idempotency_key, metadata)
+       values ($1,'personal','codex','mcp',$2,$2,'{"threadName":"Legacy capture decision"}') returning id`,
+        [ownerId, externalId]
+      )
+    ).rows[0]!;
+    const identityInput = {
+      sourceDeploymentId: deployment.protocolDeploymentId,
+      sourceUserId: ownerId,
+      originSessionId: session.id,
+      identity: "logical-memory"
+    };
+    const legacyId = crossIdentitySyncDeterministicUuid({
+      ...identityInput,
+      protocol: "koed.captured-session-sync/v1"
+    });
+    const setup = await pool.connect();
+    try {
+      await setup.query("begin");
+      await setup.query(
+        `insert into logical_memories
+      (id,protocol_logical_id,owner_user_id,owner_principal_id,
+       origin_deployment_identity_id,source_kind,logical_key)
+      values ($1,$1,$2,$2,$3,'captured_session',$4)`,
+        [legacyId, ownerId, deployment.id, `captured-session:${session.id}`]
+      );
+      await setup.query(
+        `insert into captured_session_logical_memories
+      (logical_memory_id,source_session_id,owner_principal_id) values ($1,$2,$3)`,
+        [legacyId, session.id, ownerId]
+      );
+      await setup.query(
+        `insert into local_captured_session_logical_memories
+      (logical_memory_id,local_session_id,owner_user_id) values ($1,$2,$3)`,
+        [legacyId, session.id, ownerId]
+      );
+      await setup.query("commit");
+    } catch (error) {
+      await setup.query("rollback");
+      throw error;
+    } finally {
+      setup.release();
+    }
+    for (const replay of [
+      { externalSessionId: externalId },
+      { idempotencyKey: externalId }
+    ]) {
+      await expect(
+        repo.createCapturedSession(
+          { userId: ownerId },
+          {
+            sourceRuntime: "codex",
+            ...replay
+          }
+        )
+      ).resolves.toMatchObject({ id: session.id });
+    }
+    const graph = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads"
+    });
+    expect(graph.statusCode, graph.body).toBe(200);
+    const projects = graph.json<{
+      projects: Array<{
+        threads: Array<{ sessionId: string; logicalMemoryId: string | null }>;
+      }>;
+    }>().projects;
+    expect(
+      projects
+        .flatMap((project) => project.threads)
+        .find((thread) => thread.sessionId === session.id)?.logicalMemoryId
+    ).toBe(legacyId);
+    const other = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads",
+      headers: { "x-fixture-owner": "other" }
+    });
+    expect(other.body).not.toContain(legacyId);
+    const fresh = await repo.createCapturedSession(
+      { userId: ownerId },
+      { externalSessionId: randomUUID() }
+    );
+    const bindings = (
+      await pool.query<{ local_session_id: string; logical_memory_id: string }>(
+        `select local_session_id,logical_memory_id from local_captured_session_logical_memories
+       where local_session_id=any($1::uuid[])`,
+        [[session.id, fresh.id]]
+      )
+    ).rows;
+    expect(bindings).toHaveLength(2);
+    expect(
+      bindings.find((binding) => binding.local_session_id === session.id)
+        ?.logical_memory_id
+    ).toBe(legacyId);
+    expect(
+      bindings.find((binding) => binding.local_session_id === fresh.id)
+        ?.logical_memory_id
+    ).toBe(
+      crossIdentitySyncDeterministicUuid({
+        ...identityInput,
+        protocol: "koed.captured-session-sync/v2",
+        originSessionId: fresh.id
+      })
+    );
   });
   it("moves a whole owner Project, retains future routing, and keeps the rule private", async () => {
     const actor = { userId: ownerId };

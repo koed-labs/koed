@@ -14,6 +14,9 @@ Project fields. Workspace selection, Membership, Share Grants, consent, policy
 checks, and source access continue to authorize every read. A repository fingerprint
 grants no access and cannot select a Workspace. Team Project tasks require pinned
 portable context; device-local and unresolved targets produce a resolution error.
+The Local AI Runtime resolves this context before queue acceptance. It stores the
+repository scope as `project_id` and keeps the local root as request metadata.
+Personal Project move rules do not redirect Team repository matching.
 
 Team fingerprints are unsalted selected-remote hashes. A Team member may guess a
 repository name and compute its normalized fingerprint. This accepted exposure
@@ -397,6 +400,13 @@ acknowledgements retain the exact hash. Missing fields and V1 packages are
 rejected. Codex, Claude Code, and Pi use this same profile. Existing encrypted
 source material is retained; the version change does not reset source memory,
 change encryption-envelope versions, or retarget existing Team snapshots.
+Existing Sessions also retain their saved logical Memory IDs, including IDs that
+originated under V1. Capture continuation and graph sharing read that saved binding
+instead of deriving a new ID from the current protocol version.
+
+Every enabled Pi capture signal records the current repository observation, even
+when its source artifact already exists. A changed anchor enters the assignment
+review flow. It does not replace the original Session assignment or source artifact.
 
 ## Personal Global Repository Preference
 

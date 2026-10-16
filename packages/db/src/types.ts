@@ -1199,6 +1199,7 @@ export interface LcmGraphEvent {
 
 export interface LcmGraphThread {
   repositoryAssignment?: RepositoryAssignment;
+  logicalMemoryId?: string | null;
   id: string;
   name: string;
   sessionId: string | null;

@@ -43,6 +43,7 @@ type Artifact = {
   providerCursorOffset: number;
   providerCursorLine: number;
   journalStartOffset: number;
+  journalStartLine: number;
   liveStartOffset: number;
   liveStartLine: number;
   sourceFingerprint?: string;
@@ -350,55 +351,61 @@ export const processPiTranscriptSignal = async (
     excludedThrough[target] ?? baseline
   );
   if (boundary < captureBaseline) throw new Error("pi_session_truncated");
-  if (!artifact) {
-    const repositoryIdentity = await resolveCaptureRepositoryIdentity({
-      cwd: identity.cwd,
-      env
-    });
-    artifact = artifactFrom(
-      await client.ensureConversationSourceArtifact({
-        sourceSession: {
-          externalSessionId: identity.id,
-          sourceRuntime: "pi",
-          captureMethod: "api",
-          cwd: identity.cwd,
-          ...(repositoryIdentity ? { repositoryIdentity } : {}),
-          idempotencyKey: `pi-session:${identity.id}`,
-          sourceHash: hash({ provider: "pi", sessionId: identity.id }),
-          metadata: {
-            sourceKind: "pi",
-            sourceAdapterVersion: "pi-session-v1",
-            parentSession: identity.parentSession ?? null
-          }
-        },
-        sourceKind: "pi",
-        sourceComponentId: "main",
-        sourceComponentRole: "primary",
-        parentSourceComponentId: null,
-        contentFraming: "jsonl",
+  if (artifact && file.size < artifact.providerCursorOffset)
+    throw new Error("pi_session_truncated");
+  const repositoryIdentity = await resolveCaptureRepositoryIdentity({
+    cwd: identity.cwd,
+    env
+  });
+  const journalStartOffset =
+    artifact?.journalStartOffset ??
+    (env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? captureBaseline : 0);
+  const journalStartLine =
+    artifact?.journalStartLine ??
+    (await countTranscriptLines(target, journalStartOffset));
+  const liveStartOffset = artifact?.liveStartOffset ?? captureBaseline;
+  const liveStartLine =
+    artifact?.liveStartLine ??
+    (await countTranscriptLines(target, liveStartOffset));
+  artifact = artifactFrom(
+    await client.ensureConversationSourceArtifact({
+      sourceSession: {
         externalSessionId: identity.id,
-        sourceFingerprint: hash({
-          adapter: "pi-session-v1",
-          sessionId: identity.id,
-          path: target
-        }),
-        artifactFormat: "pi_session_jsonl",
-        artifactFormatVersion: 1,
-        journalStartOffset:
-          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? captureBaseline : 0,
-        journalStartLine:
-          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
-            ? await countTranscriptLines(target, captureBaseline)
-            : 0,
-        liveStartOffset: captureBaseline,
-        liveStartLine: await countTranscriptLines(target, captureBaseline),
-        currentSourceLength: file.size,
-        sourceCreatedAt: file.birthtime.toISOString(),
-        sourceModifiedAt: file.mtime.toISOString(),
-        redactedSourceLabel: `${identity.id}.jsonl`
-      })
-    );
-  }
+        sourceRuntime: "pi",
+        captureMethod: "api",
+        cwd: identity.cwd,
+        ...(repositoryIdentity ? { repositoryIdentity } : {}),
+        idempotencyKey: `pi-session:${identity.id}`,
+        sourceHash: hash({ provider: "pi", sessionId: identity.id }),
+        metadata: {
+          sourceKind: "pi",
+          sourceAdapterVersion: "pi-session-v1",
+          parentSession: identity.parentSession ?? null
+        }
+      },
+      sourceKind: "pi",
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl",
+      externalSessionId: identity.id,
+      sourceFingerprint: hash({
+        adapter: "pi-session-v1",
+        sessionId: identity.id,
+        path: target
+      }),
+      artifactFormat: "pi_session_jsonl",
+      artifactFormatVersion: 1,
+      journalStartOffset,
+      journalStartLine,
+      liveStartOffset,
+      liveStartLine,
+      currentSourceLength: file.size,
+      sourceCreatedAt: file.birthtime.toISOString(),
+      sourceModifiedAt: file.mtime.toISOString(),
+      redactedSourceLabel: `${identity.id}.jsonl`
+    })
+  );
   if (
     env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" &&
     (artifact.providerCursorOffset < baseline ||

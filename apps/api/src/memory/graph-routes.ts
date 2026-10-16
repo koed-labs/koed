@@ -1,9 +1,6 @@
 import { registerRepositoryReviewRoutes } from "./repository-review-routes.js";
 import type { FastifyInstance } from "fastify";
-import {
-  createEncryptedJsonPackage,
-  crossIdentitySyncDeterministicUuid
-} from "@koed/shared";
+import { createEncryptedJsonPackage } from "@koed/shared";
 import { ConversationPresentationVersionConflictError } from "@koed/db";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -242,7 +239,7 @@ export const registerGraphRoutes = (
       rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
       const personalQuery = { ...query };
       delete personalQuery.teamWorkspaceId;
-      const cacheKey = `koed:graph:threads:${user.id}:${hashCacheKey(
+      const cacheKey = `koed:graph:threads:${user.id}:persisted-memory-v1:${hashCacheKey(
         JSON.stringify(personalQuery)
       )}`;
       const cached = await cacheProvider.getJson<{ projects: unknown }>(
@@ -251,10 +248,10 @@ export const registerGraphRoutes = (
       if (cached) {
         return cached;
       }
-      const [projects, localDeployment] = await Promise.all([
-        repo.listLcmGraphThreads({ userId: user.id }, personalQuery),
-        repo.getLocalSyncDeployment()
-      ]);
+      const projects = await repo.listLcmGraphThreads(
+        { userId: user.id },
+        personalQuery
+      );
       const sessionIds = projects.flatMap((project) =>
         project.threads.flatMap((thread) =>
           thread.sessionId ? [thread.sessionId] : []
@@ -273,16 +270,7 @@ export const registerGraphRoutes = (
           ...project,
           threads: project.threads.map((thread) => ({
             ...thread,
-            logicalMemoryId:
-              thread.sessionId && localDeployment
-                ? crossIdentitySyncDeterministicUuid({
-                    protocol: "koed.captured-session-sync/v2",
-                    sourceDeploymentId: localDeployment.protocolDeploymentId,
-                    sourceUserId: user.id,
-                    originSessionId: thread.sessionId,
-                    identity: "logical-memory"
-                  })
-                : null,
+            logicalMemoryId: thread.logicalMemoryId ?? null,
             presentation: thread.sessionId
               ? presentations.has(thread.sessionId)
                 ? publicConversationPresentation(

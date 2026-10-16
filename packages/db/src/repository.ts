@@ -407,6 +407,7 @@ const mapLcmGraphThreadRow = (row: {
   session_id: string | null;
   source_ai_client: SourceAiClient | null;
   origin_device_id?: string | null;
+  logical_memory_id?: string | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -436,6 +437,7 @@ const mapLcmGraphThreadRow = (row: {
     id: row.thread_id,
     name,
     sessionId: row.session_id,
+    logicalMemoryId: row.logical_memory_id ?? null,
     sourceAiClient: row.source_ai_client,
     originDeviceId: row.origin_device_id ?? null,
     projectId: row.project_id,
@@ -7961,9 +7963,13 @@ export const createMemorySourceRepository = (
             )
           order by replica.local_session_id, observation.observed_at, observation.id
         )
-        select ranked_threads.*, replica_origins.origin_device_id
+        select ranked_threads.*, replica_origins.origin_device_id,
+          local_memory.logical_memory_id
         from ranked_threads
         left join replica_origins on replica_origins.local_session_id=ranked_threads.session_id
+        left join local_captured_session_logical_memories local_memory
+          on local_memory.local_session_id=ranked_threads.session_id
+          and local_memory.owner_user_id=$1
         order by latest_at desc, thread_id desc
       `,
         [
@@ -7998,6 +8004,7 @@ export const createMemorySourceRepository = (
           id: thread.id,
           name: thread.name,
           sessionId: thread.sessionId,
+          logicalMemoryId: thread.logicalMemoryId,
           sourceAiClient: thread.sourceAiClient,
           originDeviceId: thread.originDeviceId,
           projectId: thread.projectId,

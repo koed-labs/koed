@@ -172,6 +172,12 @@ const ensureCapturedSessionLogicalMemory = async (
   ownerUserId: string,
   sessionId: string
 ): Promise<string | null> => {
+  const binding = await client.query<{ logical_memory_id: string }>(
+    `select logical_memory_id from local_captured_session_logical_memories
+      where owner_user_id = $1 and local_session_id = $2`,
+    [ownerUserId, sessionId]
+  );
+  if (binding.rows[0]) return binding.rows[0].logical_memory_id;
   const deployment = await client.query<{
     id: string;
     protocol_deployment_id: string;

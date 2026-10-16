@@ -58,3 +58,7 @@ boundary, and keep durable-task request validation outside queue orchestration.
 Upgrade databases from either the recall branch or main without skipping concurrent
 schema migrations or replaying the Project assignment cutover. Preserve applied
 migration ledger rows and roll back failed migration-gap repairs atomically.
+
+Keep existing Sessions' saved logical Memory IDs during capture and sharing.
+Resolve portable Team Project scope before queuing recall, and record later Pi
+repository observations without changing the original assignment.

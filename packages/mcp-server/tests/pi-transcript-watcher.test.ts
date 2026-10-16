@@ -122,6 +122,7 @@ describe("Pi transcript watcher", () => {
         },
         async ensureConversationSourceArtifact(input: Record<string, unknown>) {
           registrations.push(input);
+          if (artifact) return { artifact };
           artifact = {
             id: randomUUID(),
             sourceGenerationId: randomUUID(),
@@ -129,6 +130,7 @@ describe("Pi transcript watcher", () => {
             providerCursorOffset: input.journalStartOffset,
             providerCursorLine: input.journalStartLine,
             journalStartOffset: input.journalStartOffset,
+            journalStartLine: input.journalStartLine,
             liveStartOffset: input.liveStartOffset,
             liveStartLine: input.liveStartLine,
             sourceFingerprint: input.sourceFingerprint
@@ -287,6 +289,32 @@ describe("Pi transcript watcher", () => {
         ...(futureOnly ? [] : [`${sourceSessionId}:0`]),
         "user-1:0"
       ]);
+
+      const firstArtifact = structuredClone(artifact);
+      if (checkout === "root") {
+        git(
+          "remote",
+          "set-url",
+          "origin",
+          "https://example.test/team/pi-moved.git"
+        );
+        await processPiTranscriptSignal(client, state, signal, env);
+        expect(registrations.at(-1)).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              key: normalizeGitRemoteUrl(
+                "https://example.test/team/pi-moved.git"
+              ).fingerprint
+            }
+          }
+        });
+        expect(artifact).toEqual(firstArtifact);
+        expect(registrations).toHaveLength(2);
+        expect(createdExternalItemIds).toEqual([
+          ...(futureOnly ? [] : [`${sourceSessionId}:0`]),
+          "user-1:0"
+        ]);
+      }
 
       captureEnabled = false;
       fs.appendFileSync(
