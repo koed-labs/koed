@@ -21,8 +21,14 @@ import {
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
+  parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
+
+test("packaged smoke defaults health polling to five seconds", () => {
+  assert.equal(parseArgs([]).pollIntervalMs, 5_000);
+  assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
+});
 
 test("smoke home canonicalizes temporary paths before authenticated lifecycle selection", () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-smoke-home-test-"));

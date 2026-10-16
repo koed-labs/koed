@@ -34,7 +34,7 @@ const sleep = (ms) =>
 const sleepSync = (ms) =>
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-const parseArgs = (argv) => {
+export const parseArgs = (argv) => {
   const options = {
     json: false,
     build: false,
@@ -45,7 +45,7 @@ const parseArgs = (argv) => {
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
     timeoutMs: 180_000,
-    pollIntervalMs: 2_000
+    pollIntervalMs: 5_000
   };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -137,7 +137,7 @@ Options:
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
-  --poll-interval-ms <num>  Poll interval (default 2000)
+  --poll-interval-ms <num>  Poll interval (default 5000)
   --help, -h                Show this help
 `;
 
