@@ -54,6 +54,7 @@ import {
   nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
+  type EmbeddingStateSnapshot,
   type LocalAiClientDefault,
   type LocalAiClientFlowKey,
   type LocalAiClientRuntimeAssignment
@@ -953,6 +954,32 @@ const fetchAiClientCapabilityReadModel = async (
       return null;
     }
     return body as CapabilitySnapshotReadModel;
+  } catch {
+    return null;
+  }
+};
+
+const fetchEmbeddingState = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  apiUrl: string,
+  fetcher: typeof globalThis.fetch
+): Promise<EmbeddingStateSnapshot | null> => {
+  const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
+  if (!token) return null;
+  try {
+    const response = await fetcher(new URL("/v1/embedding-state", apiUrl), {
+      headers: { authorization: `Bearer ${token.token}` }
+    });
+    if (!response.ok) return null;
+    const body = JSON.parse(
+      await response.text()
+    ) as Partial<EmbeddingStateSnapshot>;
+    if (typeof body.activity !== "string" || !body.service || !body.queues) {
+      return null;
+    }
+    return body as EmbeddingStateSnapshot;
   } catch {
     return null;
   }
@@ -2646,6 +2673,16 @@ export const collectKoedServerStatus = async (
     apiUrl,
     fetcher
   );
+  const embeddingState =
+    apiReady.api.state === "healthy"
+      ? await fetchEmbeddingState(
+          paths,
+          runtimeEnvironment,
+          repoEnv,
+          apiUrl,
+          fetcher
+        )
+      : null;
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
     runtimeProcessRunning,
@@ -2908,6 +2945,7 @@ export const collectKoedServerStatus = async (
     aiClientInstances,
     aiClientFlowReadiness,
     lcmSummaryService,
+    embeddingState,
     deviceIdentity,
     upstreamBackends,
     lastVerification,

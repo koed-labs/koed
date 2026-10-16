@@ -46,6 +46,60 @@ const snapshot = {
   }
 } as unknown as CollaborationSnapshot;
 
+const workingEmbeddingState: NonNullable<KoedServerStatus["embeddingState"]> = {
+  generatedAt: "2026-10-16T08:00:00.000Z",
+  activity: "working",
+  service: {
+    healthy: true,
+    compatible: true,
+    model: "qwen3-0.6b",
+    dimensions: 1024,
+    expectedModel: "qwen3-0.6b",
+    expectedDimensions: 1024
+  },
+  calibration: {
+    mode: "refined",
+    measuredTokensPerSecond: 250,
+    calibratedAt: null
+  },
+  backlog: {
+    pendingMemoryEvents: 1_200,
+    pendingMemoryNodes: 34,
+    pendingEstimatedTokens: 600_000
+  },
+  throughput: {
+    windowMinutes: 15,
+    measuredTokensPerSecond: 180,
+    eventsPerMinute: 40,
+    retries: 0,
+    failures: 0
+  },
+  drainEstimate: {
+    lowerSeconds: 2_400,
+    upperSeconds: 4_000,
+    confidence: "medium"
+  },
+  queues: {
+    memory: { waiting: 10, active: 1, delayed: 0, failed: 0 },
+    lcm: { waiting: 0, active: 0, delayed: 0, failed: 0 }
+  },
+  projection: {
+    liveRows: 2,
+    waitingForAgentTurnRows: 5,
+    historicalRows: 900,
+    historicalBytes: 2_097_152
+  },
+  historicalAdmission: {
+    admitted: false,
+    reason: "live_projection_pressure"
+  }
+};
+
+const embeddingServiceValue = (container: HTMLElement) =>
+  [...container.querySelectorAll('dl[aria-label="Embedding state"] dt')]
+    .find((item) => item.textContent === "Embedding Service")
+    ?.nextElementSibling?.querySelector("strong")?.textContent;
+
 const advancedStatus = (
   overrides: Partial<KoedServerStatus> = {}
 ): KoedServerStatus => {
@@ -1098,6 +1152,56 @@ describe("PreferencesView", () => {
         container.querySelector('button[aria-label="Run diagnostics"]')
       ).toBeTruthy()
     );
+  });
+
+  it("shows embedding backlog and historical import pause reason", async () => {
+    const status = advancedStatus({ embeddingState: workingEmbeddingState });
+    window.koedDesktop = { invoke: vi.fn(async () => status) } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Embedding 1,234 items")
+    );
+    expect(container.textContent).toContain("All services are healthy");
+    expect(container.textContent).toContain("40 min – 1 h 7 min");
+    expect(container.textContent).toContain(
+      "5 waiting for an agent turn to finish"
+    );
+    expect(container.textContent).toContain(
+      "Paused: live capture has priority"
+    );
+    expect(container.textContent).toContain("900 rows · 2.0 MB pending");
+    expect(embeddingServiceValue(container)).toBe("Processing");
+  });
+
+  it("shows the Embedding Service as ready when embedding is idle", async () => {
+    const status = advancedStatus({
+      embeddingState: {
+        ...workingEmbeddingState,
+        activity: "idle",
+        backlog: {
+          pendingMemoryEvents: 0,
+          pendingMemoryNodes: 0,
+          pendingEstimatedTokens: 0
+        }
+      }
+    });
+    window.koedDesktop = { invoke: vi.fn(async () => status) } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Embedding is up to date")
+    );
+    expect(embeddingServiceValue(container)).toBe("Ready");
+  });
+
+  it("reports missing embedding state without counting it as a service", async () => {
+    window.koedDesktop = {
+      invoke: vi.fn(async () => advancedStatus({ embeddingState: null }))
+    } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Embedding state unavailable")
+    );
+    expect(container.textContent).toContain("All services are healthy");
   });
 
   it("shows the Privacy Filter fault counted by the health indicator", async () => {

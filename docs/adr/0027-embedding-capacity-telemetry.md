@@ -114,6 +114,10 @@ The operational surfaces are separated:
   API Token. It shares the Worker admission policy and reads coordinator-owned
   health/capacity state; the Local AI Runtime does not infer admission from
   `/ops/status` or probe the Embedding Service independently.
+- `GET /v1/embedding-state` provides a content-free local Diagnostic Status
+  snapshot of embedding backlog, throughput, capacity, Projection backlog, and
+  historical admission to an authenticated User session or Personal API Token.
+  Koed Desktop shows it under **Preferences → Services**.
 - `GET /internal/metrics` exports OpenMetrics-compatible low-cardinality counters,
   gauges, and histograms for machine collection. It is disabled unless a
   dedicated monitoring bearer credential is configured, must remain inside

@@ -1,5 +1,6 @@
 import type {
   AiClientCapabilityDescriptor,
+  EmbeddingStateSnapshot,
   LocalAiClientFlowKey,
   LocalAiClientRuntimeAssignment
 } from "@koed/shared";
@@ -108,6 +109,8 @@ export interface KoedServerStatus {
     KoedAiClientFlowReadiness
   >;
   lcmSummaryService: KoedServerComponentStatus;
+  /** Content-free Diagnostic Status; null when the API could not report it. */
+  embeddingState?: EmbeddingStateSnapshot | null;
   deviceIdentity: KoedServerComponentStatus & {
     health: string;
     deploymentId: string | null;

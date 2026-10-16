@@ -1570,6 +1570,44 @@ describe("status state aggregation", () => {
     expect(JSON.stringify(status)).not.toContain("local-token");
   });
 
+  it("includes embedding state and drops malformed payloads", async () => {
+    const collect = (embeddingStateBody: unknown) =>
+      collectKoedServerStatus(
+        {
+          KOED_HOME: tempDir(),
+          KOED_REPO_ROOT: tempDir(),
+          HOME: tempDir(),
+          MEMORY_API_TOKEN: "local-token",
+          WORK_QUEUE_BACKEND: "local"
+        },
+        {
+          fetch: async (url, init) => {
+            const path = new URL(String(url)).pathname;
+            if (path === "/ready")
+              return response(true, 200, healthyReadyPayload);
+            if (path === "/v1/embedding-state") {
+              expect(new Headers(init?.headers).get("authorization")).toBe(
+                "Bearer local-token"
+              );
+              return response(true, 200, embeddingStateBody);
+            }
+            return response(true, 200, {});
+          },
+          spawnSync: () => spawnResult(""),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+    const state = {
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      activity: "idle",
+      service: { healthy: true, compatible: true },
+      queues: { memory: null, lcm: null }
+    };
+
+    expect((await collect(state)).embeddingState).toEqual(state);
+    expect((await collect({ activity: 3 })).embeddingState).toBeNull();
+  });
+
   it("loads persisted User flow assignments into status readiness", async () => {
     const root = tempDir();
     const status = await collectKoedServerStatus(

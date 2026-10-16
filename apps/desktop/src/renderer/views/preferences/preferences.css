@@ -464,6 +464,14 @@
   color: var(--primary);
 }
 
+.koed-diagnostics + .koed-diagnostics {
+  margin-block-start: 10px;
+}
+
+.koed-diagnostics-summary-status[data-state="working"] svg {
+  color: var(--primary);
+}
+
 .koed-diagnostics-summary-status[data-state="needs_attention"] svg {
   color: var(--destructive);
 }
