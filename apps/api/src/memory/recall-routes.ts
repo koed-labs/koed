@@ -1,3 +1,4 @@
+import { planRepositorySearch } from "@koed/shared";
 import { answerMemory, searchMemory } from "@koed/core";
 import type { SharedMemorySemanticCandidate } from "@koed/db";
 import type { FastifyInstance } from "fastify";
@@ -87,6 +88,12 @@ const teamHit = (
           exactAnchorMatches: candidate.exactAnchorMatches
         }
       : {}),
+    provenance: candidate.project
+      ? {
+          project: candidate.project,
+          repositoryPreference: candidate.repositoryPreference
+        }
+      : undefined,
     score: candidate.score,
     freshness: candidate.freshness,
     sourceTime: candidate.occurredAt,
@@ -180,6 +187,8 @@ export const registerRecallRoutes = (
           searchDomain: input.search_domain,
           sessionId: input.session_id,
           projectId: input.project_id,
+          repositoryContext: input.repository_context,
+          maxSearchPasses: input.max_search_passes,
           recentDays: input.recent_days,
           sourceAfter: input.source_after?.toISOString(),
           sourceBefore: input.source_before?.toISOString(),
@@ -252,6 +261,14 @@ export const registerRecallRoutes = (
           lcmHitsCount: hits.filter((hit) => hit.sourceType === "memory_node")
             .length,
           retrieval: {
+            searchPasses: planRepositorySearch({
+              retrievalScope: "team",
+              searchDomain: input.search_domain,
+              repositoryContext: input.repository_context,
+              retrievalStage: input.retrieval_stage,
+              limit: input.limit,
+              maxSearchPasses: input.max_search_passes ?? 1
+            }).searchPasses,
             retrievalMode: "semantic_vector",
             vectorHitsCount: candidateCount,
             textHitsCount: 0,
@@ -286,7 +303,9 @@ export const registerRecallRoutes = (
         exactHints: input.exact_hints,
         retrievalStage: input.retrieval_stage,
         parentNodeIds: input.parent_node_ids,
-        strictLimit: input.strict_limit
+        strictLimit: input.strict_limit,
+        repositoryContext: input.repository_context,
+        maxSearchPasses: input.max_search_passes
       });
       const indexProof = retrievalIndexProof(
         await resolveRetrievalCapability({
@@ -364,6 +383,8 @@ export const registerRecallRoutes = (
           searchDomain: input.search_domain,
           sessionId: input.session_id,
           projectId: input.project_id,
+          repositoryContext: input.repository_context,
+          maxSearchPasses: input.max_search_passes,
           recentDays: input.recent_days,
           sourceAfter: input.source_after?.toISOString(),
           sourceBefore: input.source_before?.toISOString(),
@@ -438,7 +459,7 @@ export const registerRecallRoutes = (
           stages
         };
         const instructions =
-          "Use only this authorized Team Shared Memory evidence. Treat stale evidence as historical and report uncertainty.";
+          "Use only this authorized Team Shared Memory evidence. Treat stale evidence as historical and report uncertainty. Identify evidence from other Projects using authorized labels and preserve unknown Project provenance. Shared lineage is not independent corroboration.";
         return {
           markdown: evidence.map((hit) => hit.summaryText).join("\n\n"),
           instructions,

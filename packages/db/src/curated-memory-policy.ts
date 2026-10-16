@@ -20,6 +20,11 @@ export const curatedMemoryActiveEvidenceRowsSql = (
   select
     coalesce(${prefix}_ci.session_id, ${prefix}_me.session_id, ${prefix}_node_me.session_id) as source_session_id,
     coalesce(
+      ${prefix}_ci_session.repository_override_identity, ${prefix}_ci_session.repository_automatic_identity,
+      ${prefix}_me_session.repository_override_identity, ${prefix}_me_session.repository_automatic_identity,
+      ${prefix}_node_session.repository_override_identity, ${prefix}_node_session.repository_automatic_identity
+    ) as source_repository_identity,
+    coalesce(
       ${prefix}_ci.event_time,
       ${prefix}_ci.observed_at,
       ${prefix}_ci.created_at,
@@ -29,33 +34,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
       ${prefix}_node_me.source_event_time,
       ${prefix}_node_me.captured_at,
       ${prefix}_node_me.created_at
-    ) as source_event_time,
-    coalesce(
-      ${prefix}_ci_session.project_override_id,
-      ${prefix}_ci_session.automatic_project_id,
-      ${prefix}_ci_session.metadata ->> 'projectId'
-    ) as ci_project_id,
-    coalesce(
-      ${prefix}_ci_session.project_override_id,
-      ${prefix}_ci_session.automatic_project_id
-    ) as ci_stable_project_id,
-    ${prefix}_ci_session.cwd as ci_project_path,
-    coalesce(
-      nullif(${prefix}_me.payload ->> 'projectId', ''),
-      ${prefix}_me_encrypted.scope ->> 'projectId',
-      ${prefix}_me_session.metadata ->> 'projectId',
-      ${prefix}_me_session.project_override_id,
-      ${prefix}_me_session.automatic_project_id
-    ) as me_project_id,
-    ${prefix}_me_session.cwd as me_project_path,
-    coalesce(
-      nullif(${prefix}_node_me.payload ->> 'projectId', ''),
-      ${prefix}_node_me_encrypted.scope ->> 'projectId',
-      ${prefix}_node_session.metadata ->> 'projectId',
-      ${prefix}_node_session.project_override_id,
-      ${prefix}_node_session.automatic_project_id
-    ) as node_project_id,
-    ${prefix}_node_session.cwd as node_project_path
+    ) as source_event_time
   from curated_memory_sources ${prefix}_cms
   left join conversation_items ${prefix}_ci
     on ${prefix}_ci.id = ${prefix}_cms.conversation_item_id
@@ -77,14 +56,6 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     on ${prefix}_me_session.id = ${prefix}_me.session_id
     and ${prefix}_me_session.owner_user_id = ${assertionAlias}.owner_user_id
     and ${prefix}_me_session.personal_deleted_at is null
-  left join encrypted_field_payloads ${prefix}_me_encrypted
-    on ${prefix}_me_encrypted.owner_user_id = ${assertionAlias}.owner_user_id
-    and ${prefix}_me_encrypted.visibility = 'personal'
-    and ${prefix}_me_encrypted.encryption_scope = 'personal'
-    and ${prefix}_me_encrypted.source_table = 'memory_events'
-    and ${prefix}_me_encrypted.source_id = ${prefix}_me.id
-    and ${prefix}_me_encrypted.source_column = 'payload'
-    and ${prefix}_me_encrypted.invalidated_at is null
   left join memory_nodes ${prefix}_mn
     on ${prefix}_mn.id = ${prefix}_cms.lcm_node_id
     and ${prefix}_mn.owner_user_id = ${assertionAlias}.owner_user_id
@@ -103,14 +74,6 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     on ${prefix}_node_session.id = ${prefix}_node_me.session_id
     and ${prefix}_node_session.owner_user_id = ${assertionAlias}.owner_user_id
     and ${prefix}_node_session.personal_deleted_at is null
-  left join encrypted_field_payloads ${prefix}_node_me_encrypted
-    on ${prefix}_node_me_encrypted.owner_user_id = ${assertionAlias}.owner_user_id
-    and ${prefix}_node_me_encrypted.visibility = 'personal'
-    and ${prefix}_node_me_encrypted.encryption_scope = 'personal'
-    and ${prefix}_node_me_encrypted.source_table = 'memory_events'
-    and ${prefix}_node_me_encrypted.source_id = ${prefix}_node_me.id
-    and ${prefix}_node_me_encrypted.source_column = 'payload'
-    and ${prefix}_node_me_encrypted.invalidated_at is null
   where ${prefix}_cms.assertion_id = ${assertionAlias}.id
     and ${prefix}_cms.source_role in (
       'primary_evidence',

@@ -2745,6 +2745,26 @@ function SharedMemoryOwnerModal({
     }
   };
 
+  const updateSharedProject = (grant: SharedMemoryGrant) =>
+    run(async () => {
+      const target = {
+        teamId: grant.teamId,
+        workspaceId: grant.workspaceId,
+        shareGrantId: grant.id
+      };
+      const expected = await client.reviewSharedProjectSnapshot(target);
+      const updated = await client.updateSharedProjectSnapshot({
+        ...target,
+        mutationId: crypto.randomUUID(),
+        expected
+      });
+      setOwnerGrants((current) =>
+        current.map((item) =>
+          item.id === updated.id ? { ...item, ...updated } : item
+        )
+      );
+    });
+
   const stopSharing = (grant: SharedMemoryGrant) =>
     run(async () => {
       const revoked = await client.revokeSharedMemory({
@@ -3082,6 +3102,18 @@ function SharedMemoryOwnerModal({
                       </div>
                       {active || recoverable ? (
                         <div className="collab-owner-grant-actions">
+                          {active &&
+                          grant.source.kind === "captured_session" ? (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy}
+                              title="Review the latest synced source Project before updating this share."
+                              onClick={() => void updateSharedProject(grant)}
+                            >
+                              Update Project
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="secondary"

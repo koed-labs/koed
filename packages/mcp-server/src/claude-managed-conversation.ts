@@ -1132,7 +1132,10 @@ export class ClaudeManagedConversationSession {
     const shouldResume = this.resumed || this.submittedQuery;
     let stream: Query;
     try {
-      const koedMcp = managedKoedMcpServer(this.config.env ?? process.env);
+      const koedMcp = managedKoedMcpServer(
+        this.config.env ?? process.env,
+        this.cwd
+      );
       stream = query({
         prompt,
         options: {

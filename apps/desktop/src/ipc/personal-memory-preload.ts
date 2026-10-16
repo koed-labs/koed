@@ -1,6 +1,8 @@
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalDesktopChangeSchema,
+  personalDesktopProjectCreateInputSchema,
+  personalDesktopProjectMoveInputSchema,
   personalDesktopAskListInputSchema,
   personalDesktopAskSubmitInputSchema,
   personalDesktopAskThreadInputSchema,
@@ -205,6 +207,36 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Personal Note update result.");
       }
       return result.data.note;
+    },
+    createProject: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["createProject"]>>[0]
+    ) => {
+      const input = personalDesktopProjectCreateInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.create",
+          input
+        })
+      );
+      if (result.operation !== "personal.projects.create")
+        throw new Error("Invalid Project creation result.");
+      return result.data;
+    },
+    moveProject: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["moveProject"]>>[0]
+    ) => {
+      const input = personalDesktopProjectMoveInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.move",
+          input
+        })
+      );
+      if (result.operation !== "personal.projects.move")
+        throw new Error("Invalid Project move result.");
+      return result.data;
     },
     listProjects: async () => {
       const result = requireSuccess(

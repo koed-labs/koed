@@ -1,3 +1,6 @@
+import type { RepositoryReviewRepository } from "./repository-review-repository.js";
+import type { RepositoryAssignment } from "@koed/shared";
+import type { ProjectRoutingRepository } from "./project-routing-repository.js";
 import type {
   LcmSourceItem,
   MemoryActor,
@@ -11,6 +14,7 @@ import type {
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import type { PersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
+import type { PersonalProjectSelectionRepository } from "./personal-project-selection-repository.js";
 import type { PersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
 import type { ConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
@@ -1194,6 +1198,8 @@ export interface LcmGraphEvent {
 }
 
 export interface LcmGraphThread {
+  repositoryAssignment?: RepositoryAssignment;
+  logicalMemoryId?: string | null;
   id: string;
   name: string;
   sessionId: string | null;
@@ -1292,12 +1298,15 @@ export interface LocalEmbeddingStatus {
 }
 
 export interface PersonalProjectReference {
+  repositoryIdentity?: import("@koed/shared").RepositoryIdentity;
+  expectedAssignmentVersion?: number;
   id: string;
   name: string;
   path: string | null;
 }
 
 export interface CapturedSessionRecord {
+  repositoryAssignment?: RepositoryAssignment;
   id: string;
   logicalSessionId: string;
   ownerUserId: string | null;
@@ -1941,6 +1950,8 @@ export interface CuratedMemoryExportRecords {
 export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
+    RepositoryReviewRepository,
+    ProjectRoutingRepository,
     CapturedSessionRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,
@@ -1968,6 +1979,7 @@ export interface MemorySourceRepository
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
+  personalProjectSelections: PersonalProjectSelectionRepository;
   countUsers(): Promise<number>;
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;

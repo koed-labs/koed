@@ -91,6 +91,7 @@ Commands:
   project list --json     List discovered local Project metadata
   project show --json     Show discovered Project metadata for a cwd
   project forget --json   Forget discovered Project metadata by local Project id
+  project anchor --json   Select --remote or --reset for --local-project-id and --checkout-id
   team workspace link --json Link a local Project root to a Team Workspace id
   team workspace list --json List local Project to Team Workspace links
   team workspace show --json Show the Team Workspace link for a Project root

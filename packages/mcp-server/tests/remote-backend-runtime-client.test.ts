@@ -1,3 +1,5 @@
+import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
 import {
@@ -75,11 +77,27 @@ const fixture = () => {
   };
 };
 
+const repositoryContext = (root: string): RepositoryIdentity => ({
+  kind: "portable_repository",
+  key: "gr_fixture",
+  root,
+  branch: "main",
+  reason: "origin",
+  checkoutId: "checkout_fixture",
+  originatingDeviceId: "fixture_device",
+  selectedRemote: "origin",
+  anchorDisplay: "example.test/team/fixture"
+});
+
 describe("remote backend runtime client", () => {
   it("preserves Windows source Project IDs and rejects relative paths", async () => {
     const { client, runtime } = fixture();
     await runtime.startMemoryAnswerTask(
-      { query: "fact", project_id: "C:\\source\\project" },
+      {
+        query: "fact",
+        project_id: "C:\\source\\project",
+        repository_context: repositoryContext("C:\\source\\project")
+      },
       { cwd: "/ignored" }
     );
     expect(
@@ -90,14 +108,21 @@ describe("remote backend runtime client", () => {
         { query: "fact", project_id: "relative/project" },
         { cwd: "/server" }
       )
-    ).rejects.toThrow("absolute source Project path");
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
     expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
   });
   it("accepts and observes the existing Personal task contract with explicit Project context", async () => {
     const { client, runtime } = fixture();
     const result = await runtime.callTool(
       "memory_answer",
-      { query: "fact", project_id: "/provided/project" },
+      {
+        query: "fact",
+        project_id: "/provided/project",
+        repository_context: repositoryContext("/provided/project")
+      },
       {
         cwd: "/server/not-the-client-project",
         protocolVersion: "2026-07-28",
@@ -115,6 +140,13 @@ describe("remote backend runtime client", () => {
     expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
     const accepted = client.acceptMemoryAnswerTask.mock.calls[0]![0];
     expect(accepted.origin).toBe("mcp");
+    const acceptedInput = memoryAnswerInputSchema.parse(accepted.request.input);
+    expect(acceptedInput.project_id).toBe(
+      repositoryScopeId(repositoryContext("/provided/project"))
+    );
+    expect(acceptedInput.repository_context).toEqual(
+      repositoryContext("/provided/project")
+    );
     expect(accepted.invocation_key).toBe("call-one");
     expect(accepted.request.caller).toEqual({
       cwd: "/provided/project",
@@ -269,6 +301,55 @@ describe("remote backend runtime client", () => {
         { cwd: "" }
       )
     ).rejects.toThrow("Requested Team backend is unavailable");
+  });
+
+  it("pins portable Team Project context without changing its Workspace or backend", async () => {
+    const { client } = fixture();
+    const runtime = new RemoteBackendRuntimeClient({
+      client,
+      supportedTaskScopes: { personal: true, team: { backendId: "team" } }
+    });
+    const context = repositoryContext("/teammate/another-clone");
+    const input = {
+      query: "Project decision",
+      search_domain: "project",
+      team_workspace_id: id,
+      team_backend_id: "team",
+      repository_context: context
+    };
+    await runtime.startMemoryAnswerTask(input, {
+      cwd: "/teammate/another-clone/subdirectory"
+    });
+    expect(
+      client.acceptMemoryAnswerTask.mock.calls[0]![0].request.input
+    ).toMatchObject({
+      repository_context: context,
+      project_id: repositoryScopeId(context),
+      team_workspace_id: id
+    });
+    await expect(
+      runtime.startMemoryAnswerTask(
+        { ...input, team_backend_id: "other" },
+        { cwd: context.root! }
+      )
+    ).rejects.toThrow("Requested Team backend is unavailable");
+    await expect(
+      runtime.startMemoryAnswerTask(
+        {
+          ...input,
+          repository_context: {
+            ...context,
+            kind: "device_local_repository",
+            key: "dl_fixture"
+          }
+        },
+        { cwd: "/teammate/another-clone" }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
+    expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
   });
 
   it("fails closed for unavailable Team task capabilities and capability-gated intake", async () => {

@@ -463,6 +463,7 @@ const createFixture = (
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
     remoteOwnedShares?: Record<string, unknown>[];
     remotePendingShareControl?: Record<string, unknown>;
+    repositorySnapshotReview?: Record<string, unknown>;
     deniedDiscussionLogicalMemoryIds?: string[];
     mutateResponse?: (
       request: RecordedRequest,
@@ -601,6 +602,8 @@ const createFixture = (
         updatedAt: remote.updatedAt
       });
       persisted.grant.companionThreadId = input.companion.companionThreadId;
+      if (remote.repositorySnapshot)
+        persisted.grant.repositorySnapshot = remote.repositorySnapshot;
       grants.set(remote.id, persisted);
       return persisted;
     },
@@ -1007,6 +1010,8 @@ const createFixture = (
             grantVersion: 2
           })
         };
+      } else if (url.pathname.endsWith("/repository-snapshot/review")) {
+        response = { review: overrides.repositorySnapshotReview };
       } else if (recorded.method === "GET") {
         const remote = overrides.remoteRead ?? defaultRead;
         const direction = url.searchParams.get("direction");
@@ -1035,6 +1040,14 @@ const createFixture = (
           ...(url.pathname.endsWith("/initial-view")
             ? { companion: { thread: null, messages: null } }
             : {})
+        };
+      } else if (url.pathname.endsWith("/repository-snapshot")) {
+        response = {
+          grant: {
+            ...grantResponse({ grantVersion: 2 }),
+            repositorySnapshot:
+              overrides.repositorySnapshotReview?.currentSnapshot
+          }
         };
       } else {
         return json({ error: "not found" }, 404);
@@ -1181,6 +1194,76 @@ const loadInitialSource = async (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("reviews and applies the exact Project snapshot through a protected device request", async () => {
+    const review = {
+      shareGrantId: ids.grant,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      grantVersion: 1,
+      sourceRevision: 1,
+      representationId: ids.preview,
+      representationVersion: 1,
+      assignmentVersion: 2,
+      sourceContextHash: "a".repeat(64),
+      currentSnapshot: {
+        version: 1 as const,
+        classification: "portable_repository" as const,
+        fingerprint: "gr_updated",
+        label: null,
+        branchObservation: null
+      }
+    };
+    const fixture = createFixture({ repositorySnapshotReview: review });
+    const target = {
+      shareGrantId: ids.grant,
+      teamId: ids.team,
+      workspaceId: ids.workspace
+    };
+    const reviewed = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.review_shared_project_snapshot"),
+        input: target
+      },
+      context()
+    );
+    expect(
+      reviewed,
+      JSON.stringify({
+        reviewed,
+        paths: fixture.requests.map((request) => request.pathname)
+      })
+    ).toMatchObject({ ok: true, data: { review } });
+    expect(
+      await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.update_shared_project_snapshot"),
+          input: {
+            ...target,
+            mutationId: randomUUID(),
+            expected: review,
+            actionGrant: { id: ids.actionGrant }
+          }
+        },
+        context()
+      )
+    ).toMatchObject({
+      ok: true,
+      data: {
+        grant: { grantVersion: 2, repositorySnapshot: review.currentSnapshot }
+      }
+    });
+    const posted = fixture.requests.find((request) =>
+      request.pathname.endsWith("/repository-snapshot")
+    );
+    expect(posted?.body).toMatchObject({
+      expected: review,
+      authority: { source: "device_action_grant", referenceId: ids.actionGrant }
+    });
+    expect(fixture.grants.get(ids.grant)?.grant.repositorySnapshot).toEqual(
+      review.currentSnapshot
+    );
+  });
+
   it("queues an exact continuous Personal Note revision through the scoped device path", async () => {
     const wake = vi.fn();
     const fixture = createFixture({

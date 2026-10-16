@@ -182,6 +182,12 @@ describe("Claude Code setup", () => {
     for (const eventName of CLAUDE_HOOK_EVENTS) {
       expect(JSON.stringify(settings.hooks[eventName])).toContain(captureHook);
     }
+    expect(settings.hooks.PreToolUse).toMatchObject([
+      { matcher: "mcp__koed__memory_answer" }
+    ]);
+    expect(JSON.stringify(settings.hooks.PreToolUse)).toContain(
+      "--memory-tool"
+    );
     expect(
       JSON.parse(
         readFileSync(

@@ -115,7 +115,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     const deploymentId = options.resolveDeploymentId();
     if (!deploymentId) return null;
     const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-      protocol: "koed.captured-session-sync/v1",
+      protocol: "koed.captured-session-sync/v2",
       sourceDeploymentId: deploymentId,
       sourceUserId: input.localOwnerUserId,
       originSessionId: input.sessionId,

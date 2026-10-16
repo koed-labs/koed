@@ -1,3 +1,4 @@
+import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,18 @@ import {
 } from "../src/memory-tool-executor.js";
 import type { MemoryApiClient } from "../src/index.js";
 import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
+
+const repositoryContext = (root: string): RepositoryIdentity => ({
+  kind: "portable_repository",
+  key: "gr_fixture",
+  root,
+  branch: "main",
+  reason: "origin",
+  checkoutId: "checkout_fixture",
+  originatingDeviceId: "fixture_device",
+  selectedRemote: "origin",
+  anchorDisplay: "example.test/team/fixture"
+});
 
 describe("MemoryToolExecutor", () => {
   it.each([
@@ -213,7 +226,8 @@ describe("MemoryToolExecutor", () => {
     const completed = await executor.executeMemoryAnswerTask(
       memoryAnswerInputSchema.parse({
         query: "What changed?",
-        search_domain: "global"
+        search_domain: "global",
+        repository_context: null
       }),
       { cwd: "/fixture" },
       "task",
@@ -273,13 +287,19 @@ describe("MemoryToolExecutor", () => {
     await expect(
       executor.execute(
         "memory_answer",
-        { query: "What changed?", search_domain: "project" },
+        {
+          query: "What changed?",
+          search_domain: "project",
+          repository_context: repositoryContext("/work/requesting-project")
+        },
         { cwd: "/work/requesting-project" }
       )
     ).rejects.toThrow("worker boundary reached");
     expect(observedOptions).toEqual({
       cwd: "/work/requesting-project",
-      projectId: "/work/requesting-project",
+      projectId: repositoryScopeId(
+        repositoryContext("/work/requesting-project")
+      ),
       responseDetail: "internal"
     });
   });
@@ -314,12 +334,16 @@ describe("MemoryToolExecutor", () => {
         {
           query: "What changed?",
           search_domain: "project",
-          project_id: project
+          project_id: project,
+          repository_context: repositoryContext(project)
         },
         { cwd: project }
       )
     ).rejects.toThrow("worker boundary reached");
-    expect(observed).toEqual({ cwd: process.cwd(), projectId: project });
+    expect(observed).toEqual({
+      cwd: process.cwd(),
+      projectId: repositoryScopeId(repositoryContext(project))
+    });
   });
 
   it("keeps origin out of untrusted tool input", async () => {

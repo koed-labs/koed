@@ -8,6 +8,7 @@ import {
   CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
   conversationSourceRewriteProofWithinLimit,
   conversationSourceRewriteGenerationId,
+  type RepositoryIdentity,
   type ConversationSourceRewriteFrontier
 } from "@koed/shared";
 import {
@@ -77,6 +78,7 @@ interface ConversationSourceCursor {
 }
 
 export interface ConversationSourceSessionRegistration {
+  repositoryIdentity?: RepositoryIdentity;
   externalSessionId: string;
   sourceRuntime: "codex" | "codex-cli";
   captureMethod: "api";

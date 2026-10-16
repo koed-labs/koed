@@ -62,6 +62,7 @@ import {
 } from "./project-team-workspace-links.js";
 import {
   discoverProjectMetadata,
+  setProjectRepositoryAnchor,
   forgetProjectMetadata,
   getProjectMetadataForCwd,
   listProjectMetadata
@@ -1047,27 +1048,35 @@ export const runKoedServerCli = async (
       const projectCommand = subcommand;
       const paths = resolvePaths();
       const result =
-        projectCommand === "discover"
-          ? await discoverProject(paths, {
-              cwd: flagValue(args, "--cwd") ?? process.cwd(),
-              aiClientSource: args.includes("--codex") ? "codex" : undefined
+        projectCommand === "anchor"
+          ? await setProjectRepositoryAnchor(paths, {
+              localProjectId: requireFlagValue(args, "--local-project-id"),
+              expectedCheckoutId: requireFlagValue(args, "--checkout-id"),
+              remoteName: args.includes("--reset")
+                ? null
+                : requireFlagValue(args, "--remote")
             })
-          : projectCommand === "list"
-            ? listProjects(paths)
-            : projectCommand === "show"
-              ? getProjectForCwd(
-                  paths,
-                  flagValue(args, "--cwd") ?? process.cwd()
-                )
-              : projectCommand === "forget"
-                ? forgetProject(
+          : projectCommand === "discover"
+            ? await discoverProject(paths, {
+                cwd: flagValue(args, "--cwd") ?? process.cwd(),
+                aiClientSource: args.includes("--codex") ? "codex" : undefined
+              })
+            : projectCommand === "list"
+              ? listProjects(paths)
+              : projectCommand === "show"
+                ? getProjectForCwd(
                     paths,
-                    requireFlagValue(args, "--local-project-id")
+                    flagValue(args, "--cwd") ?? process.cwd()
                   )
-                : null;
+                : projectCommand === "forget"
+                  ? forgetProject(
+                      paths,
+                      requireFlagValue(args, "--local-project-id")
+                    )
+                  : null;
       if (!result) {
         throw new Error(
-          "project command must be discover, list, show, or forget."
+          "project command must be discover, list, show, forget, or anchor."
         );
       }
       if (wantsJson) {

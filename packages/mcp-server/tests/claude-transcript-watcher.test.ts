@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canonicalConversationItemKey } from "@koed/shared";
+import {
+  canonicalConversationItemKey,
+  normalizeGitRemoteUrl
+} from "@koed/shared";
 
 const filesystemRace = vi.hoisted(() => ({
   failReaddirPath: null as string | null,
@@ -62,6 +66,11 @@ import {
 const temporaryDirectories: string[] = [];
 
 beforeEach(() => {
+  const koedHome = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-claude-profile-")
+  );
+  temporaryDirectories.push(koedHome);
+  vi.stubEnv("KOED_HOME", koedHome);
   filesystemRace.failReaddirPath = null;
   filesystemRace.remainingFailures = 0;
   listSubagents.mockResolvedValue([]);
@@ -75,6 +84,7 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+  vi.unstubAllEnvs();
 });
 
 const fixture = () => {
@@ -92,128 +102,149 @@ const fixture = () => {
 };
 
 describe("Claude transcript watcher", () => {
-  it("pins component frontiers and journals only one bounded component page", async () => {
-    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
-    const agentId = "bounded-history";
-    const subagentDirectory = path.join(
-      path.dirname(transcriptPath),
-      sourceSessionId,
-      "subagents"
-    );
-    const subagentPath = path.join(subagentDirectory, `agent-${agentId}.jsonl`);
-    fs.mkdirSync(subagentDirectory, { recursive: true });
-    const historicalRecord = (id: string, type: string) =>
-      `${JSON.stringify({
-        uuid: id,
-        sessionId: sourceSessionId,
-        cwd: "/tmp/project",
-        timestamp: "2026-08-11T12:00:00.000Z",
-        type,
-        payload: "x".repeat(700)
-      })}\n`;
-    const mainHistory = [
-      historicalRecord(randomUUID(), "user"),
-      historicalRecord(randomUUID(), "assistant"),
-      historicalRecord(randomUUID(), "assistant")
-    ].join("");
-    const auxiliaryHistory = historicalRecord(randomUUID(), "assistant");
-    fs.writeFileSync(transcriptPath, mainHistory);
-    fs.writeFileSync(subagentPath, auxiliaryHistory);
-    const mainFrontier = Buffer.byteLength(mainHistory);
-    const auxiliaryFrontier = Buffer.byteLength(auxiliaryHistory);
-    fs.appendFileSync(
-      transcriptPath,
-      historicalRecord(randomUUID(), "assistant")
-    );
-    fs.appendFileSync(
-      subagentPath,
-      historicalRecord(randomUUID(), "assistant")
-    );
-    listSubagents.mockResolvedValue([agentId]);
-
-    const artifacts = new Map<string, Record<string, unknown>>();
-    const appended: string[] = [];
-    const client = {
-      async lookupConversationSourceArtifact(input: {
-        sourceComponentId: string;
-      }) {
-        const artifact = artifacts.get(input.sourceComponentId);
-        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
-        return { artifact };
-      },
-      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
-        const componentId = String(input.sourceComponentId);
-        const artifact = {
-          id: `artifact-${componentId}`,
-          sessionId: randomUUID(),
-          sourceComponentId: componentId,
-          providerCursorOffset: 0,
-          providerCursorLine: 0,
-          journalStartOffset: 0,
-          liveStartOffset: input.liveStartOffset
-        };
-        artifacts.set(componentId, artifact);
-        return { artifact };
-      },
-      async appendConversationSourceSegment(
-        artifactId: string,
-        input: Record<string, unknown>
-      ) {
-        const componentId = artifactId.replace("artifact-", "");
-        appended.push(componentId);
-        const artifact = {
-          ...artifacts.get(componentId),
-          providerCursorOffset: input.sourceEndOffset,
-          providerCursorLine: input.sourceEndLine
-        };
-        artifacts.set(componentId, artifact);
-        return { artifact };
-      }
-    } as unknown as MemoryApiClient;
-
-    const registered = await registerClaudeHistoricalTranscriptSources(
-      client,
-      {
+  it.each(["/tmp/project", "relative/project", undefined])(
+    "pins component frontiers and uses only a valid recorded folder (%s)",
+    async (recordedCwd) => {
+      const { claudeHome, sourceSessionId, transcriptPath } = fixture();
+      const agentId = "bounded-history";
+      const subagentDirectory = path.join(
+        path.dirname(transcriptPath),
         sourceSessionId,
+        "subagents"
+      );
+      const subagentPath = path.join(
+        subagentDirectory,
+        `agent-${agentId}.jsonl`
+      );
+      fs.mkdirSync(subagentDirectory, { recursive: true });
+      const historicalRecord = (id: string, type: string) =>
+        `${JSON.stringify({
+          uuid: id,
+          sessionId: sourceSessionId,
+          cwd: recordedCwd,
+          timestamp: "2026-08-11T12:00:00.000Z",
+          type,
+          payload: "x".repeat(700)
+        })}\n`;
+      const mainHistory = [
+        historicalRecord(randomUUID(), "user"),
+        historicalRecord(randomUUID(), "assistant"),
+        historicalRecord(randomUUID(), "assistant")
+      ].join("");
+      const auxiliaryHistory = historicalRecord(randomUUID(), "assistant");
+      fs.writeFileSync(transcriptPath, mainHistory);
+      fs.writeFileSync(subagentPath, auxiliaryHistory);
+      const mainFrontier = Buffer.byteLength(mainHistory);
+      const auxiliaryFrontier = Buffer.byteLength(auxiliaryHistory);
+      fs.appendFileSync(
         transcriptPath,
-        cwd: "/tmp/project",
-        hookEventName: "HistoricalImport"
-      },
-      { CLAUDE_CONFIG_DIR: claudeHome },
-      {
-        components: [
-          {
-            componentId: "main",
-            componentRole: "primary",
-            parentComponentId: null,
-            frontierOffset: mainFrontier,
-            frontierLine: 3
-          },
-          {
-            componentId: `subagent.${agentId}`,
-            componentRole: "auxiliary",
-            parentComponentId: "main",
-            frontierOffset: auxiliaryFrontier,
-            frontierLine: 1
-          }
-        ],
-        maxBytesPerPass: 1_024
-      }
-    );
+        historicalRecord(randomUUID(), "assistant")
+      );
+      fs.appendFileSync(
+        subagentPath,
+        historicalRecord(randomUUID(), "assistant")
+      );
+      listSubagents.mockResolvedValue([agentId]);
 
-    expect(appended).toEqual(["main"]);
-    expect(artifacts.get("main")).toMatchObject({
-      liveStartOffset: mainFrontier
-    });
-    expect(artifacts.get(`subagent.${agentId}`)).toMatchObject({
-      liveStartOffset: auxiliaryFrontier,
-      providerCursorOffset: 0
-    });
-    expect(registered[0]?.providerCursorOffset).toBeLessThan(mainFrontier);
-    expect(
-      registered.map((artifact) => artifact.registrationFrontierOffset)
-    ).toEqual([mainFrontier, auxiliaryFrontier]);
-  });
+      const artifacts = new Map<string, Record<string, unknown>>();
+      const appended: string[] = [];
+      const client = {
+        async lookupConversationSourceArtifact(input: {
+          sourceComponentId: string;
+        }) {
+          const artifact = artifacts.get(input.sourceComponentId);
+          if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+          return { artifact };
+        },
+        async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+          expect(input).toMatchObject({
+            sourceSession: {
+              repositoryIdentity: {
+                kind:
+                  recordedCwd === "/tmp/project"
+                    ? "non_git_project"
+                    : "unresolved",
+                root: recordedCwd === "/tmp/project" ? recordedCwd : null,
+                checkoutId: null
+              }
+            }
+          });
+          const componentId = String(input.sourceComponentId);
+          const artifact = {
+            id: `artifact-${componentId}`,
+            sessionId: randomUUID(),
+            sourceComponentId: componentId,
+            providerCursorOffset: 0,
+            providerCursorLine: 0,
+            journalStartOffset: 0,
+            liveStartOffset: input.liveStartOffset
+          };
+          artifacts.set(componentId, artifact);
+          return { artifact };
+        },
+        async appendConversationSourceSegment(
+          artifactId: string,
+          input: Record<string, unknown>
+        ) {
+          const componentId = artifactId.replace("artifact-", "");
+          appended.push(componentId);
+          const artifact = {
+            ...artifacts.get(componentId),
+            providerCursorOffset: input.sourceEndOffset,
+            providerCursorLine: input.sourceEndLine
+          };
+          artifacts.set(componentId, artifact);
+          return { artifact };
+        }
+      } as unknown as MemoryApiClient;
+
+      const registered = await registerClaudeHistoricalTranscriptSources(
+        client,
+        {
+          sourceSessionId,
+          transcriptPath,
+          cwd: "/caller/unrelated-project",
+          hookEventName: "HistoricalImport"
+        },
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        },
+        {
+          components: [
+            {
+              componentId: "main",
+              componentRole: "primary",
+              parentComponentId: null,
+              frontierOffset: mainFrontier,
+              frontierLine: 3
+            },
+            {
+              componentId: `subagent.${agentId}`,
+              componentRole: "auxiliary",
+              parentComponentId: "main",
+              frontierOffset: auxiliaryFrontier,
+              frontierLine: 1
+            }
+          ],
+          maxBytesPerPass: 1_024
+        }
+      );
+
+      expect(appended).toEqual(["main"]);
+      expect(artifacts.get("main")).toMatchObject({
+        liveStartOffset: mainFrontier
+      });
+      expect(artifacts.get(`subagent.${agentId}`)).toMatchObject({
+        liveStartOffset: auxiliaryFrontier,
+        providerCursorOffset: 0
+      });
+      expect(registered[0]?.providerCursorOffset).toBeLessThan(mainFrontier);
+      expect(
+        registered.map((artifact) => artifact.registrationFrontierOffset)
+      ).toEqual([mainFrontier, auxiliaryFrontier]);
+    }
+  );
 
   it("uses the earlier activation frontier of an existing live artifact", async () => {
     const { claudeHome, sourceSessionId, transcriptPath } = fixture();
@@ -274,7 +305,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         hookEventName: "HistoricalImport"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome },
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      },
       {
         components: [
           {
@@ -450,7 +484,10 @@ describe("Claude transcript watcher", () => {
           activatedAt: "2026-08-11T12:00:00.000Z",
           cursors: {}
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).resolves.toEqual([
       expect.objectContaining({
@@ -468,7 +505,10 @@ describe("Claude transcript watcher", () => {
           activatedAt: "2026-08-11T12:00:02.000Z",
           cursors: {}
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).resolves.toEqual([]);
   });
@@ -527,7 +567,8 @@ describe("Claude transcript watcher", () => {
     ]);
 
     const discovered = await discoverClaudeTranscriptSignals(state, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
     expect(discovered).toHaveLength(1);
 
@@ -590,7 +631,8 @@ describe("Claude transcript watcher", () => {
     } as unknown as MemoryApiClient;
 
     await processClaudeTranscriptSignal(client, state, discovered[0]!, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdItems.map((item) => item.sourceEventType)).toEqual([
@@ -600,203 +642,276 @@ describe("Claude transcript watcher", () => {
     expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(2);
     await expect(
       discoverClaudeTranscriptSignals(state, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).resolves.toEqual([]);
   });
 
-  it("journals complete source bytes before projecting official SDK messages", async () => {
-    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
-    const userId = randomUUID();
-    const assistantId = randomUUID();
-    const toolResultId = randomUUID();
-    const finalAssistantId = randomUUID();
-    const timestamp = "2026-08-11T12:00:00.000Z";
-    fs.writeFileSync(
-      transcriptPath,
-      [
-        { uuid: userId, timestamp, type: "user" },
-        {
-          uuid: assistantId,
-          timestamp: "2026-08-11T12:00:01.000Z",
-          type: "assistant"
-        },
-        {
-          uuid: toolResultId,
-          timestamp: "2026-08-11T12:00:02.000Z",
-          type: "user"
-        },
-        {
-          uuid: finalAssistantId,
-          timestamp: "2026-08-11T12:00:03.000Z",
-          type: "assistant"
-        }
-      ]
-        .map((entry) => JSON.stringify(entry))
-        .join("\n") + "\n"
-    );
-    getSessionMessages.mockResolvedValue([
-      {
-        type: "user",
-        uuid: userId,
-        message: { content: [{ type: "text", text: "Question" }] }
-      },
-      {
-        type: "assistant",
-        uuid: assistantId,
-        message: {
-          content: [
-            { type: "text", text: "Answer" },
-            { type: "thinking", text: "Check the source first." },
-            { type: "tool_use", id: "tool-1", name: "Read", input: {} }
-          ]
-        }
-      },
-      {
-        type: "user",
-        uuid: toolResultId,
-        message: {
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-1",
-              content: "source contents"
-            }
-          ]
-        }
-      },
-      {
-        type: "assistant",
-        uuid: finalAssistantId,
-        message: { content: [{ type: "text", text: "Final answer" }] }
-      }
-    ]);
-
-    const operations: string[] = [];
-    const capturedSessionId = randomUUID();
-    let artifact: Record<string, unknown> | null = null;
-    let ensuredArtifact: Record<string, unknown> | null = null;
-    const createdItems: Array<Record<string, unknown>> = [];
-    const client = {
-      async lookupConversationSourceArtifact() {
-        throw new MemoryApiError("not found", { status: 404 });
-      },
-      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
-        operations.push("journal-created");
-        ensuredArtifact = input;
-        artifact = {
-          id: randomUUID(),
-          sessionId: capturedSessionId,
-          sourceGenerationId: randomUUID(),
-          sourceComponentId: input.sourceComponentId,
-          providerCursorOffset: input.journalStartOffset,
-          providerCursorLine: input.journalStartLine,
-          journalStartOffset: input.journalStartOffset
-        };
-        return { artifact };
-      },
-      async appendConversationSourceSegment(
-        _artifactId: string,
-        input: Record<string, unknown>
-      ) {
-        operations.push("journal-appended");
-        artifact = {
-          ...artifact,
-          providerCursorOffset: input.sourceEndOffset,
-          providerCursorLine: input.sourceEndLine
-        };
-        return { artifact };
-      },
-      async listConversationSourceSegments() {
-        throw new Error("existing source segments were not expected");
-      },
-      async createConversationItems(input: {
-        items: Record<string, unknown>[];
-      }) {
-        operations.push("items");
-        createdItems.push(...input.items);
-        return {
-          items: input.items.map((item) => ({ ...item, id: randomUUID() }))
-        };
-      },
-      async projectConversationItems() {
-        operations.push("project");
-        return {};
-      }
-    } as unknown as MemoryApiClient;
-    const state: {
-      version: 2;
-      activatedAt: string;
-      cursors: Record<string, { messageCount: number; updatedAt: string }>;
-    } = {
-      version: 2 as const,
-      activatedAt: "2026-08-11T11:59:59.000Z",
-      cursors: {}
-    };
-
-    await processClaudeTranscriptSignal(
-      client,
-      state,
-      {
-        sourceSessionId,
+  it.each([
+    "root",
+    "subdirectory",
+    "worktree-one",
+    "worktree-two",
+    "unavailable"
+  ])(
+    "journals complete source bytes and the shared assignment from %s before Projection",
+    async (checkout) => {
+      const { root, claudeHome, sourceSessionId, transcriptPath } = fixture();
+      const repo = path.join(root, "repository");
+      fs.mkdirSync(repo);
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+      git("init");
+      git(
+        "remote",
+        "add",
+        "origin",
+        "https://example.test/team/claude-capture.git"
+      );
+      git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Fixture"
+      );
+      fs.mkdirSync(path.join(repo, "subdirectory"));
+      const worktree = path.join(root, checkout);
+      if (checkout.startsWith("worktree"))
+        git("worktree", "add", "-b", checkout, worktree);
+      const cwd =
+        checkout === "root"
+          ? repo
+          : checkout === "subdirectory"
+            ? path.join(repo, checkout)
+            : worktree;
+      const userId = randomUUID();
+      const assistantId = randomUUID();
+      const toolResultId = randomUUID();
+      const finalAssistantId = randomUUID();
+      const timestamp = "2026-08-11T12:00:00.000Z";
+      fs.writeFileSync(
         transcriptPath,
-        cwd: "/tmp/project",
-        hookEventName: "Stop",
-        observedAt: "2026-08-11T12:00:02.000Z"
-      },
-      { CLAUDE_CONFIG_DIR: claudeHome }
-    );
+        [
+          { uuid: userId, timestamp, type: "user" },
+          {
+            uuid: assistantId,
+            timestamp: "2026-08-11T12:00:01.000Z",
+            type: "assistant"
+          },
+          {
+            uuid: toolResultId,
+            timestamp: "2026-08-11T12:00:02.000Z",
+            type: "user"
+          },
+          {
+            uuid: finalAssistantId,
+            timestamp: "2026-08-11T12:00:03.000Z",
+            type: "assistant"
+          }
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n"
+      );
+      getSessionMessages.mockResolvedValue([
+        {
+          type: "user",
+          uuid: userId,
+          message: { content: [{ type: "text", text: "Question" }] }
+        },
+        {
+          type: "assistant",
+          uuid: assistantId,
+          message: {
+            content: [
+              { type: "text", text: "Answer" },
+              { type: "thinking", text: "Check the source first." },
+              { type: "tool_use", id: "tool-1", name: "Read", input: {} }
+            ]
+          }
+        },
+        {
+          type: "user",
+          uuid: toolResultId,
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: "source contents"
+              }
+            ]
+          }
+        },
+        {
+          type: "assistant",
+          uuid: finalAssistantId,
+          message: { content: [{ type: "text", text: "Final answer" }] }
+        }
+      ]);
 
-    expect(operations.indexOf("journal-appended")).toBeLessThan(
-      operations.indexOf("items")
-    );
-    expect(ensuredArtifact).toMatchObject({
-      sourceKind: "claude-code",
-      sourceComponentId: "main",
-      sourceComponentRole: "primary",
-      parentSourceComponentId: null,
-      contentFraming: "jsonl",
-      artifactFormat: "claude_session_jsonl",
-      artifactFormatVersion: 1
-    });
-    expect(ensuredArtifact).not.toHaveProperty("sourceComponentSchemaVersion");
-    expect(createdItems).toHaveLength(7);
-    expect(new Set(createdItems.map((item) => item.sourceSequence)).size).toBe(
-      7
-    );
-    expect(createdItems.map((item) => item.sourceEventType)).toEqual([
-      "user_message",
-      "agent_message",
-      "agent_reasoning",
-      "tool_call",
-      "tool_result",
-      "agent_message",
-      "turn_completed"
-    ]);
-    expect(
-      new Set(createdItems.slice(0, -1).map((item) => item.externalTurnId))
-    ).toEqual(new Set([userId]));
-    expect(createdItems.slice(0, -1).map((item) => item.eventTime)).toEqual([
-      "2026-08-11T12:00:00.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:01.000Z",
-      "2026-08-11T12:00:02.000Z",
-      "2026-08-11T12:00:03.000Z"
-    ]);
-    expect(createdItems[0]).toMatchObject({
-      canonicalStableItemId: `main:${userId}:0`,
-      observationComponent: "message",
-      canonicalItemKey: canonicalConversationItemKey({
-        provider: "claude-code",
-        externalThreadId: sourceSessionId,
-        externalTurnId: userId,
-        stableItemId: `main:${userId}:0`,
-        component: "message"
-      })
-    });
-    expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(4);
-  });
+      const operations: string[] = [];
+      const capturedSessionId = randomUUID();
+      let artifact: Record<string, unknown> | null = null;
+      let ensuredArtifact: Record<string, unknown> | null = null;
+      const createdItems: Array<Record<string, unknown>> = [];
+      const client = {
+        async lookupConversationSourceArtifact() {
+          throw new MemoryApiError("not found", { status: 404 });
+        },
+        async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+          operations.push("journal-created");
+          ensuredArtifact = input;
+          artifact = {
+            id: randomUUID(),
+            sessionId: capturedSessionId,
+            sourceGenerationId: randomUUID(),
+            sourceComponentId: input.sourceComponentId,
+            providerCursorOffset: input.journalStartOffset,
+            providerCursorLine: input.journalStartLine,
+            journalStartOffset: input.journalStartOffset
+          };
+          return { artifact };
+        },
+        async appendConversationSourceSegment(
+          _artifactId: string,
+          input: Record<string, unknown>
+        ) {
+          operations.push("journal-appended");
+          artifact = {
+            ...artifact,
+            providerCursorOffset: input.sourceEndOffset,
+            providerCursorLine: input.sourceEndLine
+          };
+          return { artifact };
+        },
+        async listConversationSourceSegments() {
+          throw new Error("existing source segments were not expected");
+        },
+        async createConversationItems(input: {
+          items: Record<string, unknown>[];
+        }) {
+          operations.push("items");
+          createdItems.push(...input.items);
+          return {
+            items: input.items.map((item) => ({ ...item, id: randomUUID() }))
+          };
+        },
+        async projectConversationItems() {
+          operations.push("project");
+          return {};
+        }
+      } as unknown as MemoryApiClient;
+      const state: {
+        version: 2;
+        activatedAt: string;
+        cursors: Record<string, { messageCount: number; updatedAt: string }>;
+      } = {
+        version: 2 as const,
+        activatedAt: "2026-08-11T11:59:59.000Z",
+        cursors: {}
+      };
+
+      await processClaudeTranscriptSignal(
+        client,
+        state,
+        {
+          sourceSessionId,
+          transcriptPath,
+          cwd,
+          hookEventName: "Stop",
+          observedAt: "2026-08-11T12:00:02.000Z"
+        },
+        { CLAUDE_CONFIG_DIR: claudeHome, KOED_HOME: path.join(root, "koed") }
+      );
+
+      expect(operations.indexOf("journal-appended")).toBeLessThan(
+        operations.indexOf("items")
+      );
+      expect(ensuredArtifact).toMatchObject({
+        sourceKind: "claude-code",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
+        artifactFormat: "claude_session_jsonl",
+        artifactFormatVersion: 1
+      });
+      expect(ensuredArtifact).toMatchObject({
+        sourceSession: { cwd, sourceRuntime: "claude-code" }
+      });
+      if (checkout === "unavailable") {
+        expect(ensuredArtifact).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              kind: "unresolved",
+              key: null,
+              reason: "probe_failed"
+            }
+          }
+        });
+      } else {
+        expect(ensuredArtifact).toMatchObject({
+          sourceSession: {
+            repositoryIdentity: {
+              kind: "portable_repository",
+              key: normalizeGitRemoteUrl(
+                "https://example.test/team/claude-capture.git"
+              ).fingerprint,
+              root: fs.realpathSync(
+                checkout.startsWith("worktree") ? worktree : repo
+              )
+            }
+          }
+        });
+      }
+      expect(ensuredArtifact).not.toHaveProperty(
+        "sourceComponentSchemaVersion"
+      );
+      expect(createdItems).toHaveLength(7);
+      expect(
+        new Set(createdItems.map((item) => item.sourceSequence)).size
+      ).toBe(7);
+      expect(createdItems.map((item) => item.sourceEventType)).toEqual([
+        "user_message",
+        "agent_message",
+        "agent_reasoning",
+        "tool_call",
+        "tool_result",
+        "agent_message",
+        "turn_completed"
+      ]);
+      expect(
+        new Set(createdItems.slice(0, -1).map((item) => item.externalTurnId))
+      ).toEqual(new Set([userId]));
+      expect(createdItems.slice(0, -1).map((item) => item.eventTime)).toEqual([
+        "2026-08-11T12:00:00.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:01.000Z",
+        "2026-08-11T12:00:02.000Z",
+        "2026-08-11T12:00:03.000Z"
+      ]);
+      expect(createdItems[0]).toMatchObject({
+        canonicalStableItemId: `main:${userId}:0`,
+        observationComponent: "message",
+        canonicalItemKey: canonicalConversationItemKey({
+          provider: "claude-code",
+          externalThreadId: sourceSessionId,
+          externalTurnId: userId,
+          stableItemId: `main:${userId}:0`,
+          component: "message"
+        })
+      });
+      expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(
+        4
+      );
+    }
+  );
 
   it("keeps assistant records in their user turn across incremental scans", async () => {
     const { claudeHome, sourceSessionId, transcriptPath } = fixture();
@@ -900,11 +1015,13 @@ describe("Claude transcript watcher", () => {
     };
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
     fs.appendFileSync(transcriptPath, assistantLine);
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdItems.map((item) => item.externalTurnId)).toEqual([
@@ -1020,20 +1137,23 @@ describe("Claude transcript watcher", () => {
 
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toMatchObject({ code: "ENOSPC" });
     expect(state.cursors).toEqual({});
 
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toThrow("memory API unavailable");
     expect(state.cursors).toEqual({});
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(createdBatches).toHaveLength(2);
@@ -1111,7 +1231,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow(`claude_source_timestamp_missing:${sdkMessageId}`);
     expect(state.cursors).toEqual({});
@@ -1345,6 +1468,7 @@ describe("Claude transcript watcher", () => {
       {
         CLAUDE_CONFIG_DIR: claudeHome,
         MEMORY_CLAUDE_SOURCE_SET_QUIET_MS: "25",
+        KOED_HOME: path.join(claudeHome, "koed"),
         MEMORY_CLAUDE_SOURCE_SET_STABILIZATION_TIMEOUT_MS: "100"
       }
     );
@@ -1445,7 +1569,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         hookEventName: "HistoricalImport"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(operations).toEqual([
@@ -1574,7 +1701,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         observedAt: "2026-08-11T12:00:02.000Z"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(ensured).toEqual([
@@ -1819,14 +1949,16 @@ describe("Claude transcript watcher", () => {
     };
     await expect(
       processClaudeTranscriptSignal(client, state, signal, {
-        CLAUDE_CONFIG_DIR: claudeHome
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
       })
     ).rejects.toThrow("transient successor creation failure");
     expect(latest.get("main")).toMatchObject({ lifecycle: "active" });
     expect(state.cursors[`${sourceSessionId}\u0000main`]?.messageCount).toBe(1);
 
     await processClaudeTranscriptSignal(client, state, signal, {
-      CLAUDE_CONFIG_DIR: claudeHome
+      CLAUDE_CONFIG_DIR: claudeHome,
+      KOED_HOME: path.join(claudeHome, "koed")
     });
 
     expect(successorCalls.map((call) => call.parentId)).toEqual([
@@ -1934,7 +2066,10 @@ describe("Claude transcript watcher", () => {
         cwd: "/tmp/project",
         observedAt: "2026-08-11T12:00:01.000Z"
       },
-      { CLAUDE_CONFIG_DIR: claudeHome }
+      {
+        CLAUDE_CONFIG_DIR: claudeHome,
+        KOED_HOME: path.join(claudeHome, "koed")
+      }
     );
 
     expect(appended.equals(Buffer.from(complete))).toBe(true);
@@ -1990,7 +2125,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow("claude_transcript_append_only_identity_violation");
   });
@@ -2013,7 +2151,10 @@ describe("Claude transcript watcher", () => {
           transcriptPath,
           cwd: "/tmp/project"
         },
-        { CLAUDE_CONFIG_DIR: claudeHome }
+        {
+          CLAUDE_CONFIG_DIR: claudeHome,
+          KOED_HOME: path.join(claudeHome, "koed")
+        }
       )
     ).rejects.toThrow("claude_transcript_outside_config_home");
     expect(getSessionMessages).not.toHaveBeenCalled();

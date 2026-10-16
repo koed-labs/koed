@@ -1,11 +1,22 @@
+> **Project cutover amendment:** The released profiles use closed source
+> manifest version `"3"` and cumulative checkpoint manifest version `"4"`.
+> Both require the encrypted, origin-signed `repositoryAssignment` described in
+> section 9. The old signed source bytes stay unchanged in storage and fixtures;
+> the new source reader rejects those old profiles. Transport and governance
+> still use `koed/pds/v1`. Activation remains gated by ticket 16.
+
 > **Incremental publication amendment (2026-09-15):**
 > [ADR-0045](adr/0045-incremental-personal-session-checkpoints.md) adds the explicit
-> `version: "2", profile: "cumulative_checkpoint"` signed manifest profile for automatic completed-turn
+> `version: "4", profile: "cumulative_checkpoint"` signed manifest profile for automatic completed-turn
 > publication. The closed-session V1 rules below remain binding for their original
 > profile; a checkpoint does not permanently close its source Session. Both peers
 > must support the new profile. The existing encrypted transport is reused.
 
 # Personal Device Sync Protocol V1
+
+The independent Project configuration contract is described in
+[Personal Project association and selection records](personal-project-selection.md).
+It uses a separate signed plaintext profile; it is not a Session checkpoint.
 
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
@@ -434,6 +445,17 @@ canonical remote alias exists:
 ```json
 {
   "protocol": "koed/pds/v1",
+  "version": "2",
+  "repositoryAssignment": {
+    "version": "1",
+    "state": "historical_unresolved",
+    "assignmentVersion": "1",
+    "capturedCwd": null,
+    "branchObservation": null,
+    "automatic": null,
+    "override": null,
+    "selectedAnchor": null
+  },
   "packageId": "base64url-sha256",
   "originDeploymentId": "opaque-id",
   "originDeviceId": "opaque-id",
@@ -610,17 +632,28 @@ Captured Session while the origin AI Client can continue that same Conversation.
 It is a distinct signed source-manifest profile; it does not relax the immutable
 closed-session rules above. The PDS protocol identifier and encrypted package
 transport remain `koed/pds/v1` and package version `1`. A receiver dispatches
-only on the explicit manifest `version: "2"` and
+only on the explicit manifest `version: "4"` and
 `profile: "cumulative_checkpoint"`; it must reject an unsupported profile and
 must never interpret a checkpoint as a closed-session manifest.
 
-The v2 manifest has exactly these top-level fields, with
+The v4 manifest has exactly these top-level fields, with
 `projectAliasManifest` optional under section 9's rules:
 
 ```json
 {
   "protocol": "koed/pds/v1",
-  "version": "2",
+  "version": "4",
+  "profileTransition": null,
+  "repositoryAssignment": {
+    "version": "1",
+    "state": "historical_unresolved",
+    "assignmentVersion": "1",
+    "capturedCwd": null,
+    "branchObservation": null,
+    "automatic": null,
+    "override": null,
+    "selectedAnchor": null
+  },
   "profile": "cumulative_checkpoint",
   "packageId": "base64url-sha256",
   "originDeploymentId": "opaque-id",
@@ -935,41 +968,64 @@ matching source and derived state. Full tombstone remains until all snapshot
 ACKs plus 30 days. A valid finalized revoke can waive a recipient after snapshot;
 otherwise revoked-after-snapshot device remains required.
 
-## 9. Project aliases
+## 9. Selected repository assignments
 
-Project association is local grouping/search context only. It never grants Team
-access or chooses a Workspace. Raw aliases, paths, remotes, and canonical alias
-text never leave encrypted package boundary. Signed source manifest contains
-exact `projectAliasManifest`:
+Every new closed source manifest and completed-turn checkpoint carries one
+`repositoryAssignment` inside the encrypted, origin-signed payload. Its version
+is `"1"`. Its exact fields are `version`, `state`, `assignmentVersion`,
+`capturedCwd`, `branchObservation`, `automatic`, `override`, and `selectedAnchor`.
+`assignmentVersion` is a positive canonical decimal string bounded by the Session
+counter's signed 32-bit range. `state` is `recorded` or `historical_unresolved`.
+The automatic identity of historical-unresolved state is always null. An explicit
+User override may still resolve that history. Reset restores the null automatic
+identity rather than discovering a repository from the current path.
 
-```json
-{
-  "version": "1",
-  "epoch": "3",
-  "tokens": ["base64url-hmac-sha256"]
-}
-```
+`automatic` and `override` preserve the complete typed identity and original
+checkout/device provenance. Override wins. `capturedCwd` retains the source path;
+it is never a matching or authorization value. `branchObservation` is the
+recorded automatic branch only when all capture observations agree. Otherwise it
+is null. Recall may prefer that branch only when the local effective identity
+still matches the recorded automatic identity. A target
+branch chosen during reassignment cannot stand in for an observed source branch.
 
-It is absent only when no canonical remote alias exists. `tokens` is unique,
-ASCII sorted, maximum 16 entries; every token is 32-byte HMAC output base64url.
-`version` is exactly `1`; `epoch` must equal manifest `contentEpoch` and a
-verified `K_project[epoch]`. Token is exactly:
+Only the effective portable repository has `selectedAnchor`. It contains exactly
+`epoch` and `token`; the epoch equals the source manifest's `contentEpoch`.
+The token is:
 
 ```text
-HMAC-SHA-256(K_project[epoch], UTF8("koed/pds/v1/project-alias\0") || UTF8(alias))
+HMAC-SHA-256(K_project[epoch],
+  UTF8("koed/pds/v1/selected-repository\0") || UTF8(selectedAnchorFingerprint))
 ```
 
-Canonical alias is normalized network host (lowercase, IDNA), namespace, and
-repository name after stripping credentials, default port, `.git` suffix, and
-transport spelling. Local-only paths have no alias. Receiver rejects raw alias
-fields, mismatched version/epoch, oversized or unordered token set, bad token
-length, or unverified project epoch.
+It uses the one selected anchor's `gr_` fingerprint, not the set of remotes or
+historical aliases. The token is a 32-byte unpadded base64url value. A local,
+non-Git, unresolved, or null effective identity has no token. A non-portable
+User override never exports the original automatic repository's token.
+The former optional alias diagnostics do not establish matching or association.
 
-Auto-match only when exactly one token intersects and maps to exactly one local
-Project on each device, with no explicit deny/manual override and no competing
-current/historical token. Zero or multiple tokens, collisions, forks, changed
-canonicalization, local-only Projects, or any competing Project requires User
-confirmation. User override wins until removed.
+The receiver first verifies the group, active transport, original device
+signature, source binding, and deletion floor. It then verifies the token using
+that group's private Project key for the exact source epoch. Epoch refresh keeps
+previously verified Project keys in the platform secret provider, scoped to the
+same runtime group. Missing epoch keys defer materialization; malformed or
+incorrect tokens fail cryptographic validation. Key history never enters the
+relay or API configuration. Old origin-signed packages are not rewritten when a
+transport is rewrapped for the current membership epoch.
+
+A first import initializes the recorded assignment. Later source-side edits can
+update a replica only while its version and assignment still equal the previous
+verified source snapshot. A local User edit takes precedence. Later capture or
+checkpoints cannot create an automatic identity for unresolved history. The latest
+signed source observation is retained separately from local assignment state.
+Source records and original source metadata remain immutable. Owner assignment
+edits, verified checkpoint assignment updates, and the explicit cutover transaction
+are the narrow exceptions to replica Session field protection.
+
+Portable equality uses the verified selected fingerprint. Local identities keep
+the originating profile/device binding, so identical paths on another device do
+not match. Each checkout retains separate local provenance. Repository identity
+never authorizes a Workspace, Team Membership, or Share Grant. Configuration
+association remains explicit and is added by tickets 12 and 13.
 
 ## 10. Observability and operational state
 
@@ -1004,3 +1060,85 @@ and reject altered wrapper, domain, duplicate member, Unicode, numeric,
 undefined, zero-shared-secret, and envelope-AAD inputs. Implementations consume
 committed expected bytes and outputs; tests must not generate expected
 signatures, X25519 secrets, HKDF, or AEAD output at run time.
+
+### Checkpoint profile upgrade baseline
+
+The coordinated Project release uses the V4 cumulative checkpoint manifest. Every
+manifest includes `profileTransition`: null for ordinary publication, or a signed
+pre-cutover boundary for one upgrade baseline. The boundary binds the prior
+manifest hash, raw closure hash, source sequence, and checkpoint ordinal. The
+publisher preserves the ordinal sequence, source fingerprint, logical Memory ID,
+and deletion floor. It does not rewrite retained encrypted packages.
+
+A database profile epoch records whether a source or replica has entered the
+current profile. Old checkpoint chains are eligible for a baseline even without
+new turns. A newly paired receiver can accept that authenticated baseline at a
+nonzero ordinal. An existing receiver preserves its known raw prefix and origin
+identity; the normal append and read-only fences resume after the baseline.
+Historical-unresolved assignments and local User overrides remain authoritative.
+The current reader rejects earlier manifest profiles. See
+[ADR 0058](adr/0058-signed-checkpoint-profile-baselines.md) for the trade-off and
+remaining release checks.
+
+### Closed source profile upgrade boundary
+
+The V3 closed-source manifest requires `profileTransition`, null for an ordinary
+publication. An upgrade from retained pre-cutover state instead signs exactly
+`previousProfile: "pre_repository_cutover"`, `previousManifestHash`,
+`previousSourceSequence`, and `previousClosureHash`. The new source sequence must
+increase and the raw closure hash must equal the prior closure hash. The origin
+signature and package identity cover this boundary. Older signed profiles remain
+stored unchanged and are rejected by the released reader.
+
+The publication scan discovers retained old closed sources even when their
+Session predates policy enablement; this republishes an already-shared source
+and does not enable historical backfill. Migration 0059 allows one immutable
+closed publication per source profile epoch. The publisher preserves the original
+closed timestamp, native and logical identity, fingerprint, deletion floor, item
+count, and closure hash. Failed signing or changed identity rolls back the entire
+publication. Retained ciphertext, source mappings, and the old closure survive;
+source capture remains sealed. The current profile is published once.
+
+Native migration validation covers old V2 source publication, signing failure,
+changed-closure rejection, automatic candidate discovery, retained provenance,
+and the closed-source insertion fence.
+
+An existing closed replica is looked up within the authorized Personal group by
+fingerprint and closure hash. Its logical and provider Session IDs must agree
+with the verified manifest. The receiver reuses its Session and ordered source
+item mappings without ingesting its raw records again. An old replica advances
+only after the signed boundary matches its retained manifest hash, source
+sequence, origin, and original closure time. The inbound retained package must
+bind the current closed profile and source identity. A current replica accepts
+only exact retained-publication replay. Assignment updates retain local override
+and historical-unresolved rules.
+
+The native pre-0058 receiver fixture covers those fences, stable Session and
+replica IDs, preserved ciphertext and source mappings, replay after explicit
+reassignment, reset to unresolved history, and raw-record immutability. The full
+release still requires coordinated queued-delivery transition and integrated
+two-device validation under ticket 16.
+
+### Superseded pre-cutover delivery work
+
+Migration 0060 adds a terminal `superseded` outbox state with the replacement
+closure, prior delivery state, and supersession time. Publishing the signed
+current-profile baseline records these fields atomically for earlier source
+publications that have not been acknowledged. It releases their worker leases
+and retains their package bytes, idempotency keys, attempt counts, transport IDs,
+and relay receipt records. Already acknowledged publications remain acknowledged.
+Supersession records cannot be changed or returned to the delivery queue.
+
+The current publisher claims and opens retained source packages only from the
+current profile epoch. Recipient refresh, expired-transport retry, and wake
+scheduling do not reactivate old profiles. Before the baseline is durable, the
+old queue remains stored and cannot enter the new source reader. A signing
+failure rolls back both publication and supersession. Late relay receipts remain
+in the relay receipt ledger without reopening superseded work.
+
+The native source migration fixtures cover queued claim denial, an in-flight
+checkpoint lease, committed closed-source transport metadata, acknowledged
+history, failed publication rollback, replacement-only claims, manual retry,
+recipient refresh, and the database supersession guard. Directed Captured Session
+Sync has a separate contiguous-sequence transition; PDS supersession does not
+change those sequence rules.

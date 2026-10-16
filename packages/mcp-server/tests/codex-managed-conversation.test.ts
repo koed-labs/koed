@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { normalizeGitRemoteUrl } from "@koed/shared";
 import os from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
@@ -89,6 +91,7 @@ const writeManagedFakeAppServer = (
     hangTurnStartResponse?: boolean;
     oversizedAnswerBytes?: number;
     idleNotificationDelayMs?: number;
+    idleNotificationReadyPath?: string;
     exitAfterTurn?: boolean;
     continueTurnIndexAcrossLaunches?: boolean;
     hangFirstInitialize?: boolean;
@@ -279,7 +282,14 @@ reader.on("line", (line) => {
     }
     send({ id: message.id, result: { thread: { id: threadId, sessionId: "session-tree-1", ...(options.pathOnlyInThreadStarted ? {} : { path: transcriptPath }), cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1", gitInfo: { branch: "test" } } } });
     if (typeof options.idleNotificationDelayMs === "number") {
-      setTimeout(() => send({ method: "item/completed", params: { threadId, turnId: "idle-turn", completedAtMs: Date.now(), item: { id: "idle-message", type: "agentMessage", text: "Idle durable event", phase: "final_answer" } } }), options.idleNotificationDelayMs);
+      const notifyWhenReady = () => {
+        if (options.idleNotificationReadyPath && !fs.existsSync(options.idleNotificationReadyPath)) {
+          setTimeout(notifyWhenReady, 10);
+          return;
+        }
+        send({ method: "item/completed", params: { threadId, turnId: "idle-turn", completedAtMs: Date.now(), item: { id: "idle-message", type: "agentMessage", text: "Idle durable event", phase: "final_answer" } } });
+      };
+      setTimeout(notifyWhenReady, options.idleNotificationDelayMs);
     }
     return;
   }
@@ -866,6 +876,12 @@ describe("Codex managed conversation coordinator", () => {
     expect(overrides[0]).toContain("enabled=true");
     expect(overrides[0]).toContain("required=true");
     expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
+    expect(
+      managedConversationKoedMcpConfigOverrides(
+        { KOED_HOME: "/tmp/koed home" },
+        "/work/conversation"
+      )[0]
+    ).toContain('KOED_MCP_CWD="/work/conversation"');
   });
 
   it.each([false, true])(
@@ -929,6 +945,85 @@ describe("Codex managed conversation coordinator", () => {
           expect(timing.durationMs).toBeGreaterThanOrEqual(0);
           expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.durationMs);
         }
+      } finally {
+        session.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(["root", "subdirectory", "worktree", "standalone"])(
+    "registers managed capture from its target %s before transcript ingestion",
+    async (checkout) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-managed-assignment-")
+      );
+      const repo = path.join(directory, "repository");
+      fs.mkdirSync(repo);
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+      git("init");
+      git("remote", "add", "origin", "https://example.test/team/managed.git");
+      git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Fixture"
+      );
+      const target =
+        checkout === "root" ? repo : path.join(directory, checkout);
+      if (checkout === "worktree")
+        git("worktree", "add", "-b", "preview", target);
+      else if (checkout !== "root") fs.mkdirSync(target);
+      // A subdirectory belongs inside the selected repository.
+      const cwd =
+        checkout === "subdirectory" ? path.join(repo, "nested") : target;
+      if (checkout === "subdirectory") fs.mkdirSync(cwd);
+      const transcriptPath = path.join(directory, "rollout.jsonl");
+      const memoryClient = new FakeMemoryClient();
+      const config = configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath),
+        directory
+      );
+      const session = new CodexManagedConversationSession({
+        ...config,
+        projectId: "selected-managed-project",
+        appServer: { ...config.appServer, cwd }
+      });
+      try {
+        await session.runTurn("Capture the selected target", 5000);
+        const registration = memoryClient.operations.find(
+          (operation) => operation.kind === "create_session"
+        );
+        expect(registration?.input).toMatchObject({
+          projectId: "selected-managed-project",
+          cwd,
+          repositoryIdentity: {
+            kind:
+              checkout === "standalone"
+                ? "non_git_project"
+                : "portable_repository"
+          }
+        });
+        if (checkout !== "standalone")
+          expect(registration?.input).toMatchObject({
+            repositoryIdentity: {
+              key: normalizeGitRemoteUrl(
+                "https://example.test/team/managed.git"
+              ).fingerprint,
+              root: fs.realpathSync(checkout === "worktree" ? target : repo)
+            }
+          });
+        expect(
+          memoryClient.operations.filter(
+            (operation) => operation.kind === "create_session"
+          )
+        ).toHaveLength(1);
       } finally {
         session.close();
         fs.rmSync(directory, { recursive: true, force: true });
@@ -2026,6 +2121,7 @@ describe("Codex managed conversation coordinator", () => {
           memoryClient,
           writeManagedFakeAppServer(directory, transcriptPath, {
             idleNotificationDelayMs: 20,
+            idleNotificationReadyPath: path.join(directory, "capture-ready"),
             lifecyclePath
           }),
           directory,
@@ -2082,6 +2178,7 @@ describe("Codex managed conversation coordinator", () => {
           );
           fs.unlinkSync(transcriptPath);
         }
+        fs.writeFileSync(path.join(directory, "capture-ready"), "ready");
         await waitFor(() => memoryClient.persistAttempts > persistAttempts);
         await session.closeAndWait();
 

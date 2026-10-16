@@ -396,7 +396,10 @@ describe("Codex setup wrapper", () => {
         `[mcp_servers.koed.tools.${tool}]\napproval_mode = "approve"`
       );
     }
-    expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(6);
+    expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(7);
+    expect(installed).toContain(
+      '[[hooks.PreToolUse]]\nmatcher = "mcp__koed__memory_answer"'
+    );
     const base = {
       KOED_HOME: root,
       KOED_REPO_ROOT: root,
@@ -498,7 +501,7 @@ describe("Codex setup wrapper", () => {
       expect(installed).toContain(
         "[mcp_servers.koed.tools.memory_answer_result]"
       );
-      expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(6);
+      expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(7);
       expect(repair("1").ok).toBe(true);
       const deferred = readFileSync(configPath, "utf8");
       expect(deferred).toBe(installed);

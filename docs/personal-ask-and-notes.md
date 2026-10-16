@@ -93,6 +93,47 @@ activity. Catalogue discovery and refresh times do not count as activity.
 Projects without Conversations show No activity. The Project list labels its
 activity groups **Active** and **Inactive**.
 
+The Projects view hides automatically discovered Projects with no Conversations
+and no Memory Events, including from move destinations. There is no control to
+show these empty entries. Capture or historical ingestion makes a Project
+available as soon as it adds a Conversation, even before Memory processing
+finishes. Existing catalogue entries and ingestion continue to work. Named
+Projects created by the User remain visible while empty, in Active, so they can
+receive Conversations.
+Desktop includes the named Project identity in the Project response even when
+the Project has no Conversations.
+
+The Project header has a fixed height. It shows the Project name, a compact
+repository label, Conversation and Memory Event counts, and equal-height Move
+and New actions. Select the name or repository label to open a detail card with
+repository links and its folders. Selecting a folder opens its repository and
+path, an inline reveal action, and Advanced controls. Repository anchor, Review
+previous assignments, and Share anchor across devices each open a separate page
+for that folder. The card does not expand the header or change the folder used
+to start a Conversation.
+
+Each folder has a checkbox that filters the Conversation list. Select all
+checks or clears every folder. The checkbox shows a partial state when only
+some folders are selected. Desktop remembers hidden folders
+for each Project on this device, including after a restart. New folders start
+visible. Conversations without a recorded source folder appear under Other
+Conversations. Moved Conversations use their original source folder when known.
+The filter affects Pinned, Active, and Inactive lists. The Project header keeps
+its total counts. A filtered list shows its visible count and a Show all action.
+The filter does not change assignments, capture, or recall.
+
+The Desktop main process stores these display preferences in
+`KOED_HOME/config/project-folder-filters.json`. The renderer reads and writes
+them through validated Desktop commands.
+
+The Move Conversation card shows the Conversation name and its current Project.
+Select a destination or use the + action beside the dropdown to create a named
+Project. Capture details stays closed until selected. It shows the original
+assignment and captured folder without internal repository identifiers.
+For a manually moved Conversation, Restore original opens a separate page that
+shows the destination before applying the reset. Legacy Conversations return to
+Unresolved history when their original assignment is unresolved.
+
 Chats has one stable Project identity. Desktop matches captured Projects to
 catalogue entries by identity before path. Private runtime directories under
 `managed-conversations/independent` belong to Chats and do not appear as separate

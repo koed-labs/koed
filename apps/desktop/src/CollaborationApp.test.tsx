@@ -4,6 +4,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  repositoryScopeId,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationMessage,
@@ -14,6 +15,8 @@ import {
   type PendingShare,
   type PersonalDesktopApi,
   type PersonalDesktopNote,
+  type PersonalDesktopProjectThread,
+  type RepositoryIdentity,
   type SharedMemoryGrant,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
@@ -1064,6 +1067,12 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         "Shared Memory owner flow is not configured in this fixture"
       );
     }),
+    reviewSharedProjectSnapshot: vi.fn(async () => {
+      throw new Error("Snapshot review is not configured in this fixture");
+    }),
+    updateSharedProjectSnapshot: vi.fn(async () => {
+      throw new Error("Snapshot update is not configured in this fixture");
+    }),
     changeSharedMemoryFidelity: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
@@ -1289,6 +1298,176 @@ describe("CollaborationApp", () => {
     expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
     return client;
   };
+
+  it("keeps a moved Captured Session open when unresolved history still has other Sessions", async () => {
+    const identity: RepositoryIdentity = {
+      kind: "non_git_project",
+      key: "ng_destination",
+      root: "/tmp/destination",
+      branch: null,
+      checkoutId: "checkout_destination",
+      originatingDeviceId: "device",
+      reason: "non_git",
+      selectedRemote: null,
+      anchorDisplay: null
+    };
+    const destinationId = repositoryScopeId(identity);
+    let moved = false;
+    const history: PersonalDesktopProjectThread = {
+      id: "history-a",
+      sessionId: uuid(901),
+      sourceAiClient: "codex",
+      presentation: null,
+      name: "History A",
+      projectId: "unassigned",
+      projectName: "Unresolved history",
+      projectPath: "/tmp/old",
+      projectAssignmentSource: "detected",
+      eventCount: 1,
+      invalidatedCount: 0,
+      latestAt: new Date().toISOString(),
+      sample: "History",
+      repositoryAssignment: {
+        state: "historical_unresolved",
+        version: 1,
+        automatic: null,
+        override: null,
+        effective: null
+      }
+    };
+    const other = {
+      ...history,
+      id: "history-b",
+      sessionId: uuid(902),
+      name: "History B"
+    };
+    const api = createPersonalMemoryApi();
+    api.listProjectMetadata = async () => [
+      {
+        schemaVersion: 1,
+        discoveredAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        localProjectId: "lp_destination",
+        displayName: "Destination",
+        path: { cwd: identity.root!, projectRoot: null },
+        repository: identity
+      }
+    ];
+    api.listProjects = async () => [
+      {
+        id: "unassigned",
+        name: "Unresolved history",
+        path: "/tmp/old",
+        eventCount: moved ? 1 : 2,
+        threads: moved ? [other] : [history, other]
+      },
+      ...(moved
+        ? [
+            {
+              id: destinationId,
+              name: "Destination",
+              path: identity.root,
+              eventCount: 1,
+              threads: [
+                {
+                  ...history,
+                  projectId: destinationId,
+                  projectName: "Destination",
+                  projectAssignmentSource: "user_override" as const,
+                  repositoryAssignment: {
+                    state: "historical_unresolved" as const,
+                    version: 2,
+                    automatic: null,
+                    override: identity,
+                    effective: identity
+                  }
+                }
+              ]
+            }
+          ]
+        : [])
+    ];
+    api.assignSessionProject = vi.fn(async (input) => {
+      moved = input.action === "move";
+      return { projectId: moved ? destinationId : null };
+    });
+    await render(createClient(), api);
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Projects")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[data-project-id="unassigned"]')
+      ).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[data-project-id="unassigned"]')!
+        .click()
+    );
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".personal-session-row-select"
+        )
+      ]
+        .find((button) => button.textContent?.includes("History A"))!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
+        .click()
+    );
+    await act(async () => {
+      const select = document.querySelector<HTMLSelectElement>(
+        'select[name="targetProjectId"]'
+      )!;
+      select.value = destinationId;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () =>
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".personal-session-detail h2")?.textContent
+      ).toBe("History A")
+    );
+    expect(
+      container.querySelector(".desktop-breadcrumb")?.textContent
+    ).toContain("Destination");
+    expect(
+      container.querySelector('[data-project-id="unassigned"]')
+    ).not.toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Reset to automatic")!
+        .click()
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".desktop-breadcrumb")?.textContent
+      ).toContain("Unresolved history")
+    );
+    expect(
+      container.querySelector(".personal-session-detail h2")?.textContent
+    ).toBe("History A");
+    expect(api.assignSessionProject).toHaveBeenLastCalledWith({
+      action: "reset",
+      sessionId: history.sessionId,
+      expectedVersion: 2
+    });
+  });
 
   it("reloads both recent lists when the Personal owner changes with the same API", async () => {
     const api = createPersonalMemoryApi();
@@ -2446,6 +2625,98 @@ describe("CollaborationApp", () => {
       expect.objectContaining({ action: "revoke" })
     );
     expect(document.body.textContent).toContain("Revoked");
+  });
+
+  it("reviews the received Project before explicitly updating an existing share", async () => {
+    const snapshot = baseSnapshot();
+    const entry = snapshot.navigation.personal.memory[0]!;
+    if (!entry.logicalMemoryId)
+      throw new Error("Fixture must have a logical Memory identity");
+    const client = createClient(snapshot);
+    const grant: SharedMemoryGrant = {
+      source: {
+        kind: "captured_session",
+        sessionId: entry.id,
+        logicalMemoryId: entry.logicalMemoryId
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      id: uuid(701),
+      logicalGrantId: uuid(702),
+      logicalMemoryId: entry.logicalMemoryId,
+      ownerUserId: ids.remoteMark,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      consentId: uuid(703),
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
+      sourceRevision: 1,
+      grantVersion: 1,
+      lifecycle: "active",
+      createdAt: at,
+      updatedAt: at,
+      revokedAt: null,
+      companionThreadId: ids.discussion
+    };
+    const review = {
+      shareGrantId: grant.id,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.workspaceId,
+      grantVersion: 1,
+      sourceRevision: 1,
+      representationId: uuid(704),
+      representationVersion: 1,
+      assignmentVersion: 2,
+      sourceContextHash: "a".repeat(64),
+      currentSnapshot: {
+        version: 1 as const,
+        classification: "portable_repository" as const,
+        fingerprint: "gr_updated",
+        label: null,
+        branchObservation: null
+      }
+    };
+    vi.mocked(client.listOwnedSharedMemoryGrants).mockResolvedValue([grant]);
+    vi.mocked(client.reviewSharedProjectSnapshot).mockResolvedValue(review);
+    vi.mocked(client.updateSharedProjectSnapshot).mockResolvedValue({
+      ...grant,
+      grantVersion: 2,
+      repositorySnapshot: review.currentSnapshot
+    });
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          snapshot={snapshot}
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          modal={{ kind: "share_personal_memory", sessionId: entry.id }}
+          onModalChange={vi.fn()}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Update Project")
+    );
+    expect(client.updateSharedProjectSnapshot).not.toHaveBeenCalled();
+    await click(container, "Update Project");
+    await vi.waitFor(() =>
+      expect(client.updateSharedProjectSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamId: grant.teamId,
+          workspaceId: grant.workspaceId,
+          shareGrantId: grant.id,
+          expected: review
+        })
+      )
+    );
+    expect(client.reviewSharedProjectSnapshot).toHaveBeenCalledWith({
+      teamId: grant.teamId,
+      workspaceId: grant.workspaceId,
+      shareGrantId: grant.id
+    });
+    expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
   });
 
   it("closes Share revocation confirmation after approval while execution continues", async () => {

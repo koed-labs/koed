@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import desktopPackage from "./apps/desktop/package.json" with { type: "json" };
 
@@ -10,6 +10,14 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      {
+        find: "@koed/shared/repository-review",
+        replacement: `${root}packages/shared/src/repository-review.ts`
+      },
+      {
+        find: "@koed/shared/repository-recall",
+        replacement: `${root}packages/shared/src/repository-recall.ts`
+      },
       {
         find: "@koed/shared/collaboration-client-runtime",
         replacement: `${root}packages/shared/src/collaboration-client-runtime.ts`
@@ -85,6 +93,8 @@ export default defineConfig({
     ]
   },
   test: {
+    // Ignored dependency snapshots and preview checkouts are not test sources.
+    exclude: [...configDefaults.exclude, "scratch/**", ".pnpm-store/**"],
     globals: true,
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],

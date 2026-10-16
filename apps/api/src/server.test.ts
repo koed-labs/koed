@@ -1,3 +1,4 @@
+import type { RepositoryIdentity } from "@koed/shared";
 import {
   createHash,
   createPrivateKey,
@@ -86,6 +87,23 @@ import {
 import type { BuildServerOptions } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
 
+let isolatedDefaultKoedHome: string | undefined;
+
+const fixtureRepositoryIdentity = (
+  name: string,
+  root: string | null
+): RepositoryIdentity => ({
+  kind: "portable_repository",
+  key: `gr_${name}`,
+  root,
+  branch: "main",
+  reason: "origin",
+  checkoutId: `checkout_${name}`,
+  originatingDeviceId: "fixture_device",
+  selectedRemote: "origin",
+  anchorDisplay: `example.test/team/${name}`
+});
+
 const testProtocolDeploymentId = "00000000-0000-4000-8000-000000000001";
 
 const buildServer = (options: BuildServerOptions = {}) =>
@@ -128,6 +146,9 @@ const codexCanonicalConversationItemKeyForTest = (input: {
     .digest("hex")}`;
 
 afterEach(() => {
+  if (isolatedDefaultKoedHome)
+    rmSync(isolatedDefaultKoedHome, { recursive: true, force: true });
+  isolatedDefaultKoedHome = undefined;
   for (const name of [
     "KOED_ALLOW_PUBLIC_REGISTRATION",
     "KOED_TEAM_COLLABORATION_ENABLED",
@@ -203,6 +224,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  isolatedDefaultKoedHome = mkdtempSync(
+    resolve(tmpdir(), "koed-api-test-profile-")
+  );
+  process.env.KOED_HOME = isolatedDefaultKoedHome;
   process.env.KOED_TEAM_COLLABORATION_ENABLED = "true";
 });
 
@@ -3592,6 +3617,13 @@ const createFakeRepository = () => {
         ? capturedSessions.get(existingId)
         : undefined;
       const record: CapturedSessionRecord = {
+        repositoryAssignment: existing?.repositoryAssignment ?? {
+          state: "recorded",
+          version: 1,
+          automatic: input.repositoryIdentity ?? null,
+          override: null,
+          effective: input.repositoryIdentity ?? null
+        },
         id: existing?.id ?? id,
         logicalSessionId: existing?.logicalSessionId ?? randomUUID(),
         ownerUserId: actor.userId,
@@ -3706,6 +3738,16 @@ const createFakeRepository = () => {
       const updatedAt = new Date().toISOString();
       const nextSession: CapturedSessionRecord = {
         ...session,
+        repositoryAssignment: {
+          state: session.repositoryAssignment?.state ?? "historical_unresolved",
+          version: (session.repositoryAssignment?.version ?? 1) + 1,
+          automatic: session.repositoryAssignment?.automatic ?? null,
+          override: project.repositoryIdentity ?? null,
+          effective:
+            project.repositoryIdentity ??
+            session.repositoryAssignment?.automatic ??
+            null
+        },
         projectOverride: project,
         project,
         projectAssignmentSource: "user_override",
@@ -3724,6 +3766,13 @@ const createFakeRepository = () => {
         return null;
       const nextSession: CapturedSessionRecord = {
         ...session,
+        repositoryAssignment: {
+          state: session.repositoryAssignment?.state ?? "historical_unresolved",
+          version: (session.repositoryAssignment?.version ?? 1) + 1,
+          automatic: session.repositoryAssignment?.automatic ?? null,
+          override: null,
+          effective: session.repositoryAssignment?.automatic ?? null
+        },
         projectOverride: null,
         project: session.automaticProject,
         projectAssignmentSource: session.automaticProject ? "detected" : null,
@@ -11588,6 +11637,105 @@ describe("account and access flows", () => {
     expect(operatorDetails.body).toContain("crossIdentitySync");
   });
 
+  it("authenticates profile transition receipts and rejects body or route substitution", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const repository = createFakeRepository();
+    const reconcile = vi.fn<
+      MemorySourceRepository["reconcileTargetSyncProfile"]
+    >(async (_actor, request) => ({
+      request,
+      outcome: "superseded",
+      sourceCursor: request.fromCursor,
+      targetProcessingCursor: request.fromCursor,
+      packageSequence: request.sourceSequence,
+      issuedAt: new Date().toISOString()
+    }));
+    repository.reconcileTargetSyncProfile = reconcile;
+    const app = await buildServer({ repository });
+    try {
+      const registration = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "sync-transition@example.com",
+          password: "password123"
+        }
+      });
+      const cookie = cookieHeader(registration);
+      const sync = await enrollDeviceCredentialForTest(app, cookie, ["sync"]);
+      const readOnly = await enrollDeviceCredentialForTest(app, cookie, [
+        "team_workspace_read"
+      ]);
+      const request = {
+        protocol: "koed.captured-session-sync/profile-transition/v1",
+        relationshipId: randomUUID(),
+        packageId: randomUUID(),
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 3,
+        requestHash: "a".repeat(64),
+        manifestHash: "b".repeat(64),
+        packageChecksum: "c".repeat(64)
+      };
+      const url = `/v1/cross-identity-sync/relationships/${request.relationshipId}/profile-transition`;
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: browserSessionHeaders(cookie),
+            payload: request
+          })
+        ).statusCode
+      ).toBe(401);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: readOnly.authorization },
+            payload: request
+          })
+        ).statusCode
+      ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: sync.authorization },
+            payload: { ...request, encryptedPackage: {} }
+          })
+        ).statusCode
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { authorization: sync.authorization },
+            payload: { ...request, relationshipId: randomUUID() }
+          })
+        ).statusCode
+      ).toBe(400);
+      expect(reconcile).not.toHaveBeenCalled();
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: sync.authorization },
+        payload: request
+      });
+      expect(response.statusCode).toBe(200);
+      expect(
+        jsonBody<{ receipt: { request: unknown; outcome: string } }>(response)
+          .receipt
+      ).toMatchObject({ request, outcome: "superseded" });
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps Cross-Identity Sync behind profile and scoped device boundaries", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
     const targetApp = await buildServer({ repository: createFakeRepository() });
@@ -15779,7 +15927,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(ownerCookie),
       payload: {
         action: "move",
-        project: { id: "project-b", name: "Project B", path: "/work/manual-b" }
+        expectedVersion: 1,
+        project: {
+          id: "project-b",
+          name: "Project B",
+          path: "/work/manual-b",
+          repositoryIdentity: fixtureRepositoryIdentity("b", "/work/manual-b")
+        }
       }
     });
     const redetected = await app.inject({
@@ -15816,7 +15970,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookieHeader(other)),
       payload: {
         action: "move",
-        project: { id: "project-a", name: "Project A", path: null }
+        expectedVersion: 2,
+        project: {
+          id: "project-a",
+          name: "Project A",
+          path: null,
+          repositoryIdentity: fixtureRepositoryIdentity("a", null)
+        }
       }
     });
     const rejectedTeamAuthority = await app.inject({
@@ -15825,7 +15985,13 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(ownerCookie),
       payload: {
         action: "move",
-        project: { id: "project-a", name: "Project A", path: null },
+        expectedVersion: 2,
+        project: {
+          id: "project-a",
+          name: "Project A",
+          path: null,
+          repositoryIdentity: fixtureRepositoryIdentity("a", null)
+        },
         teamWorkspaceId: randomUUID()
       }
     });
@@ -15833,7 +15999,7 @@ describe("account and access flows", () => {
       method: "PATCH",
       url: `/v1/memory/graph/sessions/${session.id}/project`,
       headers: browserSessionHeaders(ownerCookie),
-      payload: { action: "reset" }
+      payload: { action: "reset", expectedVersion: 2 }
     });
     const ambiguous = await app.inject({
       method: "POST",

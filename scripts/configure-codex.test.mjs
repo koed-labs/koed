@@ -87,6 +87,7 @@ test("codex configure writes credential-free hooks and pre-approved read-only re
       )
     );
     for (const eventName of [
+      "PreToolUse",
       "SessionStart",
       "UserPromptSubmit",
       "PostToolUse",
@@ -175,6 +176,7 @@ test("Codex task setup preserves capture, user settings, and managed guidance", 
       );
     }
     for (const event of [
+      "PreToolUse",
       "SessionStart",
       "UserPromptSubmit",
       "PostToolUse",
@@ -191,7 +193,12 @@ test("Codex task setup preserves capture, user settings, and managed guidance", 
         )
       );
     }
-    assert.equal((installed.match(/capture-hook\.js/g) ?? []).length, 6);
+    assert.equal((installed.match(/capture-hook\.js/g) ?? []).length, 7);
+    assert.ok(
+      installed.includes(
+        '[[hooks.PreToolUse]]\nmatcher = "mcp__memory-local__memory_answer"'
+      )
+    );
     await invoke(["--check"], { MEMORY_MCP_NAME: "memory-local" });
     await invoke(["--blocking-recall"], { MEMORY_MCP_NAME: "memory-local" });
     assert.equal(readFileSync(config, "utf8"), installed);

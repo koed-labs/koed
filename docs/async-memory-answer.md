@@ -133,6 +133,12 @@ enrollment, policy and persisted task authority are rechecked by the existing
 backend paths. An unavailable Team route must fail before accepting work; it
 must not silently search Personal Memory instead.
 
+For Team Project scope, admission requires a portable repository identity and
+stores it separately from the Workspace/backend selection. Clone paths do not
+establish Team repository equality. Search and expansion use the authorized
+Share Grant snapshot, while collection rechecks access before decrypting the
+answer, including when access was revoked after completion.
+
 The adapter currently preflights cancellation with an authorized task read.
 If Team access has been revoked, this can also prevent cancellation through the
 tool, even where the backend permits redacted owner cleanup. Existing backend
@@ -173,3 +179,13 @@ protocol support. It should replace only the submission/observation adapter,
 not create another queue, worker or Memory Answer format. Task-protocol support
 alone does not guarantee that a harness wakes an idle agent or permits model
 progress while work is pending; that behavior still needs host acceptance tests.
+
+### Team Global repository context
+
+Team Global tasks use the persisted repository context established at submission.
+The worker forwards this context on scripted and follow-up searches, counts both
+Global and current-repository passes against the existing search budget, and
+preserves Project provenance in evidence. Both pools reuse one query embedding;
+canonical overlap is merged before authorized content disclosure. Result collection
+continues to revalidate the selected Workspace, Share Grants, and snapshot versions
+before returning evidence. A later checkout change does not retarget a pending task.

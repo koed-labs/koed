@@ -1,3 +1,8 @@
+import {
+  discoverProjectMetadata,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
+import { execFileSync } from "node:child_process";
 import fs, {
   appendFileSync,
   mkdirSync,
@@ -14,7 +19,7 @@ import fs, {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexHistoricalCandidate } from "../src/codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "../src/codex-compressed-transcript.js";
 
@@ -49,11 +54,16 @@ const temporaryDirectory = (): string => {
   return directory;
 };
 
+beforeEach(() => {
+  vi.stubEnv("KOED_HOME", temporaryDirectory());
+});
+
 afterEach(async () => {
   await Promise.all(watcherHandles.splice(0).map((watcher) => watcher.stop()));
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
+  vi.unstubAllEnvs();
 });
 
 const trackedWatcher = (
@@ -1041,19 +1051,12 @@ describe("Codex Transcript Watcher source journal", () => {
     const transcript = transcriptPath(root);
     writeFileSync(transcript, line(sessionRecord("catalogued", projectRoot)));
     const koedHome = path.join(root, "koed");
-    mkdirSync(path.join(koedHome, "config"), { recursive: true });
-    writeFileSync(
-      path.join(koedHome, "config", "projects.json"),
-      JSON.stringify({
-        projects: [
-          {
-            localProjectId: "lp_0123456789abcdef0123456789abcdef",
-            displayName: "Catalogued Project",
-            path: { cwd: projectRoot, projectRoot }
-          }
-        ]
-      })
-    );
+    const discovered = (
+      await discoverProjectMetadata(
+        resolveKoedServerPaths({ KOED_HOME: koedHome }),
+        { cwd: projectRoot }
+      )
+    ).project!;
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(client, watcherConfig(root));
 
@@ -1063,19 +1066,103 @@ describe("Codex Transcript Watcher source journal", () => {
 
     expect(client.sourceSessions.at(-1)).toMatchObject({
       cwd: projectRoot,
+      repositoryIdentity: {
+        kind: "non_git_project",
+        checkoutId: discovered.repository!.checkoutId
+      },
       metadata: {
-        localProjectId: "lp_0123456789abcdef0123456789abcdef",
-        projectName: "Catalogued Project",
+        localProjectId: discovered.localProjectId,
+        projectName: discovered.displayName,
         projectPath: projectRoot
       },
       detectedProjects: [
         {
-          id: "lp_0123456789abcdef0123456789abcdef",
-          name: "Catalogued Project",
+          id: discovered.localProjectId,
+          name: discovered.displayName,
           path: projectRoot
         }
       ]
     });
+  });
+
+  it("resolves Codex capture from a subdirectory and worktree with the same selected anchor", async () => {
+    const root = temporaryDirectory();
+    const repo = path.join(root, "repository");
+    mkdirSync(repo);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "--initial-branch=main");
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture"
+    );
+    git(
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/example/recall-fixture.git"
+    );
+    const subdirectory = path.join(repo, "packages", "example");
+    mkdirSync(subdirectory, { recursive: true });
+    const worktree = path.join(root, "worktree");
+    git("worktree", "add", "-b", "preview", worktree);
+    const config = watcherConfig(root);
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, config);
+    for (const [sessionId, cwd] of [
+      ["repo-main", subdirectory],
+      ["repo-worktree", worktree]
+    ]) {
+      const transcript = transcriptPath(root, `rollout-${sessionId}.jsonl`);
+      writeFileSync(transcript, line(sessionRecord(sessionId!, cwd)));
+      await watcher.scanNow();
+      appendFileSync(
+        transcript,
+        line(userRecord("Use the distinctive cobalt release protocol."))
+      );
+      await watcher.scanNow();
+    }
+    const registrations = client.sourceSessions.filter((entry) =>
+      ["repo-main", "repo-worktree"].includes(String(entry.externalSessionId))
+    );
+    const first = registrations.find(
+      (entry) => entry.externalSessionId === "repo-main"
+    )!;
+    const second = registrations.find(
+      (entry) => entry.externalSessionId === "repo-worktree"
+    )!;
+    expect(first).toMatchObject({
+      cwd: subdirectory,
+      repositoryIdentity: {
+        kind: "portable_repository",
+        root: fs.realpathSync(repo),
+        branch: "main"
+      }
+    });
+    expect(second).toMatchObject({
+      cwd: worktree,
+      repositoryIdentity: {
+        kind: "portable_repository",
+        root: fs.realpathSync(worktree),
+        branch: "preview"
+      }
+    });
+    const firstIdentity = first.repositoryIdentity as {
+      key: string;
+      checkoutId: string;
+    };
+    const secondIdentity = second.repositoryIdentity as {
+      key: string;
+      checkoutId: string;
+    };
+    expect(firstIdentity.key).toBe(secondIdentity.key);
+    expect(firstIdentity.checkoutId).not.toBe(secondIdentity.checkoutId);
   });
 
   it("stores normalized lineage for native Codex guardian sessions", async () => {
@@ -1214,67 +1301,95 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(client.itemBatches).toHaveLength(0);
   });
 
-  it("shares one durable frontier when a selected old source grows", async () => {
-    const root = temporaryDirectory();
-    const transcript = transcriptPath(root, "rollout-history-race.jsonl");
-    const startedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000);
-    const activityAt = new Date(Date.now() - 24 * 60 * 60 * 1_000);
-    const initial =
-      line(
-        sessionRecord(
-          "history-race",
-          "/missing/project",
-          startedAt.toISOString()
-        )
-      ) +
-      line({
-        ...userRecord("long-running historical prompt"),
-        timestamp: activityAt.toISOString()
-      });
-    writeFileSync(transcript, initial);
-    const selections = new Map<
-      string,
-      { frontierOffset: number; frontierLine: number }
-    >();
-    let offeredProjectName: string | undefined;
-    const observer: CodexHistoricalCandidateObserver = {
-      offerCandidates(candidates) {
-        for (const candidate of candidates) {
-          selections.set(candidate.sourceSessionId, {
-            frontierOffset: candidate.frontierOffset,
-            frontierLine: 2
-          });
-          offeredProjectName = candidate.projectName;
+  it.each([false, true])(
+    "shares the durable frontier and source-time assignment when old history grows (Git metadata: %s)",
+    async (knownRepository) => {
+      const root = temporaryDirectory();
+      const transcript = transcriptPath(root, "rollout-history-race.jsonl");
+      const startedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000);
+      const activityAt = new Date(Date.now() - 24 * 60 * 60 * 1_000);
+      const initial =
+        line({
+          ...sessionRecord(
+            "history-race",
+            "/missing/project",
+            startedAt.toISOString()
+          ),
+          payload: {
+            ...sessionRecord(
+              "history-race",
+              "/missing/project",
+              startedAt.toISOString()
+            ).payload,
+            ...(knownRepository
+              ? {
+                  git: {
+                    repository_url: "https://example.test/team/original.git",
+                    branch: "main"
+                  }
+                }
+              : {})
+          }
+        }) +
+        line({
+          ...userRecord("long-running historical prompt"),
+          timestamp: activityAt.toISOString()
+        });
+      writeFileSync(transcript, initial);
+      const selections = new Map<
+        string,
+        { frontierOffset: number; frontierLine: number }
+      >();
+      let offeredProjectName: string | undefined;
+      const observer: CodexHistoricalCandidateObserver = {
+        offerCandidates(candidates) {
+          for (const candidate of candidates) {
+            selections.set(candidate.sourceSessionId, {
+              frontierOffset: candidate.frontierOffset,
+              frontierLine: 2
+            });
+            offeredProjectName = candidate.projectName;
+            expect(candidate.sourceSession.repositoryIdentity).toMatchObject({
+              kind: knownRepository ? "portable_repository" : "non_git_project",
+              root: knownRepository ? null : "/missing/project"
+            });
+          }
+        },
+        selectionFor(sourceSessionId) {
+          return selections.get(sourceSessionId);
         }
-      },
-      selectionFor(sourceSessionId) {
-        return selections.get(sourceSessionId);
-      }
-    };
-    const client = new FakeWatcherClient();
-    const watcher = trackedWatcher(client, watcherConfig(root), observer);
+      };
+      const client = new FakeWatcherClient();
+      const watcher = trackedWatcher(client, watcherConfig(root), observer);
 
-    await watcher.scanNow();
-    expect(selections.get("history-race")?.frontierOffset).toBe(
-      Buffer.byteLength(initial)
-    );
-    expect(offeredProjectName).toBe("Unassigned");
+      await watcher.scanNow();
+      expect(selections.get("history-race")?.frontierOffset).toBe(
+        Buffer.byteLength(initial)
+      );
+      expect(offeredProjectName).toBe("Unassigned");
 
-    const appended = line(userRecord("live while history is pending"));
-    appendFileSync(transcript, appended);
-    await watcher.scanNow();
+      const appended = line(userRecord("live while history is pending"));
+      appendFileSync(transcript, appended);
+      await watcher.scanNow();
 
-    const artifact = client.artifacts.get("history-race")!;
-    expect(artifact.journalStartOffset).toBe(0);
-    expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
-    expect(artifact.liveStartLine).toBe(2);
-    expect(
-      Buffer.from(client.segments.get(artifact.id)![0]!.bytesBase64, "base64")
-    ).toEqual(Buffer.from(initial + appended));
-    expect(client.itemBatches.flat().map((item) => item.rawText)).toEqual([
-      "live while history is pending"
-    ]);
-  });
+      expect(client.sourceSessions.at(-1)).toMatchObject({
+        repositoryIdentity: {
+          kind: knownRepository ? "portable_repository" : "non_git_project",
+          root: knownRepository ? null : "/missing/project"
+        }
+      });
+      const artifact = client.artifacts.get("history-race")!;
+      expect(artifact.journalStartOffset).toBe(0);
+      expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
+      expect(artifact.liveStartLine).toBe(2);
+      expect(
+        Buffer.from(client.segments.get(artifact.id)![0]!.bytesBase64, "base64")
+      ).toEqual(Buffer.from(initial + appended));
+      expect(client.itemBatches.flat().map((item) => item.rawText)).toEqual([
+        "live while history is pending"
+      ]);
+    }
+  );
 
   it("journals a post-activation source from byte zero", async () => {
     const root = temporaryDirectory();

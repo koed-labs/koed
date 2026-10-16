@@ -1,9 +1,26 @@
+import {
+  adoptSourceSyncProfileWithClient,
+  reconcileTargetSyncProfileWithClient
+} from "./sync-profile-transition.js";
 import { randomUUID } from "node:crypto";
+import { writeOwnerPrivateRepositorySnapshot } from "./owner-private-repository-snapshot.js";
+import {
+  mapRepositoryAssignment,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
+import {
+  createTeamRepositorySnapshot,
+  teamRepositorySnapshotSchema
+} from "@koed/shared";
 import pg from "pg";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
+  syncProfileTransitionReceiptSchema,
+  syncProfileTransitionRequestSchema,
+  type SyncProfileTransitionRequest,
+  type SyncProfileTransitionReceipt,
   capturedSessionSyncUploadPackageManifestSchema,
   classifyApprovalActivity,
   crossIdentitySyncDigest,
@@ -11,7 +28,7 @@ import {
   logicalMemorySourceRevisionIdentity,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncContributorV1,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type CapturedSessionSyncSummaryNodeV1,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedJsonPackage,
@@ -32,6 +49,17 @@ import {
 } from "./cross-identity-sync-canonical.js";
 import type { RecordAuditEventInput } from "./types.js";
 import type { ActorContext } from "./types.js";
+
+// This metadata stays in the directed owner-private package. Team disclosure
+// separately classifies label/branch in the encrypted representation preview.
+const privateSourceRepositorySnapshot = (
+  row: Row & RepositoryAssignmentRow
+) => {
+  const assignment = mapRepositoryAssignment(row);
+  return createTeamRepositorySnapshot(assignment, {
+    permittedLabel: assignment.effective?.anchorDisplay
+  });
+};
 
 export interface SyncActorContext extends ActorContext {
   deviceCredentialId?: string | null;
@@ -67,7 +95,8 @@ export type SyncPackageState =
   | "verified"
   | "processing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "superseded";
 export type SyncQueueEntryState =
   | "pending"
   | "processing"
@@ -241,6 +270,7 @@ export interface CrossIdentitySyncRelationshipRecord {
   targetProcessingCursor: number;
   packageSequence: number;
   sourceSummaryRevisionHash: string | null;
+  sourceRepositorySnapshotHash: string | null;
   targetSummaryRevisionHash: string | null;
   lastPackageId: string | null;
   lastSyncedAt: string | null;
@@ -328,7 +358,7 @@ export interface CrossIdentitySyncRepository {
   getCapturedSessionSyncSource(
     actor: ActorContext,
     sessionId: string
-  ): Promise<CapturedSessionSyncPackageV1["session"] | null>;
+  ): Promise<CapturedSessionSyncPackageV2["session"] | null>;
   getLocalSyncDeployment(): Promise<DeploymentIdentityRecord | null>;
   ensureLocalSyncDeployment(input: {
     profile: DeploymentProfile;
@@ -409,7 +439,7 @@ export interface CrossIdentitySyncRepository {
       creationRequestHash: string;
       policyManifest: Record<string, unknown>;
       consentManifest: Record<string, unknown>;
-      session: CapturedSessionSyncPackageV1["session"];
+      session: CapturedSessionSyncPackageV2["session"];
     }
   ): Promise<{
     relationship: CrossIdentitySyncRelationshipRecord;
@@ -462,10 +492,11 @@ export interface CrossIdentitySyncRepository {
     limit?: number;
   }): Promise<{
     relationship: CrossIdentitySyncRelationshipRecord;
-    session: CapturedSessionSyncPackageV1["session"];
+    session: CapturedSessionSyncPackageV2["session"];
     changes: CapturedSessionSyncChangeV1[];
     summaryNodes: CapturedSessionSyncSummaryNodeV1[];
     summarySnapshotIncluded: boolean;
+    repositorySnapshotChanged: boolean;
     summaryRevisionHash: string;
     fromCursor: number;
     toCursor: number;
@@ -610,10 +641,23 @@ export interface CrossIdentitySyncRepository {
     retryAfterMs: number;
     terminal?: boolean;
   }): Promise<boolean>;
+  enqueueSourceSyncProfileTransitions(): Promise<number>;
+  getSourceSyncProfileTransition(input: {
+    relationshipId: string;
+  }): Promise<SyncProfileTransitionRequest | null>;
+  adoptSourceSyncProfileReceipt(input: {
+    receipt: SyncProfileTransitionReceipt;
+    outboxId: string;
+    claimToken: string;
+  }): Promise<boolean>;
+  reconcileTargetSyncProfile(
+    actor: SyncActorContext,
+    input: SyncProfileTransitionRequest
+  ): Promise<SyncProfileTransitionReceipt | null>;
   applyCapturedSessionSyncPackage(input: {
     relationshipId: string;
     uploadSessionId: string;
-    package: CapturedSessionSyncPackageV1;
+    package: CapturedSessionSyncPackageV2;
   }): Promise<{
     eventIds: string[];
     invalidatedEventIds: string[];
@@ -627,6 +671,7 @@ export interface CrossIdentitySyncRepository {
     targetProcessingCursor: number;
     packageSequence: number;
     summaryRevisionHash: string | null;
+    repositorySnapshotHash: string;
     staleAfterSeconds: number;
   }): Promise<void>;
   markSourceSyncProcessing(input: {
@@ -778,6 +823,9 @@ const mapRelationship = (r: Row): CrossIdentitySyncRelationshipRecord => ({
   targetProcessingCursor: numberValue(r.target_processing_cursor),
   packageSequence: numberValue(r.package_sequence),
   sourceSummaryRevisionHash: optionalString(r.source_summary_revision_hash),
+  sourceRepositorySnapshotHash: optionalString(
+    r.source_repository_snapshot_hash
+  ),
   targetSummaryRevisionHash: optionalString(r.target_summary_revision_hash),
   lastPackageId: optionalString(r.last_package_id),
   lastSyncedAt: iso(r.last_synced_at),
@@ -1334,6 +1382,9 @@ export const createCrossIdentitySyncRepository = (
       const session = result.rows[0];
       if (!session) return null;
       return {
+        repositorySnapshot: privateSourceRepositorySnapshot(
+          session as Row & RepositoryAssignmentRow
+        ),
         originSessionId: String(session.id),
         externalSessionId: optionalString(session.external_session_id),
         sourceRuntime: String(session.source_runtime),
@@ -1928,6 +1979,7 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async createTargetSyncRelationship(actor, input) {
+      teamRepositorySnapshotSchema.parse(input.session.repositorySnapshot);
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -2084,13 +2136,33 @@ export const createCrossIdentitySyncRepository = (
             input.session.sourceAdapterVersion,
             JSON.stringify({
               syncReplica: true,
-              contentEncrypted: true
+              contentEncrypted: true,
+              repositorySnapshot: {
+                ...input.session.repositorySnapshot,
+                label: null,
+                branchObservation: null
+              }
             }),
             input.session.capturedAt
           ]
         );
         if (!sessionResult.rows[0]) throw new SyncIdempotencyConflictError();
         const sessionId = String((sessionResult.rows[0] as Row).id);
+        if (
+          input.session.repositorySnapshot?.label ||
+          input.session.repositorySnapshot?.branchObservation
+        ) {
+          await writeOwnerPrivateRepositorySnapshot(
+            client,
+            requireOwnerPrivateReplicaEnvelopeEncryptionProvider(),
+            {
+              sessionId,
+              ownerUserId: actor.userId,
+              ownerPrincipalId: input.sourceUserId
+            },
+            input.session.repositorySnapshot
+          );
+        }
         const logicalResult = await client.query(
           "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_kind,logical_key) values ($1,$2,$5,$3,'captured_session',$4) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.source_kind=excluded.source_kind and logical_memories.logical_key=excluded.logical_key returning *",
           [
@@ -2623,9 +2695,13 @@ export const createCrossIdentitySyncRepository = (
           (relationship.sourceSummaryRevisionHash !== null &&
             summarySnapshot.nodes.length === 0));
       const summaryNodes = summarySnapshotIncluded ? summarySnapshot.nodes : [];
+      const repositorySnapshot = privateSourceRepositorySnapshot(
+        session as Row & RepositoryAssignmentRow
+      );
       return {
         relationship,
         session: {
+          repositorySnapshot,
           originSessionId: sessionId,
           externalSessionId: optionalString(session.external_session_id),
           sourceRuntime: String(session.source_runtime),
@@ -2640,6 +2716,9 @@ export const createCrossIdentitySyncRepository = (
         changes,
         summaryNodes,
         summarySnapshotIncluded,
+        repositorySnapshotChanged:
+          crossIdentitySyncDigest(repositorySnapshot) !==
+          relationship.sourceRepositorySnapshotHash,
         summaryRevisionHash: summarySnapshotIncluded
           ? summarySnapshot.revisionHash
           : crossIdentitySyncDigest([]),
@@ -2736,6 +2815,123 @@ export const createCrossIdentitySyncRepository = (
       const snapshot = await readSessionSummarySnapshot({ actor, sessionId });
       return snapshot.nodes.map((node) => node.originNodeId);
     },
+    async enqueueSourceSyncProfileTransitions() {
+      const result =
+        await pool.query(`insert into sync_outbox_entries (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+        select relationship.id,upload.id,'profile-transition-reconcile:'||upload.protocol_package_id::text,upload.request_hash,'{"kind":"profile_transition"}'::jsonb
+        from cross_identity_sync_relationships relationship
+        join users owner on owner.id=relationship.local_user_id
+        join sync_package_upload_sessions upload on upload.sync_relationship_id=relationship.id and upload.source_sequence=relationship.package_sequence+1
+        join sync_external_user_identities remote_user on remote_user.id=relationship.remote_user_identity_id
+        where relationship.side='source' and relationship.revoked_at is null and relationship.state not in ('paused','failed','revoked','purge_pending')
+          and owner.disabled_at is null and owner.deleted_at is null and remote_user.status='active' and remote_user.revoked_at is null
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          and upload.package_manifest->>'format'='koed.captured-session-sync/v1' and upload.package_manifest->>'formatVersion'='1'
+        order by relationship.id limit 100
+        on conflict (sync_relationship_id,idempotency_key) do nothing`);
+      return result.rowCount ?? 0;
+    },
+    async getSourceSyncProfileTransition(input) {
+      const found = await pool.query<Row>(
+        `select upload.* from sync_package_upload_sessions upload
+        join cross_identity_sync_relationships relationship on relationship.id=upload.sync_relationship_id
+        join users owner on owner.id=relationship.local_user_id
+        where relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null
+          and relationship.state not in ('paused','failed','revoked','purge_pending')
+          and owner.disabled_at is null and owner.deleted_at is null
+          and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          and upload.source_sequence=relationship.package_sequence+1
+          and upload.package_manifest->>'format'='koed.captured-session-sync/v1'
+          and upload.package_manifest->>'formatVersion'='1'`,
+        [input.relationshipId]
+      );
+      const upload = found.rows[0];
+      if (!upload) return null;
+      return syncProfileTransitionRequestSchema.parse({
+        protocol: "koed.captured-session-sync/profile-transition/v1",
+        relationshipId: input.relationshipId,
+        packageId: String(upload.protocol_package_id),
+        sourceSequence: numberValue(upload.source_sequence),
+        fromCursor: numberValue(upload.from_cursor),
+        toCursor: numberValue(upload.to_cursor),
+        requestHash: String(upload.request_hash),
+        manifestHash: crossIdentitySyncDigest(upload.package_manifest),
+        packageChecksum: String(upload.package_checksum)
+      });
+    },
+    async adoptSourceSyncProfileReceipt(input) {
+      const receipt = syncProfileTransitionReceiptSchema.parse(input.receipt);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const found = await client.query<Row>(
+          `select relationship.* from cross_identity_sync_relationships relationship join users owner on owner.id=relationship.local_user_id
+          where relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null
+            and relationship.state not in ('paused','failed','revoked','purge_pending') and owner.disabled_at is null and owner.deleted_at is null
+          and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+          and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+          for update of relationship`,
+          [receipt.request.relationshipId]
+        );
+        if (!found.rows[0]) {
+          await client.query("rollback");
+          return false;
+        }
+        const adopted = await adoptSourceSyncProfileWithClient(
+          client,
+          mapRelationship(found.rows[0]),
+          { ...input, receipt }
+        );
+        await client.query("commit");
+        return adopted;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async reconcileTargetSyncProfile(actor, input) {
+      const request = syncProfileTransitionRequestSchema.parse(input);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        if (
+          !actor.deviceCredentialId ||
+          !(await lockActiveSyncDeviceCredential(client, actor))
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const found = await client.query<Row>(
+          `select * from cross_identity_sync_relationships relationship
+          where id=$1 and local_user_id=$2 and side='target' and revoked_at is null
+            and state not in ('paused','failed','revoked','purge_pending')
+            and ${relationshipCredentialClause("relationship", 3)}
+            and exists(select 1 from sync_external_user_identities remote_user where remote_user.id=relationship.remote_user_identity_id and remote_user.status='active' and remote_user.revoked_at is null)
+            and exists(select 1 from sync_principal_links link where link.external_user_identity_id=relationship.remote_user_identity_id and link.local_user_id=relationship.local_user_id and link.revoked_at is null)
+            for update`,
+          [request.relationshipId, actor.userId, actor.deviceCredentialId]
+        );
+        if (!found.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+        const receipt = await reconcileTargetSyncProfileWithClient(
+          client,
+          mapRelationship(found.rows[0]),
+          request
+        );
+        await client.query("commit");
+        return receipt;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async createSyncPackageUploadSession(actor, input) {
       assertSafeControlManifest(input.packageManifest);
       const client = await pool.connect();
@@ -2787,6 +2983,10 @@ export const createCrossIdentitySyncRepository = (
             "Sync relationship must be retried before accepting a new package"
           );
         }
+        if (input.sourceSequence <= numberValue(relationship.package_sequence))
+          throw new SyncStateConflictError(
+            "Sync package sequence has already been consumed"
+          );
         const result = await client.query<Row>(
           "insert into sync_package_upload_sessions (sync_relationship_id,protocol_package_id,package_format_version,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,1,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11) returning *",
           [
@@ -2849,6 +3049,10 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const uploadState = String(upload.state);
+        if (uploadState === "superseded")
+          throw new SyncStateConflictError(
+            "Sync upload was superseded at the profile transition"
+          );
         if (["verified", "processing", "completed"].includes(uploadState)) {
           const existing = await client.query(
             "select * from sync_package_chunks where upload_session_id=$1 and chunk_index=$2",
@@ -3015,7 +3219,7 @@ export const createCrossIdentitySyncRepository = (
           await client.query("commit");
           return upload;
         }
-        if (upload.state === "failed") {
+        if (upload.state === "failed" || upload.state === "superseded") {
           throw new SyncStateConflictError("Sync upload has failed");
         }
         const chunks = await client.query<Row>(
@@ -3180,6 +3384,10 @@ export const createCrossIdentitySyncRepository = (
     async claimSyncQueueEntry(input) {
       const table =
         input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
+      const currentInboxProfile =
+        input.queue === "inbox"
+          ? "and not exists(select 1 from sync_package_upload_sessions legacy where legacy.id=entry.upload_session_id and legacy.package_manifest->>'format'='koed.captured-session-sync/v1')"
+          : "";
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -3214,6 +3422,8 @@ export const createCrossIdentitySyncRepository = (
              and (entry.lease_expires_at is null or entry.lease_expires_at<=now())
              and entry.attempt_count>=entry.max_attempts
              and relationship.state<>'paused'
+             ${currentInboxProfile}
+             ${input.queue === "outbox" ? "and not exists(select 1 from sync_package_upload_sessions legacy where legacy.sync_relationship_id=relationship.id and legacy.source_sequence=relationship.package_sequence+1 and legacy.package_manifest->>'format'='koed.captured-session-sync/v1')" : ""}
            order by entry.lease_expires_at,entry.created_at
            for update of relationship,entry skip locked
            limit 1`
@@ -3370,6 +3580,7 @@ export const createCrossIdentitySyncRepository = (
                      (entry.lease_expires_at is null or entry.lease_expires_at<=now())))
                 and entry.available_at<=now()
                 and entry.attempt_count<entry.max_attempts
+                ${currentInboxProfile}
                 and (
                   ($2='outbox'
                     and relationship.side='source'
@@ -3637,6 +3848,15 @@ export const createCrossIdentitySyncRepository = (
           uploadManifest.summaryRevisionHash
         );
         const summarySnapshotIncluded = manifestSummaryRevisionHash !== null;
+        const manifestRepositorySnapshotHash =
+          uploadManifest.repositorySnapshotHash;
+        if (
+          manifestRepositorySnapshotHash !==
+          crossIdentitySyncDigest(input.package.session.repositorySnapshot)
+        )
+          throw new SyncStateConflictError(
+            "Package repository snapshot does not match its upload manifest"
+          );
         if (
           (summarySnapshotIncluded &&
             manifestSummaryRevisionHash !==
@@ -3698,6 +3918,17 @@ export const createCrossIdentitySyncRepository = (
             "Package cursor or identity mismatch"
           );
         }
+        if (input.package.session.repositorySnapshot)
+          await writeOwnerPrivateRepositorySnapshot(
+            client,
+            ownerPrivateReplicaEncryptionProvider,
+            {
+              sessionId,
+              ownerUserId: relationship.localUserId,
+              ownerPrincipalId
+            },
+            input.package.session.repositorySnapshot
+          );
         for (const change of input.package.changes) {
           const active = await client.query<Row>(
             "select * from sync_event_mappings where sync_relationship_id=$1 and origin_event_id=$2 and active=true for update",
@@ -4374,6 +4605,7 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async acknowledgeSourceSyncPackage(input) {
+      assertHash(input.repositorySnapshotHash);
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -4395,7 +4627,7 @@ export const createCrossIdentitySyncRepository = (
               and local_memory.owner_user_id=relationship.local_user_id
             where relationship.id = $1
               and relationship.side = 'source'
-            for update of relationship`,
+            for no key update of relationship`,
           [input.relationshipId]
         );
         const relationship = await client.query(
@@ -4408,6 +4640,7 @@ export const createCrossIdentitySyncRepository = (
                     when $6::text is null then source_summary_revision_hash
                     else $6
                   end,
+                  source_repository_snapshot_hash=coalesce($8::text,source_repository_snapshot_hash),
                   state='ready',
                   last_synced_at=now(),
                   stale_after=now()+($7::int*interval '1 second'),
@@ -4428,7 +4661,8 @@ export const createCrossIdentitySyncRepository = (
             input.packageSequence,
             input.packageId,
             input.summaryRevisionHash,
-            input.staleAfterSeconds
+            input.staleAfterSeconds,
+            input.repositorySnapshotHash
           ]
         );
         if (!relationship.rows[0]) {
@@ -4437,6 +4671,38 @@ export const createCrossIdentitySyncRepository = (
           );
         }
         const acknowledgedSource = source.rows[0];
+        if (acknowledgedSource) {
+          const currentSession = await client.query<
+            Row & RepositoryAssignmentRow
+          >(
+            "select * from sessions where id=$1 and owner_user_id=$2 and personal_deleted_at is null and invalidated_at is null for share",
+            [
+              acknowledgedSource.local_session_id,
+              acknowledgedSource.local_user_id
+            ]
+          );
+          if (currentSession.rows[0]) {
+            const currentHash = crossIdentitySyncDigest(
+              privateSourceRepositorySnapshot(currentSession.rows[0])
+            );
+            if (currentHash !== input.repositorySnapshotHash) {
+              const key = `repository-snapshot:${input.packageSequence}:${currentHash}`;
+              await client.query(
+                `insert into sync_outbox_entries(sync_relationship_id,idempotency_key,request_hash,payload_manifest)
+                 values($1,$2,$3,$4::jsonb) on conflict(sync_relationship_id,idempotency_key) do nothing`,
+                [
+                  input.relationshipId,
+                  key,
+                  crossIdentitySyncDigest({
+                    kind: "repository_snapshot",
+                    hash: currentHash
+                  }),
+                  JSON.stringify({ kind: "repository_snapshot" })
+                ]
+              );
+            }
+          }
+        }
         if (
           acknowledgedSource?.state === "processing" &&
           (!acknowledgedSource.local_user_id ||
@@ -4922,23 +5188,29 @@ export const createCrossIdentitySyncRepository = (
         input.terminalUploadRetentionHours ?? 720,
         24
       );
+      const awaitingProfileReceipt = (
+        alias: string
+      ) => `(${alias}.package_manifest->>'format' is not distinct from 'koed.captured-session-sync/v1'
+        and not exists(select 1 from sync_profile_transition_receipts receipt where receipt.sync_relationship_id=${alias}.sync_relationship_id and receipt.protocol_package_id=${alias}.protocol_package_id)
+        and exists(select 1 from cross_identity_sync_relationships relationship where relationship.id=${alias}.sync_relationship_id and relationship.revoked_at is null and relationship.state<>'purge_pending'))`;
+      const queueRetentionFence = `not exists(select 1 from sync_package_upload_sessions upload where upload.sync_relationship_id=entry.sync_relationship_id and ${awaitingProfileReceipt("upload")})`;
       const client = await pool.connect();
       try {
         await client.query("begin");
         const abandoned = await client.query(
-          "update sync_package_upload_sessions upload set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=coalesce(last_error_message,'AbandonedSyncUpload'),updated_at=now() where ((state in ('created','uploading','uploaded')) or (state in ('verified','processing') and not exists (select 1 from sync_inbox_entries inbox where inbox.upload_session_id=upload.id and inbox.state in ('pending','processing')))) and updated_at<now()-($1::int*interval '1 hour') returning id",
+          `update sync_package_upload_sessions upload set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=coalesce(last_error_message,'AbandonedSyncUpload'),updated_at=now() where not ${awaitingProfileReceipt("upload")} and ((state in ('created','uploading','uploaded')) or (state in ('verified','processing') and not exists (select 1 from sync_inbox_entries inbox where inbox.upload_session_id=upload.id and inbox.state in ('pending','processing')))) and updated_at<now()-($1::int*interval '1 hour') returning id`,
           [abandonedUploadHours]
         );
         const chunks = await client.query(
-          "delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state='failed' and upload.updated_at<now()-($2::int*interval '1 hour'))) returning chunk.id",
+          `delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and not ${awaitingProfileReceipt("upload")} and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state in ('failed','superseded') and upload.updated_at<now()-($2::int*interval '1 hour'))) returning chunk.id`,
           [completedRetentionHours, terminalUploadRetentionHours]
         );
         const queues = await client.query<Row>(
-          "with deleted_outbox as (delete from sync_outbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id), deleted_inbox as (delete from sync_inbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id) select (select count(*) from deleted_outbox)+(select count(*) from deleted_inbox) as count",
+          `with deleted_outbox as (delete from sync_outbox_entries entry where ${queueRetentionFence} and state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id), deleted_inbox as (delete from sync_inbox_entries entry where ${queueRetentionFence} and state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id) select (select count(*) from deleted_outbox)+(select count(*) from deleted_inbox) as count`,
           [terminalQueueRetentionHours]
         );
         const uploads = await client.query(
-          "delete from sync_package_upload_sessions upload where upload.state in ('completed','failed') and upload.updated_at<now()-($1::int*interval '1 hour') and not exists (select 1 from sync_package_chunks chunk where chunk.upload_session_id=upload.id) returning upload.id",
+          `delete from sync_package_upload_sessions upload where not ${awaitingProfileReceipt("upload")} and upload.state in ('completed','failed','superseded') and upload.updated_at<now()-($1::int*interval '1 hour') and not exists (select 1 from sync_package_chunks chunk where chunk.upload_session_id=upload.id) returning upload.id`,
           [terminalUploadRetentionHours]
         );
         await client.query("commit");

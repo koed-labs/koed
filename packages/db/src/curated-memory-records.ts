@@ -294,7 +294,7 @@ export const createCuratedMemoryRecordMethods = ({
           and (ci.source_event_type in ('user_message', 'UserPromptSubmit')
             or ci.metadata ->> 'transcriptType' = 'user_message')
           and ($2::uuid is null or ci.session_id = $2)
-          and ($3::text is null or s.cwd = $3)
+          and ($3::text is null or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $3))
         order by coalesce(ci.event_time, ci.observed_at, ci.created_at) desc, ci.id desc
         limit $4
       `,
@@ -369,6 +369,7 @@ export const createCuratedMemoryRecordMethods = ({
       `
         select me.id, me.payload
         from memory_events me
+        left join sessions source_session on source_session.id = me.session_id
         left join encrypted_field_payloads encrypted
           on encrypted.owner_user_id = me.owner_user_id
           and encrypted.visibility = 'personal'
@@ -383,14 +384,7 @@ export const createCuratedMemoryRecordMethods = ({
           and me.personal_deleted_at is null
           and ${semanticMemoryEventEligibleSql("me")}
           and ($2::uuid is null or me.session_id = $2)
-          and (
-            $3::text is null
-            or me.payload ->> 'projectId' = $3
-            or (
-              me.payload ->> 'contentEncrypted' = 'true'
-              and encrypted.scope ->> 'projectId' = $3
-            )
-          )
+          and ($3::text is null or repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $3))
           and (
             me.payload ->> 'actor' = 'user'
             or (
@@ -425,10 +419,7 @@ export const createCuratedMemoryRecordMethods = ({
           );
         payload = recordValue(decrypted?.plaintext, null) ?? {};
       }
-      if (
-        payload.actor !== "user" ||
-        (input.projectId !== undefined && payload.projectId !== input.projectId)
-      ) {
+      if (payload.actor !== "user") {
         throw new Error(
           "Curated Memory evidence metadata did not match its authenticated payload"
         );

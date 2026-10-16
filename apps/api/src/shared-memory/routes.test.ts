@@ -25,6 +25,7 @@ import {
   sharedMemoryGrantScopedSourceId,
   sharedMemoryCeilingAuthorizes,
   sharedMemoryRepresentationsForCeiling,
+  teamRepositorySnapshotReviewSchema,
   SharedMemoryConflictError
 } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
@@ -108,6 +109,7 @@ const createFixture = () => {
   ];
 
   let grantVersion = 1;
+  let updatedRepositorySnapshot: SharedMemoryGrantRecord["repositorySnapshot"];
   let revoked = false;
   let maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups" =
     "memory_events";
@@ -167,6 +169,9 @@ const createFixture = () => {
   });
 
   const grantRecord = (): SharedMemoryGrantRecord => ({
+    ...(updatedRepositorySnapshot
+      ? { repositorySnapshot: updatedRepositorySnapshot }
+      : {}),
     source: capturedSource,
     sourceRevisionId: ids.sourceRevision,
     sourceCapabilities: capturedSourceCapabilities,
@@ -479,6 +484,47 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async reviewGrantRepositorySnapshot(actor, input) {
+      repositoryCalls += 1;
+      if (
+        actor.userId !== ids.alice ||
+        input.shareGrantId !== ids.grant ||
+        revoked
+      )
+        throw new SharedMemoryAuthorizationError();
+      return {
+        shareGrantId: ids.grant,
+        teamId: ids.teamA,
+        teamWorkspaceId: ids.workspaceA,
+        grantVersion,
+        sourceRevision: 1,
+        representationId: ids.grant,
+        representationVersion: 1,
+        assignmentVersion: 1,
+        sourceContextHash: "a".repeat(64),
+        currentSnapshot: {
+          version: 1,
+          classification: "portable_repository",
+          fingerprint: "gr_reviewed_project",
+          label: null,
+          branchObservation: null
+        }
+      };
+    },
+    async updateGrantRepositorySnapshot(actor, input) {
+      repositoryCalls += 1;
+      if (
+        actor.userId !== ids.alice ||
+        input.shareGrantId !== ids.grant ||
+        revoked
+      )
+        throw new SharedMemoryAuthorizationError();
+      if (input.expected.grantVersion !== grantVersion)
+        throw new SharedMemoryConflictError();
+      updatedRepositorySnapshot = input.expected.currentSnapshot;
+      grantVersion += 1;
+      return grantRecord();
+    },
     async createSharedMemoryCandidatePreview() {
       return null;
     },
@@ -1421,6 +1467,78 @@ const ownerGrantIndexUrl = (fixture: ReturnType<typeof createFixture>) =>
   `/v1/shared-memory/logical-memories/${fixture.ids.logicalMemory}/share-grants`;
 
 describe("Shared Memory HTTP routes", () => {
+  it("reviews and explicitly updates an owned Project snapshot without accepting another Workspace", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const url = `/v1/shared-memory/share-grants/${fixture.ids.grant}/repository-snapshot`;
+    const preview = await app.inject({
+      method: "GET",
+      url: `${url}/review`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(preview.statusCode).toBe(200);
+    const review = teamRepositorySnapshotReviewSchema.parse(
+      jsonBody<{ review: unknown }>(preview).review
+    );
+    const payload = {
+      mutationId: randomUUID(),
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: fixture.ids.workspaceA,
+      expected: review,
+      authority: { action: SHARED_MEMORY_AUTHORITY, source: "browser_session" }
+    };
+    const before = fixture.repositoryCalls;
+    const wrong = await app.inject({
+      method: "POST",
+      url,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { ...payload, teamWorkspaceId: fixture.ids.workspaceB }
+    });
+    expect(wrong.statusCode).toBe(409);
+    expect(fixture.repositoryCalls).toBe(before);
+    const update = await app.inject({
+      method: "POST",
+      url,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload
+    });
+    expect(update.statusCode).toBe(200);
+    expect(
+      jsonBody<{
+        grant: { repositorySnapshot: unknown; grantVersion: number };
+      }>(update).grant
+    ).toMatchObject({
+      repositorySnapshot: review.currentSnapshot,
+      grantVersion: 2
+    });
+    const stale = await app.inject({
+      method: "POST",
+      url,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { ...payload, mutationId: randomUUID() }
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `${url}/review`,
+          headers: sessionHeaders(fixture.ids.bob)
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `${url}/review`,
+          headers: { authorization: "Bearer personal-api-token" }
+        })
+      ).statusCode
+    ).toBe(403);
+    await app.close();
+  });
+
   it("requires device-bound provenance for candidate admission", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);

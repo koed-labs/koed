@@ -260,6 +260,70 @@ describe.skipIf(!databaseUrl)(
       expect(storage.read).not.toHaveBeenCalled();
     });
 
+    it("retains the recorded repository assignment while replay records a capture conflict", async () => {
+      const payload = sourcePayload();
+      const automatic = {
+        kind: "portable_repository",
+        key: "gr_fixture_a",
+        root: "/fixture/a",
+        branch: "main",
+        reason: "origin",
+        checkoutId: "checkout_fixture",
+        originatingDeviceId: "fixture_device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/team/a"
+      };
+      const headers = { authorization: `Bearer ${ownerToken}` };
+      const created = await app.inject({
+        method: "POST",
+        url: "/v1/conversation-source-artifacts",
+        headers,
+        payload: {
+          ...payload,
+          sourceSession: {
+            ...payload.sourceSession,
+            cwd: "/fixture/a/subdirectory",
+            repositoryIdentity: automatic
+          }
+        }
+      });
+      expect(created.statusCode, created.body).toBe(200);
+      const session = created.json().session as {
+        id: string;
+        repositoryAssignment: { automatic: unknown };
+      };
+      expect(session.repositoryAssignment.automatic).toEqual(automatic);
+      const replay = await app.inject({
+        method: "POST",
+        url: "/v1/conversation-source-artifacts",
+        headers,
+        payload: {
+          ...payload,
+          sourceSession: {
+            ...payload.sourceSession,
+            repositoryIdentity: {
+              ...automatic,
+              key: "gr_fixture_b",
+              branch: "preview"
+            }
+          }
+        }
+      });
+      expect(replay.statusCode, replay.body).toBe(200);
+      expect(
+        (replay.json().session as { repositoryAssignment: unknown })
+          .repositoryAssignment
+      ).toEqual(
+        (created.json().session as { repositoryAssignment: unknown })
+          .repositoryAssignment
+      );
+      const conflicts = await pool.query<{ count: number }>(
+        "select count(*)::int as count from session_repository_observations where session_id=$1 and is_conflict",
+        [session.id]
+      );
+      expect(conflicts.rows[0]?.count).toBe(1);
+    });
+
     it("blocks paused or disabled hosted source writes while preserving retained owner reads", async () => {
       const payload = sourcePayload();
       const headers = { authorization: `Bearer ${ownerToken}` };

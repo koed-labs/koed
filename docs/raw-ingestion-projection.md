@@ -710,3 +710,98 @@ For a truly fresh hook replay, also remove the local hook optimization cache:
 ```bash
 rm -f ~/.koed/capture-state.json
 ```
+
+## Recorded repository assignments
+
+On the Project integration branch, a new Codex Captured Session stores one
+`repositoryAssignment`. The API session inspection response includes the
+recorded automatic identity, optional User override, effective identity, state,
+and assignment version. The effective identity is the override when present;
+otherwise it is the recorded automatic identity. An unresolved override still
+suppresses a portable automatic identity. Reset restores the recorded state.
+
+The Codex Transcript Watcher resolves the transcript's cwd through the shared
+local Project discovery boundary before live registration. The Supported
+Capture Hook remains a content-free watcher signal. It does not maintain its
+own device salt, Git policy, or assignment state. Registration retains original
+cwd and resolved Git root, originating checkout/device provenance, and a branch
+observation separate from the matching identity.
+
+Capture stores the automatic identity only on creation. External-session
+convergence and idempotency-key replay preserve the automatic identity, override,
+and assignment version. Existing native/logical session provenance is consulted
+even for a newly ingested row after invalidation. Changing capture keys cannot
+assign a historical Conversation from today's checkout. Explicit logical-session
+registrations use the same transaction locking boundary as native convergence.
+
+Later observations are deduplicated in `session_repository_observations`, bound
+to the owner and Session. Identity disagreements become capture conflicts;
+branch observations do not replace the recorded assignment. Existing source
+artifact registration also records observations after ownership and Capture
+Policy checks. No capture path unions identities or silently resolves history.
+
+Migration 0045 adds persistence and indexes without assigning old sessions from
+paths or remotes. Their assignment state is `historical_unresolved`. The explicit
+cutover function is prepared for ticket 16; no startup, migration, or capture
+path invokes it. Tests exercise it in a rolled-back release transaction.
+Historical candidate previews retain their recorded display metadata and do
+not discover an automatic assignment from current filesystem contents.
+
+Owner session inspection is available through `GET /v1/sessions/:sessionId`.
+Another User cannot inspect the assignment or update its override. Repository
+metadata grants no Workspace access and changes no existing Team snapshot.
+See [ADR 0057](adr/0057-selected-repository-identity.md) for identity selection.
+
+### Claude Code repository context
+
+Live Claude Code transcript registration carries the shared selected-repository
+observation from the transcript checkout. Projection reuses the Captured Session
+and its recorded effective assignment. Neither subsequent records nor auxiliary
+source components replace the assignment or resolve historical-unresolved state.
+Hook signals and filesystem discovery converge through the same Transcript
+Watcher and source registration; the watcher's own cwd never supplies the Project.
+
+### Pi repository context
+
+New live Pi source registrations carry the shared repository observation resolved
+from the authenticated transcript header's cwd. Later pages and resumed cursor
+processing reuse the same logical Captured Session. Repository metadata does not
+change source fingerprints, cursor identities, or the existing append-only and
+rewrite-generation checks. Recorded assignments, User overrides, and historical
+unresolved state remain authoritative across duplicate and delayed ingestion.
+
+### Managed runtime registration ordering
+
+Managed runtime capture resolves repository context before initial Session
+registration, including managed Codex child threads. This ordering matters:
+adding a repository observation only when the transcript journal arrives cannot
+resolve a Session that was already created unresolved. Managed runtime bindings
+supply the target checkout to the shared resolver. Transcript replay and recovery
+reuse the recorded Session assignment; they do not rediscover identity for every
+page or automatically repair historical Sessions.
+
+### Historical repository provenance
+
+Historical producers pass recorded source context through the same Session
+registration boundary as live capture. A fresh import prefers a reliable
+source-time Git anchor, then current Git discovery in the recorded absolute
+working folder, then a local folder Project. Missing
+or conflicting context produces an unresolved observation. Codex uses native
+Session metadata. Claude Code reads the main transcript's recorded cwd, including
+for auxiliary components. Pi uses the verified Session header's cwd.
+
+Historical assignment never substitutes the importing process's cwd. A recorded
+Git anchor remains authoritative when the folder disappears or changes repositories.
+Without a recorded anchor, discovery uses the same current repository selection
+as live capture, including subdirectory resolution and explicit anchor choices.
+The current branch is not recorded as a historical branch. Git selection conflicts
+remain unresolved. Missing folders and folders without usable Git metadata retain
+the recorded path fallback. Folder groups use normalized recorded paths and the
+local profile's Project salt. They claim no current checkout incarnation and
+remain separate from live checkout identities at the same path.
+
+Only initial Session creation records this automatic assignment. Re-import and
+Projection reuse existing assignments and User overrides. Migration 0046's
+`historical_unresolved` state remains authoritative through continued capture,
+invalidation recovery, and re-import. Resetting a User override restores the
+recorded automatic assignment or the migration's unresolved state.

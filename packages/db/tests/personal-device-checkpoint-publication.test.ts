@@ -91,6 +91,17 @@ describeDb("PDS automatic checkpoint publication", () => {
     });
 
     const memory = createMemorySourceRepository(pool);
+    const repositoryIdentity = {
+      kind: "portable_repository" as const,
+      key: "gr_publication_fixture",
+      root: "/source/checkout",
+      branch: "capture-branch",
+      reason: "origin" as const,
+      checkoutId: "source-checkout",
+      originatingDeviceId: deviceId,
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/publication"
+    };
     const session = await memory.createCapturedSession(
       { userId },
       {
@@ -99,7 +110,9 @@ describeDb("PDS automatic checkpoint publication", () => {
         sourceRuntime: "pi",
         sourceKind: "pi",
         sourceAdapterVersion: "pi-session-v1",
-        captureMethod: "transcript"
+        captureMethod: "transcript",
+        cwd: "/source/checkout/subdirectory",
+        repositoryIdentity
       }
     );
     const add = async (n: number, complete: boolean) => {
@@ -184,6 +197,15 @@ describeDb("PDS automatic checkpoint publication", () => {
         >[0]
       ) => {
         const checkpoint = value.checkpoint!;
+        expect(value.source.repositoryAssignment).toEqual({
+          state: "recorded",
+          version: 1,
+          automatic: repositoryIdentity,
+          override: null,
+          effective: repositoryIdentity
+        });
+        expect(value.source.capturedCwd).toBe("/source/checkout/subdirectory");
+        expect(value.source.branchObservation).toBe("capture-branch");
         published.push({
           count: value.source.items.length,
           ordinal: checkpoint.ordinal,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { isConversationDirectory } from "./conversation-directory.js";
 
 import { signalCodexTranscriptWatcher } from "./codex-transcript-watcher-signal.js";
 import { signalClaudeTranscriptWatcher } from "./claude-transcript-watcher-signal.js";
@@ -16,12 +17,16 @@ export const captureHookEnvironment = (
     : environment;
 };
 
-const readRoutingMetadata = async (): Promise<{
+export interface CaptureHookMetadata {
   hookEventName?: string;
   sourceSessionId?: string;
   transcriptPath?: string;
   cwd?: string;
-}> => {
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+}
+
+const readRoutingMetadata = async (): Promise<CaptureHookMetadata> => {
   let encoded = "";
   for await (const chunk of process.stdin) {
     if (encoded.length <= 16 * 1024 * 1024) {
@@ -41,23 +46,59 @@ const readRoutingMetadata = async (): Promise<{
       ...(typeof payload.transcript_path === "string"
         ? { transcriptPath: payload.transcript_path }
         : {}),
-      ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {})
+      ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+      ...(typeof payload.tool_name === "string"
+        ? { toolName: payload.tool_name }
+        : {}),
+      ...(payload.tool_input &&
+      typeof payload.tool_input === "object" &&
+      !Array.isArray(payload.tool_input)
+        ? { toolInput: payload.tool_input as Record<string, unknown> }
+        : {})
     };
   } catch {
     return {};
   }
 };
 
+/** Native hooks supply the Conversation directory before each recall call. */
+export const recallHookOutput = (
+  metadata: CaptureHookMetadata,
+  memoryTool = "mcp__koed__memory_answer",
+  source: "codex" | "claude" = "codex"
+): Record<string, unknown> => {
+  if (
+    metadata.hookEventName !== "PreToolUse" ||
+    metadata.toolName !== memoryTool ||
+    !metadata.toolInput
+  )
+    return {};
+  if (!isConversationDirectory(metadata.cwd))
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "Koed recall requires the current Conversation directory. Repair the AI Client integration and reconnect before retrying recall."
+      }
+    };
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      // Codex requires allow with updatedInput. Claude can rewrite arguments
+      // without an approval decision, preserving its normal permission flow.
+      ...(source === "codex" ? { permissionDecision: "allow" } : {}),
+      updatedInput: { ...metadata.toolInput, conversation_cwd: metadata.cwd }
+    }
+  };
+};
+
 export const signalCaptureHook = (
   environment: NodeJS.ProcessEnv = process.env,
-  metadata: {
-    hookEventName?: string;
-    sourceSessionId?: string;
-    transcriptPath?: string;
-    cwd?: string;
-  } = {},
+  metadata: CaptureHookMetadata = {},
   args: string[] = process.argv.slice(2)
 ): void => {
+  if (metadata.hookEventName === "PreToolUse") return;
   const sourceFlag = args.indexOf("--source");
   const source =
     args
@@ -89,11 +130,27 @@ export const signalCaptureHook = (
 };
 
 const main = async (): Promise<void> => {
-  signalCaptureHook(
-    captureHookEnvironment(),
-    await readRoutingMetadata(),
-    process.argv.slice(2)
-  );
+  const metadata = await readRoutingMetadata();
+  const args = process.argv.slice(2);
+  if (metadata.hookEventName === "PreToolUse") {
+    const toolFlag = args.indexOf("--memory-tool");
+    const sourceFlag = args.indexOf("--source");
+    const source =
+      args.includes("--source=claude") || args[sourceFlag + 1] === "claude"
+        ? "claude"
+        : "codex";
+    process.stdout.write(
+      JSON.stringify(
+        recallHookOutput(
+          metadata,
+          toolFlag < 0 ? undefined : args[toolFlag + 1],
+          source
+        )
+      )
+    );
+    return;
+  }
+  signalCaptureHook(captureHookEnvironment(), metadata, args);
 };
 
 if (

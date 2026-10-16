@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { MemoryAnswerTask, ClaimedMemoryAnswerTask } from "@koed/shared";
+import {
+  repositoryScopeId,
+  type RepositoryIdentity,
+  type MemoryAnswerTask,
+  type ClaimedMemoryAnswerTask
+} from "@koed/shared";
 import type { MemoryAnswerRetrievalClient } from "../src/answer-worker.js";
 import { AnswerExecutionCapacity } from "../src/answer-admission.js";
 import { MemoryAnswerTaskScheduler } from "../src/memory-answer-task-scheduler.js";
@@ -407,11 +412,26 @@ describe("Memory Answer task coordinator", () => {
       "team"
     ]);
     const input = acceptInput(accepted.teamWorkspaceId!);
+    const repositoryContext: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_team_fixture",
+      root: "/fixture",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_team_fixture",
+      originatingDeviceId: "device_fixture",
+      selectedRemote: "origin",
+      anchorDisplay: null
+    };
     await adapter.acceptMemoryAnswerTask({
       ...input,
       request: {
         ...input.request,
-        input: { ...input.request.input, team_backend_id: "remote" }
+        input: {
+          ...input.request.input,
+          team_backend_id: "remote",
+          repository_context: repositoryContext
+        }
       }
     });
     expect(accept).toHaveBeenCalledWith({
@@ -424,7 +444,8 @@ describe("Memory Answer task coordinator", () => {
           response_detail: "answer_only",
           limit: 10,
           include_evidence: false,
-          project_id: "/fixture"
+          project_id: repositoryScopeId(repositoryContext),
+          repository_context: repositoryContext
         }
       }
     });

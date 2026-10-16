@@ -16,9 +16,8 @@ When changing the schema:
 
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.
-Current journal head is `0033_fixed_scarlet_witch`; its owner backfill is
-covered by migration tests and preserves history without a client-instance
-foreign key. It fails closed unless all of these cases pass:
+Current journal head is `0046_project_scoped_recall`. The acceptance matrix
+covers the following upgrade and recovery cases:
 
 - a clean run of the full migration journal;
 - the exact populated current-main `0000` through `0012` schema upgraded by the
@@ -40,6 +39,18 @@ databases. The server must have the `vector` extension available. Matching
 `pg_dump` and `pg_restore` binaries must be on `PATH`; use `PG_DUMP_BIN` and
 `PG_RESTORE_BIN` to select explicit binaries. Every disposable database is
 force-dropped in cleanup, including on failure.
+
+Project recall uses one consolidated migration, `0046_project_scoped_recall`,
+after main's unchanged `0045_agent_seal_waiting_marker`. Migration `0046` includes
+the Project schema, database guards, sync profile support, and the one-time
+transition that marks existing Personal Sessions unresolved. Main databases can
+upgrade normally. Databases that used the earlier unreleased recall migrations
+require a reset. Startup rejects that discarded history before changing data.
+Do not use this build with an old branch database that contains data you need.
+
+Migration startup serializes concurrent upgrades. Workers wait for every expected
+migration hash before they use the schema. The migration tests cover populated
+main upgrades, transaction rollback, repeated runs, and the reset diagnostic.
 
 Do not add new migrations under `packages/db/src/migrations/`; that directory
 was replaced by the Drizzle migration folder.

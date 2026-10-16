@@ -7,7 +7,9 @@ import {
   discoverProjectMetadata,
   forgetProjectMetadata,
   getProjectMetadataForCwd,
-  listProjectMetadata
+  listProjectMetadata,
+  createNamedProject,
+  listNamedProjects
 } from "./project-metadata.js";
 
 const pathsFor = (directory: string): KoedServerPaths =>
@@ -42,6 +44,46 @@ const execFileFor = (repo: string) =>
   }) as never;
 
 describe("Project metadata discovery", () => {
+  it("persists named local identities without probing or creating a folder and retains them through discovery", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-named-project-")
+    );
+    try {
+      const paths = pathsFor(directory);
+      const first = createNamedProject(paths, "  Planning  ");
+      const second = createNamedProject(paths, "Planning");
+      expect(first).toMatchObject({
+        name: "Planning",
+        repository: {
+          kind: "local_project",
+          root: null,
+          checkoutId: null,
+          branch: null,
+          reason: "manual"
+        }
+      });
+      expect(second.repository.key).not.toBe(first.repository.key);
+      expect(second.repository.originatingDeviceId).toBe(
+        first.repository.originatingDeviceId
+      );
+      expect(listProjectMetadata(paths).projects).toEqual([]);
+      expect(listNamedProjects(paths)).toEqual([first, second]);
+      const cwd = path.join(directory, "actual-folder");
+      fs.mkdirSync(cwd);
+      await discoverProjectMetadata(paths, { cwd });
+      expect(listNamedProjects(paths)).toEqual([first, second]);
+      expect(() => createNamedProject(paths, "  ")).toThrow("Project name");
+      expect(() => createNamedProject(paths, "x".repeat(161))).toThrow(
+        "Project name"
+      );
+      expect(fs.readdirSync(directory).sort()).toEqual([
+        "actual-folder",
+        "config"
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("discovers and stores privacy-conscious Project metadata", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
     const repo = path.join(directory, "repo");
