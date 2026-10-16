@@ -58,10 +58,16 @@ it("shows unresolved identity and sends checkout-bound edits and reset while sur
       expectedCheckoutId: "checkout_one",
       remoteName: "missing"
     });
-    const reset = [...container.querySelectorAll("button")].find(
-      (element) => element.textContent === "Use automatic selection"
-    )!;
-    await act(async () => reset.click());
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLInputElement>('input[type="radio"]')[0]!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
     expect(onSetAnchor).toHaveBeenLastCalledWith({
       localProjectId: project.localProjectId,
       expectedCheckoutId: "checkout_one",
@@ -126,13 +132,27 @@ it("inspects and edits the selected checkout in a shared repository group", asyn
         <RepositoryAnchorPanel project={project} onSetAnchor={onSetAnchor} />
       )
     );
-    const select = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Repository checkout"]'
-    )!;
-    await act(async () => {
-      select.value = "local_two";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await act(async () =>
+      root.render(
+        <RepositoryAnchorPanel
+          project={{
+            ...project,
+            localProjectId: "local_two",
+            repository: project.checkouts![1]!.repository,
+            checkouts: undefined
+          }}
+          onSetAnchor={onSetAnchor}
+        />
+      )
+    );
+    expect(
+      container.querySelector('[aria-label="Repository checkout"]')
+    ).toBeNull();
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!
+        .click()
+    );
     expect(container.textContent).toContain("feature");
     expect(
       container.querySelector<HTMLInputElement>(

@@ -246,6 +246,7 @@ export const personalDesktopProjectSchema = z
   .object({
     id: identifierSchema,
     name: projectNameSchema,
+    repository: repositoryIdentitySchema.optional(),
     path: localProjectPathSchema.nullable(),
     eventCount: z.number().int().safe().nonnegative(),
     threads: z.array(personalDesktopProjectThreadSchema).max(5_000)

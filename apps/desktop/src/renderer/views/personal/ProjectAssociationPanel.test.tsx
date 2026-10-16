@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import type { ProjectSelectionCommandResult } from "@koed/shared/project-selection";
 import { ProjectAssociationPanel } from "./ProjectAssociationPanel.js";
 const localProjectId = `lp_${"a".repeat(32)}`;
+beforeEach(() => {
+  (
+    globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+});
 const accepted = {
   groupId: "group",
   associationId: "association",
@@ -58,8 +63,8 @@ const fixture = (conflict = true): ProjectSelectionCommandResult => ({
   ]
 });
 const button = (container: HTMLElement, text: string) =>
-  [...container.querySelectorAll("button")].find(
-    (entry) => entry.textContent === text
+  [...container.querySelectorAll("button")].find((entry) =>
+    entry.textContent?.startsWith(text)
   )!;
 
 it("reviews set/delete heads, rejects stale resolution, and requires another explicit choice", async () => {
@@ -89,14 +94,9 @@ it("reviews set/delete heads, rejects stale resolution, and requires another exp
         />
       )
     );
-    await act(async () =>
-      button(container, "Refresh shared selections").click()
-    );
-    expect(container.textContent).toContain("Concurrent changes");
-    expect(container.textContent).toContain("Remove shared selection");
-    await act(async () =>
-      button(container, "Resolve with chosen anchor").click()
-    );
+    expect(container.textContent).toContain("changes conflict");
+    expect(container.textContent).toContain("Remove shared choice");
+    await act(async () => button(container, "Resolve").click());
     expect(onAssociation.mock.calls[1]?.[0]).toEqual({
       operation: "set",
       localProjectId,
@@ -111,13 +111,13 @@ it("reviews set/delete heads, rejects stale resolution, and requires another exp
     );
     expect(container.textContent).toContain("deviceC");
     await act(async () =>
-      button(container, "Resolve by removing shared selection").click()
+      button(container, "Resolve by removing shared choice").click()
     );
     expect(onAssociation.mock.calls[3]?.[0]).toMatchObject({
       remoteName: null,
       reviewedHeads: ["rA", "rB", "rC"]
     });
-    expect(container.textContent).toContain("Re-create shared selection");
+    expect(container.textContent).toContain("Share again");
   } finally {
     await act(async () => root.unmount());
     container.remove();
@@ -138,12 +138,7 @@ it("keeps deletion recreation and local forgetting distinct", async () => {
         />
       )
     );
-    await act(async () =>
-      button(container, "Refresh shared selections").click()
-    );
-    await act(async () =>
-      button(container, "Re-create shared selection").click()
-    );
+    await act(async () => button(container, "Share again").click());
     expect(onAssociation).toHaveBeenLastCalledWith({
       operation: "set",
       localProjectId,
@@ -152,9 +147,7 @@ it("keeps deletion recreation and local forgetting distinct", async () => {
       remoteName: "origin",
       reviewedHeads: ["rDeleted"]
     });
-    await act(async () =>
-      button(container, "Forget association on this checkout").click()
-    );
+    await act(async () => button(container, "Unlink this folder").click());
     expect(onAssociation).toHaveBeenLastCalledWith({
       operation: "forget",
       localProjectId,
@@ -182,23 +175,16 @@ it("requires acceptance instead of silently linking an equal anchor", async () =
         />
       )
     );
-    await act(async () =>
-      button(container, "Refresh shared selections").click()
-    );
     expect(onAssociation).toHaveBeenCalledTimes(1);
-    expect(
-      button(container, "Accept association for this checkout").disabled
-    ).toBe(true);
+    expect(button(container, "Link folder").disabled).toBe(true);
     const select = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Available Project association"]'
+      '[aria-label="Available shared choice"]'
     )!;
     await act(async () => {
       select.value = "association";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await act(async () =>
-      button(container, "Accept association for this checkout").click()
-    );
+    await act(async () => button(container, "Link folder").click());
     expect(onAssociation).toHaveBeenLastCalledWith({
       operation: "accept",
       localProjectId,
@@ -208,5 +194,88 @@ it("requires acceptance instead of silently linking an equal anchor", async () =
   } finally {
     await act(async () => root.unmount());
     container.remove();
+  }
+});
+
+it("separates new sharing from linking and uses the inspected default remote", async () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const offered = fixture();
+  offered.accepted = null;
+  offered.remotes.push({
+    name: "upstream",
+    fingerprint: "gr_other",
+    display: "example.test/team/other"
+  });
+  offered.defaultRemote = "upstream";
+  const linked = { ...offered, accepted };
+  linked.associations[0]!.state = {
+    ...linked.associations[0]!.state,
+    state: "selected",
+    heads: ["rA"],
+    anchorFingerprint: "gr_project"
+  };
+  const onAssociation = vi
+    .fn()
+    .mockResolvedValueOnce(offered)
+    .mockResolvedValue(linked);
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectAssociationPanel
+          localProjectId={localProjectId}
+          onAssociation={onAssociation}
+        />
+      )
+    );
+    expect(
+      container.querySelector('[aria-label="Repository remote"]')
+    ).toBeNull();
+    expect(button(container, "Link folder").disabled).toBe(true);
+    await act(async () => button(container, "Share new").click());
+    expect(
+      container.querySelector('[aria-label="Available shared choice"]')
+    ).toBeNull();
+    expect(
+      container.querySelector<HTMLSelectElement>(
+        '[aria-label="Repository remote"]'
+      )!.value
+    ).toBe("upstream");
+    await act(async () => button(container, "Share and link").click());
+    expect(onAssociation).toHaveBeenLastCalledWith({
+      operation: "create",
+      localProjectId,
+      expectedCheckoutId: "checkout",
+      remoteName: "upstream"
+    });
+    expect(container.textContent).toContain(
+      "Updates apply to all linked folders."
+    );
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("keeps shared edits unavailable while history is incomplete", async () => {
+  const container = document.createElement("div"),
+    root = createRoot(container);
+  const incomplete = fixture();
+  incomplete.associations[0]!.state.state = "incomplete";
+  const onAssociation = vi.fn().mockResolvedValue(incomplete);
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectAssociationPanel
+          localProjectId={localProjectId}
+          onAssociation={onAssociation}
+        />
+      )
+    );
+    expect(button(container, "Save changes").disabled).toBe(true);
+    expect(button(container, "Remove shared choice").disabled).toBe(true);
+    expect(button(container, "Unlink this folder").disabled).toBe(false);
+    expect(onAssociation).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => root.unmount());
   }
 });

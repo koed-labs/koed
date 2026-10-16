@@ -176,7 +176,13 @@ describe("Koed server desktop manager", () => {
         ok: true,
         data: {
           projects: [
-            { id: targetProjectId, name: "Planning", path: null, threads: [] }
+            {
+              id: targetProjectId,
+              name: "Planning",
+              repository: { kind: "local_project", reason: "manual" },
+              path: null,
+              threads: []
+            }
           ]
         }
       });

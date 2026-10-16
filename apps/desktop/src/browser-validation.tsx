@@ -33,6 +33,7 @@ import type {
   ManagedConversationIdentity
 } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
+import { ProjectFolderValidation } from "./project-folder-validation.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -161,6 +162,7 @@ const namedProjectIdentity = {
 const addedPersonalProject: PersonalDesktopProject = {
   id: repositoryScopeId(namedProjectIdentity),
   name: "Added Project",
+  repository: namedProjectIdentity,
   path: null,
   eventCount: 0,
   threads: []
@@ -428,7 +430,22 @@ const personalMemoryApi: PersonalDesktopApi = {
           }
         ]
       : [personalProject, ...(addedProject ? [addedPersonalProject] : [])],
-  listProjectMetadata: async () => [independentProjectMetadata],
+  listProjectMetadata: async () => [
+    independentProjectMetadata,
+    {
+      schemaVersion: 1,
+      discoveredAt: timestamp,
+      lastSeenAt: timestamp,
+      localProjectId: personalProject.id,
+      displayName: personalProject.name,
+      path: { cwd: personalProject.path!, projectRoot: personalProject.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ name: "origin", display: "github.com/koed-labs/koed" }]
+      }
+    }
+  ],
   loadEventPage: async () => personalEvents,
   updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
@@ -3064,7 +3081,9 @@ const browserValidationView = new URLSearchParams(window.location.search).get(
   "view"
 );
 createRoot(document.querySelector("#root")!).render(
-  browserValidationView === "chat" ? (
+  browserValidationView === "project-folders" ? (
+    <ProjectFolderValidation />
+  ) : browserValidationView === "chat" ? (
     <ChatValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (
     <CollaborationInteractionsValidationApp />

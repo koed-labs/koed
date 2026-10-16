@@ -12,6 +12,13 @@ Projects from their headers. Whole-Project moves also route future captures
 from that source into the destination. Empty Projects can receive unresolved
 history.
 
+Hide empty automatically discovered Projects until they contain a Conversation
+or Memory Events, while keeping empty named Projects visible.
+Keep the Project header compact with repository and folder details in a pop-up
+card, and align the Move and New actions to the same height. Place Advanced
+controls inside each folder card and use separate, concise flows to link an
+existing shared anchor choice or publish a new one across Personal devices.
+
 Assign fresh historical imports from reliable recorded Git metadata, then Git
 discovery in the recorded working folder, then a local folder Project. Preserve
 manual assignments and the existing migration cutoff. Current discovery does not

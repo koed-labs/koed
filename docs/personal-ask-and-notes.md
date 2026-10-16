@@ -93,6 +93,25 @@ activity. Catalogue discovery and refresh times do not count as activity.
 Projects without Conversations show No activity. The Project list labels its
 activity groups **Active** and **Inactive**.
 
+The Projects view hides automatically discovered Projects with no Conversations
+and no Memory Events, including from move destinations. There is no control to
+show these empty entries. Capture or historical ingestion makes a Project
+available as soon as it adds a Conversation, even before Memory processing
+finishes. Existing catalogue entries and ingestion continue to work. Named
+Projects created by the User remain visible while empty, in Active, so they can
+receive Conversations.
+Desktop includes the named Project identity in the Project response even when
+the Project has no Conversations.
+
+The Project header has a fixed height. It shows the Project name, a compact
+repository label, Conversation and Memory Event counts, and equal-height Move
+and New actions. Select the name or repository label to open a detail card with
+repository links and its folders. Selecting a folder opens its repository and
+path, an inline reveal action, and Advanced controls. Repository anchor, Review
+previous assignments, and Share anchor across devices each open a separate page
+for that folder. The card does not expand the header or change the folder used
+to start a Conversation.
+
 Chats has one stable Project identity. Desktop matches captured Projects to
 catalogue entries by identity before path. Private runtime directories under
 `managed-conversations/independent` belong to Chats and do not appear as separate

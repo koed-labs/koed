@@ -25,6 +25,7 @@ export type DesktopThreadGroup = {
 export type DesktopProjectGroup = {
   id: string;
   name: string;
+  repository?: RepositoryIdentity;
   path: string | null;
   eventCount: number;
   threads: DesktopThreadGroup[];
@@ -67,6 +68,7 @@ export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
     localProjectId: string;
     path: string;
     repository?: RepositoryIdentity;
+    repositoryRemotes?: Array<{ name?: string; display: string | null }>;
   }>;
 };
 
@@ -175,7 +177,7 @@ const enrichProject = (
   lastSeenAt: metadata?.lastSeenAt ?? null,
   localProjectId: metadata?.localProjectId ?? null,
   branch: metadata?.git?.branch ?? null,
-  repository: metadata?.repository,
+  repository: metadata?.repository ?? project.repository,
   repositoryRemotes: metadata?.git?.remotes,
   remoteDisplay: metadata?.repository
     ? metadata.repository.anchorDisplay
@@ -194,9 +196,10 @@ export const mergeProjectSources = (
       ? repositoryScopeId(identity)
       : null;
   for (const source of graphProjects) {
-    const identity = source.threads.find(
-      (thread) => thread.repositoryAssignment?.effective
-    )?.repositoryAssignment?.effective;
+    const identity =
+      source.repository ??
+      source.threads.find((thread) => thread.repositoryAssignment?.effective)
+        ?.repositoryAssignment?.effective;
     // Graph groups are main-owned explicit context. Paths never establish
     // affinity; recorded effective identity is authoritative when present.
     const id = keyFor(identity) ?? source.id;
@@ -224,7 +227,8 @@ export const mergeProjectSources = (
     const checkout = {
       localProjectId: metadata.localProjectId,
       path: metadata.path.projectRoot ?? metadata.path.cwd,
-      repository: metadata.repository
+      repository: metadata.repository,
+      repositoryRemotes: metadata.git?.remotes
     };
     const current = groups.get(id);
     if (current) {
@@ -275,7 +279,8 @@ export const mergeProjectSources = (
         checkouts.push({
           localProjectId: metadata.localProjectId,
           path: metadata.path.projectRoot ?? metadata.path.cwd,
-          repository: metadata.repository
+          repository: metadata.repository,
+          repositoryRemotes: metadata.git?.remotes
         });
     if (checkouts.length) project.checkouts = checkouts;
   }

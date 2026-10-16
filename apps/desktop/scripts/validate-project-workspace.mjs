@@ -549,6 +549,60 @@ const run = async () => {
     );
     await delay(50);
 
+    const projectHeader = await window.webContents.executeJavaScript(`(() => {
+      const header = document.querySelector('.personal-project-header');
+      const move = header.querySelector('[aria-label="Move Project"]');
+      const create = header.querySelector('.personal-new-conversation');
+      return {
+        height: header.getBoundingClientRect().height,
+        moveHeight: move.getBoundingClientRect().height,
+        newHeight: create.getBoundingClientRect().height,
+        pathsExposed: header.textContent.includes('/private/operator/')
+      };
+    })()`);
+    assert.equal(projectHeader.height, 96, JSON.stringify(projectHeader));
+    assert.equal(
+      projectHeader.moveHeight,
+      projectHeader.newHeight,
+      JSON.stringify(projectHeader)
+    );
+    assert.equal(
+      projectHeader.pathsExposed,
+      false,
+      JSON.stringify(projectHeader)
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.personal-project-details-trigger').click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-project-details-card'))`,
+      "Project detail card"
+    );
+    const projectDetails = await window.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.personal-project-details-card');
+      return {
+        folder: card.textContent.includes('/private/operator/koed'),
+        repository: Boolean(card.querySelector('.personal-project-repo')),
+        headerHeight: document.querySelector('.personal-project-header').getBoundingClientRect().height
+      };
+    })()`);
+    assert.equal(projectDetails.folder, true, JSON.stringify(projectDetails));
+    assert.equal(
+      projectDetails.repository,
+      true,
+      JSON.stringify(projectDetails)
+    );
+    assert.equal(
+      projectDetails.headerHeight,
+      96,
+      JSON.stringify(projectDetails)
+    );
+    await captureValidationScreenshot(window, "balanced-project-header");
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Close Project details"]').click()`
+    );
+
     await setEmulatedViewport(window, 1440, 900);
     const wide = await inspectWorkspace(window);
     assert.equal(wide.workspaceDisplay, "grid", JSON.stringify(wide));

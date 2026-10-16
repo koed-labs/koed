@@ -3037,6 +3037,7 @@ export const createKoedServerManager = ({
       byId.set(id, {
         id,
         name: named.name,
+        repository: named.repository,
         path: null,
         eventCount: existing?.eventCount ?? 0,
         threads:

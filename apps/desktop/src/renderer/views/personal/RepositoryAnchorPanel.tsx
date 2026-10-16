@@ -1,55 +1,62 @@
-import { RepositoryReviewPanel } from "./RepositoryReviewPanel.js";
-import { ProjectAssociationPanel } from "./ProjectAssociationPanel.js";
-import { useEffect, useState } from "react";
+import { Button } from "@koed/ui";
+import { useEffect, useId, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { RendererPlatform } from "../../services/platform.js";
 
-export function RepositoryAnchorPanel({
-  project,
-  onSetAnchor,
-  onReview,
-  onAssociation,
-  onChanged
-}: {
-  project: DesktopProject;
+export type ProjectRepositoryActions = {
   onSetAnchor?: RendererPlatform["setRepositoryAnchor"];
   onReview?: RendererPlatform["reviewRepository"];
   onAssociation?: RendererPlatform["projectAssociation"];
   onChanged?: () => Promise<void>;
-}) {
-  const [selectedCheckoutId, setSelectedCheckoutId] = useState(
-    project.localProjectId
-  );
-  const selectedCheckout =
-    project.checkouts?.find(
-      (checkout) => checkout.localProjectId === selectedCheckoutId
-    ) ?? project.checkouts?.[0];
-  const localProjectId =
-    selectedCheckout?.localProjectId ?? project.localProjectId;
-  const [remote, setRemote] = useState(
-    project.repository?.selectedRemote ?? ""
+};
+
+export function RepositoryAnchorPanel({
+  project,
+  onSetAnchor,
+  onChanged
+}: { project: DesktopProject } & Pick<
+  ProjectRepositoryActions,
+  "onSetAnchor" | "onChanged"
+>) {
+  const repository = project.repository;
+  const [remote, setRemote] = useState(repository?.selectedRemote ?? "");
+  const [mode, setMode] = useState<"auto" | "local">(
+    repository?.reason === "local_selection" ||
+      repository?.reason === "selection_missing" ||
+      repository?.reason === "selection_not_portable"
+      ? "local"
+      : "auto"
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const repository = selectedCheckout?.repository ?? project.repository;
+  const [message, setMessage] = useState("");
+  const remoteListId = useId();
   useEffect(() => {
     setRemote(repository?.selectedRemote ?? "");
   }, [repository?.checkoutId, repository?.selectedRemote]);
   if (!repository) return null;
-  const save = async (remoteName: string | null) => {
-    if (!onSetAnchor || !localProjectId || !repository.checkoutId) return;
+  const save = async () => {
+    if (!onSetAnchor || !project.localProjectId || !repository.checkoutId)
+      return;
     setBusy(true);
     setError("");
+    setMessage("");
     try {
       await onSetAnchor({
-        localProjectId,
+        localProjectId: project.localProjectId,
         expectedCheckoutId: repository.checkoutId,
-        remoteName
+        remoteName: mode === "local" ? remote.trim() : null
       });
-    } catch (error) {
+      setMessage("Repository choice saved. Older Conversations did not move.");
+      try {
+        await onChanged?.();
+      } catch {
+        setError("The choice was saved. Refresh Projects to see it.");
+      }
+    } catch (failure) {
       setError(
-        error instanceof Error
-          ? error.message
+        failure instanceof Error
+          ? failure.message
           : "Repository anchor could not be saved."
       );
     } finally {
@@ -57,106 +64,106 @@ export function RepositoryAnchorPanel({
     }
   };
   return (
-    <details className="personal-repository-anchor">
-      <summary>
-        Repository anchor ·{" "}
-        {repository.anchorDisplay ?? repository.kind.replaceAll("_", " ")}
-      </summary>
-      {(project.checkouts?.length ?? 0) > 1 ? (
-        <label>
-          Checkout{" "}
-          <select
-            aria-label="Repository checkout"
-            value={localProjectId ?? ""}
-            onChange={(event) => {
-              setSelectedCheckoutId(event.target.value);
-              setRemote(
-                project.checkouts?.find(
-                  (checkout) => checkout.localProjectId === event.target.value
-                )?.repository?.selectedRemote ?? ""
-              );
-            }}
-          >
-            {project.checkouts!.map((checkout) => (
-              <option
-                key={checkout.localProjectId}
-                value={checkout.localProjectId}
-              >
-                {checkout.path}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      <dl>
-        <dt>Resolution</dt>
-        <dd>{repository.reason.replaceAll("_", " ")}</dd>
-        <dt>Identity</dt>
-        <dd>{repository.key ?? "Unresolved"}</dd>
-        <dt>Checkout</dt>
-        <dd>{repository.root}</dd>
-        <dt>Branch</dt>
-        <dd>{repository.branch ?? "No branch observation"}</dd>
-        <dt>Originating device</dt>
-        <dd>{repository.originatingDeviceId}</dd>
-      </dl>
-      {onSetAnchor && repository.checkoutId && localProjectId ? (
+    <section className="personal-repository-anchor">
+      <p className="personal-project-details-description">
+        An anchor is the repository that identifies this folder. Koed uses this
+        choice for new Conversations.
+      </p>
+      {onSetAnchor && repository.checkoutId && project.localProjectId ? (
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            void save(remote);
+            void save();
           }}
         >
-          <label>
-            Selected remote{" "}
+          <label className="personal-project-choice">
             <input
-              aria-label="Selected repository remote"
-              value={remote}
-              onChange={(event) => setRemote(event.target.value)}
-              list={`repository-remotes-${project.localProjectId}`}
+              type="radio"
+              name={remoteListId}
+              checked={mode === "auto"}
               disabled={busy}
+              onChange={() => setMode("auto")}
             />
+            <span>
+              Automatic
+              <small>
+                If this folder is linked, follow its shared choice. Otherwise,
+                use Git detection.
+              </small>
+            </span>
           </label>
-          <datalist id={`repository-remotes-${project.localProjectId}`}>
-            {[
-              ...new Set(
-                project.repositoryRemotes
-                  ?.map((entry) => entry.name)
-                  .filter(Boolean)
-              )
-            ].map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-          <button type="submit" disabled={busy || !remote.trim()}>
-            Save anchor
-          </button>
-          <button type="button" disabled={busy} onClick={() => void save(null)}>
-            Use automatic selection
-          </button>
-          <p>
-            The selected anchor identifies this checkout. Recorded session
-            assignments stay as recorded.
+          <label className="personal-project-choice">
+            <input
+              type="radio"
+              name={remoteListId}
+              checked={mode === "local"}
+              disabled={busy}
+              onChange={() => setMode("local")}
+            />
+            <span>
+              Choose for this folder only
+              <small>Use this choice even when a shared choice exists.</small>
+            </span>
+          </label>
+          {mode === "local" ? (
+            <label className="personal-project-field">
+              Git remote
+              <input
+                aria-label="Selected repository remote"
+                value={remote}
+                onChange={(event) => setRemote(event.target.value)}
+                list={remoteListId}
+                disabled={busy}
+              />
+              <datalist id={remoteListId}>
+                {[
+                  ...new Set(
+                    project.repositoryRemotes
+                      ?.map((entry) => entry.name)
+                      .filter(Boolean)
+                  )
+                ].map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              <small>A remote is a named Git repository address.</small>
+            </label>
+          ) : (
+            <p className="personal-project-details-description">
+              {repository.anchorDisplay ?? "Unresolved"}
+            </p>
+          )}
+          <p className="personal-project-details-description">
+            This does not move older Conversations. Use Review previous
+            assignments to move them.
           </p>
+          <div className="personal-project-card-actions">
+            <Button
+              type="submit"
+              disabled={busy || (mode === "local" && !remote.trim())}
+            >
+              Save anchor
+            </Button>
+          </div>
         </form>
       ) : null}
-      {onReview && localProjectId ? (
-        <RepositoryReviewPanel
-          key={localProjectId}
-          localProjectId={localProjectId}
-          onReview={onReview}
-          onChanged={onChanged}
-        />
-      ) : null}
-      {onAssociation && localProjectId ? (
-        <ProjectAssociationPanel
-          key={localProjectId}
-          localProjectId={localProjectId}
-          onAssociation={onAssociation}
-          onChanged={onChanged}
-        />
-      ) : null}
+      <details className="personal-project-technical">
+        <summary>Technical details</summary>
+        <dl>
+          <dt>Resolution</dt>
+          <dd>{repository.reason.replaceAll("_", " ")}</dd>
+          <dt>Identity</dt>
+          <dd>{repository.key ?? "Unresolved"}</dd>
+          <dt>Folder</dt>
+          <dd>{repository.root}</dd>
+          <dt>Branch</dt>
+          <dd>{repository.branch ?? "No branch observation"}</dd>
+          <dt>Originating device</dt>
+          <dd>{repository.originatingDeviceId}</dd>
+        </dl>
+      </details>
+      {message ? <p role="status">{message}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
-    </details>
+    </section>
   );
 }

@@ -485,12 +485,194 @@
 }
 
 .personal-project-detail > header {
+  box-sizing: border-box;
+  flex: 0 0 6rem;
+  height: 6rem;
   justify-content: flex-start;
+  max-height: 6rem;
+  min-height: 6rem;
 }
 
-.personal-project-detail > header > div {
+.personal-project-detail-heading {
   flex: 1;
   min-width: 0;
+}
+
+.personal-project-detail-heading h2 {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.personal-project-details-trigger,
+.personal-project-repository-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.25rem;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.375rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.personal-project-details-trigger > span,
+.personal-project-repository-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-project-details-trigger svg,
+.personal-project-repository-trigger svg {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  height: 0.875rem;
+  width: 0.875rem;
+}
+
+.personal-project-details-trigger:hover,
+.personal-project-repository-trigger:hover {
+  color: var(--foreground);
+}
+
+.personal-project-details-trigger:focus-visible,
+.personal-project-repository-trigger:focus-visible,
+.personal-project-details-folder:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.personal-project-header-meta {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  min-width: 0;
+}
+
+.personal-project-header-meta .personal-project-overview {
+  flex: 0 0 auto;
+  gap: 0.625rem;
+}
+
+.personal-project-detail-actions > button {
+  box-sizing: border-box;
+  height: 2.375rem;
+  line-height: 1.25rem;
+  max-height: 2.375rem;
+  min-height: 2.375rem;
+  padding: 0 0.75rem;
+}
+
+.personal-project-details-positioner {
+  max-width: calc(100vw - 1.5rem);
+  z-index: 50;
+}
+
+.personal-project-details-card {
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 16%);
+  color: var(--popover-foreground);
+  font-size: 0.8125rem;
+  max-height: min(32rem, var(--available-height, calc(100dvh - 1.5rem)));
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1rem;
+  width: 25rem;
+}
+
+.personal-project-details-card-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.personal-project-details-card-heading h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.personal-project-details-card section + section {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.personal-project-details-card h3 {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+}
+
+.personal-project-details-card ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.personal-project-details-card li + li {
+  margin-top: 0.375rem;
+}
+
+.personal-project-details-folder {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: inherit;
+  display: flex;
+  font: inherit;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  text-align: left;
+  width: 100%;
+}
+
+button.personal-project-details-folder {
+  cursor: pointer;
+}
+
+button.personal-project-details-folder:hover {
+  background: var(--accent);
+}
+
+.personal-project-details-folder svg {
+  flex: 0 0 auto;
+  height: 1rem;
+  margin-top: 0.125rem;
+  width: 1rem;
+}
+
+.personal-project-details-folder > span,
+.personal-project-details-card .personal-project-repo > span {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.personal-project-details-description {
+  color: var(--muted-foreground);
+  margin: 0;
+}
+
+@media (max-width: 480px) {
+  .personal-project-detail-actions .personal-session-manage-button > span {
+    display: none;
+  }
 }
 
 .personal-new-conversation {
@@ -3222,64 +3404,7 @@
   white-space: nowrap;
 }
 
-.personal-repository-anchor {
-  margin-block: 0.75rem;
-  max-width: 100%;
-  font-size: 0.8125rem;
-}
-.personal-repository-anchor summary {
-  cursor: pointer;
-}
-.personal-repository-anchor dl {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.375rem 0.75rem;
-}
-.personal-repository-anchor dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.personal-repository-anchor form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.personal-repository-anchor form p {
-  flex-basis: 100%;
-}
-
-.personal-repository-anchor button,
-.personal-repository-anchor select {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--background);
-  color: var(--foreground);
-  min-height: 2.25rem;
-  padding: 0.4rem 0.65rem;
-  font: inherit;
-}
-.personal-repository-anchor button {
-  cursor: pointer;
-}
-.personal-repository-anchor button:hover:not(:disabled) {
-  background: var(--accent);
-}
-.personal-repository-anchor button:focus-visible,
-.personal-repository-anchor select:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-.personal-repository-anchor button:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-.personal-repository-anchor select {
-  max-width: 100%;
-}
 .personal-repository-review {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
   line-height: 1.5;
 }
 .personal-repository-review h3 {
@@ -3317,9 +3442,249 @@
 .personal-repository-review li + li {
   margin-top: 0.5rem;
 }
-.personal-repository-review button + button {
-  margin-left: 0.5rem;
-}
 .personal-repository-review [role="alert"] {
   color: var(--destructive);
+}
+
+.personal-project-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.personal-project-card-title h2:focus {
+  outline: none;
+}
+.personal-project-details-folder > span {
+  flex: 1;
+  min-width: 0;
+}
+.personal-project-details-folder > span > span,
+.personal-project-details-folder small {
+  display: block;
+}
+.personal-project-details-folder small,
+.personal-project-folder-action small,
+.personal-project-field small,
+.personal-project-choice small {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.personal-project-details-folder > svg:last-child {
+  align-self: center;
+}
+.personal-project-folder-location {
+  display: grid;
+  gap: 0.5rem;
+}
+.personal-project-folder-path,
+.personal-project-folder-context {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.personal-project-folder-path {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.personal-project-folder-path > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.personal-project-folder-path > svg,
+.personal-project-folder-context > svg,
+.personal-project-folder-action > svg,
+.personal-project-notice > svg {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+.personal-project-folder-context {
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  overflow-wrap: anywhere;
+}
+.personal-project-folder-context > span:first-child {
+  color: var(--muted-foreground);
+}
+.personal-project-folder-advanced {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+.personal-project-folder-action {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.625rem;
+  padding: 0.75rem 0;
+  text-align: left;
+  width: 100%;
+}
+.personal-project-folder-action:hover {
+  background: var(--accent);
+}
+.personal-project-folder-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.personal-project-folder-action > span {
+  flex: 1;
+  min-width: 0;
+}
+.personal-project-folder-action > span > span,
+.personal-project-folder-action small {
+  display: block;
+}
+.personal-project-field {
+  display: grid;
+  gap: 0.375rem;
+  margin-block: 0.875rem;
+}
+.personal-project-field input,
+.personal-project-field select {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-sizing: border-box;
+  color: var(--foreground);
+  font: inherit;
+  min-height: 2.375rem;
+  min-width: 0;
+  padding: 0.5rem;
+  width: 100%;
+}
+.personal-project-field input:focus-visible,
+.personal-project-field select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.personal-project-choice {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.5rem;
+  margin-block: 0.875rem;
+}
+.personal-project-choice input {
+  accent-color: var(--primary);
+  flex: none;
+  margin-top: 0.25rem;
+}
+.personal-project-choice small {
+  display: block;
+  margin-top: 0.25rem;
+}
+.personal-project-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-block: 1rem;
+}
+.personal-project-card-actions > button {
+  white-space: normal;
+  min-height: 2.375rem;
+  height: auto;
+  padding-block: 0.375rem;
+}
+.personal-project-technical {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  margin-top: 1rem;
+}
+.personal-project-technical summary {
+  cursor: pointer;
+}
+.personal-project-technical p {
+  margin-block: 0.75rem;
+}
+.personal-project-technical dl {
+  display: grid;
+  gap: 0.375rem 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.personal-project-technical dd {
+  margin: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.personal-project-sharing-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.personal-project-sharing-intro p {
+  flex: 1;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.personal-project-sharing-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.personal-project-sharing-modes [aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--muted-foreground);
+}
+.personal-project-notice {
+  align-items: center;
+  background: var(--accent);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  margin-block: 1rem;
+  overflow-wrap: anywhere;
+  padding: 0.625rem;
+}
+.personal-project-sharing-links {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+.personal-project-sharing-links > button {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.25rem;
+  height: auto;
+  padding: 0.625rem;
+  white-space: normal;
+  text-align: left;
+}
+.personal-project-sharing-links small {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.personal-project-shared-revisions li {
+  padding-block: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.personal-project-shared-revisions small {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 0.75rem;
+}
+.personal-project-details-card [role="alert"] {
+  color: var(--destructive);
+  overflow-wrap: anywhere;
+}
+.personal-project-details-card [role="status"] {
+  overflow-wrap: anywhere;
 }

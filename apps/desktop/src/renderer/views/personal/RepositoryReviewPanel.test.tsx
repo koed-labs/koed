@@ -55,7 +55,7 @@ const review: RepositoryReview = {
 };
 const button = (container: HTMLDivElement, text: string) =>
   [...container.querySelectorAll("button")].find(
-    (el) => el.textContent === text
+    (el) => el.textContent === text || el.getAttribute("aria-label") === text
   )!;
 it("shows fixed versions and replaced overrides, applies only selected ids, and reloads groups", async () => {
   const container = document.createElement("div");
@@ -78,9 +78,6 @@ it("shows fixed versions and replaced overrides, applies only selected ids, and 
         />
       )
     );
-    await act(async () =>
-      button(container, "Review repository changes").click()
-    );
     expect(container.textContent).toContain("example/a");
     expect(container.textContent).toContain("example/b");
     await act(async () =>
@@ -88,25 +85,23 @@ it("shows fixed versions and replaced overrides, applies only selected ids, and 
         .querySelector<HTMLInputElement>('input[type="checkbox"]')!
         .click()
     );
-    await act(async () => button(container, "Prepare fixed review").click());
+    await act(async () => button(container, "Preview Conversations").click());
     expect(onReview).toHaveBeenLastCalledWith({
       operation: "preview",
       localProjectId,
       eventId: event.id,
       options: { includeOverrides: true, includeUnresolved: false }
     });
-    expect(container.textContent).toContain("2 sessions in this fixed review");
+    expect(container.textContent).toContain("2 Conversations in this review");
     expect(container.textContent).toContain("Assignment version 2");
     expect(container.textContent).toContain(
       "Manual override to replace: User override"
     );
     const checkboxes = container.querySelectorAll<HTMLInputElement>(
-      '[aria-label="Reviewed sessions"] input'
+      '[aria-label="Reviewed Conversations"] input'
     );
     await act(async () => checkboxes[1]!.click());
-    await act(async () =>
-      button(container, "Apply to 1 selected sessions").click()
-    );
+    await act(async () => button(container, "Move 1 Conversations").click());
     expect(onReview).toHaveBeenLastCalledWith({
       operation: "apply",
       localProjectId,
@@ -115,7 +110,7 @@ it("shows fixed versions and replaced overrides, applies only selected ids, and 
       sessionIds: [review.sessions[0]!.id]
     });
     expect(changed).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("accepted set was reassigned");
+    expect(container.textContent).toContain("selected Conversations moved");
   } finally {
     await act(async () => root.unmount());
   }
@@ -140,17 +135,12 @@ it("allows dismissal without applying and clears a stale review on failure", asy
       )
     );
     await act(async () =>
-      button(container, "Review repository changes").click()
-    );
-    await act(async () =>
       container
         .querySelector<HTMLInputElement>('input[type="checkbox"]')!
         .click()
     );
-    await act(async () => button(container, "Prepare fixed review").click());
-    await act(async () =>
-      button(container, "Dismiss without reassignment").click()
-    );
+    await act(async () => button(container, "Preview Conversations").click());
+    await act(async () => button(container, "Dismiss").click());
     expect(onReview).toHaveBeenLastCalledWith({
       operation: "dismiss",
       localProjectId,
@@ -160,22 +150,20 @@ it("allows dismissal without applying and clears a stale review on failure", asy
     expect(
       onReview.mock.calls.some(([input]) => input.operation === "apply")
     ).toBe(false);
-    expect(container.textContent).toContain("Assignments were unchanged");
+    expect(container.textContent).toContain("No Conversations moved");
     await act(async () =>
-      button(container, "Review repository changes").click()
+      button(container, "Refresh previous assignments").click()
     );
-    await act(async () => button(container, "Prepare fixed review").click());
+    await act(async () => button(container, "Preview Conversations").click());
     onReview.mockRejectedValueOnce(
       new Error("The session changed. Nothing was reassigned.")
     );
-    await act(async () =>
-      button(container, "Apply to 2 selected sessions").click()
-    );
+    await act(async () => button(container, "Move 2 Conversations").click());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Nothing was reassigned"
     );
     expect(
-      container.querySelector('[aria-label="Reviewed sessions"]')
+      container.querySelector('[aria-label="Reviewed Conversations"]')
     ).toBeNull();
   } finally {
     await act(async () => root.unmount());

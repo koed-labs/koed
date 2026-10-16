@@ -383,6 +383,7 @@ describe("PersonalMemoryWorkspace", () => {
   const createdProject: PersonalDesktopProject = {
     id: repositoryScopeId(namedIdentity),
     name: "Manual Project",
+    repository: namedIdentity,
     path: null,
     eventCount: 0,
     threads: []
@@ -454,6 +455,119 @@ describe("PersonalMemoryWorkspace", () => {
       threads: []
     });
   });
+
+  it("hides empty discovered Projects without a toggle while retaining named Projects and captured Conversations", async () => {
+    const empty = { ...project([]), id: "empty", name: "Empty checkout" };
+    const captured = {
+      ...project([thread(2, { eventCount: 0 })]),
+      id: "captured",
+      name: "Awaiting Memory"
+    };
+    const eventOnly = {
+      ...project([]),
+      id: "events",
+      name: "Retained Memory",
+      eventCount: 1
+    };
+    const chatsMetadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      path: { cwd: "/tmp/independent", projectRoot: null },
+      localProjectId: "empty-chats",
+      displayName: "Chats",
+      contextKind: "independent"
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => [empty, captured, eventOnly, createdProject],
+        listProjectMetadata: async () => [chatsMetadata]
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const pane = container.querySelector(".personal-projects-pane")!;
+    const row = (id: string) =>
+      [...pane.querySelectorAll("[data-project-id]")].find(
+        (element) => element.getAttribute("data-project-id") === id
+      ) ?? null;
+    expect(pane.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(
+      pane.querySelector('[aria-labelledby="personal-empty-projects"]')
+    ).toBeNull();
+    expect(pane.querySelector('[aria-label="3 Projects"]')).not.toBeNull();
+    expect(row(empty.id)).toBeNull();
+    expect(row("empty-chats")).toBeNull();
+    expect(row(createdProject.id)).not.toBeNull();
+    expect(row(captured.id)).not.toBeNull();
+    await act(async () =>
+      pane
+        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")!
+        .click()
+    );
+    expect(row(eventOnly.id)).not.toBeNull();
+    const search = pane.querySelector<HTMLInputElement>(
+      'input[type="search"]'
+    )!;
+    await act(async () => changeInput(search, "Empty checkout"));
+    expect(row(empty.id)).toBeNull();
+    expect(pane.textContent).toContain("No Projects match “Empty checkout”.");
+    expect(store.current().projectsById.has(empty.id)).toBe(true);
+  });
+
+  it.each(["capture", "historical ingestion"])(
+    "reveals an empty discovered Project when %s adds a Conversation",
+    async (source) => {
+      let current = project([]);
+      const store = new PersonalMemoryStore(
+        api({ listProjects: async () => [current] })
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryWorkspace
+            onNavigate={vi.fn()}
+            route={{ kind: "projects" }}
+            store={store}
+          />
+        )
+      );
+      const pane = container.querySelector(".personal-projects-pane")!;
+      expect(pane.querySelector("[data-project-id]")).toBeNull();
+      expect(pane.querySelector('[aria-label="0 Projects"]')).not.toBeNull();
+      expect(container.textContent).toContain("No Projects yet");
+      current = project([
+        thread(2, {
+          eventCount: 0,
+          latestAt: new Date(
+            Date.now() -
+              (source === "historical ingestion" ? 30 : 0) * 86_400_000
+          ).toISOString()
+        })
+      ]);
+      await act(async () => {
+        await store.loadProjects();
+      });
+      if (source === "historical ingestion") {
+        await act(async () =>
+          pane
+            .querySelector<HTMLButtonElement>(".personal-inactive-toggle")!
+            .click()
+        );
+      }
+      expect(
+        pane.querySelector(`[data-project-id="${current.id}"]`)
+      ).not.toBeNull();
+      expect(pane.querySelector('[aria-label="1 Projects"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("No Projects yet");
+    }
+  );
 
   it("cancels creation without a write and retains a failed name for retry", async () => {
     const store = new PersonalMemoryStore(api());
@@ -3448,8 +3562,20 @@ describe("PersonalMemoryWorkspace", () => {
         ?.click();
     });
 
-    const headerRepo = container.querySelector(
-      ".personal-project-detail-heading .personal-project-repo"
+    expect(
+      container.querySelector(".personal-project-header")?.textContent
+    ).not.toContain(source.path);
+    expect(document.querySelector(".personal-project-details-card")).toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          ".personal-project-repository-trigger"
+        )!
+        .click()
+    );
+    expect(openExternal).not.toHaveBeenCalled();
+    const headerRepo = document.querySelector(
+      ".personal-project-details-card .personal-project-repo"
     );
     expect(headerRepo?.tagName).toBe("BUTTON");
     await act(async () => {
@@ -3459,13 +3585,21 @@ describe("PersonalMemoryWorkspace", () => {
       "https://github.com/koed-labs/koed"
     );
 
-    const headerFolder = container.querySelector<HTMLButtonElement>(
-      ".personal-project-detail-heading .personal-project-folder"
+    const headerFolder = document.querySelector<HTMLButtonElement>(
+      ".personal-project-details-folder"
     );
     expect(headerFolder?.getAttribute("aria-label")).toBe(
-      `Reveal ${source.name} in file browser`
+      `Open ${source.path} details`
     );
     await act(async () => headerFolder?.click());
+    expect(revealLocalProject).not.toHaveBeenCalled();
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="Reveal ${source.path} in file browser"]`
+        )!
+        .click()
+    );
     expect(revealLocalProject).toHaveBeenCalledWith(metadata.localProjectId);
 
     const sessionRow = container.querySelector(".personal-session-row");
@@ -3542,14 +3676,19 @@ describe("PersonalMemoryWorkspace", () => {
     });
     await vi.waitFor(() =>
       expect(
-        container.querySelector(
-          ".personal-project-detail-heading .personal-project-repo"
-        )
+        container.querySelector(".personal-project-repository-trigger")
       ).not.toBeNull()
     );
 
-    const repository = container.querySelector<HTMLButtonElement>(
-      ".personal-project-detail-heading .personal-project-repo"
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          ".personal-project-repository-trigger"
+        )!
+        .click()
+    );
+    const repository = document.querySelector<HTMLButtonElement>(
+      ".personal-project-details-card .personal-project-repo"
     );
     expect(repository?.dataset.repositoryProvider).toBe("git");
     expect(repository?.getAttribute("aria-label")).toBe(
@@ -3563,7 +3702,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
   });
 
-  it("shows no activity for a Project without Conversations", async () => {
+  it("keeps a recently refreshed catalogue Project hidden until it has Conversations", async () => {
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-23T00:00:00.000Z",
@@ -3588,29 +3727,11 @@ describe("PersonalMemoryWorkspace", () => {
         />
       );
     });
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(".personal-inactive-toggle")
-      ).not.toBeNull()
+    expect(container.querySelector("[data-project-id]")).toBeNull();
+    expect(container.querySelector(".personal-inactive-toggle")).toBeNull();
+    expect(container.querySelector(".personal-empty-toggle")).toBeNull();
+    expect(store.current().projectsById.has(metadata.localProjectId)).toBe(
+      true
     );
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")
-        ?.click()
-    );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(
-          `[data-project-id="${metadata.localProjectId}"]`
-        )
-      ).not.toBeNull()
-    );
-
-    const projectRow = container.querySelector(
-      `[data-project-id="${metadata.localProjectId}"]`
-    );
-    const activity = projectRow?.querySelector("time");
-    expect(activity?.dateTime).not.toBe(metadata.lastSeenAt);
-    expect(projectRow?.textContent).toContain("No activity");
   });
 });

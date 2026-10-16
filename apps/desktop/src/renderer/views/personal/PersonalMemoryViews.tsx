@@ -1,5 +1,6 @@
 import { CreateProjectDialog, MoveProjectDialog } from "./ProjectActions.js";
-import { RepositoryAnchorPanel } from "./RepositoryAnchorPanel.js";
+import { ProjectHeader } from "./ProjectHeader.js";
+import { ProjectRepo } from "./ProjectRepo.js";
 import type { RendererPlatform } from "../../services/platform.js";
 import {
   localApiRetryDelay,
@@ -35,7 +36,6 @@ import {
   CircleAlert,
   Folder,
   FolderInput,
-  Github,
   CirclePlay,
   Clock3,
   Ellipsis,
@@ -74,7 +74,6 @@ import {
   projectIsActive,
   projectLatestAt,
   relativeTime,
-  repositoryPresentationFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId
 } from "../../../project-memory-ui.js";
@@ -179,45 +178,6 @@ export type PersonalMemoryWorkspaceProps = {
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
-function ProjectRepo({
-  onOpenRepository,
-  remoteDisplay
-}: {
-  onOpenRepository?: (url: string) => void;
-  remoteDisplay: string;
-}) {
-  const repository = repositoryPresentationFromRemoteDisplay(remoteDisplay);
-  const RepositoryIcon = repository.provider === "github" ? Github : GitFork;
-  const actionLabel =
-    repository.provider === "github"
-      ? `Open ${repository.label} on GitHub`
-      : `Open repository ${repository.label}`;
-  if (!onOpenRepository) {
-    return (
-      <span
-        aria-label={`Repository ${repository.label}`}
-        className="personal-project-repo personal-project-repo-static"
-        data-repository-provider={repository.provider}
-      >
-        <RepositoryIcon aria-hidden="true" />
-        <span>{repository.label}</span>
-      </span>
-    );
-  }
-  return (
-    <button
-      aria-label={actionLabel}
-      className="personal-project-repo"
-      data-repository-provider={repository.provider}
-      onClick={() => onOpenRepository(repository.url)}
-      title={actionLabel}
-      type="button"
-    >
-      <RepositoryIcon aria-hidden="true" />
-      <span>{repository.label}</span>
-    </button>
-  );
-}
 const compactTokenCount = (value: number): string => {
   if (value < 1_000) return String(value);
   if (value < 10_000) {
@@ -477,13 +437,20 @@ function ProjectsPane({
       (value) => value.toLocaleLowerCase().includes(normalizedQuery)
     );
   });
-  const active = filtered.filter(
-    (project) =>
-      project.contextKind === "independent" || projectIsActive(project)
-  );
-  const inactive = filtered.filter(
-    (project) => !active.some(({ id }) => id === project.id)
-  );
+  const active: DesktopProject[] = [];
+  const inactive: DesktopProject[] = [];
+  for (const project of filtered) {
+    if (project.threads.length === 0 && project.eventCount === 0) {
+      active.push(project);
+    } else if (
+      project.contextKind === "independent" ||
+      projectIsActive(project)
+    ) {
+      active.push(project);
+    } else {
+      inactive.push(project);
+    }
+  }
 
   return (
     <aside className="personal-projects-pane" aria-label="Projects">
@@ -1110,48 +1077,16 @@ function ProjectDetail({
   }
   return (
     <section className="personal-project-detail">
-      <header>
-        <span className="personal-project-monogram" aria-hidden="true">
-          {Array.from(project.name)[0]?.toLocaleUpperCase() ?? "P"}
-        </span>
-        <div className="personal-project-detail-heading">
-          <h2 data-personal-route-focus="project" tabIndex={-1}>
-            {project.name}
-          </h2>
-          <RepositoryAnchorPanel
-            key={project.repository?.checkoutId ?? project.id}
-            project={project}
-            onSetAnchor={onSetRepositoryAnchor}
-            onReview={onReviewRepository}
-            onAssociation={onProjectAssociation}
-            onChanged={async () => onRetry()}
-          />
-          {(project.checkouts?.length ?? 0) > 1 ? (
-            <ul aria-label="Project checkouts">
-              {project.checkouts!.map((checkout) => (
-                <li key={checkout.localProjectId}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onRevealLocalProject?.(checkout.localProjectId)
-                    }
-                  >
-                    {checkout.path}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <ProjectOverview
-            eventCount={project.eventCount}
-            localProjectId={project.localProjectId}
-            onOpenRepository={onOpenRepository}
-            onRevealLocalProject={onRevealLocalProject}
-            projectName={project.name}
-            remoteDisplay={project.remoteDisplay}
-            sessionCount={project.threads.length}
-          />
-        </div>
+      <ProjectHeader
+        key={project.id}
+        project={project}
+        onSetAnchor={onSetRepositoryAnchor}
+        onReview={onReviewRepository}
+        onAssociation={onProjectAssociation}
+        onChanged={async () => onRetry()}
+        onOpenRepository={onOpenRepository}
+        onRevealLocalProject={onRevealLocalProject}
+      >
         <div className="personal-project-detail-actions">
           {moveAction}
           <button
@@ -1164,7 +1099,7 @@ function ProjectDetail({
             New
           </button>
         </div>
-      </header>
+      </ProjectHeader>
       {launchError ? (
         <p className="personal-managed-error" role="alert">
           {launchError}
@@ -3933,6 +3868,16 @@ export function PersonalMemoryWorkspace({
       }),
     [snapshot.projectOrder, snapshot.projectsById]
   );
+  const visibleProjects = useMemo(
+    () =>
+      projects.filter(
+        (project) =>
+          project.repository?.kind === "local_project" ||
+          project.threads.length > 0 ||
+          project.eventCount > 0
+      ),
+    [projects]
+  );
   const selectedProjectId =
     route.kind === "projects"
       ? null
@@ -4026,7 +3971,7 @@ export function PersonalMemoryWorkspace({
           loading={!ready || snapshot.loading}
           onRetry={() => void store.loadProjects()}
           onSelect={(projectId) => onNavigate({ kind: "project", projectId })}
-          projects={projects}
+          projects={visibleProjects}
           selectedProjectId={selectedProject?.id ?? null}
         />
         <main className="personal-memory-detail-pane">
@@ -4052,7 +3997,7 @@ export function PersonalMemoryWorkspace({
               onOpenRepository={onOpenRepository}
               onShare={onShareToWorkspace}
               project={selectedProject}
-              projects={projects}
+              projects={visibleProjects}
               records={sharingRecords}
               routeSessionId={
                 route.kind === "session"
@@ -4077,7 +4022,7 @@ export function PersonalMemoryWorkspace({
                   <MoveProjectDialog
                     key={selectedProject.id}
                     project={selectedProject}
-                    projects={projects}
+                    projects={visibleProjects}
                     move={moveProject}
                     create={onCreateProject}
                     store={store}
@@ -4090,9 +4035,11 @@ export function PersonalMemoryWorkspace({
               localAiClients={localAiClients}
               launchSelection={launchSelection}
               setLaunchSelection={setLaunchSelection}
-              error={projects.length === 0 ? snapshot.error : null}
-              hasProjects={projects.length > 0}
-              loading={(!ready || snapshot.loading) && projects.length === 0}
+              error={visibleProjects.length === 0 ? snapshot.error : null}
+              hasProjects={visibleProjects.length > 0}
+              loading={
+                (!ready || snapshot.loading) && visibleProjects.length === 0
+              }
               managedConversations={managedConversations}
               onChangeSessionPresentation={async (thread, input) => {
                 if (!thread.sessionId || !updateSessionPresentation) {

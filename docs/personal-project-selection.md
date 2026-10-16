@@ -90,21 +90,36 @@ without resurrecting a superseded preference or requiring Conversation capture.
 
 ## Desktop use
 
-Open a Project's **Repository anchor** details, then **Shared Project selection**.
-Choose a portable remote and create a shared Project association, or explicitly
-accept an available association for this checkout. Equal anchors in an ordinary
-clone do not link its configuration automatically.
+Open the Project dropdown and select a folder. The folder card shows its
+repository, path, inline reveal action, and Advanced controls. Each control
+uses that folder's local Project and checkout identity. Changing folders requires
+returning to the Project dropdown.
 
-Use **Update shared selection** to publish a new choice. **Delete shared selection**
-removes the shared preference while retaining its deletion revision.
-**Forget association on this checkout** removes only local acceptance.
-The ordinary **Save anchor** control remains a local explicit choice.
+Open Share anchor across devices. Use existing lists available shared choices.
+Select one and choose Link folder to accept it for this checkout. Share new
+shows this folder's portable remotes. Choose Share and link to publish a choice
+and link this checkout. Pair Personal devices before either action. Matching
+repository addresses do not link folders automatically.
 
-For a conflict, review every current head's anchor or deletion and authoring device.
-Choose **Resolve with chosen anchor** or **Resolve by removing shared selection**.
-If another revision arrives before the transaction, Desktop refreshes the review
-and requires another explicit choice. It does not resubmit automatically.
-After deletion, **Re-create shared selection** explicitly replaces the deletion.
+Save changes publishes a new choice for all linked folders. Remove shared choice
+removes that shared preference and preserves its deletion revision. Unlink this
+folder removes only this checkout's local acceptance. Choices made for one folder
+stay in place and take priority over shared choices. Existing Conversation
+assignments do not move. How sharing works contains these additional details.
+
+For a conflict, review every current choice or deletion and its authoring device.
+Choose Resolve or Resolve by removing shared choice. Even changes that select
+the same repository require review. If another revision arrives before the
+transaction, Desktop refreshes the review and requires another explicit choice.
+It does not resubmit automatically. Share again explicitly replaces a deletion.
+Incomplete history disables shared edits until inspection succeeds. Refresh
+shared choices reloads the current state.
+
+Repository anchor offers Automatic and Choose for this folder only. Automatic
+follows an accepted shared choice or uses Git detection. Save anchor records the
+chosen mode for new Conversations. Review previous assignments provides a
+separate, explicit review for older Conversations. Repository controls require a
+live local checkout. Historical imports keep their existing migration cutoff.
 
 Accepted quiet checkouts refresh through the local Personal API when Desktop
 loads Projects or inspects an association. Capture and recall discovery look up
