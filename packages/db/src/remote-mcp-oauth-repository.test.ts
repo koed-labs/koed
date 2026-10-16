@@ -35,7 +35,7 @@ describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
     await pool.query(migration.replaceAll('"public".', `"${schema}".`));
     await pool.query(
       await readFile(
-        new URL("../drizzle/0045_external_agent_grants.sql", import.meta.url),
+        new URL("../drizzle/0046_external_agent_grants.sql", import.meta.url),
         "utf8"
       )
     );

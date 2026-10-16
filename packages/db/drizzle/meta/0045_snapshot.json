@@ -1,5 +1,5 @@
 {
-  "id": "92d2a84c-1ff1-4fe2-b034-1a30220f60a4",
+  "id": "b2e54151-70fe-4801-80e3-8074724699ee",
   "prevId": "1ce37f31-8f0a-4b57-9286-0c838f2b2122",
   "version": "7",
   "dialect": "postgresql",
@@ -4877,6 +4877,12 @@
         },
         "projected_at": {
           "name": "projected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_seal_waiting_at": {
+          "name": "agent_seal_waiting_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -28839,7 +28845,7 @@
           "name": "client_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "resource": {
           "name": "resource",
@@ -28852,49 +28858,6 @@
           "type": "text[]",
           "primaryKey": false,
           "notNull": true
-        },
-        "provider_issuer": {
-          "name": "provider_issuer",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_environment": {
-          "name": "provider_environment",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_registration_id": {
-          "name": "provider_registration_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_user_id": {
-          "name": "provider_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_organization_id": {
-          "name": "provider_organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "team_boundary_id": {
-          "name": "team_boundary_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "authorization_version": {
-          "name": "authorization_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
         },
         "expires_at": {
           "name": "expires_at",
@@ -28954,29 +28917,9 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "remote_mcp_external_registration_unique": {
-          "name": "remote_mcp_external_registration_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "provider_issuer",
-            "provider_environment",
-            "provider_registration_id",
-            "resource"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "remote_mcp_grant_binding_check": {
-          "name": "remote_mcp_grant_binding_check",
-          "value": "(\n      \"remote_mcp_oauth_grants\".\"client_id\" is not null and \"remote_mcp_oauth_grants\".\"provider_issuer\" is null and\n      \"remote_mcp_oauth_grants\".\"provider_environment\" is null and \"remote_mcp_oauth_grants\".\"provider_registration_id\" is null and\n      \"remote_mcp_oauth_grants\".\"provider_user_id\" is null and \"remote_mcp_oauth_grants\".\"provider_organization_id\" is null and\n      \"remote_mcp_oauth_grants\".\"team_boundary_id\" is null\n    ) or (\n      \"remote_mcp_oauth_grants\".\"client_id\" is null and \"remote_mcp_oauth_grants\".\"provider_issuer\" is not null and\n      \"remote_mcp_oauth_grants\".\"provider_environment\" is not null and \"remote_mcp_oauth_grants\".\"provider_registration_id\" is not null and\n      \"remote_mcp_oauth_grants\".\"provider_user_id\" is not null and \"remote_mcp_oauth_grants\".\"provider_organization_id\" is not null\n    )"
-        },
-        "remote_mcp_grant_version_check": {
-          "name": "remote_mcp_grant_version_check",
-          "value": "\"remote_mcp_oauth_grants\".\"authorization_version\" > 0"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.remote_mcp_oauth_requests": {

@@ -56,7 +56,7 @@ describe.skipIf(!databaseUrl)(
       await pool.query(
         await readFile(
           new URL(
-            "../../../../packages/db/drizzle/0045_external_agent_grants.sql",
+            "../../../../packages/db/drizzle/0046_external_agent_grants.sql",
             import.meta.url
           ),
           "utf8"

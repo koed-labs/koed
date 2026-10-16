@@ -496,7 +496,15 @@ worker always drains a bounded live Projection pass before considering one
 historical batch. It admits that batch only when live raw-Projection rows and
 pending interactive Memory Questions are at or below configured thresholds, the
 configured API `/ready` endpoint is healthy, queue probing succeeds, and the
-Embedding Service is healthy.
+Embedding Service is healthy. Live rows that a Projection pass left waiting for
+an agent seal are left out of that count while their turn stays open. Projection
+records this on each row (`agent_seal_waiting_at`) and clears it when the row is
+projected or fails. An open turn has no completion signal and recent activity
+within `MEMORY_AGENT_TURN_STALE_MS`. Such rows need no Projection capacity.
+Rows that Projection has not scanned yet still count, including user, system
+and raw-only rows, and turns are scoped to their owning User. Without this exclusion, continuous agent activity
+would pause history indefinitely. When the turn completes or goes stale, its
+rows count again, and the live pass still runs before every historical batch.
 
 Before producing each raw historical batch, the Local AI Runtime calls the
 authenticated, local-only `GET /v1/historical-import-admission` contract. Its
@@ -514,8 +522,10 @@ live capture.
 
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.
-No atomic segment is admitted when it would exceed the configured row or byte
-cap; the raw rows remain pending until the Operator raises the cap. Runtime is
+A batch admits segments in chronological order while their cumulative rows and
+bytes fit the configured caps. When the oldest pending segment alone exceeds a
+cap, Koed admits that segment by itself as the whole batch. Otherwise one large
+turn would block every later segment, even at the maximum caps. Runtime is
 an atomic-segment boundary rather than a strict wall-clock cancellation: Koed
 finishes an admitted segment, then yields before starting another segment after
 the deadline. Admission backlog counts exclude rows attached to invalidated or
@@ -567,6 +577,20 @@ Project identity. Status and canonical raw/Captured Session provenance use only
 a basename-style redacted label, stable fingerprint, and path-free detected
 Project fields. Historical routes are available only in `developer` and
 `local_personal` profiles and require owning User authentication.
+
+Every historical-import HTTP 409 carries a machine-readable `code`. A rejected
+run or source transition reports one of three codes:
+
+- `historical_import_transition_already_applied`: the record is already in the
+  requested state.
+- `historical_import_completion_pending`: the record is still in the expected
+  state, but downstream work must finish before `completed`.
+- `historical_import_state_conflict`: another state change won.
+
+Importers treat only pending completion, or a legacy 409 without a code, as
+"retry later", and they treat an applied completion as done. Any other code is
+reported as a diagnostic. The coordinator then moves on to later sources, so
+one conflicted source cannot block the pass.
 
 Import evaluates effective Capture Policy and Capture Pause before eligibility
 or queueing and again before every raw write batch. `disabled`, `ask`, active

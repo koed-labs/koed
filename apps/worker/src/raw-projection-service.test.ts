@@ -20,6 +20,7 @@ const healthy = {
 
 const emptyBacklog = {
   liveProjectionRows: 0,
+  parkedLiveProjectionRows: 0,
   historicalImportRows: 0,
   historicalImportBytes: 0
 };
@@ -367,6 +368,7 @@ const historicalProjectionResult = (
 const createHistoricalRepository = () => ({
   getConversationProjectionBacklog: vi.fn().mockResolvedValue({
     liveProjectionRows: 0,
+    parkedLiveProjectionRows: 0,
     historicalImportRows: 10,
     historicalImportBytes: 1000
   }),
@@ -553,11 +555,13 @@ describe("raw Projection historical priority", () => {
     repository.getConversationProjectionBacklog
       .mockResolvedValueOnce({
         liveProjectionRows: 1,
+        parkedLiveProjectionRows: 0,
         historicalImportRows: 10,
         historicalImportBytes: 1000
       })
       .mockResolvedValueOnce({
         liveProjectionRows: 0,
+        parkedLiveProjectionRows: 0,
         historicalImportRows: 10,
         historicalImportBytes: 1000
       });
