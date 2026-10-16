@@ -121,6 +121,11 @@ chosen mode for new Conversations. Review previous assignments provides a
 separate, explicit review for older Conversations. Repository controls require a
 live local checkout. Historical imports keep their existing migration cutoff.
 
+Desktop uses its Personal API Token for the bounded repository-selection lookup,
+including when the User opens sharing before pairing devices. Device-group
+inspection and shared configuration changes use the separate local Desktop
+credential. The lookup does not grant authority to change shared configuration.
+
 Accepted quiet checkouts refresh through the local Personal API when Desktop
 loads Projects or inspects an association. Capture and recall discovery look up
 the current accepted selection before choosing an anchor. The local catalog stores

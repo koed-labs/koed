@@ -21,6 +21,10 @@ import {
 } from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as capabilityRefresh from "./local-ai-client-refresh.js";
+import {
+  discoverProjectMetadata,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
 afterEach(() => vi.restoreAllMocks());
 import {
   configureDetectedSetupAiClients,
@@ -91,6 +95,173 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("persists validated folder filters per Project without using the API", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-folder-filter-ipc-"));
+    const personalMemoryFetch = vi.fn<typeof fetch>();
+    const create = () =>
+      createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) =>
+          callback(null, JSON.stringify({ ok: true }), ""),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        personalMemoryFetch
+      });
+    try {
+      const manager = create();
+      await manager.handlers.project_folder_filter_set({
+        projectId: "alpha",
+        hiddenFolderIds: ["one"]
+      });
+      await expect(
+        create().handlers.project_folder_filter_get({ projectId: "alpha" })
+      ).resolves.toEqual({ projectId: "alpha", hiddenFolderIds: ["one"] });
+      await expect(
+        manager.handlers.project_folder_filter_get({ projectId: "beta" })
+      ).resolves.toEqual({ projectId: "beta", hiddenFolderIds: [] });
+      await expect(
+        manager.handlers.project_folder_filter_set({
+          projectId: "alpha",
+          hiddenFolderIds: [],
+          path: "/outside-profile"
+        })
+      ).rejects.toThrow();
+      expect(personalMemoryFetch).not.toHaveBeenCalled();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses Personal API authentication for shared-anchor lookup and Desktop authentication for device governance", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-sharing-auth-"));
+    const koedHome = resolve(root, "profile");
+    const cwd = resolve(root, "checkout");
+    try {
+      mkdirSync(cwd, { recursive: true });
+      execFileSync("git", ["init", "--quiet", cwd]);
+      execFileSync("git", [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "Fixture"
+      ]);
+      execFileSync("git", [
+        "-C",
+        cwd,
+        "remote",
+        "add",
+        "origin",
+        "https://example.test/team/project.git"
+      ]);
+      const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+      const { project } = await discoverProjectMetadata(paths, { cwd });
+      if (!project?.repository?.checkoutId)
+        throw new Error("Fixture checkout is unavailable");
+      mkdirSync(resolve(koedHome, "config"), { recursive: true });
+      writeFileSync(
+        resolve(koedHome, "config/local-app-credential.json"),
+        JSON.stringify({ apiToken: "personal_api_fixture" })
+      );
+      const desktop = storeDesktopLocalCredential(koedHome, {
+        ownerUserId: "00000000-0000-4000-8000-000000000001",
+        operationFamilies: [
+          "personal_collaboration_read",
+          "personal_collaboration_write"
+        ]
+      });
+      const requests: Array<{ path: string; authorization: string | null }> =
+        [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) =>
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              api: { state: "healthy", url: "http://127.0.0.1:4170" }
+            }),
+            ""
+          ),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        personalMemoryFetch: (async (url, init) => {
+          const path = new URL(String(url)).pathname;
+          const authorization = new Headers(init?.headers).get("authorization");
+          requests.push({ path, authorization });
+          const lookup = path === "/v1/memory/repository-selection";
+          const expected = lookup
+            ? "Bearer personal_api_fixture"
+            : desktop.authorization;
+          return new Response(
+            JSON.stringify(
+              authorization !== expected
+                ? { error: "Unauthorized" }
+                : lookup
+                  ? { association: null }
+                  : { groups: [], pairing_invitation_group_ids: [] }
+            ),
+            { status: authorization === expected ? 200 : 401 }
+          );
+        }) as typeof fetch
+      });
+      await expect(
+        manager.handlers.project_association!({
+          operation: "inspect",
+          localProjectId: project.localProjectId
+        })
+      ).resolves.toMatchObject({
+        checkoutId: project.repository.checkoutId,
+        groupId: null,
+        accepted: null,
+        associations: []
+      });
+      expect(
+        requests.filter(
+          (entry) => entry.path === "/v1/memory/repository-selection"
+        )
+      ).toEqual([
+        {
+          path: "/v1/memory/repository-selection",
+          authorization: "Bearer personal_api_fixture"
+        },
+        {
+          path: "/v1/memory/repository-selection",
+          authorization: "Bearer personal_api_fixture"
+        }
+      ]);
+      expect(
+        requests.find(
+          (entry) => entry.path === "/v1/personal-device-sync/groups"
+        )?.authorization
+      ).toBe(desktop.authorization);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates folderless Projects and derives individual and whole-Project moves from their local identities", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-named-desktop-"));
     try {
@@ -1798,6 +1969,7 @@ describe("Koed server desktop manager", () => {
       projectName: "koed",
       projectPath: "/repo",
       projectAssignmentSource: "detected",
+      capturedProjectProvenance: { capturedCwd: "/original/repo" },
       presentation: null,
       eventCount: 3,
       invalidatedCount: 0,
@@ -1877,7 +2049,13 @@ describe("Koed server desktop manager", () => {
         projects: [
           {
             eventCount: 3,
-            threads: [{ id: parentThreadId, threadKind: "conversation" }]
+            threads: [
+              {
+                id: parentThreadId,
+                threadKind: "conversation",
+                capturedCwd: "/original/repo"
+              }
+            ]
           }
         ]
       }

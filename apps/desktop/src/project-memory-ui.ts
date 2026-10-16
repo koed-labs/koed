@@ -10,6 +10,7 @@ export type DesktopThreadGroup = {
   projectId: string;
   projectName: string;
   projectPath?: string | null;
+  capturedCwd?: string | null;
   projectAssignmentSource?: "detected" | "user_override" | null;
   capturedProjectProvenance?: Record<string, unknown>;
   repositoryAssignment?: RepositoryAssignment;

@@ -229,6 +229,7 @@ export const personalDesktopProjectThreadSchema = z
     projectId: identifierSchema,
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
+    capturedCwd: localProjectPathSchema.nullable().optional(),
     projectAssignmentSource: z.enum(["detected", "user_override"]).nullable(),
     repositoryAssignment: repositoryAssignmentSchema.optional(),
     eventCount: z.number().int().safe().nonnegative(),

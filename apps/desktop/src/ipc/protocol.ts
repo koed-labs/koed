@@ -22,6 +22,8 @@ export const desktopCommandNames = [
   "package_status",
   "package_install",
   "project_list",
+  "project_folder_filter_get",
+  "project_folder_filter_set",
   "project_anchor_set",
   "project_association",
   "repository_review",

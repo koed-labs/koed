@@ -112,6 +112,28 @@ previous assignments, and Share anchor across devices each open a separate page
 for that folder. The card does not expand the header or change the folder used
 to start a Conversation.
 
+Each folder has a checkbox that filters the Conversation list. Select all
+checks or clears every folder. The checkbox shows a partial state when only
+some folders are selected. Desktop remembers hidden folders
+for each Project on this device, including after a restart. New folders start
+visible. Conversations without a recorded source folder appear under Other
+Conversations. Moved Conversations use their original source folder when known.
+The filter affects Pinned, Active, and Inactive lists. The Project header keeps
+its total counts. A filtered list shows its visible count and a Show all action.
+The filter does not change assignments, capture, or recall.
+
+The Desktop main process stores these display preferences in
+`KOED_HOME/config/project-folder-filters.json`. The renderer reads and writes
+them through validated Desktop commands.
+
+The Move Conversation card shows the Conversation name and its current Project.
+Select a destination or use the + action beside the dropdown to create a named
+Project. Capture details stays closed until selected. It shows the original
+assignment and captured folder without internal repository identifiers.
+For a manually moved Conversation, Restore original opens a separate page that
+shows the destination before applying the reset. Legacy Conversations return to
+Unresolved history when their original assignment is unresolved.
+
 Chats has one stable Project identity. Desktop matches captured Projects to
 catalogue entries by identity before path. Private runtime directories under
 `managed-conversations/independent` belong to Chats and do not appear as separate

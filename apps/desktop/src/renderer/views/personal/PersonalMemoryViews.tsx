@@ -1,4 +1,7 @@
+import { projectConversationFolders } from "../../../project-conversation-folders.js";
+import { useProjectFolderFilter } from "./use-project-folder-filter.js";
 import { CreateProjectDialog, MoveProjectDialog } from "./ProjectActions.js";
+import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ProjectHeader } from "./ProjectHeader.js";
 import { ProjectRepo } from "./ProjectRepo.js";
 import type { RendererPlatform } from "../../services/platform.js";
@@ -21,21 +24,12 @@ import type {
 import { PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS } from "@koed/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle
-} from "@koed/ui";
-import {
   BookText,
   Brain,
   Check,
   ChevronDown,
   CircleAlert,
   Folder,
-  FolderInput,
   CirclePlay,
   Clock3,
   Ellipsis,
@@ -99,7 +93,6 @@ import {
   type PersonalMemorySharingRecord,
   type ProjectWorkspaceSuggestion,
   type ShareToWorkspaceRequest,
-  type SessionProjectAssignment,
   type WorkspaceShareCandidate
 } from "./adapters.js";
 import { AiClientLogo } from "./AiClientLogo.js";
@@ -818,9 +811,28 @@ function ProjectDetail({
   const [openSessionActionsId, setOpenSessionActionsId] = useState<
     string | null
   >(null);
-  const threads = [...(project?.threads ?? [])].sort(
-    (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
+  const folderFilter = useProjectFolderFilter(project?.id);
+  const folderModel = useMemo(
+    () =>
+      project
+        ? projectConversationFolders(project)
+        : { folders: [], byThread: new Map<string, string>() },
+    [project]
   );
+  const hiddenFolderIds = new Set(folderFilter.hiddenFolderIds);
+  const hasFolderFilter = folderModel.folders.some((folder) =>
+    hiddenFolderIds.has(folder.id)
+  );
+  const threads = (project?.threads ?? [])
+    .filter(
+      (thread) =>
+        !hiddenFolderIds.has(
+          folderModel.byThread.get(sessionSelectionId(thread)) ?? ""
+        )
+    )
+    .sort(
+      (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
+    );
   const nextDeadline = nextConversationPresentationDeadline(
     threads,
     presentationNow
@@ -941,8 +953,12 @@ function ProjectDetail({
       </section>
     );
   }
+  const visibleThreadIds = new Set(threads.map((thread) => thread.id));
   const rootThreads = threads.filter(
-    (thread) => thread.threadKind !== "subagent" || !thread.parentThreadId
+    (thread) =>
+      thread.threadKind !== "subagent" ||
+      !thread.parentThreadId ||
+      !visibleThreadIds.has(thread.parentThreadId)
   );
   const pinned = rootThreads.filter((thread) => thread.presentation?.pinnedAt);
   const active = rootThreads.filter(
@@ -1080,6 +1096,12 @@ function ProjectDetail({
       <ProjectHeader
         key={project.id}
         project={project}
+        folderFilter={{
+          folders: folderModel.folders,
+          hiddenFolderIds: folderFilter.hiddenFolderIds,
+          loading: folderFilter.loading,
+          onChange: folderFilter.change
+        }}
         onSetAnchor={onSetRepositoryAnchor}
         onReview={onReviewRepository}
         onAssociation={onProjectAssociation}
@@ -1106,6 +1128,21 @@ function ProjectDetail({
         </p>
       ) : null}
       <section className="personal-sessions" aria-label="Captured Sessions">
+        {folderFilter.error ? (
+          <p className="personal-managed-error" role="alert">
+            {folderFilter.error}
+          </p>
+        ) : null}
+        {hasFolderFilter ? (
+          <div className="personal-project-filter-status" role="status">
+            <span>
+              Showing {threads.length} of {project.threads.length} Conversations
+            </span>
+            <button type="button" onClick={() => folderFilter.change([])}>
+              Show all
+            </button>
+          </div>
+        ) : null}
         {presentationError ? (
           <p className="personal-managed-error" role="alert">
             {presentationError}
@@ -1152,11 +1189,17 @@ function ProjectDetail({
           >
             <div>
               <BookText aria-hidden="true" className="personal-empty-icon" />
-              <h2>No Captured Sessions yet</h2>
+              <h2>
+                {hasFolderFilter && project.threads.length
+                  ? "No Conversations match the folder filter"
+                  : "No Captured Sessions yet"}
+              </h2>
               <p>
-                {project.path
-                  ? "Sessions appear after the Supported Capture Hook records activity in this Project."
-                  : "Move existing Conversations or a Project into this Project to get started."}
+                {hasFolderFilter && project.threads.length
+                  ? "Select Show all to restore the list."
+                  : project.path
+                    ? "Sessions appear after the Supported Capture Hook records activity in this Project."
+                    : "Move existing Conversations or a Project into this Project to get started."}
               </p>
             </div>
           </div>
@@ -3341,188 +3384,6 @@ function ShareAffordance({
   );
 }
 
-function SessionAssignment({
-  assign,
-  onCreateProject,
-  onAssigned,
-  projects,
-  store,
-  thread
-}: {
-  assign?: PersonalDesktopApi["assignSessionProject"];
-  onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
-  onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
-  projects: readonly PersonalDesktopProject[];
-  store: PersonalMemoryStore;
-  thread: PersonalDesktopProjectThread;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [open, setOpen] = useState(false);
-  const [targetProjectId, setTargetProjectId] = useState("");
-  const requestRef = useRef(0);
-  const targets = projects.filter(
-    (project) =>
-      project.id !== thread.projectId &&
-      project.id !== "unassigned" &&
-      project.id.trim() &&
-      project.name.trim()
-  );
-
-  useEffect(() => {
-    requestRef.current += 1;
-    setBusy(false);
-    setError("");
-    setTargetProjectId("");
-    return () => {
-      requestRef.current += 1;
-    };
-  }, [thread.id, thread.projectId]);
-
-  const run = useCallback(
-    async (input: SessionProjectAssignment) => {
-      if (!assign || !thread.sessionId) return;
-      const request = ++requestRef.current;
-      setBusy(true);
-      setError("");
-      try {
-        const result = await assign(input);
-        if (request !== requestRef.current) return;
-        store.purge(
-          ({ thread: cached }) => cached.sessionId === thread.sessionId
-        );
-        // Navigate before reloading: removing this Session from its old group
-        // can unmount these controls, which fences later selection callbacks.
-        setOpen(false);
-        onAssigned?.({
-          projectId: result.projectId,
-          sessionId: thread.sessionId
-        });
-        await store.loadProjects();
-      } catch (cause) {
-        if (request !== requestRef.current) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        if (request === requestRef.current) setBusy(false);
-      }
-    },
-    [assign, onAssigned, store, thread.sessionId]
-  );
-
-  if (!assign || !thread.sessionId) return null;
-  return (
-    <Dialog onOpenChange={setOpen} open={open}>
-      <button
-        aria-label="Move Conversation"
-        className="personal-session-manage-button"
-        onClick={() => setOpen(true)}
-        title="Move Conversation"
-        type="button"
-      >
-        <FolderInput aria-hidden="true" />
-        <span>Move</span>
-      </button>
-      <DialogPopup className="personal-session-assignment-dialog">
-        <DialogHeader>
-          <DialogTitle>Move Conversation</DialogTitle>
-          <DialogDescription>
-            Move this session to another Project. Reset restores its recorded
-            capture assignment, including unresolved history.
-          </DialogDescription>
-        </DialogHeader>
-        <p>
-          Recorded checkout:{" "}
-          {thread.repositoryAssignment?.automatic?.root ?? "Unresolved history"}
-        </p>
-        <p>
-          Effective repository:{" "}
-          {thread.repositoryAssignment?.effective?.key ?? "Unresolved"}
-        </p>
-        <form
-          aria-busy={busy}
-          onSubmit={(event) => {
-            event.preventDefault();
-            const targetProjectId = new FormData(event.currentTarget).get(
-              "targetProjectId"
-            );
-            if (typeof targetProjectId !== "string") return;
-            void run({
-              action: "move",
-              sessionId: thread.sessionId!,
-              targetProjectId,
-              expectedVersion: thread.repositoryAssignment?.version ?? 1
-            });
-          }}
-        >
-          <label className="personal-session-move-control">
-            <span>Move to Project:</span>
-            <select
-              value={targetProjectId}
-              onChange={(event) =>
-                setTargetProjectId(event.currentTarget.value)
-              }
-              disabled={busy || targets.length === 0}
-              name="targetProjectId"
-              required
-            >
-              <option disabled value="">
-                {targets.length ? "Select destination…" : "No other Projects"}
-              </option>
-              {targets.map((target) => (
-                <option key={target.id} value={target.id}>
-                  {target.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {onCreateProject ? (
-            <CreateProjectDialog
-              create={onCreateProject}
-              disabled={busy}
-              onCreated={(project) => {
-                if (
-                  project.id !== thread.projectId &&
-                  project.id !== "unassigned"
-                )
-                  setTargetProjectId(project.id);
-              }}
-            />
-          ) : null}
-          {error ? (
-            <p role="alert" className="personal-memory-error">
-              {error}
-            </p>
-          ) : null}
-          <DialogFooter className="personal-session-assignment-actions">
-            {thread.projectAssignmentSource === "user_override" ? (
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void run({
-                    action: "reset",
-                    sessionId: thread.sessionId!,
-                    expectedVersion: thread.repositoryAssignment?.version ?? 1
-                  })
-                }
-                type="button"
-              >
-                Reset to automatic
-              </button>
-            ) : null}
-            <button
-              className="personal-move-button"
-              disabled={busy || targets.length === 0}
-              type="submit"
-            >
-              {busy ? "Saving…" : "Move"}
-            </button>
-          </DialogFooter>
-        </form>
-      </DialogPopup>
-    </Dialog>
-  );
-}
-
 function SessionDetail({
   assignSessionProject,
   onCreateProject,
@@ -3717,7 +3578,7 @@ function SessionDetail({
             suggestions={suggestions}
             thread={thread}
           />
-          <SessionAssignment
+          <MoveConversationDialog
             assign={assignSessionProject}
             onCreateProject={onCreateProject}
             onAssigned={onAssigned}

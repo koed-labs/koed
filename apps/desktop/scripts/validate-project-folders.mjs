@@ -44,6 +44,9 @@ async function run() {
   })()`);
   const layouts = [];
   const capture = async (name) => {
+    await evaluate(
+      `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+    );
     if (process.env.KOED_BROWSER_VALIDATION_SCREENSHOT)
       await writeFile(
         process.env.KOED_BROWSER_VALIDATION_SCREENSHOT.replace(
@@ -63,6 +66,7 @@ async function run() {
     await waitFor(
       `document.documentElement.dataset.browserValidationReady==='true'`
     );
+    await waitFor(`!!document.querySelector('.personal-project-header')`);
     window.webContents.debugger.attach("1.3");
     for (const width of [1440, 620, 360]) {
       await window.webContents.debugger.sendCommand(
@@ -72,6 +76,69 @@ async function run() {
       await click(".personal-project-details-trigger");
       await waitFor(
         `!!document.querySelector('.personal-project-details-card')`
+      );
+      await waitFor(
+        `document.querySelectorAll('.personal-session-row').length===2`
+      );
+      assert.equal(
+        await evaluate(
+          `document.querySelectorAll('.personal-project-folder-filter-row input').length`
+        ),
+        2
+      );
+      assert.equal(
+        await evaluate(
+          `document.querySelector('[aria-label="Select all folders"]').checked`
+        ),
+        true
+      );
+      await click(".personal-project-folder-filter-row input");
+      await waitFor(
+        `document.querySelectorAll('.personal-session-row').length===1`
+      );
+      assert.equal(
+        await evaluate(
+          `!!document.querySelector('.personal-project-details-card')`
+        ),
+        true
+      );
+      layouts.push(await layout());
+      assert.equal(
+        await evaluate(
+          `document.querySelector('[aria-label="Select all folders"]').indeterminate`
+        ),
+        true
+      );
+      assert.equal(
+        await evaluate(
+          `document.querySelectorAll('.personal-project-folder-filter-row .lucide-folder, .personal-project-folder-count, [aria-label="Project folders"] h3').length`
+        ),
+        0
+      );
+      await capture(`filter-${width}`);
+      await click('[aria-label="Select all folders"]');
+      await waitFor(
+        `document.querySelectorAll('.personal-session-row').length===2`
+      );
+      await click('[aria-label="Select all folders"]');
+      await waitFor(
+        `document.querySelectorAll('.personal-session-row').length===0`
+      );
+      assert.equal(
+        await evaluate(
+          `document.body.textContent.includes('No Conversations match the folder filter')`
+        ),
+        true
+      );
+      assert.equal(
+        await evaluate(
+          `(() => {const input=document.querySelector('[aria-label="Select all folders"]');return !input.checked&&!input.indeterminate;})()`
+        ),
+        true
+      );
+      await click('[aria-label="Select all folders"]');
+      await waitFor(
+        `document.querySelectorAll('.personal-session-row').length===2`
       );
       await click('[aria-label="Open /private/operator/koed-alt details"]');
       await delay(100);

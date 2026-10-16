@@ -5,7 +5,6 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
-  Folder,
   GitFork,
   X
 } from "lucide-react";
@@ -14,6 +13,10 @@ import {
   repoLabelFromRemoteDisplay,
   type DesktopProject
 } from "../../../project-memory-ui.js";
+import {
+  projectConversationFolders,
+  type ProjectConversationFolder
+} from "../../../project-conversation-folders.js";
 import { ProjectRepo } from "./ProjectRepo.js";
 import type { ProjectRepositoryActions } from "./RepositoryAnchorPanel.js";
 import {
@@ -25,6 +28,12 @@ import {
 
 type ProjectHeaderProps = ProjectRepositoryActions & {
   project: DesktopProject;
+  folderFilter?: {
+    folders: ProjectConversationFolder[];
+    hiddenFolderIds: string[];
+    loading: boolean;
+    onChange: (hiddenFolderIds: string[]) => void;
+  };
   children: ReactNode;
   onOpenRepository?: (url: string) => void;
   onRevealLocalProject?: (localProjectId: string) => void;
@@ -32,6 +41,7 @@ type ProjectHeaderProps = ProjectRepositoryActions & {
 
 export function ProjectHeader({
   project,
+  folderFilter,
   children,
   onOpenRepository,
   onRevealLocalProject,
@@ -43,23 +53,16 @@ export function ProjectHeader({
   useEffect(() => {
     heading.current?.focus();
   }, [page, folderKey]);
-  const folders = project.checkouts?.length
-    ? project.checkouts
-    : project.path
-      ? [
-          {
-            localProjectId: project.localProjectId,
-            path: project.path,
-            repository: project.repository,
-            repositoryRemotes: project.repositoryRemotes
-          }
-        ]
-      : [];
+  const folders =
+    folderFilter?.folders ?? projectConversationFolders(project).folders;
+  const selectedFolders = folders.filter(
+    (entry) => !folderFilter?.hiddenFolderIds.includes(entry.id)
+  ).length;
+  const allSelected = selectedFolders === folders.length;
+  const partiallySelected = selectedFolders > 0 && !allSelected;
   const remote = project.remoteDisplay ?? project.repository?.anchorDisplay;
-  const folder = folders.find(
-    (entry) => (entry.localProjectId ?? entry.path) === folderKey
-  );
-  const selectedProject = folder
+  const folder = folders.find((entry) => entry.id === folderKey);
+  const selectedProject = folder?.path
     ? {
         ...project,
         localProjectId: folder.localProjectId,
@@ -74,7 +77,7 @@ export function ProjectHeader({
     currentPage === "overview"
       ? project.name
       : currentPage === "folder"
-        ? folderName(folder!.path)
+        ? folderName(folder?.path ?? project.name)
         : folderPageTitle[currentPage];
   return (
     <Popover.Root
@@ -192,26 +195,87 @@ export function ProjectHeader({
                 ) : null}
                 {folders.length ? (
                   <section aria-label="Project folders">
-                    <h3>Folders</h3>
+                    {folderFilter ? (
+                      <label className="personal-project-folder-checkbox personal-project-select-all">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all folders"
+                          checked={allSelected}
+                          ref={(input) => {
+                            if (input) input.indeterminate = partiallySelected;
+                          }}
+                          disabled={folderFilter.loading}
+                          onChange={(event) =>
+                            folderFilter.onChange(
+                              event.target.checked
+                                ? []
+                                : folders.map((entry) => entry.id)
+                            )
+                          }
+                        />
+                        <span>Select all</span>
+                      </label>
+                    ) : null}
                     <ul>
                       {folders.map((entry) => (
-                        <li key={entry.localProjectId ?? entry.path}>
-                          <button
-                            type="button"
-                            className="personal-project-details-folder"
-                            aria-label={`Open ${entry.path} details`}
-                            onClick={() => {
-                              setFolderKey(entry.localProjectId ?? entry.path);
-                              setPage("folder");
-                            }}
-                          >
-                            <Folder aria-hidden="true" />
-                            <span>
-                              <span>{folderName(entry.path)}</span>
-                              <small>{entry.path}</small>
+                        <li
+                          key={entry.id}
+                          className="personal-project-folder-filter-row"
+                        >
+                          {folderFilter ? (
+                            <label className="personal-project-folder-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  !folderFilter.hiddenFolderIds.includes(
+                                    entry.id
+                                  )
+                                }
+                                disabled={folderFilter.loading}
+                                onChange={(event) =>
+                                  folderFilter.onChange(
+                                    event.target.checked
+                                      ? folderFilter.hiddenFolderIds.filter(
+                                          (id) => id !== entry.id
+                                        )
+                                      : [
+                                          ...folderFilter.hiddenFolderIds,
+                                          entry.id
+                                        ]
+                                  )
+                                }
+                              />
+                              <span className="sr-only">
+                                {entry.path
+                                  ? `Show Conversations from ${entry.path}`
+                                  : "Show other Conversations"}
+                              </span>
+                            </label>
+                          ) : null}
+                          {entry.path ? (
+                            <button
+                              type="button"
+                              className="personal-project-details-folder"
+                              aria-label={`Open ${entry.path} details`}
+                              onClick={() => {
+                                setFolderKey(entry.id);
+                                setPage("folder");
+                              }}
+                            >
+                              <span>
+                                <span>{folderName(entry.path)}</span>
+                                <small>{entry.path}</small>
+                              </span>
+                              <ChevronRight aria-hidden="true" />
+                            </button>
+                          ) : (
+                            <span className="personal-project-details-folder">
+                              <span>
+                                Other Conversations
+                                <small>No recorded source folder</small>
+                              </span>
                             </span>
-                            <ChevronRight aria-hidden="true" />
-                          </button>
+                          )}
                         </li>
                       ))}
                     </ul>

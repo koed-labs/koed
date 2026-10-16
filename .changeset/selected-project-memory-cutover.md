@@ -18,6 +18,13 @@ Keep the Project header compact with repository and folder details in a pop-up
 card, and align the Move and New actions to the same height. Place Advanced
 controls inside each folder card and use separate, concise flows to link an
 existing shared anchor choice or publish a new one across Personal devices.
+Use the Personal API credential for shared-anchor lookup so opening sharing
+also works before devices are paired.
+Filter the Conversation list with folder checkboxes and a Select all checkbox
+that shows whether all, some, or none are selected.
+Remember the selection per Project on this device across restarts.
+Simplify Move Conversation with capture details behind a disclosure, an inline
+create action, and an explicit destination before restoring the original assignment.
 
 Assign fresh historical imports from reliable recorded Git metadata, then Git
 discovery in the recorded working folder, then a local folder Project. Preserve

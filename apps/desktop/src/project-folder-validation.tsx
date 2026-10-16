@@ -1,8 +1,9 @@
 import { useEffect } from "react";
+import { PersonalMemoryWorkspace } from "./renderer/views/personal/PersonalMemoryViews.js";
+import { PersonalMemoryStore } from "./renderer/state/personal-memory.js";
 import type { ProjectSelectionCommandResult } from "@koed/shared/project-selection";
 import { mergeProjectSources } from "./project-memory-ui.js";
 import type { RendererPlatform } from "./renderer/services/platform.js";
-import { ProjectHeader } from "./renderer/views/personal/ProjectHeader.js";
 
 const repository = {
   kind: "portable_repository" as const,
@@ -15,36 +16,57 @@ const repository = {
   selectedRemote: "origin",
   anchorDisplay: "github.com/koed-labs/koed"
 };
-const project = mergeProjectSources(
-  [],
-  ["koed", "koed-alt"].map((name, index) => ({
-    schemaVersion: 1 as const,
-    discoveredAt: "2026-10-16T00:00:00.000Z",
-    lastSeenAt: "2026-10-16T00:00:00.000Z",
-    localProjectId: `lp_${String(index + 1).repeat(32)}`,
-    displayName: "koed",
-    path: {
-      cwd: `/private/operator/${name}`,
-      projectRoot: `/private/operator/${name}`
-    },
-    git: {
-      branch: "main",
-      isWorktree: false,
-      remotes: [
-        {
-          name: index ? "upstream" : "origin",
-          display: repository.anchorDisplay
-        }
-      ]
-    },
-    repository: {
-      ...repository,
-      root: `/private/operator/${name}`,
-      checkoutId: `checkout_${index + 1}`,
-      selectedRemote: index ? "upstream" : "origin"
-    }
-  }))
-)[0]!;
+const metadata = ["koed", "koed-alt"].map((name, index) => ({
+  schemaVersion: 1 as const,
+  discoveredAt: "2026-10-16T00:00:00.000Z",
+  lastSeenAt: "2026-10-16T00:00:00.000Z",
+  localProjectId: `lp_${String(index + 1).repeat(32)}`,
+  displayName: "koed",
+  path: {
+    cwd: `/private/operator/${name}`,
+    projectRoot: `/private/operator/${name}`
+  },
+  git: {
+    branch: "main",
+    isWorktree: false,
+    remotes: [
+      {
+        name: index ? "upstream" : "origin",
+        display: repository.anchorDisplay
+      }
+    ]
+  },
+  repository: {
+    ...repository,
+    root: `/private/operator/${name}`,
+    checkoutId: `checkout_${index + 1}`,
+    selectedRemote: index ? "upstream" : "origin"
+  }
+}));
+const project = mergeProjectSources([], metadata)[0]!;
+project.threads = project.checkouts!.map((folder, index) => ({
+  id: `folder-conversation-${index + 1}`,
+  name: `Conversation in ${index ? "koed-alt" : "koed"}`,
+  sessionId: null,
+  sourceAiClient: "codex" as const,
+  projectId: project.id,
+  projectName: project.name,
+  projectPath: folder.path,
+  capturedCwd: folder.path,
+  projectAssignmentSource: "detected" as const,
+  repositoryAssignment: {
+    state: "recorded" as const,
+    version: 1,
+    automatic: folder.repository!,
+    override: null,
+    effective: folder.repository!
+  },
+  eventCount: 1,
+  invalidatedCount: 0,
+  latestAt: new Date().toISOString(),
+  sample: "Folder filter fixture",
+  presentation: null
+}));
 const trace: unknown[] = [];
 Object.assign(window, { projectFolderValidationTrace: trace });
 const linked = new Set<string>();
@@ -112,42 +134,42 @@ const onReview: RendererPlatform["reviewRepository"] = async (input) => {
   return { events: [] };
 };
 
+const store = new PersonalMemoryStore({
+  listProjects: async () => [
+    {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      repository: project.repository,
+      eventCount: project.threads.length,
+      threads: project.threads
+    }
+  ],
+  listProjectMetadata: async () => metadata,
+  loadEventPage: async () => [],
+  subscribe: () => () => undefined,
+  assignSessionProject: async () => ({ projectId: null }),
+  updateSessionTitle: async ({ title }) => ({ title }),
+  updateSessionPresentation: async () => {
+    throw new Error("Not used by this fixture");
+  }
+});
 export function ProjectFolderValidation() {
   useEffect(() => {
     document.documentElement.dataset.browserValidationReady = "true";
   }, []);
   return (
-    <main
-      style={{
-        padding: "1rem",
-        width: "100%",
-        minHeight: "100vh",
-        boxSizing: "border-box"
+    <PersonalMemoryWorkspace
+      store={store}
+      route={{ kind: "project", projectId: project.id }}
+      onNavigate={() => undefined}
+      projectAssociation={onAssociation}
+      setRepositoryAnchor={onSetAnchor}
+      reviewRepository={onReview}
+      moveProject={async () => ({ movedCount: 0, projectId: project.id })}
+      revealLocalProject={async (localProjectId) => {
+        trace.push({ reveal: localProjectId });
       }}
-    >
-      <section className="personal-project-detail">
-        <ProjectHeader
-          project={project}
-          onAssociation={onAssociation}
-          onSetAnchor={onSetAnchor}
-          onReview={onReview}
-          onRevealLocalProject={(localProjectId) =>
-            trace.push({ reveal: localProjectId })
-          }
-        >
-          <div className="personal-project-detail-actions">
-            <button
-              className="personal-session-manage-button"
-              aria-label="Move Project"
-            >
-              Move
-            </button>
-            <button className="personal-new-conversation personal-new-conversation-standalone">
-              New
-            </button>
-          </div>
-        </ProjectHeader>
-      </section>
-    </main>
+    />
   );
 }

@@ -1,5 +1,13 @@
 import { hostname } from "node:os";
 import {
+  readProjectFolderFilter,
+  writeProjectFolderFilter
+} from "../project-folder-filters.js";
+import {
+  projectFolderFilterGetSchema,
+  projectFolderFilterSchema
+} from "../ipc/project-folder-filter.js";
+import {
   createProjectSelectionCommand,
   createProjectSelectionLookup
 } from "./project-selection-command.js";
@@ -777,6 +785,9 @@ const personalProjectsData = (
         : [];
       const threads = threadValues.map((threadValue) => {
         const thread = objectValue(threadValue) ?? {};
+        const capturedCwd = objectValue(
+          thread.capturedProjectProvenance
+        )?.capturedCwd;
         return {
           id: thread.id,
           name: thread.name,
@@ -795,6 +806,12 @@ const personalProjectsData = (
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
+          capturedCwd:
+            typeof capturedCwd === "string" &&
+            capturedCwd.trim().length > 0 &&
+            capturedCwd.length <= 4096
+              ? capturedCwd
+              : null,
           projectAssignmentSource: thread.projectAssignmentSource,
           ...(thread.repositoryAssignment
             ? { repositoryAssignment: thread.repositoryAssignment }
@@ -2862,6 +2879,11 @@ export const createKoedServerManager = ({
     path: string,
     init: RequestInit = { method: "GET" }
   ): Promise<Record<string, unknown>> => {
+    // The capture lookup uses Personal API authentication. PDS governance
+    // below requires the separate local Desktop credential.
+    if (path.split("?")[0] === "/v1/memory/repository-selection") {
+      return repositoryReviewJson(path, init);
+    }
     const access = await personalSyncEnvironment();
     const origin = access.environment.PDS_CONTROL_URL;
     if (!origin) throw new Error("Local Personal API is unavailable");
@@ -5867,6 +5889,16 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       repository_review: (args) => repositoryReviewCommand(args),
+      project_folder_filter_get: async (args) =>
+        readProjectFolderFilter(
+          resolveKoedHome(environment),
+          projectFolderFilterGetSchema.parse(args).projectId
+        ),
+      project_folder_filter_set: async (args) =>
+        writeProjectFolderFilter(
+          resolveKoedHome(environment),
+          projectFolderFilterSchema.parse(args)
+        ),
       project_list: async () => {
         await refreshProjectAssociations(resolveKoedServerPaths(environment), {
           lookupAssociatedSelection: createProjectSelectionLookup(

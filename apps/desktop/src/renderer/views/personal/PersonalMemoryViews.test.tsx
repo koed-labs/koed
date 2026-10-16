@@ -404,6 +404,104 @@ describe("PersonalMemoryWorkspace", () => {
     );
   };
 
+  it("filters folders without navigating, keeps unmatched history accessible, and restores saved filters", async () => {
+    const one = thread(1, {
+      projectPath: "/work/one",
+      capturedCwd: "/work/one"
+    });
+    const two = thread(2, {
+      projectPath: "/work/two",
+      capturedCwd: "/work/two"
+    });
+    const unknown = thread(3, {
+      projectAssignmentSource: "user_override",
+      projectPath: null
+    });
+    const source = { ...project([one, two, unknown]), path: null };
+    const store = new PersonalMemoryStore(
+      api({ listProjects: async () => [source] })
+    );
+    const saved = new Map<string, string[]>();
+    const previous = window.koedDesktop;
+    const invoke = vi.fn(
+      async (command: string, args: Record<string, unknown> = {}) => {
+        const projectId = String(args.projectId);
+        if (command === "project_folder_filter_set")
+          saved.set(projectId, args.hiddenFolderIds as string[]);
+        return { projectId, hiddenFolderIds: saved.get(projectId) ?? [] };
+      }
+    );
+    window.koedDesktop = { invoke } as unknown as DesktopApi;
+    const onNavigate = vi.fn();
+    const render = () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          store={store}
+          route={{ kind: "project", projectId: source.id }}
+          onNavigate={onNavigate}
+        />
+      );
+    const rows = () =>
+      container.querySelectorAll(".personal-session-row").length;
+    try {
+      await act(async () => render());
+      expect(rows()).toBe(3);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            ".personal-project-details-trigger"
+          )!
+          .click()
+      );
+      const checkbox = document.querySelector<HTMLInputElement>(
+        ".personal-project-folder-filter-row input"
+      )!;
+      const selectAll = document.querySelector<HTMLInputElement>(
+        '[aria-label="Select all folders"]'
+      )!;
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      await act(async () => checkbox.click());
+      expect(rows()).toBe(2);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(true);
+      expect(
+        document.querySelector(".personal-project-details-card")
+      ).not.toBeNull();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(saved.get(source.id)).toHaveLength(1);
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(3);
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(0);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(container.textContent).toContain(
+        "No Conversations match the folder filter"
+      );
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(3);
+      await act(async () =>
+        document
+          .querySelectorAll<HTMLInputElement>(
+            ".personal-project-folder-filter-row input"
+          )[2]!
+          .click()
+      );
+      expect(rows()).toBe(2);
+      await act(async () => root.render(<div />));
+      await act(async () => render());
+      expect(rows()).toBe(2);
+      expect(
+        container.querySelector(".personal-project-filter-status")?.textContent
+      ).toContain("Showing 2 of 3");
+    } finally {
+      window.koedDesktop = previous;
+    }
+  });
+
   it("creates a named empty Project without a folder and opens it despite an active search", async () => {
     const registered: PersonalDesktopProject[] = [];
     const store = new PersonalMemoryStore(
@@ -619,6 +717,7 @@ describe("PersonalMemoryWorkspace", () => {
     const historical = thread(1, {
       projectId: "unassigned",
       projectName: "Unresolved history",
+      capturedCwd: "/recorded/alpha-one",
       repositoryAssignment: {
         state: "historical_unresolved",
         version: 1,
@@ -705,9 +804,23 @@ describe("PersonalMemoryWorkspace", () => {
         .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
         .click()
     );
+    const captureDetails = document.querySelector<HTMLDetailsElement>(
+      ".personal-assignment-capture-details"
+    )!;
+    expect(captureDetails.open).toBe(false);
+    expect(captureDetails.textContent).toContain("/recorded/alpha-one");
+    expect(
+      document
+        .querySelector(
+          '.personal-session-assignment-dialog button[type="submit"]'
+        )
+        ?.hasAttribute("disabled")
+    ).toBe(true);
     await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Create Project…")!
+      document
+        .querySelector<HTMLButtonElement>(
+          '.personal-session-assignment-dialog .personal-project-destination-row [aria-label="Create Project"]'
+        )!
         .click()
     );
     await submitCreation();
@@ -737,8 +850,45 @@ describe("PersonalMemoryWorkspace", () => {
     );
     await act(async () =>
       [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Reset to automatic")!
+        .find((button) => button.textContent === "Restore original…")!
         .click()
+    );
+    expect(assignSessionProject).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector(".personal-assignment-restore-target")?.textContent
+    ).toContain("Unresolved history");
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Back to Move Conversation"]'
+        )!
+        .click()
+    );
+    expect(
+      document.querySelector<HTMLDetailsElement>(
+        ".personal-assignment-capture-details"
+      )?.open
+    ).toBe(false);
+    expect(
+      document.querySelector(".personal-assignment-capture-details")
+        ?.textContent
+    ).toContain("/recorded/alpha-one");
+    expect(
+      document.querySelector(".personal-session-assignment-dialog")?.textContent
+    ).not.toContain(namedIdentity.key!);
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Restore original…")!
+        .click()
+    );
+    await act(async () =>
+      [
+        ...document.querySelectorAll(
+          ".personal-session-assignment-dialog button"
+        )
+      ]
+        .find((button) => button.textContent === "Restore")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }))
     );
     expect(assignSessionProject).toHaveBeenLastCalledWith({
       action: "reset",
@@ -1481,7 +1631,8 @@ describe("PersonalMemoryWorkspace", () => {
     const target = {
       ...project([]),
       id: "project-2",
-      name: "Destination Project"
+      name: "Destination Project",
+      eventCount: 1
     };
     const store = new PersonalMemoryStore(
       api({
@@ -1521,28 +1672,24 @@ describe("PersonalMemoryWorkspace", () => {
 
     await act(async () => manage?.click());
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Move to Project:")
+      expect(document.body.textContent).toContain("Move to Project")
     );
-    expect(
-      [
-        ...document.querySelectorAll(
-          ".personal-session-assignment-dialog button"
-        )
-      ]
-        .find((button) => button.textContent === "Move")
-        ?.classList.contains("personal-move-button")
-    ).toBe(true);
-
     const form = document.querySelector(
       ".personal-session-assignment-dialog form"
     );
     await act(async () => {
       const select = form?.querySelector<HTMLSelectElement>("select");
-      if (select) select.value = target.id;
+      if (select) {
+        select.value = target.id;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await act(async () => {
       form?.dispatchEvent(
         new Event("submit", { bubbles: true, cancelable: true })
       );
     });
+    expect(assignSessionProject).toHaveBeenCalledTimes(1);
     await act(async () => {
       root.render(
         <PersonalMemoryWorkspace
