@@ -60,6 +60,10 @@ const buildServer = async (options?: {
       typeof error === "object" && error !== null && "statusCode" in error
         ? error.statusCode
         : undefined;
+    const codeCandidate =
+      typeof error === "object" && error !== null && "code" in error
+        ? error.code
+        : undefined;
     reply
       .status(
         error instanceof z.ZodError
@@ -74,7 +78,11 @@ const buildServer = async (options?: {
             ? "Invalid request payload"
             : error instanceof Error
               ? error.message
-              : String(error)
+              : String(error),
+        ...(typeof codeCandidate === "string" &&
+        /^[a-z][a-z0-9_]{0,119}$/.test(codeCandidate)
+          ? { code: codeCandidate }
+          : {})
       });
   });
   registerManagedConversationRunnerRoutes(app, {
@@ -691,6 +699,187 @@ describe("managed Conversation runner routes", () => {
     await fixture.app.close();
   });
 
+  it("reads only the authenticated owner's review bindings for an execution assigned to this device", async () => {
+    const binding = {
+      requestId: ids.command,
+      teamId: ids.handoff,
+      teamProjectId: ids.fork,
+      channelId: ids.snapshot,
+      ownerUserId: ids.user,
+      agentId: ids.other,
+      status: "awaiting_owner"
+    };
+    const pending = {
+      requestId: ids.command,
+      teamId: ids.handoff,
+      teamProjectId: ids.fork,
+      ownerUserId: ids.user,
+      agentId: ids.other,
+      agentVersion: 4,
+      localProjectId: ids.sourceGeneration,
+      privateGoal: "must stay on the Team authority"
+    };
+    const getBinding = vi.fn(async () => binding);
+    const getPending = vi.fn(async () => pending);
+    const getExecution = vi.fn(async () => ({
+      id: ids.execution,
+      ownerUserId: ids.user,
+      runnerDeploymentId: ids.deployment,
+      runnerDeviceId: ids.device,
+      state: "running"
+    }));
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: getExecution,
+        getOwnerReviewBindingForExecution: getBinding,
+        getAwaitingOwnerRequestForExecution: getPending
+      }
+    });
+    try {
+      const bindingResponse = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/managed-conversation-runner/executions/${ids.execution}/owner-review-binding`,
+        headers: runnerHeaders
+      });
+      const pendingResponse = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/managed-conversation-runner/executions/${ids.execution}/awaiting-owner-request`,
+        headers: runnerHeaders
+      });
+      const queryResponse = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/managed-conversation-runner/executions/${ids.execution}/owner-review-binding?ownerUserId=${ids.other}`,
+        headers: runnerHeaders
+      });
+
+      expect(bindingResponse.statusCode).toBe(200);
+      expect(bindingResponse.json()).toEqual({ binding });
+      expect(pendingResponse.statusCode).toBe(200);
+      expect(pendingResponse.json()).toEqual({
+        pending: {
+          ownerUserId: ids.user,
+          agentId: ids.other,
+          agentVersion: 4,
+          localProjectId: ids.sourceGeneration
+        }
+      });
+      expect(pendingResponse.body).not.toContain("privateGoal");
+      expect(queryResponse.statusCode).toBe(400);
+      expect(getExecution).toHaveBeenCalledTimes(2);
+      expect(getExecution).toHaveBeenCalledWith(
+        { userId: ids.user },
+        ids.execution
+      );
+      expect(getBinding).toHaveBeenCalledWith(
+        { userId: ids.user },
+        { executionId: ids.execution }
+      );
+      expect(getPending).toHaveBeenCalledWith(
+        { userId: ids.user },
+        { executionId: ids.execution }
+      );
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("rejects owner-review reads when the execution is assigned to another device or deployment", async () => {
+    for (const assigned of [
+      { runnerDeviceId: ids.otherDevice, runnerDeploymentId: ids.deployment },
+      { runnerDeviceId: ids.device, runnerDeploymentId: ids.otherDeployment }
+    ]) {
+      const getBinding = vi.fn(async () => null);
+      const getPending = vi.fn(async () => null);
+      const fixture = await buildServer({
+        repository: {
+          getManagedConversationExecution: vi.fn(async () => ({
+            id: ids.execution,
+            ownerUserId: ids.user,
+            state: "running",
+            ...assigned
+          })),
+          getOwnerReviewBindingForExecution: getBinding,
+          getAwaitingOwnerRequestForExecution: getPending
+        }
+      });
+      try {
+        for (const suffix of [
+          "owner-review-binding",
+          "awaiting-owner-request"
+        ]) {
+          const response = await fixture.app.inject({
+            method: "GET",
+            url: `/v1/managed-conversation-runner/executions/${ids.execution}/${suffix}`,
+            headers: runnerHeaders
+          });
+          expect(response.statusCode).toBe(403);
+        }
+        expect(getBinding).not.toHaveBeenCalled();
+        expect(getPending).not.toHaveBeenCalled();
+      } finally {
+        await fixture.app.close();
+      }
+    }
+  });
+
+  it("preserves only the known owner-review backfill retry code across the runner route", async () => {
+    const getExecution = vi.fn(async () => ({
+      id: ids.execution,
+      ownerUserId: ids.user,
+      runnerDeploymentId: ids.deployment,
+      runnerDeviceId: ids.device,
+      state: "running"
+    }));
+    const knownFailure = Object.assign(
+      new Error(
+        "Owner review binding lookup is incomplete; retry before dispatch"
+      ),
+      {
+        statusCode: 503,
+        code: "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING"
+      }
+    );
+    const known = await buildServer({
+      repository: {
+        getManagedConversationExecution: getExecution,
+        getOwnerReviewBindingForExecution: vi.fn(async () => {
+          throw knownFailure;
+        })
+      }
+    });
+    const knownResponse = await known.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/owner-review-binding`,
+      headers: runnerHeaders
+    });
+    await known.app.close();
+
+    const unrelated = await buildServer({
+      repository: {
+        getManagedConversationExecution: getExecution,
+        getOwnerReviewBindingForExecution: vi.fn(async () => {
+          throw Object.assign(new Error("Other retryable failure"), {
+            statusCode: 503,
+            code: "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING_EXTRA"
+          });
+        })
+      }
+    });
+    const unrelatedResponse = await unrelated.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/owner-review-binding`,
+      headers: runnerHeaders
+    });
+    await unrelated.app.close();
+
+    expect(knownResponse.statusCode).toBe(503);
+    expect(knownResponse.json().code).toBe(
+      "team_agent_review_binding_backfill_pending"
+    );
+    expect(unrelatedResponse.statusCode).toBe(503);
+    expect(unrelatedResponse.json()).not.toHaveProperty("code");
+  });
+
   it("acquires an idle execution lease only through its assigned runner identity", async () => {
     const acquire = vi.fn(async () => true);
     const fixture = await buildServer({
@@ -774,18 +963,29 @@ describe("managed Conversation runner routes", () => {
     });
     await fixture.app.close();
 
-    const wrongScope = await buildServer({ operationFamilies: ["sync"] });
+    const deniedBinding = vi.fn(async () => null);
+    const wrongScope = await buildServer({
+      operationFamilies: ["sync"],
+      repository: { getOwnerReviewBindingForExecution: deniedBinding }
+    });
     const scopedResponse = await wrongScope.app.inject({
       method: "POST",
       url: "/v1/managed-conversation-runner/commands/claim",
       headers: runnerHeaders,
       payload: { runnerId: "runner", limit: 1, leaseMs: 30_000 }
     });
+    const ownerReviewResponse = await wrongScope.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/owner-review-binding`,
+      headers: runnerHeaders
+    });
     await wrongScope.app.close();
 
     expect(noCredential.statusCode).toBe(401);
     expect(apiToken.statusCode).toBe(401);
     expect(scopedResponse.statusCode).toBe(403);
+    expect(ownerReviewResponse.statusCode).toBe(403);
+    expect(deniedBinding).not.toHaveBeenCalled();
   });
 
   it("requires a verified deployment identity and scopes command claims to its exact owner and device", async () => {

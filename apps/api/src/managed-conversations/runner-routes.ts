@@ -34,6 +34,11 @@ const claimSchema = z
 const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
+const emptyQuerySchema = z.object({}).strict();
+const ownerReviewBackfillErrorCode =
+  "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING";
+const ownerReviewBackfillWireErrorCode =
+  "team_agent_review_binding_backfill_pending";
 const personalAgentJobParamsSchema = z.object({ jobId: uuid }).strict();
 const personalAgentJobListQuerySchema = z
   .object({
@@ -2266,6 +2271,83 @@ export const registerManagedConversationRunnerRoutes = (
       const { executionId } = executionParamsSchema.parse(request.params);
       return {
         execution: await requireExecutionForRunner(context, auth, executionId)
+      };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/executions/:executionId/owner-review-binding",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      emptyQuerySchema.parse(request.query);
+      await requireExecutionForRunner(context, auth, executionId);
+      let binding;
+      try {
+        binding = await context
+          .requireRepository()
+          .getOwnerReviewBindingForExecution(
+            { userId: auth.userId },
+            { executionId }
+          );
+      } catch (error) {
+        const candidate =
+          typeof error === "object" && error !== null
+            ? (error as Record<string, unknown>)
+            : null;
+        if (
+          candidate?.statusCode === 503 &&
+          candidate.code === ownerReviewBackfillErrorCode
+        ) {
+          throw Object.assign(
+            new Error(
+              error instanceof Error
+                ? error.message
+                : "Owner review binding lookup is incomplete; retry before dispatch"
+            ),
+            { statusCode: 503, code: ownerReviewBackfillWireErrorCode }
+          );
+        }
+        throw error;
+      }
+      if (binding && binding.ownerUserId !== auth.userId) {
+        throw Object.assign(new Error("Owner review is not assigned here"), {
+          statusCode: 403
+        });
+      }
+      return { binding };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/executions/:executionId/awaiting-owner-request",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      emptyQuerySchema.parse(request.query);
+      await requireExecutionForRunner(context, auth, executionId);
+      const pending = await context
+        .requireRepository()
+        .getAwaitingOwnerRequestForExecution(
+          { userId: auth.userId },
+          { executionId }
+        );
+      if (pending && pending.ownerUserId !== auth.userId) {
+        throw Object.assign(new Error("Owner review is not assigned here"), {
+          statusCode: 403
+        });
+      }
+      return {
+        pending: pending
+          ? {
+              ownerUserId: pending.ownerUserId,
+              agentId: pending.agentId,
+              agentVersion: pending.agentVersion,
+              localProjectId: pending.localProjectId
+            }
+          : null
       };
     }
   );

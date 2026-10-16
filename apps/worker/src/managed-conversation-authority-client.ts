@@ -10,6 +10,8 @@ import type {
   ManagedConversationHandoffTargetMaterial,
   ManagedConversationProjectMoveRecord,
   ManagedConversationRuntimeItemRecord,
+  PendingTeamAgentRequestExecutionBinding,
+  TeamAgentRequestOwnerReviewBinding,
   MemorySourceRepository
 } from "@koed/db";
 import {
@@ -30,8 +32,12 @@ import type {
 
 const requestTimeoutMs = 60_000;
 const ordinaryResponseBytes = 4 * 1024 * 1024;
+const ownerReviewBackfillWireErrorCode =
+  "team_agent_review_binding_backfill_pending";
+const ownerReviewBackfillErrorCode =
+  "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING";
 
-export type ManagedConversationAuthorityRepository = Pick<
+type ManagedConversationAuthorityRepositoryBase = Pick<
   MemorySourceRepository,
   | "claimManagedConversationCommands"
   | "claimManagedConversationProjectMoves"
@@ -68,6 +74,8 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "getDevelopmentWorkspaceSnapshot"
   | "getDevelopmentWorkspaceSnapshotChunk"
   | "getManagedConversationExecution"
+  | "getOwnerReviewBindingForExecution"
+  | "getAwaitingOwnerRequestForExecution"
   | "listManagedConversationExecutionCheckpoints"
   | "recordManagedConversationExecutionCheckpoint"
   | "listManagedConversationExecutionsForRunner"
@@ -98,7 +106,23 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "recordPersonalAgentTurnOutput"
   | "recordPersonalAgentBuildProgressEvent"
   | "completePersonalAgentExecutionAttempt"
+>;
+
+export type ManagedConversationAuthorityRepository = Omit<
+  ManagedConversationAuthorityRepositoryBase,
+  "getAwaitingOwnerRequestForExecution"
 > & {
+  getAwaitingOwnerRequestForExecution(
+    actor: Parameters<
+      MemorySourceRepository["getAwaitingOwnerRequestForExecution"]
+    >[0],
+    input: Parameters<
+      MemorySourceRepository["getAwaitingOwnerRequestForExecution"]
+    >[1]
+  ): Promise<Pick<
+    PendingTeamAgentRequestExecutionBinding,
+    "ownerUserId" | "agentId" | "agentVersion" | "localProjectId"
+  > | null>;
   createManagedConversationSourceDownloadAuthorization(input: {
     transferKind: "handoff" | "fork";
     transferId: string;
@@ -152,7 +176,9 @@ class ManagedConversationAuthorityError extends Error {
               : "ManagedConversationAuthorityRequestError";
     this.transient = status === 429 || status >= 500;
     this.code =
-      typeof code === "string" && /^[a-z][a-z0-9_]{0,119}$/.test(code)
+      typeof code === "string" &&
+      (/^[a-z][a-z0-9_]{0,119}$/.test(code) ||
+        code === ownerReviewBackfillErrorCode)
         ? code
         : null;
   }
@@ -1369,6 +1395,89 @@ export const createManagedConversationAuthorityClient = (options: {
       ) as unknown as ManagedConversationExecutionRecord;
     },
 
+    async getOwnerReviewBindingForExecution(_actor, input) {
+      let payload: Record<string, unknown>;
+      try {
+        payload = await request(
+          "GET",
+          `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+            input.executionId
+          )}/owner-review-binding`
+        );
+      } catch (error) {
+        if (
+          error instanceof ManagedConversationAuthorityError &&
+          error.statusCode === 503 &&
+          error.code === ownerReviewBackfillWireErrorCode
+        ) {
+          throw new ManagedConversationAuthorityError(
+            error.statusCode,
+            error.message,
+            ownerReviewBackfillErrorCode
+          );
+        }
+        throw error;
+      }
+      if (payload.binding === null) return null;
+      const binding = object(payload.binding, "owner review binding");
+      const status = string(binding.status, "owner review status");
+      if (
+        status !== "awaiting_owner" &&
+        status !== "accepted" &&
+        status !== "declined" &&
+        status !== "withdrawn" &&
+        status !== "unavailable"
+      ) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned an invalid owner review status"
+        );
+      }
+      return {
+        requestId: string(binding.requestId, "owner review request id"),
+        teamId: string(binding.teamId, "owner review Team id"),
+        teamProjectId: string(
+          binding.teamProjectId,
+          "owner review Team Project id"
+        ),
+        channelId: string(binding.channelId, "owner review channel id"),
+        ownerUserId: string(binding.ownerUserId, "owner review owner id"),
+        agentId: string(binding.agentId, "owner review Agent id"),
+        status
+      } as TeamAgentRequestOwnerReviewBinding;
+    },
+
+    async getAwaitingOwnerRequestForExecution(_actor, input) {
+      const payload = await request(
+        "GET",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/awaiting-owner-request`
+      );
+      if (payload.pending === null) return null;
+      const pending = object(payload.pending, "awaiting owner request binding");
+      const agentVersion = pending.agentVersion;
+      if (
+        typeof agentVersion !== "number" ||
+        !Number.isSafeInteger(agentVersion) ||
+        agentVersion < 1
+      ) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned an invalid owner Agent version"
+        );
+      }
+      return {
+        ownerUserId: string(pending.ownerUserId, "owner review owner id"),
+        agentId: string(pending.agentId, "owner review Agent id"),
+        agentVersion,
+        localProjectId: string(
+          pending.localProjectId,
+          "owner review local Project id"
+        )
+      };
+    },
+
     async getActiveManagedConversationHandoffForExecution(_actor, executionId) {
       const payload = await request(
         "GET",
@@ -1677,6 +1786,7 @@ export const createManagedConversationAuthorityClient = (options: {
 const localManagedConversationMethods = new Set<PropertyKey>([
   "listAiClientInstances",
   "listCurrentAiClientCapabilitySnapshots",
+  "listDeviceCredentials",
   "upsertManagedConversationRuntimeBinding",
   "listPendingManagedConversationRuntimeBindings",
   "acknowledgeManagedConversationRuntimeBinding",

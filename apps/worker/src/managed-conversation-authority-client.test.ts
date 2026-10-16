@@ -122,6 +122,107 @@ describe("Managed Conversation authority client", () => {
     });
   });
 
+  it("reads runner-scoped owner review state without sending caller-selected identity or private goal", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000088";
+    const binding = {
+      requestId: "00000000-0000-4000-8000-000000000089",
+      teamId: "00000000-0000-4000-8000-000000000090",
+      teamProjectId: "00000000-0000-4000-8000-000000000091",
+      channelId: "00000000-0000-4000-8000-000000000092",
+      ownerUserId: ids.session,
+      agentId: "00000000-0000-4000-8000-000000000093",
+      status: "awaiting_owner"
+    };
+    const pending = {
+      ownerUserId: ids.session,
+      agentId: binding.agentId,
+      agentVersion: 3,
+      localProjectId: "00000000-0000-4000-8000-000000000094"
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("/owner-review-binding") ? { binding } : { pending }
+        ),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device bound-instance",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const untrustedActor = { userId: "caller-selected-owner" };
+
+    await expect(
+      client.getOwnerReviewBindingForExecution(untrustedActor, { executionId })
+    ).resolves.toEqual(binding);
+    await expect(
+      client.getAwaitingOwnerRequestForExecution(untrustedActor, {
+        executionId
+      })
+    ).resolves.toEqual(pending);
+
+    expect(
+      fetch.mock.calls.map(([request]) => new URL(String(request)).pathname)
+    ).toEqual([
+      `/v1/managed-conversation-runner/executions/${executionId}/owner-review-binding`,
+      `/v1/managed-conversation-runner/executions/${executionId}/awaiting-owner-request`
+    ]);
+    for (const [, init] of fetch.mock.calls) {
+      expect(init?.method).toBe("GET");
+      expect(init?.headers).toMatchObject({
+        authorization: "Koed-Device bound-instance"
+      });
+      expect(init?.body).toBeUndefined();
+    }
+  });
+
+  it("restores only the known owner-review backfill retry code", async () => {
+    const responses = [
+      {
+        error:
+          "Owner review binding lookup is incomplete; retry before dispatch",
+        code: "team_agent_review_binding_backfill_pending"
+      },
+      { error: "Other retryable failure", code: "other_retryable_failure" }
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const payload = responses.shift();
+      return new Response(JSON.stringify(payload), {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device bound-instance",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await expect(
+      client.getOwnerReviewBindingForExecution(
+        { userId: ids.session },
+        { executionId: ids.session }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING"
+    });
+    await expect(
+      client.getOwnerReviewBindingForExecution(
+        { userId: ids.session },
+        { executionId: ids.session }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: "other_retryable_failure"
+    });
+  });
+
   it("keeps provider usage on the execution device while authority stays remote", async () => {
     const localOwnerUserId = ids.session;
     const recordWorkflowTokenUsage = vi.fn(async () => ({ id: "usage-1" }));
@@ -292,6 +393,46 @@ describe("Managed Conversation authority client", () => {
     }
   });
 
+  it("delegates owner-review authority to the paired Team authority without local fallback", async () => {
+    const getOwnerReviewBindingForExecution = vi.fn(async () => null);
+    const getAwaitingOwnerRequestForExecution = vi.fn(async () => null);
+    const localBinding = vi.fn(async () => {
+      throw new Error("local owner-review lookup must not be used");
+    });
+    const localPending = vi.fn(async () => {
+      throw new Error("local pending-request lookup must not be used");
+    });
+    const repository = combineManagedConversationRepositories(
+      {
+        getOwnerReviewBindingForExecution: localBinding,
+        getAwaitingOwnerRequestForExecution: localPending
+      } as never,
+      {
+        getOwnerReviewBindingForExecution,
+        getAwaitingOwnerRequestForExecution
+      } as never,
+      ids.session
+    );
+
+    await expect(
+      repository.getOwnerReviewBindingForExecution(
+        { userId: "native-owner" },
+        { executionId: ids.session }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repository.getAwaitingOwnerRequestForExecution(
+        { userId: "native-owner" },
+        { executionId: ids.session }
+      )
+    ).resolves.toBeNull();
+
+    expect(getOwnerReviewBindingForExecution).toHaveBeenCalledOnce();
+    expect(getAwaitingOwnerRequestForExecution).toHaveBeenCalledOnce();
+    expect(localBinding).not.toHaveBeenCalled();
+    expect(localPending).not.toHaveBeenCalled();
+  });
+
   it("revalidates hosted turns against the execution device's native AI Client catalog", async () => {
     const instance = {
       instanceId: "codex.default",
@@ -305,16 +446,28 @@ describe("Managed Conversation authority client", () => {
     const listCurrentAiClientCapabilitySnapshots = vi.fn(async () => [
       snapshot
     ]);
+    const sourceCredential = {
+      id: "native-source-credential",
+      deviceInstanceId: "native-device",
+      operationFamilies: ["managed_execution"],
+      metadata: { protocolDeploymentId: "native-deployment" },
+      revokedAt: null,
+      expiresAt: null
+    };
+    const listDeviceCredentials = vi.fn(async () => [sourceCredential]);
     const remoteInstances = vi.fn(async () => []);
     const remoteSnapshots = vi.fn(async () => []);
+    const remoteCredentials = vi.fn(async () => []);
     const repository = combineManagedConversationRepositories(
       {
         listAiClientInstances,
-        listCurrentAiClientCapabilitySnapshots
+        listCurrentAiClientCapabilitySnapshots,
+        listDeviceCredentials
       } as never,
       {
         listAiClientInstances: remoteInstances,
-        listCurrentAiClientCapabilitySnapshots: remoteSnapshots
+        listCurrentAiClientCapabilitySnapshots: remoteSnapshots,
+        listDeviceCredentials: remoteCredentials
       } as never,
       "native-owner"
     );
@@ -327,14 +480,21 @@ describe("Managed Conversation authority client", () => {
         userId: "hosted-owner"
       })
     ).resolves.toEqual([snapshot]);
+    await expect(
+      repository.listDeviceCredentials({ userId: "hosted-owner" })
+    ).resolves.toEqual([sourceCredential]);
     expect(listAiClientInstances).toHaveBeenCalledWith({
       userId: "native-owner"
     });
     expect(listCurrentAiClientCapabilitySnapshots).toHaveBeenCalledWith({
       userId: "native-owner"
     });
+    expect(listDeviceCredentials).toHaveBeenCalledWith({
+      userId: "native-owner"
+    });
     expect(remoteInstances).not.toHaveBeenCalled();
     expect(remoteSnapshots).not.toHaveBeenCalled();
+    expect(remoteCredentials).not.toHaveBeenCalled();
   });
 
   it("forwards the explicit transient-output retention flag to runtime cleanup", async () => {

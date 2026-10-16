@@ -1063,6 +1063,36 @@ describe("local edge upstream routing", () => {
     }
   });
 
+  it("allows only the scoped owner-review reads for an assigned managed runner execution", () => {
+    const executionId = "11111111-1111-4111-8111-111111111111";
+    for (const suffix of ["owner-review-binding", "awaiting-owner-request"]) {
+      const path = `/v1/managed-conversation-runner/executions/${executionId}/${suffix}`;
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", "GET", path)
+      ).not.toThrow();
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "managed_execution",
+          "GET",
+          `${path}?ownerUserId=other`
+        )
+      ).toThrow("not allowed for operation family");
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", "POST", path)
+      ).toThrow("not allowed for operation family");
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_write", "GET", path)
+      ).toThrow("not allowed for operation family");
+    }
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversation-runner/executions/not-an-id/owner-review-binding"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
   it("routes the Personal Agent runner job lifecycle only on its declared methods", () => {
     const allowed = [
       [

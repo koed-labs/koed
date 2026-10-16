@@ -1743,6 +1743,7 @@ export const createManagedConversationService = (options: {
   let runAgain = false;
   let wakeClient: CommandWakeClient | null = null;
   let sourceWakeClient: CommandWakeClient | null = null;
+  let sourceWakeConnectPromise: Promise<void> | null = null;
   let sourceWakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let sourceWakeReconnectAttempt = 0;
   let startupRecovery: Promise<void> | null = null;
@@ -11796,53 +11797,116 @@ export const createManagedConversationService = (options: {
     sourceWakeReconnectTimer.unref?.();
   };
 
-  const connectSourceWakeClient = async (): Promise<void> => {
-    if (stopped || sourceWakeClient || !options.commandWakePool) return;
-    try {
-      const client = await options.commandWakePool.connect();
-      if (stopped) {
-        client.release();
-        return;
-      }
-      sourceWakeClient = client;
-      await client.query("listen koed_conversation_source_replication");
-      sourceWakeReconnectAttempt = 0;
-      client.on("notification", (message) => {
-        if (message.channel !== "koed_conversation_source_replication") return;
-        let sourceGenerationId: string | null;
-        try {
-          const payload = JSON.parse(message.payload ?? "{}") as {
-            sourceGenerationId?: unknown;
-          };
-          sourceGenerationId =
-            typeof payload.sourceGenerationId === "string"
-              ? payload.sourceGenerationId
-              : null;
-        } catch {
+  const connectSourceWakeClient = (): Promise<void> => {
+    if (
+      stopped ||
+      sourceWakeClient ||
+      sourceWakeConnectPromise ||
+      !options.commandWakePool
+    ) {
+      return Promise.resolve();
+    }
+    const connecting = (async () => {
+      let client: CommandWakeClient | null = null;
+      try {
+        client = await options.commandWakePool!.connect();
+        if (stopped) {
+          client.release();
           return;
         }
-        if (sourceGenerationId) {
-          void options.repository
-            .releaseManagedConversationCommandsForSourceGeneration({
-              ownerUserId: options.localOwnerUserId,
-              sourceGenerationId,
-              targetDeploymentId: options.deploymentId,
-              targetDeviceId: options.deviceId
-            })
-            .then(() => requestProcessing())
-            .catch(() => undefined);
+        await client.query("listen koed_conversation_source_replication");
+        // Remote commands arrive through SSE, but native runtime bindings are
+        // written locally. Keep their local wake channel active as well.
+        if (options.remoteWake) {
+          await client.query("listen koed_managed_conversation_commands");
         }
-      });
-      client.on("error", () => {
-        if (sourceWakeClient === client) sourceWakeClient = null;
-        client.removeAllListeners();
-        client.release();
+        if (stopped) {
+          await client
+            .query("unlisten koed_conversation_source_replication")
+            .catch(() => undefined);
+          if (options.remoteWake) {
+            await client
+              .query("unlisten koed_managed_conversation_commands")
+              .catch(() => undefined);
+          }
+          client.release();
+          return;
+        }
+        // Publish the connection only after setup succeeds. Until then, this
+        // attempt owns cleanup, including when stop() races either LISTEN.
+        sourceWakeClient = client;
+        sourceWakeReconnectAttempt = 0;
+        client.on("notification", (message) => {
+          if (
+            options.remoteWake &&
+            message.channel === "koed_managed_conversation_commands"
+          ) {
+            signalRuntimeWake();
+            requestProcessing();
+            return;
+          }
+          if (message.channel !== "koed_conversation_source_replication") {
+            return;
+          }
+          let sourceGenerationId: string | null;
+          try {
+            const payload = JSON.parse(message.payload ?? "{}") as {
+              sourceGenerationId?: unknown;
+            };
+            sourceGenerationId =
+              typeof payload.sourceGenerationId === "string"
+                ? payload.sourceGenerationId
+                : null;
+          } catch {
+            return;
+          }
+          if (sourceGenerationId) {
+            void options.repository
+              .releaseManagedConversationCommandsForSourceGeneration({
+                ownerUserId: options.localOwnerUserId,
+                sourceGenerationId,
+                targetDeploymentId: options.deploymentId,
+                targetDeviceId: options.deviceId
+              })
+              .then(() => requestProcessing())
+              .catch(() => undefined);
+          }
+        });
+        client.on("error", () => {
+          if (sourceWakeClient === client) sourceWakeClient = null;
+          client!.removeAllListeners();
+          client!.release();
+          scheduleSourceWakeReconnect();
+        });
+        // Cover bindings committed before LISTEN finished connecting.
+        if (options.remoteWake) requestProcessing();
+      } catch {
+        if (client) {
+          if (sourceWakeClient === client) sourceWakeClient = null;
+          client.removeAllListeners();
+          // A successful first LISTEN survives a later setup failure on a
+          // pooled connection. Clear both channels before returning it.
+          await client
+            .query("unlisten koed_conversation_source_replication")
+            .catch(() => undefined);
+          if (options.remoteWake) {
+            await client
+              .query("unlisten koed_managed_conversation_commands")
+              .catch(() => undefined);
+          }
+          client.release();
+        }
         scheduleSourceWakeReconnect();
-      });
-    } catch {
-      sourceWakeClient = null;
-      scheduleSourceWakeReconnect();
-    }
+      }
+    })();
+    sourceWakeConnectPromise = connecting;
+    const clearConnecting = () => {
+      if (sourceWakeConnectPromise === connecting) {
+        sourceWakeConnectPromise = null;
+      }
+    };
+    void connecting.then(clearConnecting, clearConnecting);
+    return connecting;
   };
 
   return {
@@ -11875,6 +11939,7 @@ export const createManagedConversationService = (options: {
     },
     async stop() {
       stopped = true;
+      const sourceWakeConnecting = sourceWakeConnectPromise;
       await Promise.all([...publicProgress.keys()].map(flushPublicProgress));
       signalRuntimeWake();
       for (const transient of transientOutputs.values()) {
@@ -11902,6 +11967,11 @@ export const createManagedConversationService = (options: {
         await client
           .query("unlisten koed_conversation_source_replication")
           .catch(() => undefined);
+        if (options.remoteWake) {
+          await client
+            .query("unlisten koed_managed_conversation_commands")
+            .catch(() => undefined);
+        }
         client.release();
       }
       remoteWakeAbort?.abort();
@@ -11921,6 +11991,7 @@ export const createManagedConversationService = (options: {
       await Promise.all([
         startupRecovery?.catch(() => undefined),
         deferredStartDiscovery?.catch(() => undefined),
+        sourceWakeConnecting?.catch(() => undefined),
         drainPromise?.catch(() => undefined),
         controlsPromise?.catch(() => undefined),
         filesPromise?.catch(() => undefined)

@@ -5,7 +5,7 @@ See [the revised ticket plan](docs/studio-ui-integration-plan.md). Tickets 24–
 ## Current open tickets
 
 The [separate Personal and Collaboration tables](docs/studio-ui-integration-plan.md) replace the earlier five-ticket count.
-There are 12 distinct open tickets: one retains deferred feature scope and eleven contain testing/release acceptance. Ticket 04's instruction-only implementation is enabled after live adapter validation; live local loopback UI acceptance passes; retained acceptance and deferrals remain open.
+There are 12 distinct open tickets, including retained feature scope, newly identified recovery/adapter work, and testing/release acceptance. Ticket 04's instruction-only implementation is enabled after live adapter validation; live local loopback UI acceptance passes; retained acceptance and deferrals remain open.
 
 | Area          | Open ticket IDs    | Count |
 | ------------- | ------------------ | ----- |
@@ -18,6 +18,15 @@ Ticket 04 assessment is complete: local catalogue and accepted Codex context are
 Ticket 27 Collaboration assessment is recorded in [the surface and authority map](docs/studio-collaboration-chat-assessment.md). Implemented participant-owned Agent requests in private/group chats with owner-private native execution, explicit result sharing, exact-origin permission checks and guarded local/hosted navigation. Native request status refresh is corrected without private content or extra Job/Memory machinery. Focused checks pass; live provider, cross-account and deployment acceptance remain open under 27.
 Ticket 22 reuses one scoped Skill picker across Studio and retained Electron AI chats, with truthful native availability, owner-private launch, fresh send-time validation and discovery access checks. The [implementation checkpoint](docs/studio-plugins-skills-assessment.md#implementation-checkpoint) records provider limits and validation. Installation and sign-in remain in the original AI Client. Live Codex/Claude invocation, hosted/device and reconnect acceptance remain open; the distinct open-ticket count stays 12.
 Keep original acceptance records and explicit deferrals. Do not count superseded tickets or repeated tests twice.
+
+Ticket 13 live follow-ups found on 2026-10-15:
+
+- Validate safe recovery when the first prompt fails before provider dispatch and the stopped execution has no resumable provider history. Reconnect currently stops the runtime, but the next prompt is rejected for missing provider history. Keep the history guard until recovery has an explicit proof of safe restart; assess with Ticket 04.
+- Wire or replace the remote runtime-item listing used by the non-Codex output fallback before claiming complete Claude channel execution acceptance. The runner adapter currently supports individual runtime-item reads, not that listing.
+- Audit the remaining remote adapter gaps for file-operation continuation and Project Move within their existing retained scope. Do not count a passing Codex channel test as evidence for those paths.
+- Assess owner-review focus revalidation under Ticket 30: controls briefly disappear while refreshing, which invalidated pending UI clicks during validation. Verify unsaved brief/question/summary edits remain stable.
+- Preserve the human-derived chat title after reload under 04/30. The accepted test conversation reloaded with an internal managed-context label instead of its initial human-message title.
+
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.
 
 # Implementation backlog

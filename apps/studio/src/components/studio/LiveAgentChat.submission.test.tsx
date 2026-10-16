@@ -44,7 +44,12 @@ const mocks = vi.hoisted(() => ({
   personalRead: vi.fn(),
   personalRequest: null as TestSubmitRequest | null,
   personalRoot: null as TestConversationRoot | null,
-  agents: [] as Array<Record<string, unknown>>
+  agents: [] as Array<Record<string, unknown>>,
+  onReviewSaved: null as
+    | ((review: { version: number; privateGoal: string }) => void)
+    | null,
+  startGate: null as Promise<unknown> | null,
+  rejectAbortedRequests: false
 }));
 const router = { replace: vi.fn(), push: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
@@ -97,6 +102,14 @@ vi.mock("@/lib/hosted-managed-chats", async (original) => ({
   ...(await original<object>()),
   loadLatestLocalProjectMove: async () => null,
   loadLocalRetainedWorkspaces: async () => []
+}));
+vi.mock("@/components/TeamAgentRequestViews", () => ({
+  TeamAgentRequestReviewPanel: (props: {
+    onReviewSaved: (review: { version: number; privateGoal: string }) => void;
+  }) => {
+    mocks.onReviewSaved = props.onReviewSaved;
+    return null;
+  }
 }));
 vi.mock("./NewChatView", () => ({
   NewChatView: (props: {
@@ -349,7 +362,11 @@ afterEach(async () => {
   mocks.personalRequest = null;
   mocks.personalRoot = null;
   mocks.agents = [];
+  mocks.onReviewSaved = null;
+  mocks.startGate = null;
+  mocks.rejectAbortedRequests = false;
   router.replace.mockClear();
+  window.history.replaceState({}, "", "/");
 });
 async function mount(
   turnSelection = selection,
@@ -358,11 +375,19 @@ async function mount(
     submit?: boolean;
     skipInitialSelection?: boolean;
     initialDraft?: string;
+    teamRequest?: boolean;
+    teamReviewVersion?: number;
   } = {}
 ) {
   mocks.records.set("new", { schemaVersion: 1, draft: "" });
   mocks.request.mockImplementation(
-    async (path: string, body?: Record<string, unknown>) => {
+    async (
+      path: string,
+      body?: Record<string, unknown>,
+      signal?: AbortSignal
+    ) => {
+      if (mocks.rejectAbortedRequests && signal?.aborted)
+        throw new DOMException("The request was aborted.", "AbortError");
       if (path === "/access") return { user: { id: "owner" } };
       if (path === "/launch-options")
         return {
@@ -395,6 +420,7 @@ async function mount(
         };
       if (path === "") {
         if (mocks.fail) throw new Error("Start failed");
+        if (mocks.startGate) return mocks.startGate;
         return { execution };
       }
       if (path.endsWith("/runtime"))
@@ -458,6 +484,14 @@ async function mount(
           {...(options.personalConversationId
             ? { personalConversationId: options.personalConversationId }
             : {})}
+          {...(options.teamRequest
+            ? {
+                teamRequestId: "agent-request",
+                teamRequestTeamId: "team",
+                teamRequestExpectedRequestVersion: 4,
+                teamRequestExpectedReviewVersion: options.teamReviewVersion ?? 1
+              }
+            : {})}
           {...(options.submit === false
             ? {}
             : {
@@ -475,6 +509,132 @@ async function mount(
 async function flushReact() {
   await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
 }
+it("explains that the private brief must be saved before a Team planning chat can start", async () => {
+  await mount(selection, { submit: false, teamRequest: true });
+  await flushReact();
+
+  const runtime = mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime;
+  expect(runtime.enabled).toBe(false);
+  expect(runtime.status).toBe(
+    "Save the private brief above before starting the private planning chat."
+  );
+  expect(
+    mocks.request.mock.calls.filter((call) => call[0] === "")
+  ).toHaveLength(0);
+  expect(
+    mocks.request.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/prompts")
+    )
+  ).toHaveLength(0);
+});
+it("keeps an in-flight Team first send alive when the saved review version advances", async () => {
+  let resolveStart!: (value: unknown) => void;
+  mocks.startGate = new Promise((resolve) => {
+    resolveStart = resolve;
+  });
+  mocks.rejectAbortedRequests = true;
+  window.history.replaceState(
+    {},
+    "",
+    "/?chat=1&teamRequest=agent-request&teamRequestTeam=team&teamRequestVersion=4&teamReviewVersion=1"
+  );
+
+  await mount(selection, {
+    submit: false,
+    teamRequest: true,
+    teamReviewVersion: 1
+  });
+  await flushReact();
+
+  expect(mocks.onReviewSaved).not.toBeNull();
+  await act(async () => {
+    mocks.onReviewSaved?.({ version: 2, privateGoal: "Saved private brief" });
+  });
+  const runtime = mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime;
+  expect(runtime.enabled).toBe(true);
+
+  let sendOutcome!: Promise<{ accepted: true } | { error: unknown }>;
+  await act(async () => {
+    sendOutcome = runtime
+      .onSend("Home question", selection)
+      .then(() => ({ accepted: true as const }))
+      .catch((error: unknown) => ({ error }));
+    await vi.waitFor(() => {
+      expect(
+        mocks.request.mock.calls.filter((call) => call[0] === "")
+      ).toHaveLength(1);
+    });
+  });
+
+  const startBody = mocks.request.mock.calls.find(
+    (call) => call[0] === ""
+  )?.[1];
+  expect(startBody).toMatchObject({
+    model: "chosen-model",
+    reasoningEffort: "high",
+    aiClientInstanceId: "chosen-client",
+    teamAgentRequest: {
+      requestId: "agent-request",
+      expectedRequestVersion: 4,
+      expectedReviewVersion: 2
+    }
+  });
+  const initialLaunchLoads = mocks.request.mock.calls.filter(
+    (call) => call[0] === "/launch-options"
+  ).length;
+
+  window.history.replaceState(
+    {},
+    "",
+    "/?chat=1&teamRequest=agent-request&teamRequestTeam=team&teamRequestVersion=4&teamReviewVersion=2"
+  );
+  await act(async () =>
+    root.render(
+      <StrictMode>
+        <LiveAgentChat
+          onConversationStarted={mocks.started}
+          initialDraft="Home question"
+          initialSelection={selection}
+          teamRequestId="agent-request"
+          teamRequestTeamId="team"
+          teamRequestExpectedRequestVersion={4}
+          teamRequestExpectedReviewVersion={2}
+        />
+      </StrictMode>
+    )
+  );
+  await flushReact();
+
+  expect(
+    mocks.request.mock.calls.filter((call) => call[0] === "/launch-options")
+  ).toHaveLength(initialLaunchLoads);
+  expect(container.querySelector("textarea")?.value).toBe("Home question");
+  expect(mocks.view.mock.lastCall?.[0].initialSelection).toMatchObject({
+    model: "chosen-model",
+    effort: "high",
+    instanceId: "chosen-client"
+  });
+  expect(mocks.records.get("new")?.pendingOperation?.prompt).toBe(
+    "Home question"
+  );
+  expect(
+    mocks.request.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/prompts")
+    )
+  ).toHaveLength(0);
+
+  await act(async () => {
+    resolveStart({ execution });
+    await sendOutcome;
+  });
+
+  expect(await sendOutcome).toEqual({ accepted: true });
+  const prompts = mocks.request.mock.calls.filter((call) =>
+    String(call[0]).endsWith("/prompts")
+  );
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]?.[1]).toMatchObject({ prompt: "Home question" });
+});
 it("submits the Home question once, displays the conversation, and continues the same execution", async () => {
   await mount();
   const calls = mocks.request.mock.calls;

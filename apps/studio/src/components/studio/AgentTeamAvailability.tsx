@@ -7,15 +7,7 @@ import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
 
 /** Uses the existing Team offers authority; never publishes the private Agent profile. */
-export function AgentTeamAvailability({
-  agentId,
-  ownerId,
-  backendId
-}: {
-  agentId: string;
-  ownerId: string;
-  backendId: string;
-}) {
+export function AgentTeamAvailability({ agentId }: { agentId: string }) {
   const transport =
     process.env.NEXT_PUBLIC_KOED_STUDIO_HOSTED === "1" ? "hosted" : "studio";
   const client = useMemo(
@@ -24,18 +16,33 @@ export function AgentTeamAvailability({
   );
   const [context, setContext] = useState<{
     state: "loading" | "ready" | "unavailable";
+    identityKey: string;
     authorityKey: string;
     teams: Array<{ id: string; name: string }>;
-  }>({ state: "loading", authorityKey: "", teams: [] });
+  }>({ state: "loading", identityKey: "", authorityKey: "", teams: [] });
   const [revision, setRevision] = useState(0);
-  const identityKey = `${backendId}:${ownerId}:${agentId}`;
+  const identityKey = JSON.stringify([transport, agentId]);
+  const visibleContext =
+    context.identityKey === identityKey
+      ? context
+      : {
+          state: "loading" as const,
+          identityKey,
+          authorityKey: "",
+          teams: []
+        };
 
   useEffect(() => {
     let current = true;
     let sequence = 0;
     const refresh = async () => {
       const read = ++sequence;
-      setContext({ state: "loading", authorityKey: "", teams: [] });
+      setContext({
+        state: "loading",
+        identityKey,
+        authorityKey: "",
+        teams: []
+      });
       try {
         let principalId: string | null;
         let authority: string | null;
@@ -57,23 +64,39 @@ export function AgentTeamAvailability({
           }));
         }
         if (!current || read !== sequence) return;
-        if (principalId !== ownerId || !authority)
-          throw new Error("Team and Agent accounts differ");
+        if (!principalId || !authority)
+          throw new Error("Team account unavailable");
         setContext({
           state: "ready",
-          authorityKey: `${identityKey}:${authority}`,
+          identityKey,
+          authorityKey: JSON.stringify([
+            transport,
+            authority,
+            principalId,
+            agentId
+          ]),
           teams
         });
       } catch {
         if (current && read === sequence)
-          setContext({ state: "unavailable", authorityKey: "", teams: [] });
+          setContext({
+            state: "unavailable",
+            identityKey,
+            authorityKey: "",
+            teams: []
+          });
       }
     };
     void refresh();
     const wake = () => void refresh();
     const offline = () => {
       sequence += 1;
-      setContext({ state: "unavailable", authorityKey: "", teams: [] });
+      setContext({
+        state: "unavailable",
+        identityKey,
+        authorityKey: "",
+        teams: []
+      });
     };
     window.addEventListener("focus", wake);
     window.addEventListener("online", wake);
@@ -85,7 +108,7 @@ export function AgentTeamAvailability({
       window.removeEventListener("online", wake);
       window.removeEventListener("offline", offline);
     };
-  }, [identityKey, ownerId, transport, revision]);
+  }, [agentId, identityKey, transport, revision]);
 
   return (
     <section
@@ -99,15 +122,16 @@ export function AgentTeamAvailability({
         Teammates see this Agent’s name and the description you approve.
         Instructions and Conversations stay private.
       </p>
-      {context.state === "loading" && (
+      {visibleContext.state === "loading" && (
         <p role="status" className="text-xs text-faint">
           Checking your Teams…
         </p>
       )}
-      {context.state === "unavailable" && (
+      {visibleContext.state === "unavailable" && (
         <div className="space-y-2">
           <p role="status" className="text-xs text-faint">
-            Connect the same Koed account to manage Team availability.
+            Could not verify the Team account. Check the Team connection and
+            retry.
           </p>
           <button
             type="button"
@@ -118,17 +142,18 @@ export function AgentTeamAvailability({
           </button>
         </div>
       )}
-      {context.state === "ready" && context.teams.length === 0 && (
-        <p className="text-xs text-faint">You have no Teams yet.</p>
-      )}
-      {context.state === "ready" &&
-        context.teams.map((team) => (
+      {visibleContext.state === "ready" &&
+        visibleContext.teams.length === 0 && (
+          <p className="text-xs text-faint">You have no Teams yet.</p>
+        )}
+      {visibleContext.state === "ready" &&
+        visibleContext.teams.map((team) => (
           <TeamAgentOffers
-            key={`${context.authorityKey}:${team.id}`}
+            key={`${visibleContext.authorityKey}:${team.id}`}
             teamId={team.id}
             teamName={team.name}
             onlyAgentId={agentId}
-            authorityKey={context.authorityKey}
+            authorityKey={visibleContext.authorityKey}
             refreshRevision={revision}
             client={client}
           />

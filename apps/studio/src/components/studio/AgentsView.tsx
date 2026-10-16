@@ -1216,10 +1216,8 @@ export function AgentsView({
             teamAvailability={
               selected.lifecycle === "active" && draftScope ? (
                 <AgentTeamAvailability
-                  key={`${draftScope.backendId}:${draftScope.ownerId}:${selected.id}`}
+                  key={selected.id}
                   agentId={selected.id}
-                  ownerId={draftScope.ownerId}
-                  backendId={draftScope.backendId}
                 />
               ) : undefined
             }

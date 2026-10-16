@@ -107,6 +107,23 @@ describe("route identity contract", () => {
     ).toBe(true);
   });
 
+  it("publishes runner-scoped owner-review reads as device-credential APIs", () => {
+    for (const path of [
+      "/v1/managed-conversation-runner/executions/{executionId}/owner-review-binding",
+      "/v1/managed-conversation-runner/executions/{executionId}/awaiting-owner-request"
+    ]) {
+      expect(routeIdentityFor("GET", path)).toMatchObject({
+        identity: "device_credential",
+        domain: "personal_memory",
+        status: "implemented"
+      });
+      expect(openApiPaths[path]?.get).toMatchObject({
+        security: [{ deviceCredential: [] }],
+        "x-koed-identity": "device_credential"
+      });
+    }
+  });
+
   it("has one implemented contract per method/path and exports all implemented routes through OpenAPI", () => {
     const keys = routeIdentityContracts.map(
       (contract) => `${contract.method} ${contract.path}`

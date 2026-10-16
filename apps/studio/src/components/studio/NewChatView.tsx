@@ -640,7 +640,8 @@ export function NewChatView({
                       ? "Demo only. Messages stay in this tab and never reach an AI Client."
                       : runtime?.enabled
                         ? ""
-                        : "Live Send is disabled until a verified execution path is connected."
+                        : runtime?.status ||
+                          "Live Send is disabled until a verified execution path is connected."
                   }
                 />
               </div>

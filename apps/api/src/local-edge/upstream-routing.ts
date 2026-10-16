@@ -1049,6 +1049,11 @@ export const assertUpstreamOperationPathAllowed = (
         pathname
       ) ||
       /^\/v1\/managed-conversation-runner\/executions\/[^/]+$/.test(pathname) ||
+      (method === "GET" &&
+        parsed.searchParams.size === 0 &&
+        /^\/v1\/managed-conversation-runner\/executions\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:owner-review-binding|awaiting-owner-request)$/i.test(
+          pathname
+        )) ||
       /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/(?:lease|complete|fail)$/.test(
         pathname
       ) ||

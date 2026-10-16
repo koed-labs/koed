@@ -182,6 +182,12 @@ it("keeps native acceptance behind the saved private execution and shows queued 
 
   const view = await mount(props);
   expect(view.textContent).toContain(
+    "Save the private brief first to unlock the private planning chat."
+  );
+  expect(view.textContent).toContain(
+    "You can refine and save it again before accepting."
+  );
+  expect(view.textContent).not.toContain(
     "Send a private message to create this native conversation"
   );
   let accept = [...view.querySelectorAll("button")].find(

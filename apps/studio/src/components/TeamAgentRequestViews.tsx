@@ -763,9 +763,9 @@ export function TeamAgentRequestReviewPanel({
           <>
             {!executionId && (
               <p className="mt-3 text-xs text-warning">
-                Send a private message to create this native conversation, then
-                save the brief before accepting. Nothing from the private chat
-                is shared with the Team automatically.
+                Save the private brief first to unlock the private planning
+                chat. You can refine and save it again before accepting. Nothing
+                from the private chat is shared with the Team automatically.
               </p>
             )}
             {executionId &&

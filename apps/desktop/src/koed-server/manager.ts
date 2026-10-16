@@ -1858,13 +1858,19 @@ export const createKoedServerManager = ({
     results: Array<{
       kind: (typeof requiredModelKinds)[number];
       value: unknown;
-    }>
+    }>,
+    operation: "status" | "install"
   ) => {
     const models = Object.fromEntries(
       results.map(({ kind, value }) => [kind, value])
     );
     const installed = results.every(
-      ({ value }) => resultOk(value) && resultState(value) === "installed"
+      ({ kind, value }) =>
+        resultState(value) === "installed" &&
+        (resultOk(value) ||
+          (operation === "status" &&
+            kind === "embedding" &&
+            objectValue(value)?.ok === undefined))
     );
     return {
       ok: installed,
@@ -1883,7 +1889,8 @@ export const createKoedServerManager = ({
           kind,
           value: await runJson(["models", "status", "--kind", kind], 60_000)
         }))
-      )
+      ),
+      "status"
     );
 
   const runModelInstallJson = async () =>
@@ -1893,7 +1900,8 @@ export const createKoedServerManager = ({
           kind,
           value: await runJson(["models", "install", "--kind", kind], 600_000)
         }))
-      )
+      ),
+      "install"
     );
 
   const runPackageStatusJson = () => runJson(["package", "status"], 60_000);

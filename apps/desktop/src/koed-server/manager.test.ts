@@ -3805,6 +3805,70 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     ]);
   });
 
+  it.each([
+    {
+      embedding: { state: "installed" },
+      privacy: { ok: true, state: "installed" },
+      installed: true
+    },
+    {
+      embedding: { state: "missing" },
+      privacy: { ok: true, state: "installed" },
+      installed: false
+    },
+    {
+      embedding: { state: "checksum_mismatch" },
+      privacy: { ok: true, state: "installed" },
+      installed: false
+    },
+    {
+      embedding: { ok: false, state: "installed" },
+      privacy: { ok: true, state: "installed" },
+      installed: false
+    },
+    {
+      embedding: { state: "installed" },
+      privacy: { ok: false, state: "missing" },
+      installed: false
+    },
+    {
+      embedding: { state: "installed" },
+      privacy: { state: "installed" },
+      installed: false
+    }
+  ])(
+    "recognizes verified model status contracts: %j",
+    async ({ embedding, privacy, installed }) => {
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          const value = args.includes("privacy") ? privacy : embedding;
+          callback(null, JSON.stringify(value), "");
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+
+      await expect(manager.handlers.models_status!()).resolves.toMatchObject({
+        ok: installed,
+        state: installed ? "installed" : "missing"
+      });
+      // Installation commands retain their explicit success requirement.
+      await expect(manager.handlers.models_install!()).resolves.toMatchObject({
+        ok: false,
+        state: "missing"
+      });
+    }
+  );
+
   it("installs every required local model during Team Desktop setup", async () => {
     const calls: string[][] = [];
     const manager = createKoedServerManager({

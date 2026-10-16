@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   mkdir,
   mkdtemp,
@@ -4886,12 +4887,32 @@ describe("Managed Conversation service lifecycle", () => {
 
   it.each([
     { unborn: false, retry: false },
+    { unborn: false, retry: false, remoteWake: true },
+    {
+      unborn: false,
+      retry: false,
+      remoteWake: true,
+      sourceWakeSetupFails: true
+    },
+    {
+      unborn: false,
+      retry: false,
+      remoteWake: true,
+      stopDuringSourceWakeSetup: true
+    },
     { unborn: true, retry: false },
     { unborn: false, retry: true },
     { unborn: false, retry: false, ackLost: true }
   ])(
-    "releases a start against the selected Project (unborn: $unborn, retry: $retry, ack lost: $ackLost)",
-    async ({ unborn, retry, ackLost }) => {
+    "handles runtime binding startup (unborn: $unborn, retry: $retry, ack lost: $ackLost, remote wake: $remoteWake, setup failure: $sourceWakeSetupFails, stop race: $stopDuringSourceWakeSetup)",
+    async ({
+      unborn,
+      retry,
+      ackLost,
+      remoteWake,
+      sourceWakeSetupFails,
+      stopDuringSourceWakeSetup
+    }) => {
       const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-prepare-"));
       try {
         const ownerUserId = randomUUID();
@@ -4930,6 +4951,66 @@ describe("Managed Conversation service lifecycle", () => {
           sourceProjectPath
         });
         let currentBinding = binding;
+        let bindingVisible = !remoteWake;
+        const localWake = new EventEmitter();
+        const defer = () => {
+          let resolve!: () => void;
+          const promise = new Promise<void>((settle) => {
+            resolve = settle;
+          });
+          return { promise, resolve };
+        };
+        const managedListenStarted = defer();
+        const managedListenGate = defer();
+        const remoteWakeConnected = defer();
+        const firstPendingScanStarted = defer();
+        const finishFirstPendingScan = defer();
+        const secondPendingScanStarted = defer();
+        const finishSecondPendingScan = defer();
+        const wakeQuery = vi.fn(async (sql: string) => {
+          if (sql === "listen koed_managed_conversation_commands") {
+            managedListenStarted.resolve();
+            if (stopDuringSourceWakeSetup) {
+              await managedListenGate.promise;
+            }
+            if (sourceWakeSetupFails) {
+              throw new Error("TestManagedConversationListenFailure");
+            }
+          }
+          return undefined;
+        });
+        const wakeRelease = vi.fn();
+        let pendingScanCount = 0;
+        const listPendingBindings = vi.fn(async () => {
+          pendingScanCount += 1;
+          if (
+            remoteWake &&
+            !sourceWakeSetupFails &&
+            !stopDuringSourceWakeSetup
+          ) {
+            if (pendingScanCount === 1) {
+              firstPendingScanStarted.resolve();
+              await finishFirstPendingScan.promise;
+            } else if (pendingScanCount === 2) {
+              secondPendingScanStarted.resolve();
+              await finishSecondPendingScan.promise;
+            }
+          }
+          return [...(acknowledged || !bindingVisible ? [] : [currentBinding])];
+        });
+        const claimCommands = vi.fn(async () => []);
+        const remoteWakeFetch = vi.fn(async () => {
+          remoteWakeConnected.resolve();
+          return new Response(new ReadableStream(), {
+            headers: { "content-type": "text/event-stream" }
+          });
+        });
+        const sourceWakeClient = {
+          query: wakeQuery,
+          on: localWake.on.bind(localWake),
+          removeAllListeners: () => localWake.removeAllListeners(),
+          release: wakeRelease
+        };
         let acknowledged = false;
         const acknowledge = vi.fn(async () => {
           acknowledged = true;
@@ -4961,15 +5042,13 @@ describe("Managed Conversation service lifecycle", () => {
           listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
             async () => []
           ),
-          listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
-            ...(acknowledged ? [] : [currentBinding])
-          ]),
+          listPendingManagedConversationRuntimeBindings: listPendingBindings,
           getManagedConversationExecution: vi.fn(async () => execution),
           bindManagedConversationExecutionCheckout: bindWorkspace,
           acknowledgeManagedConversationRuntimeBinding: acknowledge,
           releaseManagedConversationStartForRuntimeBinding: releaseStart,
           reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
-          claimManagedConversationCommands: vi.fn(async () => [])
+          claimManagedConversationCommands: claimCommands
         } as unknown as MemorySourceRepository;
         const service = createManagedConversationService({
           repository,
@@ -4981,6 +5060,18 @@ describe("Managed Conversation service lifecycle", () => {
           deploymentId,
           koedHome: resolve(root, "koed-home"),
           envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+          ...(remoteWake
+            ? {
+                remoteWake: {
+                  baseUrl: "http://authority.invalid",
+                  authorization: "test-only",
+                  fetch: remoteWakeFetch as typeof fetch
+                },
+                commandWakePool: {
+                  connect: async () => sourceWakeClient
+                }
+              }
+            : {}),
           logger: {
             info: vi.fn(),
             warn: vi.fn(),
@@ -4988,10 +5079,90 @@ describe("Managed Conversation service lifecycle", () => {
           } as never
         });
 
-        await expect(service.processOnce()).resolves.toEqual({
-          completed: 0,
-          failed: 0
-        });
+        if (remoteWake && sourceWakeSetupFails) {
+          service.start();
+          await managedListenStarted.promise;
+          await vi.waitFor(() => expect(wakeRelease).toHaveBeenCalledOnce());
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "listen koed_conversation_source_replication"
+          );
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "unlisten koed_conversation_source_replication"
+          );
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "unlisten koed_managed_conversation_commands"
+          );
+          expect(localWake.listenerCount("notification")).toBe(0);
+          await service.stop();
+          expect(wakeRelease).toHaveBeenCalledOnce();
+          return;
+        } else if (remoteWake && stopDuringSourceWakeSetup) {
+          service.start();
+          await managedListenStarted.promise;
+          let stopCompleted = false;
+          const stopping = service.stop().then(() => {
+            stopCompleted = true;
+          });
+          await new Promise<void>((resolveImmediate) =>
+            setImmediate(resolveImmediate)
+          );
+          expect(stopCompleted).toBe(false);
+          expect(wakeRelease).not.toHaveBeenCalled();
+          managedListenGate.resolve();
+          await stopping;
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "unlisten koed_conversation_source_replication"
+          );
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "unlisten koed_managed_conversation_commands"
+          );
+          expect(wakeRelease).toHaveBeenCalledOnce();
+          expect(localWake.listenerCount("notification")).toBe(0);
+          localWake.emit("notification", {
+            channel: "koed_managed_conversation_commands"
+          });
+          expect(acknowledge).not.toHaveBeenCalled();
+          return;
+        } else if (remoteWake) {
+          service.start();
+          await Promise.all([
+            firstPendingScanStarted.promise,
+            managedListenStarted.promise,
+            remoteWakeConnected.promise
+          ]);
+          await vi.waitFor(() => {
+            expect(wakeQuery).toHaveBeenCalledWith(
+              "listen koed_managed_conversation_commands"
+            );
+            expect(localWake.listenerCount("notification")).toBe(1);
+          });
+          await new Promise<void>((resolveImmediate) =>
+            setImmediate(resolveImmediate)
+          );
+          expect(pendingScanCount).toBe(1);
+          expect(releaseStart).not.toHaveBeenCalled();
+          finishFirstPendingScan.resolve();
+          await secondPendingScanStarted.promise;
+          finishSecondPendingScan.resolve();
+          await vi.waitFor(() =>
+            expect(claimCommands).toHaveBeenCalledTimes(2)
+          );
+          await new Promise<void>((resolveImmediate) =>
+            setImmediate(resolveImmediate)
+          );
+          expect(pendingScanCount).toBe(2);
+          bindingVisible = true;
+          localWake.emit("notification", {
+            channel: "koed_managed_conversation_commands"
+          });
+          await vi.waitFor(() => expect(acknowledged).toBe(true));
+          expect(listPendingBindings).toHaveBeenCalledTimes(3);
+        } else {
+          await expect(service.processOnce()).resolves.toEqual({
+            completed: 0,
+            failed: 0
+          });
+        }
         if (retry || ackLost) {
           expect(acknowledged).toBe(false);
           expect(currentBinding.checkoutLifecycle).toBe("ready");
@@ -5002,6 +5173,12 @@ describe("Managed Conversation service lifecycle", () => {
         expect(acknowledge).toHaveBeenCalledTimes(ackLost ? 2 : 1);
         expect(acknowledged).toBe(true);
         await service.stop();
+        if (remoteWake) {
+          expect(wakeQuery).toHaveBeenCalledWith(
+            "unlisten koed_managed_conversation_commands"
+          );
+          expect(wakeRelease).toHaveBeenCalledOnce();
+        }
         const canonicalProjectPath = await realpath(sourceProjectPath);
         expect(bindWorkspace).toHaveBeenCalledWith(
           { userId: ownerUserId },

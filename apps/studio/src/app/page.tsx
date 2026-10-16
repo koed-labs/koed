@@ -98,6 +98,12 @@ function LiveHome({
     requestedAgentId && agentSelectionResult?.id === requestedAgentId
       ? (agentSelectionResult.error ?? null)
       : null;
+  const requestedProvider = requestedSettings?.provider;
+  const requestedModel = requestedSettings?.model;
+  const requestedEffort = requestedSettings?.effort;
+  const requestedPermissionMode = requestedSettings?.permissionMode;
+  const requestedInstanceId = requestedSettings?.instanceId;
+  const requestedHostedInstanceId = requestedSettings?.hostedInstanceId;
   const [resumeId, setResumeId] = useState(executionId);
   const [resumePersonalConversationId, setResumePersonalConversationId] =
     useState(initialPersonalConversationId);
@@ -206,7 +212,20 @@ function LiveHome({
           model: "",
           effort: "",
           permissionMode: "full",
-          ...requestedSettings
+          ...(requestedProvider !== undefined
+            ? { provider: requestedProvider }
+            : {}),
+          ...(requestedModel !== undefined ? { model: requestedModel } : {}),
+          ...(requestedEffort !== undefined ? { effort: requestedEffort } : {}),
+          ...(requestedPermissionMode !== undefined
+            ? { permissionMode: requestedPermissionMode }
+            : {}),
+          ...(requestedInstanceId !== undefined
+            ? { instanceId: requestedInstanceId }
+            : {}),
+          ...(requestedHostedInstanceId !== undefined
+            ? { hostedInstanceId: requestedHostedInstanceId }
+            : {})
         });
         setChatKey((value) => value + 1);
         setAgentSelectionResult({ id: requestedAgentId, state: "ready" });
@@ -224,7 +243,16 @@ function LiveHome({
         });
       });
     return () => controller.abort();
-  }, [requestedAgentId, requestedSettings, executionId]);
+  }, [
+    requestedAgentId,
+    requestedProvider,
+    requestedModel,
+    requestedEffort,
+    requestedPermissionMode,
+    requestedInstanceId,
+    requestedHostedInstanceId,
+    executionId
+  ]);
 
   const loadRegisteredProjects = useCallback(async () => {
     registeredProjectsSequence.current += 1;

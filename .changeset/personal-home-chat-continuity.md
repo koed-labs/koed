@@ -61,3 +61,15 @@ Support one verified native Claude Skill per turn through an isolated adapter fo
 Add owner-managed recurring Agent tasks with interval or time-zone-aware daily and weekly schedules. Keep each run in a private native Codex or Claude conversation with the existing Memory, permissions and progress flow. Save changes paused, require explicit activation, run only the latest missed occurrence after offline time, prevent overlapping runs and require review when earlier effects are uncertain. Include pause, Run now, archive and occurrence history without automatically sharing results with Teams.
 
 Keep hosted Collaboration composers read-only until their verified draft is ready. Preserve new text and human mentions when an earlier chat finishes sending after the User switches conversations.
+
+Recognize checksum-verified embedding model status during Desktop setup, while keeping privacy-model and installation success checks strict. Prevent a valid local model from leaving setup blocked.
+
+Preserve Collaboration forms and drafts when returning from a native dialog or refreshing the same authenticated Team context on focus. Clear the workspace when access changes or revalidation fails, and keep explicit refresh behavior intact.
+
+Use the authenticated Team principal and backend for Agent availability instead of comparing the remote account with the separate local private-draft owner. Preserve server ownership checks and clear stale Team context when authentication changes.
+
+Wake paired runners when a local Project runtime binding is created, alongside remote command notifications. Prepare the selected Project promptly and clean up local notification connections during setup failures and shutdown.
+
+Preserve the active chat when a private Team Agent review updates its URL version. Keep the first message and selected AI Client settings through the execution-start handoff instead of remounting the composer before the prompt is sent.
+
+Wire paired runners to the existing private Team Agent review lookups. Recheck owner, Device and execution authority before dispatch, retaining read-only planning for unaccepted requests and the existing access checks for accepted work.

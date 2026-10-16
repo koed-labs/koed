@@ -343,6 +343,16 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "GET",
+    "/v1/managed-conversation-runner/executions/{executionId}/owner-review-binding",
+    "Read the private Team request status bound to an execution owned by this runner."
+  ],
+  [
+    "GET",
+    "/v1/managed-conversation-runner/executions/{executionId}/awaiting-owner-request",
+    "Read the minimal active owner-review binding required to gate a native Agent turn."
+  ],
+  [
+    "GET",
     "/v1/managed-conversation-runner/executions/{executionId}/checkpoints",
     "List exact execution checkpoints assigned to this runner."
   ],

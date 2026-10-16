@@ -461,6 +461,16 @@ export function LiveAgentChat({
   );
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
+  const latestTeamRequestRouteVersions = useRef({
+    requestVersion: teamRequestExpectedRequestVersion,
+    reviewVersion: teamRequestExpectedReviewVersion
+  });
+  useEffect(() => {
+    latestTeamRequestRouteVersions.current = {
+      requestVersion: teamRequestExpectedRequestVersion,
+      reviewVersion: teamRequestExpectedReviewVersion
+    };
+  }, [teamRequestExpectedRequestVersion, teamRequestExpectedReviewVersion]);
   const recoveryStore = useRef<LocalRecoveryStore | null>(null);
   const recoveryIdentity = useRef<{
     ownerId: string;
@@ -712,8 +722,8 @@ export function LiveAgentChat({
                         `/?chat=1&execution=${encodeURIComponent(execution.id)}`,
                         teamRequestId,
                         teamRequestTeamId,
-                        teamRequestExpectedRequestVersion,
-                        teamRequestExpectedReviewVersion
+                        latestTeamRequestRouteVersions.current.requestVersion,
+                        latestTeamRequestRouteVersions.current.reviewVersion
                       )
                     );
                     return;
@@ -799,9 +809,7 @@ export function LiveAgentChat({
     router,
     settleRecoveredSend,
     teamRequestId,
-    teamRequestTeamId,
-    teamRequestExpectedRequestVersion,
-    teamRequestExpectedReviewVersion
+    teamRequestTeamId
   ]);
 
   const refresh = useCallback(
@@ -2922,6 +2930,19 @@ export function LiveAgentChat({
       setStatus("Response accepted; reconnecting to progress");
     }
   };
+  const runtimeReadyWithoutTeamReview =
+    loaded &&
+    instances.length > 0 &&
+    !personalConversationLoading &&
+    !personalConversationBlocked &&
+    !personalRetryAvailable &&
+    !recoveryBlocked &&
+    !failedExecutions.has(runtime?.execution.state ?? "");
+  const teamRequestReviewNeedsSavedBrief = Boolean(
+    teamRequestId && !executionId && !teamRequestReviewSaved
+  );
+  const teamRequestBriefBlocksSend =
+    runtimeReadyWithoutTeamReview && teamRequestReviewNeedsSavedBrief;
   return (
     <div className="flex h-full min-h-0 flex-col">
       {teamRequestId && teamRequestTeamId && (
@@ -3205,16 +3226,8 @@ export function LiveAgentChat({
           modelOptions={instances.flatMap((instance) => instance.models)}
           runtime={{
             enabled:
-              loaded &&
-              instances.length > 0 &&
-              !personalConversationLoading &&
-              !personalConversationBlocked &&
-              !personalRetryAvailable &&
-              (!teamRequestId ||
-                Boolean(executionId) ||
-                teamRequestReviewSaved) &&
-              !recoveryBlocked &&
-              !failedExecutions.has(runtime?.execution.state ?? ""),
+              runtimeReadyWithoutTeamReview &&
+              !teamRequestReviewNeedsSavedBrief,
             messages: displayedMessages,
             jobMarkers,
             isSending: sending,
@@ -3243,7 +3256,9 @@ export function LiveAgentChat({
                       )
                   }
                 : undefined,
-            status: [status, historyNotice].filter(Boolean).join(" · "),
+            status: teamRequestBriefBlocksSend
+              ? "Save the private brief above before starting the private planning chat."
+              : [status, historyNotice].filter(Boolean).join(" · "),
             personalConversation:
               personalConversation || personalRetryAvailable
                 ? {

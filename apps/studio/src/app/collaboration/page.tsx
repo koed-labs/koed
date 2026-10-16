@@ -70,6 +70,28 @@ type CollaborationRouteState =
   | { mode: "preview" | "unavailable" }
   | { mode: "loading" };
 
+const collaborationAccessKey = (snapshot: CollaborationSnapshot) =>
+  JSON.stringify({
+    backendId: snapshot.connection.backendId ?? null,
+    principalId: snapshot.navigation.teamPrincipal?.id ?? null,
+    teams: snapshot.navigation.teams
+      .map((team) => ({
+        id: team.id,
+        role: team.role,
+        lifecycle: team.lifecycle,
+        membershipVersion: team.membershipVersion ?? null,
+        projectIds: team.sharedProjects.map((project) => project.id).sort(),
+        workspaces: team.workspaces
+          .map((workspace) => ({
+            id: workspace.id,
+            access: workspace.access,
+            lifecycle: workspace.lifecycle
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id))
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id))
+  });
+
 function CollaborationRuntime() {
   const searchParams = useSearchParams();
   const notificationNavigation =
@@ -95,29 +117,53 @@ function CollaborationRuntime() {
   const routeRef = useRef(route);
   const requestSequence = useRef(0);
 
-  const refresh = useCallback(async () => {
-    if (routeRef.current.mode === "preview") return;
-    const sequence = ++requestSequence.current;
-    routeRef.current = { mode: "loading" };
-    setRoute(routeRef.current);
-    let result: CollaborationRouteState;
-    try {
-      result = { mode: "studio", snapshot: await client.loadSession() };
-    } catch (error) {
-      result =
-        error instanceof StudioCollaborationRequestError && error.status === 404
-          ? { mode: "preview" }
-          : { mode: "unavailable" };
-    }
-    if (sequence !== requestSequence.current) return;
-    routeRef.current = result;
-    setRoute(result);
-  }, [client]);
+  const refresh = useCallback(
+    async (preserveWorkspace = false) => {
+      if (routeRef.current.mode === "preview") return;
+      const sequence = ++requestSequence.current;
+      const previousSnapshot =
+        routeRef.current.mode === "studio" ? routeRef.current.snapshot : null;
+      if (!preserveWorkspace || !previousSnapshot) {
+        routeRef.current = { mode: "loading" };
+        setRoute(routeRef.current);
+      }
+      let result: CollaborationRouteState;
+      try {
+        result = { mode: "studio", snapshot: await client.loadSession() };
+      } catch (error) {
+        result =
+          error instanceof StudioCollaborationRequestError &&
+          error.status === 404 &&
+          !previousSnapshot
+            ? { mode: "preview" }
+            : { mode: "unavailable" };
+      }
+      if (sequence !== requestSequence.current) return;
+
+      // Native dialogs return focus to this window. Revalidate the same access
+      // scope without tearing down the stateful workspace (for example an open
+      // Project form). A changed or unavailable authority still replaces it.
+      if (
+        preserveWorkspace &&
+        previousSnapshot &&
+        result.mode === "studio" &&
+        collaborationAccessKey(previousSnapshot) ===
+          collaborationAccessKey(result.snapshot)
+      ) {
+        routeRef.current = result;
+        return;
+      }
+
+      routeRef.current = result;
+      setRoute(result);
+    },
+    [client]
+  );
 
   useEffect(() => {
     void refresh();
     const onFocus = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible") void refresh(true);
     };
     window.addEventListener("focus", onFocus);
     return () => {
@@ -140,11 +186,11 @@ function CollaborationRuntime() {
   if (route.mode === "studio") {
     return (
       <TeamChannelWorkspace
-        key={route.snapshot.connection.backendId ?? "no-backend"}
+        key={collaborationAccessKey(route.snapshot)}
         snapshot={route.snapshot}
         client={client}
         drafts={client}
-        onRefresh={refresh}
+        onRefresh={() => void refresh()}
         notificationNavigation={notificationNavigation}
       />
     );
