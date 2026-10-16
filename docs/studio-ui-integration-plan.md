@@ -368,3 +368,8 @@ automatic action recovery stays under Ticket 30. Additional-Device, deployed
 Team/Google and remaining retained acceptance are open. The distinct open-ticket
 count remains **12**. See the native execution evidence document for exact
 fixtures and validation limits.
+
+The final supported native rebuild is current. The accepted Claude conversation
+reopened from the Project sidebar and answered a newly typed private message
+after worker restart, with history, settings and Team binding restored. Retain
+the transient Project catalogue startup/retry warning under 04/30.

@@ -273,8 +273,18 @@ reviewed text in the original channel. Outcome message
 `461089ea-58c9-55ce-a2ca-9fbe836a9899` advanced request version 2 to 3, while
 accepted command `2d68fe13-5bdf-8d6d-b257-f9bacef46c59` remained completed.
 The database audit still reports one acceptance command, matching bindings, no
-retired Jobs and no Job attempts. Claude post-worker-restart continuation is
-being checked separately.
+retired Jobs and no Job attempts. After a supported stop, stable source rebuild and restart, the same Claude
+conversation reopened from its Project with request version 3, review version 2,
+history and Sonnet 4.6/Medium restored. A newly typed private question about
+trailing newlines received a real Claude reply without authentication failure and
+completed. The requester channel retained the reviewed outcome and contained
+neither that private question nor its reply.
+The rebuilt native source passes `source-runtime:check` with fingerprint
+`sha256:dc35a9b8fc620ff095545916ad95b2ad0a4ac541f7b7d1a0b1f56173090b899d`.
+The local Project catalogue briefly reported unavailable during startup while
+captured conversations remained visible. **Retry Projects** cleared the warning
+and retained the working chat. Keep automatic cold-start catalogue recovery under
+04/30 rather than claiming all cold-start UI acceptance.
 
 ### Local Docker live result, 2026-10-15
 
