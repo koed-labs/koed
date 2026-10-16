@@ -29,7 +29,7 @@
     "pretypecheck": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed-labs/server build",
-    "test": "node --test scripts/desktop-artifact-report-lib.test.mjs scripts/prepare-macos-signing.test.mjs && vitest run --passWithNoTests",
+    "test": "node --test scripts/desktop-artifact-report-lib.test.mjs scripts/prepare-macos-signing.test.mjs scripts/verify-macos-package.test.mjs && vitest run --passWithNoTests",
     "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs"
   },
   "dependencies": {
