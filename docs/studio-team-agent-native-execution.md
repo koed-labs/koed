@@ -241,7 +241,40 @@ without output and was stopped; this is not a clean lint result. A new disposabl
 request `341ddd7c-0a40-4e9f-acbc-d5cbcb038721` is awaiting acceptance in execution
 `c731efef-f1bf-4028-8206-2904f46f2ec2` for live verification against the rebuilt
 Docker backend. Its synthetic marker-only planning prompt drew a model refusal;
-an ordinary explanation-only prompt is being used without changing safety rules.
+an ordinary explanation-only prompt then completed without file changes.
+The rebuilt Docker image
+`sha256:27acdfa77f18a814c244b735662cb4a956042873255f8b63e9e4b8bc862adf07`
+passed compilation and health checks and replaced only the isolated application
+service. Pairing revalidated with preserved volumes. After a UI reload, owner
+acceptance created command `c503722b-f6b9-8206-a767-e0c09213f0cb` in the same
+private execution. The read-only database audit confirms one command for its
+acceptance key, matching owner/execution binding, zero retired Jobs and zero
+Job attempts. The provider completed with a refusal, citing its earlier synthetic marker prompt
+as suspected injection; the canonical test file remained absent. This proves
+command delivery and safe terminal handling, not completed assignment execution.
+A separate ordinary-language request is being tested without changing provider
+safety behavior. The native review also needed a reload after the intentional
+backend outage before its acceptance action advanced; automatic action recovery
+remains a Ticket 30 follow-up.
+
+A clean ordinary-language Claude request passed canonical accepted work after
+that refusal. Request `dd7561c8-9b4b-42e3-9181-bafa9affb216`, private execution
+`571eb546-4397-465c-81a4-289913b36107`, used Sonnet 4.6/Medium. Its first
+planning response explained Write/Read without changing files. One UI **Accept
+and assign** action resumed Claude and created/read back `hello-from-claude.txt`
+without an additional chat confirmation. An independent read matched exactly
+`Hello from Claude.` plus one newline. The native UI displayed the tool activity
+and completed reply. Owner runtime/review reads returned 200; requester and
+outsider runtime reads returned 404 and review reads returned 403. This is local
+Docker/native acceptance with actual authenticated test accounts, not deployed
+Team, Google/WorkOS or additional-Device acceptance. The Agent drafted a private summary from the accepted command; the owner
+reviewed/edited it and explicitly shared it. The requester UI displayed that
+reviewed text in the original channel. Outcome message
+`461089ea-58c9-55ce-a2ca-9fbe836a9899` advanced request version 2 to 3, while
+accepted command `2d68fe13-5bdf-8d6d-b257-f9bacef46c59` remained completed.
+The database audit still reports one acceptance command, matching bindings, no
+retired Jobs and no Job attempts. Claude post-worker-restart continuation is
+being checked separately.
 
 ### Local Docker live result, 2026-10-15
 
