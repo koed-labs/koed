@@ -50,7 +50,10 @@ import {
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
-import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
+import {
+  teamAgentRequestContextHref,
+  teamReviewSavedHref
+} from "@/lib/team-review-saved-navigation";
 import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
 import type {
   PersonalAgentChatConversation,
@@ -289,6 +292,7 @@ export function LiveAgentChat({
   initialSubmission,
   conversationTitle,
   onConversationStarted,
+  onStartFreshTeamPlanning,
   claimInitialSubmission,
   projectId: initialProjectId,
   projectName: initialProjectName,
@@ -308,6 +312,12 @@ export function LiveAgentChat({
   initialSelection?: ChatComposerSelection;
   conversationTitle?: string;
   onConversationStarted?: (conversation: HomeExecution) => void;
+  onStartFreshTeamPlanning?: (input: {
+    selection: ChatComposerSelection;
+    projectId: string | null;
+    requestVersion: number;
+    reviewVersion: number;
+  }) => void;
   initialSubmission?: InitialChatSubmission;
   claimInitialSubmission?: (id: string) => boolean;
   projectId?: string;
@@ -344,6 +354,11 @@ export function LiveAgentChat({
   const [teamRequestReviewSaved, setTeamRequestReviewSaved] = useState(
     !teamRequestId || Boolean(initialExecutionId)
   );
+  const [teamRequestStatus, setTeamRequestStatus] = useState<{
+    scopeKey: string;
+    status: string;
+    version: number;
+  } | null>(null);
   const [agents, setAgents] = useState<PersonalAgent[]>([]);
   const [instances, setInstances] = useState<LaunchInstance[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(
@@ -1744,6 +1759,17 @@ export function LiveAgentChat({
     const signal = lifecycle.current?.signal;
     if (!signal || signal.aborted)
       throw new Error("The chat is no longer active.");
+    if (
+      teamRequestId &&
+      (!teamRequestReviewLoaded || !teamRequestBindingVersionCurrent)
+    )
+      throw new Error(
+        "The Team request changed or is still loading. Refresh the private review before sending."
+      );
+    if (teamRequestId && !executionId && !teamRequestReviewSaved)
+      throw new Error(
+        "Save the private brief before starting the Team planning chat."
+      );
     if (!recoveryStore.current)
       throw new Error(
         "Studio could not establish device recovery for this chat. Nothing was sent."
@@ -2603,6 +2629,130 @@ export function LiveAgentChat({
     ? persistedPersonalAgentSelections(personalConversation)
     : undefined;
   const currentExecution = runtime?.execution ?? null;
+  const teamRequestScopeKey =
+    teamRequestId && teamRequestTeamId
+      ? `${teamRequestTeamId}\u0000${teamRequestId}`
+      : null;
+  const currentTeamRequestStatus =
+    teamRequestStatus?.scopeKey === teamRequestScopeKey
+      ? teamRequestStatus
+      : null;
+  const teamRequestReviewLoaded = Boolean(
+    !teamRequestId ||
+    (currentTeamRequestStatus &&
+      Number.isSafeInteger(teamRequestReviewVersion) &&
+      teamRequestReviewVersion! > 0)
+  );
+  const teamRequestBindingVersionCurrent = Boolean(
+    !teamRequestId ||
+    (currentTeamRequestStatus &&
+      Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+      currentTeamRequestStatus.version === teamRequestExpectedRequestVersion &&
+      Number.isSafeInteger(teamRequestExpectedReviewVersion) &&
+      teamRequestReviewVersion === teamRequestExpectedReviewVersion)
+  );
+  useEffect(() => {
+    if (
+      !teamRequestId ||
+      !teamRequestTeamId ||
+      !currentTeamRequestStatus ||
+      !Number.isSafeInteger(teamRequestReviewVersion) ||
+      teamRequestReviewVersion! < 1 ||
+      typeof window === "undefined"
+    )
+      return;
+    const href = teamAgentRequestContextHref({
+      pathname: window.location.pathname,
+      search: window.location.search,
+      requestId: teamRequestId,
+      teamId: teamRequestTeamId,
+      requestVersion: currentTeamRequestStatus.version,
+      reviewVersion: teamRequestReviewVersion!
+    });
+    if (href) router.replace(href);
+  }, [
+    currentTeamRequestStatus,
+    router,
+    teamRequestId,
+    teamRequestReviewVersion,
+    teamRequestTeamId
+  ]);
+  const freshPlanningAgent = agents.find(
+    (agent) => agent.id === activeAgentId && agent.lifecycle === "active"
+  );
+  const freshPlanningPermissionMode =
+    currentExecution?.permissionMode === "supervised"
+      ? "ask"
+      : currentExecution?.permissionMode === "full_access"
+        ? "full"
+        : null;
+  const freshPlanningInstance = currentExecution
+    ? instances.find(
+        (instance) =>
+          instance.driverId === currentExecution.provider &&
+          instance.instanceId === currentExecution.aiClientInstanceId &&
+          Boolean(currentExecution.runnerDeviceId) &&
+          instance.runnerDeviceId === currentExecution.runnerDeviceId &&
+          instance.permissionModes.includes(currentExecution.permissionMode) &&
+          instance.models.some(
+            (model) =>
+              model.id === currentExecution.model &&
+              (currentExecution.reasoningEffort === null ||
+                model.supportedReasoningEfforts.includes(
+                  currentExecution.reasoningEffort
+                ))
+          )
+      )
+    : undefined;
+  const canStartFreshTeamPlanning = Boolean(
+    onStartFreshTeamPlanning &&
+    teamRequestScopeKey &&
+    teamRequestStatus?.scopeKey === teamRequestScopeKey &&
+    currentTeamRequestStatus?.status === "awaiting_owner" &&
+    Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+    teamRequestStatus.version === teamRequestExpectedRequestVersion &&
+    Number.isSafeInteger(teamRequestExpectedReviewVersion) &&
+    teamRequestReviewVersion === teamRequestExpectedReviewVersion &&
+    teamRequestReviewSaved &&
+    !personalConversationId &&
+    executionId &&
+    runtime?.execution.id === executionId &&
+    currentExecution?.state === "stopped" &&
+    runtime.hasIndeterminatePrompt !== true &&
+    !recoveryBlocked &&
+    !sending &&
+    freshPlanningAgent &&
+    freshPlanningAgent.id === initialSelection?.agentId &&
+    freshPlanningPermissionMode &&
+    freshPlanningInstance
+  );
+  const startFreshTeamPlanning = () => {
+    if (
+      !canStartFreshTeamPlanning ||
+      !currentExecution ||
+      !freshPlanningAgent ||
+      !freshPlanningPermissionMode ||
+      !teamRequestStatus
+    )
+      return;
+    onStartFreshTeamPlanning?.({
+      selection: {
+        agentId: freshPlanningAgent.id,
+        expectedAgentVersion: freshPlanningAgent.currentVersion,
+        provider: currentExecution.provider,
+        model: currentExecution.model,
+        effort: currentExecution.reasoningEffort ?? "",
+        permissionMode: freshPlanningPermissionMode,
+        instanceId: currentExecution.aiClientInstanceId,
+        ...(freshPlanningInstance?.hostedInstanceId
+          ? { hostedInstanceId: freshPlanningInstance.hostedInstanceId }
+          : {})
+      },
+      projectId: currentExecution.projectId,
+      requestVersion: teamRequestStatus.version,
+      reviewVersion: teamRequestReviewVersion!
+    });
+  };
   useEffect(() => {
     const attempt = teamSummaryAttempt.current;
     const command = runtime?.latestCommand;
@@ -2955,9 +3105,26 @@ export function LiveAgentChat({
             setError("Team access changed. Refresh to check your access.")
           }
           onAccepted={() => {
+            if (teamRequestScopeKey)
+              setTeamRequestStatus((current) =>
+                current?.scopeKey === teamRequestScopeKey
+                  ? { ...current, status: "accepted" }
+                  : current
+              );
             if (currentExecution?.id && lifecycle.current)
               void refresh(currentExecution.id, lifecycle.current.signal);
           }}
+          onRequestStatusChange={(request) =>
+            setTeamRequestStatus(
+              request && teamRequestScopeKey
+                ? {
+                    scopeKey: teamRequestScopeKey,
+                    status: request.status,
+                    version: request.version
+                  }
+                : null
+            )
+          }
           onReviewSaved={handleTeamReviewSaved}
           summaryDraftStatus={teamSummaryState.status}
           summaryDraftText={teamSummaryState.text}
@@ -3107,6 +3274,21 @@ export function LiveAgentChat({
           </button>
         </div>
       ) : null}
+      {canStartFreshTeamPlanning ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-warning/5 px-4 py-3 text-xs text-foreground-secondary">
+          <p className="max-w-2xl">
+            The earlier private planning prompt’s outcome is unconfirmed. A
+            fresh chat starts blank and will not resend it.
+          </p>
+          <button
+            type="button"
+            onClick={startFreshTeamPlanning}
+            className="shrink-0 rounded-md border border-border px-3 py-1.5 text-foreground hover:bg-surface-hover"
+          >
+            Start a fresh private planning chat
+          </button>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1">
         <NewChatView
           conversationTitle={
@@ -3227,6 +3409,8 @@ export function LiveAgentChat({
           runtime={{
             enabled:
               runtimeReadyWithoutTeamReview &&
+              teamRequestReviewLoaded &&
+              teamRequestBindingVersionCurrent &&
               !teamRequestReviewNeedsSavedBrief,
             messages: displayedMessages,
             jobMarkers,

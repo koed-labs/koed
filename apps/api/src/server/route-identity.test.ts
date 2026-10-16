@@ -110,7 +110,8 @@ describe("route identity contract", () => {
   it("publishes runner-scoped owner-review reads as device-credential APIs", () => {
     for (const path of [
       "/v1/managed-conversation-runner/executions/{executionId}/owner-review-binding",
-      "/v1/managed-conversation-runner/executions/{executionId}/awaiting-owner-request"
+      "/v1/managed-conversation-runner/executions/{executionId}/awaiting-owner-request",
+      "/v1/managed-conversation-runner/executions/{executionId}/runtime-items"
     ]) {
       expect(routeIdentityFor("GET", path)).toMatchObject({
         identity: "device_credential",

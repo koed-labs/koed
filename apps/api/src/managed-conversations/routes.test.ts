@@ -4258,8 +4258,21 @@ describe("managed Conversation routes", () => {
       updatedAt: now
     };
     let hasIndeterminatePrompt = false;
+    let teamBinding: {
+      ownerUserId: string;
+      requestId: string;
+      teamId: string;
+      agentId: string;
+      status: string;
+      privateGoal: string;
+    } | null = null;
     const answer = vi.fn(async () => ({ state: "answered" }));
     const repository = {
+      getOwnerReviewBindingForExecution: vi.fn(async (actor, input) => {
+        expect(actor).toEqual({ userId });
+        expect(input).toEqual({ executionId });
+        return teamBinding;
+      }),
       getManagedConversationRuntimeBinding: async () => null,
       getManagedConversationExecution: async () => ({
         id: executionId,
@@ -4394,6 +4407,37 @@ describe("managed Conversation routes", () => {
     });
     expect(runtime.body).not.toContain("must-not-leak");
     expect(runtime.body).not.toContain("attempts");
+    expect(runtime.json().teamAgentRequestBinding).toBeNull();
+    teamBinding = {
+      ownerUserId: userId,
+      requestId: randomUUID(),
+      teamId: randomUUID(),
+      agentId: randomUUID(),
+      status: "accepted",
+      privateGoal: "private-goal-must-not-leak"
+    };
+    const teamRuntime = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/runtime`
+    });
+    expect(teamRuntime.statusCode).toBe(200);
+    expect(teamRuntime.json().teamAgentRequestBinding).toEqual({
+      requestId: teamBinding.requestId,
+      teamId: teamBinding.teamId,
+      agentId: teamBinding.agentId,
+      status: "accepted"
+    });
+    expect(teamRuntime.body).not.toContain("private-goal-must-not-leak");
+    teamBinding = { ...teamBinding, ownerUserId: randomUUID() };
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/v1/managed-conversations/${executionId}/runtime`
+        })
+      ).statusCode
+    ).toBe(404);
+    teamBinding = null;
     latestCommand = {
       ...latestCommand,
       state: "dispatching",

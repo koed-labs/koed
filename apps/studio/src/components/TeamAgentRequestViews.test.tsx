@@ -26,6 +26,7 @@ afterEach(async () => {
   container?.remove();
   root = undefined;
   container = undefined;
+  vi.restoreAllMocks();
 });
 
 const request = (
@@ -221,4 +222,133 @@ it("keeps native acceptance behind the saved private execution and shows queued 
     "Continue the private execution in this chat"
   );
   expect(view.textContent).not.toContain("Draft summary privately");
+});
+
+it("keeps the review mounted during polling and ignores callback identity changes", async () => {
+  let tick: (() => void) | undefined;
+  vi.spyOn(window, "setInterval").mockImplementation((callback) => {
+    tick = callback as () => void;
+    return 1 as unknown as ReturnType<typeof window.setInterval>;
+  });
+  vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
+  const savedReview = {
+    teamId,
+    requestId,
+    executionId,
+    privateGoal: "Saved brief",
+    version: 2
+  };
+  let finishRead: ((value: typeof savedReview) => void) | undefined;
+  const getReview = vi
+    .fn()
+    .mockResolvedValueOnce(savedReview)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        })
+    )
+    .mockResolvedValue(savedReview);
+  const client = {
+    getReview,
+    listRequests: vi.fn(async () => ({
+      teamId,
+      requests: [request({ status: "accepted", executionStatus: "running" })],
+      nextCursor: null
+    }))
+  } as unknown as TeamAgentRequestsClient;
+  const props = {
+    teamId,
+    requestId,
+    executionId,
+    client,
+    onAuthorizationLost: vi.fn(),
+    onAccepted: vi.fn(),
+    onShareQuestion: vi.fn(),
+    onReviewSaved: vi.fn()
+  };
+  const view = await mount(props);
+  const question = view.querySelector("textarea")!;
+  question.focus();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!.set!.call(question, "Unsaved private question");
+    question.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    root!.render(
+      <TeamAgentRequestReviewPanel
+        {...props}
+        onReviewSaved={vi.fn()}
+        onAuthorizationLost={vi.fn()}
+      />
+    );
+  });
+  expect(getReview).toHaveBeenCalledTimes(1);
+  await act(async () => tick!());
+  expect(getReview).toHaveBeenCalledTimes(2);
+  expect(view.querySelector("textarea")).toBe(question);
+  expect(document.activeElement).toBe(question);
+  expect(question.value).toBe("Unsaved private question");
+  await act(async () => finishRead!(savedReview));
+  expect(view.querySelector("textarea")).toBe(question);
+  expect(question.value).toBe("Unsaved private question");
+});
+
+it("preserves a dirty private brief on refresh and clears actions when authority is lost", async () => {
+  const savedReview = {
+    teamId,
+    requestId,
+    executionId,
+    privateGoal: "Saved brief",
+    version: 2
+  };
+  const getReview = vi.fn().mockResolvedValue(savedReview);
+  const onAuthorizationLost = vi.fn();
+  const onRequestStatusChange = vi.fn();
+  const client = {
+    getReview,
+    listRequests: vi.fn(async () => ({
+      teamId,
+      requests: [request()],
+      nextCursor: null
+    }))
+  } as unknown as TeamAgentRequestsClient;
+  const props = {
+    teamId,
+    requestId,
+    executionId: null,
+    client,
+    onAuthorizationLost,
+    onRequestStatusChange,
+    onAccepted: vi.fn()
+  };
+  const view = await mount(props);
+  const brief = view.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!.set!.call(brief, "Unsaved revised brief");
+    brief.dispatchEvent(new Event("input", { bubbles: true }));
+    root!.render(
+      <TeamAgentRequestReviewPanel {...props} executionId={executionId} />
+    );
+  });
+  expect(getReview).toHaveBeenCalledTimes(2);
+  expect(view.querySelector("textarea")).toBe(brief);
+  expect(brief.value).toBe("Unsaved revised brief");
+  getReview.mockRejectedValueOnce(
+    new (
+      await import("@/lib/team-agent-requests-client")
+    ).TeamAgentRequestError("Access lost", 403)
+  );
+  await act(async () => {
+    root!.render(<TeamAgentRequestReviewPanel {...props} executionId={null} />);
+  });
+  expect(view.querySelector("textarea")).toBeNull();
+  expect(onAuthorizationLost).toHaveBeenCalledOnce();
+  expect(onRequestStatusChange).toHaveBeenLastCalledWith(null);
 });

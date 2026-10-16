@@ -48,6 +48,11 @@ const mocks = vi.hoisted(() => ({
   onReviewSaved: null as
     | ((review: { version: number; privateGoal: string }) => void)
     | null,
+  onRequestStatusChange: null as
+    | ((request: { status: string; version: number } | null) => void)
+    | null,
+  runtime: null as Record<string, unknown> | null,
+  startFreshTeamPlanning: vi.fn(),
   startGate: null as Promise<unknown> | null,
   rejectAbortedRequests: false
 }));
@@ -106,8 +111,12 @@ vi.mock("@/lib/hosted-managed-chats", async (original) => ({
 vi.mock("@/components/TeamAgentRequestViews", () => ({
   TeamAgentRequestReviewPanel: (props: {
     onReviewSaved: (review: { version: number; privateGoal: string }) => void;
+    onRequestStatusChange: (
+      request: { status: string; version: number } | null
+    ) => void;
   }) => {
     mocks.onReviewSaved = props.onReviewSaved;
+    mocks.onRequestStatusChange = props.onRequestStatusChange;
     return null;
   }
 }));
@@ -115,6 +124,7 @@ vi.mock("./NewChatView", () => ({
   NewChatView: (props: {
     runtime: NewChatRuntime;
     recoveredDraft: string | null;
+    onActiveAgentChange?: (agentId: string | null) => void;
   }) => {
     mocks.view(props);
     return (
@@ -144,6 +154,7 @@ const selection: ChatComposerSelection = {
 const execution = {
   id,
   projectId: null,
+  runnerDeviceId: "device-1",
   provider: "codex",
   aiClientInstanceId: "chosen-client",
   executionGeneration: 1,
@@ -154,6 +165,24 @@ const execution = {
   reasoningEffort: "high",
   permissionMode: "full_access"
 };
+const stoppedTeamRuntime = (
+  commandState = "failed",
+  sequence = 1,
+  hasIndeterminatePrompt = false
+) => ({
+  execution: { ...execution, state: "stopped" },
+  items: [],
+  hasIndeterminatePrompt,
+  latestCommand: {
+    id: "command-failed",
+    sequence,
+    executionGeneration: 1,
+    commandKind: "prompt",
+    clientUserMessageId: "42345678-1234-4234-8234-123456789012",
+    state: commandState,
+    lastErrorCode: "OWNER_REVIEW_BINDING_UNAVAILABLE"
+  }
+});
 const agentA = "agent-a";
 const agentB = "agent-b";
 const secondExecutionId = "22345678-1234-4234-8234-123456789012";
@@ -363,6 +392,9 @@ afterEach(async () => {
   mocks.personalRoot = null;
   mocks.agents = [];
   mocks.onReviewSaved = null;
+  mocks.onRequestStatusChange = null;
+  mocks.runtime = null;
+  mocks.startFreshTeamPlanning.mockReset();
   mocks.startGate = null;
   mocks.rejectAbortedRequests = false;
   router.replace.mockClear();
@@ -377,6 +409,11 @@ async function mount(
     initialDraft?: string;
     teamRequest?: boolean;
     teamReviewVersion?: number;
+    executionId?: boolean;
+    latestCommandState?: string;
+    latestCommandSequence?: number;
+    requestStatus?: string;
+    requestVersion?: number;
   } = {}
 ) {
   mocks.records.set("new", { schemaVersion: 1, draft: "" });
@@ -424,7 +461,7 @@ async function mount(
         return { execution };
       }
       if (path.endsWith("/runtime"))
-        return { execution, items: [], latestCommand: null };
+        return mocks.runtime ?? { execution, items: [], latestCommand: null };
       if (path.endsWith("/prompts")) {
         mocks.prompted = true;
         return { command: { id: "command", state: "completed" }, body };
@@ -477,6 +514,7 @@ async function mount(
       <StrictMode>
         <LiveAgentChat
           onConversationStarted={mocks.started}
+          onStartFreshTeamPlanning={mocks.startFreshTeamPlanning}
           initialDraft={options.initialDraft ?? "Home question"}
           {...(options.skipInitialSelection
             ? {}
@@ -486,6 +524,15 @@ async function mount(
             : {})}
           {...(options.teamRequest
             ? {
+                teamRequestId: "agent-request",
+                teamRequestTeamId: "team",
+                teamRequestExpectedRequestVersion: 4,
+                teamRequestExpectedReviewVersion: options.teamReviewVersion ?? 1
+              }
+            : {})}
+          {...(options.executionId
+            ? {
+                executionId: id,
                 teamRequestId: "agent-request",
                 teamRequestTeamId: "team",
                 teamRequestExpectedRequestVersion: 4,
@@ -527,6 +574,171 @@ it("explains that the private brief must be saved before a Team planning chat ca
     )
   ).toHaveLength(0);
 });
+it("offers a fresh blank Team planning chat for a stopped owner review without replaying a prompt", async () => {
+  const stoppedRuntime = stoppedTeamRuntime();
+  mocks.runtime = {
+    ...stoppedRuntime,
+    latestCommand: {
+      ...stoppedRuntime.latestCommand,
+      commandKind: "stop",
+      sequence: 2,
+      state: "completed"
+    }
+  };
+  await mount(selection, {
+    submit: false,
+    executionId: true,
+    teamReviewVersion: 1
+  });
+  await flushReact();
+  await act(async () => {
+    mocks.onRequestStatusChange?.({ status: "awaiting_owner", version: 4 });
+  });
+  await flushReact();
+
+  expect(container.textContent).toContain(
+    "The earlier private planning prompt’s outcome is unconfirmed."
+  );
+  expect(container.textContent).toContain(
+    "A fresh chat starts blank and will not resend it."
+  );
+  const button = Array.from(container.querySelectorAll("button")).find(
+    (candidate) =>
+      candidate.textContent === "Start a fresh private planning chat"
+  );
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(mocks.startFreshTeamPlanning).toHaveBeenCalledTimes(1);
+  expect(mocks.startFreshTeamPlanning).toHaveBeenCalledWith({
+    selection: {
+      agentId: "agent-a",
+      expectedAgentVersion: 2,
+      provider: "codex",
+      model: "chosen-model",
+      effort: "high",
+      permissionMode: "full",
+      instanceId: "chosen-client"
+    },
+    projectId: null,
+    requestVersion: 4,
+    reviewVersion: 1
+  });
+  expect(
+    mocks.request.mock.calls.filter((call) => call[0] === "")
+  ).toHaveLength(0);
+  expect(
+    mocks.request.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/prompts")
+    )
+  ).toHaveLength(0);
+});
+it("does not offer fresh planning when the active Agent differs from the request Agent", async () => {
+  mocks.agents = [
+    {
+      id: "agent-a",
+      name: "Agent A",
+      currentVersion: 2,
+      lifecycle: "active"
+    },
+    {
+      id: "agent-b",
+      name: "Agent B",
+      currentVersion: 3,
+      lifecycle: "active"
+    }
+  ];
+  mocks.runtime = stoppedTeamRuntime();
+  await mount(selection, {
+    submit: false,
+    executionId: true,
+    teamReviewVersion: 1
+  });
+  await flushReact();
+  await act(async () => {
+    mocks.onRequestStatusChange?.({ status: "awaiting_owner", version: 4 });
+  });
+  await act(async () => {
+    mocks.view.mock.lastCall?.[0].onActiveAgentChange?.("agent-b");
+  });
+  await flushReact();
+
+  expect(container.textContent).not.toContain(
+    "Start a fresh private planning chat"
+  );
+  expect(mocks.startFreshTeamPlanning).not.toHaveBeenCalled();
+});
+it.each([
+  {
+    name: "accepted Team requests",
+    commandState: "failed",
+    sequence: 1,
+    hasIndeterminatePrompt: false,
+    requestStatus: "accepted",
+    requestVersion: 4,
+    reviewVersion: 1
+  },
+  {
+    name: "indeterminate prompt outcomes",
+    commandState: "indeterminate",
+    sequence: 1,
+    hasIndeterminatePrompt: true,
+    requestStatus: "awaiting_owner",
+    requestVersion: 4,
+    reviewVersion: 1
+  },
+  {
+    name: "stale request versions",
+    commandState: "failed",
+    sequence: 1,
+    hasIndeterminatePrompt: false,
+    requestStatus: "awaiting_owner",
+    requestVersion: 5,
+    reviewVersion: 1
+  },
+  {
+    name: "stale review versions",
+    commandState: "failed",
+    sequence: 1,
+    hasIndeterminatePrompt: false,
+    requestStatus: "awaiting_owner",
+    requestVersion: 4,
+    reviewVersion: 2
+  }
+])("does not offer fresh planning for $name", async (scenario) => {
+  mocks.runtime = stoppedTeamRuntime(
+    scenario.commandState,
+    scenario.sequence,
+    scenario.hasIndeterminatePrompt
+  );
+  await mount(selection, {
+    submit: false,
+    executionId: true,
+    teamReviewVersion: 1
+  });
+  await flushReact();
+  if (scenario.reviewVersion !== 1)
+    await act(async () => {
+      mocks.onReviewSaved?.({
+        version: scenario.reviewVersion,
+        privateGoal: "Saved private brief"
+      });
+    });
+  await act(async () => {
+    mocks.onRequestStatusChange?.({
+      status: scenario.requestStatus,
+      version: scenario.requestVersion
+    });
+  });
+  await flushReact();
+
+  expect(container.textContent).not.toContain(
+    "Start a fresh private planning chat"
+  );
+  expect(mocks.startFreshTeamPlanning).not.toHaveBeenCalled();
+});
 it("keeps an in-flight Team first send alive when the saved review version advances", async () => {
   let resolveStart!: (value: unknown) => void;
   mocks.startGate = new Promise((resolve) => {
@@ -549,6 +761,31 @@ it("keeps an in-flight Team first send alive when the saved review version advan
   expect(mocks.onReviewSaved).not.toBeNull();
   await act(async () => {
     mocks.onReviewSaved?.({ version: 2, privateGoal: "Saved private brief" });
+  });
+  window.history.replaceState(
+    {},
+    "",
+    "/?chat=1&teamRequest=agent-request&teamRequestTeam=team&teamRequestVersion=4&teamReviewVersion=2"
+  );
+  await act(async () =>
+    root.render(
+      <StrictMode>
+        <LiveAgentChat
+          onConversationStarted={mocks.started}
+          onStartFreshTeamPlanning={mocks.startFreshTeamPlanning}
+          initialDraft="Home question"
+          initialSelection={selection}
+          teamRequestId="agent-request"
+          teamRequestTeamId="team"
+          teamRequestExpectedRequestVersion={4}
+          teamRequestExpectedReviewVersion={2}
+        />
+      </StrictMode>
+    )
+  );
+  await flushReact();
+  await act(async () => {
+    mocks.onRequestStatusChange?.({ status: "awaiting_owner", version: 4 });
   });
   const runtime = mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime;
   expect(runtime.enabled).toBe(true);

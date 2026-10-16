@@ -1093,6 +1093,38 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("allows only bounded, generation- and turn-scoped managed runtime output reads", () => {
+    const executionId = "11111111-1111-4111-8111-111111111111";
+    const path =
+      `/v1/managed-conversation-runner/executions/${executionId}/runtime-items` +
+      "?executionGeneration=3&providerTurnId=turn%3Aexact&limit=32";
+    expect(() =>
+      assertUpstreamOperationPathAllowed("managed_execution", "GET", path)
+    ).not.toThrow();
+
+    for (const [method, invalidPath] of [
+      ["POST", path],
+      ["GET", path.replace("limit=32", "limit=33")],
+      ["GET", path.replace("&limit=32", "&ownerUserId=other")],
+      ["GET", `${path}&providerTurnId=other`],
+      [
+        "GET",
+        path.replace("/11111111-1111-4111-8111-111111111111/", "/invalid/")
+      ]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "managed_execution",
+          method,
+          invalidPath
+        )
+      ).toThrow("not allowed for operation family");
+    }
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_write", "GET", path)
+    ).toThrow("not allowed for operation family");
+  });
+
   it("routes the Personal Agent runner job lifecycle only on its declared methods", () => {
     const allowed = [
       [

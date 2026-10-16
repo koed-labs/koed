@@ -180,6 +180,141 @@ describe("Managed Conversation authority client", () => {
     }
   });
 
+  it("reads only bounded runtime output through the assigned generation and turn route", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000095";
+    const providerTurnId = "claude-turn:current";
+    const item = {
+      id: "00000000-0000-4000-8000-000000000096",
+      ownerUserId: ids.session,
+      executionId,
+      executionGeneration: 4,
+      providerRequestId: "transient:claude-turn:current:assistant",
+      providerTurnId,
+      providerItemId: "assistant-final",
+      itemKind: "transient_output",
+      presentation: {},
+      state: "pending",
+      requestDigest: "a".repeat(64),
+      payload: { text: "Final response", managedOutputTruncated: true },
+      response: null,
+      responseDigest: null,
+      revision: 1,
+      createdAt: "2026-10-01T00:00:01.000Z",
+      updatedAt: "2026-10-01T00:00:01.000Z",
+      respondedAt: null,
+      resolvedAt: null
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ items: [item] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device bound-instance",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await expect(
+      client.listManagedConversationRuntimeItems(
+        { userId: ids.session },
+        {
+          executionId,
+          executionGeneration: 4,
+          providerTurnId,
+          itemKind: "transient_output",
+          limit: 33
+        }
+      )
+    ).resolves.toEqual([item]);
+
+    const [request, init] = fetch.mock.calls[0]!;
+    const url = new URL(String(request));
+    expect(url.pathname).toBe(
+      `/v1/managed-conversation-runner/executions/${executionId}/runtime-items`
+    );
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      executionGeneration: "4",
+      providerTurnId,
+      limit: "32"
+    });
+    expect(init?.method).toBe("GET");
+    expect(init?.headers).toMatchObject({
+      authorization: "Koed-Device bound-instance"
+    });
+    expect(init?.body).toBeUndefined();
+    expect(url.searchParams.has("ownerUserId")).toBe(false);
+    expect(url.searchParams.has("deviceId")).toBe(false);
+  });
+
+  it("rejects oversized and out-of-scope runtime output responses", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000097";
+    const baseItem = {
+      id: "00000000-0000-4000-8000-000000000098",
+      ownerUserId: ids.session,
+      executionId,
+      executionGeneration: 2,
+      providerRequestId: "transient:turn",
+      providerTurnId: "turn",
+      itemKind: "transient_output",
+      payload: { text: "reply" }
+    };
+    const responses: unknown[] = [
+      { items: [{ ...baseItem, ownerUserId: ids.generation }] },
+      { items: Array.from({ length: 33 }, () => baseItem) },
+      { items: [{ ...baseItem, payload: { text: "x".repeat(65_537) } }] }
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device bound-instance",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const request = {
+      executionId,
+      executionGeneration: 2,
+      providerTurnId: "turn",
+      itemKind: "transient_output" as const,
+      limit: 33
+    };
+
+    await expect(
+      client.listManagedConversationRuntimeItems(
+        { userId: ids.session },
+        request
+      )
+    ).rejects.toMatchObject({ statusCode: 502 });
+    await expect(
+      client.listManagedConversationRuntimeItems(
+        { userId: ids.session },
+        request
+      )
+    ).rejects.toMatchObject({ statusCode: 502 });
+    await expect(
+      client.listManagedConversationRuntimeItems(
+        { userId: ids.session },
+        request
+      )
+    ).rejects.toMatchObject({ statusCode: 502 });
+    await expect(
+      client.listManagedConversationRuntimeItems(
+        { userId: ids.session },
+        { ...request, limit: 34 }
+      )
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("restores only the known owner-review backfill retry code", async () => {
     const responses = [
       {

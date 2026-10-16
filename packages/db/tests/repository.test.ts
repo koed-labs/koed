@@ -4218,6 +4218,143 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBe(false);
   });
 
+  it("bounds runtime output reads to the owner, execution generation, and provider turn", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 93).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-runtime-list-owner-${randomUUID()}@example.com`
+    });
+    const other = await protectedRepo.createUser({
+      email: `managed-runtime-list-other-${randomUUID()}@example.com`
+    });
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "claude",
+        aiClientInstanceId: "claude.default",
+        model: "claude-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-runtime-list-project",
+        runnerDeploymentId: randomUUID(),
+        runnerDeviceId: randomUUID(),
+        idempotencyKey: randomUUID()
+      }
+    );
+    await protectedRepo.putManagedConversationRuntimeItem(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerRequestId: "approval:same-turn",
+        providerTurnId: "target-turn",
+        itemKind: "command_approval",
+        payload: { command: "never returned by output listing" }
+      }
+    );
+    for (let index = 0; index < 40; index += 1) {
+      await protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: `transient:target-turn:${index}`,
+          providerTurnId: "target-turn",
+          providerItemId: `assistant-${index}`,
+          itemKind: "transient_output",
+          payload: {
+            text:
+              index === 39
+                ? "assistant final survives"
+                : `assistant part ${index}`
+          }
+        }
+      );
+    }
+    await protectedRepo.putManagedConversationRuntimeItem(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerRequestId: "transient:other-turn",
+        providerTurnId: "other-turn",
+        itemKind: "transient_output",
+        payload: { text: "wrong turn" }
+      }
+    );
+
+    const listed = await protectedRepo.listManagedConversationRuntimeItems(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerTurnId: "target-turn",
+        itemKind: "transient_output",
+        limit: 1_000
+      }
+    );
+
+    expect(listed).toHaveLength(33);
+    expect(listed.at(-1)).toMatchObject({
+      ownerUserId: owner.id,
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      providerTurnId: "target-turn",
+      itemKind: "transient_output",
+      payload: { text: "assistant final survives" }
+    });
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 2,
+          providerTurnId: "target-turn",
+          itemKind: "transient_output",
+          limit: 32
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerTurnId: "other-turn",
+          itemKind: "transient_output",
+          limit: 32
+        }
+      )
+    ).resolves.toMatchObject([
+      { payload: { text: "wrong turn" }, providerTurnId: "other-turn" }
+    ]);
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: other.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerTurnId: "target-turn",
+          itemKind: "transient_output",
+          limit: 32
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          limit: 0
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("claims interrupt and stop commands through the concurrent control lane", async () => {
     const protectedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

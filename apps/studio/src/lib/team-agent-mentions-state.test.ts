@@ -5,6 +5,8 @@ import {
   buildTeamAgentMentions,
   privateAgentHandoffHref,
   privateAgentHandoffSelection,
+  teamAgentRequestBindingFromRuntime,
+  teamAgentFreshPlanningHref,
   teamAgentMentionsForParticipants,
   teamMentionSelectionForScope
   // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
@@ -56,6 +58,30 @@ test("selected Team Agent reaches the current composer submit context only in it
   assert.equal(
     teamMentionSelectionForScope(selection, "account-b:team-a:channel-a"),
     null
+  );
+});
+
+test("runtime Team binding parsing distinguishes bound, ordinary and unavailable responses", () => {
+  const binding = {
+    requestId: "12345678-1234-4234-8234-123456789012",
+    teamId: "22345678-1234-4234-8234-123456789012",
+    agentId: "32345678-1234-4234-8234-123456789012",
+    status: "accepted"
+  };
+  assert.deepEqual(
+    teamAgentRequestBindingFromRuntime({ teamAgentRequestBinding: binding }),
+    binding
+  );
+  assert.equal(
+    teamAgentRequestBindingFromRuntime({ teamAgentRequestBinding: null }),
+    null
+  );
+  assert.equal(teamAgentRequestBindingFromRuntime({}), undefined);
+  assert.equal(
+    teamAgentRequestBindingFromRuntime({
+      teamAgentRequestBinding: { ...binding, teamId: "other" }
+    }),
+    undefined
   );
 });
 
@@ -199,6 +225,81 @@ test("owned-Agent handoff retains model, reasoning, access and exact Client", ()
     instanceId: "client-a",
     hostedInstanceId: "hosted-a"
   });
+});
+
+test("fresh Team planning route is blank and retains owner, versions, project and exact launch settings", () => {
+  const href = teamAgentFreshPlanningHref({
+    agentId: "agent-a",
+    projectId: "lp_project",
+    teamId: "team-a",
+    requestId: "request-a",
+    requestVersion: 4,
+    reviewVersion: 7,
+    selection: {
+      agentId: "agent-a",
+      provider: "codex",
+      model: "chosen-model",
+      effort: "high",
+      permissionMode: "ask",
+      instanceId: "client-a",
+      hostedInstanceId: "hosted-a"
+    }
+  });
+  assert.ok(href);
+  const params = new URLSearchParams(href.slice(href.indexOf("?") + 1));
+  assert.equal(params.get("chat"), "1");
+  assert.equal(params.get("agent"), "agent-a");
+  assert.equal(params.get("project"), "lp_project");
+  assert.equal(params.get("provider"), "codex");
+  assert.equal(params.get("model"), "chosen-model");
+  assert.equal(params.get("effort"), "high");
+  assert.equal(params.get("access"), "ask");
+  assert.equal(params.get("client"), "client-a");
+  assert.equal(params.get("hostedClient"), "hosted-a");
+  assert.equal(params.get("teamRequest"), "request-a");
+  assert.equal(params.get("teamRequestTeam"), "team-a");
+  assert.equal(params.get("teamRequestVersion"), "4");
+  assert.equal(params.get("teamReviewVersion"), "7");
+  assert.equal(params.has("draft"), false);
+  assert.equal(params.has("execution"), false);
+});
+
+test("fresh Team planning route rejects missing or stale binding versions and unsupported permission modes", () => {
+  const base = {
+    agentId: "agent-a",
+    projectId: null,
+    teamId: "team-a",
+    requestId: "request-a",
+    requestVersion: 4,
+    reviewVersion: 7,
+    selection: {
+      agentId: "agent-a",
+      provider: "codex",
+      model: "chosen-model",
+      effort: "high",
+      permissionMode: "full" as const,
+      instanceId: "client-a"
+    }
+  };
+  assert.equal(
+    teamAgentFreshPlanningHref({ ...base, requestVersion: Number.NaN }),
+    null
+  );
+  assert.equal(teamAgentFreshPlanningHref({ ...base, reviewVersion: 0 }), null);
+  assert.equal(
+    teamAgentFreshPlanningHref({
+      ...base,
+      selection: { ...base.selection, permissionMode: "read" }
+    }),
+    null
+  );
+  assert.equal(
+    teamAgentFreshPlanningHref({
+      ...base,
+      selection: { ...base.selection, agentId: "different-agent" }
+    }),
+    null
+  );
 });
 test("handoff settings reject incomplete or malformed values", () => {
   assert.equal(privateAgentHandoffSelection(new URLSearchParams()), undefined);

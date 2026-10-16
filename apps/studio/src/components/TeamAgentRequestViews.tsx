@@ -451,7 +451,8 @@ export function TeamAgentRequestReviewPanel({
   questionDraft = "",
   onQuestionDraftConsumed,
   onShareQuestion,
-  onReviewSaved
+  onReviewSaved,
+  onRequestStatusChange
 }: {
   teamId: string;
   requestId: string;
@@ -471,6 +472,9 @@ export function TeamAgentRequestReviewPanel({
   ) => Promise<void>;
   onReviewSaved?: (
     review: import("@koed/shared/team-agent-requests").TeamAgentRequestReview
+  ) => void;
+  onRequestStatusChange?: (
+    request: Pick<TeamAgentRequest, "status" | "version"> | null
   ) => void;
 }) {
   const [request, setRequest] = useState<TeamAgentRequest | null>(null);
@@ -492,9 +496,30 @@ export function TeamAgentRequestReviewPanel({
   const [loadedScopeKey, setLoadedScopeKey] = useState<string | null>(null);
   const generation = useRef(0);
 
+  const reviewCallbacks = useRef({
+    onAuthorizationLost,
+    onReviewSaved,
+    onRequestStatusChange
+  });
+  const loadedReview = useRef<{
+    scopeKey: string;
+    privateGoal: string;
+  } | null>(null);
+  useEffect(() => {
+    reviewCallbacks.current = {
+      onAuthorizationLost,
+      onReviewSaved,
+      onRequestStatusChange
+    };
+  }, [onAuthorizationLost, onReviewSaved, onRequestStatusChange]);
+
   const load = useCallback(async () => {
     const captured = ++generation.current;
-    setState("loading");
+    const previousReview = loadedReview.current;
+    const sameScope = previousReview?.scopeKey === scopeKey;
+    setState((current) =>
+      sameScope && current === "ready" ? current : "loading"
+    );
     setError(null);
     try {
       const savedReview = await client.getReview(teamId, requestId);
@@ -515,13 +540,24 @@ export function TeamAgentRequestReviewPanel({
           404
         );
       setRequest(found);
+      reviewCallbacks.current.onRequestStatusChange?.(found);
       setReview(savedReview);
-      setGoal(savedReview.privateGoal);
-      onReviewSaved?.(savedReview);
+      setGoal((current) =>
+        sameScope && current !== previousReview?.privateGoal
+          ? current
+          : savedReview.privateGoal
+      );
+      if (previousReview && !sameScope) {
+        setQuestion("");
+        setSummary("");
+      }
+      loadedReview.current = { scopeKey, privateGoal: savedReview.privateGoal };
+      reviewCallbacks.current.onReviewSaved?.(savedReview);
       setLoadedScopeKey(scopeKey);
       setState("ready");
     } catch (failure) {
       if (captured !== generation.current) return;
+      reviewCallbacks.current.onRequestStatusChange?.(null);
       if (
         failure instanceof TeamAgentRequestError &&
         [401, 403].includes(failure.status)
@@ -530,7 +566,7 @@ export function TeamAgentRequestReviewPanel({
         setReview(null);
         setLoadedScopeKey(scopeKey);
         setState("access-lost");
-        onAuthorizationLost();
+        reviewCallbacks.current.onAuthorizationLost();
       } else {
         setError(
           failure instanceof Error
@@ -541,11 +577,10 @@ export function TeamAgentRequestReviewPanel({
         setState("unavailable");
       }
     }
-  }, [client, onAuthorizationLost, onReviewSaved, requestId, scopeKey, teamId]);
+  }, [client, requestId, scopeKey, teamId]);
 
   useEffect(() => {
     // The private owner review is loaded only for the explicit request handoff.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     return () => {
       generation.current += 1;
@@ -590,6 +625,7 @@ export function TeamAgentRequestReviewPanel({
         executionId: executionId ?? review.executionId
       });
       setReview(updated);
+      loadedReview.current = { scopeKey, privateGoal: updated.privateGoal };
       onReviewSaved?.(updated);
     } catch (failure) {
       setError(
@@ -626,6 +662,7 @@ export function TeamAgentRequestReviewPanel({
         decision
       });
       setRequest(updated);
+      reviewCallbacks.current.onRequestStatusChange?.(updated);
       if (decision === "accept") onAccepted();
     } catch (failure) {
       setError(
@@ -651,6 +688,7 @@ export function TeamAgentRequestReviewPanel({
         summary: summary.trim()
       });
       setRequest(updated);
+      reviewCallbacks.current.onRequestStatusChange?.(updated);
     } catch (failure) {
       setError(
         failure instanceof Error

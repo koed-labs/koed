@@ -647,7 +647,14 @@ export interface ManagedConversationRepository {
   ): Promise<ManagedConversationRuntimeItemRecord>;
   listManagedConversationRuntimeItems(
     actor: ActorContext,
-    input: { executionId: string; includeTerminal?: boolean }
+    input: {
+      executionId: string;
+      includeTerminal?: boolean;
+      executionGeneration?: number;
+      providerTurnId?: string;
+      itemKind?: ManagedConversationRuntimeItemKind;
+      limit?: number;
+    }
   ): Promise<ManagedConversationRuntimeItemRecord[]>;
   getManagedConversationRuntimeItem(
     actor: ActorContext,
@@ -5699,6 +5706,14 @@ export const createManagedConversationRepository = (
     },
 
     async listManagedConversationRuntimeItems(actor, input) {
+      if (
+        input.limit !== undefined &&
+        (!Number.isSafeInteger(input.limit) || input.limit < 1)
+      ) {
+        throw statusError("Managed runtime item list limit is invalid", 400);
+      }
+      const limit =
+        input.limit === undefined ? null : Math.min(input.limit, 33);
       const result = await pool.query<RuntimeItemRow>(
         `select ${RUNTIME_ITEM_COLUMNS}
            from managed_conversation_runtime_items
@@ -5710,13 +5725,27 @@ export const createManagedConversationRepository = (
                   and item_kind = 'transient_output'
                   and provider_request_id like 'public-progress:%'
                 order by created_at desc, id desc limit 20))
-          order by created_at, id`,
-        [actor.userId, input.executionId, input.includeTerminal === true]
+            and ($4::integer is null or execution_generation = $4)
+            and ($5::text is null or provider_turn_id = $5)
+            and ($6::text is null or item_kind = $6)
+          order by created_at desc, id desc
+          limit $7`,
+        [
+          actor.userId,
+          input.executionId,
+          input.includeTerminal === true,
+          input.executionGeneration ?? null,
+          input.providerTurnId ?? null,
+          input.itemKind ?? null,
+          limit
+        ]
       );
       const policySnapshot =
         await loadConversationPresentationPolicySnapshot(pool);
       return Promise.all(
-        result.rows.map((row) => hydrateRuntimeItem(row, policySnapshot))
+        result.rows
+          .reverse()
+          .map((row) => hydrateRuntimeItem(row, policySnapshot))
       );
     },
 

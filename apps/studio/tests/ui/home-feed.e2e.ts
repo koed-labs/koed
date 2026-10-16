@@ -3,6 +3,11 @@ import type { HomeItem, HomeSnapshot } from "@koed/shared/home";
 import type { PersonalAgentChatConversationSummary } from "@koed/shared";
 import { installSyntheticApi } from "./fixtures/synthetic-studio-api";
 
+const personalAgentChatConversationPageSchema = import("@koed/shared").then(
+  ({ personalAgentChatConversationPageSchema }) =>
+    personalAgentChatConversationPageSchema
+);
+
 const executionItem: HomeItem = {
   sourceEventId: "runtime:approval-1",
   source: "managed_runtime_item",
@@ -124,9 +129,8 @@ class HomeFixture {
         path === "/studio-api/personal-conversations") &&
       request.method() === "GET"
     ) {
-      const { personalAgentChatConversationPageSchema } =
-        await import("@koed/shared");
-      const response = personalAgentChatConversationPageSchema.parse({
+      const schema = await personalAgentChatConversationPageSchema;
+      const response = schema.parse({
         conversations: this.personalConversations,
         hasMore: false,
         nextCursor: null
@@ -242,6 +246,7 @@ const installHomeFixture = async (page: Page, home: HomeFixture) => {
 };
 
 test.beforeAll(async ({ browser }) => {
+  await personalAgentChatConversationPageSchema;
   // The UI server health check warms /studio/agents, while Home tests exercise
   // the separate /studio route. Compile that route before parallel Home tests
   // so cold dev-server work cannot leave the feed mid-load.
@@ -249,6 +254,11 @@ test.beforeAll(async ({ browser }) => {
   try {
     await installSyntheticApi(page);
     await page.goto("/studio", { waitUntil: "domcontentloaded" });
+    await expect(
+      page
+        .getByRole("region", { name: "Home activity" })
+        .getByText("Nothing here needs you.", { exact: true })
+    ).toBeVisible({ timeout: 15_000 });
   } finally {
     await page.close();
   }

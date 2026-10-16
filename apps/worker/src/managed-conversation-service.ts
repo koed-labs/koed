@@ -847,6 +847,21 @@ export const managedConversationAssistantOutputForTurn = (
   );
 };
 
+export const boundManagedConversationAssistantOutput = (
+  text: string,
+  maximumBytes = 65_536
+): { text: string; truncated: boolean } => {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maximumBytes) return { text, truncated: false };
+  let start = bytes.byteLength - maximumBytes;
+  while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80)
+    start += 1;
+  return {
+    text: bytes.subarray(start).toString("utf8"),
+    truncated: true
+  };
+};
+
 export const codexAssistantFinalTextForTurn = (input: {
   bytes: Uint8Array;
   turnId: string;
@@ -2695,6 +2710,7 @@ export const createManagedConversationService = (options: {
     command: PersonalAgentCommandContext,
     turnId?: string | null
   ): Promise<{ text: string; truncated: boolean } | undefined> => {
+    let authorityOutputTruncated = false;
     let text =
       command.execution.provider === "codex" && turnId
         ? ((await personalAgentTranscriptOutputForTurn(command, turnId))
@@ -2713,16 +2729,30 @@ export const createManagedConversationService = (options: {
       const items =
         await options.repository.listManagedConversationRuntimeItems(
           { userId: command.ownerUserId },
-          { executionId: command.executionId }
+          {
+            executionId: command.executionId,
+            executionGeneration: command.executionGeneration,
+            providerTurnId: turnId,
+            itemKind: "transient_output",
+            limit: 33
+          }
         );
-      text = items
-        .filter(
-          (item) =>
-            item.itemKind === "transient_output" &&
-            item.executionGeneration === command.executionGeneration &&
-            item.providerTurnId === turnId &&
-            typeof item.payload?.text === "string"
-        )
+      const scopedItems = items.filter(
+        (item) =>
+          item.ownerUserId === command.ownerUserId &&
+          item.executionId === command.executionId &&
+          item.itemKind === "transient_output" &&
+          item.executionGeneration === command.executionGeneration &&
+          item.providerTurnId === turnId &&
+          typeof item.payload?.text === "string"
+      );
+      authorityOutputTruncated =
+        scopedItems.some(
+          (item) => item.payload?.managedOutputTruncated === true
+        ) || scopedItems.length > 32;
+      text = scopedItems
+        .slice(-32)
+        .filter((item) => typeof item.payload?.text === "string")
         .map((item) => item.payload!.text as string)
         .join("\n");
     }
@@ -2731,13 +2761,12 @@ export const createManagedConversationService = (options: {
         "ManagedConversationTurnOutputRecoveryPendingError"
       );
     }
-    const originalText = text;
-    while (Buffer.byteLength(text, "utf8") > 65_536) {
-      text = Array.from(text).slice(0, -256).join("");
-    }
-    return text
-      ? { text, truncated: text.length < originalText.length }
-      : undefined;
+    if (!text) return undefined;
+    const bounded = boundManagedConversationAssistantOutput(text);
+    return {
+      ...bounded,
+      truncated: authorityOutputTruncated || bounded.truncated
+    };
   };
 
   const completePromptCommand = async (input: {

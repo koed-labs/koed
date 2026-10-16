@@ -5425,8 +5425,25 @@ export const registerManagedConversationRoutes = (
             executionGeneration: execution.executionGeneration
           }
         );
+      const teamBinding = await repository.getOwnerReviewBindingForExecution(
+        { userId: user.id },
+        { executionId }
+      );
+      if (teamBinding && teamBinding.ownerUserId !== user.id) {
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      }
       return {
         execution: await publicExecutionFor(user.id, execution),
+        teamAgentRequestBinding: teamBinding
+          ? {
+              requestId: teamBinding.requestId,
+              teamId: teamBinding.teamId,
+              agentId: teamBinding.agentId,
+              status: teamBinding.status
+            }
+          : null,
         hasIndeterminatePrompt,
         latestCommand: latestCommand
           ? {

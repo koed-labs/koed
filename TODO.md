@@ -21,10 +21,13 @@ Keep original acceptance records and explicit deferrals. Do not count superseded
 
 Ticket 13 live follow-ups found on 2026-10-15:
 
-- Validate safe recovery when the first prompt fails before provider dispatch and the stopped execution has no resumable provider history. Reconnect currently stops the runtime, but the next prompt is rejected for missing provider history. Keep the history guard until recovery has an explicit proof of safe restart; assess with Ticket 04.
-- Wire or replace the remote runtime-item listing used by the non-Codex output fallback before claiming complete Claude channel execution acceptance. The runner adapter currently supports individual runtime-item reads, not that listing.
+- Validate explicit new blank planning chats for eligible stopped, unaccepted Team reviews. Keep the missing-history guard and never replay the old prompt: current records do not prove nonacceptance. Accepted and uncertain outcomes retain their existing protections; assess broader recovery with Ticket 04.
+- Validate the bounded paired-runner runtime-item output read with live Claude. Generation/turn-scoped listing now reuses the existing encrypted items; automated wiring alone does not certify provider execution.
 - Audit the remaining remote adapter gaps for file-operation continuation and Project Move within their existing retained scope. Do not count a passing Codex channel test as evidence for those paths.
-- Assess owner-review focus revalidation under Ticket 30: controls briefly disappear while refreshing, which invalidated pending UI clicks during validation. Verify unsaved brief/question/summary edits remain stable.
+- Validate the owner-review refresh correction under Ticket 30: controls and dirty edits stay mounted during same-request polling; authority loss still removes private actions.
+- Validate restored Team request context when reopening a bound execution from Home/sidebar. The previous route displayed history but sent through the Personal message endpoint, which correctly returned 403.
+- Investigate the isolated Codex worker restart's repeated `thread_open` timeouts (`ManagedConversationThreadOpenError`, about 10 seconds). History display is not evidence that the provider resumed successfully.
+- Resolve the live Claude accepted-turn authentication failure after successful read-only planning. The accepted command is indeterminate; keep its uncertainty guard and do not replay it merely because the output file is absent or CLI auth status says signed in.
 - Preserve the human-derived chat title after reload under 04/30. The accepted test conversation reloaded with an internal managed-context label instead of its initial human-message title.
 
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.

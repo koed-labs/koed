@@ -46,6 +46,7 @@ import {
   managedConversationCodexRebaseSourceMatches,
   managedConversationCodexRebaseRequired,
   managedConversationAssistantOutputForTurn,
+  boundManagedConversationAssistantOutput,
   codexAssistantFinalTextForTurn,
   reconcileBlockedManagedConversationSource,
   shouldPublishManagedConversationSource,
@@ -971,6 +972,22 @@ describe("Managed Conversation runtime session singleflight", () => {
 });
 
 describe("Managed Conversation assistant output buffers", () => {
+  it("keeps the assistant output suffix within the byte bound and reports truncation", () => {
+    const bounded = boundManagedConversationAssistantOutput(
+      `${"😀".repeat(30)}assistant final survives`,
+      64
+    );
+
+    expect(Buffer.byteLength(bounded.text, "utf8")).toBeLessThanOrEqual(64);
+    expect(bounded.text.endsWith("assistant final survives")).toBe(true);
+    expect(bounded.text).not.toContain("\uFFFD");
+    expect(bounded.truncated).toBe(true);
+    expect(boundManagedConversationAssistantOutput("complete", 64)).toEqual({
+      text: "complete",
+      truncated: false
+    });
+  });
+
   it("recovers only the final answer tied to the exact Codex turn", () => {
     const transcript = [
       {

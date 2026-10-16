@@ -47,6 +47,7 @@ const buildServer = async (options?: {
     claimManagedConversationControlCommands: vi.fn(async () => []),
     claimManagedConversationFileOperations: vi.fn(async () => []),
     listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+    listManagedConversationRuntimeItems: vi.fn(async () => []),
     reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
     getManagedConversationExecution: vi.fn(async () => null),
     getManagedConversationHandoff: vi.fn(async () => null),
@@ -411,6 +412,196 @@ describe("managed Conversation runner routes", () => {
       { checkpoint, diffs: [] }
     );
 
+    await fixture.app.close();
+  });
+
+  it("reads only bounded output for the assigned owner, execution, generation, and turn", async () => {
+    const execution = {
+      id: ids.execution,
+      executionGeneration: 2,
+      runnerDeviceId: ids.device,
+      runnerDeploymentId: ids.deployment
+    };
+    const runtimeItem = (input: {
+      createdAt: string;
+      payload: Record<string, unknown>;
+      itemKind?: string;
+      ownerUserId?: string;
+      executionGeneration?: number;
+      providerTurnId?: string;
+      providerRequestId?: string;
+    }) => ({
+      id: randomUUID(),
+      ownerUserId: input.ownerUserId ?? ids.user,
+      executionId: ids.execution,
+      executionGeneration: input.executionGeneration ?? 2,
+      providerRequestId: input.providerRequestId ?? `transient:${randomUUID()}`,
+      providerTurnId: input.providerTurnId ?? "turn-target",
+      providerItemId: null,
+      itemKind: input.itemKind ?? "transient_output",
+      presentation: {},
+      state: "pending",
+      requestDigest: "a".repeat(64),
+      payload: input.payload,
+      response: null,
+      responseDigest: null,
+      revision: 1,
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
+      respondedAt: null,
+      resolvedAt: null
+    });
+    const items = [
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:01.000Z",
+        payload: { text: "earlier answer" }
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:02.000Z",
+        payload: { text: "middle answer" }
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:03.000Z",
+        payload: { text: "assistant final answer" }
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:04.000Z",
+        payload: { text: "wrong owner secret" },
+        ownerUserId: ids.other
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:05.000Z",
+        payload: { text: "wrong turn secret" },
+        providerTurnId: "another-turn"
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:06.000Z",
+        payload: { text: "wrong generation secret" },
+        executionGeneration: 1
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:07.000Z",
+        payload: { command: "private approval" },
+        itemKind: "command_approval"
+      }),
+      runtimeItem({
+        createdAt: "2026-10-01T00:00:08.000Z",
+        payload: { text: "public progress" },
+        providerRequestId: "public-progress:command"
+      })
+    ];
+    const list = vi.fn(async () => items);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => execution),
+        listManagedConversationRuntimeItems: list
+      }
+    });
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/runtime-items?executionGeneration=2&providerTurnId=turn-target&limit=2`,
+      headers: runnerHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(
+      { userId: ids.user },
+      {
+        executionId: ids.execution,
+        executionGeneration: 2,
+        providerTurnId: "turn-target",
+        itemKind: "transient_output",
+        limit: 3
+      }
+    );
+    expect(response.json().items).toHaveLength(2);
+    expect(
+      response
+        .json()
+        .items.map((item: { payload: { text: string } }) => item.payload.text)
+    ).toEqual(["middle answer", "assistant final answer"]);
+    expect(response.json().items.at(-1).payload).toEqual({
+      text: "assistant final answer",
+      managedOutputTruncated: true
+    });
+    expect(JSON.stringify(response.json())).not.toContain("secret");
+    expect(JSON.stringify(response.json())).not.toContain("private approval");
+    await fixture.app.close();
+  });
+
+  it("bounds output text while retaining its final bytes and rejects stale runner scopes", async () => {
+    const execution = {
+      id: ids.execution,
+      executionGeneration: 2,
+      runnerDeviceId: ids.device,
+      runnerDeploymentId: ids.deployment
+    };
+    const oversizedText = `${"beginning ".repeat(9_000)}assistant final survives`;
+    const item = {
+      id: randomUUID(),
+      ownerUserId: ids.user,
+      executionId: ids.execution,
+      executionGeneration: 2,
+      providerRequestId: "transient:target-turn",
+      providerTurnId: "target-turn",
+      providerItemId: "assistant-final",
+      itemKind: "transient_output",
+      presentation: {},
+      state: "pending",
+      requestDigest: "b".repeat(64),
+      payload: { text: oversizedText },
+      response: null,
+      responseDigest: null,
+      revision: 1,
+      createdAt: "2026-10-01T00:00:01.000Z",
+      updatedAt: "2026-10-01T00:00:01.000Z",
+      respondedAt: null,
+      resolvedAt: null
+    };
+    const list = vi.fn(async () => [item]);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => execution),
+        listManagedConversationRuntimeItems: list
+      }
+    });
+    const basePath = `/v1/managed-conversation-runner/executions/${ids.execution}/runtime-items`;
+
+    const staleGeneration = await fixture.app.inject({
+      method: "GET",
+      url: `${basePath}?executionGeneration=1&providerTurnId=target-turn`,
+      headers: runnerHeaders
+    });
+    const invalidQuery = await fixture.app.inject({
+      method: "GET",
+      url: `${basePath}?executionGeneration=2&providerTurnId=target-turn&ownerUserId=${ids.other}`,
+      headers: runnerHeaders
+    });
+    const bounded = await fixture.app.inject({
+      method: "GET",
+      url: `${basePath}?executionGeneration=2&providerTurnId=target-turn`,
+      headers: runnerHeaders
+    });
+    execution.runnerDeviceId = ids.otherDevice;
+    const wrongDevice = await fixture.app.inject({
+      method: "GET",
+      url: `${basePath}?executionGeneration=2&providerTurnId=target-turn`,
+      headers: runnerHeaders
+    });
+
+    expect(staleGeneration.statusCode).toBe(409);
+    expect(invalidQuery.statusCode).toBe(400);
+    expect(bounded.statusCode).toBe(200);
+    expect(
+      Buffer.byteLength(bounded.json().items[0].payload.text, "utf8")
+    ).toBeLessThanOrEqual(65_536);
+    expect(
+      bounded.json().items[0].payload.text.endsWith("assistant final survives")
+    ).toBe(true);
+    expect(bounded.json().items[0].payload.managedOutputTruncated).toBe(true);
+    expect(wrongDevice.statusCode).toBe(403);
+    expect(list).toHaveBeenCalledTimes(1);
     await fixture.app.close();
   });
 

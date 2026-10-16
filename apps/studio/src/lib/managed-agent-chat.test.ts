@@ -266,6 +266,22 @@ describe("managed agent chat boundary", () => {
     expect(
       parseRuntime({
         execution,
+        items: [],
+        latestCommand: {
+          id: "first-prompt",
+          sequence: 1,
+          executionGeneration: execution.executionGeneration,
+          commandKind: "prompt",
+          state: "failed"
+        }
+      }).latestCommand
+    ).toMatchObject({
+      sequence: 1,
+      executionGeneration: execution.executionGeneration
+    });
+    expect(
+      parseRuntime({
+        execution,
         hasIndeterminatePrompt: true,
         items: []
       }).hasIndeterminatePrompt

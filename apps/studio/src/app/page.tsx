@@ -2,8 +2,14 @@
 
 import { readHomeJson } from "@/lib/home-json";
 import type { InitialChatSubmission } from "@/lib/use-initial-chat-submission";
-import { privateAgentHandoffSelection } from "@/lib/team-agent-mentions-state";
+import {
+  privateAgentHandoffSelection,
+  teamAgentRequestBindingFromRuntime,
+  teamAgentFreshPlanningHref
+} from "@/lib/team-agent-mentions-state";
 import { newChatProjectId } from "@/lib/chat-project-selection";
+import { managedRequest } from "@/lib/managed-agent-chat";
+import type { TeamAgentRequestExecutionBinding } from "@/lib/team-agent-mentions-state";
 
 import {
   Suspense,
@@ -36,6 +42,9 @@ import { useVerifiedPersonalScope } from "@/components/studio/useVerifiedPersona
 import { listPersonalConversations } from "@/lib/personal-conversations-client";
 import { personalConversationForExecution } from "@/lib/personal-conversation-routing";
 import type { PersonalAgentChatConversationSummary } from "@koed/shared/personal-agent-chat-contract";
+
+const teamBindingContextMismatchMessage =
+  "This conversation’s Team request context does not match its owner-authorized runtime binding.";
 
 function LiveHome({
   onPlugins,
@@ -110,12 +119,68 @@ function LiveHome({
   const [selectedExecutionId, setSelectedExecutionId] = useState(
     executionId ?? initialPersonalConversationId
   );
+  const [teamBindingProbe, setTeamBindingProbe] = useState<{
+    executionId: string;
+    state: "loading" | "ready" | "error";
+    binding:
+      | TeamAgentRequestExecutionBinding
+      | Omit<TeamAgentRequestExecutionBinding, "status">
+      | null;
+    error?: string;
+  } | null>(null);
+  const [acceptedTeamStartExecutionId, setAcceptedTeamStartExecutionId] =
+    useState<string | null>(null);
+  const acceptedTeamStartExecutionIdRef = useRef<string | null>(null);
+  const teamBindingProbeLoadingExecution = useRef<string | null>(null);
+  const [openingConversationError, setOpeningConversationError] = useState<{
+    executionId: string;
+    message: string;
+  } | null>(null);
+  const [openingConversationId, setOpeningConversationId] = useState<
+    string | null
+  >(null);
+  const openingConversationSequence = useRef(0);
+  const openingConversationController = useRef<AbortController | null>(null);
+  const routeScopeKey = [
+    executionId ?? "",
+    initialPersonalConversationId ?? "",
+    teamRequestId ?? "",
+    teamRequestTeamId ?? "",
+    requestedAgentId ?? ""
+  ].join("\u0000");
+  const routeScopeKeyRef = useRef(routeScopeKey);
+  useEffect(() => {
+    routeScopeKeyRef.current = routeScopeKey;
+  }, [routeScopeKey]);
+  const pendingOpenOnScopeCleanup = useRef(false);
+  const previousRouteScopeKey = useRef(routeScopeKey);
+  const invalidateOpeningConversation = useCallback(() => {
+    openingConversationSequence.current += 1;
+    openingConversationController.current?.abort();
+    openingConversationController.current = null;
+  }, []);
+  useEffect(() => {
+    if (previousRouteScopeKey.current !== routeScopeKey) {
+      previousRouteScopeKey.current = routeScopeKey;
+      if (pendingOpenOnScopeCleanup.current) {
+        pendingOpenOnScopeCleanup.current = false;
+        // Close the stale loading gate when navigation changes its owner scope.
+        setOpeningConversationId(null);
+      }
+    }
+    return () => {
+      pendingOpenOnScopeCleanup.current =
+        openingConversationController.current !== null;
+      invalidateOpeningConversation();
+    };
+  }, [invalidateOpeningConversation, routeScopeKey]);
   useEffect(() => {
     // Route recovery can arrive without the first-send callback.
     if (executionId) {
       // This effect mirrors an external URL selection into sidebar state.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedExecutionId(executionId);
+      setResumeId(executionId);
     }
   }, [executionId]);
   useEffect(() => {
@@ -227,7 +292,8 @@ function LiveHome({
             ? { hostedInstanceId: requestedHostedInstanceId }
             : {})
         });
-        setChatKey((value) => value + 1);
+        if (acceptedTeamStartExecutionIdRef.current !== executionId)
+          setChatKey((value) => value + 1);
         setAgentSelectionResult({ id: requestedAgentId, state: "ready" });
       })
       .catch((reason: unknown) => {
@@ -339,14 +405,120 @@ function LiveHome({
     personalConversationSummaries,
     executionId
   );
+  const currentTeamBindingProbe =
+    teamBindingProbe?.executionId === executionId ? teamBindingProbe : null;
+  const teamBindingContextMismatch = Boolean(
+    currentTeamBindingProbe?.state === "ready" &&
+    ((currentTeamBindingProbe.binding &&
+      ((teamRequestId &&
+        teamRequestId !== currentTeamBindingProbe.binding.requestId) ||
+        (teamRequestTeamId &&
+          teamRequestTeamId !== currentTeamBindingProbe.binding.teamId) ||
+        (requestedAgentId &&
+          requestedAgentId !== currentTeamBindingProbe.binding.agentId))) ||
+      (!currentTeamBindingProbe.binding &&
+        (teamRequestId || teamRequestTeamId)))
+  );
+  useEffect(() => {
+    if (!executionId) return;
+    if (teamBindingProbe?.executionId === executionId) {
+      if (teamBindingProbe.state !== "ready") return;
+      const binding = teamBindingProbe.binding;
+      if (teamBindingContextMismatch) return;
+      if (binding && !teamRequestId) {
+        const query = new URLSearchParams({
+          chat: "1",
+          execution: executionId,
+          agent: binding.agentId,
+          teamRequest: binding.requestId,
+          teamRequestTeam: binding.teamId
+        });
+        router.replace(`/?${query.toString()}`);
+      }
+      return;
+    }
+    if (teamBindingProbeLoadingExecution.current === executionId) return;
+    const controller = new AbortController();
+    teamBindingProbeLoadingExecution.current = executionId;
+    void managedRequest(
+      `/${encodeURIComponent(executionId)}/runtime`,
+      undefined,
+      controller.signal
+    )
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        teamBindingProbeLoadingExecution.current = null;
+        const binding = teamAgentRequestBindingFromRuntime(payload);
+        if (binding === undefined)
+          throw new Error(
+            "The owner-authorized Team request binding is unavailable."
+          );
+        if (
+          (binding &&
+            ((teamRequestId && teamRequestId !== binding.requestId) ||
+              (teamRequestTeamId && teamRequestTeamId !== binding.teamId) ||
+              (requestedAgentId && requestedAgentId !== binding.agentId))) ||
+          (!binding && (teamRequestId || teamRequestTeamId))
+        )
+          throw new Error(teamBindingContextMismatchMessage);
+        setTeamBindingProbe({ executionId, state: "ready", binding });
+        if (binding && !teamRequestId) {
+          const query = new URLSearchParams({
+            chat: "1",
+            execution: executionId,
+            agent: binding.agentId,
+            teamRequest: binding.requestId,
+            teamRequestTeam: binding.teamId
+          });
+          router.replace(`/?${query.toString()}`);
+        }
+      })
+      .catch((failure: unknown) => {
+        if (controller.signal.aborted) return;
+        teamBindingProbeLoadingExecution.current = null;
+        setTeamBindingProbe({
+          executionId,
+          state: "error",
+          binding: null,
+          error:
+            failure instanceof Error
+              ? failure.message
+              : "The conversation owner scope could not be checked."
+        });
+      });
+    return () => {
+      controller.abort();
+      if (teamBindingProbeLoadingExecution.current === executionId)
+        teamBindingProbeLoadingExecution.current = null;
+    };
+  }, [
+    executionId,
+    requestedAgentId,
+    router,
+    teamBindingContextMismatch,
+    teamBindingProbe,
+    teamRequestId,
+    teamRequestTeamId
+  ]);
   const resolvingExecutionRoot = Boolean(
     executionId &&
     !initialPersonalConversationId &&
-    !teamRequestId &&
-    !personalConversationSummariesLoaded
+    (!currentTeamBindingProbe ||
+      currentTeamBindingProbe.state === "loading" ||
+      (currentTeamBindingProbe.state === "ready" &&
+        ((currentTeamBindingProbe.binding && !teamRequestId) ||
+          (!currentTeamBindingProbe.binding &&
+            !personalConversationSummariesLoaded))))
   );
   useEffect(() => {
-    if (!executionId || !executionRoot || teamRequestId) return;
+    if (
+      !executionId ||
+      !executionRoot ||
+      teamRequestId ||
+      currentTeamBindingProbe?.state !== "ready" ||
+      currentTeamBindingProbe.binding
+    )
+      return;
     // Resolve legacy child/source links to the durable root URL and selection.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setResumeId(undefined);
@@ -356,7 +528,56 @@ function LiveHome({
     router.replace(
       `/?chat=1&conversation=${encodeURIComponent(executionRoot.conversationId)}`
     );
-  }, [executionId, executionRoot, router, teamRequestId]);
+  }, [
+    currentTeamBindingProbe,
+    executionId,
+    executionRoot,
+    router,
+    teamRequestId
+  ]);
+  useEffect(() => {
+    if (!openingConversationId || openingConversationError) return;
+    const root = personalConversationForExecution(
+      personalConversationSummaries,
+      openingConversationId
+    );
+    const routeMatchesTeamExecution = Boolean(
+      executionId === openingConversationId &&
+      currentTeamBindingProbe?.state === "ready" &&
+      currentTeamBindingProbe.binding &&
+      teamRequestId === currentTeamBindingProbe.binding.requestId &&
+      teamRequestTeamId === currentTeamBindingProbe.binding.teamId
+    );
+    const routeMatchesManagedExecution = Boolean(
+      executionId === openingConversationId &&
+      currentTeamBindingProbe?.state === "ready" &&
+      currentTeamBindingProbe.binding === null &&
+      !teamRequestId
+    );
+    const routeMatchesPersonalRoot = Boolean(
+      initialPersonalConversationId &&
+      (openingConversationId === initialPersonalConversationId ||
+        root?.conversationId === initialPersonalConversationId)
+    );
+    if (
+      routeMatchesTeamExecution ||
+      routeMatchesManagedExecution ||
+      routeMatchesPersonalRoot
+    ) {
+      // Clear the loading gate once the route reflects this explicit open.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOpeningConversationId(null);
+    }
+  }, [
+    currentTeamBindingProbe,
+    executionId,
+    initialPersonalConversationId,
+    openingConversationError,
+    openingConversationId,
+    personalConversationSummaries,
+    teamRequestId,
+    teamRequestTeamId
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -561,6 +782,9 @@ function LiveHome({
     projectId?: string | null,
     selection?: ChatComposerSelection
   ) => {
+    invalidateOpeningConversation();
+    setOpeningConversationId(null);
+    setOpeningConversationError(null);
     setResumeId(undefined);
     setResumePersonalConversationId(undefined);
     setSelectedExecutionId(undefined);
@@ -584,28 +808,148 @@ function LiveHome({
       : "";
     router.replace(`/?chat=1${project}`);
   };
+  const startFreshTeamPlanning = (input: {
+    selection: ChatComposerSelection;
+    projectId: string | null;
+    requestVersion: number;
+    reviewVersion: number;
+  }) => {
+    if (!teamRequestId || !teamRequestTeamId || !input.selection.agentId)
+      return;
+    const href = teamAgentFreshPlanningHref({
+      agentId: input.selection.agentId,
+      projectId: input.projectId,
+      teamId: teamRequestTeamId,
+      requestId: teamRequestId,
+      requestVersion: input.requestVersion,
+      reviewVersion: input.reviewVersion,
+      selection: input.selection
+    });
+    if (!href) return;
+    invalidateOpeningConversation();
+    setOpeningConversationId(null);
+    setOpeningConversationError(null);
+    setResumeId(undefined);
+    setResumePersonalConversationId(undefined);
+    setSelectedExecutionId(undefined);
+    setInitialChatDraft("");
+    setInitialChatSelection(input.selection);
+    setInitialSubmission(undefined);
+    setChatKey((value) => value + 1);
+    setChatOpen(true);
+    setSelectedProject(input.projectId);
+    router.replace(href);
+  };
   const resumeChat = (id: string) => {
-    const root = managedConversations.find(
+    const knownPersonalRootExecution = managedConversations.find(
       (item) => item.personalConversationId === id
     );
-    const rootId =
-      root?.personalConversationId ??
-      personalConversationForExecution(personalConversationSummaries, id)
-        ?.conversationId;
-    setResumeId(rootId ? undefined : id);
-    setResumePersonalConversationId(rootId);
-    setSelectedExecutionId(rootId ?? id);
-    setSelectedProject(null);
+    const knownPersonalRootSummary = personalConversationSummaries.find(
+      (conversation) => conversation.conversationId === id
+    );
+    const knownPersonalRootId =
+      knownPersonalRootExecution?.personalConversationId ??
+      knownPersonalRootSummary?.conversationId;
+    invalidateOpeningConversation();
+    const requestSequence = openingConversationSequence.current;
+    const routeScopeAtStart = routeScopeKeyRef.current;
+    setOpeningConversationError(null);
+    setOpeningConversationId(id);
+    setChatOpen(true);
+    setSelectedExecutionId(id);
     setInitialChatDraft("");
     setInitialChatSelection(undefined);
     setInitialSubmission(undefined);
     setChatKey((value) => value + 1);
-    setChatOpen(true);
-    router.replace(
-      rootId
-        ? `/?chat=1&conversation=${encodeURIComponent(rootId)}`
-        : `/?chat=1&execution=${encodeURIComponent(id)}`
-    );
+    if (knownPersonalRootId) {
+      setTeamBindingProbe(null);
+      setResumeId(undefined);
+      setResumePersonalConversationId(knownPersonalRootId);
+      setSelectedExecutionId(knownPersonalRootId);
+      setSelectedProject(
+        knownPersonalRootSummary?.projectId ??
+          knownPersonalRootExecution?.projectId ??
+          null
+      );
+      router.replace(
+        `/?chat=1&conversation=${encodeURIComponent(knownPersonalRootId)}`
+      );
+      return;
+    }
+    const controller = new AbortController();
+    openingConversationController.current = controller;
+    void managedRequest(
+      `/${encodeURIComponent(id)}/runtime`,
+      undefined,
+      controller.signal
+    )
+      .then((payload) => {
+        if (
+          requestSequence !== openingConversationSequence.current ||
+          routeScopeKeyRef.current !== routeScopeAtStart
+        )
+          return;
+        openingConversationController.current = null;
+        const binding = teamAgentRequestBindingFromRuntime(payload);
+        if (binding === undefined)
+          throw new Error(
+            "The owner-authorized Team request binding is unavailable."
+          );
+        setTeamBindingProbe({ executionId: id, state: "ready", binding });
+        if (binding) {
+          setResumeId(id);
+          setResumePersonalConversationId(undefined);
+          setSelectedProject(null);
+          const query = new URLSearchParams({
+            chat: "1",
+            execution: id,
+            agent: binding.agentId,
+            teamRequest: binding.requestId,
+            teamRequestTeam: binding.teamId
+          });
+          router.replace(`/?${query.toString()}`);
+          return;
+        }
+        const rootId =
+          managedConversations.find(
+            (item) => item.personalConversationId === id
+          )?.personalConversationId ??
+          personalConversationForExecution(personalConversationSummaries, id)
+            ?.conversationId;
+        setResumeId(rootId ? undefined : id);
+        setResumePersonalConversationId(rootId);
+        setSelectedExecutionId(rootId ?? id);
+        setSelectedProject(null);
+        router.replace(
+          rootId
+            ? `/?chat=1&conversation=${encodeURIComponent(rootId)}`
+            : `/?chat=1&execution=${encodeURIComponent(id)}`
+        );
+      })
+      .catch((failure: unknown) => {
+        if (
+          requestSequence !== openingConversationSequence.current ||
+          routeScopeKeyRef.current !== routeScopeAtStart
+        )
+          return;
+        openingConversationController.current = null;
+        setOpeningConversationError({
+          executionId: id,
+          message:
+            failure instanceof Error
+              ? failure.message
+              : "The conversation owner scope could not be checked."
+        });
+        setTeamBindingProbe({
+          executionId: id,
+          state: "error",
+          binding: null,
+          error:
+            failure instanceof Error
+              ? failure.message
+              : "The conversation owner scope could not be checked."
+        });
+      });
   };
   const openHomeItem = (item: HomeItem) => {
     if (item.destination.kind === "execution")
@@ -734,6 +1078,9 @@ function LiveHome({
           }}
           onToggle={() => setCollapsed((value) => !value)}
           onHome={() => {
+            invalidateOpeningConversation();
+            setOpeningConversationId(null);
+            setOpeningConversationError(null);
             setChatOpen(false);
             router.replace("/");
           }}
@@ -764,9 +1111,35 @@ function LiveHome({
             </div>
           ) : null}
           <div className="min-h-0 flex-1">
-            {resolvingExecutionRoot ? (
+            {openingConversationError ||
+            (executionId &&
+              (currentTeamBindingProbe?.state === "error" ||
+                teamBindingContextMismatch)) ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+                <p role="alert" className="max-w-md text-sm text-danger">
+                  {openingConversationError?.message ??
+                    currentTeamBindingProbe?.error ??
+                    (teamBindingContextMismatch
+                      ? teamBindingContextMismatchMessage
+                      : "The conversation owner scope could not be checked.")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    resumeChat(
+                      openingConversationError?.executionId ?? executionId!
+                    )
+                  }
+                  className="rounded-md border border-border px-3 py-2 text-xs text-foreground-secondary hover:bg-surface-hover"
+                >
+                  Retry owner check
+                </button>
+              </div>
+            ) : openingConversationId || resolvingExecutionRoot ? (
               <div className="flex h-full items-center justify-center text-sm text-subtle">
-                Opening conversation…
+                {openingConversationId
+                  ? "Checking conversation ownership…"
+                  : "Opening conversation…"}
               </div>
             ) : requestedAgentId && agentSelectionState === "loading" ? (
               <div className="flex h-full items-center justify-center text-sm text-subtle">
@@ -797,7 +1170,7 @@ function LiveHome({
             ) : (
               <>
                 <LiveAgentChat
-                  key={`${chatKey}:${executionRoot?.conversationId ?? resumePersonalConversationId ?? resumeId ?? "new"}`}
+                  key={`${chatKey}:${acceptedTeamStartExecutionId === executionId ? "new" : (executionRoot?.conversationId ?? resumePersonalConversationId ?? resumeId ?? "new")}`}
                   conversationTitle={
                     managedConversations.find(
                       (item) => item.id === selectedExecutionId
@@ -807,6 +1180,33 @@ function LiveHome({
                   onConversationStarted={(conversation) => {
                     setSelectedExecutionId(conversation.id);
                     setSelectedProject(conversation.projectId);
+                    if (
+                      !conversation.personalConversationId &&
+                      teamRequestId &&
+                      teamRequestTeamId &&
+                      requestedAgentId &&
+                      Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+                      teamRequestExpectedRequestVersion! > 0 &&
+                      Number.isSafeInteger(teamRequestExpectedReviewVersion) &&
+                      teamRequestExpectedReviewVersion! > 0 &&
+                      routeScopeKeyRef.current === routeScopeKey
+                    ) {
+                      // The successful start accepted these exact owner-review
+                      // versions and binds the execution before it is returned.
+                      // Seed the scope now so the execution URL transition keeps
+                      // this live chat mounted while subsequent state refreshes.
+                      acceptedTeamStartExecutionIdRef.current = conversation.id;
+                      setAcceptedTeamStartExecutionId(conversation.id);
+                      setTeamBindingProbe({
+                        executionId: conversation.id,
+                        state: "ready",
+                        binding: {
+                          requestId: teamRequestId,
+                          teamId: teamRequestTeamId,
+                          agentId: requestedAgentId
+                        }
+                      });
+                    }
                     setManagedConversations((current) => [
                       conversation,
                       ...current.filter((item) => item.id !== conversation.id)
@@ -821,6 +1221,7 @@ function LiveHome({
                         .catch(() => undefined);
                     }
                   }}
+                  onStartFreshTeamPlanning={startFreshTeamPlanning}
                   initialSubmission={initialSubmission}
                   claimInitialSubmission={claimInitialSubmission}
                   initialSelection={initialChatSelection}

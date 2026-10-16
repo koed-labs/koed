@@ -132,6 +132,11 @@ const managedConversationRunnerRoutes = [
     "List active managed Conversation executions assigned to this runner."
   ],
   [
+    "GET",
+    "/v1/managed-conversation-runner/executions/{executionId}/runtime-items",
+    "Read bounded assistant output for the assigned execution, generation and turn."
+  ],
+  [
     "POST",
     "/v1/managed-conversation-runner/commands/claim",
     "Claim durable managed Conversation commands assigned to this runner."

@@ -73,3 +73,5 @@ Wake paired runners when a local Project runtime binding is created, alongside r
 Preserve the active chat when a private Team Agent review updates its URL version. Keep the first message and selected AI Client settings through the execution-start handoff instead of remounting the composer before the prompt is sent.
 
 Wire paired runners to the existing private Team Agent review lookups. Recheck owner, Device and execution authority before dispatch, retaining read-only planning for unaccepted requests and the existing access checks for accepted work.
+
+Bound paired-runner output recovery to the current execution generation and provider turn, using the existing encrypted runtime items. Preserve the owner’s review controls and unsaved edits during status refreshes. Restore Team request context when reopening a private Agent conversation, and offer an explicit new blank planning chat for eligible stopped reviews without replaying an unconfirmed prompt.

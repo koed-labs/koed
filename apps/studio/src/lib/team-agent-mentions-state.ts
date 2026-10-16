@@ -19,6 +19,56 @@ export type ScopedTeamMentionSelection = Readonly<{
   agentId: string | null;
 }>;
 
+export type TeamAgentRequestExecutionBinding = Readonly<{
+  requestId: string;
+  teamId: string;
+  agentId: string;
+  status:
+    | "awaiting_owner"
+    | "accepted"
+    | "declined"
+    | "withdrawn"
+    | "unavailable";
+}>;
+
+const teamBindingUuid =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+/** Distinguish an ordinary execution from an old or invalid runtime response. */
+export function teamAgentRequestBindingFromRuntime(
+  payload: Record<string, unknown>
+): TeamAgentRequestExecutionBinding | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(payload, "teamAgentRequestBinding"))
+    return undefined;
+  const binding = payload.teamAgentRequestBinding;
+  if (binding === null) return null;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding))
+    return undefined;
+  const value = binding as Record<string, unknown>;
+  if (
+    typeof value.requestId !== "string" ||
+    !teamBindingUuid.test(value.requestId) ||
+    typeof value.teamId !== "string" ||
+    !teamBindingUuid.test(value.teamId) ||
+    typeof value.agentId !== "string" ||
+    !teamBindingUuid.test(value.agentId) ||
+    ![
+      "awaiting_owner",
+      "accepted",
+      "declined",
+      "withdrawn",
+      "unavailable"
+    ].includes(String(value.status))
+  )
+    return undefined;
+  return {
+    requestId: value.requestId,
+    teamId: value.teamId,
+    agentId: value.agentId,
+    status: value.status as TeamAgentRequestExecutionBinding["status"]
+  };
+}
+
 export function teamMentionSelectionForScope(
   selection: ScopedTeamMentionSelection | null,
   scopeKey: string
@@ -56,6 +106,53 @@ export function privateAgentHandoffHref(input: {
     query.set("teamRequestTeam", input.teamId);
   }
   if (input.executionId) query.set("execution", input.executionId);
+  return `/?${query.toString()}`;
+}
+
+/** Start a blank, owner-private planning chat for an unaccepted Team request. */
+export function teamAgentFreshPlanningHref(input: {
+  agentId: string;
+  projectId: string | null;
+  teamId: string;
+  requestId: string;
+  requestVersion: number;
+  reviewVersion: number;
+  selection: ChatComposerSelection;
+}): string | null {
+  const { selection } = input;
+  if (
+    !input.agentId.trim() ||
+    !input.teamId.trim() ||
+    !input.requestId.trim() ||
+    !Number.isSafeInteger(input.requestVersion) ||
+    input.requestVersion < 1 ||
+    !Number.isSafeInteger(input.reviewVersion) ||
+    input.reviewVersion < 1 ||
+    selection.agentId !== input.agentId ||
+    !selection.provider?.trim() ||
+    !selection.model.trim() ||
+    !selection.effort.trim() ||
+    !selection.instanceId?.trim() ||
+    !["full", "ask"].includes(selection.permissionMode)
+  )
+    return null;
+
+  const query = new URLSearchParams({
+    chat: "1",
+    agent: input.agentId,
+    provider: selection.provider,
+    model: selection.model,
+    effort: selection.effort,
+    access: selection.permissionMode,
+    client: selection.instanceId,
+    teamRequest: input.requestId,
+    teamRequestTeam: input.teamId,
+    teamRequestVersion: String(input.requestVersion),
+    teamReviewVersion: String(input.reviewVersion)
+  });
+  if (input.projectId) query.set("project", input.projectId);
+  if (selection.hostedInstanceId)
+    query.set("hostedClient", selection.hostedInstanceId);
   return `/?${query.toString()}`;
 }
 

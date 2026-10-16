@@ -1022,6 +1022,37 @@ export const assertUpstreamOperationPathAllowed = (
     )
       return;
     if (
+      /^\/v1\/managed-conversation-runner\/executions\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/runtime-items$/i.test(
+        pathname
+      )
+    ) {
+      const queryKeys = [...parsed.searchParams.keys()];
+      const executionGeneration = parsed.searchParams.get(
+        "executionGeneration"
+      );
+      const providerTurnId = parsed.searchParams.get("providerTurnId");
+      const limit = parsed.searchParams.get("limit");
+      if (
+        method === "GET" &&
+        queryKeys.every((key) =>
+          ["executionGeneration", "providerTurnId", "limit"].includes(key)
+        ) &&
+        parsed.searchParams.getAll("executionGeneration").length === 1 &&
+        parsed.searchParams.getAll("providerTurnId").length === 1 &&
+        parsed.searchParams.getAll("limit").length <= 1 &&
+        executionGeneration !== null &&
+        /^[1-9][0-9]*$/.test(executionGeneration) &&
+        Number.isSafeInteger(Number(executionGeneration)) &&
+        providerTurnId !== null &&
+        providerTurnId.trim().length > 0 &&
+        providerTurnId.length <= 512 &&
+        (limit === null || /^(?:[1-9]|[12][0-9]|3[0-2])$/.test(limit))
+      ) {
+        return;
+      }
+      deny();
+    }
+    if (
       pathname === "/v1/managed-conversation-runner/commands/claim" ||
       pathname === "/v1/managed-conversation-runner/commands/claim-controls" ||
       pathname === "/v1/managed-conversation-runner/runtime-items" ||

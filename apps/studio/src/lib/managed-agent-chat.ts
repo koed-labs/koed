@@ -39,6 +39,8 @@ export type RuntimeSnapshot = {
   hasIndeterminatePrompt?: boolean;
   latestCommand: {
     id: string;
+    sequence?: number;
+    executionGeneration?: number;
     state: string;
     commandKind: string;
     canCancelBeforeClaim?: boolean;
@@ -542,6 +544,12 @@ export function parseRuntime(
     typeof command.commandKind === "string"
       ? {
           id: command.id,
+          ...(Number.isSafeInteger(command.sequence)
+            ? { sequence: command.sequence as number }
+            : {}),
+          ...(Number.isSafeInteger(command.executionGeneration)
+            ? { executionGeneration: command.executionGeneration as number }
+            : {}),
           state: command.state,
           commandKind: command.commandKind,
           canCancelBeforeClaim: command.canCancelBeforeClaim === true,

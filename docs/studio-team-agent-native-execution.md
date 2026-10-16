@@ -87,6 +87,61 @@ This request's broad status and owner request inbox remain Ticket 13 responsibil
 
 ## Validation record
 
+### Recovery and paired-runner follow-up, 2026-10-16
+
+The validated 2026-10-15 checkpoint is committed and pushed as `56155e4b`.
+Follow-up work keeps the stopped-history guard intact. Current records do not
+prove that a failed first prompt was never accepted by the provider. Eligible
+stopped, unaccepted reviews can therefore open a new **blank** private planning
+chat through the existing version-checked start and review-binding transaction.
+The old prompt is not resent. Accepted requests and uncertain outcomes do not
+gain a replay path.
+
+The paired-runner output read uses the existing encrypted runtime items, scoped
+to the authenticated owner, assigned Device/deployment, execution generation and
+provider turn. Reads keep at most 32 output items and 65,536 UTF-8 text bytes,
+with one bounded database lookahead item to report truncation. This is output
+recovery for the existing provider adapter, not another execution or Memory path.
+
+The owner-only runtime read also identifies an execution's Team request binding
+without returning the private brief. Reopening a bound execution must restore
+that context before deciding whether to use a Personal joined conversation.
+The live Home reopen check exposed the old misrouting: history loaded, but the
+Personal message endpoint rejected the new send with 403. This is a failed
+continuation check, not evidence that the access check should be relaxed.
+
+The review panel preserves its controls and unsaved edits during same-request
+status reads, while failed authority checks remove the private controls. A
+separate Claude 2.1.299 profile was configured through setup/repair and signed
+in for this disposable runtime. These setup and automated checks do not certify
+the remaining live Claude, restart, additional-Device or deployed acceptance.
+
+Focused checks passed: 98 runner/routing API tests, 69 managed-route tests,
+156 worker tests, 25 chat/page tests, four review-panel tests and 16 native
+navigation/helper tests. The new SQL bounds test passed against a uniquely
+created disposable database, which was removed afterward. DB/API/worker/Studio
+type checks passed. Source runtime preparation and the Docker image build passed;
+the running test image is `sha256:87a15f46dfec103e583599d510cda82684db15dc1cad2cda6f15915572f24ff2`.
+
+The six Home browser tests pass after moving a cold schema load out of request
+handling and waiting for the warmup's authenticated Home feed before closing it.
+The feature assertions keep their existing timeouts. A read-only deployment
+recheck on 2026-10-16 still returns router-level 404 for both Personal Agent
+routes on `next.koed.ai`; deployed Team acceptance still needs a compatible
+deployment. No deployed test data was created.
+
+The new Claude request `a9b7ca69-7ec4-4a17-bf72-c19fa6c4ec35` uses execution
+`a84e8cfe-f92d-4e3d-bf8f-06cc46a166f6`, Sonnet 4.6 and Medium effort.
+Its pre-acceptance turn completed with only read/search/question tools available;
+neither the probe nor assignment file was created. Reload restored that private
+history and the current review version. Requester and outsider runtime reads
+returned 404. Explicit acceptance created exactly one native command and no
+retired Jobs, but its provider query returned `ManagedConversationAuthenticationError`.
+The command remains indeterminate and the execution reconciling. The assignment
+file is absent. CLI auth status still reports signed in; that does not prove the
+provider accepted the execution query. No automatic retry or manual database
+repair was attempted. Claude accepted-work and recovery acceptance remain open.
+
 ### Local Docker live result, 2026-10-15
 
 The Codex channel-request core flow passes against the isolated Docker Team backend and native owner runtime. This is one computer with separate authenticated owner, requester and outsider accounts, not a deployed or two-Device acceptance result.

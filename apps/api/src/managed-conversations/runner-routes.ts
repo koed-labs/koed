@@ -58,6 +58,35 @@ const checkpointQuerySchema = z
     executionGeneration: z.coerce.number().int().safe().positive()
   })
   .strict();
+const runtimeOutputListQuerySchema = z
+  .object({
+    executionGeneration: z.coerce.number().int().safe().positive(),
+    providerTurnId: z.string().trim().min(1).max(512),
+    limit: z.coerce.number().int().safe().min(1).max(32).default(32)
+  })
+  .strict();
+const managedRuntimeOutputPageLimit = 32;
+const managedRuntimeOutputPageBytes = 65_536;
+type ManagedRuntimeOutputItem = {
+  id: string;
+  ownerUserId: string;
+  executionId: string;
+  executionGeneration: number;
+  providerRequestId: string;
+  providerTurnId: string;
+  itemKind: "transient_output";
+  payload: { text: string; managedOutputTruncated?: boolean };
+};
+
+const utf8Suffix = (text: string, maximumBytes: number): string => {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maximumBytes) return text;
+  let start = Math.max(0, bytes.byteLength - maximumBytes);
+  while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return bytes.subarray(start).toString("utf8");
+};
 const nullableObjectId = z
   .string()
   .regex(/^[0-9a-f]{40,64}$/)
@@ -2317,6 +2346,98 @@ export const registerManagedConversationRunnerRoutes = (
         });
       }
       return { binding };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/executions/:executionId/runtime-items",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const query = runtimeOutputListQuerySchema.parse(request.query);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        executionId
+      );
+      if (execution.executionGeneration !== query.executionGeneration) {
+        throw Object.assign(
+          new Error("Managed runtime item generation is fenced"),
+          { statusCode: 409 }
+        );
+      }
+
+      const listed = await context
+        .requireRepository()
+        .listManagedConversationRuntimeItems(
+          { userId: auth.userId },
+          {
+            executionId,
+            executionGeneration: query.executionGeneration,
+            providerTurnId: query.providerTurnId,
+            itemKind: "transient_output",
+            limit: Math.min(managedRuntimeOutputPageLimit + 1, query.limit + 1)
+          }
+        );
+      const scoped = listed
+        .filter(
+          (item) =>
+            item.ownerUserId === auth.userId &&
+            item.executionId === executionId &&
+            item.executionGeneration === query.executionGeneration &&
+            item.providerTurnId === query.providerTurnId &&
+            item.itemKind === "transient_output" &&
+            typeof item.payload?.text === "string" &&
+            !item.providerRequestId.startsWith("public-progress:")
+        )
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.id.localeCompare(right.id)
+        );
+      const hasMore = scoped.length > query.limit;
+      const selected = scoped.slice(-query.limit);
+      let remainingBytes = managedRuntimeOutputPageBytes;
+      let wasTruncated = hasMore;
+      const reversedBoundedItems: ManagedRuntimeOutputItem[] = [];
+      for (const item of [...selected].reverse()) {
+        if (remainingBytes <= 0) {
+          wasTruncated = true;
+          break;
+        }
+        const text = item.payload.text as string;
+        const boundedText = utf8Suffix(text, remainingBytes);
+        const boundedBytes = Buffer.byteLength(boundedText, "utf8");
+        if (boundedBytes < Buffer.byteLength(text, "utf8")) {
+          wasTruncated = true;
+        }
+        if (boundedBytes === 0) continue;
+        remainingBytes -= boundedBytes;
+        reversedBoundedItems.push({
+          id: item.id,
+          ownerUserId: auth.userId,
+          executionId,
+          executionGeneration: query.executionGeneration,
+          providerRequestId: item.providerRequestId,
+          providerTurnId: query.providerTurnId,
+          itemKind: "transient_output",
+          payload: { text: boundedText }
+        });
+      }
+      const items = reversedBoundedItems.reverse();
+      if (wasTruncated && items.length > 0) {
+        const lastIndex = items.length - 1;
+        const last = items[lastIndex]!;
+        items[lastIndex] = {
+          ...last,
+          payload: {
+            ...last.payload,
+            managedOutputTruncated: true
+          } as typeof last.payload
+        };
+      }
+      return { items };
     }
   );
 

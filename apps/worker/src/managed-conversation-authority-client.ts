@@ -36,6 +36,9 @@ const ownerReviewBackfillWireErrorCode =
   "team_agent_review_binding_backfill_pending";
 const ownerReviewBackfillErrorCode =
   "TEAM_AGENT_REVIEW_BINDING_BACKFILL_PENDING";
+const managedRuntimeOutputPageLimit = 32;
+const managedRuntimeOutputPageBytes = 65_536;
+const managedRuntimeOutputLookahead = managedRuntimeOutputPageLimit + 1;
 
 type ManagedConversationAuthorityRepositoryBase = Pick<
   MemorySourceRepository,
@@ -60,6 +63,7 @@ type ManagedConversationAuthorityRepositoryBase = Pick<
   | "failManagedConversationCommand"
   | "failManagedConversationFileOperation"
   | "putManagedConversationRuntimeItem"
+  | "listManagedConversationRuntimeItems"
   | "getManagedConversationRuntimeItem"
   | "resolveManagedConversationRuntimeItem"
   | "cancelManagedConversationRuntimeItems"
@@ -110,8 +114,20 @@ type ManagedConversationAuthorityRepositoryBase = Pick<
 
 export type ManagedConversationAuthorityRepository = Omit<
   ManagedConversationAuthorityRepositoryBase,
-  "getAwaitingOwnerRequestForExecution"
+  "getAwaitingOwnerRequestForExecution" | "listManagedConversationRuntimeItems"
 > & {
+  listManagedConversationRuntimeItems(
+    actor: Parameters<
+      MemorySourceRepository["listManagedConversationRuntimeItems"]
+    >[0],
+    input: {
+      executionId: string;
+      executionGeneration: number;
+      providerTurnId: string;
+      itemKind: "transient_output";
+      limit: number;
+    }
+  ): Promise<ManagedConversationRuntimeItemRecord[]>;
   getAwaitingOwnerRequestForExecution(
     actor: Parameters<
       MemorySourceRepository["getAwaitingOwnerRequestForExecution"]
@@ -1023,6 +1039,104 @@ export const createManagedConversationAuthorityClient = (options: {
         payload.item,
         "managed runtime item"
       ) as unknown as ManagedConversationRuntimeItemRecord;
+    },
+
+    async listManagedConversationRuntimeItems(actor, input) {
+      if (
+        !Number.isSafeInteger(input.limit) ||
+        input.limit < 1 ||
+        input.limit > managedRuntimeOutputLookahead ||
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1 ||
+        !input.providerTurnId.trim() ||
+        input.providerTurnId.length > 512
+      ) {
+        throw new ManagedConversationAuthorityError(
+          400,
+          "Managed runtime item list scope is invalid"
+        );
+      }
+      const responseLimit = Math.min(
+        input.limit,
+        managedRuntimeOutputPageLimit
+      );
+      const response = await request(
+        "GET",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/runtime-items`,
+        undefined,
+        ordinaryResponseBytes,
+        {
+          executionGeneration: String(input.executionGeneration),
+          providerTurnId: input.providerTurnId,
+          limit: String(responseLimit)
+        }
+      );
+      if (
+        !Array.isArray(response.items) ||
+        response.items.length > responseLimit ||
+        response.items.length > managedRuntimeOutputPageLimit
+      ) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned an invalid runtime item list"
+        );
+      }
+      let textBytes = 0;
+      const items = response.items.map((entry) => {
+        const item = object(entry, "managed runtime output item");
+        const itemPayload = object(
+          item.payload,
+          "managed runtime output payload"
+        );
+        const itemOwnerUserId = string(
+          item.ownerUserId,
+          "managed runtime output owner"
+        );
+        const itemExecutionId = string(
+          item.executionId,
+          "managed runtime output execution"
+        );
+        const itemTurnId = string(
+          item.providerTurnId,
+          "managed runtime output turn"
+        );
+        const itemRequestId = string(
+          item.providerRequestId,
+          "managed runtime output request"
+        );
+        const itemGeneration = item.executionGeneration;
+        const itemKind = item.itemKind;
+        const text = string(itemPayload.text, "managed runtime output text");
+        if (
+          itemOwnerUserId !== actor.userId ||
+          itemExecutionId !== input.executionId ||
+          itemGeneration !== input.executionGeneration ||
+          itemTurnId !== input.providerTurnId ||
+          itemKind !== "transient_output" ||
+          itemRequestId.startsWith("public-progress:") ||
+          (itemPayload.managedOutputTruncated !== undefined &&
+            typeof itemPayload.managedOutputTruncated !== "boolean")
+        ) {
+          throw new ManagedConversationAuthorityError(
+            502,
+            "Managed authority returned an out-of-scope runtime output item"
+          );
+        }
+        textBytes += Buffer.byteLength(text, "utf8");
+        if (textBytes > managedRuntimeOutputPageBytes) {
+          throw new ManagedConversationAuthorityError(
+            502,
+            "Managed authority returned oversized runtime output"
+          );
+        }
+        return {
+          ...item,
+          payload: itemPayload
+        } as unknown as ManagedConversationRuntimeItemRecord;
+      });
+      return items;
     },
 
     async getManagedConversationRuntimeItem(_actor, itemId) {
