@@ -91,8 +91,9 @@ test("release workflow dispatches full CI for the generated version branch", () 
     .split("- name: Dispatch release-candidate CI for the version branch")[1]
     .split("- name: Read product version")[0];
 
-  assert.match(release, /permissions:\n  actions: write/);
-  assert.match(step, /steps\.changesets\.outputs\.hasChangesets == 'true'/);
+  assert.ok(release.includes("permissions:\n  actions: write"));
+  assert.match(step, /if: steps\.changesets\.outputs\.pullRequestNumber != ''/);
+  assert.doesNotMatch(step, /hasChangesets/);
   assert.match(
     step,
     /gh workflow run ci\.yml --ref changeset-release\/main -f validation_level=full/

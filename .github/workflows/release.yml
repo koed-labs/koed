@@ -68,12 +68,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pull requests opened or updated with GITHUB_TOKEN do not start pull_request
-      # workflows, so the release pull request would never run CI required.
-      # workflow_dispatch is exempt from that rule; checks from the dispatched run
+      # Pull requests created or updated with GITHUB_TOKEN only produce
+      # approval-required pull_request runs (action_required, no jobs), so CI
+      # required never reports on the release pull request without a manual
+      # approval. Dispatch CI for the branch instead: checks from a dispatched run
       # attach to the branch head commit and satisfy the required status.
+      # pullRequestNumber is set only when the action created or updated the
+      # version pull request; hasChangesets is also true when every changeset is
+      # empty, in which case no branch is pushed.
       - name: Dispatch release-candidate CI for the version branch
-        if: steps.changesets.outputs.hasChangesets == 'true'
+        if: steps.changesets.outputs.pullRequestNumber != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run ci.yml --ref changeset-release/main -f validation_level=full

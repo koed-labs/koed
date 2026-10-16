@@ -111,16 +111,18 @@ requires identical symlink-aware runtime and app trees, verifies the app and
 mounted DMG, and runs both packaged daemon startup cycles. These are validation
 outputs, not publishable release artifacts.
 
-The Changesets action opens and updates that pull request with `GITHUB_TOKEN`,
-and GitHub does not start `pull_request` workflows for changes made with that
-token, so the release pull request would otherwise never run `CI required`.
-After the action runs with pending changesets, `.github/workflows/release.yml`
-therefore dispatches `ci.yml` on `changeset-release/main` with
-`validation_level=full`. `workflow_dispatch` is exempt from the `GITHUB_TOKEN`
-restriction, and checks from the dispatched run attach to the branch head commit,
-so the same `CI required` status gates the pull request. The dispatch needs the
-`actions: write` permission and uses the same full-validation path as a manual
-`full` run. Replacing the token with a GitHub App token would restore ordinary
+The Changesets action opens and updates that pull request with `GITHUB_TOKEN`.
+GitHub does not run workflows for such pull requests automatically: the
+`pull_request` run is created in an approval-required state with no jobs, so
+`CI required` would not report until someone approves it. After the action
+creates or updates the version pull request (its `pullRequestNumber` output is
+set; it is not set when every pending changeset is empty),
+`.github/workflows/release.yml` therefore dispatches `ci.yml` on
+`changeset-release/main` with `validation_level=full`. Checks from the
+dispatched run attach to the branch head commit, so the same `CI required`
+status gates the pull request. The dispatch needs the `actions: write`
+permission and uses the same full-validation path as a manual `full` run.
+Replacing the token with a GitHub App token would restore ordinary
 `pull_request` runs and make this step unnecessary.
 
 After the Changesets pull request merges, `.github/workflows/release.yml`
