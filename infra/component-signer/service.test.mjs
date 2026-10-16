@@ -48,16 +48,20 @@ const manifest = {
   requiredFiles: ["entry.js"],
   files: [{ path: "entry.js", sha256: "b".repeat(64) }]
 };
-test("authorizes release/recovery main workflows and rejects other identities, refs and events", () => {
+test("authorizes release main workflow and rejects removed recovery workflow", () => {
   authorizeClaims(claims, config);
-  authorizeClaims(
-    {
-      ...claims,
-      workflow_ref:
-        "koed-labs/koed/.github/workflows/release-desktop-assets.yml@refs/heads/main",
-      event_name: "workflow_dispatch"
-    },
-    config
+  assert.throws(
+    () =>
+      authorizeClaims(
+        {
+          ...claims,
+          workflow_ref:
+            "koed-labs/koed/.github/workflows/release-desktop-assets.yml@refs/heads/main",
+          event_name: "workflow_dispatch"
+        },
+        config
+      ),
+    /not authorized/
   );
   for (const change of [
     { repository_id: "1" },

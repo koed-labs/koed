@@ -13,11 +13,7 @@ const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks`), {
 });
 export const authorizeClaims = (claims, config) => {
   const workflows = new Map([
-    ["koed-labs/koed/.github/workflows/release.yml@refs/heads/main", "push"],
-    [
-      "koed-labs/koed/.github/workflows/release-desktop-assets.yml@refs/heads/main",
-      "workflow_dispatch"
-    ]
+    ["koed-labs/koed/.github/workflows/release.yml@refs/heads/main", "push"]
   ]);
   const identityMatches =
     claims.repository_id === config.repositoryId &&
