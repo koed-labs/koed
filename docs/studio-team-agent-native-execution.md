@@ -229,6 +229,20 @@ newly typed post-worker-restart prompt returned `T13-RESTART-CONTINUED`. This
 fixture therefore passed actual provider continuation, not just history display. CI for authentication checkpoint `003d8b0f` passed in run
 `38904452766`.
 
+The live Claude check also exposed an accepted-turn context gap: acceptance was
+persisted and dispatched, but the provider received only the raw saved brief.
+The accepted-command path now states that the owner has already accepted and
+assigned the request, then includes the saved brief verbatim. Planning prompts
+remain unchanged; execution settings and authority checks still govern tool use.
+The raw brief continues to determine the historical idempotency digest, preserving
+exact retries of commands created before this change. The focused repository
+suite passes all 35 tests and DB type checking passes. Targeted ESLint hung
+without output and was stopped; this is not a clean lint result. A new disposable
+request `341ddd7c-0a40-4e9f-acbc-d5cbcb038721` is awaiting acceptance in execution
+`c731efef-f1bf-4028-8206-2904f46f2ec2` for live verification against the rebuilt
+Docker backend. Its synthetic marker-only planning prompt drew a model refusal;
+an ordinary explanation-only prompt is being used without changing safety rules.
+
 ### Local Docker live result, 2026-10-15
 
 The Codex channel-request core flow passes against the isolated Docker Team backend and native owner runtime. This is one computer with separate authenticated owner, requester and outsider accounts, not a deployed or two-Device acceptance result.

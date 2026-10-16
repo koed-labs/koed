@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import {
@@ -18,6 +19,17 @@ vi.mock("./native-public-square-repository.js", () => ({
 }));
 
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+
+const stableTestUuidFromSeed = (seed: string): string => {
+  const bytes = createHash("sha256")
+    .update(seed, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
 
 describe("managed Conversation recovery lookup", () => {
   it("returns absent from an owner, kind, and prompt identity scoped query", async () => {
@@ -841,7 +853,7 @@ describe("retired managed Agent Job execution protocol", () => {
 });
 
 describe("managed Conversation initial Agent start", () => {
-  it("keeps the Team review fence while storing only presentation context", async () => {
+  it("keeps an awaiting-owner planning prompt separate from assignment acceptance", async () => {
     const ownerUserId = "11111111-1111-4111-8111-111111111111";
     const agentId = "22222222-2222-4222-8222-222222222222";
     const identityVersionId = "33333333-3333-4333-8333-333333333333";
@@ -1057,6 +1069,9 @@ describe("managed Conversation initial Agent start", () => {
       },
       personalAgentContext: agentContext
     });
+    expect(decodedStartPayload.prompt).not.toContain(
+      "The owner has explicitly accepted"
+    );
     expect(decodedStartPayload).not.toHaveProperty("continueWithoutMemory");
     expect(decodedStartPayload.personalAgentContext).not.toHaveProperty(
       "pendingTeamRequestId"
@@ -1101,6 +1116,227 @@ describe("managed Conversation initial Agent start", () => {
       )
     ).toBe(true);
     expect(jobInsertCalls).toHaveLength(0);
+  });
+});
+
+describe("accepted Team assignment prompt", () => {
+  it("tells the Agent the owner accepted while preserving the saved brief verbatim", async () => {
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const requesterUserId = "22222222-2222-4222-8222-222222222222";
+    const teamId = "33333333-3333-4333-8333-333333333333";
+    const requestId = "44444444-4444-4444-8444-444444444444";
+    const teamProjectId = "55555555-5555-4555-8555-555555555555";
+    const channelId = "66666666-6666-4666-8666-666666666666";
+    const agentId = "77777777-7777-4777-8777-777777777777";
+    const identityVersionId = "88888888-8888-4888-8888-888888888888";
+    const executionId = "99999999-9999-4999-8999-999999999999";
+    const localProjectId = "lp_0123456789abcdef0123456789abcdef";
+    const brief =
+      "After explicit acceptance, create ticket13-claude-resume-result.txt containing exactly T13-CLAUDE-RESUME-OK followed by a newline. Change no other files.";
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 11).toString("base64")
+    );
+    const now = new Date("2026-10-16T00:00:00.000Z");
+    let encryptedCommandPayload: EncryptedPayloadEnvelope | null = null;
+    const outboxRow = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      cursor: "1",
+      protocol_version: 1,
+      family: "managed_conversation_changed",
+      scope: "personal",
+      personal_owner_user_id: ownerUserId,
+      team_id: null,
+      team_workspace_id: null,
+      thread_id: null,
+      message_id: null,
+      share_grant_id: null,
+      logical_memory_id: null,
+      resource_type: "managed_conversation_execution",
+      resource_id: executionId,
+      actor_principal_id: ownerUserId,
+      mutation_id: "accepted-team-assignment",
+      occurred_at: now
+    };
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+      const normalized = sql.replace(/\s+/gu, " ").toLowerCase();
+      if (normalized.includes("from team_agent_requests"))
+        return {
+          rows: [
+            {
+              status: "awaiting_owner",
+              version: 3,
+              team_id: teamId,
+              team_project_id: teamProjectId,
+              channel_id: channelId,
+              requester_user_id: requesterUserId,
+              owner_user_id: ownerUserId,
+              agent_id: agentId,
+              job_id: null,
+              managed_execution_id: null,
+              managed_command_id: null
+            }
+          ]
+        };
+      if (normalized.includes("from team_memberships"))
+        return {
+          rows: [{ user_id: ownerUserId }, { user_id: requesterUserId }]
+        };
+      if (normalized.includes("from collaboration_team_shared_projects"))
+        return { rows: [{ id: teamProjectId }], rowCount: 1 };
+      if (normalized.includes("from collaboration_threads"))
+        return {
+          rows: [{ kind: "team_channel", team_project_id: teamProjectId }]
+        };
+      if (normalized.includes("from team_agent_offers"))
+        return {
+          rows: [
+            {
+              enabled: true,
+              version: 4,
+              current_version: 5,
+              lifecycle: "active"
+            }
+          ]
+        };
+      if (normalized.includes("from public_square_project_connections"))
+        return { rows: [{ local_project_id: localProjectId }] };
+      if (normalized.includes("from managed_conversation_executions"))
+        return {
+          rows: [
+            {
+              id: executionId,
+              owner_user_id: ownerUserId,
+              project_id: localProjectId,
+              model: "claude-test",
+              reasoning_effort: "high",
+              permission_mode: "supervised",
+              state: "running",
+              execution_generation: 2,
+              runner_deployment_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              runner_device_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            }
+          ]
+        };
+      if (normalized.includes("from personal_agent_conversations"))
+        return { rows: [{ active_agent_id: agentId }] };
+      if (normalized.includes("from personal_agent_conversation_participants"))
+        return { rows: [{ exists: true }], rowCount: 1 };
+      if (normalized.includes("from personal_agent_identity_versions"))
+        return {
+          rows: [
+            {
+              id: identityVersionId,
+              name: "Mira",
+              role: "Reviewer",
+              avatar_reference: null
+            }
+          ]
+        };
+      if (normalized.includes("from managed_conversation_project_moves"))
+        return { rows: [] };
+      if (normalized.includes("from managed_conversation_commands")) {
+        if (normalized.includes("coalesce(max(sequence)"))
+          return { rows: [{ sequence: 0 }] };
+        return { rows: [] };
+      }
+      if (normalized.includes("insert into managed_conversation_commands")) {
+        encryptedCommandPayload = params[8] as EncryptedPayloadEnvelope;
+        return { rows: [] };
+      }
+      if (normalized.includes("insert into collaboration_outbox"))
+        return { rows: [outboxRow] };
+      return { rows: [] };
+    });
+    const client = { query, release: vi.fn() } as unknown as pg.PoolClient;
+    const repository = createManagedConversationRepository({} as pg.Pool, {
+      envelopeEncryptionProvider: provider
+    });
+    nativePublicSquare.register.mockClear();
+
+    await repository.createManagedConversationAcceptedAgentAssignmentWithClient(
+      client,
+      {
+        requestId,
+        teamId,
+        teamProjectId,
+        channelId,
+        requesterUserId,
+        ownerUserId,
+        expectedRequestVersion: 3,
+        expectedReviewVersion: 8,
+        expectedOfferVersion: 4,
+        agentId,
+        agentVersion: 5,
+        localProjectId,
+        executionId,
+        privateGoal: brief,
+        idempotencyKey: `team-agent-request:${requestId}:accept:v3`
+      }
+    );
+
+    expect(encryptedCommandPayload).not.toBeNull();
+    const decoded = JSON.parse(
+      await decryptEnvelopeToUtf8(provider, encryptedCommandPayload!)
+    ) as Record<string, unknown>;
+    expect(decoded).toMatchObject({
+      prompt: [
+        "The owner has explicitly accepted and assigned this Team request. Execute the saved assignment brief below now, using this Conversation's existing settings and permissions. Do not ask whether it has been accepted again.",
+        "Accepted private assignment brief (verbatim):",
+        brief
+      ].join("\n\n"),
+      settings: {
+        model: "claude-test",
+        reasoningEffort: "high",
+        permissionMode: "supervised"
+      },
+      personalAgent: {
+        jobId: null,
+        agentId,
+        agentVersion: 5,
+        identityVersionId
+      }
+    });
+    expect(decoded.prompt).not.toBe(brief);
+    const insertCall = query.mock.calls.find(([sql]) =>
+      sql.includes("insert into managed_conversation_commands")
+    );
+    expect(insertCall).toBeDefined();
+    const commandParams = insertCall![1];
+    const idempotencyKey = `team-agent-request:${requestId}:accept:v3`;
+    const clientUserMessageId = stableTestUuidFromSeed(
+      `${idempotencyKey}:message`
+    );
+    expect(commandParams[3]).toBe(idempotencyKey);
+    expect(commandParams[6]).toBe(clientUserMessageId);
+    expect(commandParams[5]).toBe(
+      createHash("sha256")
+        .update(
+          JSON.stringify({
+            kind: "prompt",
+            executionId,
+            executionGeneration: 2,
+            clientUserMessageId,
+            prompt: brief,
+            agentId,
+            agentVersion: 5,
+            identityVersionId
+          }),
+          "utf8"
+        )
+        .digest("hex")
+    );
+    expect(nativePublicSquare.register).toHaveBeenCalledWith(
+      client,
+      { userId: ownerUserId },
+      expect.objectContaining({
+        commandId: expect.any(String),
+        executionId,
+        executionGeneration: 2,
+        agentId,
+        agentVersion: 5,
+        originalProjectId: localProjectId
+      })
+    );
   });
 });
 

@@ -1587,6 +1587,13 @@ const statusError = (
 ): Error & { statusCode: number } =>
   Object.assign(new Error(message), { statusCode });
 
+const acceptedTeamAssignmentPrompt = (privateGoal: string): string =>
+  [
+    "The owner has explicitly accepted and assigned this Team request. Execute the saved assignment brief below now, using this Conversation's existing settings and permissions. Do not ask whether it has been accepted again.",
+    "Accepted private assignment brief (verbatim):",
+    privateGoal
+  ].join("\n\n");
+
 const nativePublicSquareWorkMayPublishWithClient = async (
   client: pg.PoolClient,
   ownerUserId: string,
@@ -3079,7 +3086,8 @@ export const createManagedConversationRepository = (
         }
       }
 
-      const prompt = input.privateGoal.trim();
+      const privateGoal = input.privateGoal.trim();
+      const prompt = acceptedTeamAssignmentPrompt(privateGoal);
       const clientUserMessageId = stableUuidFromSeed(
         `${input.idempotencyKey}:message`
       );
@@ -3089,7 +3097,9 @@ export const createManagedConversationRepository = (
           executionId: input.executionId,
           executionGeneration: current.execution_generation,
           clientUserMessageId,
-          prompt,
+          // Preserve the pre-acceptance-context idempotency digest so a
+          // replay of a previously queued assignment keeps the same identity.
+          prompt: privateGoal,
           agentId: input.agentId,
           agentVersion: input.agentVersion,
           identityVersionId: identity.id

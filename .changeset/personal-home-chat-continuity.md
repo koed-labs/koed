@@ -85,3 +85,5 @@ Restore the existing conversation’s model, reasoning and execution settings wh
 Bound the MCP diagnostic launched during runtime status checks so an unresponsive diagnostic cannot indefinitely block Desktop chat initialization. Report a diagnostic timeout while preserving independent API health and owner checks.
 
 Use lightweight API readiness for native draft and recovery initialization while retaining authenticated owner checks.
+
+Tell the connected Agent when a Team assignment has already been accepted, retaining its saved brief, permissions and existing command retry identity.
