@@ -72,7 +72,7 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
         entries: Array<{ idx: number; tag: string }>;
       };
       await mkdir(join(folder, "meta"));
-      const prior = journal.entries.filter((entry) => entry.idx < 58);
+      const prior = journal.entries.filter((entry) => entry.idx < 46);
       for (const entry of prior)
         await copyFile(
           join(migrations, `${entry.tag}.sql`),
@@ -235,8 +235,8 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
       const session = (
         await pool.query<{ id: string }>(
           `insert into sessions
-        (owner_user_id,visibility,logical_session_id,external_session_id,source_runtime,capture_method,source_kind,source_adapter_version,repository_assignment_state,metadata)
-        values ($1,'personal',$2,$3,$4,'transcript',$5,$6,'historical_unresolved',$7::jsonb) returning id`,
+        (owner_user_id,visibility,logical_session_id,external_session_id,source_runtime,capture_method,source_kind,source_adapter_version,metadata)
+        values ($1,'personal',$2,$3,$4,'transcript',$5,$6,$7::jsonb) returning id`,
           [
             userId,
             source.sourceSession.logicalSessionId,

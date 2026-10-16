@@ -1,16 +1,16 @@
 # Project cutover validation
 
-Ticket 16 uses one coordinated Project behavior change. Migration 0062 runs the
+Ticket 16 uses one coordinated Project behavior change. Migration 0046 runs the
 historical assignment transition once. The release uses current protocol
 profiles and does not add a feature flag or a legacy Memory body reader.
 
 ## Assignment and storage evidence
 
-The native assignment migration test starts from schema 0061 with recorded and
-explicitly reassigned Sessions. It covers old, additive-period, invalidated, and
-future-dated rows. Every existing assignment becomes unresolved and advances its
-version. Complete Session provenance, Memory Event rows, and repository
-observations remain unchanged.
+The native assignment migration test starts from main's schema 0045. It covers
+old, invalidated, and future-dated Sessions, including legacy Project display
+overrides. Every existing Personal Session becomes unresolved. Complete Session
+provenance and Memory Event rows remain unchanged. Repository observations start
+empty because main does not record repository assignments.
 
 The same test covers continued capture, duplicate ingestion, re-import, stale
 writes, explicit reassignment, and reset. Repeated migrations preserve later
@@ -58,7 +58,7 @@ add automatic completion delivery.
 ## Team fixture assessment
 
 A read-only export of the maintained synthetic Team fixture was restored into a
-disposable PostgreSQL database. Migration 0062 transitioned all 14 Sessions.
+disposable PostgreSQL database. Before consolidation, migration 0062 transitioned all 14 Sessions.
 Hashes proved that 11 Share Grants, 14 Conversation Items, 14 Memory Events,
 15 Memory Nodes, and 71 encryption companions remained unchanged. Session fields
 outside the assignment transition also remained unchanged. Migration replay
@@ -193,7 +193,7 @@ live assignments. The running Desktop process needs a restart to load the change
 existing imported folder groups still require an explicit move to merge.
 
 Eighteen PostgreSQL assignment regressions cover fresh assignment, replay, manual
-overrides, reset, and invalidated-session re-import. The separate migration 0062
+overrides, reset, and invalidated-session re-import. The separate migration 0046
 acceptance test also passed. It preserves the one-time cutoff and prevents
 continued capture from automatically resolving existing history. Tests used
 disposable databases and isolated local profiles.

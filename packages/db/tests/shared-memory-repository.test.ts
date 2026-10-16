@@ -8941,15 +8941,19 @@ describeDb("Shared Memory repository", () => {
       }>("select to_jsonb(s) as row from sessions s where id=$1", [
         source.localSessionId
       ]);
-      await client.query(
-        await readFile(
-          new URL(
-            "../drizzle/0062_project_assignment_cutover.sql",
-            import.meta.url
-          ),
-          "utf8"
+      const recallMigration = await readFile(
+        new URL("../drizzle/0046_project_scoped_recall.sql", import.meta.url),
+        "utf8"
+      );
+      // Exercise the one-time data transition against existing Share Grants.
+      // Schema creation already ran before this runtime fixture was populated.
+      const cutover = recallMigration.slice(
+        recallMigration.indexOf(
+          "LOCK TABLE sessions IN SHARE ROW EXCLUSIVE MODE;"
         )
       );
+      expect(cutover).toContain("UPDATE sessions");
+      await client.query(cutover);
       expect(
         (
           await client.query<{ row: unknown }>(

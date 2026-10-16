@@ -801,7 +801,7 @@ local profile's Project salt. They claim no current checkout incarnation and
 remain separate from live checkout identities at the same path.
 
 Only initial Session creation records this automatic assignment. Re-import and
-Projection reuse existing assignments and User overrides. Migration 0062's
+Projection reuse existing assignments and User overrides. Migration 0046's
 `historical_unresolved` state remains authoritative through continued capture,
 invalidation recovery, and re-import. Resetting a User override restores the
 recorded automatic assignment or the migration's unresolved state.

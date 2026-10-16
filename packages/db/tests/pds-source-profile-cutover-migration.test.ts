@@ -84,7 +84,7 @@ describe.skipIf(!databaseUrl)(
           entries: Array<{ idx: number; tag: string }>;
         };
         await mkdir(join(folder, "meta"));
-        const prior = journal.entries.filter((entry) => entry.idx < 58);
+        const prior = journal.entries.filter((entry) => entry.idx < 46);
         for (const entry of prior)
           await copyFile(
             join(migrations, `${entry.tag}.sql`),

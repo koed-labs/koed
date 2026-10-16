@@ -71,7 +71,7 @@ tickets; repository identity never chooses or authorizes a Workspace.
 
 ## One-time historical assignment transition
 
-Migration `0062_project_assignment_cutover` marks every existing Personal Session
+Migration `0046_project_scoped_recall` marks every existing Personal Session
 as `historical_unresolved`. This includes Sessions captured during additive
 preparation, invalidated rows, and Personal Device Sync replicas. The migration
 clears automatic and User override assignments and increments assignment versions.
@@ -250,7 +250,7 @@ existing assignment. Individual moves do not create routing rules. Resetting an
 individual override restores that Conversation's recorded identity; it does not
 remove the rule for later new captures.
 
-Migration `0063_named_local_projects` adds the routing table and recognizes
+Migration `0046_project_scoped_recall` adds the routing table and recognizes
 `local_project` identities in the common SQL scope functions. Named identities
 have no root, branch, remote, or checkout and retain originating-device scope.
 They are not portable Team repository fingerprints. Project recall accepts a

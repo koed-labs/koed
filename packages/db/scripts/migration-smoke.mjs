@@ -72,9 +72,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0064_agent_seal_waiting_marker";
+const expectedLatestMigrationTag = "0046_project_scoped_recall";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 64;
+const expectedLatestMigrationIndex = 46;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 

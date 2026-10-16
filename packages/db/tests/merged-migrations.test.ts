@@ -19,9 +19,9 @@ import {
 } from "../src/index.js";
 
 const databaseUrl = process.env.MERGED_MIGRATIONS_TEST_DATABASE_URL;
-describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
-  it.each(["main", "recall"] as const)(
-    "upgrades an existing %s database without replaying applied migrations",
+describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
+  it.each(["main", "discarded recall"] as const)(
+    "handles an existing %s database without replaying applied migrations",
     async (history) => {
       const admin = createDbPool({ connectionString: databaseUrl });
       const name = `koed_merge_${randomUUID().replaceAll("-", "")}`;
@@ -41,13 +41,7 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
         ) as {
           entries: Array<{ idx: number; tag: string; when: number }>;
         };
-        const baseline =
-          history === "recall"
-            ? journal.entries.slice(0, 64)
-            : [
-                ...journal.entries.slice(0, 45),
-                { ...journal.entries[64]!, idx: 45 }
-              ];
+        const baseline = journal.entries.slice(0, 46);
         await mkdir(join(folder, "meta"));
         for (const entry of baseline)
           await copyFile(
@@ -63,25 +57,16 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
         const owner = await repo.createUser({
           email: `merge-${randomUUID()}@example.test`
         });
-        const retained =
-          history === "recall"
-            ? await repo.createCapturedSession(
-                { userId: owner.id },
-                {
-                  repositoryIdentity: {
-                    kind: "local_project",
-                    key: `project_${randomUUID()}`,
-                    reason: "manual",
-                    originatingDeviceId: "fixture_device",
-                    root: null,
-                    branch: null,
-                    checkoutId: null,
-                    selectedRemote: null,
-                    anchorDisplay: null
-                  }
-                }
-              )
-            : null;
+        if (history === "discarded recall") {
+          // Original unreleased 0045, now replaced by consolidated 0046.
+          await pool.query(
+            "insert into drizzle.__drizzle_migrations (hash,created_at) values ($1,$2)",
+            [
+              "85f784af0986ab04d3ac87560cc1984405e579b23b01c01055d11fb60ab67aa6",
+              1791983422862
+            ]
+          );
+        }
         const before = (
           await pool.query<{ hash: string; created_at: string }>(
             "select hash, created_at::text from drizzle.__drizzle_migrations order by id"
@@ -89,7 +74,7 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
         ).rows;
         const readiness = {
           timeoutMs: 0,
-          expectedLatestMigrationTimestamp: journal.entries[64]!.when,
+          expectedLatestMigrationTimestamp: journal.entries[46]!.when,
           expectedMigrationHashes: readMigrationFiles({
             migrationsFolder: source
           }).map((migration) => migration.hash)
@@ -97,9 +82,29 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
         await expect(waitForDbMigrations(pool, readiness)).rejects.toThrow(
           "Timed out waiting"
         );
+        if (history === "discarded recall") {
+          await expect(runDbMigrations(pool)).rejects.toThrow(
+            "Reset disposable databases"
+          );
+          expect(
+            (
+              await pool.query(
+                "select hash, created_at::text from drizzle.__drizzle_migrations order by id"
+              )
+            ).rows
+          ).toEqual(before);
+          expect(
+            (
+              await pool.query<{ table: string | null }>(
+                "select to_regclass('public.session_repository_observations')::text as table"
+              )
+            ).rows[0]?.table
+          ).toBeNull();
+          return;
+        }
         if (history === "main") {
-          // A failed gap must roll back earlier statements and ledger inserts.
-          for (const entry of journal.entries.slice(45, 64))
+          // A failed upgrade must roll back all schema changes and ledger inserts.
+          for (const entry of journal.entries.slice(46))
             await copyFile(
               join(source, `${entry.tag}.sql`),
               join(folder, `${entry.tag}.sql`)
@@ -141,7 +146,7 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
               "select count(*)::text from drizzle.__drizzle_migrations"
             )
           ).rows[0]?.count
-        ).toBe("65");
+        ).toBe("47");
         expect(
           (
             await pool.query<{ hash: string; created_at: string }>(
@@ -171,11 +176,6 @@ describe.skipIf(!databaseUrl)("merged main and recall migrations", () => {
             )
           ).rows[0]?.table
         ).toBe("session_repository_observations");
-        if (retained)
-          expect(
-            (await repo.getCapturedSession({ userId: owner.id }, retained.id))
-              ?.repositoryAssignment
-          ).toEqual(retained.repositoryAssignment);
         const after = (
           await pool.query(
             "select * from drizzle.__drizzle_migrations order by id"

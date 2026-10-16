@@ -64,7 +64,7 @@ export const runDbMigrations = async (
   const migrations = readMigrationFiles(config);
   const client = await pool.connect();
   try {
-    // Serialize gap repair and the normal timestamp-based migrator together.
+    // Keep concurrent startup attempts on one migration history.
     await client.query(
       "select pg_advisory_lock(hashtext('koed:db:migrations'))"
     );
@@ -72,36 +72,16 @@ export const runDbMigrations = async (
       "select to_regclass('drizzle.__drizzle_migrations') is not null as present"
     );
     if (ledger.rows[0]?.present) {
-      const applied = await client.query<{ hash: string; created_at: string }>(
-        "select hash, created_at::text from drizzle.__drizzle_migrations"
+      const applied = await client.query<{ hash: string }>(
+        "select hash from drizzle.__drizzle_migrations"
       );
-      const hashes = new Set(applied.rows.map((row) => row.hash));
-      const latest = Math.max(
-        0,
-        ...applied.rows.map((row) => Number(row.created_at))
+      const knownHashes = new Set(
+        migrations.map((migration) => migration.hash)
       );
-      // Independently developed migrations can precede an already-applied main
-      // migration. Drizzle's timestamp cursor would silently skip those gaps.
-      const gaps = migrations.filter(
-        (migration) =>
-          migration.folderMillis <= latest && !hashes.has(migration.hash)
-      );
-      if (gaps.length) {
-        await client.query("begin");
-        try {
-          for (const migration of gaps) {
-            for (const statement of migration.sql)
-              await client.query(statement);
-            await client.query(
-              "insert into drizzle.__drizzle_migrations (hash, created_at) values ($1, $2)",
-              [migration.hash, migration.folderMillis]
-            );
-          }
-          await client.query("commit");
-        } catch (error) {
-          await client.query("rollback");
-          throw error;
-        }
+      if (applied.rows.some((row) => !knownHashes.has(row.hash))) {
+        throw new Error(
+          "Database migration history does not match this build. Reset disposable databases that used the unreleased Project recall migrations before retrying."
+        );
       }
     }
     await migrate(createDb(client), config);

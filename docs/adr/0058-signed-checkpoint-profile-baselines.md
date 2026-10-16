@@ -60,8 +60,8 @@ integration checks in ticket 16; they are not declared complete by this ADR.
 
 ## Validation
 
-The dedicated pre-0058 source migration fixture uses a signed V3 publication
-created by the prior publisher. It verifies rollback on build failure, exactly one
+The dedicated source migration fixture starts from main's schema 0045. It uses
+a signed V3 publication created by the prior publisher. It verifies rollback on build failure, exactly one
 V4 baseline without additional turns, unchanged retained ciphertext and source
 item mappings, and a later ordinary checkpoint after native Pi capture resumes.
 The Session remains historical-unresolved throughout. The companion receiver

@@ -32,7 +32,7 @@ const identity: RepositoryIdentity = {
 };
 
 describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
-  it("invalidates every existing Personal assignment once and preserves capture and explicit reassignment behavior", async () => {
+  it("marks existing Personal Sessions unresolved once and preserves capture and explicit reassignment behavior", async () => {
     const pool = createDbPool({ connectionString: databaseUrl });
     const folder = await mkdtemp(
       fileURLToPath(
@@ -51,7 +51,7 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
       const journal = JSON.parse(
         await readFile(join(migrations, "meta/_journal.json"), "utf8")
       ) as { entries: Array<{ idx: number; tag: string }> };
-      const prior = journal.entries.filter((entry) => entry.idx < 62);
+      const prior = journal.entries.filter((entry) => entry.idx < 46);
       await mkdir(join(folder, "meta"));
       for (const entry of prior)
         await copyFile(
@@ -63,12 +63,6 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
         JSON.stringify({ ...journal, entries: prior })
       );
       await runDbMigrations(pool, { migrationsFolder: folder });
-      // The current capture adapter expects the later routing catalog. Keep
-      // that catalog empty and temporary while preparing pre-cutover rows.
-      await pool.query(`create table personal_project_routes (
-        owner_user_id uuid,source_project_id text,target_project_id text,
-        target_name text,target_path text,target_identity jsonb
-      )`);
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `cutover-${randomUUID()}@example.test`
@@ -82,13 +76,21 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
         "pi"
       ] as const) {
         const externalSessionId = randomUUID();
-        const session = await repo.createCapturedSession(actor, {
-          sourceRuntime,
-          externalSessionId,
-          idempotencyKey: externalSessionId,
-          repositoryIdentity: identity,
-          metadata: { retainedProvenance: "synthetic-cutover" }
-        });
+        // Seed main's schema directly. Project assignment columns do not exist yet.
+        const session = (
+          await pool.query<{ id: string; externalSessionId: string }>(
+            `insert into sessions
+             (owner_user_id,source_runtime,capture_method,external_session_id,idempotency_key,metadata)
+             values ($1,$2,'transcript',$3,$3,$4::jsonb)
+             returning id,external_session_id as "externalSessionId"`,
+            [
+              owner.id,
+              sourceRuntime,
+              externalSessionId,
+              JSON.stringify({ retainedProvenance: "synthetic-cutover" })
+            ]
+          )
+        ).rows[0]!;
         await repo.createMemoryEvent(actor, {
           sessionId: session.id,
           projectId: "legacy-cutover-project",
@@ -101,13 +103,11 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
         });
         sessions.push(session);
       }
-      const overridden = sessions[0]!;
-      await updateSessionRepositoryOverride(pool, {
-        ownerUserId: owner.id,
-        sessionId: overridden.id,
-        expectedVersion: 1,
-        identity: { ...identity, key: "gr_override" }
-      });
+      // Preserve legacy display overrides as provenance, without resolving them.
+      await pool.query(
+        "update sessions set project_override_id='legacy-project', project_override_name='Legacy Project', project_override_at=now(), project_override_by_user_id=owner_user_id where id=$1",
+        [sessions[0]!.id]
+      );
       // Include old, newly captured, invalidated and future-dated retained rows.
       await pool.query(
         "update sessions set created_at='2020-01-01', invalidated_at=now() where id=$1",
@@ -127,12 +127,6 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
           "select to_jsonb(e) as row from memory_events e order by id"
         )
       ).rows;
-      const observationsBefore = (
-        await pool.query<{ row: unknown }>(
-          "select to_jsonb(o) as row from session_repository_observations o order by id"
-        )
-      ).rows;
-      await pool.query("drop table personal_project_routes");
       await runDbMigrations(pool);
       const after = (
         await pool.query<{ id: string; row: Record<string, unknown> }>(
@@ -146,8 +140,7 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
           repository_assignment_state: "historical_unresolved",
           repository_automatic_identity: null,
           repository_override_identity: null,
-          repository_assignment_version:
-            Number(old.row.repository_assignment_version) + 1
+          repository_assignment_version: 2
         });
       }
       expect(
@@ -163,7 +156,7 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
             "select to_jsonb(o) as row from session_repository_observations o order by id"
           )
         ).rows
-      ).toEqual(observationsBefore);
+      ).toEqual([]);
       const resetSession = sessions[3]!;
       const continued = await repo.createCapturedSession(actor, {
         sourceRuntime: "pi",

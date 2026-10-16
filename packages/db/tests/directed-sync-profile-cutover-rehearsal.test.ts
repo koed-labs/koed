@@ -93,7 +93,7 @@ describe.skipIf(!sourceUrl || !targetUrl)(
           await readFile(join(migrations, "meta/_journal.json"), "utf8")
         ) as { entries: Array<{ idx: number; tag: string }> };
         await mkdir(join(folder, "meta"));
-        const prior = journal.entries.filter((entry) => entry.idx < 58);
+        const prior = journal.entries.filter((entry) => entry.idx < 46);
         for (const entry of prior)
           await copyFile(
             join(migrations, `${entry.tag}.sql`),
@@ -162,6 +162,11 @@ describe.skipIf(!sourceUrl || !targetUrl)(
           } finally {
             seedClient.release();
           }
+          // Completion time is local transport metadata, outside signed bytes.
+          // Keep this upgrade fixture inside the normal ciphertext retention window.
+          await pool.query(
+            "update sync_package_upload_sessions set completed_at=now() where completed_at is not null"
+          );
           await runDbMigrations(pool);
         }
         const sourceRoot = createLocalTestKeyEnvelopeEncryptionProvider(
