@@ -4853,7 +4853,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
   });
 
-  it("scopes managed Conversation drafts and recovery to the authenticated owner and backend", async () => {
+  it("uses startup API readiness and scopes drafts and recovery to the authenticated owner and backend", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));
     const credentialDirectory = resolve(koedHome, "config");
     mkdirSync(credentialDirectory, { recursive: true });
@@ -4862,6 +4862,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       JSON.stringify({ apiToken: "local_app_token" })
     );
     const drafts = new Map<string, string>();
+    const statusCalls: string[][] = [];
     const draftStore = {
       get: vi.fn(async (reference: string) => drafts.get(reference) ?? null),
       put: vi.fn(async (reference: string, value: string) => {
@@ -4903,6 +4904,18 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       }),
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
+        if (args.includes("status")) {
+          statusCalls.push([...args]);
+          // A full diagnostic may be unavailable while API readiness is valid.
+          if (!args.includes("--startup")) {
+            callback(
+              null,
+              JSON.stringify({ api: { state: "needs_attention" } }),
+              ""
+            );
+            return;
+          }
+        }
         callback(
           null,
           JSON.stringify(
@@ -5188,6 +5201,10 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
       expect(draftStore.get).toHaveBeenCalledTimes(reads);
       expect(personalMemoryFetch).toHaveBeenCalledTimes(33);
+      expect(statusCalls.length).toBeGreaterThan(0);
+      expect(statusCalls.every((args) => args.includes("--startup"))).toBe(
+        true
+      );
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

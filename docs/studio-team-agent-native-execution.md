@@ -196,6 +196,39 @@ while local and Docker API health checks returned 200. The new request's private
 brief is saved at review version 1; no planning execution or accepted work has
 started for it. This is not passing UI acceptance evidence.
 
+The native bridge investigation found an unbounded synchronous MCP doctor in
+`koed-server status`. Instrumented read-only checks returned HTTP 200 for API
+readiness, app-token and capability routes before reaching this nested diagnostic.
+The status probe now has a 10-second hard termination deadline and a 1 MiB output
+cap. Timeout is reported as `needs_attention`, while the independent API health
+field remains intact. Desktop still requires an owner-authenticated read before
+using recovery data; the change adds no replay or authority bypass. The regression
+uses a hanging child that ignores SIGTERM. Desktop API discovery now uses the existing lightweight `status --startup`
+readiness path, so optional provider diagnostics do not gate encrypted draft and
+recovery initialization. Credential provisioning and the live owner check remain
+required. All 102 native manager tests pass, including authenticated owner/backend
+isolation; the 87 status tests pass, including a doctor child that ignores SIGTERM.
+Desktop type checking, changed-file lint and main-process compilation pass. The
+source rebuild is current at
+`sha256:2eb71f02d13e51bec650ba9a2852aa9b9a1c3beb0cbd50d0f4cefbcece65fa83`.
+The fresh native window loaded the saved request and model catalogue and sent
+its planning prompt. Claude returned `T13-CLAUDE-READY`; the assignment file was
+absent before acceptance. Owner acceptance then resumed the same Claude session
+without authentication failure. Its first accepted response requested confirmation
+of the plan. A newly typed owner follow-up explicitly confirmed it; Claude then
+created and read back `ticket13-claude-resume-result.txt`, and an independent local
+read matched `T13-CLAUDE-RESUME-OK` plus one newline exactly. The reply and three
+finished tools appeared in the native chat. This proves live resumed tool execution
+after acceptance; it does not claim that the canonical acceptance command itself
+performed the file change. Owner runtime reads returned 200; requester and outsider
+reads returned 404. The original indeterminate request remains untouched.
+Reload restored Claude history, Sonnet 4.6/Medium and the accepted Team review.
+Reopening the recovered Codex execution `18d968f9-f867-4404-a09c-61939cae04dc`
+from the Project sidebar restored review version 3 and gpt-6-luna/Extra High. A
+newly typed post-worker-restart prompt returned `T13-RESTART-CONTINUED`. This
+fixture therefore passed actual provider continuation, not just history display. CI for authentication checkpoint `003d8b0f` passed in run
+`38904452766`.
+
 ### Local Docker live result, 2026-10-15
 
 The Codex channel-request core flow passes against the isolated Docker Team backend and native owner runtime. This is one computer with separate authenticated owner, requester and outsider accounts, not a deployed or two-Device acceptance result.

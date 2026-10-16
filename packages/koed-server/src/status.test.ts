@@ -7,6 +7,7 @@ import {
   writeFileSync,
   type PathLike
 } from "node:fs";
+import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -2891,6 +2892,57 @@ describe("status and doctor JSON contracts", () => {
     expect(doctorEnvironments[0]?.MEMORY_API_URL).toBeUndefined();
     expect(doctorEnvironments[0]?.KOED_HOME).toBe(root);
   });
+
+  it("bounds a hanging MCP doctor during status inspection without hiding API health", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    writeFileSync(
+      mcpCli,
+      'process.on("SIGTERM", () => {});\nsetInterval(() => {}, 1_000);\n'
+    );
+    let doctorTimeout: number | undefined;
+    let doctorMaxBuffer: number | undefined;
+    let doctorKillSignal: string | undefined;
+    let doctorResultSignal: NodeJS.Signals | null | undefined;
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: healthyStartupFetcher(),
+        spawnSync: (_command, args, options) => {
+          if (args[0] === mcpCli && args[1] === "doctor") {
+            doctorTimeout = options?.timeout;
+            doctorMaxBuffer = options?.maxBuffer;
+            doctorKillSignal = options?.killSignal;
+            const result = nodeSpawnSync(_command, args, options);
+            doctorResultSignal = result.signal;
+            return result;
+          }
+          return spawnResult("");
+        },
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(doctorTimeout).toBe(10_000);
+    expect(doctorMaxBuffer).toBe(1_024 * 1_024);
+    expect(doctorKillSignal).toBe("SIGKILL");
+    expect(doctorResultSignal).toBe("SIGKILL");
+    expect(status.api.state).toBe("healthy");
+    expect(status.mcpServer).toMatchObject({
+      state: "needs_attention",
+      message: "MCP Server doctor timed out during status inspection.",
+      details: { timeoutMs: 10_000, errorCode: "ETIMEDOUT" }
+    });
+  }, 20_000);
 
   it("reports a Codex KOED_HOME mismatch while signal hooks remain configured", async () => {
     const root = tempDir();

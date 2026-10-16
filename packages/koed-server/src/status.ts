@@ -1286,6 +1286,7 @@ const inspectMcp = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
+  const doctorTimeoutMs = 10_000;
   const appRuntime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const cliPath = appRuntime.mcpCli;
   if (!deps.existsSync(cliPath)) {
@@ -1319,6 +1320,11 @@ const inspectMcp = (
       KOED_HOME: paths.koedHome
     },
     encoding: "utf8",
+    timeout: doctorTimeoutMs,
+    maxBuffer: 1_024 * 1_024,
+    // The doctor CLI installs an asynchronous SIGTERM handler; make this
+    // read-only probe's timeout a hard deadline.
+    killSignal: "SIGKILL",
     stdio: ["ignore", "pipe", "pipe"]
   });
   if (result.status === 0) {
@@ -1327,10 +1333,20 @@ const inspectMcp = (
       runtimeRoot: appRuntime.root
     });
   }
+  const errorCode =
+    result.error && "code" in result.error
+      ? String((result.error as NodeJS.ErrnoException).code ?? "")
+      : "";
+  const timedOut = errorCode === "ETIMEDOUT";
   return needsAttention(
-    "MCP Server doctor failed.",
-    "Run koed-server doctor --json for details.",
+    timedOut
+      ? "MCP Server doctor timed out during status inspection."
+      : "MCP Server doctor failed.",
+    timedOut
+      ? "Check Local AI Runtime responsiveness, then rerun koed-server doctor --json."
+      : "Run koed-server doctor --json for details.",
     {
+      ...(timedOut ? { timeoutMs: doctorTimeoutMs, errorCode } : {}),
       stderr: result.stderr.trim(),
       stdout: result.stdout.trim(),
       artifactSource: appRuntime.artifactSource,

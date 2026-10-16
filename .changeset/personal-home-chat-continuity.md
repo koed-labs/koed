@@ -81,3 +81,7 @@ Keep Team review versions current through delayed chat starts and preserve the v
 Preserve the registered Claude profile’s authentication namespace on macOS and Windows when resuming managed session storage, including the native default profile, without loading profile settings or accepting arbitrary authentication-directory overrides.
 
 Restore the existing conversation’s model, reasoning and execution settings when reopening it with an Agent selection.
+
+Bound the MCP diagnostic launched during runtime status checks so an unresponsive diagnostic cannot indefinitely block Desktop chat initialization. Report a diagnostic timeout while preserving independent API health and owner checks.
+
+Use lightweight API readiness for native draft and recovery initialization while retaining authenticated owner checks.

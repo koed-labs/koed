@@ -2068,9 +2068,11 @@ export const createKoedServerManager = ({
     refreshToken?: boolean;
   } = {}) => {
     if (refreshOrigin) retainedPersonalApiOrigin = null;
+    // Discover API readiness without waiting for optional provider diagnostics.
+    // Credential provisioning and the live owner check still authorize access.
     const current = retainedPersonalApiOrigin
       ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
+      : await runJson(["status", "--startup"], statusCommandTimeoutMs);
     const apiOrigin =
       retainedPersonalApiOrigin ??
       (current ? localPersonalMemoryOrigin(current) : null);
