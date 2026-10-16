@@ -33,7 +33,8 @@ export const REMOTE_MCP_MAX_BODY_BYTES = 1_048_576;
 const rejection = (
   status: number,
   error: string,
-  challenge = "Bearer"
+  challenge = "Bearer",
+  retryAfterMs?: number
 ): Response =>
   Response.json(
     { error },
@@ -41,7 +42,16 @@ const rejection = (
       status,
       headers: {
         "cache-control": "no-store",
-        ...(status === 401 ? { "www-authenticate": challenge } : {})
+        ...(status === 401 ? { "www-authenticate": challenge } : {}),
+        ...(retryAfterMs !== undefined &&
+        Number.isFinite(retryAfterMs) &&
+        retryAfterMs > 0
+          ? {
+              "retry-after": String(
+                Math.ceil(Math.min(retryAfterMs, 60_000) / 1000)
+              )
+            }
+          : {})
       }
     }
   );
@@ -107,7 +117,22 @@ export const createRemoteKoedMcpHandler = ({
       let binding: AuthenticatedRemoteMcpRequest | null;
       try {
         binding = await authenticate(request);
-      } catch {
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "statusCode" in error &&
+          (error.statusCode === 429 || error.statusCode === 503)
+        ) {
+          return rejection(
+            error.statusCode,
+            "Authentication is temporarily unavailable",
+            challenge,
+            "retryAfterMs" in error && typeof error.retryAfterMs === "number"
+              ? error.retryAfterMs
+              : undefined
+          );
+        }
         return rejection(401, "Authentication required", challenge);
       }
       if (!binding) return rejection(401, "Authentication required", challenge);

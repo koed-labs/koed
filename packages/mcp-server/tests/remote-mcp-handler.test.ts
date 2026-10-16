@@ -343,6 +343,30 @@ describe("authenticated remote MCP transport", () => {
     );
   });
 
+  it.each([429, 503])(
+    "preserves retryable auth status %s without leaking provider errors",
+    async (statusCode) => {
+      const { handler, executor } = setup({
+        authenticate: async () => {
+          throw Object.assign(new Error("Sensitive provider credential"), {
+            statusCode,
+            retryAfterMs: 5000
+          });
+        }
+      });
+      const response = await handler.fetch(
+        new Request("https://memory.test/mcp")
+      );
+      expect(response.status).toBe(statusCode);
+      expect(response.headers.get("retry-after")).toBe("5");
+      expect(await response.text()).not.toContain(
+        "Sensitive provider credential"
+      );
+      expect(executor.capabilities).not.toHaveBeenCalled();
+      expect(executor.callTool).not.toHaveBeenCalled();
+    }
+  );
+
   it("keeps simultaneous authenticated executors isolated", async () => {
     const first = runtime();
     const second = runtime();

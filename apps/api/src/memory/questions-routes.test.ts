@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 const fixture = async (
-  credential: "token" | "oauth" | "browser",
+  credential: "token" | "oauth" | "browser" | "device",
   scopes: string[] = [],
   teamCollaborationEnabled = true
 ) => {
@@ -71,14 +71,28 @@ const fixture = async (
     if (credential !== "oauth") throw new Error("Invalid delegated token");
     return principal;
   });
-  const getDeviceCredentialUser = vi.fn();
+  const getDeviceCredentialUser = vi.fn().mockResolvedValue({
+    user,
+    credential: { operationFamilies: ["team_workspace_read"] }
+  });
+  const createFinalMemoryQuestion = vi.fn(
+    async (
+      actor: MemoryQuestionActorContext,
+      input: { teamWorkspaceId?: string }
+    ) => {
+      if (input.teamWorkspaceId && !actor.allowTeam)
+        throw new SharedMemoryAuthorizationError();
+      return input.teamWorkspaceId ? protectedTeam : personal;
+    }
+  );
   const repository = {
     getUser: vi.fn(async () => user),
     getApiTokenUser: vi.fn(async () => (credential === "token" ? user : null)),
     getSessionUser: vi.fn(async () => user),
     getDeviceCredentialUser,
     listMemoryQuestions,
-    getMemoryQuestion
+    getMemoryQuestion,
+    createFinalMemoryQuestion
   } as unknown as MemorySourceRepository;
   const auth = createAuthHelpers(() => repository, {
     hashSecret: (secret) => secret,
@@ -97,12 +111,14 @@ const fixture = async (
   const headers =
     credential === "browser"
       ? { cookie: "cm_session=browser-session" }
-      : {
-          authorization:
-            credential === "oauth"
-              ? "Bearer koed_mcp_access_history"
-              : "Bearer personal-api-token"
-        };
+      : credential === "device"
+        ? { authorization: "Koed-Device credential:secret" }
+        : {
+            authorization:
+              credential === "oauth"
+                ? "Bearer koed_mcp_access_history"
+                : "Bearer personal-api-token"
+          };
   return {
     app,
     headers,
@@ -113,6 +129,7 @@ const fixture = async (
     expandTeam,
     listMemoryQuestions,
     getMemoryQuestion,
+    createFinalMemoryQuestion,
     resolveDelegatedPrincipal,
     getDeviceCredentialUser,
     revokeMembership: () => {
@@ -133,6 +150,65 @@ const expectProtectedAbsent = (body: string) => {
 };
 
 describe("Memory Question history credential boundaries", () => {
+  it.each(["oauth", "browser", "device"] as const)(
+    "preserves verified Team-read authority on final-question responses for %s",
+    async (credential) => {
+      const test = await fixture(credential, [
+        "koed:memory:read",
+        "koed:team:read",
+        "koed:local-execution"
+      ]);
+      const workspaceId = randomUUID();
+      const response = await test.app.inject({
+        method: "POST",
+        url: "/v1/memory/questions/final",
+        headers: test.headers,
+        payload: {
+          idempotency_key: randomUUID(),
+          origin: "mcp_memory_answer",
+          query: "Team final question",
+          team_workspace_id: workspaceId,
+          status: "answered",
+          answer_markdown: "Team answer"
+        }
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(test.createFinalMemoryQuestion).toHaveBeenCalledWith(
+        { userId: test.user.id, allowTeam: true },
+        expect.objectContaining({ teamWorkspaceId: workspaceId })
+      );
+      if (credential === "device")
+        expect(test.getDeviceCredentialUser).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each(["token", "oauth"] as const)(
+    "creates Personal final questions without granting Team authority for %s",
+    async (credential) => {
+      const test = await fixture(credential, [
+        "koed:memory:read",
+        "koed:local-execution"
+      ]);
+      const response = await test.app.inject({
+        method: "POST",
+        url: "/v1/memory/questions/final",
+        headers: test.headers,
+        payload: {
+          idempotency_key: randomUUID(),
+          origin: "mcp_memory_answer",
+          query: "Personal final question",
+          status: "answered",
+          answer_markdown: "Personal answer"
+        }
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(test.createFinalMemoryQuestion).toHaveBeenCalledWith(
+        { userId: test.user.id, allowTeam: false },
+        expect.objectContaining({ teamWorkspaceId: undefined })
+      );
+    }
+  );
+
   it.each(["Basic unrelated", "Bearer stale-personal-token"])(
     "uses a successful browser session despite an unrelated %s header",
     async (authorization) => {
@@ -255,9 +331,8 @@ describe("Memory Question history credential boundaries", () => {
     }
   );
 
-  it("refreshes delegated consent before history access and does not fall back to a browser session after revocation", async () => {
+  it("revalidates each history request and does not fall back to a browser session after revocation", async () => {
     const test = await fixture("oauth", ["koed:memory:read", "koed:team:read"]);
-    // Authentication succeeds once, but the history-specific fresh lookup fails.
     test.resolveDelegatedPrincipal.mockResolvedValueOnce({
       userId: test.user.id,
       grantId: randomUUID(),
@@ -267,6 +342,15 @@ describe("Memory Question history credential boundaries", () => {
       expiresAt: Date.now() + 60_000
     });
     test.resolveDelegatedPrincipal.mockRejectedValueOnce(new Error("revoked"));
+    const allowed = await test.app.inject({
+      method: "GET",
+      url: `/v1/memory/questions/${test.protectedTeam.id}`,
+      headers: { ...test.headers, cookie: "cm_session=browser-session" }
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().question).toEqual(test.protectedTeam);
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(1);
+    test.getMemoryQuestion.mockClear();
     const denied = await test.app.inject({
       method: "GET",
       url: `/v1/memory/questions/${test.protectedTeam.id}`,
@@ -278,7 +362,7 @@ describe("Memory Question history credential boundaries", () => {
     expect(test.getMemoryQuestion).not.toHaveBeenCalled();
   });
 
-  it("uses the refreshed delegated scopes when Team consent is removed", async () => {
+  it("uses current delegated scopes on the next request when Team consent is removed", async () => {
     const test = await fixture("oauth", ["koed:memory:read", "koed:team:read"]);
     const principal = {
       userId: test.user.id,
@@ -291,13 +375,23 @@ describe("Memory Question history credential boundaries", () => {
     test.resolveDelegatedPrincipal
       .mockResolvedValueOnce(principal)
       .mockResolvedValueOnce({ ...principal, scopes: ["koed:memory:read"] });
+    const before = await test.app.inject({
+      method: "GET",
+      url: "/v1/memory/questions",
+      headers: test.headers
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().questions).toContainEqual(test.protectedTeam);
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(1);
+    test.expandTeam.mockClear();
     const listed = await test.app.inject({
       method: "GET",
       url: "/v1/memory/questions",
       headers: test.headers
     });
     expect(listed.statusCode).toBe(200);
-    expect(test.listMemoryQuestions.mock.calls[0]![0]).toEqual({
+    expect(test.resolveDelegatedPrincipal).toHaveBeenCalledTimes(2);
+    expect(test.listMemoryQuestions.mock.calls[1]![0]).toEqual({
       userId: test.user.id,
       allowTeam: false
     });

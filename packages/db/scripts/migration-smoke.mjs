@@ -72,9 +72,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0045_agent_seal_waiting_marker";
+const expectedLatestMigrationTag = "0046_external_agent_grants";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 45;
+const expectedLatestMigrationIndex = 46;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -730,7 +730,14 @@ const assertLatestSchema = async (pool) => {
     remote_mcp_oauth_grants: [
       ["id", "uuid", "NO"],
       ["user_id", "uuid", "NO"],
-      ["client_id", "uuid", "NO"],
+      ["client_id", "uuid", "YES"],
+      ["provider_issuer", "text", "YES"],
+      ["provider_environment", "text", "YES"],
+      ["provider_registration_id", "text", "YES"],
+      ["provider_user_id", "text", "YES"],
+      ["provider_organization_id", "text", "YES"],
+      ["team_boundary_id", "uuid", "YES"],
+      ["authorization_version", "integer", "NO"],
       ["resource", "text", "NO"],
       ["scopes", "ARRAY", "NO"],
       ["expires_at", "timestamp with time zone", "NO"],
@@ -792,6 +799,9 @@ const assertLatestSchema = async (pool) => {
     );
   }
   const expectedConstraints = [
+    ["remote_mcp_oauth_grants", "remote_mcp_external_registration_unique", "u"],
+    ["remote_mcp_oauth_grants", "remote_mcp_grant_binding_check", "c"],
+    ["remote_mcp_oauth_grants", "remote_mcp_grant_version_check", "c"],
     ["remote_mcp_oauth_clients", "remote_mcp_oauth_clients_pkey", "p"],
     ["remote_mcp_oauth_credentials", "remote_mcp_oauth_credentials_pkey", "p"],
     ["remote_mcp_oauth_grants", "remote_mcp_oauth_grants_pkey", "p"],
