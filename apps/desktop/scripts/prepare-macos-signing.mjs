@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { appendFileSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import console from "node:console";
+import process from "node:process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
