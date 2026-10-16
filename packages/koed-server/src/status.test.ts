@@ -1611,6 +1611,45 @@ describe("status state aggregation", () => {
     expect((await collect({}, 403)).embeddingState).toBeUndefined();
   });
 
+  it("reads embedding state when readiness is degraded but not before the managed runtime starts", async () => {
+    const state = {
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      activity: "unavailable",
+      service: { healthy: false, compatible: false },
+      queues: { memory: null, lcm: null }
+    };
+    const requested: string[] = [];
+    const collect = (environment: NodeJS.ProcessEnv) =>
+      collectKoedServerStatus(
+        {
+          KOED_HOME: tempDir(),
+          KOED_REPO_ROOT: tempDir(),
+          HOME: tempDir(),
+          MEMORY_API_TOKEN: "local-token",
+          WORK_QUEUE_BACKEND: "local",
+          ...environment
+        },
+        {
+          fetch: async (url) => {
+            const path = new URL(String(url)).pathname;
+            requested.push(path);
+            if (path === "/ready")
+              return response(false, 503, healthyReadyPayload);
+            if (path === "/v1/embedding-state")
+              return response(true, 200, state);
+            return response(true, 200, {});
+          },
+          spawnSync: () => spawnResult(""),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+    expect((await collect({})).embeddingState).toEqual(state);
+    requested.length = 0;
+    expect((await collect({ KOED_AUTO_PORTS: "1" })).embeddingState).toBeNull();
+    expect(requested).not.toContain("/v1/embedding-state");
+  });
+
   it("loads persisted User flow assignments into status readiness", async () => {
     const root = tempDir();
     const status = await collectKoedServerStatus(

@@ -2652,12 +2652,13 @@ export const collectKoedServerStatus = async (
   // Automatic ports identify a Desktop-owned local control plane. Without a
   // live runtime for this KOED_HOME, a healthy service on the default port may
   // be an unrelated Koed backend and must not satisfy local readiness.
-  const apiReady =
-    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning
-      ? statusWaitingForManagedRuntime(Boolean(runtime))
-      : await statusFromApiReady(apiUrl, fetcher, {
-          dependencyMode: serverConfig.dependencyMode
-        });
+  const waitingForManagedRuntime =
+    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning;
+  const apiReady = waitingForManagedRuntime
+    ? statusWaitingForManagedRuntime(Boolean(runtime))
+    : await statusFromApiReady(apiUrl, fetcher, {
+        dependencyMode: serverConfig.dependencyMode
+      });
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
@@ -2675,16 +2676,18 @@ export const collectKoedServerStatus = async (
     apiUrl,
     fetcher
   );
-  const embeddingState =
-    apiReady.api.state === "healthy"
-      ? await fetchEmbeddingState(
-          paths,
-          runtimeEnvironment,
-          repoEnv,
-          apiUrl,
-          fetcher
-        )
-      : null;
+  // Readiness can fail because the Embedding Service is degraded, which is
+  // when these diagnostics matter most, so only the managed-runtime wait skips
+  // the request.
+  const embeddingState = !waitingForManagedRuntime
+    ? await fetchEmbeddingState(
+        paths,
+        runtimeEnvironment,
+        repoEnv,
+        apiUrl,
+        fetcher
+      )
+    : null;
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
     runtimeProcessRunning,
