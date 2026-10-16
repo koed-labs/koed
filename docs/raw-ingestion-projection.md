@@ -526,10 +526,13 @@ health, pending embedding counts and estimated tokens, the 15-minute
 throughput, the calibrated capacity, a drain estimate, embedding queue counts,
 the live and historical Projection backlog, and the current historical
 admission decision. Live rows waiting for an open agent turn are reported as
-`waitingForAgentTurnRows`. `koed status` includes this snapshot as
-`embeddingState`, or `null` when the API cannot report it. Koed Desktop shows
-it under **Preferences → Services**. It is not a health gate, so it never
-changes the service health count.
+`waitingForAgentTurnRows`. The counts are deployment-wide, so the route
+returns 403 when the deployment has more than one User. `activity` is
+`unknown` when backlog telemetry is missing and no queue shows work.
+`koed status` includes this snapshot as `embeddingState`, `null` when the API
+cannot report it, or leaves it out when the deployment does not offer it. Koed
+Desktop shows it under **Preferences → Services** only when it is offered. It
+is not a health gate, so it never changes the service health count.
 
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.

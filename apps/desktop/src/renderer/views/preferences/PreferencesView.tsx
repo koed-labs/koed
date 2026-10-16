@@ -1162,8 +1162,8 @@ function AdvancedSection({
           </dl>
         )}
       </details>
-      {status ? (
-        <EmbeddingStateDetails state={status.embeddingState ?? null} />
+      {status && status.embeddingState !== undefined ? (
+        <EmbeddingStateDetails state={status.embeddingState} />
       ) : null}
       {snapshot.error || actionError ? (
         <p className="koed-diagnostic-error" role="alert">

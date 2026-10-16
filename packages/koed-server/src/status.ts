@@ -965,13 +965,15 @@ const fetchEmbeddingState = async (
   repoEnv: Record<string, string>,
   apiUrl: string,
   fetcher: typeof globalThis.fetch
-): Promise<EmbeddingStateSnapshot | null> => {
+): Promise<EmbeddingStateSnapshot | null | undefined> => {
   const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
   if (!token) return null;
   try {
     const response = await fetcher(new URL("/v1/embedding-state", apiUrl), {
       headers: { authorization: `Bearer ${token.token}` }
     });
+    // 404 and 403 mean this deployment does not offer embedding state.
+    if (response.status === 404 || response.status === 403) return undefined;
     if (!response.ok) return null;
     const body = JSON.parse(
       await response.text()

@@ -1,6 +1,6 @@
 import type { HistoricalAdmissionDecision } from "./historical-admission.js";
 
-export type EmbeddingActivity = "unavailable" | "working" | "idle";
+export type EmbeddingActivity = "unavailable" | "working" | "idle" | "unknown";
 
 export interface EmbeddingQueueCounts {
   waiting: number;
@@ -72,9 +72,13 @@ export const deriveEmbeddingActivity = (
   const pending = snapshot.backlog
     ? snapshot.backlog.pendingMemoryEvents + snapshot.backlog.pendingMemoryNodes
     : 0;
-  return pending > 0 ||
+  if (
+    pending > 0 ||
     queueBusy(snapshot.queues.memory) ||
     queueBusy(snapshot.queues.lcm)
-    ? "working"
-    : "idle";
+  ) {
+    return "working";
+  }
+  // Without backlog telemetry, pending work cannot be ruled out.
+  return snapshot.backlog ? "idle" : "unknown";
 };

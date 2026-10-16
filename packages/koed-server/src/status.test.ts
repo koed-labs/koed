@@ -1570,8 +1570,8 @@ describe("status state aggregation", () => {
     expect(JSON.stringify(status)).not.toContain("local-token");
   });
 
-  it("includes embedding state and drops malformed payloads", async () => {
-    const collect = (embeddingStateBody: unknown) =>
+  it("includes embedding state, drops malformed payloads, and omits unsupported state", async () => {
+    const collect = (embeddingStateBody: unknown, status = 200) =>
       collectKoedServerStatus(
         {
           KOED_HOME: tempDir(),
@@ -1589,7 +1589,7 @@ describe("status state aggregation", () => {
               expect(new Headers(init?.headers).get("authorization")).toBe(
                 "Bearer local-token"
               );
-              return response(true, 200, embeddingStateBody);
+              return response(status === 200, status, embeddingStateBody);
             }
             return response(true, 200, {});
           },
@@ -1606,6 +1606,9 @@ describe("status state aggregation", () => {
 
     expect((await collect(state)).embeddingState).toEqual(state);
     expect((await collect({ activity: 3 })).embeddingState).toBeNull();
+    expect((await collect({}, 500)).embeddingState).toBeNull();
+    expect((await collect({}, 404)).embeddingState).toBeUndefined();
+    expect((await collect({}, 403)).embeddingState).toBeUndefined();
   });
 
   it("loads persisted User flow assignments into status readiness", async () => {

@@ -1421,8 +1421,14 @@ export const registerOperationalRoutes = (
         });
       }
       await auth.authenticate(request);
+      const repository = requireRepository();
+      // Counts are deployment-wide, so only a single-User deployment may read
+      // them without exposing activity derived from another User's memory.
+      if ((await repository.countUsers()) > 1) {
+        throw forbidden("Embedding state requires a single-User deployment");
+      }
       return collectEmbeddingState({
-        repository: requireRepository(),
+        repository,
         embeddingCapacityRepository,
         embeddingQueue,
         lcmEmbeddingQueue,

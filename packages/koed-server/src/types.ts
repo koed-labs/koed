@@ -109,7 +109,10 @@ export interface KoedServerStatus {
     KoedAiClientFlowReadiness
   >;
   lcmSummaryService: KoedServerComponentStatus;
-  /** Content-free Diagnostic Status; null when the API could not report it. */
+  /**
+   * Content-free Diagnostic Status; null when the API could not report it,
+   * omitted when the deployment does not offer it.
+   */
   embeddingState?: EmbeddingStateSnapshot | null;
   deviceIdentity: KoedServerComponentStatus & {
     health: string;

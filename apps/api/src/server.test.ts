@@ -10964,6 +10964,37 @@ describe("account and access flows", () => {
     });
   });
 
+  it("denies embedding state when the deployment has more than one User", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "embedding-owner@example.com", password: "password123" }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "embedding-other@example.com", password: "password123" }
+    });
+    const token = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(owner)),
+      payload: { name: "Embedding State" }
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/embedding-state",
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(token).token}`
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(403);
+  });
+
   it("keeps embedding state off hosted deployment profiles", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "private-vps";
     const app = await buildServer({ repository: createFakeRepository() });

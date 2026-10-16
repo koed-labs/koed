@@ -44,6 +44,7 @@ const summaryLabel = (state: EmbeddingStateSnapshot | null): string => {
   if (!state) return "Embedding state unavailable";
   if (state.activity === "unavailable") return "Embedding is unavailable";
   if (state.activity === "idle") return "Embedding is up to date";
+  if (state.activity === "unknown") return "Embedding progress unknown";
   const pending = pendingItems(state);
   return pending > 0
     ? `Embedding ${plural(pending, "item", "items")}`
@@ -90,7 +91,7 @@ export function EmbeddingStateDetails({
 }) {
   const summaryState = !state
     ? "needs_attention"
-    : state.activity === "unavailable"
+    : state.activity === "unavailable" || state.activity === "unknown"
       ? "needs_attention"
       : state.activity === "working"
         ? "working"
@@ -157,6 +158,13 @@ export function EmbeddingStateDetails({
                   ? formatDuration(state.drainEstimate.upperSeconds)
                   : `${formatDuration(state.drainEstimate.lowerSeconds)} – ${formatDuration(state.drainEstimate.upperSeconds)}`
               }
+            />
+          ) : null}
+          {state.throughput ? (
+            <Row
+              detail={`${count(state.throughput.eventsPerMinute)} events/min · last ${state.throughput.windowMinutes} min${state.throughput.retries > 0 ? ` · ${plural(state.throughput.retries, "retry", "retries")}` : ""}${state.throughput.failures > 0 ? ` · ${plural(state.throughput.failures, "failure", "failures")}` : ""}`}
+              label="Throughput"
+              value={`${count(Math.round(state.throughput.measuredTokensPerSecond))} tokens/s`}
             />
           ) : null}
           <Row label="Memory queue" value={queueLabel(state.queues.memory)} />

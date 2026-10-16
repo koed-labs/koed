@@ -1170,6 +1170,8 @@ describe("PreferencesView", () => {
       "Paused: live capture has priority"
     );
     expect(container.textContent).toContain("900 rows · 2.0 MB pending");
+    expect(container.textContent).toContain("180 tokens/s");
+    expect(container.textContent).toContain("40 events/min · last 15 min");
     expect(embeddingServiceValue(container)).toBe("Processing");
   });
 
@@ -1202,6 +1204,36 @@ describe("PreferencesView", () => {
       expect(container.textContent).toContain("Embedding state unavailable")
     );
     expect(container.textContent).toContain("All services are healthy");
+  });
+
+  it("does not claim embedding is up to date without backlog telemetry", async () => {
+    const status = advancedStatus({
+      embeddingState: {
+        ...workingEmbeddingState,
+        activity: "unknown",
+        backlog: null
+      }
+    });
+    window.koedDesktop = { invoke: vi.fn(async () => status) } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Embedding progress unknown")
+    );
+    expect(container.textContent).not.toContain("Embedding is up to date");
+  });
+
+  it("hides embedding state when the deployment does not offer it", async () => {
+    window.koedDesktop = {
+      invoke: vi.fn(async () => advancedStatus())
+    } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("All services are healthy")
+    );
+    expect(container.textContent).not.toContain("Embedding state unavailable");
+    expect(
+      container.querySelector('dl[aria-label="Embedding state"]')
+    ).toBeNull();
   });
 
   it("shows the Privacy Filter fault counted by the health indicator", async () => {
