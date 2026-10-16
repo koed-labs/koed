@@ -4,6 +4,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -232,6 +234,22 @@ describe("koed-server CLI entrypoint detection", () => {
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
+  });
+
+  it("recognizes argv paths that are symlinks to the loaded CLI", () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), "koed-cli-entrypoint-"));
+    const cliPath = resolve(tempDir, "cli.js");
+    const symlinkPath = resolve(tempDir, "cli-symlink.js");
+    try {
+      writeFileSync(cliPath, "");
+      symlinkSync(cliPath, symlinkPath);
+
+      expect(
+        isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, symlinkPath)
+      ).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("explicitly exits only the packaged long-running supervisor", () => {
@@ -1836,29 +1854,36 @@ describe("JSON command output", () => {
   it.each([
     ["--deferred-recall", "1"],
     ["--blocking-recall", "0"]
-  ])("passes %s to packaged setup", async (flag, value) => {
-    const stdout = writer();
-    let configuredValue: string | undefined;
+  ])(
+    "accepts legacy %s and explains per-call delivery",
+    async (flag, value) => {
+      const stdout = writer();
+      const stderr = writer();
+      let configuredValue: string | undefined;
 
-    const exitCode = await runKoedServerCli(
-      ["setup", "codex", flag, "--json"],
-      {
-        stdout: stdout.stream,
-        setupCodex: async (options = {}) => {
-          configuredValue = options.environment?.KOED_CODEX_STOP_DELIVERY;
-          return {
-            ok: true,
-            state: "healthy",
-            koedHome: "/tmp/koed",
-            apiUrl: "http://localhost:3300",
-            checkedAt: "2026-01-01T00:00:00.000Z",
-            command: "node scripts/clients-bootstrap.mjs"
-          };
+      const exitCode = await runKoedServerCli(
+        ["setup", "codex", flag, "--json"],
+        {
+          stdout: stdout.stream,
+          stderr: stderr.stream,
+          setupCodex: async (options = {}) => {
+            configuredValue = options.environment?.KOED_CODEX_STOP_DELIVERY;
+            return {
+              ok: true,
+              state: "healthy",
+              koedHome: "/tmp/koed",
+              apiUrl: "http://localhost:3300",
+              checkedAt: "2026-01-01T00:00:00.000Z",
+              command: "node scripts/clients-bootstrap.mjs"
+            };
+          }
         }
-      }
-    );
+      );
 
-    expect(exitCode).toBe(0);
-    expect(configuredValue).toBe(value);
-  });
+      expect(exitCode).toBe(0);
+      expect(configuredValue).toBe(value);
+      expect(stderr.text()).toContain("deprecated");
+      expect(JSON.parse(stdout.text()) as unknown).toMatchObject({ ok: true });
+    }
+  );
 });

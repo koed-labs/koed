@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { canonicalArtifactBytes } from "./artifact-canonical-json.mjs";
 import { createGunzip } from "node:zlib";
 import {
   chmodSync,
@@ -259,20 +260,6 @@ const normalizeSha256 = (value: string): string => {
     throw new Error("Package SHA-256 must be 64 hex characters.");
   }
   return normalized;
-};
-
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 };
 
 const validatePackageVersion = (version: string): string => {
@@ -702,7 +689,7 @@ const verifyProvenanceSignature = ({
     throw new Error("Package provenance signature algorithm must be ed25519.");
   }
   const key = createPublicKey(publicKey);
-  const payload = Buffer.from(canonicalJson(provenance.statement), "utf8");
+  const payload = canonicalArtifactBytes(provenance.statement);
   const ok = verify(null, payload, key, Buffer.from(signature, "base64"));
   if (!ok) {
     throw new Error("Package provenance signature verification failed.");

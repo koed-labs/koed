@@ -18,18 +18,9 @@ import {
   planReleasePromotion
 } from "./release-promotion-lib.mjs";
 
-export const canonicalReleaseJson = (value) => {
-  if (Array.isArray(value))
-    return `[${value.map(canonicalReleaseJson).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) => `${JSON.stringify(key)}:${canonicalReleaseJson(value[key])}`
-      )
-      .join(",")}}`;
-  return JSON.stringify(value);
-};
+import { canonicalArtifactJson } from "../packages/koed-server/src/artifact-canonical-json.mjs";
+
+export const canonicalReleaseJson = canonicalArtifactJson;
 
 export const verifyReleaseSignatures = (artifacts, trustRoots) => {
   if (

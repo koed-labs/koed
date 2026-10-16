@@ -13,7 +13,6 @@ export interface KoedLocalPorts {
   embedding: string;
   privacy: string;
   llamaEmbedding: string;
-  llamaReranker: string;
 }
 
 const DEFAULT_PORTS: KoedLocalPorts = {
@@ -21,8 +20,7 @@ const DEFAULT_PORTS: KoedLocalPorts = {
   postgres: "45432",
   embedding: "43800",
   privacy: "48092",
-  llamaEmbedding: "18080",
-  llamaReranker: "19080"
+  llamaEmbedding: "18080"
 };
 
 const localPortLeaseSchemaVersion = 1;
@@ -54,10 +52,6 @@ const ENV_KEYS = {
   llamaEmbedding: [
     "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
     "LLAMA_EMBEDDING_SERVER_PORT"
-  ],
-  llamaReranker: [
-    "EMBEDDING_LLAMA_RERANKER_SERVER_PORT",
-    "LLAMA_RERANKER_SERVER_PORT"
   ]
 } as const satisfies Record<keyof KoedLocalPorts, readonly string[]>;
 
@@ -192,9 +186,6 @@ export const readPersistedLocalPorts = (
         : {}),
       ...(validPort(parsed.llamaEmbedding)
         ? { llamaEmbedding: validPort(parsed.llamaEmbedding)! }
-        : {}),
-      ...(validPort(parsed.llamaReranker)
-        ? { llamaReranker: validPort(parsed.llamaReranker)! }
         : {})
     };
   } catch {
@@ -236,10 +227,6 @@ export const applyPersistedLocalPorts = (
     ...(persisted.llamaEmbedding &&
     !ENV_KEYS.llamaEmbedding.some((key) => trim(environment[key]))
       ? { EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: persisted.llamaEmbedding }
-      : {}),
-    ...(persisted.llamaReranker &&
-    !ENV_KEYS.llamaReranker.some((key) => trim(environment[key]))
-      ? { EMBEDDING_LLAMA_RERANKER_SERVER_PORT: persisted.llamaReranker }
       : {})
   };
 };
@@ -313,8 +300,7 @@ export const allocateAndPersistLocalPorts = async (
       POSTGRES_HOST_PORT: allocated.postgres,
       EMBEDDING_SERVICE_HOST_PORT: allocated.embedding,
       PRIVACY_SERVICE_PORT: allocated.privacy,
-      EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: allocated.llamaEmbedding,
-      EMBEDDING_LLAMA_RERANKER_SERVER_PORT: allocated.llamaReranker
+      EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: allocated.llamaEmbedding
     };
   } finally {
     await release();

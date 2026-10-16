@@ -14,6 +14,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
   query: sdk.query
 }));
+import { countTokensForModel } from "@koed/core";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
@@ -122,7 +123,9 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "scanOnlyNotFound"
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
+    capturePromptsPath?: string;
     requiredPromptSnippets?: string[];
+    retryPromptSnippets?: string[];
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -144,6 +147,8 @@ import readline from "node:readline";
 const useTools = ${options.useTools === false ? "false" : "true"};
 const mode = ${JSON.stringify(options.mode ?? "happy")};
 const requiredPromptSnippets = ${JSON.stringify(options.requiredPromptSnippets ?? [])};
+const retryPromptSnippets = ${JSON.stringify(options.retryPromptSnippets ?? [])};
+const capturePromptsPath = ${JSON.stringify(options.capturePromptsPath ?? null)};
 const attemptFile = ${JSON.stringify(attemptFile)};
 const answer = ${JSON.stringify(
       options.answer ?? {
@@ -203,7 +208,8 @@ lineReader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const promptText = message.params?.input?.[0]?.text ?? "";
-    for (const snippet of requiredPromptSnippets) {
+    if (capturePromptsPath) fs.appendFileSync(capturePromptsPath, JSON.stringify(promptText) + "\\n");
+    for (const snippet of [...requiredPromptSnippets, ...(attempt > 1 ? retryPromptSnippets : [])]) {
       if (!promptText.includes(snippet)) {
         console.error("missing prompt snippet: " + snippet);
         process.exit(67);
@@ -284,7 +290,7 @@ lineReader.on("line", (line) => {
       process.exit(64);
     }
     if (mode === "invalidThenValid" && attempt === 1) {
-      sendFinal("This is not JSON");
+      sendFinal({ ...answer, relevant_memory_found: false });
       return;
     }
     sendFinal(answer);
@@ -323,6 +329,88 @@ const resolveMemoryAnswerWorkerTestConfig = (
     KOED_HOME: path.join(directory, "koed-home"),
     CODEX_HOME: path.join(directory, "codex-home")
   });
+
+const promptBudgetRegressionModel = "gpt-5.6-luna";
+
+const createPromptBudgetRegressionClient = (): MemoryAnswerRetrievalClient => ({
+  async search(input) {
+    if (input.retrieval_stage === "score_scan") {
+      return {
+        retrieval: {
+          stages: [
+            { name: "leaf_search", countAboveThreshold: 2, maxAllowed: 2 }
+          ]
+        }
+      };
+    }
+    return {
+      hits: ["A", "B"].map((id) => ({
+        nodeId: `node-${id}`,
+        sourceId: `event-${id}`,
+        visibility: "personal",
+        summaryText: `KOE144_DYNAMIC_TOOL_EVIDENCE PROMPT_BUDGET_EVIDENCE_${id} ${"deployment evidence ".repeat(100)}`,
+        citation: { nodeId: `node-${id}`, visibility: "personal" }
+      })),
+      retrieval: { stage: input.retrieval_stage }
+    };
+  },
+  async expand() {
+    throw new Error("expand should not be required for direct evidence");
+  }
+});
+
+const runPromptBudgetRegression = (
+  directory: string,
+  maxPromptTokens: number,
+  capturePromptsPath: string
+) =>
+  answerWithMemoryWorker(
+    {
+      evidenceBundle: {
+        query: "What deployment did we choose?",
+        evidence: [],
+        retrieval: { mode: "app_server_dynamic_tools" }
+      }
+    },
+    {
+      client: createPromptBudgetRegressionClient(),
+      retrievalScope: "personal",
+      searchDomain: "project",
+      projectId: "workspace-1",
+      responseDetail: "internal",
+      config: resolveMemoryAnswerWorkerTestConfig(directory, {
+        MEMORY_ANSWER_PROVIDER: "codex",
+        MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
+        MEMORY_ANSWER_MAX_ATTEMPTS: "2",
+        MEMORY_ANSWER_MAX_PROMPT_TOKENS: String(maxPromptTokens),
+        MEMORY_CODEX_APP_SERVER_BINARY: writeFakeDynamicMemoryAnswerAppServer(
+          directory,
+          {
+            mode: "invalidThenValid",
+            answer: {
+              ...answerObject(
+                "Available evidence suggests Docker, but does not confirm the final deployment choice.",
+                "insufficient"
+              ),
+              relevant_memory_found: true,
+              evidence: [
+                {
+                  evidence_index: 0,
+                  relevance: "partial deployment evidence",
+                  support: "KOE144_DYNAMIC_TOOL_EVIDENCE"
+                }
+              ],
+              missing_evidence: ["confirmation of the final deployment choice"]
+            },
+            capturePromptsPath,
+            retryPromptSnippets: [
+              "The previous answer failed validation. Correct this before finishing:"
+            ]
+          }
+        )
+      })
+    }
+  );
 
 describe("memory answer worker", () => {
   it.each([
@@ -744,6 +832,22 @@ process.stdin.once("data", () => {
         ...insufficient,
         evidence: [{ evidence_index: 0 }]
       })
+    ).toThrow(/insufficient requires/);
+  });
+
+  it("preserves relevant partial evidence in insufficient answers", () => {
+    const answer = {
+      ...answerObject("A partial supported answer", "found"),
+      memory_status: "insufficient",
+      missing: ["the remaining decision"]
+    };
+    expect(parseStructuredMemoryAnswer(answer)).toMatchObject({
+      memory_status: "insufficient",
+      relevant_memory_found: true,
+      evidence: [{ evidence_index: 0 }]
+    });
+    expect(() =>
+      parseStructuredMemoryAnswer({ ...answer, evidence: [] })
     ).toThrow(/insufficient requires/);
   });
 
@@ -1239,6 +1343,204 @@ process.stdin.once("data", () => {
     }
   });
 
+  it("retains selected rollout facts and resolves a deduplicated expansion in the final bundle", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        mode: "expandSuccess",
+        answer: {
+          ...answerObject(
+            "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+          ),
+          evidence: [
+            {
+              source_type: "memory_node",
+              source_id: "summary-parent-1",
+              source_chunk_index: 0,
+              node_id: "node-1",
+              visibility: "personal"
+            },
+            {
+              source_type: "memory_event",
+              source_id: "event-child-1",
+              source_chunk_index: 4,
+              node_id: "node-1:source:event-child-1:4",
+              visibility: "personal",
+              relevance: "grounded expanded source",
+              support: "GROUNDED_CHILD_EVIDENCE"
+            }
+          ]
+        }
+      });
+      const expansions: string[] = [];
+      const client: MemoryAnswerRetrievalClient = {
+        async search(input) {
+          if (input.retrieval_stage === "score_scan") {
+            return {
+              retrieval: {
+                stages: [
+                  {
+                    name: "leaf_search",
+                    countAboveThreshold: 1,
+                    maxAllowed: 1
+                  }
+                ]
+              }
+            };
+          }
+          return {
+            hits: [
+              {
+                nodeId: "node-1",
+                sourceType: "memory_node",
+                sourceId: "summary-parent-1",
+                citation: {
+                  nodeId: "node-1",
+                  sourceType: "memory_node",
+                  sourceId: "summary-parent-1",
+                  sourceChunkIndex: 0,
+                  visibility: "personal"
+                },
+                sourceChunkIndex: 0,
+                visibility: "personal",
+                summaryText:
+                  "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+              },
+              {
+                nodeId: "searched-event-child-1",
+                sourceType: "memory_event",
+                sourceId: "event-child-1",
+                sourceChunkIndex: 4,
+                visibility: "personal",
+                summaryText:
+                  "GROUNDED_CHILD_EVIDENCE: restore backup and replay 120 items with zero missing IDs.",
+                citation: {
+                  nodeId: "searched-event-child-1",
+                  sourceType: "memory_event",
+                  sourceId: "event-child-1",
+                  sourceChunkIndex: 4,
+                  visibility: "personal"
+                }
+              }
+            ],
+            retrieval: { stage: input.retrieval_stage }
+          };
+        },
+        async expand(nodeId) {
+          expansions.push(nodeId);
+          return {
+            expanded: {
+              nodeId,
+              visibility: "personal",
+              sourceItems: [
+                {
+                  sourceId: "event-child-1",
+                  sourceChunkIndex: 4,
+                  text: "GROUNDED_CHILD_EVIDENCE: restore backup and replay 120 items with zero missing IDs."
+                }
+              ]
+            }
+          };
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What enables the deployment sentinel?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            MEMORY_ANSWER_MAX_EXPANSIONS: "1"
+          })
+        }
+      );
+
+      expect(expansions).toEqual(["node-1"]);
+      expect(response.markdown).toContain("90 seconds");
+      expect(response.localMemoryWorker).toMatchObject({
+        usedFallback: false,
+        memoryStatus: "found",
+        expandCount: 1
+      });
+      expect(response.evidence).toHaveLength(2);
+      expect(response.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sourceId: "summary-parent-1",
+            summaryText:
+              "Restore backup; replay exactly 120 items with zero missing IDs within 90 seconds; confirm persisted byte cursor equals final source byte offset; obtain Store owner and Capture owner approval; then move traffic."
+          }),
+          expect.objectContaining({
+            sourceId: "event-child-1",
+            sourceChunkIndex: 4,
+            parentNodeIds: ["node-1"]
+          })
+        ])
+      );
+      expect(response.citations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sourceId: "summary-parent-1" }),
+          expect.objectContaining({
+            sourceId: "event-child-1",
+            sourceChunkIndex: 4,
+            nodeId: "searched-event-child-1"
+          })
+        ])
+      );
+      expect(response.evidenceBundle?.retrieval).toMatchObject({
+        expansions: [{ nodeId: "node-1" }],
+        trace: {
+          budgets: { consumed: { expansions: 1 } }
+        }
+      });
+      expect(response.evidence?.[0]).not.toHaveProperty("observedReferences");
+      expect(response.citations?.[1]).not.toHaveProperty("observedReferences");
+
+      const capped = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What enables the deployment sentinel?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          projectId: "workspace-1",
+          responseDetail: "internal",
+          limit: 1,
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            MEMORY_ANSWER_MAX_EXPANSIONS: "1"
+          })
+        }
+      );
+      expect(capped.localMemoryWorker.memoryStatus).toBe("insufficient");
+      expect(capped.localMemoryWorker.errorMessage).toContain(
+        "Memory answer budget exhausted: evidence_items"
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("bounds a worker-refined semantic search and narrows exact anchors", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
@@ -1548,11 +1850,14 @@ process.stdin.once("data", () => {
     }
   });
 
-  it("retries malformed structured worker output before falling back", async () => {
+  it("retries semantically invalid Codex output with validation feedback", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
-        mode: "invalidThenValid"
+        mode: "invalidThenValid",
+        retryPromptSnippets: [
+          "The previous answer failed validation. Correct this before finishing:"
+        ]
       });
       const searches: Record<string, unknown>[] = [];
       const client: MemoryAnswerRetrievalClient = {
@@ -1616,13 +1921,16 @@ process.stdin.once("data", () => {
       expect(response.localMemoryWorker.usedFallback).toBe(false);
       expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
       expect(
+        response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+      ).toContain("relevant_memory_found");
+      expect(
         response.localMemoryWorker.appServerExecutions?.map(
           (execution) => execution.status
         )
       ).toEqual(["failed", "succeeded"]);
       expect(
         response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
-      ).toContain("JSON");
+      ).toContain("relevant_memory_found");
       const retryTrace = (
         response.evidenceBundle?.retrieval as {
           trace?: {
@@ -1652,6 +1960,150 @@ process.stdin.once("data", () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("trims evidence to fit retry validation feedback within remaining prompt budget", async () => {
+    const calibrationDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-budget-calibration-")
+    );
+    const constrainedDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-budget-constrained-")
+    );
+    try {
+      const calibrationPath = path.join(calibrationDirectory, "prompts.jsonl");
+      const calibration = await runPromptBudgetRegression(
+        calibrationDirectory,
+        24_000,
+        calibrationPath
+      );
+      expect(calibration.localMemoryWorker.usedFallback).toBe(false);
+      const calibrationPrompts = fs
+        .readFileSync(calibrationPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      expect(calibrationPrompts).toHaveLength(2);
+
+      const retryPrompt = calibrationPrompts[1] ?? "";
+      const feedbackMarker =
+        "\nThe previous answer failed validation. Correct this before finishing:\n";
+      const feedbackOffset = retryPrompt.indexOf(feedbackMarker);
+      expect(feedbackOffset).toBeGreaterThan(0);
+      const baseRetryPrompt = retryPrompt.slice(0, feedbackOffset);
+      const firstPromptTokens = countTokensForModel(
+        calibrationPrompts[0] ?? "",
+        { model: promptBudgetRegressionModel }
+      ).tokens;
+      const retryTokens = countTokensForModel(retryPrompt, {
+        model: promptBudgetRegressionModel
+      }).tokens;
+      const constrainedBudget = firstPromptTokens + retryTokens - 5;
+      const constrainedPath = path.join(constrainedDirectory, "prompts.jsonl");
+      const constrained = await runPromptBudgetRegression(
+        constrainedDirectory,
+        constrainedBudget,
+        constrainedPath
+      );
+
+      const constrainedPrompts = fs
+        .readFileSync(constrainedPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      const constrainedPromptTokenCounts = constrainedPrompts.map(
+        (prompt) =>
+          countTokensForModel(prompt, { model: promptBudgetRegressionModel })
+            .tokens
+      );
+      expect(
+        constrained.localMemoryWorker.usedFallback,
+        `Worker failure: ${constrained.localMemoryWorker.errorMessage}; prompt token counts: ${constrainedPromptTokenCounts.join(", ")}`
+      ).toBe(false);
+      expect(constrainedPrompts).toHaveLength(2);
+      const remainingPromptTokens =
+        constrainedBudget - (constrainedPromptTokenCounts[0] ?? 0);
+      expect(remainingPromptTokens).toBeLessThan(retryTokens);
+      expect(constrainedPromptTokenCounts[1] ?? 0).toBeLessThanOrEqual(
+        remainingPromptTokens
+      );
+      const constrainedRetry = constrainedPrompts[1] ?? "";
+      const retainedA = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_A");
+      const retainedB = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_B");
+      expect(retainedA).not.toBe(retainedB);
+      expect(constrainedRetry).toContain(feedbackMarker.trim());
+      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_A");
+      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_B");
+    } finally {
+      fs.rmSync(calibrationDirectory, { recursive: true, force: true });
+      fs.rmSync(constrainedDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("retries semantically invalid Claude output with shared validation feedback", async () => {
+    const prompts: string[] = [];
+    let attempt = 0;
+    sdk.query.mockImplementation(({ prompt }: { prompt?: string }) => {
+      prompts.push(typeof prompt === "string" ? prompt : "");
+      attempt += 1;
+      const structuredOutput =
+        attempt === 1
+          ? {
+              ...answerObject("Unsupported answer"),
+              relevant_memory_found: false
+            }
+          : {
+              ...answerObject(
+                "No complete evidence is available.",
+                "pending_summary"
+              ),
+              missing: ["a completed summary"]
+            };
+      async function* resultStream(): AsyncGenerator<SDKMessage, void> {
+        yield {
+          type: "result",
+          subtype: "success",
+          structured_output: structuredOutput,
+          result: JSON.stringify(structuredOutput),
+          modelUsage: {},
+          usage: {}
+        } as SDKMessage;
+      }
+      return resultStream() as Query;
+    });
+
+    const response = await answerWithMemoryWorker(
+      { evidenceBundle: { query: "What is available?", evidence: [] } },
+      {
+        client: {
+          async search() {
+            throw new Error("pending summary should not retrieve");
+          },
+          async expand() {
+            throw new Error("pending summary should not expand");
+          }
+        },
+        responseDetail: "internal",
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({}),
+          provider: "claude",
+          aiClientInstanceId: "claude.work",
+          executablePath: process.execPath,
+          maxAttempts: 2
+        }
+      }
+    );
+
+    expect(response.localMemoryWorker.usedFallback).toBe(false);
+    expect(response.localMemoryWorker.memoryStatus).toBe("pending_summary");
+    expect(attempt).toBe(2);
+    expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
+    expect(
+      response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+    ).toContain("relevant_memory_found");
+    expect(prompts[1]).toContain(
+      "The previous answer failed validation. Correct this before finishing:"
+    );
+    expect(prompts[1]).toContain("relevant_memory_found");
   });
 
   it("returns insufficient when the request-wide prompt-token budget cannot start an attempt", async () => {
@@ -1946,7 +2398,7 @@ process.stdin.once("data", () => {
         expect(response.localMemoryWorker.usedFallback).toBe(true);
         if (responseDetail === "internal") {
           expect(response.localMemoryWorker.errorMessage).toContain(
-            "insufficient requires relevant_memory_found=false"
+            "insufficient requires relevant_memory_found to match selected partial evidence"
           );
         }
         expect(response.markdown).toBe(
@@ -1972,7 +2424,7 @@ process.stdin.once("data", () => {
     }
   );
 
-  it("rejects clean insufficient answers without selected partial evidence", async () => {
+  it("accepts insufficient answers that identify missing evidence after clean retrieval", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const response = await answerWithMemoryWorker(
@@ -2008,10 +2460,8 @@ process.stdin.once("data", () => {
         }
       );
 
-      expect(response.localMemoryWorker.usedFallback).toBe(true);
-      expect(response.localMemoryWorker.errorMessage).toContain(
-        "returned insufficient after complete retrieval without selected partial evidence"
-      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.structuredAnswer?.memory_status).toBe("insufficient");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -2859,6 +3309,187 @@ process.stdin.once("data", () => {
 
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ canonicalSourceIdentity });
+  });
+
+  it("resolves observed searched and expanded identities after canonical merging", () => {
+    const searched = {
+      nodeId: "searched-child",
+      sourceType: "memory_node",
+      sourceId: "child",
+      sourceChunkIndex: 7,
+      visibility: "personal",
+      summaryText: "Selected child",
+      citation: {
+        nodeId: "searched-child",
+        sourceType: "memory_node",
+        sourceId: "child",
+        sourceChunkIndex: 7
+      }
+    };
+    const [expanded] = evidenceFromExpansion({
+      expanded: {
+        nodeId: "parent",
+        visibility: "personal",
+        sourceItems: [
+          {
+            kind: "lcm_child",
+            sourceId: "child",
+            position: 7,
+            canonicalSourceIdentity: {
+              sourceType: "memory_node",
+              sourceId: "child",
+              sourceChunkIndex: 7
+            },
+            text: "Selected child"
+          }
+        ]
+      }
+    });
+    const merged = mergeMemoryAnswerCandidateLists(
+      [searched],
+      [{ query: "child", stage: "expanded_source", hits: [expanded] }]
+    );
+    for (const node_id of [
+      searched.nodeId,
+      (expanded as { nodeId: string }).nodeId
+    ]) {
+      const selected = evidenceSelectedByAnswer(merged, {
+        ...answerObject("Selected child"),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: "child",
+            source_chunk_index: 7,
+            node_id,
+            visibility: "personal"
+          }
+        ]
+      } as StructuredMemoryAnswer);
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({
+        sourceId: "child",
+        sourceChunkIndex: 7
+      });
+    }
+  });
+
+  it("rejects ambiguous and conflicting observed references", () => {
+    const searched = {
+      nodeId: "searched",
+      sourceType: "memory_node",
+      sourceId: "child",
+      sourceChunkIndex: 7,
+      visibility: "personal"
+    };
+    const expanded = {
+      ...searched,
+      nodeId: "expanded",
+      parentNodeIds: ["parent"]
+    };
+    const merged = mergeMemoryAnswerCandidateLists(
+      [searched],
+      [{ query: "q", stage: "expanded_source", hits: [expanded] }]
+    );
+    const selection = {
+      source_type: "memory_node",
+      source_id: "child",
+      source_chunk_index: 7,
+      node_id: "searched",
+      visibility: "personal"
+    };
+    for (const change of [
+      { source_chunk_index: 0 },
+      { source_id: "unauthorized" },
+      { node_id: "unobserved" },
+      { node_id: "parent" },
+      { visibility: "team" }
+    ]) {
+      expect(() =>
+        evidenceSelectedByAnswer(merged, {
+          ...answerObject("child"),
+          evidence: [{ ...selection, ...change }]
+        } as StructuredMemoryAnswer)
+      ).toThrow("without resolvable supporting evidence");
+    }
+    expect(
+      evidenceSelectedByAnswer([searched, { ...searched }], {
+        ...answerObject("child"),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: "child",
+            source_chunk_index: 7
+          }
+        ]
+      } as StructuredMemoryAnswer)
+    ).toEqual([searched]);
+    expect(() =>
+      evidenceSelectedByAnswer(
+        [searched, { ...searched, visibility: "team" }],
+        {
+          ...answerObject("child"),
+          evidence: [
+            {
+              source_type: "memory_node",
+              source_id: "child",
+              source_chunk_index: 7
+            }
+          ]
+        } as StructuredMemoryAnswer
+      )
+    ).toThrow("without resolvable supporting evidence");
+  });
+
+  it("keeps a complete selected rollout parent alongside partial children", () => {
+    const summaryText =
+      "Restore backup; replay 120 items with zero missing IDs within 90 seconds; persisted byte cursor equals final source offset; Store owner and Capture owner approve; then move traffic.";
+    const parent = {
+      nodeId: "rollout",
+      sourceType: "memory_node",
+      sourceId: "rollout",
+      sourceChunkIndex: 0,
+      summaryText,
+      visibility: "personal",
+      corroborationGroupId: "rollout"
+    };
+    const children = evidenceFromExpansion({
+      expanded: {
+        nodeId: "rollout",
+        visibility: "personal",
+        sourceItems: [
+          {
+            sourceId: "restore",
+            position: 4,
+            text: "Restore backup and replay 120 items with zero missing IDs."
+          },
+          {
+            sourceId: "traffic",
+            position: 8,
+            text: "Move traffic after approvals."
+          }
+        ]
+      }
+    });
+    const evidence = [parent, ...children];
+    const selected = evidenceSelectedByAnswer(evidence, {
+      ...answerObject(summaryText),
+      evidence: [
+        { evidence_index: 0 },
+        { evidence_index: 1 },
+        { evidence_index: 2 },
+        { evidence_index: 0 }
+      ]
+    } as StructuredMemoryAnswer);
+    expect(selected).toEqual(evidence);
+    expect(selected[0]).toMatchObject({ summaryText });
+    expect(children).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentNodeIds: ["rollout"],
+          corroborationGroupId: "rollout"
+        })
+      ])
+    );
   });
 
   it("bounds an adversarial retrieval trace to 32 KiB deterministically", () => {

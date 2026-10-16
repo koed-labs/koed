@@ -213,7 +213,7 @@ contract.
 
 ### Model artifacts
 
-Embedding and reranker model artifacts stay separate and install under:
+Embedding model artifacts stay separate and install under:
 
 ```text
 KOED_HOME/models
@@ -307,8 +307,7 @@ Each standalone package should include a manifest:
     "requires": ["postgresql@17", "pgvector", "llama-server"]
   },
   "models": {
-    "embedding": "qwen3-0.6b",
-    "reranker": "qwen3-reranker-0.6b"
+    "embedding": "qwen3-0.6b"
   },
   "provenance": {
     "sourceRepository": "owner/repo",
@@ -402,6 +401,15 @@ staging root under the private `KOED_HOME` runtime directory and verify/extract
 only within that root. These checks detect ordinary link and replacement races;
 they do not claim defense against a same-UID attacker with arbitrary ability to
 mutate the verifier process or its staging files.
+
+Component acquisition downloads and verifies archives in exclusive private
+staging directories without holding the component publication lock. Publication
+then locks the store, rechecks existing digests and cache entries, and atomically
+publishes the verified tree and index; conflicts fail closed and failed staging
+is removed. HTTPS transfers bound response headers to 30 seconds and reset a
+30-second body idle timeout on each chunk, allowing large progressing downloads
+without an absolute transfer deadline. Caller cancellation and byte limits still
+apply throughout acquisition and publication.
 
 Component verification is not wired into package installation yet. Production
 component trust roots are intentionally empty, so component verification fails

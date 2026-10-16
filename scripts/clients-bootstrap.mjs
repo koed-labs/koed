@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCodexBootstrap } from "./codex-bootstrap.mjs";
@@ -180,10 +180,18 @@ export const runClientsBootstrap = async ({
   return result;
 };
 
-if (
-  process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+const isClientsBootstrapEntrypoint = (argvPath) => {
+  if (!argvPath) return false;
+  try {
+    return (
+      realpathSync(argvPath) === realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+};
+
+if (isClientsBootstrapEntrypoint(process.argv[1])) {
   try {
     if (hasHelpArg(process.argv.slice(2))) {
       process.stdout.write(usageText);

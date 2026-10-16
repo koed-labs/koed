@@ -144,19 +144,7 @@ const modelCallSchema = z
     error: z.string().optional()
   })
   .strict();
-const rerankerCallSchema = z
-  .object({
-    model: z.string().nullable(),
-    artifact: z.string().nullable(),
-    artifactRevision: z.string().nullable(),
-    artifactHash: z.string().nullable(),
-    latencyMs: nullableNonnegativeNumber,
-    calls: z.number().int().nonnegative(),
-    inputTokens: nullableNonnegativeNumber,
-    costUsd: nullableNonnegativeNumber,
-    costBasis: arenaCostBasisSchema
-  })
-  .strict();
+
 const peakMemorySchema = z
   .object({
     schemaVersion: z.literal("koed-retrieval-arena-peak-memory-v2"),
@@ -204,10 +192,7 @@ const resourceMetricsSchema = z
     decryptBytes: nullableNonnegativeNumber,
     embeddingCalls: nullableNonnegativeNumber,
     embeddingTokens: nullableNonnegativeNumber,
-    rerankerCalls: nullableNonnegativeNumber,
-    rerankerLatencyMs: nullableNonnegativeNumber,
-    rerankerInputTokens: nullableNonnegativeNumber,
-    rerankerCostUsd: nullableNonnegativeNumber,
+
     internalVectorStages: nullableNonnegativeNumber,
     apiRetrievalCalls: nullableNonnegativeNumber,
     searchCalls: nullableNonnegativeNumber,
@@ -331,7 +316,7 @@ const runResultSchema = z
       })
       .strict()
       .optional(),
-    rerankerResources: rerankerCallSchema.optional(),
+
     productProof: productProofSchema.optional(),
     qualityObservation: z
       .object({
@@ -347,7 +332,7 @@ const runResultSchema = z
         retrievalAndSynthesisUsd: nullableNonnegativeNumber,
         readerUsd: nullableNonnegativeNumber,
         judgeUsd: nullableNonnegativeNumber,
-        rerankerUsd: nullableNonnegativeNumber,
+
         totalUsd: nullableNonnegativeNumber,
         complete: z.boolean(),
         billingBasis: z
@@ -355,7 +340,7 @@ const runResultSchema = z
             retrievalAndSynthesis: arenaCostBasisSchema,
             reader: arenaCostBasisSchema,
             judge: arenaCostBasisSchema,
-            reranker: arenaCostBasisSchema,
+
             total: arenaCostBasisSchema
           })
           .strict()
@@ -536,7 +521,7 @@ const aggregateRunCost = (
   const reportedRetrievalAndSynthesisUsd =
     result.resources?.costUsd ?? (layer === "product" ? readerUsd : null);
   const judgeUsd = result.answerResources?.judge?.costUsd ?? null;
-  const rerankerUsd = result.rerankerResources?.costUsd ?? null;
+
   const retrievalAndSynthesis =
     result.resources?.costUsd !== null &&
     result.resources?.costUsd !== undefined
@@ -553,9 +538,7 @@ const aggregateRunCost = (
   const judge = result.answerResources?.judge
     ? (result.answerResources.judge.costBasis ?? "unavailable")
     : "not_applicable";
-  const reranker = result.rerankerResources
-    ? (result.rerankerResources.costBasis ?? "unavailable")
-    : "not_applicable";
+
   const required = [retrievalAndSynthesisUsd];
   const requiredBases: ArenaCostBasis[] = [retrievalAndSynthesis];
   if (layer === "fixed_reader") {
@@ -566,10 +549,7 @@ const aggregateRunCost = (
     required.push(judgeUsd);
     requiredBases.push(judge);
   }
-  if (result.rerankerResources) {
-    required.push(rerankerUsd);
-    requiredBases.push(reranker);
-  }
+
   const complete = required.every((value) => value !== null);
   const totalUsd = complete
     ? required.reduce<number>((sum, value) => sum + value!, 0)
@@ -578,14 +558,14 @@ const aggregateRunCost = (
     retrievalAndSynthesisUsd,
     readerUsd,
     judgeUsd,
-    rerankerUsd,
+
     totalUsd,
     complete,
     billingBasis: {
       retrievalAndSynthesis,
       reader,
       judge,
-      reranker,
+
       total: !complete
         ? "unavailable"
         : requiredBases.includes("api_equivalent_estimate")
@@ -770,20 +750,7 @@ const resources = (
     decryptBytes: output.metrics?.decryptBytes ?? null,
     embeddingCalls: output.metrics?.embeddingCalls ?? null,
     embeddingTokens: output.metrics?.embeddingTokens ?? null,
-    rerankerCalls:
-      output.rerankerMetrics?.calls ?? output.metrics?.rerankerCalls ?? null,
-    rerankerLatencyMs:
-      output.rerankerMetrics?.latencyMs ??
-      output.metrics?.rerankerLatencyMs ??
-      null,
-    rerankerInputTokens:
-      output.rerankerMetrics?.inputTokens ??
-      output.metrics?.rerankerInputTokens ??
-      null,
-    rerankerCostUsd:
-      output.rerankerMetrics?.costUsd ??
-      output.metrics?.rerankerCostUsd ??
-      null,
+
     internalVectorStages: output.metrics?.internalVectorStages ?? null,
     apiRetrievalCalls:
       output.metrics?.apiRetrievalCalls ?? output.metrics?.searchCalls ?? null,
@@ -885,10 +852,7 @@ const failedResources = (error: unknown): ArenaResourceMetrics | undefined => {
     decryptBytes: null,
     embeddingCalls: null,
     embeddingTokens: null,
-    rerankerCalls: null,
-    rerankerLatencyMs: null,
-    rerankerInputTokens: null,
-    rerankerCostUsd: null,
+
     internalVectorStages: null,
     apiRetrievalCalls: null,
     searchCalls: null,
@@ -1248,16 +1212,7 @@ export const runRetrievalArena = async (
               ),
               trace: output.trace
             };
-            if (output.rerankerMetrics) {
-              base.rerankerResources = {
-                ...output.rerankerMetrics,
-                costUsd: output.rerankerMetrics.costUsd ?? 0,
-                costBasis:
-                  output.rerankerMetrics.costUsd === null
-                    ? "local_no_cost"
-                    : "provider_reported"
-              };
-            }
+
             if (layer === "retrieval_only") {
               base.aggregateCost = aggregateRunCost(base, layer);
             }
@@ -1285,14 +1240,7 @@ export const runRetrievalArena = async (
                   "embeddingTokens"
                 );
               }
-              if (arm.modelRoles?.includes("reranker")) {
-                requiredResourceFields.push(
-                  "rerankerCalls",
-                  "rerankerLatencyMs",
-                  "rerankerInputTokens",
-                  "rerankerCostUsd"
-                );
-              }
+
               if (arm.modelRoles?.includes("rewrite")) {
                 requiredResourceFields.push(
                   "rewriteInputTokens",
@@ -1722,18 +1670,13 @@ export const runRetrievalArena = async (
         ["artifact", model.artifact],
         ["artifactRevision", model.artifactRevision]
       ];
-      if (role !== "reranker") {
-        missing.push(
-          ["artifactHash", model.artifactHash],
-          ["tokenizer", model.tokenizer],
-          ["tokenizerRevision", model.tokenizerRevision],
-          ["acceleration", model.acceleration]
-        );
-      }
-      if (role === "reranker") {
-        missing.push(["artifactHash", model.artifactHash]);
-      }
-      if (role !== "embedding" && role !== "reranker") {
+      missing.push(
+        ["artifactHash", model.artifactHash],
+        ["tokenizer", model.tokenizer],
+        ["tokenizerRevision", model.tokenizerRevision],
+        ["acceleration", model.acceleration]
+      );
+      if (role !== "embedding") {
         missing.push(
           [
             "inputPricePerMillionTokensUsd",
@@ -1754,37 +1697,7 @@ export const runRetrievalArena = async (
         );
       }
     }
-    const rerankerModel = metadata.models.reranker;
-    for (const result of results.filter(
-      (item) => item.status === "completed" && item.rerankerResources
-    )) {
-      const actual = result.rerankerResources!;
-      if (
-        !rerankerModel ||
-        actual.model !== rerankerModel.model ||
-        actual.artifact !== rerankerModel.artifact ||
-        actual.artifactRevision !== rerankerModel.artifactRevision ||
-        actual.artifactHash !== rerankerModel.artifactHash
-      ) {
-        throw new Error(
-          `strict Retrieval Arena reranker provenance mismatch for ${result.armId}: actual model/artifact/revision/hash must match pinned reranker metadata`
-        );
-      }
-      const missingCallMetrics = [
-        ["latencyMs", actual.latencyMs],
-        ["inputTokens", actual.inputTokens],
-        ["costUsd", actual.costUsd]
-      ].flatMap(([name, value]) =>
-        typeof value === "number" && Number.isFinite(value) && value >= 0
-          ? []
-          : [name]
-      );
-      if (missingCallMetrics.length > 0) {
-        throw new Error(
-          `strict Retrieval Arena reranker call metrics require ${missingCallMetrics.join(", ")}`
-        );
-      }
-    }
+
     for (const result of results.filter(
       (item) => item.status === "completed" || item.qualityObservation
     )) {

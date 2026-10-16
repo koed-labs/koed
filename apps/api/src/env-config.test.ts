@@ -82,27 +82,6 @@ describe("resolveApiEnv", () => {
     ).not.toThrow();
   });
 
-  it("rejects unsupported reranker model keys", () => {
-    expect(() =>
-      resolveApiEnv({
-        RERANKER_KEY: "unsupported"
-      })
-    ).toThrow("Unsupported reranker model key");
-  });
-
-  it("validates the documented root reranker key alias", () => {
-    expect(() =>
-      resolveApiEnv({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
-      })
-    ).not.toThrow();
-    expect(() =>
-      resolveApiEnv({
-        EMBEDDING_RERANKER_KEY: "unsupported"
-      })
-    ).toThrow("Unsupported reranker model key");
-  });
-
   it("requires production secrets and service URLs", () => {
     expect(() => resolveApiEnv({ NODE_ENV: "production" })).toThrow(
       "DATABASE_URL, REDIS_URL, API_TOKEN_PEPPER, COLLABORATION_LOCAL_BROKER_SECRET, COLLABORATION_REALTIME_CURSOR_SECRET, EMBEDDING_SERVICE_TOKEN, CORS_ORIGINS"

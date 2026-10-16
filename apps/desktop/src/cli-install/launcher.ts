@@ -40,6 +40,25 @@ const digest = (value: string): string =>
 const launcherContents = (input: LauncherInput): string =>
   `${marker}\n# version:${input.expectedVersion}\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(input.helperPath)} ${quote(input.cliPath)} "$@"\n`;
 
+// Only the validated version field may differ across Desktop upgrades.
+const ownedLauncherVersion = (
+  contents: string,
+  input: LauncherInput
+): string | null => {
+  const version = /^# version:([^\n]+)$/mu.exec(contents)?.[1];
+  const numeric = "(?:0|[1-9][0-9]*)";
+  const prerelease = `(?:${numeric}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`;
+  const semver = new RegExp(
+    `^${numeric}\\.${numeric}\\.${numeric}(?:-${prerelease}(?:\\.${prerelease})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`,
+    "u"
+  );
+  if (!version || !semver.test(version)) return null;
+  return version &&
+    contents === launcherContents({ ...input, expectedVersion: version })
+    ? version
+    : null;
+};
+
 interface FileSnapshot {
   contents: string;
   dev: number;
@@ -97,7 +116,9 @@ export const inspectLauncher = async (
   const snapshot = file.snapshot;
   const contents = snapshot?.contents ?? null;
   const owned = contents?.startsWith(`${marker}\n`) ?? false;
-  const exactLauncher = owned && contents === launcherContents(input);
+  const version =
+    contents === null ? null : ownedLauncherVersion(contents, input);
+  const exactLauncher = version !== null;
   const targetStatus = cliTargetStatus(input.cliPath);
   return {
     ownership:
@@ -117,9 +138,7 @@ export const inspectLauncher = async (
           ? "invalid"
           : "valid",
     helper: (await input.probeHelper()) ? "supported" : "unsupported",
-    version: owned
-      ? (/^# version:(.+)$/mu.exec(contents ?? "")?.[1] ?? null)
-      : null,
+    version,
     pathVisible: input.currentPath
       .split(":")
       .includes(dirname(input.destination)),
@@ -131,7 +150,10 @@ export const removeLauncher = async (
   input: LauncherInput & { probeHelper: HelperProbe }
 ): Promise<LauncherStatus> => {
   const beforeProbe = inspectFile(input.destination).snapshot;
-  if (!beforeProbe || beforeProbe.contents !== launcherContents(input))
+  if (
+    !beforeProbe ||
+    ownedLauncherVersion(beforeProbe.contents, input) === null
+  )
     throw new Error(
       "Launcher is not an unchanged Koed-owned file; refusing removal."
     );
@@ -142,7 +164,7 @@ export const removeLauncher = async (
     immediatelyBeforeUnlink.dev !== beforeProbe.dev ||
     immediatelyBeforeUnlink.ino !== beforeProbe.ino ||
     digest(immediatelyBeforeUnlink.contents) !== digest(beforeProbe.contents) ||
-    immediatelyBeforeUnlink.contents !== launcherContents(input)
+    ownedLauncherVersion(immediatelyBeforeUnlink.contents, input) === null
   ) {
     throw new Error("Launcher changed during removal; refusing removal.");
   }

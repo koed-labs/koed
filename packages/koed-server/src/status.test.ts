@@ -2982,7 +2982,7 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("checks the complete opted-in Codex delivery chain without changing blocking health", async () => {
+  it("reports healthy task collection setup and detects a mismatched MCP runtime", async () => {
     const root = tempDir();
     const dist = resolve(root, "packages/mcp-server/dist");
     const profile = resolve(root, ".codex");
@@ -2992,7 +2992,7 @@ describe("status and doctor JSON contracts", () => {
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "generated-token" })
     );
-    for (const name of ["cli.js", "capture-hook.js", "codex-memory-hook.js"])
+    for (const name of ["cli.js", "capture-hook.js"])
       writeFileSync(resolve(dist, name), "");
     const environment = {
       KOED_HOME: root,
@@ -3018,39 +3018,15 @@ describe("status and doctor JSON contracts", () => {
         })
       ).codex;
     expect((await check()).state).toBe("healthy");
-    for (const broken of [
-      original.replace("timeout = 305", "timeout = 25"),
-      original.replace(
-        "mcp__koed__memory_answer$",
-        "mcp__wrong__memory_answer$"
-      ),
-      original.replace("[[hooks.Interrupt]]", "[[hooks.Unrelated]]"),
-      original.replace(
-        'KOED_CODEX_MEMORY_TOOL = "mcp__koed__memory_answer"',
-        'KOED_CODEX_MEMORY_TOOL = "mcp__other__memory_answer"'
-      ),
-      original.replace("timeout = 305", "timeout = 305\nasync = true")
-    ]) {
-      writeFileSync(config, broken);
-      expect((await check()).message).toContain(
-        "deferred recall hook configuration"
-      );
-      expect(readFileSync(config, "utf8")).toBe(broken);
-    }
-    writeFileSync(config, original);
-    rmSync(resolve(dist, "codex-memory-hook.js"));
+    const broken = original.replace("cli.js", "wrong-cli.js");
+    writeFileSync(config, broken);
     expect((await check()).state).toBe("needs_attention");
-    writeFileSync(
-      config,
-      original.replace(
-        'KOED_CODEX_STOP_DELIVERY = "1"',
-        'KOED_CODEX_STOP_DELIVERY = "0"'
-      )
-    );
+    expect(readFileSync(config, "utf8")).toBe(broken);
+    writeFileSync(config, original);
     expect((await check()).state).toBe("healthy");
   });
 
-  it("accepts Codex delivery hooks whose runtime path needs quoting", async () => {
+  it("accepts Codex Capture Hooks whose runtime path needs quoting", async () => {
     const root = resolve(tempDir(), "koed's home");
     const dist = resolve(root, "packages/mcp-server/dist");
     const profile = resolve(root, ".codex");

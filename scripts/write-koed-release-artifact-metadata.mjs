@@ -384,7 +384,7 @@ export const buildReleaseArtifactMetadata = (options) => {
       models: {
         kind: "models",
         description:
-          "Embedding and reranker model assets remain separate and install under KOED_HOME/models."
+          "Embedding model assets remain separate and install under KOED_HOME/models."
       }
     }
   };

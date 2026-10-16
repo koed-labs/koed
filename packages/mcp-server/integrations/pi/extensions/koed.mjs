@@ -10,9 +10,13 @@ import {
   createRuntimeTaskPort
 } from "../runtime-client.mjs";
 import {
-  ACCEPTANCE_UNCERTAIN,
-  createPiMemoryDelivery
-} from "../pi-memory-delivery.mjs";
+  isMemoryAnswerTaskId,
+  validateMemoryAnswerTask,
+  pendingMemoryAnswerTask,
+  presentMemoryAnswerTask,
+  collectMemoryAnswerTask
+} from "../memory-answer-task-presentation.mjs";
+import { formatMemoryAnswerCompletion } from "../memory-answer-presentation.mjs";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
@@ -63,7 +67,11 @@ const answerParameters = Type.Object(
     query: Type.String({ minLength: 1, maxLength: 32000 }),
     delivery_mode: Type.Optional(
       Type.Union(
-        MEMORY_ANSWER_DELIVERY_MODES.map((value) => Type.Literal(value))
+        MEMORY_ANSWER_DELIVERY_MODES.map((value) => Type.Literal(value)),
+        {
+          description:
+            "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
+        }
       )
     ),
     retrieval_hints: Type.Optional(
@@ -116,6 +124,20 @@ const workspaceParameters = Type.Object(
   { additionalProperties: false }
 );
 
+const taskIdPattern =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
+const taskParameters = Type.Object(
+  { task_id: Type.String({ pattern: taskIdPattern.source }) },
+  { additionalProperties: false }
+);
+const resultParameters = Type.Object(
+  {
+    task_id: Type.String({ pattern: taskIdPattern.source }),
+    wait: Type.Optional(Type.Boolean())
+  },
+  { additionalProperties: false }
+);
+
 const intakeParameters = Type.Object(
   {
     proposed_claim: Type.String({ minLength: 1, maxLength: 4000 }),
@@ -156,26 +178,7 @@ const intakeParameters = Type.Object(
 
 export default function koedExtension(pi) {
   let sessionController;
-  const delivery = createPiMemoryDelivery(pi, {
-    port: createRuntimeTaskPort(koedHome),
-    mode:
-      process.env.KOED_PI_MEMORY_ANSWER_MODE === "blocking"
-        ? "blocking"
-        : "auto",
-    blocking: (input, ctx, signal, invocation) =>
-      callTool("memory_answer", input, ctx, signal, invocation),
-    reportDelivery: (decision) => {
-      try {
-        // One bounded private routing diagnostic, never a receipt or result store.
-        writePrivate(
-          join(koedHome, "run", "pi-memory-answer-delivery.json"),
-          `${JSON.stringify({ observedAt: new Date().toISOString(), ...decision })}\n`
-        );
-      } catch {
-        // Diagnostic storage must not change acceptance or delivery behavior.
-      }
-    }
-  });
+  const port = createRuntimeTaskPort(koedHome);
   const register = (name, label, description, parameters) =>
     pi.registerTool({
       name,
@@ -183,21 +186,92 @@ export default function koedExtension(pi) {
       description,
       parameters,
       async execute(id, params, signal, _update, ctx) {
+        if (
+          name === "memory_answer_result" &&
+          params.wait !== undefined &&
+          typeof params.wait !== "boolean"
+        )
+          throw new Error("wait must be a boolean");
         const combined = AbortSignal.any(
           [signal, sessionController?.signal].filter(Boolean)
         );
         try {
-          if (name === "memory_answer")
-            return await delivery.execute(id, params, combined, ctx);
-          const result = await callTool(
-            name,
-            params,
-            ctx,
-            combined,
-            `${ctx.sessionManager.getSessionId()}:${id}`
-          );
+          const invocation = `${ctx.sessionManager.getSessionId()}:${id}`;
+          let result;
+          if (
+            name === "memory_answer" &&
+            params.delivery_mode === "non_blocking"
+          ) {
+            const input = { ...params };
+            delete input.delivery_mode;
+            const task = await port.start(
+              input,
+              {
+                cwd: ctx.cwd,
+                clientInfo: { name: "pi", version: "koed-extension-v1" }
+              },
+              invocation,
+              combined
+            );
+            validateMemoryAnswerTask(task);
+            result = pendingMemoryAnswerTask(task);
+          } else if (
+            name === "memory_answer_result" ||
+            name === "memory_answer_cancel"
+          ) {
+            if (!isMemoryAnswerTaskId(params.task_id))
+              throw new Error("Koed Memory Answer task identity is invalid");
+            let task =
+              name === "memory_answer_result"
+                ? await collectMemoryAnswerTask(
+                    port,
+                    params.task_id.toLowerCase(),
+                    {
+                      signal: combined,
+                      wait: params.wait ?? false
+                    }
+                  )
+                : await port.get(params.task_id.toLowerCase(), combined);
+            validateMemoryAnswerTask(task, params.task_id);
+            if (name === "memory_answer_cancel") {
+              task = await port.cancel(params.task_id.toLowerCase(), combined);
+              validateMemoryAnswerTask(task, params.task_id);
+              result = {
+                status:
+                  task.status === "cancel_requested"
+                    ? "cancel_requested"
+                    : ["accepted", "running"].includes(task.status)
+                      ? "pending"
+                      : ["completed", "cancelled"].includes(task.status)
+                        ? task.status
+                        : "failed",
+                task_id: task.id,
+                expires_at: task.expiresAt
+              };
+            } else result = presentMemoryAnswerTask(task);
+          } else {
+            const input = { ...params };
+            delete input.delivery_mode;
+            result = await callTool(name, input, ctx, combined, invocation);
+          }
           return {
-            content: [{ type: "text", text: JSON.stringify(result) }],
+            content: [
+              {
+                type: "text",
+                text:
+                  name === "memory_answer" &&
+                  params.delivery_mode !== "non_blocking"
+                    ? formatMemoryAnswerCompletion(result, "completed", {
+                        includeDetails:
+                          params.include_evidence === true ||
+                          params.response_detail === "with_citations" ||
+                          params.response_detail === "with_evidence"
+                      })
+                    : typeof result.text === "string"
+                      ? result.text
+                      : JSON.stringify(result)
+              }
+            ],
             details: result
           };
         } catch (error) {
@@ -207,14 +281,42 @@ export default function koedExtension(pi) {
               { cause: error }
             );
           }
-          if (error?.code === ACCEPTANCE_UNCERTAIN)
-            throw new Error(
-              "Koed Memory Answer could not be completed. Acceptance may be uncertain; do not resubmit this request.",
-              { cause: error }
+          const nonBlocking =
+            name === "memory_answer" && params.delivery_mode === "non_blocking";
+          const status = error?.statusCode;
+          // The runtime rejected the submission before creating a task, so a
+          // later retry is safe. Timeouts, transport and 5xx stay ambiguous.
+          if (
+            nonBlocking &&
+            Number.isInteger(status) &&
+            status >= 400 &&
+            status < 500 &&
+            status !== 408
+          ) {
+            throw Object.assign(
+              new Error(
+                status === 429
+                  ? `Koed Memory Answer queue is full; no task was created. Retry the submission${
+                      error.retryAfterMs !== undefined
+                        ? ` after ${error.retryAfterMs} ms`
+                        : " later"
+                    }.`
+                  : `Koed rejected the Memory Answer submission (HTTP ${status}); no task was created.`
+              ),
+              {
+                statusCode: status,
+                ...(error.retryAfterMs !== undefined
+                  ? { retryAfterMs: error.retryAfterMs }
+                  : {})
+              }
             );
+          }
+          // Runtime exception causes may contain private provider details.
+          // eslint-disable-next-line preserve-caught-error
           throw new Error(
-            "Koed unavailable; check the Local AI Runtime and retry",
-            { cause: error }
+            nonBlocking
+              ? "Koed Memory Answer submission could not be confirmed. Acceptance may be uncertain; do not resubmit this request."
+              : "Koed unavailable; check the Local AI Runtime and retry"
           );
         }
       }
@@ -222,8 +324,20 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Recall Koed memory evidence for answer synthesis. Select delivery_mode from the next planned action: blocking for direct recall answers, immediately dependent decisions or edits, or uncertain independence; non_blocking for useful independent diagnostics before a later dependent action. A fix that needs prior memory can still start with independent reads. Follow explicit User instructions to wait or continue independent work. Omitted and auto preserve configured calling-integration behavior; unsupported contexts and opt-outs remain authoritative. Eligible persistent Pi calls return a receipt promptly and the result arrives automatically. Finish independent work, then yield before a memory-dependent decision. Do not poll, use sleep tools or artificial work to keep the turn busy, repeat recall in blocking mode, invent prior constraints, or claim dependent work is complete. Apply the result before dependent work. Failed delivery or uncertain acceptance leaves the prerequisite unresolved; do not resubmit. Stop after successful not-found. Other routes return the result directly. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team Memory, discover authorized Workspaces with memory_workspaces, then pass team_workspace_id and team_backend_id. The Workspace open in Desktop does not select this tool scope.",
+    "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory. Recall Koed memory evidence for answer synthesis. Keep task_id; continue independent work, then collect with memory_answer_result(wait=true) when needed. No automatic follow-up is delivered. Do not repeat a pending question, poll rapidly, invent prior constraints or claim dependent work is complete before collection. Cancel unnecessary recall with memory_answer_cancel. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team, use memory_workspaces, then pass team_workspace_id and team_backend_id. The open Desktop Workspace does not select scope.",
     answerParameters
+  );
+  register(
+    "memory_answer_result",
+    "Collect Memory Answer",
+    "Collect an accepted Memory Answer by task_id. Omitted or false wait returns promptly with pending or final answer text, including citations or evidence requested at submission; compact is the default. When independent work is finished and recalled memory is needed, set wait=true to wait for this task within the call, subject to task expiry, cancellation, client timeout, or disconnection. Waiting does not start another recall. Do not repeat recall or use a tight polling loop.",
+    resultParameters
+  );
+  register(
+    "memory_answer_cancel",
+    "Cancel Memory Answer",
+    "Cancel an accepted Memory Answer by task_id when it is no longer needed. Returns promptly; cancellation may still be in progress.",
+    taskParameters
   );
   register(
     "memory_workspaces",
@@ -237,20 +351,16 @@ export default function koedExtension(pi) {
     "Propose curated Personal Memory backed by evidence.",
     intakeParameters
   );
-  pi.on("session_start", (event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();
-    delivery.start(event, ctx);
     try {
       signalWatcher(ctx, "session_start");
     } catch {
       /* correctness comes from filesystem discovery */
     }
   });
-  // Confirms delivered recall completions and replaces late duplicates.
-  pi.on("message_end", (event, ctx) => delivery.messageEnd(event, ctx));
-  pi.on("agent_settled", (event, ctx) => {
-    delivery.agentSettled(event, ctx);
+  pi.on("agent_settled", (_event, ctx) => {
     try {
       signalWatcher(ctx, "agent_settled");
     } catch {
@@ -258,23 +368,20 @@ export default function koedExtension(pi) {
     }
   });
   pi.on("session_tree", (_event, ctx) => {
-    delivery.detach(true);
     sessionController?.abort();
     sessionController = new AbortController();
-    delivery.start({ reason: "fork" }, ctx);
     try {
       signalWatcher(ctx, "session_tree");
     } catch {
       /* correctness comes from filesystem discovery */
     }
   });
-  pi.on("session_shutdown", (event, ctx) => {
+  pi.on("session_shutdown", (_event, ctx) => {
     try {
       signalWatcher(ctx, "session_shutdown");
     } catch {
       /* correctness comes from filesystem discovery */
     }
-    delivery.detach(["new", "resume", "fork"].includes(event.reason));
     sessionController?.abort();
     sessionController = undefined;
   });

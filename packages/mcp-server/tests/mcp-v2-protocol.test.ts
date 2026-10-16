@@ -238,6 +238,8 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const second = await client.listTools();
     expect(first.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
       "memory_workspaces",
       "memory_intake_propose"
     ]);
@@ -259,6 +261,8 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
       "memory_workspaces",
       "memory_access_check",
       "memory_search",
@@ -331,7 +335,11 @@ describe("Koed MCP 2026-07-28 protocol", () => {
 
     await expect(client.connect(clientTransport)).resolves.toBeUndefined();
     await expect(client.listTools()).resolves.toMatchObject({
-      tools: [{ name: "memory_answer" }]
+      tools: [
+        { name: "memory_answer" },
+        { name: "memory_answer_result" },
+        { name: "memory_answer_cancel" }
+      ]
     });
 
     await expect(
@@ -355,6 +363,8 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     await expect(client.listTools()).resolves.toMatchObject({
       tools: [
         { name: "memory_answer" },
+        { name: "memory_answer_result" },
+        { name: "memory_answer_cancel" },
         { name: "memory_workspaces" },
         { name: "memory_intake_propose" }
       ]
@@ -383,7 +393,9 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       callTool
     });
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
-      "memory_answer"
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel"
     ]);
     await expect(
       client.callTool({

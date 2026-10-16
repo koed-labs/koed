@@ -363,10 +363,7 @@ export interface EmbeddingResult {
 }
 
 export interface RetrievalMetadata {
-  retrievalMode:
-    | "semantic_vector"
-    | "semantic_vector_reranked"
-    | "embedding_unavailable";
+  retrievalMode: "semantic_vector" | "embedding_unavailable";
   vectorHitsCount: number;
   textHitsCount: number;
   embeddingModel: string | null;
@@ -382,11 +379,7 @@ export interface RetrievalMetadata {
   embeddingCalls?: number;
   embeddingTokens?: number | null;
   vectorCandidateCount?: number;
-  rerankedCount?: number;
-  rerankerModel?: string | null;
-  rerankingEnabled?: boolean;
-  rerankingUnavailable?: boolean;
-  rerankingError?: string;
+
   temporalFilter?: {
     recentDays?: number;
     sourceAfter?: string;
@@ -401,7 +394,7 @@ export interface RetrievalMetadata {
     durationMs: number;
     parallelGroup?: string;
     temporalFilterApplied?: boolean;
-    reranked?: boolean;
+
     parentNodeIds?: string[];
     topScore?: number;
     scoreThreshold?: number;

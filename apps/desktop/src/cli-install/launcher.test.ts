@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +27,70 @@ afterEach(() => {
 });
 
 describe("Desktop CLI launcher", () => {
+  it("recognizes exact historical templates across version upgrades and removes them safely", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "koed"),
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      expectedVersion: "0.8.1",
+      currentPath: root,
+      probeHelper: async () => true
+    };
+    writeFileSync(input.cliPath, "// CLI entry\n");
+    await installLauncher({ ...input, consent: true });
+    const upgraded = { ...input, expectedVersion: "0.9.0" };
+    await expect(inspectLauncher(upgraded)).resolves.toMatchObject({
+      ownership: "koed",
+      target: "valid",
+      version: "0.8.1"
+    });
+    await expect(removeLauncher(upgraded)).resolves.toMatchObject({
+      ownership: "absent"
+    });
+  });
+
+  it("rejects invalid version fields, modified historical templates and symlinks", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "koed"),
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      expectedVersion: "0.8.1",
+      currentPath: root,
+      probeHelper: async () => true
+    };
+    writeFileSync(input.cliPath, "// CLI entry\n");
+    await installLauncher({ ...input, consent: true });
+    const original = readFileSync(input.destination, "utf8");
+    for (const contents of [
+      original.replace("0.8.1", "01.8.1"),
+      original.replace("0.8.1", "0.8.1-01"),
+      original.replace("0.8.1", "0.8.1-.."),
+      `${original}echo tampered\n`,
+      original.replace(input.helperPath, `${input.helperPath}-other`)
+    ]) {
+      writeFileSync(input.destination, contents);
+      await expect(inspectLauncher(input)).resolves.toMatchObject({
+        ownership: "changed"
+      });
+      await expect(removeLauncher(input)).rejects.toThrow(
+        "unchanged Koed-owned"
+      );
+    }
+    writeFileSync(input.destination, original);
+    const linked = { ...input, destination: join(root, "linked") };
+    symlinkSync(input.destination, linked.destination);
+    await expect(inspectLauncher(linked)).resolves.toMatchObject({
+      ownership: "changed"
+    });
+    await expect(removeLauncher(linked)).rejects.toThrow(
+      "unchanged Koed-owned"
+    );
+    expect(readFileSync(input.destination, "utf8")).toBe(original);
+  });
   it("installs owned launcher with quoted paths and reports validated helper", async () => {
     const root = fixture();
     const input = {

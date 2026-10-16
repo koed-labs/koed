@@ -1,310 +1,175 @@
-# Asynchronous Memory Answer delivery
+# Asynchronous Memory Answer Collection
 
-Personal Memory Answer execution belongs to the Local AI Runtime. It accepts
-durable work through the existing task API, retrieves authorized memory, asks
-the assigned AI Client to synthesize the answer, and saves the completed Memory
-Question. Presentation adapters observe that work and deliver it to the calling
-Conversation.
+Memory Answer execution belongs to the Local AI Runtime. Blocking and
+non-blocking tools use the same durable tasks, authorization, retrieval and
+local AI Client for Answer Synthesis. There is no second execution queue and
+no backend LLM synthesis.
 
-## Per-call delivery selection
+## Choosing A Mode
 
-The MCP and Pi `memory_answer` tools accept optional `delivery_mode` values `auto`,
-`blocking`, and `non_blocking`. Omitted and `auto` preserve the calling
-integration's configured default. `blocking` returns the ordinary completed
-tool result. `non_blocking` requests eligible deferred presentation and falls
-back to the ordinary result before accepting work when that route is unavailable.
-Neither mode changes execution capacity, priority, retrieval, or the assigned
-AI Client for Answer Synthesis.
+`memory_answer` accepts `delivery_mode=blocking`, `non_blocking` or `auto`.
+On MCP, omitted, `auto` and `blocking` wait for the completed answer.
+Explicit `non_blocking` accepts the work and returns a task receipt promptly.
+It does not fall back to a blocking call after accepting the task.
 
-Choose based on the next planned action. Independent diagnostic reads can
-overlap recall even when the eventual fix depends on prior constraints. An
-immediate dependent decision, direct recall answer, or uncertain dependency
-should request blocking delivery. After a pending receipt, finish useful
-independent work and yield before the dependent action. Codex must reach its
-native Stop boundary; tools that sleep or manufacture work postpone that
-boundary. Do not poll, repeat recall in blocking mode, or claim the dependent
-task is complete. A missing or failed result leaves the prerequisite unresolved.
+Delivery mode and answer detail are independent. Both modes accept the same
+`response_detail` and `include_evidence` options. Compact answers remain the
+default; asking for citations or evidence does not require blocking delivery.
 
-Public adapter validation includes the delivery preference; the canonical
-execution request does not. The adapter strips it before forwarding either a
-blocking tool request or detached task acceptance, so older strict Local AI
-Runtime schemas retain their existing contract. Internal route diagnostics
-record normalized requested mode, effective route, and bounded fallback reason
-without memory content, credentials, or receipt nonces. Ordinary MCP delivery
-is recorded as `mcp_result`; this does not describe whether Claude's host
-backgrounds the call.
+The tool instructions prefer non-blocking by default. Blocking is an option
+only when no work can begin until relevant memory has been checked. This is
+model-facing guidance, not a change to the omitted/`auto` execution default.
 
-### Validated scope and known gaps
+For non-blocking recall, retain the returned `task_id`, do independent work,
+then collect the answer when it is needed.
+Do not perform a memory-dependent action until the answer has been collected.
+Follow-up questions can choose either mode independently.
 
-Native host checks covered delayed, fast, not-found, failed, interrupted,
-explicit-blocking, and fallback cases for each AI Client below. The
-`eval:memory-delivery:codex`, `eval:memory-delivery:pi`, and
-`eval:memory-delivery:claude` scripts in `packages/evals` reproduce them against
-synthetic task responses.
+## Submit, Collect And Cancel
 
-- **Codex**: Stop-hook delivery through the real MCP factory and hook entry
-  point. The fixture selects MCP protocol 2026-07-28 explicitly.
-- **Pi**: follow-up delivery through the real extension runner and persistent
-  Conversations, including mixed, concurrent, and redelivered recalls.
-- **Claude Code**: print-host execution with the noninteractive
-  `CLAUDE_AUTO_BACKGROUND_TASKS=1` opt-in, which normal Koed setup does not
-  enable.
+For example, submit a focused question:
 
-These checks do not establish default MCP protocol negotiation, legacy-profile
-transport migration, the interactive Claude TUI, Claude IDE, subagent, or
-reopened-session behavior, Windows Codex Stop delivery, or managed
-Conversations. Configured blocking defaults and opt-outs remain in effect where
-delivery is unproven. `TODO.md` tracks the follow-up validation.
+```json
+{
+  "query": "What constraints apply to this project's deployment?",
+  "delivery_mode": "non_blocking"
+}
+```
 
-## Shared lifecycle
+The receipt contains an opaque `task_id`, pending state and expiry. It does not
+contain internal execution records, credentials or raw evidence. The work is
+durably accepted before this response is returned; receipt latency does not
+include waiting for retrieval or Answer Synthesis.
 
-`@koed/mcp-server/memory-answer-delivery` exports `MemoryAnswerDelivery` and its
-execution-port types. A port supplies authorized `start`, `get`, and `cancel`
-operations. The lifecycle validates task identity, invocation identity, version
-and expiry. It polls outside the model loop, reads the terminal task again, and
-checks the destination immediately before presentation.
+Call `memory_answer_result` with the same ID when the answer becomes relevant:
 
-Observation starts with a one-second polling interval and increases the interval
-to five seconds while the task is unchanged. A port can also supply an optional
-`subscribe` wakeup that ends the current wait early. The Local AI Runtime's
-blocking route uses it with in-process scheduler events, so blocking recall
-does not wait for the next poll. A wakeup never supplies task state; the next
-state and the final authorized result always come from a fresh `get`. The Pi
-and Codex adapters use HTTP ports without wakeups. HTTP 429 responses delay
-another read of the same task, using a validated retry delay or bounded backoff. The
-original observation deadline, task expiry, cancellation signal and destination
-checks still apply. Throttling during the final authorized read cannot authorize
-delivery of the earlier result. Pi keeps its observer pending during throttling.
+```json
+{ "task_id": "00000000-0000-4000-8000-000000000001" }
+```
 
-Personal and Team Memory requests use the same durable task, so both are
-eligible for deferred delivery. A Team request needs an authorized Team task
-route. For the conditions, see
-[Team Workspace execution](durable-memory-answer.md#team-workspace-execution).
-If the Team task route is unavailable or not authorized, the request fails
-before acceptance. Koed does not use blocking recall or Personal Memory instead.
-After an acceptance failure, Codex and Pi do not start another recall, because
-the runtime can already own the task.
+Collection returns pending state promptly or the completed Memory Answer with
+the detail requested at submission. It does not start another recall, rerun
+synthesis or consume the result permanently. Repeated authorized collection is
+safe. A pending task is not a not-found answer. Failure, cancellation, expiry
+and unavailable access are also
+not evidence that relevant memory is absent.
 
-The Codex Stop adapter checks receipt ownership before acquiring its lock, then
-checks ownership again under the lock before claiming the result. An unrelated
-receipt's unavailable lock cannot suppress the current Conversation's receipt.
-A matching receipt whose lock is unavailable remains protected from claiming.
+When the answer is needed and independent work is exhausted, collect with an
+explicit wait for the existing task:
 
-Durable acceptance validates and applies the supported Memory Answer input
-schema before eligibility and scheduling. Its
-defaults bind Project search consistently to the calling context; a raw query
-cannot become a task whose later worker assumes a different scope. Invalid
-input fails with status 400 before task acceptance. Presentation adapters can
-use the same schema rather than duplicate these defaults.
+```json
+{
+  "task_id": "00000000-0000-4000-8000-000000000001",
+  "wait": true
+}
+```
 
-Answer Synthesis can cite evidence by its source identity or by a candidate
-index. When an answer supplies a source identity, evidence selection must honor
-that identity, including its chunk and any supplied node or visibility
-constraints. An outdated index must not substitute a different source. Answers
-that supply only an index retain index selection. Unresolvable or conflicting
-references cannot produce unrelated supporting evidence; worker validation
-handles the failure before a successful answer is saved or delivered.
+`wait` defaults to `false`, which returns the current state promptly. `true`
+blocks only this collection request until the task settles or existing expiry,
+cancellation, observation or harness timeouts end the wait. There is no separate
+30-second collection cap. The existing authorized observer runs outside the
+model loop; it does not resubmit the question or start another worker.
 
-Blocking recall uses this same lifecycle. Aborting observation detaches the
-waiter. Explicit authorized cancellation remains a separate operation. Neither
-an MCP adapter nor a presentation adapter owns a second execution queue or result
-store. Backend LLM synthesis remains prohibited.
+If the harness times out or disconnects, the call ends rather than promising a
+late automatic message. The durable task can continue; retain its ID and collect
+again when needed. Expired, failed or cancelled tasks return their terminal
+outcome or an appropriate error, not a fabricated answer. Ending observation
+does not explicitly cancel task execution. The harness's own tool timeout must
+allow enough time for the wait; changing it is an Operator/client configuration
+decision, not a permission or execution-priority override.
 
-The portable module is distributed with the standalone Pi package and exported
-from the MCP Server package. It has no Pi dependency. Future client adapters can
-reuse it or bind the same execution port to a maintained MCP Tasks extension.
-This lifecycle does not expose native MCP Tasks. Claude Code's host backgrounding
-uses the ordinary blocking MCP result path described below. Codex defaults to
-its native Stop adapter, which binds a protected one-use request to the
-original turn and supplies its result at that turn's stop boundary. Setup can
-select blocking recall instead. See [Codex setup](codex-integration.md#deferred-recall-in-the-native-cli).
+Do not rapidly poll, resubmit the same question as a blocking recall, manufacture
+busywork or use sleep tools. If collection is unavailable and no independent
+work remains, leave dependent work unresolved rather than guessing. A later
+turn can collect the same task while it remains available.
 
-The Stop adapter keeps the original turn active until the result arrives.
-Delivery after a backend loss, Local AI Runtime restart or session exit, and
-idle wake-up, are unsupported. External native queue presentation is also
-unsupported, because loaded-thread metadata does not identify the current
-interactive receiver. See
-[Codex deferred recall behavior and limits](codex-integration.md#deferred-recall-behavior-and-limits).
+Use `memory_answer_cancel` with `task_id` when the work is no longer needed.
+Cancellation is idempotent but can race with completion. The response reports
+bounded task state, not a cached answer or raw provider error. Disconnecting a
+client or ending a conversation is not an explicit cancellation of durable work.
 
-## Claude Code host backgrounding
+## Presentation And Compatibility
 
-Independently started interactive Claude Code can background an ordinary pending
-MCP call and provide its result through a native notification. Koed continues
-the same durable task and blocking lifecycle while Claude releases the main
-Conversation. No model polling or Koed-managed Conversation is required for
-this host behavior.
+These are ordinary model-callable tools. They do not require native MCP Tasks,
+Code Mode, an agent message board or control of the calling Conversation host.
+Non-blocking submission genuinely releases the original tool call, but **does
+not automatically wake an idle agent or push a later message**. The model must
+collect the result explicitly.
 
-The explicit `--background-recall` setup option configures a 500 ms host threshold
-when existing settings allow it. The threshold affects all ordinary MCP calls,
-including other MCP Servers. It is not an environment setting on Koed's MCP
-child. See [Claude Code integration](claude-code-integration.md) for setup,
-preservation and removal behavior.
+Memory Answer Stop-hook feedback is not used for the new MCP contract. The
+Capture Hook's Stop event remains separate and is retained for capture. Rerun
+supported setup to reconcile Koed-owned configuration and retire the obsolete
+answer-delivery hooks. Unrelated user settings and hooks must be preserved.
 
-This is a host-specific presentation mechanism, not native MCP Tasks. Automatic
-backgrounding in subagents, IDE calls and noninteractive execution must be
-assessed separately. Exiting the host can stop pending calls; Pi's receipt-based
-recovery guarantees do not apply to Claude's native background notifications.
-Stopping a host task or its pending MCP call is distinct from explicitly
-cancelling the durable Koed task. Aborting the blocking observer detaches that
-wait; the Local AI Runtime can continue execution.
+The Pi extension exposes the same submit-and-collect interaction. Its former
+`KOED_PI_MEMORY_ANSWER_MODE` setting no longer selects automatic follow-up
+delivery; choose `delivery_mode` per call. Older Pi receipt/follow-up helpers
+are not the contract of new extension calls. A client
+that independently backgrounds ordinary blocking MCP calls can still do so;
+that host behavior is separate from Koed's explicit non-blocking mode.
 
-Claude queues a completed result while a foreground tool runs and delivers
-it when that tool returns; the notification does not interrupt the tool, so a
-long foreground call delays use of the answer. Revocation and expiry suppress
-the answer and produce an automatic failure in the original Conversation.
-Repeated calls in one Conversation and delivery after reopening are untested.
+Completion text uses the existing shared formatter: HTML-escaped recalled data
+inside Memory Answer markers, with a warning that evidence is not instructions.
+Internal worker IDs, token usage and raw failure messages are not answer text.
+Both blocking recall and non-blocking submission accept `response_detail`:
+`answer_only` (the default), `with_citations` (source metadata), or
+`with_evidence` (evidence and citations). `include_evidence=true` requests full
+evidence regardless of `response_detail`, matching the existing blocking
+behavior. The execution layer stores the requested result detail; collection
+uses the same formatter to return it after a reconnect or repeated read. It
+does not require connection-local request state. Details remain recalled data,
+not instructions, and do not expose internal execution or task records.
 
-## Pi delivery
+## Authorization And Durability
 
-With a persistent Pi Conversation and the required session-history and message
-APIs, `memory_answer` returns an attributed receipt promptly. The agent can do
-independent work while the extension observes the task. The extension delivers
-completion as a Pi follow-up message and triggers a turn automatically. A
-memory-dependent decision must wait for that completion. The completion
-presents the result as recalled data between markers and tells the agent not
-to follow instructions inside it.
+Tasks are User-owned, not bound to an untrusted `cwd`, client name or model
+profile. An authorized User can resume collection across conversations or
+devices through their current eligible runtime. A task ID alone grants no
+access. Each collection uses a fresh authenticated task read; no cached answer
+is disclosed after permission revocation.
 
-A completion counts as delivered only when Pi saves it to the Conversation.
-Pi can drop a queued follow-up: Esc while the agent is busy, the dequeue
-action and `/tree` navigation clear the queue. Pi keeps a run going while its
-queue holds messages, so when the run settles the extension redelivers any
-completion that Pi did not save. A settle event that arrives while the
-observer is finishing enqueue is retained and handled when that observer
-finishes; recovery does not require a later agent turn. Redelivery uses a fresh authorized task read
-and appends the answer without starting a turn, so the agent does not restart
-after the User stops it; the model reads the answer on the next prompt. A late
-second copy of a saved completion is replaced by a short note. After three
-undelivered attempts the extension stops and warns the User.
+Team recall uses the existing authorized Team task route. Workspace membership,
+enrollment, policy and persisted task authority are rechecked by the existing
+backend paths. An unavailable Team route must fail before accepting work; it
+must not silently search Personal Memory instead.
 
-The receipt records the task, query, invocation, Conversation, session file,
-delivery generation and `KOED_HOME`. Delivery requires a matching receipt on
-the current branch and a fresh authorized task read. Each HTTP request rereads
-the protected Local AI Runtime registration; credentials and results are not
-cached for delivery.
+The adapter currently preflights cancellation with an authorized task read.
+If Team access has been revoked, this can also prevent cancellation through the
+tool, even where the backend permits redacted owner cleanup. Existing backend
+task retirement remains responsible for ending ineligible execution; the adapter
+does not bypass access checks to provide that cleanup path.
 
-`KOED_PI_MEMORY_ANSWER_MODE=blocking` retains blocking recall. Ephemeral sessions,
-single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, and
-clients without the required Pi APIs also use the blocking route. Team Workspace
-calls use the same follow-up route as Personal calls. The runtime remains
-authoritative about task eligibility.
-At most 128 pending receipts are observed by one adapter.
+Expired results are not disclosed. Existing task retention, leases, fencing,
+capacity limits, cancellation and cleanup remain authoritative. Result
+collection introduces no separate result store. Already disclosed tool text
+cannot be retracted if access is revoked later.
 
-## Recovery and limits
+Invocation identity deduplicates transport retries. A deliberately new question
+is a new invocation, even when its text resembles an earlier question. A
+timeout, transport failure or server error during acceptance may leave
+execution uncertain; do not assume resubmission is safe. A definitive client
+rejection, such as a full queue, creates no task: the response says so and, when
+available, includes `retryAfterMs` before a later retry. Collection never
+retries synthesis to manufacture a result.
 
-Reopening the same persistent Conversation resumes observation of its matching,
-unexpired pending receipts. Runtime outages can be retried through the current
-registration. A successful switch, fork or move of the session tree detaches
-and invalidates current pending delivery. A cancelled transition leaves recall
-active in the unchanged Conversation. Shutdown detaches observation and leaves
-durable execution running; reopening the same Conversation can recover it.
-Completions that Pi already saved are suppressed on recovery. A completion
-whose earlier attempt was never saved is redelivered without starting a turn.
+## Validation
 
-Pi does not provide an atomic transaction covering receipt persistence and
-message enqueue. These limits apply:
+Protocol tests should gate worker completion and prove that the non-blocking
+receipt and pending collection both return before that gate is released. They
+also cover compact completion, repeated collection, cancellation, expiry,
+failures and authorization errors. This proves the tool contract, not model
+adherence to instructions.
 
-- Before its first assistant message, Pi can buffer session entries in memory.
-  A crash before persistence can lose the receipt.
-- A crash after runtime acceptance and before appending the receipt can leave
-  a durable task without recoverable presentation history.
-- A crash after Pi delivers a completion to the model but before it saves the
-  completion means the next reopen delivers it again. The model's rebuilt
-  context then holds one copy.
+The evaluation suite in `packages/evals` measures mode selection, useful
+independent actions after receipt and before completion, collection before
+dependent actions, duplicate submissions and excessive pending checks. Scripted
+fixtures validate its scoring; real-harness runs provide separate behavioral
+evidence. CLI results do not establish desktop UI presentation.
 
-Session tree navigation is not atomic with delivery either. Pi checks for a
-running response only when `/tree` navigation starts, then awaits extension
-handlers and any branch summary before it commits the new branch. It reports no
-event when navigation is cancelled or fails in that window. A completion that
-arrives in that window can start a turn on the outgoing branch whose response
-Pi saves on the destination branch. This is a current limitation.
+## Future MCP Tasks Support
 
-Recovery therefore repeats delivery until Pi saves the completion, within the
-attempt limit, rather than guaranteeing exactly once delivery. Expiry or a
-permanent authorization failure can prevent
-presentation and require a fresh authorized recall. The completed Memory
-Question remains available through Koed's normal history. Retrying recall
-creates a new invocation.
-
-## Authorization and diagnostics
-
-`memory_answer` defaults to `response_detail=answer_only` and
-`include_evidence=false`, including for implementation and debugging questions.
-Blocking and deferred execution produce the same compact result: answer Markdown,
-public worker status, and an evidence-count/retrieval-mode summary. Worker token
-usage, execution records, raw errors, and retrieval traces remain in internal
-question history. `with_citations` adds source metadata; `with_evidence` or the
-legacy `include_evidence=true` adds selected evidence bodies and the structured
-answer. These detail levels are explicit caller choices. Team routing errors
-return a message and routing status without an Evidence Bundle.
-
-Codex Stop hooks, ordinary MCP results (including Claude Code's native background
-notifications), and Pi blocking and deferred completions use one shared text
-formatter. It delivers the answer Markdown, or the worker's readable fallback
-message when answer text is absent. The recalled-data warning and no-poll
-guidance occupy one line, followed by HTML-escaped text between data markers.
-Worker metadata and retrieval summaries are omitted from completion text.
-Default MCP recall also omits `structuredContent`, so the result envelope is not
-injected a second time; the retrieval summary is carried in MCP result `_meta`
-under `koed/memory-answer-retrieval`, which clients do not present to the model,
-so observers such as the Experience Replay bridge keep evidence counts.
-Explicit `with_citations`, `with_evidence` or `include_evidence=true` requests
-add their citations, source metadata, evidence bodies and structured answer as
-escaped JSON in a second `<koed-memory-answer-details>` data block. This holds
-for MCP text, Codex Stop-hook delivery and Pi blocking and deferred delivery, so
-every AI Client sees the details it asked for. MCP also keeps the requested
-result in `structuredContent`. Deferred completions rely on the task result,
-which the runtime already limits to the requested detail level. Pi deferred
-completions and failure messages name the task and the request query in model-
-visible text, because Pi keeps message details out of model context and several
-recalls can be pending at once. Internal diagnostics remain in question history.
-An answer without readable text produces a static unavailable message; an
-oversized answer or detail block is rejected without truncation. Failed or
-cancelled deferred tasks produce static messages without task errors or cached
-answers. Pending acknowledgements keep their receipt format for delivery routing.
-
-Task event streams resolve ownership before writing success headers. Scheduler
-notifications only wake an observer; each event and keepalive uses another
-authorized read. Expiry ends observation, resumed versions do not regress, and
-revoked authority never supplies a cached result. Task routes preserve the
-Memory API's denial, not-found and expiry statuses through the Local AI Runtime
-and client, so delivery adapters can stop observing.
-
-Runtime error responses use static messages. On tool and Desktop Ask routes, a
-Memory API failure is reported as an upstream failure: HTTP 503 when the API is
-unreachable, 429 when it is rate limited, and 502 otherwise, with separate text
-for a rejected API Token. A failed blocking recall reports static text for its
-recorded reason, such as a time limit or cancellation; the raw failure message
-is never returned.
-
-The local API keeps recall separate from background reads. `/v1/access/check`
-uses the AI Client control quota. Personal retrieval and local Team search,
-answer, and expansion use the recall quota. Capture Policy and import reads
-continue to use the general read quota. The server selects these quotas by
-route, so a request header cannot change them.
-
-The Local AI Runtime shares one API client across its background services.
-The client starts at most ten requests per second and sends one request at a
-time. After HTTP 429, it pauses the shared backlog for the `Retry-After`
-duration, capped at five minutes. It accepts seconds and HTTP dates. Without
-valid advice, it waits 60 seconds. The owning service retains failed work for
-retry. The client does not replay failed writes. Runtime shutdown cancels
-queued waits and active background requests. Interactive recall uses a
-separate client and does not wait for this backlog.
-
-For HTTP 429, the local Team proxy preserves `Retry-After` and labels the
-response source as `remote`. Local quota failures use `local`. The Local AI
-Runtime and MCP response retain `rateLimitSource` and bounded `retryAfterMs`
-alongside a static error message. Older APIs without the source header retain
-the generic error message. A full local answer queue keeps its separate
-queue-full message.
-
-These changes require an updated local API, Local AI Runtime, and MCP adapter.
-They work with the existing remote Team Backend and its standard retry
-headers. No remote update or database migration is required.
-
-MCP diagnostics omit raw exception messages, stacks, causes and payloads and
-bound retained metadata. They keep allowlisted error class names, numeric status
-fields and allowlisted system codes such as `ECONNREFUSED`, including one level
-of cause. `KOED_LOG_ERROR_DETAIL=1` adds bounded messages and stacks for local
-debugging only; see [observability](observability.md).
-This does not replace task-result authorization or Capture Policy.
+A future MCP Tasks adapter can expose these same durable tasks using negotiated
+protocol support. It should replace only the submission/observation adapter,
+not create another queue, worker or Memory Answer format. Task-protocol support
+alone does not guarantee that a harness wakes an idle agent or permits model
+progress while work is pending; that behavior still needs host acceptance tests.

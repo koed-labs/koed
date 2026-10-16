@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
-import type { EmbedResponse, RerankResponse } from "./schemas.js";
+import type { EmbedResponse } from "./schemas.js";
 import {
   capacityHardwareIdentity,
   createEmbeddingService,
@@ -22,9 +22,9 @@ const cpuAcceleration: ResolvedAcceleration = {
 
 class RouteRuntime extends EmbeddingRuntime {
   embedCalls: Array<{ texts: string[]; priority: string | null }> = [];
-  rerankCalls: Array<{ query: string; documents: string[] }> = [];
+
   healthModelLoaded = true;
-  healthRerankerLoaded = true;
+
   resolvedEmbeddingAcceleration: ResolvedAcceleration = cpuAcceleration;
   embedResult: EmbedResponse = {
     model: "qwen3-0.6b",
@@ -42,34 +42,9 @@ class RouteRuntime extends EmbeddingRuntime {
       }
     ]
   };
-  rerankResult: RerankResponse = {
-    model: "qwen3-reranker-0.6b",
-    artifact: "repo:reranker.gguf",
-    artifactRevision: `sha256:${"a".repeat(64)}`,
-    artifactHash: "a".repeat(64),
-    latencyMs: 12,
-    inputTokens: 29,
-    costUsd: 0,
-    scores: [0.2, 0.9]
-  };
 
   override isModelLoaded(): boolean {
     return this.healthModelLoaded;
-  }
-
-  override isRerankerLoaded(): boolean {
-    return this.healthRerankerLoaded;
-  }
-
-  override rerankerProvenance() {
-    return this.healthRerankerLoaded && this.config.rerankerKey
-      ? {
-          model: this.config.rerankerKey,
-          artifact: this.config.rerankerArtifact ?? "repo:reranker.gguf",
-          artifactRevision: `sha256:${this.config.rerankerArtifactSha256 ?? "a".repeat(64)}`,
-          artifactHash: this.config.rerankerArtifactSha256 ?? "a".repeat(64)
-        }
-      : null;
   }
 
   override healthQueueSnapshot() {
@@ -80,24 +55,12 @@ class RouteRuntime extends EmbeddingRuntime {
     return this.resolvedEmbeddingAcceleration;
   }
 
-  override rerankerAcceleration(): ResolvedAcceleration | null {
-    return this.config.rerankerKey ? cpuAcceleration : null;
-  }
-
   override async embedText(
     texts: string[],
     requestedPriority: string | null
   ): Promise<EmbedResponse> {
     this.embedCalls.push({ texts, priority: requestedPriority });
     return this.embedResult;
-  }
-
-  override async rerankTexts(
-    query: string,
-    documents: string[]
-  ): Promise<RerankResponse> {
-    this.rerankCalls.push({ query, documents });
-    return this.rerankResult;
   }
 }
 
@@ -200,52 +163,8 @@ describe("Embedding Service routes", () => {
     );
   });
 
-  it("reports loading health until configured reranker is loaded", async () => {
-    const config = testConfig({
-      embeddingServiceToken: "secret",
-      rerankerKey: "qwen3-reranker-0.6b",
-      rerankerRepo: "repo",
-      rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf",
-      rerankerArtifact: "repo:reranker.gguf",
-      rerankerArtifactSha256: "a".repeat(64)
-    });
-    const runtime = new RouteRuntime(config, logger());
-    runtime.healthRerankerLoaded = false;
-    const service = createEmbeddingService(config, runtime, logger());
-
-    const response = await service.handle(
-      new Request("http://127.0.0.1/health", {
-        headers: { "x-koed-embedding-token": "secret" }
-      })
-    );
-    const payload = await json(response);
-
-    expect(response.status).toBe(503);
-    expect(response.headers.get("x-request-id")).toBeTruthy();
-    expect(payload.status).toBe("loading");
-    expect(payload.queue).toEqual({
-      active: false,
-      waiting_interactive: 0,
-      waiting_background: 1
-    });
-    expect(payload.reranker).toMatchObject({
-      enabled: true,
-      loaded: false,
-      modelKey: "qwen3-reranker-0.6b",
-      batchLimit: 100
-    });
-  });
-
   it("returns ready health with configured request id", async () => {
-    const config = testConfig({
-      rerankerKey: "qwen3-reranker-0.6b",
-      rerankerRepo: "repo",
-      rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf",
-      rerankerArtifact: "repo:reranker.gguf",
-      rerankerArtifactSha256: "a".repeat(64)
-    });
+    const config = testConfig({});
     const runtime = new RouteRuntime(config, logger());
     const service = createEmbeddingService(config, runtime, logger());
 
@@ -272,12 +191,6 @@ describe("Embedding Service routes", () => {
       acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
     });
     expect(payload).not.toHaveProperty("gpuIdleUnloadSeconds");
-    expect(payload.reranker).not.toHaveProperty("gpuIdleUnloadSeconds");
-    expect(payload.reranker).toMatchObject({
-      artifact: `sha256:${"a".repeat(64)}`,
-      artifactRevision: `sha256:${"a".repeat(64)}`,
-      artifactHash: "a".repeat(64)
-    });
   });
 
   it("protects the content-free capacity identity with the internal token", async () => {
@@ -329,7 +242,6 @@ describe("Embedding Service routes", () => {
 
     expect(payload.artifact).toBe(config.modelArtifact);
     expect(payload.gpuIdleUnloadSeconds).toBe(0);
-    expect(payload.reranker).not.toHaveProperty("gpuIdleUnloadSeconds");
   });
 
   it("does not expose raw accelerator device details through public health", async () => {
@@ -418,57 +330,6 @@ describe("Embedding Service routes", () => {
     expect(tooMany.status).toBe(422);
     expect(tooLong.status).toBe(422);
     expect(runtime.embedCalls).toEqual([]);
-  });
-
-  it("returns rerank scores and maps failures", async () => {
-    const config = testConfig({
-      rerankerKey: "qwen3-reranker-0.6b",
-      rerankerRepo: "repo",
-      rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf",
-      rerankerArtifact: "repo:reranker.gguf",
-      rerankerArtifactSha256: "a".repeat(64)
-    });
-    const runtime = new RouteRuntime(config, logger());
-    const service = createEmbeddingService(config, runtime, logger());
-
-    const response = await service.handle(
-      new Request("http://127.0.0.1/rerank", {
-        method: "POST",
-        body: JSON.stringify({ query: "question", documents: ["one", "two"] })
-      })
-    );
-    const payload = await json(response);
-
-    expect(response.status).toBe(200);
-    expect(payload).toEqual({
-      model: "qwen3-reranker-0.6b",
-      artifact: "repo:reranker.gguf",
-      artifactRevision: `sha256:${"a".repeat(64)}`,
-      artifactHash: "a".repeat(64),
-      latencyMs: 12,
-      inputTokens: 29,
-      costUsd: 0,
-      scores: [0.2, 0.9]
-    });
-    expect(runtime.rerankCalls).toEqual([
-      { query: "question", documents: ["one", "two"] }
-    ]);
-
-    runtime.rerankTexts = async () => {
-      throw new Error("server down");
-    };
-    const failed = await service.handle(
-      new Request("http://127.0.0.1/rerank", {
-        method: "POST",
-        body: JSON.stringify({ query: "question", documents: ["one", "two"] })
-      })
-    );
-    expect(failed.status).toBe(500);
-    expect(await json(failed)).toEqual({
-      detail: "reranking request failed",
-      code: "reranking_runtime_error"
-    });
   });
 
   it("redacts runtime and model details from embedding responses and logs", async () => {

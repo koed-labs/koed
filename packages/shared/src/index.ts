@@ -1638,11 +1638,6 @@ export const teamSemanticEmbeddingGeneration = (input: {
     `service-normalization=${input.normalization}`
   ].join("|");
 
-export interface SupportedRerankerModelConfig {
-  key: string;
-  model: string;
-}
-
 export const DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b";
 export const DEFAULT_EMBEDDING_QUERY_INSTRUCTION =
   "Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.";
@@ -1660,7 +1655,6 @@ export const formatEmbeddingRetrievalQuery = (
 
 export const formatEmbeddingRetrievalDocument = (document: string): string =>
   document;
-export const DEFAULT_RERANKER_MODEL_KEY = "qwen3-reranker-0.6b";
 
 export const SUPPORTED_EMBEDDING_MODELS: Record<
   string,
@@ -1683,17 +1677,6 @@ export const SUPPORTED_EMBEDDING_MODELS: Record<
   }
 };
 
-export const SUPPORTED_RERANKER_MODELS: Record<
-  string,
-  SupportedRerankerModelConfig
-> = {
-  "qwen3-reranker-0.6b": {
-    key: "qwen3-reranker-0.6b",
-    model:
-      "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp:Qwen3-Reranker-0.6B-Q4_K_M.gguf"
-  }
-};
-
 export const resolveSupportedEmbeddingModelConfig = (
   key: string | undefined = DEFAULT_EMBEDDING_MODEL_KEY
 ): SupportedEmbeddingModelConfig => {
@@ -1710,35 +1693,6 @@ export const resolveSupportedEmbeddingModelConfig = (
   }
   return config;
 };
-
-export const resolveSupportedRerankerModelConfig = (
-  key: string | undefined
-): SupportedRerankerModelConfig | null => {
-  const normalized = key?.trim() ?? "";
-  if (!normalized) {
-    return null;
-  }
-
-  const config = SUPPORTED_RERANKER_MODELS[normalized];
-  if (!config) {
-    throw new Error(
-      `Unsupported reranker model key: ${normalized}. Supported model keys: ${Object.keys(
-        SUPPORTED_RERANKER_MODELS
-      )
-        .sort()
-        .join(", ")}`
-    );
-  }
-  return config;
-};
-
-export const resolveRerankerKeyFromEnv = (environment: {
-  EMBEDDING_RERANKER_KEY?: string;
-  RERANKER_KEY?: string;
-}): string | undefined =>
-  Object.prototype.hasOwnProperty.call(environment, "RERANKER_KEY")
-    ? environment.RERANKER_KEY
-    : environment.EMBEDDING_RERANKER_KEY;
 
 export {
   REALTIME_TRANSPORT_CLIENT_INSTANCE_ID_MAX_LENGTH,

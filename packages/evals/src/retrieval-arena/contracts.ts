@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export const RETRIEVAL_ARENA_SCHEMA_VERSION = "retrieval-arena-v2";
+export const RETRIEVAL_ARENA_SCHEMA_VERSION = "retrieval-arena-v3";
 
 export const arenaCostBasisSchema = z.enum([
   "local_no_cost",
@@ -253,10 +253,7 @@ export interface ArenaResourceMetrics {
   decryptBytes: number | null;
   embeddingCalls: number | null;
   embeddingTokens: number | null;
-  rerankerCalls: number | null;
-  rerankerLatencyMs: number | null;
-  rerankerInputTokens: number | null;
-  rerankerCostUsd: number | null;
+
   internalVectorStages: number | null;
   apiRetrievalCalls: number | null;
   /** @deprecated Use apiRetrievalCalls. */
@@ -284,18 +281,6 @@ export interface ArenaModelCallMetrics {
   error?: string;
 }
 
-export interface ArenaRerankerCallMetrics {
-  model: string | null;
-  artifact: string | null;
-  artifactRevision: string | null;
-  artifactHash: string | null;
-  latencyMs: number | null;
-  calls: number;
-  inputTokens: number | null;
-  costUsd: number | null;
-  costBasis?: ArenaCostBasis;
-}
-
 export interface RetrievalArmOutput {
   /** Ranked pool before evidence item/token budgets are applied. */
   /** Null means the provider did not expose a complete, ordered candidate pool. */
@@ -306,7 +291,6 @@ export interface RetrievalArmOutput {
   provider?: string;
   trace?: Record<string, unknown>;
   metrics?: Partial<ArenaResourceMetrics>;
-  rerankerMetrics?: ArenaRerankerCallMetrics;
 }
 
 export interface ProductArmOutput extends RetrievalArmOutput {
@@ -339,7 +323,7 @@ export interface ArenaArm {
   layer: "retrieval_only" | "product";
   providerRequirement?: string;
   modelRoles?: Array<
-    "embedding" | "reranker" | "reader" | "judge" | "rewrite" | "productWorker"
+    "embedding" | "reader" | "judge" | "rewrite" | "productWorker"
   >;
   configuration: Record<string, unknown>;
   run(context: ArenaArmContext): Promise<RetrievalArmOutput | ProductArmOutput>;
@@ -457,7 +441,7 @@ export interface ArenaRunResult {
     reader?: ArenaModelCallMetrics;
     judge?: ArenaModelCallMetrics;
   };
-  rerankerResources?: ArenaRerankerCallMetrics;
+
   productProof?: ProductRunProof;
   qualityObservation?: {
     quality: number;
@@ -469,14 +453,14 @@ export interface ArenaRunResult {
     retrievalAndSynthesisUsd: number | null;
     readerUsd: number | null;
     judgeUsd: number | null;
-    rerankerUsd: number | null;
+
     totalUsd: number | null;
     complete: boolean;
     billingBasis: {
       retrievalAndSynthesis: ArenaCostBasis;
       reader: ArenaCostBasis;
       judge: ArenaCostBasis;
-      reranker: ArenaCostBasis;
+
       total: ArenaCostBasis;
     };
   };

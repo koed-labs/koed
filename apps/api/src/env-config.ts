@@ -3,8 +3,6 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
-  resolveRerankerKeyFromEnv,
-  resolveSupportedRerankerModelConfig,
   validateEnvelopeEncryptionProviderEnvironment
 } from "@koed/shared";
 import { resolveTeamCollaborationEnabled } from "./server/team-collaboration-feature.js";
@@ -60,7 +58,7 @@ export const resolveApiEnv = (
   const nodeEnv = environment.NODE_ENV ?? "development";
   const queueBackend =
     environment.WORK_QUEUE_BACKEND?.trim() === "local" ? "local" : "bullmq";
-  resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
+
   requireWorkosAuthKitEnv(environment);
   resolveTeamCollaborationEnabled(environment);
   if (nodeEnv === "production") {

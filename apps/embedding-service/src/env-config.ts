@@ -12,12 +12,6 @@ export interface SupportedEmbeddingModel {
   dimensions: number;
 }
 
-export interface SupportedRerankerModel {
-  key: string;
-  repo: string;
-  file: string;
-}
-
 export interface EmbeddingServiceEnv {
   host: string;
   port: number;
@@ -48,24 +42,7 @@ export interface EmbeddingServiceEnv {
   llamaServerBinary: string;
   llamaServerStartupTimeoutSeconds: number;
   embeddingServerPort: number;
-  rerankerKey: string | null;
-  rerankerRepo: string | null;
-  rerankerFile: string | null;
-  rerankerModelPath: string | null;
-  rerankerArtifact: string | null;
-  rerankerArtifactSha256: string | null;
-  rerankerServerPort: number;
-  rerankerBatchLimit: number;
-  rerankerContextPerSlot: number;
-  rerankerNCtx: number;
-  rerankerNThreads: number;
-  rerankerNBatch: number;
-  rerankerNUbatch: number;
-  rerankerParallel: number;
-  rerankerPromptCacheEnabled: boolean;
-  rerankerAccelerationPolicy: AccelerationPolicy;
-  rerankerAccelerationDevice: string | null;
-  rerankerGpuIdleUnloadSeconds: number;
+
   embeddingServiceToken: string;
   runtimeVersion: string;
   logLevel: string;
@@ -82,15 +59,6 @@ export const SUPPORTED_EMBEDDING_MODELS: Record<
     dimensions: 1024
   }
 };
-
-export const SUPPORTED_RERANKER_MODELS: Record<string, SupportedRerankerModel> =
-  {
-    "qwen3-reranker-0.6b": {
-      key: "qwen3-reranker-0.6b",
-      repo: "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp",
-      file: "Qwen3-Reranker-0.6B-Q4_K_M.gguf"
-    }
-  };
 
 export const DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b";
 export const DEFAULT_EMBEDDING_MAX_TOKENS = 4096;
@@ -239,30 +207,6 @@ const nonNegativeIntAlias = (
   return fallback;
 };
 
-const boolAlias = (
-  environment: NodeJS.ProcessEnv,
-  names: string[],
-  fallback: boolean
-): boolean => {
-  for (const name of names) {
-    const value = environment[name];
-    if (value !== undefined && value.trim() !== "") {
-      return boolEnv(environment, name, fallback);
-    }
-  }
-  return fallback;
-};
-
-const rerankerKeyFromEnv = (
-  environment: NodeJS.ProcessEnv
-): string | undefined =>
-  Object.prototype.hasOwnProperty.call(environment, "RERANKER_KEY")
-    ? environment.RERANKER_KEY?.trim()
-    : firstEnv(environment, ["EMBEDDING_RERANKER_KEY"]);
-
-export const rerankerEnabled = (config: EmbeddingServiceEnv): boolean =>
-  config.rerankerRepo !== null || config.rerankerModelPath !== null;
-
 export const verifyEmbeddingModelArtifact = async (
   config: Pick<
     EmbeddingServiceEnv,
@@ -282,39 +226,6 @@ export const sha256File = async (path: string): Promise<string> => {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(path)) digest.update(chunk);
   return digest.digest("hex");
-};
-
-export const verifyRerankerModelArtifact = async (
-  config: Pick<
-    EmbeddingServiceEnv,
-    "rerankerModelPath" | "rerankerArtifactSha256"
-  >
-): Promise<string> => {
-  if (!config.rerankerModelPath || !config.rerankerArtifactSha256) {
-    throw new Error(
-      "enabled reranker requires a model path and expected artifact SHA-256"
-    );
-  }
-  const actualArtifactSha256 = await sha256File(config.rerankerModelPath);
-  if (actualArtifactSha256 !== config.rerankerArtifactSha256) {
-    throw new Error(
-      `reranker model artifact SHA-256 mismatch: configured ${config.rerankerArtifactSha256}, actual ${actualArtifactSha256}`
-    );
-  }
-  return actualArtifactSha256;
-};
-
-export const rerankerModel = (config: EmbeddingServiceEnv): string | null => {
-  if (config.rerankerKey === null) {
-    return null;
-  }
-  if (config.rerankerModelPath !== null) {
-    return config.rerankerModelPath;
-  }
-  if (config.rerankerRepo !== null && config.rerankerFile !== null) {
-    return `${config.rerankerRepo}:${config.rerankerFile}`;
-  }
-  return config.rerankerKey;
 };
 
 export const resolveEnv = (
@@ -349,46 +260,6 @@ export const resolveEnv = (
     );
   }
 
-  const rerankerKey = rerankerKeyFromEnv(environment) ?? "";
-  const rerankerModelPath = optionalPathEnv(environment, [
-    "RERANKER_MODEL_PATH",
-    "EMBEDDING_RERANKER_MODEL_PATH",
-    "KOED_RERANKER_MODEL_PATH"
-  ]);
-  const rerankerConfig = rerankerKey
-    ? SUPPORTED_RERANKER_MODELS[rerankerKey]
-    : undefined;
-  if (rerankerKey && !rerankerConfig) {
-    throw new Error(
-      `Unsupported RERANKER_KEY ${JSON.stringify(
-        rerankerKey
-      )}. Supported model keys: ${Object.keys(SUPPORTED_RERANKER_MODELS)
-        .sort()
-        .join(", ")}`
-    );
-  }
-  if (!rerankerKey && rerankerModelPath) {
-    throw new Error(
-      "RERANKER_MODEL_PATH requires a supported RERANKER_KEY for model identity"
-    );
-  }
-  const configuredRerankerArtifactSha256 = firstEnv(environment, [
-    "RERANKER_ARTIFACT_SHA256",
-    "EMBEDDING_RERANKER_ARTIFACT_SHA256",
-    "KOED_RERANKER_MODEL_SHA256"
-  ]);
-  if (rerankerConfig && !configuredRerankerArtifactSha256) {
-    throw new Error(
-      "enabled reranker requires KOED_RERANKER_MODEL_SHA256 (or RERANKER_ARTIFACT_SHA256)"
-    );
-  }
-  if (
-    configuredRerankerArtifactSha256 &&
-    !/^[a-f0-9]{64}$/i.test(configuredRerankerArtifactSha256)
-  ) {
-    throw new Error("reranker artifact SHA-256 must be 64 hex characters");
-  }
-
   const llamaNCtx = Math.min(
     intAlias(
       environment,
@@ -419,47 +290,12 @@ export const resolveEnv = (
       llamaNBatch - llamaBatchTokenHeadroom
     )
   );
-  const rerankerContextPerSlot = Math.min(
-    intAlias(
-      environment,
-      ["RERANKER_CONTEXT_PER_SLOT", "EMBEDDING_RERANKER_CONTEXT_PER_SLOT"],
-      8192
-    ),
-    QWEN_OPERATIONAL_MAX_TOKENS
-  );
-  const rerankerParallel = intAlias(
-    environment,
-    ["RERANKER_PARALLEL", "EMBEDDING_RERANKER_PARALLEL"],
-    4
-  );
-  const rerankerNCtx = Math.min(
-    intAlias(
-      environment,
-      ["RERANKER_LLAMA_N_CTX", "EMBEDDING_RERANKER_LLAMA_N_CTX"],
-      rerankerContextPerSlot * rerankerParallel
-    ),
-    QWEN_OPERATIONAL_MAX_TOKENS * rerankerParallel
-  );
-  const rerankerNBatch = intAlias(
-    environment,
-    ["RERANKER_LLAMA_N_BATCH", "EMBEDDING_RERANKER_LLAMA_N_BATCH"],
-    rerankerContextPerSlot
-  );
+
   const embeddingServerPort = intAlias(
     environment,
     ["LLAMA_EMBEDDING_SERVER_PORT", "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT"],
     18080
   );
-  const rerankerServerPort = intAlias(
-    environment,
-    ["LLAMA_RERANKER_SERVER_PORT", "EMBEDDING_LLAMA_RERANKER_SERVER_PORT"],
-    18081
-  );
-  if (embeddingServerPort === rerankerServerPort) {
-    throw new Error(
-      "LLAMA_EMBEDDING_SERVER_PORT and LLAMA_RERANKER_SERVER_PORT must differ"
-    );
-  }
 
   const cpuCount = cpus().length || 1;
   return {
@@ -559,64 +395,7 @@ export const resolveEnv = (
       180
     ),
     embeddingServerPort,
-    rerankerKey: rerankerConfig?.key ?? null,
-    rerankerRepo: rerankerConfig?.repo ?? null,
-    rerankerFile: rerankerConfig?.file ?? null,
-    rerankerModelPath,
-    rerankerArtifact: rerankerConfig
-      ? (firstEnv(environment, [
-          "RERANKER_ARTIFACT",
-          "EMBEDDING_RERANKER_ARTIFACT",
-          "KOED_RERANKER_MODEL_URL"
-        ]) ?? `${rerankerConfig.repo}:${rerankerConfig.file}`)
-      : null,
-    rerankerArtifactSha256:
-      rerankerConfig && configuredRerankerArtifactSha256
-        ? configuredRerankerArtifactSha256.toLowerCase()
-        : null,
-    rerankerServerPort,
-    rerankerBatchLimit: intAlias(
-      environment,
-      ["RERANKER_BATCH_LIMIT", "EMBEDDING_RERANKER_BATCH_LIMIT"],
-      100
-    ),
-    rerankerContextPerSlot,
-    rerankerNCtx,
-    rerankerNThreads: intAlias(
-      environment,
-      ["RERANKER_LLAMA_N_THREADS", "EMBEDDING_RERANKER_LLAMA_N_THREADS"],
-      intAlias(
-        environment,
-        ["LLAMA_N_THREADS", "EMBEDDING_LLAMA_N_THREADS"],
-        cpuCount
-      )
-    ),
-    rerankerNBatch,
-    rerankerNUbatch: intAlias(
-      environment,
-      ["RERANKER_LLAMA_N_UBATCH", "EMBEDDING_RERANKER_LLAMA_N_UBATCH"],
-      512
-    ),
-    rerankerParallel,
-    rerankerPromptCacheEnabled: boolAlias(
-      environment,
-      [
-        "RERANKER_PROMPT_CACHE_ENABLED",
-        "EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED"
-      ],
-      true
-    ),
-    rerankerAccelerationPolicy: accelerationPolicy(
-      environment.KOED_RERANKER_ACCELERATION,
-      "KOED_RERANKER_ACCELERATION",
-      "cpu"
-    ),
-    rerankerAccelerationDevice: trim(environment.KOED_RERANKER_DEVICE) ?? null,
-    rerankerGpuIdleUnloadSeconds: nonNegativeIntAlias(
-      environment,
-      ["KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS"],
-      300
-    ),
+
     embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",
     runtimeVersion:
       trim(environment.KOED_EMBEDDING_RUNTIME_VERSION) ?? "unknown",

@@ -48,7 +48,10 @@ import {
   teamWorkspaceAutoResolutionEnabled
 } from "../src/project-team-workspace-links.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
-import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
+import {
+  memoryAnswerAdapterInputSchema,
+  memoryAnswerInputSchema
+} from "../src/memory-tool-schemas.js";
 
 const servers: http.Server[] = [];
 const identityHash = "f".repeat(64);
@@ -358,59 +361,88 @@ describe("MCP tool exposure", () => {
 describe("MCP memory_answer schema wording", () => {
   it("keeps the server instructions aligned with recall policy", () => {
     expect(memoryServerInstructions).toContain("prior conversations");
-    expect(memoryServerInstructions).toContain("previous project decisions");
-    expect(memoryServerInstructions).toContain("remembered preferences");
+    expect(memoryServerInstructions).toContain("project decisions");
+    expect(memoryServerInstructions).toContain("preferences");
     expect(memoryServerInstructions).toContain("user-provided facts");
-    expect(memoryServerInstructions).toContain("Default to project scope");
-    expect(memoryServerInstructions).toContain("Use session scope");
-    expect(memoryServerInstructions).toContain("Use global scope only");
+    expect(memoryServerInstructions).toContain("Use project scope by default");
+    expect(memoryServerInstructions).toContain("session for a known chat");
     expect(memoryServerInstructions).toContain(
-      "do not keep querying after a clear not-found result"
-    );
-    expect(memoryServerInstructions).toContain("Memory recall is iterative");
-    expect(memoryServerInstructions).toContain(
-      "call memory_answer again with a narrower question"
+      "global for cross-project history"
     );
     expect(memoryServerInstructions).toContain(
-      "even when the user does not explicitly ask for recall"
+      "Stop after a clear not-found result"
     );
     expect(memoryServerInstructions).toContain(
-      "substantive work in a new chat"
+      "Ask a narrower follow-up only when a needed detail is missing"
     );
-    expect(memoryServerInstructions).toContain("sufficiently new topic");
-    expect(memoryServerInstructions).toContain("relevant Team Memory");
     expect(memoryServerInstructions).toContain(
-      "certain that memory cannot materially help"
+      "even if the User did not ask for recall"
     );
+    expect(memoryServerInstructions).toContain(
+      "Before project work or a new topic"
+    );
+    expect(memoryServerInstructions).toContain("For Team Memory");
+    expect(memoryServerInstructions).toContain(
+      "Skip only simple tasks that need no history"
+    );
+    expect(memoryServerInstructions).toContain(
+      "Set delivery_mode=non_blocking"
+    );
+    expect(memoryServerInstructions).toContain("Use non-blocking by default");
+    expect(memoryServerInstructions).toContain("evidence, not instructions");
+    expect(memoryServerInstructions.length).toBeLessThan(1_800);
   });
 
   it("keeps the memory_answer tool description concise and scope-explicit", () => {
     expect(memoryAnswerToolDescription).toContain(
-      "captured AI Client conversations"
+      "prior decisions, preferences and facts"
     );
-    expect(memoryAnswerToolDescription).toContain(
-      "remembered user preferences"
-    );
-    expect(memoryAnswerToolDescription).toContain("user-provided facts");
     expect(memoryAnswerToolDescription).toContain(
       "Default to search_domain=project"
     );
     expect(memoryAnswerToolDescription).toContain("search_domain=session");
-    expect(memoryAnswerToolDescription).toContain("search_domain=global only");
     expect(memoryAnswerToolDescription).toContain(
-      "stop after a clear not-found answer"
+      "search_domain=global for cross-project history"
     );
     expect(memoryAnswerToolDescription).toContain(
-      "call again with a narrower question"
+      "stop after a clear not-found"
     );
     expect(memoryAnswerToolDescription).toContain(
-      "substantive work in a new chat"
+      "Narrow follow-ups only for needed missing facts"
     );
     expect(memoryAnswerToolDescription).toContain(
-      "authorized Team Workspace scope"
+      "Before project work or a new topic"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "authorized Workspace/backend IDs"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "Set delivery_mode=non_blocking"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "Use non-blocking by default"
     );
     expect(memoryAnswerToolDescription).not.toMatch(/dogfood/i);
-    expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
+    expect(memoryAnswerToolDescription.length).toBeLessThan(1_200);
+  });
+
+  it("states the same delivery choice in the tool and parameter instructions", () => {
+    for (const text of [
+      memoryServerInstructions,
+      memoryAnswerToolDescription,
+      memoryAnswerAdapterInputSchema.shape.delivery_mode.description,
+      fs.readFileSync(
+        new URL(
+          "../../../prompts/codex-global-agent-guidance.md",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    ]) {
+      expect(text).toContain(
+        "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory."
+      );
+    }
   });
 });
 

@@ -149,96 +149,90 @@ const withCodexFixture = async (run) => {
   }
 };
 
-test("deferred Codex setup installs synchronous matched delivery hooks and preserves capture", async () => {
-  await withCodexFixture(async ({ config, instructions, invoke }) => {
+test("Codex task setup preserves capture, user settings, and managed guidance", async () => {
+  await withCodexFixture(async ({ config, instructions, dist, invoke }) => {
     const unrelated =
       '# User configuration\nmodel = "user-model"\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "user-stop"\n';
     writeFileSync(config, unrelated);
     writeFileSync(instructions, "# User guidance\n");
-    await invoke(["--deferred-recall"], { MEMORY_MCP_NAME: "memory-local" });
+    rmSync(path.join(dist, "codex-memory-hook.js"));
+    const { stdout } = await invoke(["--deferred-recall"], {
+      MEMORY_MCP_NAME: "memory-local"
+    });
+    assert.match(stdout, /deprecated/);
     const installed = readFileSync(config, "utf8");
     assert.ok(installed.startsWith(unrelated));
-    assert.match(installed, /KOED_CODEX_STOP_DELIVERY = "1"/);
-    assert.match(
-      installed,
-      /KOED_CODEX_MEMORY_TOOL = "mcp__memory-local__memory_answer"/
-    );
-    assert.equal((installed.match(/^# >>> koed$/gm) ?? []).length, 1);
-    const delivery = installed
-      .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
-      .filter((part) => part.includes("codex-memory-hook.js"));
-    assert.equal(delivery.length, 5);
-    for (const event of ["PreToolUse", "PostToolUse"]) {
-      const block = delivery.find((part) =>
-        part.startsWith(`[[hooks.${event}]]`)
+    for (const tool of [
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
+      "memory_workspaces"
+    ]) {
+      assert.ok(
+        installed.includes(
+          `[mcp_servers.memory-local.tools.${tool}]\napproval_mode = "approve"`
+        )
       );
-      assert.match(block, /matcher = "\^mcp__memory-local__memory_answer\$"/);
     }
-    const stop = delivery.find((part) => part.startsWith("[[hooks.Stop]]"));
-    assert.match(stop, /timeout = 305/);
-    assert.doesNotMatch(stop, /async\s*=/);
-    assert.match(
-      delivery.find((part) => part.startsWith("[[hooks.Interrupt]]")),
-      /timeout = 3/
-    );
-    assert.match(
-      delivery.find((part) => part.startsWith("[[hooks.SessionEnd]]")),
-      /timeout = 10/
-    );
+    for (const event of [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PostToolUse",
+      "Stop",
+      "SubagentStart",
+      "SubagentStop"
+    ]) {
+      const groups = installed.split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m);
+      assert.ok(
+        groups.some(
+          (part) =>
+            part.startsWith(`[[hooks.${event}]]`) &&
+            part.includes("capture-hook.js")
+        )
+      );
+    }
     assert.equal((installed.match(/capture-hook\.js/g) ?? []).length, 6);
-    assert.doesNotMatch(installed, /MEMORY_API_TOKEN|MEMORY_API_URL/);
+    await invoke(["--check"], { MEMORY_MCP_NAME: "memory-local" });
+    await invoke(["--blocking-recall"], { MEMORY_MCP_NAME: "memory-local" });
+    assert.equal(readFileSync(config, "utf8"), installed);
     await invoke([], {
       MEMORY_MCP_NAME: "memory-local",
       KOED_CODEX_STOP_DELIVERY: "1"
     });
     assert.equal(readFileSync(config, "utf8"), installed);
-    const guidance = readFileSync(instructions, "utf8");
-    await invoke(["--check"], { MEMORY_MCP_NAME: "memory-local" });
-    assert.equal(readFileSync(config, "utf8"), installed);
-    assert.equal(readFileSync(instructions, "utf8"), guidance);
-    await invoke(["--blocking-recall"], { MEMORY_MCP_NAME: "memory-local" });
-    const blocking = readFileSync(config, "utf8");
-    assert.match(blocking, /KOED_CODEX_STOP_DELIVERY = "0"/);
-    assert.doesNotMatch(blocking, /codex-memory-hook\.js/);
-    await invoke([], { MEMORY_MCP_NAME: "memory-local" });
-    assert.equal(readFileSync(config, "utf8"), blocking);
-    assert.equal((blocking.match(/capture-hook\.js/g) ?? []).length, 6);
-    assert.ok(blocking.startsWith(unrelated));
     await invoke(["--remove"], { MEMORY_MCP_NAME: "memory-local" });
     assert.ok(readFileSync(config, "utf8").includes(unrelated.trimEnd()));
-    assert.doesNotMatch(
-      readFileSync(config, "utf8"),
-      /# >>> koed|capture-hook\.js/
-    );
     assert.equal(readFileSync(instructions, "utf8"), "# User guidance\n");
-    const removed = readFileSync(config, "utf8");
-    await invoke(["--remove"]);
-    assert.equal(readFileSync(config, "utf8"), removed);
   });
 });
 
-test("Codex setup defaults to deferred recall and upgrades blocks without a recorded selection", async () => {
+test("Codex setup reconciles older owned configuration into task collection", async () => {
   await withCodexFixture(async ({ config, invoke }) => {
+    const unrelated = 'model = "user-model"\n';
+    writeFileSync(
+      config,
+      unrelated +
+        '\n# >>> koed\n[mcp_servers.koed.env]\nKOED_CODEX_STOP_DELIVERY = "1"\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "node codex-memory-hook.js"\ntimeout = 305\n# <<< koed\n'
+    );
+    await assert.rejects(invoke(["--check"]));
     await invoke();
     const installed = readFileSync(config, "utf8");
-    assert.match(installed, /KOED_CODEX_STOP_DELIVERY = "1"/);
-    assert.match(installed, /codex-memory-hook\.js/);
+    assert.ok(installed.startsWith(unrelated));
+    assert.equal((installed.match(/^# >>> koed$/gm) ?? []).length, 1);
+    const stopGroups = installed
+      .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
+      .filter((part) => part.startsWith("[[hooks.Stop]]"));
+    assert.equal(stopGroups.length, 1);
+    assert.match(stopGroups[0], /capture-hook\.js/);
+    assert.match(stopGroups[0], /timeout = 30/);
     await invoke(["--check"]);
-    await invoke(["--blocking-recall"]);
-    const legacy = readFileSync(config, "utf8").replace(
-      /^KOED_CODEX_STOP_DELIVERY = "0"\n/m,
-      ""
-    );
-    assert.doesNotMatch(legacy, /KOED_CODEX_STOP_DELIVERY|codex-memory-hook/);
-    writeFileSync(config, legacy);
-    await assert.rejects(invoke(["--check"]));
     await invoke();
     assert.equal(readFileSync(config, "utf8"), installed);
   });
 });
 
-test("Codex owned-block validation and missing delivery artifact fail before configuration mutation", async () => {
-  await withCodexFixture(async ({ config, instructions, dist, invoke }) => {
+test("Codex owned-block validation fails before configuration mutation", async () => {
+  await withCodexFixture(async ({ config, instructions, invoke }) => {
     writeFileSync(
       config,
       "# User settings\n# >>> koed\n# >>> koed\n# <<< koed\n"
@@ -251,67 +245,13 @@ test("Codex owned-block validation and missing delivery artifact fail before con
     );
     assert.equal(readFileSync(config, "utf8"), before);
     assert.equal(readFileSync(instructions, "utf8"), "User instructions\n");
-    writeFileSync(config, "# User settings\n");
-    rmSync(path.join(dist, "codex-memory-hook.js"));
-    await assert.rejects(
-      invoke(["--deferred-recall"]),
-      /Build @koed\/mcp-server/
-    );
-    assert.equal(readFileSync(config, "utf8"), "# User settings\n");
-    await assert.rejects(invoke(), /Build @koed\/mcp-server/);
-    assert.equal(readFileSync(config, "utf8"), "# User settings\n");
-    await invoke(["--blocking-recall"]);
-    assert.match(
-      readFileSync(config, "utf8"),
-      /KOED_CODEX_STOP_DELIVERY = "0"/
-    );
-    const installed = readFileSync(config, "utf8");
-    await invoke(["--check"]);
-    await assert.rejects(invoke(["--check", "--deferred-recall"]));
-    assert.equal(readFileSync(config, "utf8"), installed);
     await assert.rejects(
       invoke(["--deferred-recall", "--blocking-recall"]),
       /Choose either/
     );
     await assert.rejects(invoke(["--remove", "--check"]), /Choose either/);
-    assert.equal(readFileSync(config, "utf8"), installed);
   });
 });
-
-test(
-  "delivery hook command passes literal home paths without shell substitution",
-  { skip: process.platform === "win32" },
-  async () => {
-    await withCodexFixture(async ({ dir, dist, config, invoke }) => {
-      const literalHome = path.join(
-        dir,
-        "literal ' $HOME $(touch unwanted) `whoami`"
-      );
-      writeFileSync(
-        path.join(dist, "codex-memory-hook.js"),
-        "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n"
-      );
-      await invoke(["--deferred-recall"], { KOED_HOME: literalHome });
-      const block = readFileSync(config, "utf8")
-        .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
-        .find((part) => part.startsWith("[[hooks.PreToolUse]]"));
-      const command = JSON.parse(block.match(/^command = (.+)$/m)[1]);
-      const { stdout } = await execFileAsync("/bin/sh", ["-c", command], {
-        cwd: dir,
-        env: { PATH: "/usr/bin:/bin" }
-      });
-      assert.deepEqual(JSON.parse(stdout), [
-        "--koed-home",
-        literalHome,
-        "--memory-tool",
-        "mcp__koed__memory_answer",
-        "--wait-ms",
-        "300000"
-      ]);
-      assert.equal(existsSync(path.join(dir, "unwanted")), false);
-    });
-  }
-);
 
 test("codex configure preserves user instructions and updates one managed block", async () => {
   const dir = path.join(

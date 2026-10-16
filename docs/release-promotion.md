@@ -1,6 +1,6 @@
 # Release signing and promotion
 
-Both automated release and Desktop recovery workflows keep GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification.
+Both automated release and Desktop recovery workflows keep GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification. Automated asset jobs run only when the release is absent or remains a draft; reruns skip asset acquisition and promotion for already published releases.
 
 ## Required repository variables
 

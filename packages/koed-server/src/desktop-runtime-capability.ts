@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalArtifactJson as canonicalJson } from "./artifact-canonical-json.mjs";
 import {
   closeSync,
   constants,
@@ -38,17 +39,37 @@ export interface DesktopRuntimeCapability {
 const issuedCapabilities = new WeakSet<object>();
 const hash = (bytes: Buffer | string): string =>
   createHash("sha256").update(bytes).digest("hex");
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
+function validateDesktopRuntimeManifest(
+  value: unknown
+): asserts value is DesktopRuntimeManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Desktop runtime bundle manifest is invalid");
+  const record = value as Record<string, unknown>;
+  const target = record.target as Record<string, unknown> | undefined;
+  if (
+    record.schemaVersion !== 1 ||
+    record.component !== "base" ||
+    typeof record.productVersion !== "string" ||
+    !target ||
+    typeof target !== "object" ||
+    Array.isArray(target) ||
+    (target.platform !== "macos" && target.platform !== "linux") ||
+    (target.architecture !== "arm64" && target.architecture !== "x64") ||
+    !Array.isArray(record.files)
+  )
+    throw new Error("Desktop runtime bundle manifest is invalid");
+  for (const item of record.files) {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error("Desktop runtime bundle manifest is invalid");
+    const entry = item as Record<string, unknown>;
+    if (
+      typeof entry.path !== "string" ||
+      typeof entry.sha256 !== "string" ||
+      (entry.kind !== "file" && entry.kind !== "symlink")
+    )
+      throw new Error("Desktop runtime bundle manifest is invalid");
   }
-  return JSON.stringify(value);
-};
+}
 const regularFile = (path: string): Buffer => {
   if (constants.O_NOFOLLOW === undefined)
     throw new Error("Desktop bundle no-follow access is unavailable");
@@ -70,44 +91,17 @@ export function verifyDesktopRuntimeBundle(
   const manifestPath = resolve(runtimeRoot, "desktop-bundle-manifest.json");
   const manifestBytes = regularFile(manifestPath);
   const manifest: unknown = JSON.parse(manifestBytes.toString("utf8"));
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new Error("Desktop runtime bundle manifest is invalid");
-  }
-  const record = manifest as Record<string, unknown>;
-  if (
-    record.schemaVersion !== 1 ||
-    record.component !== "base" ||
-    typeof record.productVersion !== "string" ||
-    !record.target ||
-    typeof record.target !== "object" ||
-    !["macos", "linux"].includes(
-      String((record.target as Record<string, unknown>).platform)
-    ) ||
-    !["arm64", "x64"].includes(
-      String((record.target as Record<string, unknown>).architecture)
-    ) ||
-    !Array.isArray(record.files)
-  )
-    throw new Error("Desktop runtime bundle manifest is invalid");
+  validateDesktopRuntimeManifest(manifest);
+  const record = manifest;
 
   const seen = new Set<string>();
-  for (const item of record.files) {
-    if (!item || typeof item !== "object" || Array.isArray(item))
-      throw new Error("Desktop runtime bundle manifest is invalid");
-    const entry = item as Record<string, unknown>;
-    if (
-      typeof entry.path !== "string" ||
-      typeof entry.sha256 !== "string" ||
-      !["file", "symlink"].includes(String(entry.kind))
-    ) {
-      throw new Error("Desktop runtime bundle manifest is invalid");
-    }
+  for (const entry of record.files) {
     const path = entry.path;
     const absolute = resolve(runtimeRoot, path);
     const rel = relative(runtimeRoot, absolute);
     if (
       !path ||
-      !/^[a-f0-9]{64}$/.test(entry.sha256 as string) ||
+      !/^[a-f0-9]{64}$/.test(entry.sha256) ||
       path.split("/").some((part) => !part || part === "." || part === "..") ||
       path.startsWith("privacy-service/") ||
       isAbsolute(path) ||
@@ -158,13 +152,11 @@ export function verifyDesktopRuntimeBundle(
   }
   const verifiedManifest = Object.freeze({
     ...record,
-    target: Object.freeze({ ...(record.target as object) }),
+    target: Object.freeze({ ...record.target }),
     files: Object.freeze(
-      (record.files as Record<string, unknown>[]).map((entry) =>
-        Object.freeze({ ...entry })
-      )
+      record.files.map((entry) => Object.freeze({ ...entry }))
     )
-  }) as unknown as DesktopRuntimeManifest;
+  });
   const capability = Object.freeze({
     resourcesPath: actualResources,
     productVersion: record.productVersion,

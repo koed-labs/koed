@@ -1,6 +1,34 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { runClientsBootstrap } from "./clients-bootstrap.mjs";
+
+test(
+  "direct bootstrap entrypoint works through a symlink",
+  { skip: process.platform === "win32" },
+  () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "koed-clients-bootstrap-"));
+    try {
+      const entrypoint = fileURLToPath(
+        new URL("./clients-bootstrap.mjs", import.meta.url)
+      );
+      const symlink = resolve(directory, "clients-bootstrap.mjs");
+      symlinkSync(entrypoint, symlink);
+      const result = spawnSync(process.execPath, [symlink, "--help"], {
+        encoding: "utf8"
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Usage: pnpm clients:bootstrap/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
 
 test("clients bootstrap chains environment, dependencies, and Codex setup", async () => {
   const calls = [];

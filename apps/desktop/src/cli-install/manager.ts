@@ -9,6 +9,10 @@ import {
   type LauncherStatus
 } from "./launcher.js";
 import { updateManagedPathBlock } from "./shell-path.js";
+import {
+  validateCliInstallSettings,
+  type CliInstallSettings
+} from "./settings.js";
 import type {
   CliInstallManager,
   PrivacyInstallBridge,
@@ -45,16 +49,25 @@ export const createDesktopCliInstallManager = (input: {
   homePath?: string;
   platform: NodeJS.Platform;
   probeHelper: HelperProbe;
+  settings?: CliInstallSettings;
+  settingsError?: Error;
+  saveSettings?: (settings: CliInstallSettings) => void;
 }): DesktopCliInstallManager => {
   let progressListener: (progress: PrivacyInstallProgress) => void = () => {};
   let selectedOfflineSource: PrivacyOfflineSource | null = null;
+  let offlineSelectionGeneration = 0;
   const defaultDestination = join(
     input.homePath ?? homedir(),
     ".local",
     "bin",
     "koed"
   );
-  let activeDestination = defaultDestination;
+  let settings = validateCliInstallSettings(input.settings);
+  let activeDestination = settings.destination ?? defaultDestination;
+  const persist = (next: CliInstallSettings): void => {
+    input.saveSettings?.(next);
+    settings = next;
+  };
   const launcherInput = (destination = activeDestination): LauncherInput => ({
     appPath: input.appPath,
     helperPath: input.helperPath,
@@ -86,19 +99,30 @@ export const createDesktopCliInstallManager = (input: {
           "Choose offline component files through Desktop before importing them."
         );
       const selectedSource = selectedOfflineSource;
-      selectedOfflineSource = null;
-      return requireBridge().installPrivacy({
+      const status = await requireBridge().installPrivacy({
         consent: true,
         ...(selectedSource ? { offlineSource: selectedSource } : {}),
         onProgress: progressListener
       });
+      if (status.state === "ready" && selectedOfflineSource === selectedSource)
+        selectedOfflineSource = null;
+      return status;
     },
-    cancel: async () => requireBridge().cancel(),
+    cancel: async () => {
+      offlineSelectionGeneration++;
+      selectedOfflineSource = null;
+      return requireBridge().cancel();
+    },
     selectOffline: async () => {
-      selectedOfflineSource = await requireBridge().selectOffline();
+      const generation = ++offlineSelectionGeneration;
+      selectedOfflineSource = null;
+      const source = await requireBridge().selectOffline();
+      if (generation !== offlineSelectionGeneration) return null;
+      selectedOfflineSource = source;
       return selectedOfflineSource;
     },
     launcher: async (operation, options = {}) => {
+      if (input.settingsError) throw input.settingsError;
       if (input.platform === "win32")
         throw new Error("CLI launcher is unsupported on Windows.");
       const launcher = launcherInput(options.destination);
@@ -110,6 +134,7 @@ export const createDesktopCliInstallManager = (input: {
           consent: options.consent === true,
           probeHelper: input.probeHelper
         });
+        persist({ ...settings, destination: launcher.destination });
         activeDestination = launcher.destination;
         return status;
       }
@@ -117,10 +142,10 @@ export const createDesktopCliInstallManager = (input: {
         ...launcher,
         probeHelper: input.probeHelper
       });
-      activeDestination = defaultDestination;
       return status;
     },
     updatePath: async (operation, consent) => {
+      if (input.settingsError) throw input.settingsError;
       if (input.platform === "win32")
         throw new Error("Shell PATH management is unsupported on Windows.");
       const shell = process.env.SHELL?.endsWith("zsh") ? "zsh" : "bash";
@@ -128,13 +153,25 @@ export const createDesktopCliInstallManager = (input: {
         input.homePath ?? homedir(),
         shell === "zsh" ? ".zshrc" : ".bashrc"
       );
+      const directory =
+        operation === "remove"
+          ? (settings.pathDirectory ?? dirname(activeDestination))
+          : dirname(activeDestination);
       await updateManagedPathBlock({
         rcPath: resolve(rcPath),
         shell,
         operation,
         consent,
-        launcherDirectory: dirname(activeDestination)
+        launcherDirectory: directory
       });
+      const remaining = settings.destination
+        ? { destination: settings.destination }
+        : {};
+      persist(
+        operation === "add"
+          ? { ...settings, pathDirectory: directory }
+          : remaining
+      );
     }
   };
 };

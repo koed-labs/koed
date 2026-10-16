@@ -1,4 +1,5 @@
 import { componentManifestSigningBytes } from "./component-signature-format.mjs";
+import { canonicalArtifactBytes } from "../packages/koed-server/src/artifact-canonical-json.mjs";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import {
   existsSync,
@@ -199,21 +200,8 @@ export const sha256File = (path) => {
   return hash.digest("hex");
 };
 
-const canonicalJson = (value) => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
-
 export const canonicalComponentManifestBytes = (manifest) =>
-  Buffer.from(canonicalJson(manifest), "utf8");
+  canonicalArtifactBytes(manifest);
 
 export const buildComponentManifest = ({
   componentRoot,
@@ -381,8 +369,7 @@ export const buildPackageManifest = ({
       requires: ["postgresql@17", "pgvector", "llama-server"]
     },
     models: {
-      embedding: "qwen3-0.6b",
-      reranker: "qwen3-reranker-0.6b"
+      embedding: "qwen3-0.6b"
     },
     provenance: {
       sourceRepository:
@@ -456,7 +443,7 @@ export const buildPackageProvenance = ({
     }
   };
   const key = signingPrivateKey();
-  const payload = Buffer.from(canonicalJson(statement), "utf8");
+  const payload = canonicalArtifactBytes(statement);
   const signature = key ? sign(null, payload, key).toString("base64") : null;
   return {
     statement,

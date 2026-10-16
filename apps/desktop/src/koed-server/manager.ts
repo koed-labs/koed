@@ -1853,9 +1853,13 @@ export const createKoedServerManager = ({
     const models = Object.fromEntries(
       results.map(({ kind, value }) => [kind, value])
     );
-    const installed = results.every(
-      ({ value }) => resultOk(value) && resultState(value) === "installed"
-    );
+    const installed = results.every(({ value }) => {
+      const result = objectValue(value);
+      return (
+        resultState(value) === "installed" &&
+        (result?.ok === undefined || result.ok === true)
+      );
+    });
     return {
       ok: installed,
       state: installed ? "installed" : "missing",

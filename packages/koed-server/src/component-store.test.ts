@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -30,7 +31,10 @@ vi.mock("./component-runtime-identity.js", () => ({
 vi.mock("./component-trust-roots.js", () => ({
   productionComponentTrustRoots: testKeys.current
 }));
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  goldenComponentArchive,
+  signedComponentFixture
+} from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import {
@@ -62,7 +66,8 @@ const temp = () => {
 const fixture = async (
   overrides: Parameters<typeof signedComponentFixture>[0] = {},
   archiveEntries?: Parameters<typeof signedComponentFixture>[1],
-  includeArchiveInventory = false
+  includeArchiveInventory = false,
+  archiveOptions: Parameters<typeof signedComponentFixture>[2] = {}
 ) => {
   const manifestOverrides = {
     component: "base",
@@ -73,7 +78,7 @@ const fixture = async (
   const item = await signedComponentFixture(
     manifestOverrides,
     archiveEntries,
-    {},
+    archiveOptions,
     includeArchiveInventory
   );
   fixtures.push(item);
@@ -156,6 +161,7 @@ afterEach(() => {
   for (const item of fixtures.splice(0)) item.dispose();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
+  vi.useRealTimers();
   vi.restoreAllMocks();
   testRuntime.current = undefined;
   testKeys.current.clear();
@@ -461,6 +467,150 @@ describe("immutable component and generation store", () => {
     fetch.mockRestore();
   });
 
+  it("allows another acquisition to publish while a download is stalled", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    for (const [key, value] of item.input.trustedKeys)
+      testKeys.current.set(key, value);
+    let resume!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolveResponse) => {
+            resume = resolveResponse;
+          })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(item.input.signature)))
+      .mockResolvedValueOnce(
+        new Response(readFileSync(item.input.archivePath))
+      );
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/archive",
+        manifestUrl: "https://fixture.test/manifest",
+        signatureUrl: "https://fixture.test/signature"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: item.input.target,
+        runtime: item.input.runtime
+      }
+    );
+    const installed = await stageFixture(paths, item);
+    resume(new Response(new Uint8Array(item.input.manifestBytes)));
+    expect(await pending).toEqual(installed);
+    expect(
+      readdirSync(paths.componentsDir).filter((name) =>
+        name.startsWith(".stage-")
+      )
+    ).toEqual([]);
+  });
+
+  it.each(["headers", "body"])(
+    "bounds stalled %s and removes private staging",
+    async (phase) => {
+      vi.useFakeTimers();
+      const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+      const item = await fixture();
+      testRuntime.current = item.input.runtime;
+      let cancelled = false;
+      vi.spyOn(globalThis, "fetch").mockImplementation((_url, options) => {
+        if (phase === "headers")
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true }
+            );
+          });
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              cancel() {
+                cancelled = true;
+              }
+            })
+          )
+        );
+      });
+      const pending = stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/archive",
+          manifestUrl: "https://fixture.test/manifest",
+          signatureUrl: "https://fixture.test/signature"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: item.input.target,
+          runtime: item.input.runtime
+        }
+      );
+      const rejected = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(30_001);
+      await rejected;
+      if (phase === "body") expect(cancelled).toBe(true);
+      expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
+    }
+  );
+
+  it("keeps progressing bodies alive beyond header timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delay) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), delay);
+      return controller.signal;
+    });
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+            }
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response("{}"));
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/archive",
+        manifestUrl: "https://fixture.test/manifest",
+        signatureUrl: "https://fixture.test/signature"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: item.input.target,
+        runtime: item.input.runtime
+      }
+    );
+    const rejected = expect(pending).rejects.toThrow(
+      "component archive metadata is invalid"
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    stream.enqueue(Buffer.from("{"));
+    await vi.advanceTimersByTimeAsync(20_000);
+    stream.enqueue(Buffer.from("}"));
+    stream.close();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+    await rejected;
+    expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
+  });
+
   it("cancels a stalled response body when caller aborts", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const controller = new AbortController();
@@ -567,17 +717,11 @@ describe("immutable component and generation store", () => {
 
   it("aborts while waiting for component-store lock", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
-    const runtime: RuntimeIdentity = {
-      kind: "node",
-      version: "24.13.1",
-      nodeVersion: "24.13.1",
-      modulesAbi: "137",
-      napiVersion: 10,
-      platform: "linux",
-      architecture: "x64"
-    };
-    testRuntime.current = runtime;
-    const fetch = vi.spyOn(globalThis, "fetch");
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    testKeys.current.clear();
+    for (const [key, value] of item.input.trustedKeys)
+      testKeys.current.set(key, value);
     const release = await properLockfile.lock(paths.componentsDir, {
       realpath: false
     });
@@ -585,22 +729,24 @@ describe("immutable component and generation store", () => {
     const pending = stageComponent(
       paths,
       {
-        kind: "remote",
-        archiveUrl: "https://fixture.test/archive",
-        manifestUrl: "https://fixture.test/manifest",
-        signatureUrl: "https://fixture.test/signature"
+        kind: "offline",
+        archivePath: item.input.archivePath,
+        manifestPath: writeMetadata(item.input.manifestBytes),
+        signaturePath: writeMetadata(
+          Buffer.from(JSON.stringify(item.input.signature))
+        )
       },
       {
         expectedComponent: "base",
         expectedVersion: "0.8.1",
         target: { platform: "linux", architecture: "x64" },
-        runtime,
+        runtime: item.input.runtime,
         signal: controller.signal
       }
     );
     setTimeout(() => controller.abort(), 30);
     await expect(pending).rejects.toThrow("component installation cancelled");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
     await release();
   });
 
@@ -675,9 +821,33 @@ describe("immutable component and generation store", () => {
 
   it("re-reads staged generation and binds owner and exact component roots", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
-    const item = await fixture();
+    const item = await fixture({}, undefined, false, {
+      bytes: goldenComponentArchive
+    });
     const base = await stageFixture(paths, item);
     const generation = await stageGeneration(paths, { base, owner });
+    expect(base.manifestDigest).toBe(
+      "67b2e5143f9815d6c16e0e215cde0efb2f2a6f9acfa01dcf62dba1985b2a56b6"
+    );
+    expect(generation.id).toBe(
+      "e5740ccc368b96b059940fe4e5983a4eb28208f1dab13b8b9a8d42eccaece008"
+    );
+    expect(readdirSync(resolve(paths.componentsDir, "base"))).toContain(
+      "66e1244931a366e97d2b2d65.json"
+    );
+    const storedComponent: unknown = JSON.parse(
+      readFileSync(resolve(base.root, "../component.json"), "utf8")
+    );
+    expect(storedComponent).not.toHaveProperty("kind");
+    const storedGeneration = JSON.parse(
+      readFileSync(
+        resolve(paths.generationsDir, generation.id, "generation.json"),
+        "utf8"
+      )
+    ) as { components: { base: unknown } };
+    expect(storedGeneration.components.base).not.toHaveProperty("kind");
+    expect(base.kind).toBe("signed-component");
+    expect(generation.base.kind).toBe("signed-component");
     await expect(readStagedGeneration(paths, generation.id)).resolves.toEqual(
       generation
     );

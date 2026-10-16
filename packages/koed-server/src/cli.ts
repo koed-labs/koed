@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   personalSyncAdvancedUsageText,
@@ -48,8 +49,8 @@ const lightweightStatus = async (
   if (command === "models" && subcommand === "status") {
     const kindFlag = args.indexOf("--kind");
     const kind = kindFlag < 0 ? "embedding" : args[kindFlag + 1];
-    if (kind !== "embedding" && kind !== "reranker" && kind !== "privacy")
-      throw new Error("--kind must be embedding, reranker, or privacy.");
+    if (kind !== "embedding" && kind !== "privacy")
+      throw new Error("--kind must be embedding or privacy.");
     const [
       { collectLocalModelStatus },
       { collectPrivacyModelStatus },
@@ -154,9 +155,13 @@ export const isKoedServerCliEntrypoint = (
 ): boolean => {
   if (!moduleUrl || !argvPath) return false;
   try {
-    return pathToFileURL(argvPath).href === moduleUrl;
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
   } catch {
-    return false;
+    try {
+      return pathToFileURL(argvPath).href === moduleUrl;
+    } catch {
+      return false;
+    }
   }
 };
 

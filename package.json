@@ -44,7 +44,6 @@
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "assets:embedding": "pnpm --filter @koed-labs/server exec koed models install --kind embedding",
     "assets:privacy": "pnpm --filter @koed-labs/server exec koed models install --kind privacy",
-    "assets:reranker": "pnpm --filter @koed-labs/server exec koed models install --kind reranker",
     "eval": "pnpm --filter @koed/evals eval",
     "eval:lcm-summary": "pnpm --filter @koed/evals eval:lcm-summary:live",
     "changeset": "changeset",

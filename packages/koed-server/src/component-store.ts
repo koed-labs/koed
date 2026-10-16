@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalArtifactJson as canonicalJson } from "./artifact-canonical-json.mjs";
 import {
   chmodSync,
   closeSync,
@@ -36,7 +37,7 @@ import type {
   ComponentSignature,
   RuntimeIdentity,
   RuntimeOwner,
-  VerifiedComponent,
+  VerifiedSignedComponent,
   VerifiedGeneration
 } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -86,17 +87,7 @@ const MAX_GENERATION_RECORD_BYTES =
 const REQUEST_TIMEOUT_MS = 30_000;
 const hash = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
+
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const aborted = (signal?: AbortSignal): void => {
@@ -234,9 +225,18 @@ async function fetchBounded(
   for (let redirects = 0; ; redirects++) {
     aborted(signal);
     let response: Response;
+    const timeoutController = new AbortController();
     const requestSignal = signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-      : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
+    let timeout = setTimeout(
+      () => timeoutController.abort(),
+      REQUEST_TIMEOUT_MS
+    );
+    const resetIdleTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
+    };
     try {
       response = await fetch(url, {
         redirect: "manual",
@@ -260,6 +260,8 @@ async function fetchBounded(
         );
       }
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
     if (response.status >= 500 && attempt < 2) {
       await cancelBody(response);
@@ -312,6 +314,7 @@ async function fetchBounded(
     const chunks: Buffer[] = [];
     const limiter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
+        resetIdleTimeout();
         transferredBytes += chunk.length;
         if (transferredBytes > limit) {
           callback(new Error("component download exceeds size limit"));
@@ -329,6 +332,7 @@ async function fetchBounded(
       }
     });
     const output = createWriteStream(destination, { flags: "wx", mode: 0o600 });
+    resetIdleTimeout();
     try {
       await pipeline(
         Readable.fromWeb(
@@ -357,6 +361,8 @@ async function fetchBounded(
         );
       }
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
     return collectBytes ? Buffer.concat(chunks) : undefined;
   }
@@ -488,7 +494,7 @@ async function verifyStoredComponent(
     runtime: RuntimeIdentity;
     target?: ArtifactTarget;
   }
-): Promise<VerifiedComponent> {
+): Promise<VerifiedSignedComponent> {
   assertDirectoryChain(home, root);
   const record = readComponentRecord(componentRecordPath(root));
   const manifestBytes = Buffer.from(canonicalJson(record.manifest));
@@ -516,7 +522,12 @@ async function verifyStoredComponent(
   const payload = componentPayloadPath(root);
   assertDirectoryChain(root, payload);
   await verifyExtractedComponent(payload, manifest);
-  return { manifest, root: payload, manifestDigest: record.manifestDigest };
+  return {
+    kind: "signed-component",
+    manifest,
+    root: payload,
+    manifestDigest: record.manifestDigest
+  };
 }
 
 async function stageComponentInternal(
@@ -525,117 +536,162 @@ async function stageComponentInternal(
   context: ComponentInstallContext,
   trustedKeys: ReadonlyMap<string, string>,
   runtime: RuntimeIdentity
-): Promise<VerifiedComponent> {
+): Promise<VerifiedSignedComponent> {
   aborted(context.signal);
   const storeRoot = resolve(paths.componentsDir);
   assertInside(paths.koedHome, storeRoot);
   assertDirectoryChain(paths.koedHome, storeRoot);
-  return acquireLock(paths.koedHome, storeRoot, context.signal, async () => {
-    const tempRoot = mkdtempSync(resolve(storeRoot, ".stage-"));
-    chmodSync(tempRoot, 0o700);
-    let publishedRoot: string | undefined;
-    let committed = false;
-    try {
-      let manifestBytes: Buffer;
-      let signatureBytes: Buffer;
-      if (source.kind === "offline") {
-        const offline = readOfflineSource(source);
-        manifestBytes = offline.manifestBytes;
-        signatureBytes = offline.signatureBytes;
-      } else {
-        manifestBytes = (await fetchBounded(
-          source.manifestUrl,
-          resolve(tempRoot, "manifest.json"),
-          MAX_MANIFEST_BYTES,
-          context.signal,
-          context.progress
-        ))!;
-        signatureBytes = (await fetchBounded(
-          source.signatureUrl,
-          resolve(tempRoot, "signature.json"),
-          MAX_SIGNATURE_BYTES,
-          context.signal,
-          context.progress
-        ))!;
-      }
-      const manifestEnvelope: unknown = JSON.parse(
-        manifestBytes.toString("utf8")
-      );
-      if (
-        !isPlainRecord(manifestEnvelope) ||
-        !isPlainRecord(manifestEnvelope.archive) ||
-        typeof manifestEnvelope.archive.name !== "string" ||
-        manifestEnvelope.archive.name.length > 255 ||
-        [".", ".."].includes(manifestEnvelope.archive.name) ||
-        basename(manifestEnvelope.archive.name) !==
-          manifestEnvelope.archive.name
-      )
-        throw new Error("component archive metadata is invalid");
-      const archivePath = resolve(tempRoot, manifestEnvelope.archive.name);
-      if (source.kind === "offline") {
-        copyFileSync(resolve(source.archivePath), archivePath, 1);
-        chmodSync(archivePath, 0o600);
-      } else {
-        await fetchBounded(
-          source.archiveUrl,
-          archivePath,
-          MAX_ARCHIVE_BYTES,
-          context.signal,
-          context.progress,
-          false
-        );
-      }
-      aborted(context.signal);
-      const signature = parseSignature(
-        JSON.parse(signatureBytes.toString("utf8")) as unknown
-      );
-      const manifest = await verifyComponent({
-        manifestBytes,
-        signature,
+  ensureSecureDirectory(paths.koedHome, storeRoot);
+  const tempRoot = mkdtempSync(resolve(storeRoot, ".stage-"));
+  chmodSync(tempRoot, 0o700);
+  try {
+    let manifestBytes: Buffer;
+    let signatureBytes: Buffer;
+    if (source.kind === "offline") {
+      const offline = readOfflineSource(source);
+      manifestBytes = offline.manifestBytes;
+      signatureBytes = offline.signatureBytes;
+    } else {
+      manifestBytes = (await fetchBounded(
+        source.manifestUrl,
+        resolve(tempRoot, "manifest.json"),
+        MAX_MANIFEST_BYTES,
+        context.signal,
+        context.progress
+      ))!;
+      signatureBytes = (await fetchBounded(
+        source.signatureUrl,
+        resolve(tempRoot, "signature.json"),
+        MAX_SIGNATURE_BYTES,
+        context.signal,
+        context.progress
+      ))!;
+    }
+    const manifestEnvelope: unknown = JSON.parse(
+      manifestBytes.toString("utf8")
+    );
+    if (
+      !isPlainRecord(manifestEnvelope) ||
+      !isPlainRecord(manifestEnvelope.archive) ||
+      typeof manifestEnvelope.archive.name !== "string" ||
+      manifestEnvelope.archive.name.length > 255 ||
+      [".", ".."].includes(manifestEnvelope.archive.name) ||
+      basename(manifestEnvelope.archive.name) !== manifestEnvelope.archive.name
+    )
+      throw new Error("component archive metadata is invalid");
+    const archivePath = resolve(tempRoot, manifestEnvelope.archive.name);
+    if (source.kind === "offline") {
+      copyFileSync(resolve(source.archivePath), archivePath, 1);
+      chmodSync(archivePath, 0o600);
+    } else {
+      await fetchBounded(
+        source.archiveUrl,
         archivePath,
-        expectedComponent: context.expectedComponent,
-        expectedVersion: context.expectedVersion,
-        target: context.target,
-        runtime,
-        trustedKeys
-      });
-      aborted(context.signal);
-      const manifestDigest = hash(manifestBytes);
-      const componentDir = resolve(storeRoot, manifest.component);
-      assertDirectoryChain(paths.koedHome, componentDir);
-      ensureSecureDirectory(paths.koedHome, componentDir);
-      const indexPath = resolve(componentDir, `${targetKey(manifest)}.json`);
-      const versionRoot = resolve(
-        componentDir,
-        manifest.productVersion,
-        manifestDigest
+        MAX_ARCHIVE_BYTES,
+        context.signal,
+        context.progress,
+        false
       );
-      assertDirectoryChain(paths.koedHome, versionRoot);
-      assertDirectoryChain(paths.koedHome, dirname(indexPath));
-      if (existsSync(indexPath)) {
-        const index = parseJsonFile(indexPath, 4096);
-        if (!isPlainRecord(index) || index.manifestDigest !== manifestDigest)
-          throw new Error(
-            "component version already installed with different digest"
+    }
+    aborted(context.signal);
+    const signature = parseSignature(
+      JSON.parse(signatureBytes.toString("utf8")) as unknown
+    );
+    const manifest = await verifyComponent({
+      manifestBytes,
+      signature,
+      archivePath,
+      expectedComponent: context.expectedComponent,
+      expectedVersion: context.expectedVersion,
+      target: context.target,
+      runtime,
+      trustedKeys
+    });
+    aborted(context.signal);
+    const manifestDigest = hash(manifestBytes);
+    const componentDir = resolve(storeRoot, manifest.component);
+    assertDirectoryChain(paths.koedHome, componentDir);
+    const indexPath = resolve(componentDir, `${targetKey(manifest)}.json`);
+    const versionRoot = resolve(
+      componentDir,
+      manifest.productVersion,
+      manifestDigest
+    );
+    const stagedRoot = resolve(tempRoot, "verified");
+    const completeRoot = resolve(tempRoot, "complete");
+    aborted(context.signal);
+    await extractVerifiedPackageArchive(archivePath, stagedRoot);
+    aborted(context.signal);
+    await verifyExtractedComponent(stagedRoot, manifest);
+    aborted(context.signal);
+    privateDirectory(completeRoot);
+    renameSync(stagedRoot, resolve(completeRoot, "payload"));
+    renameSync(archivePath, resolve(completeRoot, manifest.archive.name));
+    writeFileSync(
+      componentRecordPath(completeRoot),
+      JSON.stringify({
+        schemaVersion: 1,
+        manifest,
+        signature,
+        manifestDigest,
+        archivePath: resolve(versionRoot, manifest.archive.name)
+      }),
+      { flag: "wx", mode: 0o600 }
+    );
+    return await acquireLock(
+      paths.koedHome,
+      storeRoot,
+      context.signal,
+      async () => {
+        ensureSecureDirectory(paths.koedHome, componentDir);
+        assertDirectoryChain(paths.koedHome, versionRoot);
+        assertDirectoryChain(paths.koedHome, dirname(indexPath));
+        if (existsSync(indexPath)) {
+          const index = parseJsonFile(indexPath, 4096);
+          if (!isPlainRecord(index) || index.manifestDigest !== manifestDigest)
+            throw new Error(
+              "component version already installed with different digest"
+            );
+        }
+        if (existsSync(versionRoot)) {
+          const cached = await verifyStoredComponent(
+            paths.koedHome,
+            versionRoot,
+            {
+              component: manifest.component,
+              productVersion: manifest.productVersion,
+              target: manifest.target,
+              runtime
+            }
           );
-      }
-      if (existsSync(versionRoot)) {
-        const cached = await verifyStoredComponent(
-          paths.koedHome,
-          versionRoot,
-          {
-            component: manifest.component,
-            productVersion: manifest.productVersion,
-            target: manifest.target,
-            runtime
+          aborted(context.signal);
+          if (cached.manifestDigest !== manifestDigest)
+            throw new Error(
+              "component version already installed with different digest"
+            );
+          if (!existsSync(indexPath)) {
+            aborted(context.signal);
+            assertDirectoryChain(paths.koedHome, dirname(indexPath));
+            writeIndex(
+              paths.koedHome,
+              indexPath,
+              manifestDigest,
+              tempRoot,
+              context.signal
+            );
           }
-        );
-        aborted(context.signal);
-        if (cached.manifestDigest !== manifestDigest)
-          throw new Error(
-            "component version already installed with different digest"
-          );
-        if (!existsSync(indexPath)) {
+          return cached;
+        }
+        if (existsSync(indexPath))
+          throw new Error("component cache record is missing");
+        ensureSecureDirectory(paths.koedHome, dirname(versionRoot));
+        let publishedRoot: string | undefined;
+        let committed = false;
+        try {
+          aborted(context.signal);
+          assertDirectoryChain(paths.koedHome, dirname(versionRoot));
+          renameSync(completeRoot, versionRoot);
+          publishedRoot = versionRoot;
           aborted(context.signal);
           assertDirectoryChain(paths.koedHome, dirname(indexPath));
           writeIndex(
@@ -645,67 +701,29 @@ async function stageComponentInternal(
             tempRoot,
             context.signal
           );
+          committed = true;
+          return {
+            kind: "signed-component",
+            manifest,
+            root: componentPayloadPath(versionRoot),
+            manifestDigest
+          };
+        } finally {
+          if (publishedRoot && !committed)
+            rmSync(publishedRoot, { recursive: true, force: true });
         }
-        return cached;
       }
-      if (existsSync(indexPath))
-        throw new Error("component cache record is missing");
-      ensureSecureDirectory(paths.koedHome, dirname(versionRoot));
-      const stagedRoot = resolve(tempRoot, "verified");
-      const completeRoot = resolve(tempRoot, "complete");
-      aborted(context.signal);
-      await extractVerifiedPackageArchive(archivePath, stagedRoot);
-      aborted(context.signal);
-      await verifyExtractedComponent(stagedRoot, manifest);
-      aborted(context.signal);
-      assertDirectoryChain(paths.koedHome, dirname(versionRoot));
-      privateDirectory(completeRoot);
-      renameSync(stagedRoot, resolve(completeRoot, "payload"));
-      const storedArchive = resolve(completeRoot, manifest.archive.name);
-      renameSync(archivePath, storedArchive);
-      writeFileSync(
-        componentRecordPath(completeRoot),
-        JSON.stringify({
-          schemaVersion: 1,
-          manifest,
-          signature,
-          manifestDigest,
-          archivePath: resolve(versionRoot, manifest.archive.name)
-        }),
-        { flag: "wx", mode: 0o600 }
-      );
-      aborted(context.signal);
-      assertDirectoryChain(paths.koedHome, dirname(versionRoot));
-      renameSync(completeRoot, versionRoot);
-      publishedRoot = versionRoot;
-      aborted(context.signal);
-      assertDirectoryChain(paths.koedHome, dirname(indexPath));
-      writeIndex(
-        paths.koedHome,
-        indexPath,
-        manifestDigest,
-        tempRoot,
-        context.signal
-      );
-      committed = true;
-      return {
-        manifest,
-        root: componentPayloadPath(versionRoot),
-        manifestDigest
-      };
-    } finally {
-      if (publishedRoot && !committed)
-        rmSync(publishedRoot, { recursive: true, force: true });
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 export async function stageComponent(
   paths: KoedServerPaths,
   input: ComponentSource,
   context: ComponentInstallContext
-): Promise<VerifiedComponent> {
+): Promise<VerifiedSignedComponent> {
   const actualRuntime = discoverActualRuntimeIdentity();
   if (!runtimeMatches(context.runtime, actualRuntime))
     throw new Error("caller runtime identity does not match actual runtime");
@@ -721,8 +739,8 @@ export async function stageComponent(
 export async function stageGeneration(
   paths: KoedServerPaths,
   input: {
-    base: VerifiedComponent;
-    privacy?: VerifiedComponent;
+    base: VerifiedSignedComponent;
+    privacy?: VerifiedSignedComponent;
     owner: RuntimeOwner;
   }
 ): Promise<VerifiedGeneration> {
@@ -744,7 +762,7 @@ export async function stageGeneration(
     resolve(baseVerified.root) !== resolve(base.root)
   )
     throw new Error("base component is not a verified store entry");
-  let privacyVerified: VerifiedComponent | undefined;
+  let privacyVerified: VerifiedSignedComponent | undefined;
   if (privacy) {
     assertDirectoryChain(paths.componentsDir, dirname(privacy.root));
     privacyVerified = await verifyStoredComponent(
@@ -868,8 +886,8 @@ export async function stageGeneration(
 export async function readStoredComponents(
   paths: KoedServerPaths,
   runtime: RuntimeIdentity
-): Promise<VerifiedComponent[]> {
-  const components: VerifiedComponent[] = [];
+): Promise<VerifiedSignedComponent[]> {
+  const components: VerifiedSignedComponent[] = [];
   for (const component of ["base", "privacy"] as const) {
     const componentRoot = resolve(paths.componentsDir, component);
     if (!existsSync(componentRoot)) continue;
@@ -988,8 +1006,8 @@ const readDesktopPrivacyGeneration = async (
     id,
     productVersion: bundle.productVersion,
     base: {
-      manifest:
-        bundle.manifest as unknown as VerifiedGeneration["base"]["manifest"],
+      kind: "desktop-bundle",
+      manifest: bundle.manifest,
       root: resolve(bundle.resourcesPath, "koed-runtime"),
       manifestDigest: bundle.bundleDigest
     },
@@ -1004,7 +1022,7 @@ export async function stageDesktopPrivacyGeneration(
     resourcesPath: string;
     bundleDigest: string;
     productVersion: string;
-    privacy: VerifiedComponent;
+    privacy: VerifiedSignedComponent;
     owner: RuntimeOwner;
   }
 ): Promise<VerifiedGeneration> {
@@ -1135,7 +1153,7 @@ export async function readStagedGeneration(
     throw new Error(
       "generation base reference differs from verified component"
     );
-  let privacy: VerifiedComponent | undefined;
+  let privacy: VerifiedSignedComponent | undefined;
   if (Object.hasOwn(record, "privacy")) {
     const reference = record.privacy;
     if (

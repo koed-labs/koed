@@ -51,7 +51,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v9";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v10";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -221,13 +221,13 @@ const classifyMemoryAnswerFailure = (
   retrievalIncomplete: boolean,
   exhaustedBudgets: readonly string[]
 ): MemoryAnswerFailureKind => {
+  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   if (
     /"code"\s*:\s*"(?:custom|invalid_[a-z_]+|too_small|too_big)"/.test(
       workerErrorMessage
     )
   )
     return "validation";
-  if (limitingBudgets(exhaustedBudgets).length > 0) return "resource_limit";
   return retrievalIncomplete ? "retrieval" : "worker";
 };
 
@@ -392,10 +392,10 @@ const structuredMemoryAnswerSchema = z
     }
     if (
       answer.memory_status === "insufficient" &&
-      (answer.relevant_memory_found || hasEvidence)
+      answer.relevant_memory_found !== hasEvidence
     ) {
       contradiction(
-        "insufficient requires relevant_memory_found=false and no selected evidence"
+        "insufficient requires relevant_memory_found to match selected partial evidence"
       );
     }
   });
@@ -1398,6 +1398,7 @@ export const mergeMemoryAnswerCandidateLists = (
       ledger.set(key, {
         ...(current ?? {}),
         ...normalized,
+        ...observedReferenceLineage(current, normalized),
         retrievalContributions: contributions,
         fusedScore: contributions.reduce<number>((sum, entry) => {
           const rank = recordFromUnknown(entry).rank;
@@ -1503,6 +1504,27 @@ const evidenceMatchesSelection = (
   return true;
 };
 
+const evidenceMatchesObservedSelection = (
+  candidate: unknown,
+  selection: unknown
+): boolean => {
+  if (evidenceMatchesSelection(candidate, selection)) return true;
+  const record = recordFromUnknown(candidate);
+  const references = Array.isArray(record.observedReferences)
+    ? (record.observedReferences as unknown[])
+    : [];
+  // A reference cannot broaden the visibility of the admitted candidate.
+  const visibility = stringField(recordFromUnknown(selection), ["visibility"]);
+  if (visibility && visibility !== stringField(record, ["visibility"]))
+    return false;
+  return references.some(
+    (reference) =>
+      sourceKey(reference) === sourceKey(candidate) &&
+      recordFromUnknown(reference).visibility === record.visibility &&
+      evidenceMatchesSelection(reference, selection)
+  );
+};
+
 export const resolveMemoryAnswerSearchDomain = (
   requested: "global" | "project" | "session" | undefined,
   args: Record<string, unknown>,
@@ -1547,7 +1569,51 @@ export const resolveMemoryAnswerSearchDomain = (
   return { searchDomain: "global" };
 };
 
-const appendEvidence = (
+// Aliases come only from admitted candidates with the same canonical source.
+// Preserve complete references rather than combining fields from different observations.
+const observedReferenceLineage = (
+  existing: unknown,
+  incoming: unknown
+): Record<string, unknown> => {
+  if (
+    !existing ||
+    existing === incoming ||
+    sourceKey(existing) !== sourceKey(incoming)
+  )
+    return {};
+  const references = [existing, incoming].flatMap((item) => {
+    const record = recordFromUnknown(item);
+    return [
+      ...(Array.isArray(record.observedReferences)
+        ? (record.observedReferences as unknown[])
+        : []),
+      {
+        nodeId: record.nodeId,
+        sourceType: record.sourceType,
+        sourceId: record.sourceId,
+        sourceChunkIndex: record.sourceChunkIndex,
+        visibility: record.visibility
+      }
+    ];
+  });
+  return {
+    observedReferences: [
+      ...new Map(references.map((ref) => [JSON.stringify(ref), ref])).values()
+    ],
+    parentNodeIds: [
+      ...new Set(
+        [existing, incoming].flatMap((item) => {
+          const record = recordFromUnknown(item);
+          return Array.isArray(record.parentNodeIds)
+            ? (record.parentNodeIds as unknown[])
+            : [];
+        })
+      )
+    ]
+  };
+};
+
+const appendCitations = (
   existing: unknown[],
   incoming: unknown[]
 ): unknown[] => {
@@ -1558,6 +1624,28 @@ const appendEvidence = (
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(item);
+    }
+  }
+  return merged;
+};
+
+const appendEvidence = (
+  existing: unknown[],
+  incoming: unknown[]
+): unknown[] => {
+  const seen = new Map(existing.map((item, index) => [sourceKey(item), index]));
+  const merged = [...existing];
+  for (const item of incoming) {
+    const key = sourceKey(item);
+    if (!seen.has(key)) {
+      seen.set(key, merged.length);
+      merged.push(item);
+    } else {
+      const index = seen.get(key)!;
+      merged[index] = {
+        ...recordFromUnknown(merged[index]),
+        ...observedReferenceLineage(merged[index], item)
+      };
     }
   }
   return merged;
@@ -1711,43 +1799,40 @@ export const evidenceSelectedByAnswer = (
     // A complete source identity remains authoritative as that list grows.
     const matches = hasSourceIdentity
       ? evidence.filter((candidate) =>
-          evidenceMatchesSelection(candidate, selection)
+          evidenceMatchesObservedSelection(candidate, selection)
         )
       : Number.isInteger(selection.evidence_index) &&
           selection.evidence_index! >= 0 &&
-          evidenceMatchesSelection(
+          evidenceMatchesObservedSelection(
             evidence[selection.evidence_index!],
             selection
           )
         ? [evidence[selection.evidence_index!]]
         : [];
-    if (matches.length === 0) {
+    // Exact duplicates are one source; differing visibility stays ambiguous.
+    const distinct = [
+      ...new Map(
+        matches.map((candidate) => [
+          `${sourceKey(candidate)}|${stringField(recordFromUnknown(candidate), ["visibility"]) ?? ""}`,
+          candidate
+        ])
+      ).values()
+    ];
+    if (distinct.length !== 1) {
       throw new Error(
         "Memory answer worker returned without resolvable supporting evidence for a selection"
       );
     }
-    return matches;
+    return distinct;
   });
-  const selected = appendEvidence([], resolved);
-  const expandedParentIds = new Set(
-    selected
-      .map((item) =>
-        stringField(recordFromUnknown(item), [
-          "expandedFromNodeId",
-          "expanded_from_node_id"
-        ])
+  // Observed references only serve resolution; keep them out of the bundle.
+  return appendEvidence([], resolved).map((item) =>
+    Object.fromEntries(
+      Object.entries(recordFromUnknown(item)).filter(
+        ([key]) => key !== "observedReferences"
       )
-      .filter((value): value is string => Boolean(value))
+    )
   );
-  return selected.filter((item) => {
-    const record = recordFromUnknown(item);
-    const nodeId = stringField(record, ["nodeId", "node_id"]);
-    return !(
-      nodeId &&
-      expandedParentIds.has(nodeId) &&
-      !stringField(record, ["expandedFromNodeId", "expanded_from_node_id"])
-    );
-  });
 };
 
 const retrievalsHaveAvailableCandidates = (retrievals: unknown[]): boolean =>
@@ -2231,7 +2316,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(hits)
         );
@@ -2339,7 +2424,7 @@ const createMemoryAnswerDynamicToolHandler = (
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
-        state.citations = appendEvidence(
+        state.citations = appendCitations(
           state.citations,
           citationsFromHits(expandedEvidence)
         );
@@ -2394,7 +2479,8 @@ const buildDynamicMemoryAnswerPrompt = (
   state: MemoryAnswerToolState,
   config: MemoryAnswerWorkerConfig,
   promptTemplate: LoadedPrompt,
-  promptTokenLimit: number
+  promptTokenLimit: number,
+  promptSuffix: string
 ): {
   prompt: string;
   promptTokens: ReturnType<typeof countTokensForModel>;
@@ -2404,7 +2490,7 @@ const buildDynamicMemoryAnswerPrompt = (
       schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
       memory_status: "found | not_found | insufficient | pending_summary",
       relevant_memory_found:
-        "true only when at least one inspected memory candidate is genuinely relevant",
+        "true when selected supporting evidence is nonempty, including partial evidence for insufficient",
       answer_markdown: "Concise markdown answer for the main agent.",
       relevance_explanation:
         "Short explanation of why selected evidence is relevant, including recency/conflict reasoning when evidence differs over time, or why no relevant memory was found.",
@@ -2489,21 +2575,23 @@ const buildDynamicMemoryAnswerPrompt = (
           : "No scripted first pass ran. Start without scripted evidence and use only the enabled worker retrieval tools within the shared budget.",
       JSON.stringify(firstPassContext, null, 2)
     ].join("\n");
-    return renderLoadedPrompt(promptTemplate, {
-      search_domain: state.searchDomain,
-      first_pass_guidance: state.evaluation.scriptedFirstPass
-        ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
-        : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
-      required_json_schema: requiredJsonSchema,
-      question: state.query,
-      retrieval_scope: state.retrievalScope,
-      default_search_domain: state.searchDomain,
-      optional_defaults: optionalDefaults,
-      limit: state.limit,
-      max_searches: config.maxSearches,
-      max_expansions: config.maxExpansions,
-      initial_evidence_section: initialEvidenceSection
-    }).text;
+    return (
+      renderLoadedPrompt(promptTemplate, {
+        search_domain: state.searchDomain,
+        first_pass_guidance: state.evaluation.scriptedFirstPass
+          ? "The scripted first pass already consumed part of the shared search budget. Use remaining searches only to fill a concrete evidence gap."
+          : "No scripted first pass ran. Begin with no scripted evidence and account for every retrieval call against the shared search budget.",
+        required_json_schema: requiredJsonSchema,
+        question: state.query,
+        retrieval_scope: state.retrievalScope,
+        default_search_domain: state.searchDomain,
+        optional_defaults: optionalDefaults,
+        limit: state.limit,
+        max_searches: config.maxSearches,
+        max_expansions: config.maxExpansions,
+        initial_evidence_section: initialEvidenceSection
+      }).text + promptSuffix
+    );
   };
 
   let prompt = render();
@@ -2524,7 +2612,9 @@ const buildDynamicMemoryAnswerPrompt = (
   }
   if (promptTokenEstimate.tokens > promptTokenLimit) {
     throw new Error(
-      `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
+      promptSuffix
+        ? "Memory answer validation feedback exceeds prompt-token budget"
+        : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
     );
   }
   return { prompt, promptTokens: promptTokenEstimate };
@@ -2532,7 +2622,10 @@ const buildDynamicMemoryAnswerPrompt = (
 
 const runCodexWithRetries = async (
   config: MemoryAnswerWorkerConfig,
-  runner: (timeoutMs: number) => Promise<MemoryAnswerAttemptRun>,
+  runner: (
+    timeoutMs: number,
+    validationFeedback?: string
+  ) => Promise<MemoryAnswerAttemptRun>,
   validate: (run: MemoryAnswerAttemptRun) => ValidatedMemoryAnswerRun,
   attempts: MemoryAnswerAppServerExecution[],
   answerJobId?: string,
@@ -2553,7 +2646,7 @@ const runCodexWithRetries = async (
     }
     let run: MemoryAnswerAttemptRun | undefined;
     try {
-      run = await runner(config.timeoutMs);
+      run = await runner(config.timeoutMs, lastErrorMessage);
       const result = run.result;
       if (result.text.trim().length === 0) {
         throw new Error("Codex memory answer produced empty output");
@@ -3685,7 +3778,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   });
   return {
     evidence,
-    citations: appendEvidence([], citationsFromHits(evidence)),
+    citations: appendCitations([], citationsFromHits(evidence)),
     retrievals: [
       ...scans.flatMap((scan) =>
         scan.retrieval ? [sanitizeRetrievalDiagnostic(scan.retrieval)] : []
@@ -3825,7 +3918,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
-    citations: appendEvidence(
+    citations: appendCitations(
       citationsFromPayload(payload),
       firstPass.citations
     ),
@@ -3855,7 +3948,10 @@ const runDynamicToolMemoryAnswer = async (
   let promptTokens = countTokensForModel("", { model: options.config.model });
   const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
 
-  const runner = async (): Promise<MemoryAnswerAttemptRun> => {
+  const runner = async (
+    _timeoutMs: number,
+    validationFeedback?: string
+  ): Promise<MemoryAnswerAttemptRun> => {
     if (options.signal?.aborted) {
       throw new Error("Memory answer request was cancelled");
     }
@@ -3872,6 +3968,9 @@ const runDynamicToolMemoryAnswer = async (
       0,
       options.config.maxPromptTokens - state.ledger.promptTokenEstimateConsumed
     );
+    const validationFeedbackPrompt = validationFeedback
+      ? `\nThe previous answer failed validation. Correct this before finishing:\n${validationFeedback.slice(0, 2000)}`
+      : "";
     if (remainingPromptTokens <= 0) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
       throw new Error("Memory answer prompt-token budget exhausted");
@@ -3883,7 +3982,8 @@ const runDynamicToolMemoryAnswer = async (
         state,
         options.config,
         options.promptTemplate,
-        remainingPromptTokens
+        remainingPromptTokens,
+        validationFeedbackPrompt
       );
       prompt = built.prompt;
       promptTokens = built.promptTokens;
@@ -3913,6 +4013,17 @@ const runDynamicToolMemoryAnswer = async (
           developerInstructions: koedMemoryAnswerDeveloperInstructions,
           signal: options.signal,
           onProgress: options.onProgress,
+          dynamicTools: dynamicToolSpecs(),
+          dynamicToolHandler,
+          validateOutput: (value) => {
+            validate({
+              result: {
+                text: JSON.stringify(value),
+                model: options.config.model
+              },
+              state
+            });
+          },
           outputSchema: {
             type: "object",
             properties: {
@@ -4008,7 +4119,9 @@ const runDynamicToolMemoryAnswer = async (
     };
   };
 
-  const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
+  const validateUnchecked = (
+    run: MemoryAnswerAttemptRun
+  ): ValidatedMemoryAnswerRun => {
     const { result, state } = run;
     const structuredAnswer = parseStructuredMemoryAnswer(
       JSON.parse(stripJsonFence(result.text))
@@ -4056,26 +4169,29 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned without using Koed RAG tools"
       );
     }
-    const curatedEvidence = evidenceSelectedByAnswer(
+    const selectedEvidence = evidenceSelectedByAnswer(
       state.evidence,
       structuredAnswer
-    ).slice(
-      0,
-      Math.min(
-        state.limit,
-        options.config.maxCandidates,
-        options.config.maxEvidenceItems
-      )
     );
+    const selectedEvidenceLimit = Math.min(
+      state.limit,
+      options.config.maxCandidates,
+      options.config.maxEvidenceItems
+    );
+    // Dropping selected support would leave a found answer only partly grounded.
+    if (selectedEvidence.length > selectedEvidenceLimit) {
+      markBudgetExhausted(state.ledger, "evidence_items");
+      if (structuredAnswer.memory_status !== "insufficient") {
+        throw new Error("Memory answer budget exhausted: evidence_items");
+      }
+    }
+    const curatedEvidence = selectedEvidence.slice(0, selectedEvidenceLimit);
     if (
       structuredAnswer.memory_status === "insufficient" &&
-      curatedEvidence.length === 0 &&
-      state.errors.length === 0 &&
-      state.ledger.budgetExhaustions.length === 0
+      structuredAnswer.missing.length === 0 &&
+      structuredAnswer.missing_evidence.length === 0
     ) {
-      throw new Error(
-        "Memory answer worker returned insufficient after complete retrieval without selected partial evidence; use not_found when no inspected candidate is relevant"
-      );
+      throw new Error("Insufficient answers must identify missing evidence");
     }
     if (
       structuredAnswer.memory_status === "not_found" &&
@@ -4116,6 +4232,17 @@ const runDynamicToolMemoryAnswer = async (
       );
     }
     return { markdown, structuredAnswer, curatedEvidence };
+  };
+
+  const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
+    try {
+      return validateUnchecked(run);
+    } catch (error) {
+      throw new Error(
+        `Structured answer validation failed: ${errorMessage(error)}`,
+        { cause: error }
+      );
+    }
   };
 
   let retryResult: Awaited<ReturnType<typeof runCodexWithRetries>>;

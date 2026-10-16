@@ -1,3 +1,5 @@
+import type { DesktopRuntimeManifest } from "./desktop-runtime-capability.js";
+
 export type ComponentId = "base" | "privacy";
 export type ProcessId =
   | "api"
@@ -55,15 +57,23 @@ export interface RuntimeOwner {
   kind: "cli" | "desktop" | "standalone";
   installationId: string;
 }
-export interface VerifiedComponent {
+export interface VerifiedSignedComponent {
+  kind: "signed-component";
   manifest: ComponentManifest;
   root: string;
   manifestDigest: string;
 }
+export interface VerifiedDesktopBase {
+  kind: "desktop-bundle";
+  manifest: DesktopRuntimeManifest;
+  root: string;
+  manifestDigest: string;
+}
+export type VerifiedComponent = VerifiedSignedComponent | VerifiedDesktopBase;
 export interface VerifiedGeneration {
   id: string;
   productVersion: string;
   base: VerifiedComponent;
-  privacy?: VerifiedComponent;
+  privacy?: VerifiedSignedComponent;
   owner: RuntimeOwner;
 }

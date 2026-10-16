@@ -95,6 +95,38 @@ const normalCuda = async () => ({
 });
 
 describe("Privacy Filter runtime manager", () => {
+  it("reports completed startup stages in order before readiness", async () => {
+    const progress = vi.fn();
+    const manager = await PrivacyRuntimeManager.create({
+      preference: "cpu",
+      candidateProviders: ["cpu"],
+      factory: (provider) => new FakeRuntime(provider),
+      onStartupProgress: progress
+    });
+    expect(progress.mock.calls.map(([stage]) => stage)).toEqual([
+      "cpu_load_started",
+      "cpu_load_complete",
+      "cpu_parity_complete",
+      "provider_selection_complete"
+    ]);
+    expect(manager.isReady()).toBe(true);
+    await manager.dispose();
+  });
+
+  it("identifies an unfinished model load without reporting later stages", async () => {
+    const progress = vi.fn();
+    await expect(
+      PrivacyRuntimeManager.create({
+        preference: "cpu",
+        factory: (provider) => new FakeRuntime(provider, { failLoad: true }),
+        onStartupProgress: progress
+      })
+    ).rejects.toBeInstanceOf(PrivacyProviderSwitchError);
+    expect(progress.mock.calls.map(([stage]) => stage)).toEqual([
+      "cpu_load_started"
+    ]);
+  });
+
   it("starts on CPU without treating platform candidates as verified", async () => {
     const manager = await PrivacyRuntimeManager.create({
       preference: "cpu",

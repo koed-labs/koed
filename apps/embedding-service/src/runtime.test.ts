@@ -6,7 +6,7 @@ import { testConfig, testLogger } from "./test-helpers.js";
 
 class FakeLlamaServer implements LlamaEmbeddingClient {
   embedInputs: string[][] = [];
-  rerankInputs: Array<{ query: string; documents: string[] }> = [];
+
   tokenTextById = new Map<number, string>();
 
   isRunning(): boolean {
@@ -43,14 +43,6 @@ class FakeLlamaServer implements LlamaEmbeddingClient {
     return {
       vectors: texts.map((_, index) => [index + 1, 1, 0]),
       measuredTokens: texts.join(" ").split(" ").length
-    };
-  }
-
-  async rerank(query: string, documents: string[]) {
-    this.rerankInputs.push({ query, documents });
-    return {
-      scores: documents.map((document) => document.length),
-      measuredTokens: 37
     };
   }
 }
@@ -197,41 +189,6 @@ describe("EmbeddingRuntime", () => {
     expect(runtime.embeddingBatchTokenLimit()).toBe(504);
   });
 
-  it("uses llama-server rerank scores", async () => {
-    const fakeServer = new FakeLlamaServer();
-    const runtime = new EmbeddingRuntime(
-      testConfig({
-        rerankerKey: "test-reranker",
-        rerankerRepo: "repo",
-        rerankerFile: "reranker.gguf",
-        rerankerModelPath: "/models/reranker.gguf",
-        rerankerArtifact: "repo:reranker.gguf",
-        rerankerArtifactSha256: "a".repeat(64)
-      }),
-      testLogger()
-    );
-    runtime.rerankerServer = fakeServer;
-    (
-      runtime as unknown as { loadedRerankerArtifactSha256: string }
-    ).loadedRerankerArtifactSha256 = "a".repeat(64);
-
-    const response = await runtime.rerankTexts("query", ["short", "longer"]);
-
-    expect(response).toMatchObject({
-      model: "test-reranker",
-      artifact: "repo:reranker.gguf",
-      artifactRevision: `sha256:${"a".repeat(64)}`,
-      artifactHash: "a".repeat(64),
-      inputTokens: 37,
-      costUsd: 0,
-      scores: [5, 6]
-    });
-    expect(response.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(fakeServer.rerankInputs).toEqual([
-      { query: "query", documents: ["short", "longer"] }
-    ]);
-  });
-
   it("loads llama-server clients with expected options", async () => {
     const created: unknown[] = [];
     const runtime = new EmbeddingRuntime(
@@ -248,8 +205,7 @@ describe("EmbeddingRuntime", () => {
     expect(created[0]).toMatchObject({
       modelPath: "/models/embedding.gguf",
       pooling: "last",
-      embedding: true,
-      reranking: false
+      embedding: true
     });
   });
 

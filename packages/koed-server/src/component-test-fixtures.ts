@@ -10,6 +10,12 @@ import {
   canonicalComponentManifestBytes
 } from "./component-verification.js";
 
+// Fixed pre-serializer-change archive; zlib output varies across Node versions.
+export const goldenComponentArchive = Buffer.from(
+  "H4sIAAAAAAAAE0vNKymq1MsqZqAhMAACMxMTMA0E6LSBgaERgg0RNzcxNmUwoKWjYKC0uCSxCGglPewahCC1oiC/qEShupZroF0yCkbBKBgFo4CeAADk1SYtAAgAAA==",
+  "base64"
+);
+
 const hash = (value: Buffer | string) =>
   createHash("sha256").update(value).digest("hex");
 const writeString = (
@@ -64,6 +70,7 @@ function createSignedComponentFixture(
   archiveOptions: {
     terminatorBlocks?: number;
     tail?: Buffer;
+    bytes?: Buffer;
   } = {},
   includeArchiveInventory = false,
   entryContents: Readonly<Record<string, Buffer | string>> = {}
@@ -104,15 +111,17 @@ function createSignedComponentFixture(
       : [{ path: "entry.js", sha256: hash(payload) }],
     ...overrides
   };
-  const archive = gzipSync(
-    Buffer.concat([
-      ...archiveEntries.map(({ path, type }) =>
-        tarFile(path, fileContent(path), type)
-      ),
-      Buffer.alloc(512 * (archiveOptions.terminatorBlocks ?? 2)),
-      archiveOptions.tail ?? Buffer.alloc(0)
-    ])
-  );
+  const archive =
+    archiveOptions.bytes ??
+    gzipSync(
+      Buffer.concat([
+        ...archiveEntries.map(({ path, type }) =>
+          tarFile(path, fileContent(path), type)
+        ),
+        Buffer.alloc(512 * (archiveOptions.terminatorBlocks ?? 2)),
+        archiveOptions.tail ?? Buffer.alloc(0)
+      ])
+    );
   manifest.archive = {
     name: "base.tar.gz",
     bytes: archive.length,
@@ -166,7 +175,11 @@ export const signedComponentFixture = (
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
   ],
-  archiveOptions: { terminatorBlocks?: number; tail?: Buffer } = {},
+  archiveOptions: {
+    terminatorBlocks?: number;
+    tail?: Buffer;
+    bytes?: Buffer;
+  } = {},
   includeArchiveInventory = false,
   entryContents: Readonly<Record<string, Buffer | string>> = {}
 ): Promise<{

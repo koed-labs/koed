@@ -50,7 +50,7 @@ Diagnostics are redacted by design: they report whether secrets are configured, 
 
 The Embedding Service is an internal backend component. Keep it off public
 networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the Embedding
-Service, API, and Worker so embedding and reranking requests require a shared
+Service, API, and Worker so embedding requests require a shared
 internal header. API requests to that Operator-configured service use a
 separate trusted internal-service transport. They do not pass through the
 local-edge upstream transport or its user-configured remote URL policy, and
