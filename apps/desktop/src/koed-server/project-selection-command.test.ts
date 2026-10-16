@@ -1,3 +1,4 @@
+import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
 import { expect, it, vi } from "vitest";
 import { normalizeGitRemoteUrl, type ProjectMetadataV1 } from "@koed/shared";
 import { resolveKoedServerPaths } from "@koed-labs/server";
@@ -102,6 +103,12 @@ const fixture = (accepted = true) => {
   const command = createProjectSelectionCommand({
     paths: resolveKoedServerPaths({ KOED_HOME: "/fixture/profile" }),
     request,
+    lookup: async (checkout) =>
+      projectSelectionLookupResponseSchema.parse(
+        await request(
+          `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`
+        )
+      ),
     status: async () => ({ groups: [{ group_id: "group", state: "active" }] }),
     discover,
     setLookup,
@@ -197,7 +204,7 @@ it("does not retry a stale reviewed resolution and keeps local forgetting separa
   stale.request.mockImplementation(async (path, init) => {
     if (init?.method === "POST") throw new Error("Project selection changed");
     return path.startsWith("/v1/memory/")
-      ? { association }
+      ? { association: { ...association, selection: null } }
       : { associations: [] };
   });
   await expect(

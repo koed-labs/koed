@@ -1,3 +1,7 @@
+import {
+  effectiveProjectNameSql,
+  effectiveProjectPathSql
+} from "./project-scope-sql.js";
 import pg from "pg";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
@@ -308,11 +312,8 @@ export const createMemoryNodeRepository = (
           mn.updated_at,
           mn.pinned_at,
           coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-          case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null
-            then 'Unresolved history'
-            else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
-          case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null
-            then null else coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'root' end as project_path,
+          ${effectiveProjectNameSql("s")} as project_name,
+          ${effectiveProjectPathSql("s")} as project_path,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
         from memory_nodes mn

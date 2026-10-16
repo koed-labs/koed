@@ -1,10 +1,8 @@
-import {
-  repositoryIdentitySchema,
-  repositoryRecallContextSchema,
-  repositoryScopeId
-} from "@koed/shared";
 import { randomUUID } from "node:crypto";
-import { requirePortableTeamRepositoryContext } from "@koed/shared";
+import {
+  validateMemoryAnswerTaskRequest,
+  validateMemoryAnswerTaskCompletion
+} from "./memory-answer-task-request.js";
 import type pg from "pg";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
@@ -441,36 +439,7 @@ export const createMemoryAnswerTaskRepository = (
         throw new MemoryAnswerTaskAuthorizationError();
       if (input.teamWorkspaceId && !actor.allowTeam)
         throw new MemoryAnswerTeamAuthorityError();
-      const requestInput = input.request.input;
-      if (
-        requestInput &&
-        typeof requestInput === "object" &&
-        !Array.isArray(requestInput)
-      ) {
-        const snapshot = requestInput as Record<string, unknown>;
-        if (snapshot.search_domain === "project") {
-          const context = input.teamWorkspaceId
-            ? requirePortableTeamRepositoryContext(snapshot.repository_context)
-            : repositoryRecallContextSchema.parse(snapshot.repository_context);
-          if (snapshot.project_id !== repositoryScopeId(context))
-            throw new Error(
-              "Project task target must match its pinned repository context"
-            );
-        }
-        if (!input.teamWorkspaceId && snapshot.search_domain === "global") {
-          if (snapshot.repository_context === undefined)
-            throw new Error(
-              "Global task requires its pinned repository context or explicit null"
-            );
-          if (snapshot.repository_context !== null)
-            repositoryIdentitySchema.parse(snapshot.repository_context);
-        }
-        const requestedWorkspace = (requestInput as Record<string, unknown>)
-          .team_workspace_id;
-        if ((requestedWorkspace ?? null) !== (input.teamWorkspaceId ?? null)) {
-          throw new Error("Memory Answer request scope does not match task");
-        }
-      }
+      validateMemoryAnswerTaskRequest(input.request, input.teamWorkspaceId);
       const taskId = randomUUID();
       const maxAttempts = Math.min(positiveInteger(input.maxAttempts, 3), 10);
       const retentionMs = Math.min(
@@ -777,61 +746,17 @@ export const createMemoryAnswerTaskRepository = (
           await client.query("rollback");
           return null;
         }
-        if (
-          (input.finalQuestion.teamWorkspaceId ?? null) !==
-            (current.team_workspace_id ?? null) ||
-          (input.finalQuestion.retrievalScope ?? "personal") !== "personal"
-        ) {
-          throw new Error("Final Memory Question scope does not match task");
-        }
         const request = await decryptWithClient(
           client,
           actor,
           current.id,
           "request_snapshot"
         );
-        const acceptedInput =
-          request && typeof request === "object" && !Array.isArray(request)
-            ? (request as Record<string, unknown>).input
-            : undefined;
-        if (
-          !acceptedInput ||
-          typeof acceptedInput !== "object" ||
-          Array.isArray(acceptedInput) ||
-          typeof (acceptedInput as Record<string, unknown>).query !==
-            "string" ||
-          (
-            (acceptedInput as Record<string, unknown>).query as string
-          ).trim() !== input.finalQuestion.query.trim()
-        ) {
-          throw new Error("Final Memory Question query does not match task");
-        }
-        const snapshot = acceptedInput as Record<string, unknown>;
-        if (
-          (snapshot.search_domain !== undefined &&
-            snapshot.search_domain !== input.finalQuestion.searchDomain) ||
-          (snapshot.session_id ?? null) !==
-            (input.finalQuestion.sessionId ?? null)
-        ) {
-          throw new Error(
-            "Final Memory Question search scope does not match task"
-          );
-        }
-        let expectedProject = snapshot.project_id;
-        if (snapshot.search_domain === "project") {
-          expectedProject = repositoryScopeId(
-            current.team_workspace_id
-              ? requirePortableTeamRepositoryContext(
-                  snapshot.repository_context
-                )
-              : repositoryRecallContextSchema.parse(snapshot.repository_context)
-          );
-        }
-        if (
-          (expectedProject ?? null) !== (input.finalQuestion.projectId ?? null)
-        ) {
-          throw new Error("Final Memory Question project does not match task");
-        }
+        validateMemoryAnswerTaskCompletion(
+          request,
+          current.team_workspace_id,
+          input.finalQuestion
+        );
         const question = await questions.createFinalMemoryQuestionWithClient(
           client,
           actor,

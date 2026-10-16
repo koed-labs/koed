@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   effectiveRepositoryIdentity,
   repositoryAssignmentSchema,
+  createRepositoryAssignment,
   type RepositoryAssignment
 } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
@@ -120,7 +121,7 @@ export const createPdsRepositoryAssignment = (
     override: parsed.override,
     selectedAnchor:
       effective?.kind === "portable_repository"
-        ? { epoch, token: pdsSelectedRepositoryToken(key, effective.key!) }
+        ? { epoch, token: pdsSelectedRepositoryToken(key, effective.key) }
         : null
   });
 };
@@ -134,13 +135,15 @@ export const verifyPdsRepositoryAssignment = (
   const parsed = pdsRepositoryAssignmentSchema.parse(value);
   const effective = effectiveRepositoryIdentity(parsed);
   if (parsed.selectedAnchor) {
+    if (effective?.kind !== "portable_repository")
+      throw new TypeError("PDS repository anchor requires a portable identity");
     if (
       parsed.selectedAnchor.epoch !== contentEpoch ||
       contentEpoch !== verifiedEpoch
     )
       throw new TypeError("PDS repository key epoch is unavailable");
     const expected = decodePdsBase64url(
-      pdsSelectedRepositoryToken(key, effective!.key!),
+      pdsSelectedRepositoryToken(key, effective.key),
       32
     );
     if (
@@ -151,13 +154,12 @@ export const verifyPdsRepositoryAssignment = (
     )
       throw new TypeError("PDS repository anchor token is invalid");
   }
-  return {
+  return createRepositoryAssignment({
     state: parsed.state,
     version: Number(parsed.assignmentVersion),
     automatic: parsed.automatic,
-    override: parsed.override,
-    effective
-  };
+    override: parsed.override
+  });
 };
 
 /** Keys come from the authenticated group's private secret provider, never the package. */

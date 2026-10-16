@@ -1,4 +1,8 @@
-import { effectiveProjectPathSql } from "./project-scope-sql.js";
+import { projectFromRepositoryIdentity } from "./session-project.js";
+import {
+  effectiveProjectPathSql,
+  effectiveProjectNameSql
+} from "./project-scope-sql.js";
 import {
   lockProjectRouting,
   moveProjectConversations
@@ -291,7 +295,7 @@ export const getCapturedSessionSummaryWithClient = async (
         s.id as session_id,
         lm.id as logical_memory_id,
         nullif(btrim(s.metadata ->> 'threadName'), '') as title,
-        coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+        ${effectiveProjectNameSql("s")} as project_name,
         greatest(
           s.updated_at,
           coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
@@ -365,23 +369,31 @@ export const getCapturedSessionSummaryWithClient = async (
   return result.rows[0] ? mapCapturedSessionSummary(result.rows[0]) : null;
 };
 
-const projectReference = (
-  id: string | null,
-  name: string | null,
-  path: string | null
-): PersonalProjectReference | null => (id && name ? { id, name, path } : null);
-
 const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
-  const automaticProject = projectReference(
-    row.automatic_project_id,
-    row.automatic_project_name,
-    row.automatic_project_path
+  const assignment = mapRepositoryAssignment(row);
+  const captured = {
+    id: row.automatic_project_id,
+    name: row.automatic_project_name,
+    path: row.automatic_project_path
+  };
+  const override = {
+    id: row.project_override_id,
+    name: row.project_override_name,
+    path: row.project_override_path
+  };
+  const projectFor = (identity: RepositoryIdentity | null) =>
+    projectFromRepositoryIdentity(
+      identity,
+      assignment.automatic,
+      captured,
+      override
+    );
+  const automaticProject = projectFromRepositoryIdentity(
+    assignment.automatic,
+    assignment.automatic,
+    captured
   );
-  const projectOverride = projectReference(
-    row.project_override_id,
-    row.project_override_name,
-    row.project_override_path
-  );
+  const projectOverride = projectFor(assignment.override);
   return {
     id: row.id,
     logicalSessionId: row.logical_session_id,
@@ -400,13 +412,13 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
     importObservedAt: row.import_observed_at?.toISOString() ?? null,
     metadata: row.metadata ?? {},
     capturedProjectProvenance: row.captured_project_provenance ?? {},
-    repositoryAssignment: mapRepositoryAssignment(row),
+    repositoryAssignment: assignment,
     automaticProject,
     projectOverride,
-    project: projectOverride ?? automaticProject,
-    projectAssignmentSource: projectOverride
+    project: projectFor(assignment.effective),
+    projectAssignmentSource: assignment.override
       ? "user_override"
-      : automaticProject
+      : assignment.automatic
         ? "detected"
         : null,
     projectAssignmentUpdatedAt:
@@ -1116,7 +1128,7 @@ export const createCapturedSessionRepository = (
           s.id as session_id,
           lm.id as logical_memory_id,
           nullif(btrim(s.metadata ->> 'threadName'), '') as title,
-          coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+          ${effectiveProjectNameSql("s")} as project_name,
           greatest(
             s.updated_at,
             coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
@@ -1227,7 +1239,7 @@ export const createCapturedSessionRepository = (
           select
             s.id,
             s.external_session_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             ${effectiveProjectPathSql("s")} as project_path,
             s.metadata ->> 'threadName' as current_title,
             count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,

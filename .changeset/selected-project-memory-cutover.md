@@ -44,3 +44,13 @@ Global recall reserves a bounded candidate pool for the current repository and
 uses a small relevance preference when context matches. Personal and Team
 answers identify other Projects and preserve unknown provenance. Team matching
 uses authorized Share Grant snapshots. No reranker service is required.
+
+Preserve named Projects and local anchor choices when Desktop, capture, and recall
+processes update the local catalog concurrently. Use one shared retrieval plan so
+Global score scans cost one pass and leave the correct budget for repository
+preference searches and follow-up retrieval.
+
+Derive Session and graph Project details from the same repository assignment,
+including after Personal Device Sync updates. Make identity variants and effective
+assignment invariants explicit, separate Desktop Project commands by credential
+boundary, and keep durable-task request validation outside queue orchestration.

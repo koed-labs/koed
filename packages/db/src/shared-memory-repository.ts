@@ -1,6 +1,6 @@
+import { planRepositorySearch } from "@koed/shared";
 import {
   classifyTeamRepositoryEvidence,
-  globalRepositoryPoolLimits,
   type ClassifiedRepositoryEvidence
 } from "./global-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -18447,13 +18447,14 @@ export const createSharedMemoryRepository = (
       );
       const candidateLimit =
         Math.min(Math.max(input.limit, 1), 50) * (input.strictLimit ? 1 : 4);
-      const limits = globalRepositoryPoolLimits(
+      const limits = planRepositorySearch({
+        retrievalScope: "team",
+        searchDomain: input.searchDomain,
+        repositoryContext: input.repositoryContext,
+        limit: input.limit,
         candidateLimit,
-        input.searchDomain === "global" &&
-          input.limit > 1 &&
-          input.maxSearchPasses === 2 &&
-          input.repositoryContext?.kind === "portable_repository"
-      );
+        maxSearchPasses: input.maxSearchPasses ?? 1
+      });
       const queryRows = async (
         domain: string,
         fingerprint: string | null,

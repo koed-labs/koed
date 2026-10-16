@@ -76,7 +76,12 @@ it("stores raw Project labels only in an owner-private envelope bound to the Ses
       provider,
       binding,
       stored.repositorySnapshotMetadataEnvelope,
-      { ...stored.repositorySnapshot, fingerprint: "gr_other" }
+      {
+        ...snapshot,
+        label: null,
+        branchObservation: null,
+        fingerprint: "gr_other"
+      }
     )
   ).rejects.toThrow("disagree");
 });

@@ -14,7 +14,9 @@ import {
   updateSessionRepositoryOverride
 } from "../src/index.js";
 const databaseUrl = process.env.DATABASE_URL;
-const identity = (key: string): RepositoryIdentity => ({
+const identity = (
+  key: string
+): Extract<RepositoryIdentity, { kind: "portable_repository" }> => ({
   kind: "portable_repository",
   key: `gr_${key}`,
   root: `/fixture/${key}`,

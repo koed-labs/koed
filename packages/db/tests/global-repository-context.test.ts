@@ -1,10 +1,9 @@
 import { expect, it } from "vitest";
-import type { RepositoryIdentity } from "@koed/shared";
+import { planRepositorySearch, type RepositoryIdentity } from "@koed/shared";
 import {
   canonicalGlobalCandidateKey,
   classifyRepositoryEvidence,
-  classifyTeamRepositoryEvidence,
-  globalRepositoryPoolLimits
+  classifyTeamRepositoryEvidence
 } from "../src/global-repository-context.js";
 const current: RepositoryIdentity = {
   kind: "portable_repository",
@@ -92,13 +91,26 @@ it("keeps mixed and device-incomparable provenance unknown", () => {
 });
 it("bounds both pools by the existing cap and retains full canonical namespaces", () => {
   for (let cap = 1; cap <= 100; cap++) {
-    const split = globalRepositoryPoolLimits(cap, true);
+    const split = planRepositorySearch({
+      retrievalScope: "personal",
+      searchDomain: "global",
+      repositoryContext: current,
+      limit: cap
+    });
     expect(split.current + split.global).toBe(cap);
     expect(split.global).toBeGreaterThan(0);
   }
-  expect(globalRepositoryPoolLimits(4, false)).toEqual({
+  expect(
+    planRepositorySearch({
+      retrievalScope: "personal",
+      searchDomain: "global",
+      repositoryContext: null,
+      limit: 4
+    })
+  ).toEqual({
     global: 4,
-    current: 0
+    current: 0,
+    searchPasses: 1
   });
   const row = {
     visibility: "personal",

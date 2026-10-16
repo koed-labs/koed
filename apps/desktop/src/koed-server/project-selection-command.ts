@@ -13,17 +13,17 @@ import {
   type ProjectSelectionCommandResult
 } from "@koed/shared/project-selection";
 
+export type ProjectSelectionCheckout = {
+  originatingDeviceId: string;
+  checkoutId: string;
+};
+export type ProjectSelectionLookup = (
+  checkout: ProjectSelectionCheckout
+) => Promise<import("zod").infer<typeof projectSelectionLookupResponseSchema>>;
 export const createProjectSelectionLookup =
-  (request: (path: string) => Promise<Record<string, unknown>>) =>
-  async (
-    _paths: KoedServerPaths,
-    checkout: { originatingDeviceId: string; checkoutId: string }
-  ) => {
-    const result = projectSelectionLookupResponseSchema.parse(
-      await request(
-        `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`
-      )
-    );
+  (lookup: ProjectSelectionLookup) =>
+  async (_paths: KoedServerPaths, checkout: ProjectSelectionCheckout) => {
+    const result = await lookup(checkout);
     return result.association?.selection
       ? {
           associationId: result.association.associationId,
@@ -35,6 +35,7 @@ export const createProjectSelectionLookup =
 export const createProjectSelectionCommand =
   (deps: {
     paths: KoedServerPaths;
+    lookup: ProjectSelectionLookup;
     request(path: string, init?: RequestInit): Promise<Record<string, unknown>>;
     status(): Promise<Record<string, unknown>>;
     discover?: typeof discoverProjectMetadata;
@@ -50,7 +51,7 @@ export const createProjectSelectionCommand =
     if (!local)
       throw new Error("Local Project is unavailable; inspect it again");
     const discoveryDeps = {
-      lookupAssociatedSelection: createProjectSelectionLookup(deps.request)
+      lookupAssociatedSelection: createProjectSelectionLookup(deps.lookup)
     };
     const discover: typeof discoverProjectMetadata =
       deps.discover ??
@@ -69,14 +70,7 @@ export const createProjectSelectionCommand =
       originatingDeviceId: repository.originatingDeviceId,
       checkoutId: repository.checkoutId
     };
-    const query = new URLSearchParams(identity).toString();
-    const observed = (
-      await deps.request(`/v1/memory/repository-selection?${query}`)
-    ).association as {
-      groupId: string;
-      associationId: string;
-      selectionId: string;
-    } | null;
+    const observed = (await deps.lookup(identity)).association;
     const current = observed
       ? projectSelectionCommandResultSchema.shape.accepted.parse({
           groupId: observed.groupId,
@@ -197,9 +191,7 @@ export const createProjectSelectionCommand =
       });
     }
     if (input.operation !== "inspect") await discover(deps.paths, { cwd });
-    const accepted = (
-      await deps.request(`/v1/memory/repository-selection?${query}`)
-    ).association;
+    const accepted = (await deps.lookup(identity)).association;
     const associations = groupId
       ? (
           await deps.request(

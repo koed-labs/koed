@@ -9,6 +9,7 @@ import {
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   type RepositoryIdentity,
+  planRepositorySearch,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import {
@@ -2135,12 +2136,21 @@ const globalSearchContext = (
   searchDomain: string,
   scope: string,
   context: RepositoryIdentity | null | undefined,
-  remaining: number
+  remaining: number,
+  limit: number,
+  retrievalStage?: string
 ): Record<string, unknown> =>
   searchDomain === "global" && (scope === "personal" || scope === "team")
     ? {
         repository_context: context ?? null,
-        max_search_passes: remaining > 1 ? 2 : 1
+        max_search_passes: planRepositorySearch({
+          retrievalScope: scope,
+          searchDomain,
+          repositoryContext: context,
+          limit,
+          retrievalStage,
+          maxSearchPasses: remaining > 1 ? 2 : 1
+        }).searchPasses
       }
     : {};
 
@@ -2203,11 +2213,15 @@ const createMemoryAnswerDynamicToolHandler = (
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
+      const followUpCost = planRepositorySearch({
+        retrievalScope: options.retrievalScope,
+        searchDomain: options.searchDomain,
+        repositoryContext: options.repositoryContext,
+        limit: options.limit
+      }).searchPasses;
       if (
-        options.searchDomain === "global" &&
-        options.repositoryContext &&
-        options.repositoryContext.kind !== "unresolved" &&
-        options.config.maxSearches - state.ledger.searchAttempts <= 2
+        followUpCost === 2 &&
+        options.config.maxSearches - state.ledger.searchAttempts <= followUpCost
       ) {
         return dynamicToolResult(
           {
@@ -2233,7 +2247,9 @@ const createMemoryAnswerDynamicToolHandler = (
               searchDomain,
               options.retrievalScope,
               options.repositoryContext,
-              options.config.maxSearches - state.ledger.searchAttempts + 1
+              options.config.maxSearches - state.ledger.searchAttempts + 1,
+              1,
+              "score_scan"
             ),
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
@@ -2344,17 +2360,21 @@ const createMemoryAnswerDynamicToolHandler = (
       const { searchDomain, sessionId, projectId } = normalizeDomain(args);
       const limit = clampLimit(args.limit, options.limit);
       const started = Date.now();
-      state.ledger.searchAttempts += 1;
+      const context = globalSearchContext(
+        searchDomain,
+        options.retrievalScope,
+        options.repositoryContext,
+        options.config.maxSearches - state.ledger.searchAttempts,
+        limit,
+        stage
+      );
+      const plannedPasses = context.max_search_passes === 2 ? 2 : 1;
+      state.ledger.searchAttempts += plannedPasses;
       try {
         const searchResult = await withinRequestDeadline(state, () =>
           options.client.search({
             query: searchQuery,
-            ...globalSearchContext(
-              searchDomain,
-              options.retrievalScope,
-              options.repositoryContext,
-              options.config.maxSearches - state.ledger.searchAttempts + 1
-            ),
+            ...context,
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
             session_id: sessionId,
@@ -2372,7 +2392,8 @@ const createMemoryAnswerDynamicToolHandler = (
             limit
           })
         );
-        state.ledger.searchAttempts += searchPassesFromResult(searchResult) - 1;
+        state.ledger.searchAttempts +=
+          searchPassesFromResult(searchResult) - plannedPasses;
         const hits = hitsFromSearch(searchResult);
         const bounded = boundEvidence(
           combineMemoryAnswerCandidateLists(
@@ -2440,6 +2461,7 @@ const createMemoryAnswerDynamicToolHandler = (
           sourceBefore: options.sourceBefore,
           limit,
           hitCount: 0,
+          searchPasses: plannedPasses,
           phase: "worker",
           durationMs: Date.now() - started,
           errorClass: error instanceof Error ? error.name : "Error"
@@ -3489,13 +3511,10 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   }>;
 }> => {
   const contextualGlobal = options.searchDomain === "global";
-  const passCost =
-    contextualGlobal &&
-    options.repositoryContext &&
-    options.repositoryContext.kind !== "unresolved" &&
-    options.maxSearches > 1
-      ? 2
-      : 1;
+  const passCost = planRepositorySearch({
+    ...options,
+    maxSearchPasses: options.maxSearches > 1 ? 2 : 1
+  }).searchPasses;
   const common = {
     retrieval_scope: options.retrievalScope,
     search_domain: options.searchDomain,
@@ -3620,16 +3639,11 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     }
   }
   const followUpReserve = options.maxSearches > passCost ? passCost : 0;
-  const firstPassCallBudget = Math.max(
-    1,
-    Math.floor((options.maxSearches - followUpReserve) / passCost)
-  );
-  // Scans are allocated in deterministic rounds across hint classes. With the
-  // default five-call first-pass budget this admits caller, semantic, and
-  // lexical/exact-seeded queries while retaining two calls for routed search.
+  const firstPassBudget = Math.max(1, options.maxSearches - followUpReserve);
+  // A scan always costs one pass. Reserve room for routed retrieval separately.
   const scanCount = Math.min(
     queries.length,
-    Math.max(1, Math.ceil(firstPassCallBudget / 2))
+    Math.max(1, Math.ceil(firstPassBudget / (1 + passCost)))
   );
   const scanQueries = queries.slice(0, scanCount);
   const skippedQueries = queries.slice(scanCount).map((candidate) => ({
@@ -3693,7 +3707,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit: 1,
             hitCount: 0,
-            searchPasses: passCost,
+            searchPasses: 1,
             phase: "first_pass" as const,
             durationMs: Date.now() - started,
             errorClass: error instanceof Error ? error.name : "Error"
@@ -3716,7 +3730,11 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
           )
       : []
   }));
-  const searchBudget = Math.max(0, firstPassCallBudget - scans.length);
+  let searchBudget = Math.max(
+    0,
+    firstPassBudget -
+      scans.reduce((sum, scan) => sum + scan.record.searchPasses, 0)
+  );
   const routedTasks = [
     ...routes.flatMap((route) =>
       route.available.slice(0, 1).map((detail) => ({
@@ -3748,19 +3766,32 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
   );
   // Cover every distinct scan-positive retrieval stage before spending the
   // remaining first-pass budget on query variants for an already routed stage.
-  const tasks = [...distinctStageTasks, ...repeatedStageTasks].slice(
-    0,
-    searchBudget
+  const tasks = [...distinctStageTasks, ...repeatedStageTasks].flatMap(
+    (task) => {
+      if (searchBudget <= 0) return [];
+      const limit = Math.max(
+        1,
+        Math.min(
+          options.limit,
+          Number(task.detail.maxAllowed) || options.limit,
+          Number(task.detail.countAboveThreshold) || 1
+        )
+      );
+      const maxSearchPasses = searchBudget > 1 ? passCost : 1;
+      const cost = planRepositorySearch({
+        ...options,
+        retrievalStage: task.stage,
+        limit,
+        maxSearchPasses
+      }).searchPasses;
+      searchBudget -= cost;
+      return [{ ...task, limit, maxSearchPasses, cost }];
+    }
   );
   const results = await Promise.all(
     tasks.map(async (task) => {
       const started = Date.now();
-      const maxAllowed = Number(task.detail.maxAllowed ?? options.limit);
-      const count = Number(task.detail.countAboveThreshold ?? options.limit);
-      const limit = Math.max(
-        1,
-        Math.min(options.limit, maxAllowed || options.limit, count || 1)
-      );
+      const { limit } = task;
       try {
         const result = await beforeDeadline(() =>
           options.client.search({
@@ -3768,6 +3799,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             ...common,
             retrieval_stage: task.stage,
             strict_limit: true,
+            max_search_passes: task.maxSearchPasses,
             limit
           })
         );
@@ -3816,7 +3848,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             sourceBefore: options.sourceBefore,
             limit,
             hitCount: 0,
-            searchPasses: passCost,
+            searchPasses: task.cost,
             phase: "first_pass" as const,
             durationMs: Date.now() - started,
             errorClass: error instanceof Error ? error.name : "Error"

@@ -134,3 +134,22 @@ owner's acceptance and current causal state. A failed lookup defers discovery.
 A local explicit choice takes precedence and does not require this lookup.
 The owner inspection API returns current heads, while the journal retains complete
 causal history.
+
+## Local Project storage and command boundaries
+
+The local `projects.json` catalog contains checkout configuration, named Projects,
+and pending repository changes. Desktop, capture, and recall processes use the
+same cross-process lock for initialization, migration, and each complete
+read–modify–write operation. Each writer reads the latest state while holding the
+lock and replaces the file through a unique temporary file. A busy lock fails
+within five seconds rather than overwriting another process's changes.
+
+Git probes and Personal API lookups run outside the lock. Discovery then locks
+and re-reads the catalog, checks the profile and checkout incarnation, and applies
+its observation to the current configuration. New named Projects and local
+anchor edits therefore survive concurrent discovery.
+
+Desktop Project commands receive separate Personal Memory and device-governance
+clients. The Personal client owns the bounded selection lookup; the governance
+client owns shared-selection inspection and changes. Endpoint text never selects
+which credential to send.

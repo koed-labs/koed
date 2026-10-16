@@ -181,6 +181,13 @@ restores the recorded automatic assignment, including unresolved history.
 | Materialized Personal replicated evidence | The same Session predicates apply to local source rows, alongside existing replication-readiness checks. Assignment transport is added by ticket 11. |
 | Durable task completion                   | The final Memory Question must retain the accepted Project scope.                                                                                    |
 
+Session API responses and graph views derive the effective Project ID, label,
+path, and assignment source from the same repository assignment. Original
+capture columns remain display/provenance hints; a stale override label or path
+cannot select or describe a different effective Project. A named Project has no
+filesystem path. Replicated assignment changes take effect in both views without
+rewriting original capture provenance.
+
 Scoped Session lookup uses the effective repository assignment. A captured display
 Project ID cannot substitute for that identity. Unscoped owner inspection still
 returns authorized unresolved history. Memory-browser results use the same
@@ -412,6 +419,14 @@ combined pre-hydration rows cannot exceed the previous stage cap. Canonical sour
 identity merges overlapping rows before hydration and decryption. Both passes count
 against the existing search budget; when only one pass remains, retrieval uses the
 Global pool alone. Unknown caller context also uses the Global pool alone.
+
+The shared repository-search plan defines pool eligibility and pass cost for
+Personal and Team retrieval. Score scans always cost one pass. A candidate search
+costs two only when its current-repository pool is enabled; Team preference
+requires portable repository context. The worker reserves follow-up retrieval
+separately, charges scans at their actual cost, and schedules routed searches
+within the remaining budget. Failed searches retain their reserved cost so
+retries cannot evade the request-wide cap.
 
 After the existing semantic threshold, stage weights and exact-anchor fusion,
 current-repository evidence receives `0.04`; a known matching branch adds `0.01`.

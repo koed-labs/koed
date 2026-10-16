@@ -1,11 +1,17 @@
-import { effectiveProjectPathSql } from "./project-scope-sql.js";
+import {
+  effectiveProjectPathSql,
+  effectiveProjectNameSql
+} from "./project-scope-sql.js";
 import { createProjectRoutingRepository } from "./project-routing-repository.js";
-import { repositoryIdentitySchema, repositoryScopeId } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  repositoryScopeId,
+  planRepositorySearch
+} from "@koed/shared";
 import { globalRepositoryContextJoinSql } from "./global-repository-context-sql.js";
 import {
   canonicalGlobalCandidateKey,
-  classifyRepositoryEvidence,
-  globalRepositoryPoolLimits
+  classifyRepositoryEvidence
 } from "./global-repository-context.js";
 import { createRepositoryReviewRepository } from "./repository-review-repository.js";
 import { createHash } from "node:crypto";
@@ -6822,12 +6828,7 @@ export const createMemorySourceRepository = (
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
           coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-          coalesce(
-            s.project_override_name,
-            s.automatic_project_name,
-            case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
-            'Unassigned'
-          ) as project_name,
+          ${effectiveProjectNameSql("s")} as project_name,
           coalesce(${effectiveProjectPathSql("s")},
             case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
           ) as project_path,
@@ -7130,12 +7131,7 @@ export const createMemorySourceRepository = (
             me.capture_method,
             s.model,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            coalesce(
-              s.project_override_name,
-              s.automatic_project_name,
-              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-              'Unassigned'
-            ) as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             coalesce(${effectiveProjectPathSql("s")},
               case when s.id is null then me.payload #>> '{metadata,projectPath}' end
             ) as project_path,
@@ -7225,7 +7221,7 @@ export const createMemorySourceRepository = (
             msg.capture_method,
             s.model,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
@@ -7382,7 +7378,7 @@ export const createMemorySourceRepository = (
             te.capture_method,
             s.model,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
@@ -7533,7 +7529,7 @@ export const createMemorySourceRepository = (
             end as capture_method,
             s.model,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) as thread_id,
@@ -7804,7 +7800,7 @@ export const createMemorySourceRepository = (
             me.id::text as id,
             'event' as row_kind,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null then 'Unresolved history' else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity) ->> 'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             coalesce(${effectiveProjectPathSql("s")},
               case when s.id is null then me.payload #>> '{metadata,projectPath}' end
             ) as project_path,
@@ -7871,7 +7867,7 @@ export const createMemorySourceRepository = (
               or me.payload ->> 'content' ilike '%' || $6 || '%'
               or me.id::text = $6
               or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
@@ -7881,7 +7877,7 @@ export const createMemorySourceRepository = (
             s.id::text as id,
             'session' as row_kind,
             coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
-            case when repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null then 'Unresolved history' else coalesce(s.project_override_name, coalesce(s.repository_override_identity, s.repository_automatic_identity) ->> 'anchorDisplay', s.automatic_project_name, 'Project') end as project_name,
+            ${effectiveProjectNameSql("s")} as project_name,
             ${effectiveProjectPathSql("s")} as project_path,
             case
               when s.repository_override_identity is not null then 'user_override'
@@ -7935,7 +7931,7 @@ export const createMemorySourceRepository = (
               $6::text is null
               or s.id::text = $6
               or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
             )
             and s.visibility = 'personal'
             and s.owner_user_id = $1
@@ -11431,10 +11427,14 @@ export const createMemorySourceRepository = (
               parentNodeIds: string[] = []
             ): Promise<StageResult> => {
               const started = Date.now();
-              const pools = globalRepositoryPoolLimits(
+              const pools = planRepositorySearch({
+                retrievalScope: "personal",
+                searchDomain,
+                repositoryContext,
+                retrievalStage: stage,
                 limit,
-                Boolean(currentRepositoryScope)
-              );
+                maxSearchPasses: input.maxSearchPasses
+              });
               if (pools.current > 0) searchPasses = 2;
               databaseReads += 1;
               const vectorResult = await pool.query<VectorRow>(
@@ -11528,7 +11528,7 @@ export const createMemorySourceRepository = (
                           coalesce(time_ev.id, time_msg.id) as source_id,
                           coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
                           coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
-                          coalesce(time_session.project_override_name, time_session.automatic_project_name, 'Unassigned') as project_name,
+                          ${effectiveProjectNameSql("time_session")} as project_name,
                           ${effectiveProjectPathSql("time_session")} as project_path
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null

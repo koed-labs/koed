@@ -8,27 +8,29 @@ import { repositoryRecallContextSchema } from "./repository-recall.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
 
 /** Team routing never contains a checkout path, device identity, or suppressed automatic anchor. */
-export const teamRepositorySnapshotSchema = z
-  .object({
-    version: z.literal(1),
-    classification: z.enum(["portable_repository", "unresolved"]),
-    fingerprint: z.string().min(1).max(512).nullable(),
-    label: z.string().min(1).max(512).nullable(),
-    branchObservation: z.string().min(1).max(512).nullable()
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (
-      (value.classification === "portable_repository") !==
-        (value.fingerprint !== null) ||
-      (value.classification === "unresolved" &&
-        (value.label !== null || value.branchObservation !== null))
-    )
-      context.addIssue({
-        code: "custom",
-        message: "Unresolved Team snapshots carry no repository metadata"
-      });
-  });
+export const teamRepositorySnapshotSchema = z.discriminatedUnion(
+  "classification",
+  [
+    z
+      .object({
+        version: z.literal(1),
+        classification: z.literal("portable_repository"),
+        fingerprint: z.string().min(1).max(512),
+        label: z.string().min(1).max(512).nullable(),
+        branchObservation: z.string().min(1).max(512).nullable()
+      })
+      .strict(),
+    z
+      .object({
+        version: z.literal(1),
+        classification: z.literal("unresolved"),
+        fingerprint: z.null(),
+        label: z.null(),
+        branchObservation: z.null()
+      })
+      .strict()
+  ]
+);
 export type TeamRepositorySnapshot = z.infer<
   typeof teamRepositorySnapshotSchema
 >;
@@ -84,7 +86,7 @@ export const createTeamRepositorySnapshot = (
 
 export const requirePortableTeamRepositoryContext = (
   value: unknown
-): RepositoryIdentity => {
+): Extract<RepositoryIdentity, { kind: "portable_repository" }> => {
   const parsed = repositoryRecallContextSchema.safeParse(value);
   if (
     !parsed.success ||

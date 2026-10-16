@@ -2,7 +2,7 @@ import { recordRepositoryChange } from "./repository-change-events.js";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
-  effectiveRepositoryIdentity,
+  createRepositoryAssignment,
   repositoryIdentitySchema,
   type RepositoryAssignment,
   type RepositoryIdentity
@@ -16,16 +16,13 @@ export type RepositoryAssignmentRow = {
 };
 export const mapRepositoryAssignment = (
   row: RepositoryAssignmentRow
-): RepositoryAssignment => ({
-  state: row.repository_assignment_state,
-  version: row.repository_assignment_version,
-  automatic: row.repository_automatic_identity,
-  override: row.repository_override_identity,
-  effective: effectiveRepositoryIdentity({
+): RepositoryAssignment =>
+  createRepositoryAssignment({
+    state: row.repository_assignment_state,
+    version: row.repository_assignment_version,
     automatic: row.repository_automatic_identity,
     override: row.repository_override_identity
-  })
-});
+  });
 
 export const recordRepositoryObservation = async (
   client: pg.PoolClient,

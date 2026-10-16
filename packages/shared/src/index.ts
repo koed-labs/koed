@@ -1834,13 +1834,15 @@ export type {
 
 export {
   repositoryAssignmentSchema,
-  effectiveRepositoryIdentity
+  effectiveRepositoryIdentity,
+  createRepositoryAssignment
 } from "./repository-assignment.js";
 export type { RepositoryAssignment } from "./repository-assignment.js";
 
 export {
   repositoryRecallContextSchema,
   repositoryScopeId,
+  planRepositorySearch,
   repositoryIdentityMatches
 } from "./repository-recall.js";
 

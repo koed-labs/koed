@@ -10,6 +10,7 @@ import {
   runDbMigrations,
   updateSessionRepositoryOverride
 } from "@koed/db";
+import { repositoryScopeId } from "@koed/shared";
 import { resolveCaptureRepositoryIdentity } from "../src/capture-repository-context.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -67,7 +68,13 @@ describe.skipIf(!databaseUrl)("managed target to capture assignment", () => {
                 ? "non_git_project"
                 : "portable_repository"
             );
-            expect(fs.realpathSync(identity!.root!)).toBe(
+            if (
+              !identity ||
+              (identity.kind !== "portable_repository" &&
+                identity.kind !== "non_git_project")
+            )
+              throw new Error("Expected a resolved captured checkout");
+            expect(fs.realpathSync(identity.root!)).toBe(
               fs.realpathSync(target)
             );
             const user = await repository.createUser({
@@ -87,11 +94,13 @@ describe.skipIf(!databaseUrl)("managed target to capture assignment", () => {
               input
             );
             expect(captured.repositoryAssignment?.effective).toEqual(identity);
-            expect(captured.automaticProject?.id).toBe(input.projectId);
+            expect(captured.automaticProject?.id).toBe(
+              repositoryScopeId(identity)
+            );
             const duplicate = await repository.createCapturedSession(actor, {
               ...input,
               cwd: process.cwd(),
-              repositoryIdentity: { ...identity!, key: "gr_other" }
+              repositoryIdentity: { ...identity, key: "gr_other" }
             });
             expect(duplicate.id).toBe(captured.id);
             expect(duplicate.repositoryAssignment).toEqual(
@@ -102,7 +111,7 @@ describe.skipIf(!databaseUrl)("managed target to capture assignment", () => {
               ownerUserId: user.id,
               sessionId: captured.id,
               expectedVersion: 1,
-              identity: { ...identity!, key: "gr_override" }
+              identity: { ...identity, key: "gr_override" }
             });
             const resumed = await repository.createCapturedSession(
               actor,

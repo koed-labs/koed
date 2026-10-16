@@ -20,13 +20,6 @@ export interface ClassifiedRepositoryEvidence {
   repositoryBonus: number;
   branchBonus: number;
 }
-export const globalRepositoryPoolLimits = (
-  limit: number,
-  enabled: boolean
-): { global: number; current: number } => {
-  const current = enabled && limit > 1 ? Math.max(1, Math.floor(limit / 4)) : 0;
-  return { global: limit - current, current };
-};
 export const classifyRepositoryEvidence = (
   raw: unknown,
   caller: RepositoryIdentity | null

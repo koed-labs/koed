@@ -1,3 +1,4 @@
+import { planRepositorySearch } from "@koed/shared";
 import { answerMemory, searchMemory } from "@koed/core";
 import type { SharedMemorySemanticCandidate } from "@koed/db";
 import type { FastifyInstance } from "fastify";
@@ -260,14 +261,14 @@ export const registerRecallRoutes = (
           lcmHitsCount: hits.filter((hit) => hit.sourceType === "memory_node")
             .length,
           retrieval: {
-            searchPasses:
-              !scoreScan &&
-              input.search_domain === "global" &&
-              input.limit > 1 &&
-              input.max_search_passes === 2 &&
-              input.repository_context?.kind === "portable_repository"
-                ? 2
-                : 1,
+            searchPasses: planRepositorySearch({
+              retrievalScope: "team",
+              searchDomain: input.search_domain,
+              repositoryContext: input.repository_context,
+              retrievalStage: input.retrieval_stage,
+              limit: input.limit,
+              maxSearchPasses: input.max_search_passes ?? 1
+            }).searchPasses,
             retrievalMode: "semantic_vector",
             vectorHitsCount: candidateCount,
             textHitsCount: 0,

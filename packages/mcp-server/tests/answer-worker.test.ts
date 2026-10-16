@@ -3862,6 +3862,69 @@ process.stdin.once("data", () => {
     }
   );
 
+  it.each(["personal", "team"])(
+    "budgets one-pass scans separately from contextual %s retrieval",
+    async (retrievalScope) => {
+      const requests: Record<string, unknown>[] = [];
+      const result = await runScriptedMemoryAnswerFirstPass({
+        query: "release guidance",
+        retrievalHints: {
+          semantic: ["shipping decision"],
+          lexical: ["rollout"]
+        },
+        retrievalScope,
+        searchDomain: "global",
+        limit: 10,
+        maxSearches: 6,
+        repositoryContext: {
+          kind: "portable_repository",
+          key: "gr_current",
+          root: "/current",
+          branch: "main",
+          reason: "origin",
+          checkoutId: "checkout_current",
+          originatingDeviceId: "device_current",
+          selectedRemote: "origin",
+          anchorDisplay: null
+        },
+        client: {
+          async search(input) {
+            requests.push(input);
+            return {
+              hits: [],
+              retrieval: {
+                searchPasses: input.retrieval_stage === "score_scan" ? 1 : 2,
+                stages: [
+                  {
+                    name: "rollup_search",
+                    countAboveThreshold: 3,
+                    maxAllowed: 10
+                  }
+                ]
+              }
+            };
+          },
+          async expand() {
+            throw new Error("unused");
+          }
+        }
+      });
+      expect(
+        requests.filter((request) => request.retrieval_stage === "score_scan")
+      ).toHaveLength(2);
+      expect(
+        requests.some((request) => request.query === "shipping decision")
+      ).toBe(true);
+      expect(
+        result.searches.reduce(
+          (sum, search) => sum + (search.searchPasses ?? 1),
+          0
+        )
+      ).toBe(4);
+      expect(result.skippedQueries).toHaveLength(1);
+    }
+  );
+
   it("runs independent first-pass semantic searches concurrently and checks exact anchors", async () => {
     let active = 0;
     let maximumActive = 0;
