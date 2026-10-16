@@ -65,7 +65,7 @@ const validReleaseWorkflow = [
   "    steps:",
   "      - name: Package native runtime release artifact",
   '        run: pnpm native-runtime:build:linux-x64 -- --version "${{ needs.release.outputs.version }}" --json',
-  "  unsigned-desktop-release-assets:",
+  "  signed-desktop-release-assets:",
   "    needs: release",
   "    steps:",
   "      - name: Build native runtime artifact",
@@ -75,24 +75,8 @@ const validReleaseWorkflow = [
   ""
 ].join("\n");
 
-const validRecoveryWorkflow = [
-  "jobs:",
-  "  recover-desktop-assets:",
-  "    steps:",
-  "      - name: Build native runtime artifact",
-  "        env:",
-  "          TAG: ${{ inputs.tag }}",
-  '        run: KOED_NATIVE_RUNTIME_VERSION="${TAG#v}" pnpm native-runtime:build:macos-arm64 -- --json',
-  ""
-].join("\n");
-
 const writeWorkflowFixture = (root, releaseWorkflow = validReleaseWorkflow) => {
   writeText(root, ".github/workflows/release.yml", releaseWorkflow);
-  writeText(
-    root,
-    ".github/workflows/release-desktop-assets.yml",
-    validRecoveryWorkflow
-  );
 };
 
 const fixture = () => {

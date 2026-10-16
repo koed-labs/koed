@@ -1229,7 +1229,7 @@ onboarding does not show or invoke the Privacy Filter installer.
 
 Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 
-`desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. New GitHub Releases upload these unsigned Desktop assets and checksums after packaged-native smoke passes. Signed/notarized release artifacts still require future Developer ID credential setup.
+`desktop:package` and `desktop:package:smoke:mac` build unsigned/ad-hoc local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. Production `release.yml` uses electron-builder's built-in Developer ID signing/notarization after protected `desktop-release` environment approval. Reviewed `main` build hooks share the credential-bearing process. Signature/team/staple checks, packaged smoke, composition policy, and checksums gate publication. Manual asset recovery is disabled; old rebuilds require patch releases. Administrator credential/environment setup and first signed release clean-Mac acceptance remain required; see [Desktop notarization](desktop-notarization.md).
 
 Run the bundled-local smoke workflow to verify the native control-plane path
 with an isolated temporary `KOED_HOME` and temporary host ports:
@@ -1291,7 +1291,7 @@ Packaged Desktop smoke now exercises the packaged Electron bundle with a tempora
 pnpm desktop:package:smoke:mac -- --missing-assets --json
 ```
 
-When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack. See `docs/desktop-internal-artifacts.md` for unsigned GitHub Release DMG/ZIP download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack. See `docs/desktop-internal-artifacts.md` for internal unsigned DMG/ZIP install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions. Signed production releases use the normal launch check in `docs/desktop-notarization.md`, without Gatekeeper bypasses.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 

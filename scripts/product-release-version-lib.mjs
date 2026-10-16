@@ -303,7 +303,7 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
     }
   }
 
-  const desktopJobId = "unsigned-desktop-release-assets";
+  const desktopJobId = "signed-desktop-release-assets";
   const desktopJob = findWorkflowJob(
     workflow,
     desktopJobId,
@@ -328,33 +328,6 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
   ) {
     failures.push(
       `${desktopJobId}/Build native runtime artifact must pass the release job version`
-    );
-  }
-
-  const recoveryWorkflowPath = ".github/workflows/release-desktop-assets.yml";
-  const recoveryWorkflow = parseWorkflow(root, recoveryWorkflowPath);
-  const recoveryJobId = "recover-desktop-assets";
-  const recoveryJob = findWorkflowJob(
-    recoveryWorkflow,
-    recoveryJobId,
-    recoveryWorkflowPath,
-    failures
-  );
-  const recoveryStep = findWorkflowStep(
-    recoveryJob,
-    "Build native runtime artifact",
-    recoveryJobId,
-    failures
-  );
-  if (
-    !isRecord(recoveryStep?.env) ||
-    recoveryStep.env.TAG !== "${{ inputs.tag }}" ||
-    !/KOED_NATIVE_RUNTIME_VERSION=["']?\$\{TAG#v\}["']?\s+pnpm\s+native-runtime:build:macos-arm64\b/.test(
-      executableRun(recoveryStep)
-    )
-  ) {
-    failures.push(
-      `${recoveryJobId}/Build native runtime artifact must strip the tag prefix before versioning its native runtime`
     );
   }
 

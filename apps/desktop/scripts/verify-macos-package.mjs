@@ -3,64 +3,33 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const usage =
-  "Usage: verify-macos-package.mjs --app <path-to-app> [--dmg <path-to-dmg>]";
-
-const args = process.argv.slice(2);
-const valueFor = (name) => {
-  const index = args.indexOf(name);
-  if (index < 0 || !args[index + 1]) return undefined;
-  return args[index + 1];
-};
-const app = valueFor("--app");
-const dmg = valueFor("--dmg");
-const expectedVersion =
-  valueFor("--expected-version") ??
-  JSON.parse(
-    readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8")
-  ).version;
-if (!app || args.some((arg) => arg === "--help" || arg === "-h")) {
-  console.error(usage);
-  process.exit(app ? 0 : 2);
+function commandRunner(runCommand) {
+  return (command, args) => {
+    const result = runCommand(command, args, { encoding: "utf8" });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(
+        `${command} ${args.join(" ")} failed with ${result.status}.`
+      );
+    }
+    return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  };
 }
 
-const run = (command, commandArgs) => {
-  const result = spawnSync(command, commandArgs, { stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${commandArgs.join(" ")} failed with ${result.status}.`
-    );
-  }
-};
-
-const verifyApp = (appPath) =>
+function verifyApp(appPath, expectedVersion, expectedTeamId, run) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
-
-const verifyVersion = (appPath) => {
-  const plist = spawnSync(
-    "/usr/libexec/PlistBuddy",
-    [
-      "-c",
-      "Print :CFBundleShortVersionString",
-      resolve(appPath, "Contents/Info.plist")
-    ],
-    { encoding: "utf8" }
-  );
-  if (plist.error) throw plist.error;
-  if (plist.status !== 0) {
-    throw new Error(
-      `Could not read the packaged Desktop version from ${appPath}.`
-    );
-  }
-  const bundleVersion = plist.stdout.trim();
-  const rendererMetadataPath = resolve(
-    appPath,
-    "Contents/Resources/app-dist/koed-release-version.json"
-  );
+  const bundleVersion = run("/usr/libexec/PlistBuddy", [
+    "-c",
+    "Print :CFBundleShortVersionString",
+    resolve(appPath, "Contents/Info.plist")
+  ]).trim();
   const rendererVersion = JSON.parse(
-    readFileSync(rendererMetadataPath, "utf8")
+    readFileSync(
+      resolve(appPath, "Contents/Resources/app-dist/koed-release-version.json"),
+      "utf8"
+    )
   ).version;
   if (
     bundleVersion !== expectedVersion ||
@@ -70,37 +39,87 @@ const verifyVersion = (appPath) => {
       `Packaged Desktop version mismatch: expected ${expectedVersion}, bundle ${bundleVersion}, renderer ${String(rendererVersion)}.`
     );
   }
-};
-
-try {
-  verifyApp(resolve(app));
-  verifyVersion(resolve(app));
-
-  if (dmg) {
-    const mountPath = mkdtempSync(join(tmpdir(), "koed-desktop-dmg-"));
-    try {
-      run("hdiutil", [
-        "attach",
-        "-nobrowse",
-        "-readonly",
-        "-mountpoint",
-        mountPath,
-        resolve(dmg)
-      ]);
-      const mountedApp = readdirSync(mountPath).find((name) =>
-        name.endsWith(".app")
-      );
-      if (!mountedApp) {
-        throw new Error(`No .app bundle found in ${basename(dmg)}.`);
-      }
-      verifyApp(join(mountPath, mountedApp));
-      verifyVersion(join(mountPath, mountedApp));
-    } finally {
-      spawnSync("hdiutil", ["detach", mountPath], { stdio: "inherit" });
-      rmSync(mountPath, { force: true, recursive: true });
-    }
+  if (!expectedTeamId) return;
+  const details = run("codesign", ["-dv", "--verbose=4", appPath]);
+  if (!/^Authority=Developer ID Application: .+$/m.test(details)) {
+    throw new Error(
+      "Packaged Desktop requires Developer ID Application authority."
+    );
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  const team = details.match(/^TeamIdentifier=(.+)$/m)?.[1];
+  if (team !== expectedTeamId)
+    throw new Error("Packaged Desktop signing team mismatch.");
+  run("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]);
+  run("xcrun", ["stapler", "validate", appPath]);
+}
+
+export function verifyMacosPackage({
+  appPath,
+  dmgPath,
+  expectedVersion,
+  expectedTeamId,
+  runCommand = spawnSync
+}) {
+  const run = commandRunner(runCommand);
+  verifyApp(resolve(appPath), expectedVersion, expectedTeamId, run);
+  if (!dmgPath) return;
+  const mountPath = mkdtempSync(join(tmpdir(), "koed-desktop-dmg-"));
+  let mounted = false;
+  try {
+    run("hdiutil", [
+      "attach",
+      "-nobrowse",
+      "-readonly",
+      "-mountpoint",
+      mountPath,
+      resolve(dmgPath)
+    ]);
+    mounted = true;
+    const apps = readdirSync(mountPath).filter((name) => name.endsWith(".app"));
+    if (apps.length !== 1)
+      throw new Error(`Expected one .app bundle in ${basename(dmgPath)}.`);
+    verifyApp(join(mountPath, apps[0]), expectedVersion, expectedTeamId, run);
+  } finally {
+    // Never recursively delete a mount point while the image is still mounted.
+    if (mounted) run("hdiutil", ["detach", mountPath]);
+    rmSync(mountPath, { force: true, recursive: true });
+  }
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const valueFor = (name) => {
+    const index = args.indexOf(name);
+    return index < 0 ? undefined : args[index + 1];
+  };
+  const appPath = valueFor("--app");
+  if (!appPath || args.includes("--help") || args.includes("-h")) {
+    console.error(
+      "Usage: verify-macos-package.mjs --app <path-to-app> [--dmg <path-to-dmg>] [--expected-version <version>] [--expected-team-id <id>]"
+    );
+    process.exitCode = appPath ? 0 : 2;
+    return;
+  }
+  verifyMacosPackage({
+    appPath,
+    dmgPath: valueFor("--dmg"),
+    expectedVersion:
+      valueFor("--expected-version") ??
+      JSON.parse(
+        readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8")
+      ).version,
+    expectedTeamId: valueFor("--expected-team-id")
+  });
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }
