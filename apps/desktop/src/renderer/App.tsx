@@ -936,7 +936,9 @@ export function App({
     if (statusReadyOverride !== undefined || desktopHealthIsReady) return;
     const interval = window.setInterval(
       () => void activeStatusStore.refresh(),
-      1_500
+      // Full diagnostics share the AI Client control quota with startup and
+      // background work. Status events still trigger an immediate refresh.
+      5_000
     );
     return () => window.clearInterval(interval);
   }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);
@@ -1136,6 +1138,7 @@ export function App({
           });
         }}
         statusStore={activeStatusStore}
+        teamCollaborationEnabled={teamCollaborationEnabled}
       />
     );
   }
@@ -1158,6 +1161,7 @@ export function App({
         onComplete={() => undefined}
         showTrustGuide={false}
         statusStore={activeStatusStore}
+        teamCollaborationEnabled={teamCollaborationEnabled}
       />
     );
   }
@@ -1923,6 +1927,7 @@ export function App({
         collaborationClient={client}
         collaborationSnapshot={snapshot}
         initialSection={route.section}
+        cliInstall={window.koedDesktop?.cliInstall}
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
         launchAtStartup={window.koedDesktop?.launchAtStartup}
         localAiClients={window.koedDesktop?.localAiClients}

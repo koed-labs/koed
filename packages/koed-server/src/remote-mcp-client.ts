@@ -667,13 +667,13 @@ export const runRemoteMcpCommand = async (
       const common = { environment, harness, consent, credentialAvailable };
       output =
         command === "setup"
-          ? setupHeadlessRemoteIntegration({
+          ? await setupHeadlessRemoteIntegration({
               ...common,
               backendUrl: credential?.backendUrl ?? "",
               credentialRef: HEADLESS_REMOTE_CREDENTIAL_REF
             })
           : command === "check"
-            ? checkHeadlessRemoteIntegration(common)
+            ? await checkHeadlessRemoteIntegration(common)
             : removeHeadlessRemoteIntegration(common);
       ok = (output as { ok: boolean }).ok;
     } else throw new Error("Unknown remote command.");

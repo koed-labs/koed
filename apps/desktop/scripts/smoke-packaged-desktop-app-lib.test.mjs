@@ -4,6 +4,8 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  realpathSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import test from "node:test";
@@ -11,13 +13,81 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   removeSmokeHome,
+  createSmokeHome,
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
   assertNoSourceCheckoutResolution,
+  assertFailClosedPrivacy,
+  assertFailClosedTeamStart,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
+
+test("smoke home canonicalizes temporary paths before authenticated lifecycle selection", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-smoke-home-test-"));
+  try {
+    const link = resolve(root, "linked-temp");
+    const target = resolve(root, "real-temp");
+    mkdirSync(target);
+    symlinkSync(target, link, "dir");
+    const home = createSmokeHome("smoke-", link);
+    assert.equal(home, realpathSync(home));
+    assert.equal(home.startsWith(realpathSync(target)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Base privacy remains disabled with configured roots or absent signer trust", () => {
+  assert.doesNotThrow(() =>
+    assertFailClosedPrivacy({
+      available: false,
+      state: "unavailable",
+      message:
+        "Production Privacy Filter signer trust is not configured in this Desktop release."
+    })
+  );
+  assert.doesNotThrow(() =>
+    assertFailClosedPrivacy({
+      available: false,
+      state: "unavailable",
+      message:
+        "Privacy Filter is not required by current runtime configuration."
+    })
+  );
+  assert.throws(
+    () => assertFailClosedPrivacy({ available: true, state: "ready" }),
+    /fail.closed/i
+  );
+  assert.throws(
+    () =>
+      assertFailClosedPrivacy({
+        available: false,
+        state: "unavailable",
+        message: "not required"
+      }),
+    /fail.closed/i
+  );
+});
+
+test("Team start must fail for Privacy gate, not unrelated startup errors", () => {
+  assert.doesNotThrow(() =>
+    assertFailClosedTeamStart({
+      ok: false,
+      error: "required privacy component is missing"
+    })
+  );
+  assert.throws(
+    () => assertFailClosedTeamStart({ ok: true, startedPid: 123 }),
+    /fail.closed/i
+  );
+  assert.throws(
+    () =>
+      assertFailClosedTeamStart({ ok: false, error: "database unavailable" }),
+    /fail.closed/i
+  );
+});
 
 const healthyStatus = () =>
   Object.fromEntries(

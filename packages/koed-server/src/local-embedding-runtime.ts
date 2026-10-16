@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import type { KoedServerComponentStatus } from "./types.js";
 import type { KoedServerPaths } from "./paths.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
+import type { KoedAppRuntime } from "./app-runtime.js";
 import {
   canUseSourceCheckoutFallback,
   resolvePackagedKoedRuntimeRoot,
@@ -46,6 +47,7 @@ export interface LocalEmbeddingRuntimeDependencies {
   existsSync?: typeof existsSync;
   spawn?: SpawnLike;
   fetch?: typeof fetch;
+  appRuntime?: KoedAppRuntime;
 }
 
 const DOCKER_LLAMA_SERVER_BINARY = "/opt/llama.cpp/llama-server";
@@ -97,7 +99,8 @@ const combinedArtifactSource = (
 export const resolveLocalEmbeddingRuntimePaths = (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  exists: typeof existsSync = existsSync
+  exists: typeof existsSync = existsSync,
+  selectedRuntime?: KoedAppRuntime
 ): LocalEmbeddingRuntimePaths => {
   const koedRuntimeAppDir = resolve(
     paths.koedHome,
@@ -105,40 +108,52 @@ export const resolveLocalEmbeddingRuntimePaths = (
     "embedding-service"
   );
   const repoAppDir = resolve(paths.repoRoot, "apps", "embedding-service");
-  const appRuntime = resolveKoedAppRuntime(paths, environment, exists);
+  const appRuntime =
+    selectedRuntime ?? resolveKoedAppRuntime(paths, environment, exists);
   const packagedRuntimeRoot = resolvePackagedKoedRuntimeRoot(environment);
   const packagedAppDir = packagedRuntimeRoot
     ? resolve(packagedRuntimeRoot, "embedding-service")
     : undefined;
   const service = chooseRuntimePath(
-    [
-      {
-        path: appRuntime.embeddingServiceEntry,
-        artifactSource: appRuntime.artifactSource
-      },
-      {
-        path: resolve(koedRuntimeAppDir, "dist", "index.js"),
-        artifactSource: "koed-home-runtime" as const
-      },
-      ...(packagedAppDir
-        ? [
-            {
-              path: resolve(packagedAppDir, "dist", "index.js"),
-              artifactSource: "packaged-resource" as const
-            }
-          ]
-        : []),
-      ...(canUseSourceCheckoutFallback(environment)
-        ? [
-            {
-              path: resolve(repoAppDir, "dist", "index.js"),
-              artifactSource: "source-checkout" as const
-            }
-          ]
-        : [])
-    ],
-    resolve(koedRuntimeAppDir, "dist", "index.js"),
-    "koed-home-runtime",
+    appRuntime.kind === "packaged"
+      ? [
+          {
+            path: appRuntime.embeddingServiceEntry,
+            artifactSource: appRuntime.artifactSource
+          }
+        ]
+      : [
+          {
+            path: appRuntime.embeddingServiceEntry,
+            artifactSource: appRuntime.artifactSource
+          },
+          {
+            path: resolve(koedRuntimeAppDir, "dist", "index.js"),
+            artifactSource: "koed-home-runtime" as const
+          },
+          ...(packagedAppDir
+            ? [
+                {
+                  path: resolve(packagedAppDir, "dist", "index.js"),
+                  artifactSource: "packaged-resource" as const
+                }
+              ]
+            : []),
+          ...(canUseSourceCheckoutFallback(environment)
+            ? [
+                {
+                  path: resolve(repoAppDir, "dist", "index.js"),
+                  artifactSource: "source-checkout" as const
+                }
+              ]
+            : [])
+        ],
+    appRuntime.kind === "packaged"
+      ? appRuntime.embeddingServiceEntry
+      : resolve(koedRuntimeAppDir, "dist", "index.js"),
+    appRuntime.kind === "packaged"
+      ? appRuntime.artifactSource
+      : "koed-home-runtime",
     exists
   );
   const serviceEntry = resolve(service.path);
@@ -298,7 +313,12 @@ export const collectLocalEmbeddingRuntimeStatus = async (
 ): Promise<LocalEmbeddingRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const fetcher = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
-  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment, exists);
+  const runtime = resolveLocalEmbeddingRuntimePaths(
+    paths,
+    environment,
+    exists,
+    dependencies.appRuntime
+  );
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
     return missingRuntime(runtime, missing);
@@ -355,7 +375,12 @@ export const startLocalEmbeddingRuntime = (
 ): LocalEmbeddingRuntimeStartResult => {
   const exists = dependencies.existsSync ?? existsSync;
   const spawn = dependencies.spawn ?? (nodeSpawn as SpawnLike);
-  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment, exists);
+  const runtime = resolveLocalEmbeddingRuntimePaths(
+    paths,
+    environment,
+    exists,
+    dependencies.appRuntime
+  );
   const env = {
     ...environment,
     ...localEmbeddingEnv(runtime),

@@ -359,6 +359,143 @@ describe("Personal Ask", () => {
     expect(projectNames).not.toContain("Reserved Chats");
   });
 
+  it("shows an unavailable assigned AI Client instead of retrying forever", async () => {
+    const assignment = {
+      provider: "codex" as const,
+      ai_client_instance_id: "codex.default",
+      model: "gpt-5.6-luna",
+      reasoning_effort: "medium",
+      timeout_ms: 120000,
+      max_attempts: 2
+    };
+    const settings: LocalAiClientResponse = {
+      operation: "list",
+      readModel: {
+        instances: [],
+        capabilitySnapshots: [],
+        settings: [],
+        defaults: Object.fromEntries(
+          localAiClientFlowKeys.map((flowKey) => [
+            flowKey,
+            {
+              source: "code",
+              available: true,
+              assignment: flowKey === "conversations" ? assignment : null,
+              reason: null
+            }
+          ])
+        ) as LocalAiClientResponse["readModel"]["defaults"]
+      }
+    };
+    const localAiClients = {
+      list: vi.fn(async () => settings),
+      refresh: vi.fn(async () => settings),
+      set: vi.fn(async () => settings),
+      reset: vi.fn(async () => settings)
+    };
+    const managedConversations = {
+      launchOptions: vi.fn(async () => ({
+        operation: "launch_options" as const,
+        options: {
+          runners: [
+            {
+              kind: "local_device" as const,
+              deploymentId: "local",
+              deviceId: "device",
+              displayName: "This device"
+            }
+          ],
+          instances: [
+            {
+              instanceId: "codex.default",
+              driverId: "codex" as const,
+              displayName: "Codex",
+              ready: false,
+              readiness: "authentication_required",
+              models: [
+                {
+                  id: "gpt-5.6-luna",
+                  supportedReasoningEfforts: ["medium"],
+                  defaultReasoningEffort: "medium",
+                  isDefault: true
+                }
+              ],
+              capabilities: {
+                defaultPermissionMode: "supervised" as const,
+                permissionModes: [
+                  { mode: "supervised" as const, support: "supported" as const }
+                ]
+              }
+            },
+            {
+              instanceId: "pi.default",
+              driverId: "pi" as const,
+              displayName: "Pi",
+              ready: true,
+              readiness: "ready",
+              models: [
+                {
+                  id: "pi-model",
+                  supportedReasoningEfforts: ["medium"],
+                  defaultReasoningEffort: "medium",
+                  isDefault: true
+                }
+              ],
+              capabilities: {
+                defaultPermissionMode: "supervised" as const,
+                permissionModes: [
+                  { mode: "supervised" as const, support: "supported" as const }
+                ]
+              }
+            }
+          ]
+        }
+      }))
+    } as unknown as ManagedConversationDesktopApi;
+    const project: DesktopProject = {
+      id: "project-independent",
+      name: "Independent",
+      path: "/tmp/koed/Independent",
+      eventCount: 0,
+      threads: [],
+      catalogued: true,
+      discoveredAt: null,
+      lastSeenAt: null,
+      localProjectId: "project-independent",
+      branch: null,
+      remoteDisplay: null,
+      isWorktree: false
+    };
+
+    await act(async () => {
+      root.render(
+        <PersonalAskView
+          api={
+            {
+              loadAskThread: vi.fn(async () => [])
+            } as unknown as PersonalDesktopApi
+          }
+          managedConversations={managedConversations}
+          localAiClients={localAiClients}
+          markdownAdapters={adapters}
+          onNew={vi.fn()}
+          onResolveIndependent={vi.fn(async () => project)}
+          projects={[]}
+        />
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await click(container.querySelector('button[aria-label^="AI Client:"]'));
+
+    expect(document.body.textContent).toContain(
+      "This AI Client is unavailable. Refresh its status in Preferences."
+    );
+    expect(document.body.textContent).not.toContain("Loading AI Clients…");
+  });
+
   it("keeps the empty start page understandable when AI Clients are unavailable", async () => {
     const independent = {
       id: "project-independent",

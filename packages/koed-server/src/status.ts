@@ -1,3 +1,4 @@
+import type { KoedAppRuntime } from "./app-runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -8,7 +9,12 @@ import {
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import {
@@ -104,6 +110,8 @@ const resolveEffectiveWorkQueueBackend = (
 };
 
 export interface KoedServerStatusDependencies {
+  appRuntime?: KoedAppRuntime | null;
+  desktopRuntimeCapability?: DesktopRuntimeCapability | null;
   fetch?: typeof fetch;
   spawnSync?: SpawnSyncLike;
   existsSync?: typeof existsSync;
@@ -116,6 +124,8 @@ export interface KoedServerStatusDependencies {
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
+  appRuntime: null,
+  desktopRuntimeCapability: null,
   fetch: globalThis.fetch.bind(globalThis),
   spawnSync: nodeSpawnSync as SpawnSyncLike,
   existsSync,
@@ -127,12 +137,19 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   now: () => new Date()
 });
 
+// The lifetime is exactly one collection. Rejected selections are shared too;
+// a later poll creates a fresh scope and revalidates the disk.
+const runtimeSelections = new WeakMap<
+  object,
+  { promise?: Promise<KoedAppRuntime> }
+>();
 const withDefaults = (
   dependencies: KoedServerStatusDependencies = {}
-): Required<KoedServerStatusDependencies> => ({
-  ...defaultDependencies(),
-  ...dependencies
-});
+): Required<KoedServerStatusDependencies> => {
+  const deps = { ...defaultDependencies(), ...dependencies };
+  runtimeSelections.set(deps, {});
+  return deps;
+};
 
 export const needsAttention = (
   message: string,
@@ -382,11 +399,85 @@ export const inspectPi = (
   };
 };
 
-export const inspectClaudeCode = (
+const resolveStatusIntegrationRuntime = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: Pick<Required<KoedServerStatusDependencies>, "existsSync"> &
+    Pick<
+      KoedServerStatusDependencies,
+      "appRuntime" | "desktopRuntimeCapability"
+    >
+): Promise<KoedAppRuntime> => {
+  const scope = runtimeSelections.get(deps);
+  const select = () =>
+    deps.appRuntime
+      ? Promise.resolve(deps.appRuntime)
+      : resolveKoedAppRuntimeExecution() === "packaged"
+        ? resolveVerifiedPackagedRuntime(
+            paths,
+            environment,
+            {
+              components: ["base"],
+              processes: ["local-ai-runtime"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            deps.existsSync,
+            deps.desktopRuntimeCapability ?? undefined
+          )
+        : Promise.resolve(
+            resolveKoedAppRuntime(paths, environment, deps.existsSync)
+          );
+  if (!scope) return select();
+  return (scope.promise ??= select());
+};
+
+const inspectSelectedPrivacy = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>,
+  fetcher: typeof fetch,
+  startup: boolean
+): Promise<KoedServerComponentStatus> => {
+  try {
+    const appRuntime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps
+    );
+    return await (
+      startup
+        ? collectLocalPrivacyRuntimeHealthStatus
+        : collectLocalPrivacyRuntimeStatus
+    )(paths, environment, {
+      appRuntime,
+      existsSync: deps.existsSync,
+      fetch: fetcher
+    });
+  } catch (error) {
+    return notConfigured(
+      "No compatible authenticated Privacy runtime is available.",
+      "Install and activate a compatible signed Privacy generation.",
+      { selectionError: error instanceof Error ? error.message : String(error) }
+    );
+  }
+};
+
+const authenticatedRuntimeUnavailable = () => ({
+  ...notConfigured(
+    "No compatible authenticated Koed app-runtime generation is available.",
+    "Install and activate a compatible signed Koed app-runtime generation; status never compares integrations against checkout or current-directory artifacts."
+  ),
+  configured: false,
+  detected: false
+});
+
+export const inspectClaudeCode = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
-): KoedServerStatus["claudeCode"] => {
+): Promise<KoedServerStatus["claudeCode"]> => {
   const settingsPath = resolveClaudeSettingsPath(environment);
   const detectedFromConfig = deps.existsSync(settingsPath);
   let executable: string;
@@ -403,7 +494,15 @@ export const inspectClaudeCode = (
     };
   }
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
+  } catch {
+    return {
+      ...authenticatedRuntimeUnavailable(),
+      detected: detectedFromConfig
+    };
+  }
   const childEnvironment = claudeProcessEnvironment(environment);
   const runClaude = (args: string[], timeout: number) => {
     const invocation = nodeCliInvocation(executable, args);
@@ -984,9 +1083,14 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
+type CodexStatusDependencies = Required<
+  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">
+> &
+  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">;
+
 const inspectCodexInstallation = (
   environment: NodeJS.ProcessEnv,
-  deps: Required<KoedServerStatusDependencies>
+  deps: CodexStatusDependencies
 ): { executable: string; version: string | null } => {
   const executable = deps.resolveCodexExecutable(environment);
   const invocation = nodeCliInvocation(executable, ["--version"]);
@@ -1002,12 +1106,12 @@ const inspectCodexInstallation = (
   return { executable, version };
 };
 
-export const inspectCodex = (
+export const inspectCodex = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
-  deps: Required<KoedServerStatusDependencies>,
+  deps: CodexStatusDependencies,
   memoryGuidanceEnabled: boolean
-): KoedServerStatus["codex"] => {
+): Promise<KoedServerStatus["codex"]> => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
@@ -1065,7 +1169,12 @@ export const inspectCodex = (
   }
 
   const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
+  } catch {
+    return authenticatedRuntimeUnavailable();
+  }
   const hasExpectedAdapter = mcpBlock.includes(JSON.stringify(runtime.mcpCli));
   const containsRetiredCredentials =
     tomlStringValue(mcpEnvBlock, "MEMORY_API_URL") !== null ||
@@ -1166,11 +1275,11 @@ export const inspectCodex = (
   };
 };
 
-const inspectCaptureHook = (
+const inspectCaptureHook = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
-) => {
+): Promise<KoedServerStatus["captureHook"]> => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
@@ -1182,7 +1291,12 @@ const inspectCaptureHook = (
     );
   }
   const content = String(deps.readFileSync(codexConfigPath, "utf8"));
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(paths, environment, deps);
+  } catch {
+    return authenticatedRuntimeUnavailable();
+  }
   const requiredEvents = [
     "SessionStart",
     "UserPromptSubmit",
@@ -1218,21 +1332,41 @@ const inspectCaptureHook = (
   });
 };
 
-const inspectMcp = (
+const inspectMcp = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
-  const appRuntime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let appRuntime;
+  try {
+    appRuntime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps
+    );
+  } catch (error) {
+    return notConfigured(
+      "No compatible authenticated Koed app-runtime generation is available.",
+      "Install and activate a compatible signed Koed app-runtime generation; status does not execute checkout or current-directory artifacts.",
+      { selectionError: error instanceof Error ? error.message : String(error) }
+    );
+  }
   const cliPath = appRuntime.mcpCli;
   if (!deps.existsSync(cliPath)) {
+    const authenticatedGenerationMissing = appRuntime.missing.some((entry) =>
+      entry.startsWith("authenticated ")
+    );
     return notConfigured(
-      appRuntime.kind === "packaged"
-        ? "Packaged MCP Server artifact was not found."
-        : "MCP Server build output was not found.",
-      appRuntime.kind === "packaged"
-        ? "Rebuild Koed Desktop packaging so koed-runtime includes the MCP Server and Supported Capture Hook artifacts."
-        : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
+      authenticatedGenerationMissing
+        ? "No active authenticated Koed app-runtime generation is available."
+        : appRuntime.kind === "packaged"
+          ? "Packaged MCP Server artifact was not found."
+          : "MCP Server build output was not found.",
+      authenticatedGenerationMissing
+        ? "Install and activate a compatible signed Koed app-runtime generation; status does not install or activate components."
+        : appRuntime.kind === "packaged"
+          ? "Install a compatible signed Koed app-runtime generation containing MCP Server and Supported Capture Hook artifacts."
+          : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
       {
         artifactSource: appRuntime.artifactSource,
         runtimeRoot: appRuntime.root,
@@ -2364,9 +2498,13 @@ export const koedServerStartupBlockingComponentIds = (
     : (["localAiRuntime", "apiToken"] as const))
 ];
 
-const inspectSafely = <T>(label: string, inspect: () => T, fallback: T): T => {
+const inspectSafely = async <T>(
+  label: string,
+  inspect: () => T | Promise<T>,
+  fallback: T
+): Promise<T> => {
   try {
-    return inspect();
+    return await inspect();
   } catch {
     return {
       ...needsAttention(
@@ -2505,13 +2643,12 @@ export const collectKoedServerStartupStatus = async (
       )
     : useBundledLocalDependencies
       ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
-        (await collectLocalPrivacyRuntimeHealthStatus(
+        (await inspectSelectedPrivacy(
           paths,
           serviceEnvironment,
-          {
-            existsSync: deps.existsSync,
-            fetch: fetcher
-          }
+          deps,
+          fetcher,
+          true
         )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
@@ -2652,7 +2789,7 @@ export const collectKoedServerStatus = async (
     serverConfig.runtimeMode,
     deps
   );
-  const codex = inspectSafely(
+  const codex = await inspectSafely(
     "Codex",
     () =>
       inspectCodex(
@@ -2663,12 +2800,12 @@ export const collectKoedServerStatus = async (
       ),
     { state: "needs_attention", configured: false }
   );
-  const claudeCode = inspectSafely(
+  const claudeCode = await inspectSafely(
     "Claude Code",
     () => inspectClaudeCode(runtimeEnvironment, paths, deps),
     { state: "needs_attention", configured: false, detected: false }
   );
-  const pi = inspectSafely(
+  const pi = await inspectSafely(
     "Pi",
     () =>
       inspectPi(runtimeEnvironment, paths, deps, {
@@ -2683,7 +2820,7 @@ export const collectKoedServerStatus = async (
       }),
     { state: "needs_attention", configured: false, detected: false }
   );
-  const captureHook = inspectSafely(
+  const captureHook = await inspectSafely(
     "Supported Capture Hook",
     () => inspectCaptureHook(runtimeEnvironment, paths, deps),
     { state: "needs_attention" }
@@ -2694,10 +2831,13 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning,
     deps
   );
-  const mcpServer = inspectSafely(
-    "MCP Server",
-    () => inspectMcp(runtimeEnvironment, paths, deps),
-    { state: "needs_attention" }
+  const mcpServer = await inspectMcp(runtimeEnvironment, paths, deps).catch(
+    () =>
+      needsAttention(
+        "MCP Server status could not be inspected.",
+        "Repair MCP Server integration, then refresh status.",
+        { kind: "inspection_error" }
+      )
   );
   const claudeTranscriptWatcher = inspectClaudeTranscriptWatcher(
     serverConfig.claudeTranscriptWatcherEnabled,
@@ -2770,10 +2910,13 @@ export const collectKoedServerStatus = async (
       )
     : useBundledLocalDependencies
       ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
-        (await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
-          existsSync: deps.existsSync,
-          fetch: fetcher
-        })))
+        (await inspectSelectedPrivacy(
+          paths,
+          serviceEnvironment,
+          deps,
+          fetcher,
+          false
+        )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(

@@ -154,16 +154,24 @@ other clients. No backend synthesis or parallel queue is added.
    collaboration is enabled, it also waits for the Privacy Filter; Personal-only
    startup reports that service as not required. Both source and packaged
    runtimes use these rules.
-8. `koed start --daemon --json` starts a detached `koed start`
-   supervisor and returns machine-readable startup intent for Desktop and
-   scripts. `koed stop --json` stops supervised processes in
+8. Packaged Desktop main starts its private supervisor entrypoint as a
+   long-running child with inherited IPC, a fresh nonce handshake, and Desktop
+   resources path. The child verifies the packaged runtime bundle itself and
+   receives process-local Desktop generation authority only after verification;
+   it then runs the same Personal supervisor and pins the selected authenticated
+   generation until shutdown. Desktop stop/restart is manager-owned and signals
+   that child, not a detached CLI daemon. Standalone `koed start --daemon --json`
+   remains available for CLI/scripts and starts a detached `koed start`
+   supervisor. `koed stop --json` stops standalone supervised processes in
    dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
    Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
-   `koed restart --json` runs the same stop lifecycle, starts a detached
-   supervisor, and returns machine-readable JSON without streaming startup logs.
+   Standalone `koed restart --json` runs the same stop lifecycle, starts a
+   detached supervisor, and returns machine-readable JSON without streaming
+   startup logs. Packaged Desktop restart keeps ownership in its Electron main
+   manager and restarts its inherited-IPC child.
 9. `koed status --json` and `koed doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP
@@ -1897,3 +1905,35 @@ changed after startup on its next check.
 After machine sleep or a network outage, Team routing can remain denied until the
 next successful maintenance check. This does not extend expired authorization or
 retry an agent request automatically.
+
+## Private Desktop component management
+
+Packaged Desktop can open a private stopped management child before core services
+are ready. The child authenticates the bundled Base payload using the same issued
+capability as runtime startup, reconciles the installation-owned bundle generation
+under the lifecycle lock, and serves status, signed Privacy installation/cancellation,
+activation, core setup, doctor, and AI Client setup/repair over nonce-correlated IPC.
+Before core setup or doctor, it checks startup status and refuses to proceed when a
+healthy API belongs to a supervisor this Desktop manager does not own. The stopped
+management child starts no services. Core setup still requires reachable PostgreSQL
+while it provisions or revalidates the local API Token; it does not start the
+database. This breaks the first-install cycle when Team startup requires Privacy.
+The parent closes the helper after the operation; disconnect, exit, send failure
+and deadline remove pending RPC listeners and fail the request. A test-signed
+macOS arm64 packaged-manager integration ran this setup before daemon startup with
+an isolated fixture database, then started the normal supervisor, reached healthy
+Team readiness, and stopped cleanly. It used packaged Electron in Node mode and did
+not validate full GUI launch.
+
+Running installations stage Privacy without activation, then stop, activate and
+restart through the manager-owned lifecycle. If restart fails, the transaction restores
+the previous generation and restarts it; failed rollback leaves services stopped.
+An application upgrade admits the newly verified Base bundle using the same stable
+installation owner without executing the previous bundle journal. A Privacy generation
+bound to a different bundle is not carried forward automatically.
+
+Status uses one authenticated runtime selection per collection, including failed
+selection results. Startup passes its pinned selection into readiness; Privacy and
+AI Client/MCP inspectors reuse that selection. A subsequent poll revalidates disk state.
+Claude Code and Pi setup/repair, as well as Codex, receive private Desktop authority
+in both running and stopped modes; standalone CLI requests cannot claim it.

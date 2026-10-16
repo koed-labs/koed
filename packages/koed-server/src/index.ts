@@ -78,6 +78,7 @@ export {
   runDesktopCollaborationBrokerProcess
 } from "./desktop-collaboration-broker.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
+export type { KoedServerPaths } from "./paths.js";
 export {
   discoverProjectMetadata,
   listProjectMetadata

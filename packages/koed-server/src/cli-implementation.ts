@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { deviceRequestCommand } from "./personal-device-request.js";
-import { existsSync, mkdirSync, readSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readSync,
+  realpathSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
 import {
   removeCodexIntegration,
@@ -81,13 +88,19 @@ import { runPersonalSyncCommand } from "./personal-sync.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import { runRemoteMcpCommand } from "./remote-mcp-client.js";
 import type { KoedServerDoctorResult } from "./types.js";
+import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
+import {
+  resolveKoedControlPlaneVersion,
+  resolveKoedRuntimeOwner
+} from "./app-runtime.js";
+import type { ArtifactTarget } from "./component-contract.js";
+import type { ComponentSource } from "./component-store.js";
 
 import {
-  personalSyncUsageText,
   personalSyncAdvancedUsageText,
+  personalSyncUsageText,
   usageText
 } from "./cli-help.js";
-import { startKoedServerDaemon } from "./daemon-start.js";
 
 export interface KoedServerCliDependencies {
   runRemoteMcp?: typeof runRemoteMcpCommand;
@@ -250,6 +263,8 @@ const getNoAgentsWarning = (status: {
   }
   return null;
 };
+
+import { startKoedServerDaemon } from "./daemon-start.js";
 
 const assertRuntimeFlags = (
   args: string[],
@@ -430,6 +445,124 @@ export const runKoedServerCli = async (
 
     if (command === "secret-provider") {
       return await runApplicationSecretProviderCli(args, stdout);
+    }
+
+    if (command === "components") {
+      const optionsByCommand: Record<string, ReadonlySet<string>> = {
+        status: new Set(["--json"]),
+        install: new Set([
+          "--json",
+          "--component",
+          "--version",
+          "--archive",
+          "--manifest",
+          "--signature",
+          "--archive-url",
+          "--manifest-url",
+          "--signature-url",
+          "--stage-only"
+        ]),
+        activate: new Set(["--json", "--version"]),
+        cleanup: new Set(["--json"])
+      };
+      const allowed = optionsByCommand[subcommand ?? ""];
+      if (!allowed)
+        throw new Error(
+          "components command must be status, install, activate, or cleanup."
+        );
+      const seen = new Set<string>();
+      for (let index = 2; index < args.length; index += 1) {
+        const argument = args[index];
+        if (argument === undefined || !allowed.has(argument))
+          throw new Error(`Unsupported components option: ${argument}`);
+        if (seen.has(argument))
+          throw new Error(`Duplicate components option: ${argument}`);
+        seen.add(argument);
+        if (argument !== "--json" && argument !== "--stage-only") {
+          const value = args[index + 1];
+          if (!value || value.startsWith("--"))
+            throw new Error(`${argument} requires a value.`);
+          index += 1;
+        }
+      }
+      const handlers = await import("./component-commands.js");
+      const paths = resolvePaths();
+      const runtime = discoverActualRuntimeIdentity();
+      const target: ArtifactTarget = {
+        platform: runtime.platform,
+        architecture: runtime.architecture
+      };
+      const context = {
+        paths,
+        controlPlaneVersion: resolveKoedControlPlaneVersion(),
+        target,
+        runtime,
+        owner: resolveKoedRuntimeOwner(),
+        isRunning: existsSync(resolve(paths.runDir, "koed-server.lock"))
+      };
+      let result: unknown;
+      if (subcommand === "status") {
+        result = await handlers.runComponentStatus(context);
+      } else if (subcommand === "install") {
+        const component = requireFlagValue(args, "--component");
+        if (component !== "base" && component !== "privacy")
+          throw new Error("--component must be base or privacy.");
+        const offlineValues = ["--archive", "--manifest", "--signature"].map(
+          (flag) => flagValue(args, flag)
+        );
+        const remoteValues = [
+          "--archive-url",
+          "--manifest-url",
+          "--signature-url"
+        ].map((flag) => flagValue(args, flag));
+        const hasOffline = offlineValues.some((value) => value !== undefined);
+        const hasRemote = remoteValues.some((value) => value !== undefined);
+        if (hasOffline === hasRemote)
+          throw new Error(
+            "Provide exactly one complete offline archive/manifest/signature set or exact-version URL set."
+          );
+        if (hasOffline && offlineValues.some((value) => value === undefined))
+          throw new Error(
+            "Offline install requires --archive, --manifest, and --signature paths."
+          );
+        if (hasRemote && remoteValues.some((value) => value === undefined))
+          throw new Error(
+            "Network install requires --archive-url, --manifest-url, and --signature-url."
+          );
+        const source: ComponentSource = hasOffline
+          ? {
+              kind: "offline",
+              archivePath: offlineValues[0]!,
+              manifestPath: offlineValues[1]!,
+              signaturePath: offlineValues[2]!
+            }
+          : {
+              kind: "remote",
+              archiveUrl: remoteValues[0]!,
+              manifestUrl: remoteValues[1]!,
+              signatureUrl: remoteValues[2]!
+            };
+        result = await handlers.runComponentInstall(context, {
+          component,
+          version: flagValue(args, "--version"),
+          source,
+          stageOnly: args.includes("--stage-only")
+        });
+      } else if (subcommand === "activate") {
+        result = await handlers.runComponentActivate(
+          context,
+          requireFlagValue(args, "--version")
+        );
+      } else if (subcommand === "cleanup") {
+        result = await handlers.runComponentCleanup(context);
+      } else {
+        throw new Error(
+          "components command must be status, install, activate, or cleanup."
+        );
+      }
+      if (wantsJson) printJson(stdout, result);
+      else stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
     }
 
     if (command === "status") {
@@ -659,7 +792,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "pi") {
-      const result = setupPiIntegration();
+      const result = await setupPiIntegration();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -675,11 +808,11 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = args.includes("--background-recall")
+      const result = await (args.includes("--background-recall")
         ? setupClaudeIntegration(undefined, undefined, {
             backgroundRecall: true
           })
-        : setupClaudeIntegration();
+        : setupClaudeIntegration());
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -697,7 +830,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "repair" && subcommand === "codex") {
-      const result = repairCodex();
+      const result = await repairCodex();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -741,11 +874,11 @@ export const runKoedServerCli = async (
     if (command === "repair" && subcommand) {
       const result =
         subcommand === "codex"
-          ? repairCodex()
+          ? await repairCodex()
           : subcommand === "claude"
-            ? setupClaudeIntegration()
+            ? await setupClaudeIntegration()
             : subcommand === "pi"
-              ? setupPiIntegration()
+              ? await setupPiIntegration()
               : null;
       if (!result)
         throw new Error("repair client must be codex, claude, or pi.");
@@ -1138,3 +1271,29 @@ export const runKoedServerCli = async (
     return 1;
   }
 };
+
+export const isKoedServerCliEntrypoint = (
+  metaUrl: string,
+  argvPath: string | undefined
+): boolean => {
+  if (!argvPath) {
+    return false;
+  }
+  const normalize = (path: string) => {
+    const resolved = resolve(path);
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+  return normalize(fileURLToPath(metaUrl)) === normalize(argvPath);
+};
+
+export const shouldExitPackagedSupervisor = (
+  args: string[],
+  environment: NodeJS.ProcessEnv = process.env
+): boolean =>
+  environment.KOED_PACKAGED_DESKTOP === "1" &&
+  args[0] === "start" &&
+  !args.includes("--daemon");

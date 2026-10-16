@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { canonicalArtifactBytes } from "./artifact-canonical-json.mjs";
 import { createGunzip } from "node:zlib";
 import {
   chmodSync,
@@ -259,20 +260,6 @@ const normalizeSha256 = (value: string): string => {
     throw new Error("Package SHA-256 must be 64 hex characters.");
   }
   return normalized;
-};
-
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 };
 
 const validatePackageVersion = (version: string): string => {
@@ -661,6 +648,11 @@ const readExpectedSha256 = (options: ServerPackageInstallOptions): string => {
   throw new Error("--sha256 or --sha256-file is required.");
 };
 
+export const extractVerifiedPackageArchive = (
+  archivePath: string,
+  destination: string
+): Promise<void> => extractTarGz(archivePath, destination);
+
 const adjacentProvenancePath = (archivePath: string): string | undefined => {
   const archiveName = basename(archivePath);
   const releaseName = archiveName
@@ -697,7 +689,7 @@ const verifyProvenanceSignature = ({
     throw new Error("Package provenance signature algorithm must be ed25519.");
   }
   const key = createPublicKey(publicKey);
-  const payload = Buffer.from(canonicalJson(provenance.statement), "utf8");
+  const payload = canonicalArtifactBytes(provenance.statement);
   const ok = verify(null, payload, key, Buffer.from(signature, "base64"));
   if (!ok) {
     throw new Error("Package provenance signature verification failed.");
@@ -793,6 +785,32 @@ const migrationTimestamp = (
     : undefined;
 };
 
+export const assertPackageMigrationCompatible = (
+  currentManifest: KoedServerPackageManifest,
+  nextManifest: KoedServerPackageManifest,
+  allowDowngrade = false
+): void => {
+  if (compareVersions(nextManifest.version, currentManifest.version) >= 0)
+    return;
+  if (!allowDowngrade) {
+    throw new Error(
+      `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
+    );
+  }
+  const currentMigration = migrationTimestamp(currentManifest);
+  const nextMigration = migrationTimestamp(nextManifest);
+  if (
+    currentMigration !== undefined &&
+    nextMigration !== undefined &&
+    nextMigration < currentMigration &&
+    nextManifest.database?.allowsRollback !== true
+  ) {
+    throw new Error(
+      "Downgrade would roll back the package migration set, and the target package does not allow rollback."
+    );
+  }
+};
+
 const assertUpgradeCompatible = ({
   paths,
   nextManifest,
@@ -804,25 +822,11 @@ const assertUpgradeCompatible = ({
 }): void => {
   const currentManifest = activePackageManifest(paths);
   if (!currentManifest?.version) return;
-  if (compareVersions(nextManifest.version, currentManifest.version) < 0) {
-    if (!allowDowngrade) {
-      throw new Error(
-        `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
-      );
-    }
-    const currentMigration = migrationTimestamp(currentManifest);
-    const nextMigration = migrationTimestamp(nextManifest);
-    if (
-      currentMigration !== undefined &&
-      nextMigration !== undefined &&
-      nextMigration < currentMigration &&
-      nextManifest.database?.allowsRollback !== true
-    ) {
-      throw new Error(
-        "Downgrade would roll back the package migration set, and the target package does not allow rollback."
-      );
-    }
-  }
+  assertPackageMigrationCompatible(
+    currentManifest,
+    nextManifest,
+    allowDowngrade
+  );
 };
 
 const copyAdjacentProvenanceSidecars = (

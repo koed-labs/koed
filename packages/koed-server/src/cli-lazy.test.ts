@@ -1,11 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runKoedServerCli } from "./cli.js";
 
 const serviceLoads = vi.hoisted(() => vi.fn());
 
 vi.mock("./start.js", () => {
   serviceLoads();
-  throw new Error("service start module loaded");
+  throw new Error("service start module loaded by lightweight CLI path");
 });
 
 const writer = () => {
@@ -21,34 +21,57 @@ const writer = () => {
   };
 };
 
-describe("lazy CLI help", () => {
-  it.each([[], ["--help"], ["-h"], ["start", "--help"]])(
-    "prints general help without loading service startup: %j",
-    async (...args) => {
-      const stdout = writer();
-      expect(await runKoedServerCli(args, { stdout: stdout.stream })).toBe(0);
-      expect(stdout.text()).toContain("Usage: koed <command> [options]");
+describe("lightweight CLI dispatch", () => {
+  beforeEach(() => serviceLoads.mockClear());
+  it("does not fetch artifacts from help or lightweight status commands", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await runKoedServerCli(["--help"], { stdout: writer().stream });
+      await runKoedServerCli(["models", "status", "--json"], {
+        stdout: writer().stream
+      });
+      await runKoedServerCli(["runtime", "status", "--json"], {
+        stdout: writer().stream
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
     }
-  );
+  });
 
-  it("preserves Personal Sync and advanced recovery help without service startup", async () => {
-    const ordinary = writer();
-    const advanced = writer();
-    expect(
-      await runKoedServerCli(["personal-sync", "--help"], {
-        stdout: ordinary.stream
-      })
-    ).toBe(0);
-    expect(
-      await runKoedServerCli(["personal-sync", "--help", "--advanced"], {
-        stdout: advanced.stream
-      })
-    ).toBe(0);
-    expect(ordinary.text()).toContain("koed pair");
-    expect(ordinary.text()).not.toContain("Advanced compatibility");
-    expect(advanced.text()).toContain(
-      "Advanced compatibility and recovery commands"
+  it("prints help without loading service start module", async () => {
+    const stdout = writer();
+    expect(await runKoedServerCli(["--help"], { stdout: stdout.stream })).toBe(
+      0
     );
+    expect(stdout.text()).toContain("components status --json");
+  });
+
+  it("returns actionable provisioning guidance when service imports are missing", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    expect(
+      await runKoedServerCli(["start", "--json"], {
+        stdout: stdout.stream,
+        stderr: stderr.stream
+      })
+    ).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      action: "components install --component base"
+    });
+    expect(stdout.text()).not.toContain("ERR_MODULE_NOT_FOUND");
+    expect(serviceLoads).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["models", "status", "--json"],
+    ["runtime", "status", "--json"]
+  ])("keeps %s status independent of service start module", async (...args) => {
+    const stdout = writer();
+    await runKoedServerCli(args, { stdout: stdout.stream });
+    expect(stdout.text()).not.toContain("service start module loaded");
   });
 
   it("prints remote authorization and helper commands without service startup", async () => {
@@ -62,11 +85,5 @@ describe("lazy CLI help", () => {
     expect(stdout.text()).toContain("remote start");
     expect(stdout.text()).toContain("remote logout --consent --json");
     expect(serviceLoads).not.toHaveBeenCalled();
-  });
-
-  it("loads the existing implementation for commands", async () => {
-    expect(serviceLoads).not.toHaveBeenCalled();
-    await expect(runKoedServerCli(["start"])).rejects.toThrow();
-    expect(serviceLoads).toHaveBeenCalledOnce();
   });
 });

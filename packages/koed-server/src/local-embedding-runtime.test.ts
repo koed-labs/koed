@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -17,6 +18,7 @@ import {
   startLocalEmbeddingRuntime
 } from "./local-embedding-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
+import type { KoedAppRuntime } from "./app-runtime.js";
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -33,6 +35,8 @@ const paths = (root: string): KoedServerPaths => ({
   dataDir: resolve(root, "data"),
   modelsDir: resolve(root, "models"),
   cacheDir: resolve(root, "cache"),
+  componentsDir: resolve(root, "runtime", "components"),
+  generationsDir: resolve(root, "runtime", "generations"),
   postgresDataDir: resolve(root, "data", "postgres"),
   postgresRunDir: resolve(root, "run", "postgres"),
   postgresLogPath: resolve(root, "logs", "postgres.log"),
@@ -55,6 +59,21 @@ const paths = (root: string): KoedServerPaths => ({
     "upstream-disconnect-cleanup.json"
   ),
   repoRoot: root
+});
+
+const packagedRuntime = (root: string): KoedAppRuntime => ({
+  kind: "packaged",
+  artifactSource: "verified-generation",
+  root,
+  apiEntry: resolve(root, "api/dist/index.js"),
+  workerEntry: resolve(root, "worker/dist/index.js"),
+  embeddingServiceEntry: resolve(root, "embedding-service/dist/index.js"),
+  privacyServiceEntry: resolve(root, "privacy-service/dist/index.js"),
+  mcpCli: resolve(root, "mcp-server/dist/cli.js"),
+  localAiRuntime: resolve(root, "mcp-server/dist/local-runtime-cli.js"),
+  captureHook: resolve(root, "mcp-server/dist/capture-hook.js"),
+  dbPackageRoot: resolve(root, "node_modules/@koed/db"),
+  missing: []
 });
 
 const response = (ok: boolean, status: number, body: unknown): Response =>
@@ -86,7 +105,7 @@ describe("local Embedding Service runtime", () => {
     expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_PORT).toBe("3800");
   });
 
-  it("prefers packaged Embedding Service resources over source checkout in packaged mode", () => {
+  it("keeps app JS source lookup independent from packaged env flags", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "koed-runtime", "embedding-service"), {
       recursive: true
@@ -119,12 +138,10 @@ describe("local Embedding Service runtime", () => {
       KOED_PACKAGED_RESOURCES_PATH: root
     });
 
-    expect(runtime.artifactSource).toBe("packaged-resource");
-    expect(runtime.appDir).toBe(
-      resolve(root, "koed-runtime", "embedding-service")
-    );
+    expect(runtime.artifactSources.service).toBe("source-checkout");
+    expect(runtime.appDir).toBe(resolve(root, "apps", "embedding-service"));
     expect(runtime.serviceEntry).toBe(
-      resolve(root, "koed-runtime", "embedding-service", "dist", "index.js")
+      resolve(root, "apps", "embedding-service", "dist", "index.js")
     );
     expect(runtime.llamaServerBin).toBe(
       resolve(root, "koed-runtime", "llama.cpp", "llama-server")
@@ -163,14 +180,19 @@ describe("local Embedding Service runtime", () => {
     writeFileSync(llama, "");
     chmodSync(llama, 0o755);
 
-    const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});
+    const runtime = resolveLocalEmbeddingRuntimePaths(
+      paths(root),
+      {},
+      existsSync,
+      packagedRuntime(appRuntimeRoot)
+    );
 
     expect(runtime.serviceEntry).toBe(
       resolve(appRuntimeRoot, "embedding-service", "dist", "index.js")
     );
     expect(runtime.llamaServerBin).toBe(llama);
     expect(runtime.artifactSources).toEqual({
-      service: "koed-home-runtime",
+      service: "verified-generation",
       llamaServer: "koed-home-runtime"
     });
   });
@@ -188,13 +210,16 @@ describe("local Embedding Service runtime", () => {
     );
     writeFileSync(resolve(root, "vendor", "llama.cpp", "llama-server"), "");
 
-    const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
+    const generationRoot = resolve(root, "signed-generation", "base");
+    const runtime = resolveLocalEmbeddingRuntimePaths(
+      paths(root),
+      {},
+      (candidate) => String(candidate).startsWith(resolve(root, "apps")),
+      packagedRuntime(generationRoot)
+    );
 
-    expect(runtime.artifactSource).toBe("koed-home-runtime");
-    expect(runtime.appDir).toBe(resolve(root, "runtime", "embedding-service"));
+    expect(runtime.artifactSources.service).toBe("verified-generation");
+    expect(runtime.appDir).toBe(resolve(generationRoot, "embedding-service"));
     expect(runtime.llamaServerBin).toBe(
       resolve(root, "runtime", "llama.cpp", "llama-server")
     );

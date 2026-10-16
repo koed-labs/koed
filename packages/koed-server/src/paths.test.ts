@@ -67,6 +67,8 @@ describe("KOED_HOME resolution", () => {
     expect(paths.dataDir).toBe(resolve(home, "data"));
     expect(paths.modelsDir).toBe(resolve(home, "models"));
     expect(paths.cacheDir).toBe(resolve(home, "cache"));
+    expect(paths.componentsDir).toBe(resolve(home, "runtime", "components"));
+    expect(paths.generationsDir).toBe(resolve(home, "runtime", "generations"));
     expect(paths.postgresDataDir).toBe(resolve(home, "data", "postgres"));
     expect(paths.postgresRunDir).toBe(resolve(home, "run", "postgres"));
     expect(paths.postgresLogPath).toBe(resolve(home, "logs", "postgres.log"));

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { mkdtempSync } from "node:fs";
@@ -61,7 +61,7 @@ describe("koed-server supervisor lock", () => {
     });
   });
 
-  it("reclaims a stale or malformed lock", () => {
+  it("reclaims a stale lock but fails closed on malformed lock", () => {
     const paths = pathsForTest();
     const lockPath = resolve(paths.runDir, "koed-server.lock");
     mkdirSync(paths.runDir, { recursive: true });
@@ -73,8 +73,8 @@ describe("koed-server supervisor lock", () => {
       resolveProcessIdentity: () => "process-303"
     });
 
-    expect(result).toMatchObject({ acquired: true, ownerPid: 303 });
-    expect(existsSync(lockPath)).toBe(true);
+    expect(result).toMatchObject({ acquired: false });
+    expect(readFileSync(lockPath, "utf8")).toBe("not-json");
   });
 
   it("preserves a released-shape lock while its supervisor is live", () => {

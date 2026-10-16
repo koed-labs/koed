@@ -4,6 +4,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -161,6 +163,69 @@ describe("koed executable help", () => {
   });
 });
 
+describe("explicit component provisioning CLI", () => {
+  it("rejects incomplete offline metadata before installation", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive",
+        "/tmp/base.tar.gz",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths: () =>
+          resolveKoedServerPaths({ KOED_HOME: "/tmp/koed-component-cli-test" })
+      }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      error:
+        "Offline install requires --archive, --manifest, and --signature paths."
+    });
+  });
+
+  it("rejects an incomplete network source triplet without fetching", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive-url",
+        "https://artifacts.example/base.tar.gz",
+        "--json"
+      ],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error:
+        "Network install requires --archive-url, --manifest-url, and --signature-url."
+    });
+  });
+
+  it("does not accept public trust-root or owner overrides", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      ["components", "status", "--owner", "desktop", "--json"],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Unsupported components option: --owner"
+    });
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =
@@ -169,6 +234,22 @@ describe("koed-server CLI entrypoint detection", () => {
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
+  });
+
+  it("recognizes argv paths that are symlinks to the loaded CLI", () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), "koed-cli-entrypoint-"));
+    const cliPath = resolve(tempDir, "cli.js");
+    const symlinkPath = resolve(tempDir, "cli-symlink.js");
+    try {
+      writeFileSync(cliPath, "");
+      symlinkSync(cliPath, symlinkPath);
+
+      expect(
+        isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, symlinkPath)
+      ).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("explicitly exits only the packaged long-running supervisor", () => {
@@ -1542,7 +1623,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
       stdout: stdout.stream,
-      setupClaude: () => ({
+      setupClaude: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",
@@ -1566,7 +1647,7 @@ describe("JSON command output", () => {
       ["setup", "claude", "--background-recall", "--json"],
       {
         stdout: stdout.stream,
-        setupClaude: (_environment, _spawn, options) => {
+        setupClaude: async (_environment, _spawn, options) => {
           consent = options;
           return {
             ok: true,
@@ -1726,7 +1807,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
       stdout: stdout.stream,
-      repairCodex: () => ({
+      repairCodex: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",
