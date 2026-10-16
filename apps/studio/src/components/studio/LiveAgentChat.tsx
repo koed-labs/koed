@@ -962,11 +962,7 @@ export function LiveAgentChat({
           state.activeAgentId === null)
       )
         setActiveAgentId(state.activeAgentId);
-      if (
-        !personalConversationId &&
-        restoredExecution.current !== id &&
-        !selectionDirty.current
-      ) {
+      if (!personalConversationId && restoredExecution.current !== id) {
         restoredExecution.current = id;
         const current = snapshot.execution;
         if (

@@ -28,6 +28,7 @@ import {
 import {
   claudeAgentSdkExecutableOptions,
   claudeAgentSdkEffort,
+  claudeAgentSdkSecureStorageEnvironment,
   claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
@@ -1068,17 +1069,23 @@ export class ClaudeManagedConversationSession {
 
     const sourceEnvironment = config.env ?? process.env;
     this.executablePath = resolveClaudeCodeExecutable(sourceEnvironment);
+    const configuredClaudeHome = sourceEnvironment.CLAUDE_CONFIG_DIR?.trim()
+      ? claudeManagedHome(sourceEnvironment)
+      : undefined;
     this.sdkEnvironment = claudeAgentSdkProcessEnvironment(
       this.executablePath,
       sourceEnvironment,
       config.clientName ?? "claude-managed-conversation"
     );
-    if (sourceEnvironment.CLAUDE_CONFIG_DIR?.trim()) {
-      this.sdkEnvironment.CLAUDE_CONFIG_DIR =
-        claudeManagedHome(sourceEnvironment);
+    if (configuredClaudeHome) {
+      this.sdkEnvironment.CLAUDE_CONFIG_DIR = configuredClaudeHome;
     } else {
       delete this.sdkEnvironment.CLAUDE_CONFIG_DIR;
     }
+    Object.assign(
+      this.sdkEnvironment,
+      claudeAgentSdkSecureStorageEnvironment(configuredClaudeHome)
+    );
     this.managedHome = fs.realpathSync(config.managedHome);
     this.sessionStore = createManagedClaudeSessionStore(this.managedHome);
     if (this.sdkEnvironment.ANTHROPIC_API_KEY !== undefined) {

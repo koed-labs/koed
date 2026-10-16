@@ -230,8 +230,17 @@ describe("ClaudeManagedConversationSession", () => {
     }
   });
 
-  it("leaves CLAUDE_CONFIG_DIR unset when using Claude's native HOME default", async () => {
+  it("preserves Claude's native HOME default secure-storage namespace", async () => {
     const { config } = fixture();
+    const callerOverride = path.join(
+      config.managedHome,
+      "other-claude-profile"
+    );
+    fs.mkdirSync(callerOverride);
+    config.env = {
+      ...config.env,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: callerOverride
+    };
     sdk.query.mockImplementation(({ options }: { options?: Options }) =>
       queryFrom([successResult(options?.sessionId as string, "hello")])
     );
@@ -242,6 +251,57 @@ describe("ClaudeManagedConversationSession", () => {
 
       expect(queryOptions().env?.HOME).toBe(config.env.HOME);
       expect(queryOptions().env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(queryOptions().env?.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(
+        process.platform === "darwin" || process.platform === "win32"
+          ? ""
+          : undefined
+      );
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("pins secure storage to the configured Claude profile without changing hook isolation", async () => {
+    const { config, cwd } = fixture();
+    const selectedProfile = path.join(cwd, "selected-claude-profile");
+    const selectedProfileAlias = path.join(
+      cwd,
+      "selected-claude-profile-alias"
+    );
+    const callerOverride = path.join(cwd, "other-claude-profile");
+    fs.mkdirSync(selectedProfile);
+    fs.mkdirSync(callerOverride);
+    fs.symlinkSync(selectedProfile, selectedProfileAlias);
+    config.env = {
+      ...config.env,
+      CLAUDE_CONFIG_DIR: selectedProfileAlias,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: callerOverride
+    };
+    config.instructionOnly = true;
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession(config);
+
+    try {
+      await session.start("Hello");
+
+      const options = queryOptions();
+      const canonicalProfile = fs.realpathSync(selectedProfile);
+      expect(options.env?.CLAUDE_CONFIG_DIR).toBe(canonicalProfile);
+      expect(options.env?.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(
+        process.platform === "darwin" || process.platform === "win32"
+          ? canonicalProfile
+          : undefined
+      );
+      expect(options.env?.CLAUDE_SECURESTORAGE_CONFIG_DIR).not.toBe(
+        callerOverride
+      );
+      expect(options.settingSources).toEqual([]);
+      expect(options.settings).toEqual({
+        disableAllHooks: true,
+        permissions: { ask: ["*"] }
+      });
     } finally {
       await session.closeAndWait();
     }

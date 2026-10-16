@@ -27,7 +27,7 @@ Ticket 13 live follow-ups found on 2026-10-15:
 - Validate the owner-review refresh correction under Ticket 30: controls and dirty edits stay mounted during same-request polling; authority loss still removes private actions.
 - Validate restored Team request context when reopening a bound execution from Home/sidebar. The previous route displayed history but sent through the Personal message endpoint, which correctly returned 403.
 - Investigate the isolated Codex worker restart's repeated `thread_open` timeouts (`ManagedConversationThreadOpenError`, about 10 seconds). History display is not evidence that the provider resumed successfully.
-- Resolve the live Claude accepted-turn authentication failure after successful read-only planning. The accepted command is indeterminate; keep its uncertainty guard and do not replay it merely because the output file is absent or CLI auth status says signed in.
+- The Claude custom-store authentication fix passes guarded fresh/resume diagnostics and targeted tests. Complete fresh native Team execution acceptance after resolving the native bridge CLI status timeout (60 seconds despite healthy APIs). The earlier accepted command remains indeterminate; preserve its guard and do not replay it.
 - Preserve the human-derived chat title after reload under 04/30. The accepted test conversation reloaded with an internal managed-context label instead of its initial human-message title.
 
 The historical backlog below contains superseded descriptions. Use the current plan for implementation scope and status.

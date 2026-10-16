@@ -631,6 +631,31 @@ export const claudeAgentSdkEnvironment = (
   ]);
 };
 
+/**
+ * Keep store-backed Claude resume in the selected profile's secure-storage
+ * namespace. The SDK temporarily changes CLAUDE_CONFIG_DIR while materializing
+ * a SessionStore resume. On macOS and Windows the bundled CLI supports this
+ * separate override. A selected profile pins its canonical directory; an
+ * empty value retains the CLI's native default namespace when no profile was
+ * selected, while preventing an ambient server override from taking effect.
+ * Never take this value from CLAUDE_SECURESTORAGE_CONFIG_DIR in the caller
+ * environment or synthesize a default profile path.
+ */
+export const claudeAgentSdkSecureStorageEnvironment = (
+  configuredProfileHome: string | undefined,
+  platform: NodeJS.Platform = process.platform
+): Record<string, string> => {
+  if (platform !== "darwin" && platform !== "win32") return {};
+  if (!configuredProfileHome?.trim()) {
+    return { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" };
+  }
+  const canonical = fs.realpathSync(configuredProfileHome);
+  if (!fs.statSync(canonical).isDirectory()) {
+    throw new Error("Claude secure-storage config home is not a directory");
+  }
+  return { CLAUDE_SECURESTORAGE_CONFIG_DIR: canonical };
+};
+
 export const claudeAgentSdkProcessEnvironment = (
   executablePath: string,
   env: NodeJS.ProcessEnv,

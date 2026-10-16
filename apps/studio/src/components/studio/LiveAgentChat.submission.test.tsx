@@ -584,6 +584,33 @@ it("explains that the private brief must be saved before a Team planning chat ca
     )
   ).toHaveLength(0);
 });
+it("restores canonical execution settings when the route carries only the verified Agent", async () => {
+  const agentOnlySelection: ChatComposerSelection = {
+    ...selection,
+    provider: null,
+    model: "",
+    effort: "",
+    permissionMode: "full"
+  };
+  await mount(agentOnlySelection, {
+    executionId: true,
+    submit: false,
+    teamReviewVersion: 2,
+    initialDraft: ""
+  });
+
+  await vi.waitFor(() => {
+    expect(
+      (mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime).restoreSelection
+    ).toMatchObject({
+      provider: "codex",
+      model: "chosen-model",
+      effort: "high",
+      permissionMode: "full",
+      instanceId: "chosen-client"
+    });
+  });
+});
 it("offers a fresh blank Team planning chat for a stopped owner review without replaying a prompt", async () => {
   const stoppedRuntime = stoppedTeamRuntime();
   mocks.runtime = {

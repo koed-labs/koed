@@ -77,3 +77,7 @@ Wire paired runners to the existing private Team Agent review lookups. Recheck o
 Bound paired-runner output recovery to the current execution generation and provider turn, using the existing encrypted runtime items. Preserve the owner’s review controls and unsaved edits during status refreshes. Restore Team request context when reopening a private Agent conversation, and offer an explicit new blank planning chat for eligible stopped reviews without replaying an unconfirmed prompt.
 
 Keep Team review versions current through delayed chat starts and preserve the verified Agent selection when reopening a private review. Keep recovery tied to the same authenticated runner and require a new message in a fresh planning chat.
+
+Preserve the registered Claude profile’s authentication namespace on macOS and Windows when resuming managed session storage, including the native default profile, without loading profile settings or accepting arbitrary authentication-directory overrides.
+
+Restore the existing conversation’s model, reasoning and execution settings when reopening it with an Agent selection.

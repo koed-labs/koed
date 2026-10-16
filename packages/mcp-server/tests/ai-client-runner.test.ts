@@ -15,6 +15,7 @@ import {
   claudeAgentSdkEffort,
   claudeAgentSdkEnvironment,
   claudeAgentSdkExecutableOptions,
+  claudeAgentSdkSecureStorageEnvironment,
   claudeSupportedReasoningEfforts,
   claudeExecutableInstallationIdentity,
   claudeAgentSdkTokenUsage,
@@ -584,6 +585,7 @@ exit 1
           HOME: "/home/alice",
           PATH: "/usr/bin",
           CLAUDE_CONFIG_DIR: "/home/alice/.claude-work",
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/alice/.claude-other",
           ANTHROPIC_API_KEY: "must-not-pass",
           DATABASE_URL: "must-not-pass",
           MEMORY_API_TOKEN: "must-not-pass"
@@ -596,6 +598,35 @@ exit 1
       CLAUDE_CONFIG_DIR: "/home/alice/.claude-work",
       CLAUDE_AGENT_SDK_CLIENT_APP: "koed/test"
     });
+  });
+
+  it("pins macOS and Windows secure storage to a canonical configured profile", () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-claude-secure-storage-")
+    );
+    temporaryDirectories.push(root);
+    const profile = path.join(root, "selected-profile");
+    const alias = path.join(root, "selected-profile-alias");
+    fs.mkdirSync(profile);
+    fs.symlinkSync(profile, alias);
+    const canonicalProfile = fs.realpathSync(profile);
+
+    expect(claudeAgentSdkSecureStorageEnvironment(alias, "darwin")).toEqual({
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: canonicalProfile
+    });
+    expect(claudeAgentSdkSecureStorageEnvironment(alias, "win32")).toEqual({
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: canonicalProfile
+    });
+    expect(claudeAgentSdkSecureStorageEnvironment(alias, "linux")).toEqual({});
+    expect(claudeAgentSdkSecureStorageEnvironment(undefined, "darwin")).toEqual(
+      { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" }
+    );
+    expect(claudeAgentSdkSecureStorageEnvironment(undefined, "win32")).toEqual({
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: ""
+    });
+    expect(claudeAgentSdkSecureStorageEnvironment(undefined, "linux")).toEqual(
+      {}
+    );
   });
 
   it("pins an SDK package that contains no bundled Claude executable", () => {

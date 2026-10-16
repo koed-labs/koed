@@ -166,6 +166,36 @@ and only the explicitly typed `T13-FRESH-NEW` prompt was sent. The new execution
 advanced atomically from version 2 to 3, and the URL retained version 3 and the
 Agent. The old prompt was absent from the new chat.
 
+The Claude authentication differential reproduced twice with the installed SDK
+0.3.226: fresh sessions succeeded, but custom-store resume returned login-required
+while SDK-default-store resume succeeded. Stored entries round-tripped unchanged.
+The SDK materializes custom-store resume in a temporary configuration directory;
+on macOS that also changes the CLI's Keychain namespace. The managed adapter now
+pins the CLI's supported secure-storage directory to the canonical registered
+profile on macOS and Windows. With no selected profile, an explicit empty value
+preserves the native default namespace rather than deriving a new path. This also
+blocks the SDK from taking a conflicting ambient Windows override. Linux remains
+unchanged, and arbitrary incoming secure-storage overrides remain filtered. Koed does not read or copy credentials, and filesystem settings/hooks
+remain isolated. The guarded fresh/resume diagnostic then passed with no tools or
+MCP servers. The 76 targeted runner/adapter tests and package type check pass;
+full Team execution acceptance is still being validated. The final native source
+build passed with fingerprint
+`sha256:2a258dd48e1ca5fb9cfea95ecffb2c3e857dadeb5edc05619e8260b2b7f8380b`.
+The Docker rebuild was cancelled when its control service stopped responding;
+Docker recovered with preserved volumes and the existing validated backend image.
+The authentication change executes in the native macOS worker.
+
+The recovery conversation continued with `T13-FRESH-CONTINUED` and reopened from
+the Project sidebar with its Team scope and history. A later restart check found
+that an Agent-only route suppressed canonical execution settings; the isolated
+restore correction passes its new regression (18 chat tests total), Studio type
+checking, lint and production build. Full post-restart continuation and the fresh
+Claude request `e2c542c1-6d34-48d2-9d11-c011460b219a` are currently blocked by
+native bridge checks: a read-only CLI status command timed out after 60 seconds
+while local and Docker API health checks returned 200. The new request's private
+brief is saved at review version 1; no planning execution or accepted work has
+started for it. This is not passing UI acceptance evidence.
+
 ### Local Docker live result, 2026-10-15
 
 The Codex channel-request core flow passes against the isolated Docker Team backend and native owner runtime. This is one computer with separate authenticated owner, requester and outsider accounts, not a deployed or two-Device acceptance result.
