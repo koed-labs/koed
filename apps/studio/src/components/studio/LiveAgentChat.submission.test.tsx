@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
   runtime: null as Record<string, unknown> | null,
   startFreshTeamPlanning: vi.fn(),
   startGate: null as Promise<unknown> | null,
+  launchOptionsGate: null as Promise<unknown> | null,
   rejectAbortedRequests: false
 }));
 const router = { replace: vi.fn(), push: vi.fn() };
@@ -396,6 +397,7 @@ afterEach(async () => {
   mocks.runtime = null;
   mocks.startFreshTeamPlanning.mockReset();
   mocks.startGate = null;
+  mocks.launchOptionsGate = null;
   mocks.rejectAbortedRequests = false;
   router.replace.mockClear();
   window.history.replaceState({}, "", "/");
@@ -426,14 +428,22 @@ async function mount(
       if (mocks.rejectAbortedRequests && signal?.aborted)
         throw new DOMException("The request was aborted.", "AbortError");
       if (path === "/access") return { user: { id: "owner" } };
-      if (path === "/launch-options")
+      if (path === "/launch-options") {
+        if (mocks.launchOptionsGate) return mocks.launchOptionsGate;
         return {
+          runners: [
+            {
+              kind: "local_device",
+              deviceId: "device-1",
+              deploymentId: "deployment-1",
+              displayName: "This device"
+            }
+          ],
           instances: [
             {
               ready: true,
               instanceId: "chosen-client",
               driverId: "codex",
-              runnerDeviceId: "device-1",
               models: [
                 { id: "chosen-model", supportedReasoningEfforts: ["high"] }
               ],
@@ -445,7 +455,6 @@ async function mount(
               ready: true,
               instanceId: "claude-client",
               driverId: "claude",
-              runnerDeviceId: "device-1",
               models: [
                 { id: "other-model", supportedReasoningEfforts: ["medium"] }
               ],
@@ -455,6 +464,7 @@ async function mount(
             }
           ]
         };
+      }
       if (path === "") {
         if (mocks.fail) throw new Error("Start failed");
         if (mocks.startGate) return mocks.startGate;
@@ -871,6 +881,123 @@ it("keeps an in-flight Team first send alive when the saved review version advan
   );
   expect(prompts).toHaveLength(1);
   expect(prompts[0]?.[1]).toMatchObject({ prompt: "Home question" });
+});
+it("keeps a review version saved during launch loading through start and URL handoff", async () => {
+  window.history.replaceState(
+    {},
+    "",
+    "/?chat=1&teamRequest=agent-request&teamRequestTeam=team&teamRequestVersion=4&teamReviewVersion=1"
+  );
+  await mount(selection, {
+    submit: false,
+    teamRequest: true,
+    teamReviewVersion: 1
+  });
+  await flushReact();
+
+  await act(async () => {
+    mocks.onReviewSaved?.({ version: 1, privateGoal: "Saved private brief" });
+    mocks.onRequestStatusChange?.({ status: "awaiting_owner", version: 4 });
+  });
+  router.replace.mockClear();
+  const initialRuntime = mocks.view.mock.lastCall?.[0]
+    .runtime as NewChatRuntime;
+  expect(initialRuntime.enabled).toBe(true);
+
+  let resolveLaunchOptions!: (value: unknown) => void;
+  mocks.launchOptionsGate = new Promise((resolve) => {
+    resolveLaunchOptions = resolve;
+  });
+  const launchOptionsCallsBeforeSend = mocks.request.mock.calls.filter(
+    (call) => call[0] === "/launch-options"
+  ).length;
+  let sendOutcome!: Promise<{ accepted: true } | { error: unknown }>;
+  await act(async () => {
+    sendOutcome = initialRuntime
+      .onSend("Home question", selection)
+      .then(() => ({ accepted: true as const }))
+      .catch((error: unknown) => ({ error }));
+    await vi.waitFor(() => {
+      expect(
+        mocks.request.mock.calls.filter((call) => call[0] === "/launch-options")
+      ).toHaveLength(launchOptionsCallsBeforeSend + 1);
+    });
+  });
+
+  await act(async () => {
+    mocks.onReviewSaved?.({ version: 2, privateGoal: "Updated private brief" });
+    mocks.onReviewSaved?.({ version: 1, privateGoal: "Older private brief" });
+    window.history.replaceState(
+      {},
+      "",
+      "/?chat=1&teamRequest=agent-request&teamRequestTeam=team&teamRequestVersion=4&teamReviewVersion=2"
+    );
+    root.render(
+      <StrictMode>
+        <LiveAgentChat
+          onConversationStarted={mocks.started}
+          onStartFreshTeamPlanning={mocks.startFreshTeamPlanning}
+          initialDraft="Home question"
+          initialSelection={selection}
+          teamRequestId="agent-request"
+          teamRequestTeamId="team"
+          teamRequestExpectedRequestVersion={4}
+          teamRequestExpectedReviewVersion={2}
+        />
+      </StrictMode>
+    );
+  });
+  await flushReact();
+  expect(
+    (mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime).enabled
+  ).toBe(true);
+
+  mocks.launchOptionsGate = null;
+  await act(async () => {
+    resolveLaunchOptions({
+      runners: [
+        {
+          kind: "local_device",
+          deviceId: "device-1",
+          deploymentId: "deployment-1",
+          displayName: "This device"
+        }
+      ],
+      instances: [
+        {
+          ready: true,
+          instanceId: "chosen-client",
+          driverId: "codex",
+          models: [{ id: "chosen-model", supportedReasoningEfforts: ["high"] }],
+          capabilities: {
+            permissionModes: [{ mode: "full_access", support: "supported" }]
+          }
+        }
+      ]
+    });
+    await sendOutcome;
+  });
+
+  expect(await sendOutcome).toEqual({ accepted: true });
+  expect(
+    mocks.request.mock.calls.find((call) => call[0] === "")?.[1]
+  ).toMatchObject({
+    teamAgentRequest: {
+      requestId: "agent-request",
+      expectedRequestVersion: 4,
+      expectedReviewVersion: 2
+    }
+  });
+  const executionHandoffs = router.replace.mock.calls.filter((call) =>
+    String(call[0]).includes("execution=")
+  );
+  expect(executionHandoffs.at(-1)?.[0]).toContain("teamReviewVersion=2");
+  expect(executionHandoffs.at(-1)?.[0]).toContain("agent=agent-a");
+  expect(
+    router.replace.mock.calls.every((call) =>
+      String(call[0]).includes("teamReviewVersion=2")
+    )
+  ).toBe(true);
 });
 it("submits the Home question once, displays the conversation, and continues the same execution", async () => {
   await mount();

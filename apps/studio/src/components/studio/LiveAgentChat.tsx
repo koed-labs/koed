@@ -154,7 +154,8 @@ const retainTeamRequestContext = (
   requestId?: string,
   teamId?: string,
   requestVersion?: number,
-  reviewVersion?: number
+  reviewVersion?: number,
+  agentId?: string | null
 ) => {
   if (!requestId || !teamId) return href;
   const [path, query = ""] = href.split("?", 2);
@@ -165,6 +166,7 @@ const retainTeamRequestContext = (
     params.set("teamRequestVersion", String(requestVersion));
   if (Number.isSafeInteger(reviewVersion))
     params.set("teamReviewVersion", String(reviewVersion));
+  if (agentId) params.set("agent", agentId);
   return `${path}?${params.toString()}`;
 };
 const delay = (ms: number, signal: AbortSignal) =>
@@ -359,6 +361,10 @@ export function LiveAgentChat({
     status: string;
     version: number;
   } | null>(null);
+  const teamRequestRouteScopeKey =
+    teamRequestId && teamRequestTeamId
+      ? `${teamRequestTeamId}\u0000${teamRequestId}`
+      : null;
   const [agents, setAgents] = useState<PersonalAgent[]>([]);
   const [instances, setInstances] = useState<LaunchInstance[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(
@@ -477,15 +483,67 @@ export function LiveAgentChat({
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
   const latestTeamRequestRouteVersions = useRef({
+    scopeKey: teamRequestRouteScopeKey,
     requestVersion: teamRequestExpectedRequestVersion,
     reviewVersion: teamRequestExpectedReviewVersion
   });
+  const rememberTeamRequestRouteVersions = useCallback(
+    (requestVersion: number | undefined, reviewVersion: number | undefined) => {
+      const current = latestTeamRequestRouteVersions.current;
+      if (current.scopeKey !== teamRequestRouteScopeKey) return;
+      latestTeamRequestRouteVersions.current = {
+        ...current,
+        requestVersion:
+          Number.isSafeInteger(requestVersion) &&
+          (!Number.isSafeInteger(current.requestVersion) ||
+            requestVersion! > current.requestVersion!)
+            ? requestVersion
+            : current.requestVersion,
+        reviewVersion:
+          Number.isSafeInteger(reviewVersion) &&
+          (!Number.isSafeInteger(current.reviewVersion) ||
+            reviewVersion! > current.reviewVersion!)
+            ? reviewVersion
+            : current.reviewVersion
+      };
+    },
+    [teamRequestRouteScopeKey]
+  );
+  const retainLatestTeamRequestContext = useCallback(
+    (href: string, agentId?: string | null) => {
+      const latest = latestTeamRequestRouteVersions.current;
+      if (latest.scopeKey !== teamRequestRouteScopeKey) return href;
+      return retainTeamRequestContext(
+        href,
+        teamRequestId,
+        teamRequestTeamId,
+        latest.requestVersion,
+        latest.reviewVersion,
+        agentId
+      );
+    },
+    [teamRequestId, teamRequestRouteScopeKey, teamRequestTeamId]
+  );
   useEffect(() => {
-    latestTeamRequestRouteVersions.current = {
-      requestVersion: teamRequestExpectedRequestVersion,
-      reviewVersion: teamRequestExpectedReviewVersion
-    };
-  }, [teamRequestExpectedRequestVersion, teamRequestExpectedReviewVersion]);
+    const current = latestTeamRequestRouteVersions.current;
+    if (current.scopeKey !== teamRequestRouteScopeKey) {
+      latestTeamRequestRouteVersions.current = {
+        scopeKey: teamRequestRouteScopeKey,
+        requestVersion: teamRequestExpectedRequestVersion,
+        reviewVersion: teamRequestExpectedReviewVersion
+      };
+      return;
+    }
+    rememberTeamRequestRouteVersions(
+      teamRequestExpectedRequestVersion,
+      teamRequestExpectedReviewVersion
+    );
+  }, [
+    teamRequestExpectedRequestVersion,
+    teamRequestExpectedReviewVersion,
+    rememberTeamRequestRouteVersions,
+    teamRequestRouteScopeKey
+  ]);
   const recoveryStore = useRef<LocalRecoveryStore | null>(null);
   const recoveryIdentity = useRef<{
     ownerId: string;
@@ -733,12 +791,9 @@ export function LiveAgentChat({
                       );
                     }
                     router.replace(
-                      retainTeamRequestContext(
+                      retainLatestTeamRequestContext(
                         `/?chat=1&execution=${encodeURIComponent(execution.id)}`,
-                        teamRequestId,
-                        teamRequestTeamId,
-                        latestTeamRequestRouteVersions.current.requestVersion,
-                        latestTeamRequestRouteVersions.current.reviewVersion
+                        initialSelection?.agentId
                       )
                     );
                     return;
@@ -818,11 +873,13 @@ export function LiveAgentChat({
     return () => controller.abort();
   }, [
     initialDraft,
+    initialSelection?.agentId,
     initialSubmission,
     initialPersonalConversationId,
     initialExecutionId,
     router,
     settleRecoveredSend,
+    retainLatestTeamRequestContext,
     teamRequestId,
     teamRequestTeamId
   ]);
@@ -1800,6 +1857,14 @@ export function LiveAgentChat({
         return;
       }
       const settings = resolveLaunchSelection(selection, latestOptions);
+      const routeVersions = latestTeamRequestRouteVersions.current;
+      const currentTeamBindingVersions =
+        routeVersions.scopeKey === teamRequestRouteScopeKey
+          ? routeVersions
+          : {
+              requestVersion: teamRequestExpectedRequestVersion,
+              reviewVersion: teamRequestReviewVersion
+            };
       const recoveryRecord = recoveryStore.current?.read() ?? null;
       const recovered = recoveryRecord?.pendingOperation;
       const operationExecutionId =
@@ -1830,12 +1895,12 @@ export function LiveAgentChat({
         selectedResourceIds: selection.selectedResourceIds ?? [],
         teamAgentRequestBinding:
           teamRequestId &&
-          Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
-          Number.isSafeInteger(teamRequestReviewVersion)
+          Number.isSafeInteger(currentTeamBindingVersions.requestVersion) &&
+          Number.isSafeInteger(currentTeamBindingVersions.reviewVersion)
             ? ([
                 teamRequestId,
-                teamRequestExpectedRequestVersion!,
-                teamRequestReviewVersion!
+                currentTeamBindingVersions.requestVersion!,
+                currentTeamBindingVersions.reviewVersion!
               ] as const)
             : null,
         expectedSettings: knownExecution
@@ -1941,14 +2006,16 @@ export function LiveAgentChat({
               : {}),
             ...(teamRequestId &&
             teamRequestTeamId &&
-            Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
-            Number.isSafeInteger(teamRequestReviewVersion)
+            Number.isSafeInteger(currentTeamBindingVersions.requestVersion) &&
+            Number.isSafeInteger(currentTeamBindingVersions.reviewVersion)
               ? {
                   teamAgentRequest: {
                     teamId: teamRequestTeamId,
                     requestId: teamRequestId,
-                    expectedRequestVersion: teamRequestExpectedRequestVersion,
-                    expectedReviewVersion: teamRequestReviewVersion
+                    expectedRequestVersion:
+                      currentTeamBindingVersions.requestVersion,
+                    expectedReviewVersion:
+                      currentTeamBindingVersions.reviewVersion
                   }
                 }
               : {})
@@ -2029,12 +2096,9 @@ export function LiveAgentChat({
         }
         if (startedNewExecution)
           router.replace(
-            retainTeamRequestContext(
+            retainLatestTeamRequestContext(
               `/?chat=1&execution=${encodeURIComponent(id)}`,
-              teamRequestId,
-              teamRequestTeamId,
-              teamRequestExpectedRequestVersion,
-              teamRequestReviewVersion
+              selection.agentId
             )
           );
         return {
@@ -2191,12 +2255,9 @@ export function LiveAgentChat({
       }
       if (startedNewExecution)
         router.replace(
-          retainTeamRequestContext(
+          retainLatestTeamRequestContext(
             `/?chat=1&execution=${encodeURIComponent(id)}`,
-            teamRequestId,
-            teamRequestTeamId,
-            teamRequestExpectedRequestVersion,
-            teamRequestExpectedReviewVersion
+            selection.agentId
           )
         );
       return {
@@ -2268,17 +2329,14 @@ export function LiveAgentChat({
           navigableExecutionId
         ) {
           router.replace(
-            retainTeamRequestContext(
+            retainLatestTeamRequestContext(
               selection.agentId
                 ? managedAgentRecoveryHref(
                     navigableExecutionId,
                     selection.agentId
                   )
                 : `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`,
-              teamRequestId,
-              teamRequestTeamId,
-              teamRequestExpectedRequestVersion,
-              teamRequestReviewVersion
+              selection.agentId
             )
           );
         }
@@ -2661,19 +2719,22 @@ export function LiveAgentChat({
       typeof window === "undefined"
     )
       return;
+    const latest = latestTeamRequestRouteVersions.current;
+    if (latest.scopeKey !== teamRequestRouteScopeKey) return;
     const href = teamAgentRequestContextHref({
       pathname: window.location.pathname,
       search: window.location.search,
       requestId: teamRequestId,
       teamId: teamRequestTeamId,
-      requestVersion: currentTeamRequestStatus.version,
-      reviewVersion: teamRequestReviewVersion!
+      requestVersion: latest.requestVersion ?? currentTeamRequestStatus.version,
+      reviewVersion: latest.reviewVersion ?? teamRequestReviewVersion!
     });
     if (href) router.replace(href);
   }, [
     currentTeamRequestStatus,
     router,
     teamRequestId,
+    teamRequestRouteScopeKey,
     teamRequestReviewVersion,
     teamRequestTeamId
   ]);
@@ -2963,7 +3024,16 @@ export function LiveAgentChat({
     (
       review: import("@koed/shared/team-agent-requests").TeamAgentRequestReview
     ) => {
-      setTeamRequestReviewVersion(review.version);
+      const latest = latestTeamRequestRouteVersions.current;
+      if (latest.scopeKey !== teamRequestRouteScopeKey) return;
+      rememberTeamRequestRouteVersions(latest.requestVersion, review.version);
+      const currentReviewVersion =
+        latestTeamRequestRouteVersions.current.reviewVersion ?? review.version;
+      setTeamRequestReviewVersion((current) =>
+        Number.isSafeInteger(current) && current! > currentReviewVersion
+          ? current
+          : currentReviewVersion
+      );
       setTeamRequestReviewSaved(Boolean(review.privateGoal.trim()));
       if (typeof window === "undefined") return;
       const href = teamReviewSavedHref({
@@ -2971,11 +3041,17 @@ export function LiveAgentChat({
         search: window.location.search,
         requestId: teamRequestId,
         teamId: teamRequestTeamId,
-        reviewVersion: review.version
+        reviewVersion: currentReviewVersion
       });
       if (href) router.replace(href);
     },
-    [router, teamRequestId, teamRequestTeamId]
+    [
+      rememberTeamRequestRouteVersions,
+      router,
+      teamRequestId,
+      teamRequestRouteScopeKey,
+      teamRequestTeamId
+    ]
   );
   const currentProjectId =
     currentExecution?.projectId ?? personalConversation?.projectId ?? null;
@@ -3114,7 +3190,13 @@ export function LiveAgentChat({
             if (currentExecution?.id && lifecycle.current)
               void refresh(currentExecution.id, lifecycle.current.signal);
           }}
-          onRequestStatusChange={(request) =>
+          onRequestStatusChange={(request) => {
+            const latest = latestTeamRequestRouteVersions.current;
+            if (request)
+              rememberTeamRequestRouteVersions(
+                request.version,
+                latest.reviewVersion
+              );
             setTeamRequestStatus(
               request && teamRequestScopeKey
                 ? {
@@ -3123,8 +3205,8 @@ export function LiveAgentChat({
                     version: request.version
                   }
                 : null
-            )
-          }
+            );
+          }}
           onReviewSaved={handleTeamReviewSaved}
           summaryDraftStatus={teamSummaryState.status}
           summaryDraftText={teamSummaryState.text}

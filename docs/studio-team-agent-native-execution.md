@@ -111,7 +111,9 @@ Personal message endpoint rejected the new send with 403. This is a failed
 continuation check, not evidence that the access check should be relaxed.
 
 The review panel preserves its controls and unsaved edits during same-request
-status reads, while failed authority checks remove the private controls. A
+status reads, while failed authority checks remove the private controls. The native
+live check confirmed that an unsaved brief and its keyboard focus survived a
+status refresh; restoring the original text did not require a save. A
 separate Claude 2.1.299 profile was configured through setup/repair and signed
 in for this disposable runtime. These setup and automated checks do not certify
 the remaining live Claude, restart, additional-Device or deployed acceptance.
@@ -141,6 +143,28 @@ The command remains indeterminate and the execution reconciling. The assignment
 file is absent. CLI auth status still reports signed in; that does not prove the
 provider accepted the execution query. No automatic retry or manual database
 repair was attempted. Claude accepted-work and recovery acceptance remain open.
+
+Checkpoint `c402e268` is pushed and its full GitHub regression run passed
+(`38896708793`). Separate pure-text authentication diagnostics succeeded using
+the isolated profile, both through the CLI and through fresh/resumed SDK sessions
+with the production process environment. The SDK checks covered default and
+bypass permission modes with no tools or MCP servers. They do not establish that
+the production work query succeeds: its custom session store and managed MCP
+configuration still need isolation. The indeterminate accepted command was not
+retried.
+
+The next UI correction retains monotonic request/review versions across awaited
+launch-option reads and navigation. A matching owner-authorized runtime binding
+restores a missing Agent selection on reopen. It keeps the existing exact Device
+resolver, including the authenticated single-local-runner case. Focused page
+handoff tests (10), chat submission tests (17), Studio type checking, lint and the
+production build pass. Live blank-planning recovery passed for request
+`4090eeb5-39df-4316-8aba-731f95438d25`: the stopped execution remained unchanged,
+the blank chat retained the same Agent/Project/Client/model/effort/access/Device,
+and only the explicitly typed `T13-FRESH-NEW` prompt was sent. The new execution
+`18d968f9-f867-4404-a09c-61939cae04dc` replied with that marker; review binding
+advanced atomically from version 2 to 3, and the URL retained version 3 and the
+Agent. The old prompt was absent from the new chat.
 
 ### Local Docker live result, 2026-10-15
 

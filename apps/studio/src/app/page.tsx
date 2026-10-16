@@ -434,6 +434,22 @@ function LiveHome({
           teamRequestTeam: binding.teamId
         });
         router.replace(`/?${query.toString()}`);
+      } else if (
+        binding &&
+        teamRequestId === binding.requestId &&
+        teamRequestTeamId === binding.teamId &&
+        !requestedAgentId
+      ) {
+        // A prior execution URL may retain the Team scope but lose its Agent
+        // parameter. Restore that selection only from the verified owner
+        // binding after request and team IDs have both matched.
+        const query = new URLSearchParams(window.location.search);
+        query.set("chat", "1");
+        query.set("execution", executionId);
+        query.set("agent", binding.agentId);
+        query.set("teamRequest", binding.requestId);
+        query.set("teamRequestTeam", binding.teamId);
+        router.replace(`/?${query.toString()}`);
       }
       return;
     }

@@ -366,6 +366,44 @@ it("prefers owner-bound Team routing over a Personal child-to-root mapping", asy
   );
 });
 
+it("restores a missing Team Agent only from the matching owner runtime binding", async () => {
+  const executionId = "12345678-1234-4234-8234-123456789012";
+  const requestId = "22345678-1234-4234-8234-123456789012";
+  const teamId = "32345678-1234-4234-8234-123456789012";
+  const agentId = "42345678-1234-4234-8234-123456789012";
+  const initialQuery =
+    `chat=1&execution=${executionId}&project=lp_example&teamRequest=${requestId}` +
+    `&teamRequestTeam=${teamId}&teamRequestVersion=4&teamReviewVersion=2` +
+    "&provider=claude&model=claude-opus&effort=high&access=supervised";
+  mocks.searchParams = new URLSearchParams(initialQuery);
+  window.history.replaceState({}, "", `/?${initialQuery}`);
+  mocks.managedRuntimeResponse = {
+    teamAgentRequestBinding: {
+      requestId,
+      teamId,
+      agentId,
+      status: "accepted"
+    }
+  };
+
+  await act(async () => root.render(<Home />));
+  await flushEffects();
+
+  expect(mocks.router.replace).toHaveBeenCalledTimes(1);
+  const replacement = new URL(
+    String(mocks.router.replace.mock.calls[0]?.[0]),
+    "http://localhost"
+  );
+  expect(replacement.searchParams.get("agent")).toBe(agentId);
+  expect(replacement.searchParams.get("execution")).toBe(executionId);
+  expect(replacement.searchParams.get("teamRequest")).toBe(requestId);
+  expect(replacement.searchParams.get("teamRequestTeam")).toBe(teamId);
+  expect(replacement.searchParams.get("teamRequestVersion")).toBe("4");
+  expect(replacement.searchParams.get("teamReviewVersion")).toBe("2");
+  expect(replacement.searchParams.get("provider")).toBe("claude");
+  expect(replacement.searchParams.get("model")).toBe("claude-opus");
+});
+
 it("does not restore a pending owner probe after the user returns Home", async () => {
   const executionId = "12345678-1234-4234-8234-123456789012";
   let resolveRuntime!: (response: Response) => void;

@@ -21,7 +21,7 @@ Keep original acceptance records and explicit deferrals. Do not count superseded
 
 Ticket 13 live follow-ups found on 2026-10-15:
 
-- Validate explicit new blank planning chats for eligible stopped, unaccepted Team reviews. Keep the missing-history guard and never replay the old prompt: current records do not prove nonacceptance. Accepted and uncertain outcomes retain their existing protections; assess broader recovery with Ticket 04.
+- Live explicit blank planning recovery passes for an eligible stopped, unaccepted Team review: exact settings and Device are retained, only a newly typed prompt is sent, and the version-checked review binding advances without replay. Keep the missing-history guard; accepted and uncertain outcomes retain their protections. Broader recovery remains under Ticket 04.
 - Validate the bounded paired-runner runtime-item output read with live Claude. Generation/turn-scoped listing now reuses the existing encrypted items; automated wiring alone does not certify provider execution.
 - Audit the remaining remote adapter gaps for file-operation continuation and Project Move within their existing retained scope. Do not count a passing Codex channel test as evidence for those paths.
 - Validate the owner-review refresh correction under Ticket 30: controls and dirty edits stay mounted during same-request polling; authority loss still removes private actions.
