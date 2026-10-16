@@ -2,7 +2,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { connectPackagedDesktop } from "./packaged-desktop-lifecycle.mjs";
+import {
+  connectPackagedDesktop,
+  createPackagedDesktopEnvironment
+} from "./packaged-desktop-lifecycle.mjs";
 
 const fixture = (timeoutMs = 1000) => {
   const child = Object.assign(new EventEmitter(), {
@@ -25,6 +28,20 @@ const fixture = (timeoutMs = 1000) => {
   return { child, desktop, ready };
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("packaged launch strips caller resource override but preserves smoke home", () => {
+  const environment = createPackagedDesktopEnvironment({
+    ELECTRON_RUN_AS_NODE: "1",
+    KOED_HOME: "/smoke/koed-home",
+    KOED_PACKAGED_DESKTOP: "1",
+    KOED_PACKAGED_RESOURCES_PATH: "/untrusted/resources"
+  });
+
+  assert.equal(environment.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(environment.KOED_PACKAGED_RESOURCES_PATH, undefined);
+  assert.equal(environment.KOED_HOME, "/smoke/koed-home");
+  assert.equal(environment.KOED_PACKAGED_DESKTOP, "1");
+});
 
 test("waits for manager ready then sends only correlated lifecycle requests", async () => {
   const { child, desktop, ready } = fixture();
