@@ -63,9 +63,13 @@ authorizes summaries only.
 
 `curated_assertions` is a separate representation and consent. It requires a
 separate disclosure and Step-up under ADR 0024; Full access does not bypass
-that requirement. An assertion is eligible only when it has direct provenance
-from the exact granted Conversation, has `scope = project`, and names the
-matching Project. Me-scoped, unscoped, mixed-Conversation, incomplete, or
+that requirement. An assertion is eligible only when its complete, non-empty
+active direct-source set consists exclusively of direct sources from the exact
+granted Conversation, with all active provenance resolving inside that
+Conversation. A single matching source is insufficient if another active
+direct source falls outside that Conversation or the provenance is incomplete.
+The assertion must also
+have `scope = project` and name the matching Project. Me-scoped, unscoped, or
 non-Conversation evidence is ineligible. Scope or Project changes invalidate
 affected Team representations and vectors transactionally before the Personal
 mutation commits.

@@ -50,9 +50,14 @@ The policy never creates Conversation Source Access. An owner may share the
 full transcript for one Conversation only through the separate Step-up flow in
 ADRs 0024 and 0047. The Project disclosure does not authorize `curated_assertions`.
 That representation needs separate disclosure and Step-up. Eligible
-assertions must have direct provenance from the exact granted Conversation,
-`scope = project`, and a matching Project. Me, unscoped, mixed-Conversation,
-incomplete, and non-Conversation evidence stays out of the grant.
+assertions must have a complete, non-empty active direct-source set consisting
+exclusively of direct sources from the exact granted Conversation, with all
+active provenance resolving inside that Conversation. A single matching
+source is insufficient if another active direct source falls outside that
+Conversation or the provenance is incomplete. The assertion must also have
+`scope = project` and name the
+matching Project. Me, unscoped, and non-Conversation evidence stays out of the
+grant.
 
 Project ownership and Team role are separate authority bindings. The Team-side
 Project owner is `workspace_projects.owner_team_member_id`; this does not
