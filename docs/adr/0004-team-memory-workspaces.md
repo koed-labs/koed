@@ -2,6 +2,14 @@
 
 > Supersession (14 October 2026): The dedicated reranker and its configuration, runtime, and evaluation arms have been removed. Recall uses semantic vector retrieval; the authorization and embedding decisions below still apply.
 
+> Supersession (19 October 2026): ADR 0057 supersedes only the Project
+> definition in this ADR's Decision. A Project is a User-owned container.
+> Repository, path, branch, ref, cwd, and other local AI-client or code
+> execution context may resolve to the owner's Personal Project, but is not the
+> Project itself. A local Project-to-Workspace mapping supplies recall context
+> only; it does not create a Workspace Project or sharing authority. All other
+> accepted rules in this ADR remain in force.
+
 Status: Accepted.
 
 Supersedes: [0002 Deferred Multi-User Memory Access](./0002-defer-multi-user-memory-access.md).
@@ -35,9 +43,11 @@ separate physical memory hierarchies.
   originating User.
 - A Team is the collaboration boundary.
 - A Workspace is the stable shared ID for memories within a Team.
-- A Project is local AI-client or code context such as a repository, filepath,
-  ref, branch, or cwd. Project metadata may resolve or display a Workspace, but
-  it is not the durable authorization key.
+- A Project is a User-owned container. Local AI-client or code execution
+  context such as a repository, filepath, ref, branch, or cwd may resolve to the
+  owner's Personal Project, but is not the Project itself or a durable
+  authorization key. A local Project-to-Workspace mapping supplies recall
+  context only; it does not create a Workspace Project or sharing authority.
 - Workspace Access controls whether a User can recall, share, or manage
   Team-shared Memory in a Workspace.
 - A Share Grant links a user-owned memory source to one Team and one Workspace.

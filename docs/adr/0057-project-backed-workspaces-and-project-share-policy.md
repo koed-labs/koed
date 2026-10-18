@@ -20,6 +20,13 @@ replace or own them. A Workspace remains the stable Team-side identity used
 for shared memory. The repository's local Project-to-Workspace mapping is
 recall context; it does not create a Workspace Project or authorize sharing.
 
+This decision amends ADR 0004 only where that ADR defines Project as local
+AI-client or code context. In this model, Project is the User-owned container;
+repository, path, branch, ref, cwd, and similar local context may resolve to a
+Personal Project but are not the Project itself. Existing ADR 0004 rules for
+User ownership, Share Grants, Team and Workspace authorization, Cross-Identity
+Sync, retention, and lifecycle continue to apply.
+
 Project sharing must preserve the ownership and authorization boundaries in
 ADR 0004. Each User owns their Conversations and resulting Personal Memory. A Project
 owner is not thereby a Team owner, and a Project policy cannot share another
@@ -47,22 +54,100 @@ and continue to control Team-wide authority. Project ownership is stored in
 - The last-Team-owner guard applies to the Team membership role, regardless of
   which member owns any particular Project.
 
-A Project Share Policy applies on each member's own Desktop to that member's
-own Conversations in the shared Project, after that member confirms the
-summary-sharing disclosure once when joining. It excludes the Project's HQ
-Conversation and Conversations marked private. It does not create a new
-Conversation grant type: each policy-created Share Grant binds to one exact,
-owner-owned Captured Session. A trusted mapping from that User's Conversation
-to a Captured Session must resolve to exactly one supported source before the
-policy can create or advance the grant. A missing or ambiguous mapping, or a
-Conversation with multiple candidate sessions, creates no implicit grant; each
-session must have an explicit bounded source mapping and its own grant. A grant
-can advance only revisions of its bound Captured Session and never another
-session in the same Conversation. No Project owner or other member can grant
-someone else's source. Creating a Conversation in a shared Project is not, by
-itself, a grant; the policy applies when the owner's trusted source mapping is
-available. Moving an existing Conversation into one requires a separate
-confirmation to share its summary.
+A Project Share Policy applies separately on each member's own Desktop and
+only to that member's own sources. At join, the member reviews the
+summary-sharing disclosure and explicitly enables the policy through the
+Native-review `shared_memory.project_share_policy.enable` action in ADR 0024.
+That consent is durable, versioned, and revocable; it is not the expiring,
+single-use UI Action Grant used to review the enable decision. The policy
+excludes the Project's HQ Conversation and Conversations marked private. It
+never grants another member's sources, Conversation Source Access, raw
+`memory_events`, or `curated_assertions`.
+
+Bind the policy version to the source owner, the currently enrolled source-
+owner device credential generation and backend origin, Team, Workspace, exact
+Workspace Project, the owner's exact Personal Project, and fidelity
+`lcm_leaves`. Credential rotation or re-enrollment, backend or source-owner change,
+Project-link change, or a mismatch between the bound policy scope and source
+mapping fails closed and requires new reviewed consent. A newly captured
+Session may use a new exact mapping under the same current scope only through
+the Bundled stage; a changed or ambiguous existing mapping receives no
+inherited authority and requires a fresh source/share decision. Authority is
+not migrated automatically.
+
+The policy does not create a Conversation grant type. Each policy-created Share
+Grant binds to one exact, owner-owned Captured Session. When the owner enables
+the policy, the owner's trusted local edge builds a bounded manifest from
+authoritative local capture and Project state for the currently eligible
+Captured Sessions whose Conversations are already associated with the exact
+shared Project. Native review binds consent to that manifest. It contains each
+exact Session ID, source revision, trusted Conversation-to-session mapping
+revision, and approved summary scope. The renderer cannot supply or alter the
+authoritative set. The Team Backend validates authenticated source-owner/device
+provenance, exact Project link, current policy scope, and source/mapping
+versions; the remote Team Backend never reads the owner's Personal database.
+It creates one Share Grant per Session through the backend-only Bundled
+`shared_memory.project_share_policy.apply_session_grant` stage, with a fresh
+one-use backend authority for that exact Session and scope. If the initial set
+or any bound source or mapping revision changes before execution, the initial
+batch conflicts and requires new review; it must not widen or backfill a
+different set.
+
+While the versioned policy remains active, the Team Backend may use the same
+Bundled stage for each newly captured eligible source whose Conversation is
+already associated with the exact shared Project at capture time. Before
+issuing authority, and again before consuming it, the Team Backend verifies the
+current owner and device association, backend origin, Team membership and
+Workspace Access, Project link, policy version and scope, and trusted mapping
+from the owner's Conversation to that exact Captured Session. It issues and
+consumes a fresh one-use backend authority bound to that one Session, source
+owner, active policy version, and complete scope. This authority is not
+exposed to the renderer and cannot authorize another source, action,
+destination, or later operation. The stage is not a generic reuse of an
+expiring UI Action Grant and does not bypass the existing
+`shared_memory.pending_share` approval. After creation, that exact Share Grant
+and its own consent and lifecycle govern its revision advancement.
+
+Eligibility comes from authenticated capture and trusted source association,
+not a renderer-supplied path, Project flag, or arbitrary source identifier. The
+trusted source association must resolve the owner's Conversation to exactly one
+supported Captured Session. Missing or ambiguous mapping, including multiple
+candidate sessions, creates no grant. A grant can advance only revisions of its
+bound Captured Session, never another session from the same Conversation. No
+Project owner or other member can grant someone else's source.
+
+The reviewed initial set includes eligible existing Captured Sessions that
+were already in the exact shared Project when the owner enabled the policy.
+While the policy remains active, future Sessions may receive grants through
+the Bundled stage only if their Conversation was already associated with the
+exact shared Project at capture time and they pass the same trusted mapping
+and current policy checks. Moving an existing Conversation into the Project
+after enablement does not add its already-captured Sessions to the initial set
+or make them eligible
+for future policy issuance; the owner must separately confirm sharing of each
+exact source through the existing `shared_memory.pending_share` action.
+Creating a Conversation in a shared Project is not itself a grant.
+
+The source owner can disable the durable policy through the exact Native-review
+`shared_memory.project_share_policy.revoke` action, bound to the current policy
+version. Revocation disables future policy-based grant issuance only; existing
+Share Grants continue to advance under their own consent and lifecycle. Policy
+revocation does not revoke, freeze, or change their consent, advancement, or
+published evidence. Freezing or revoking an existing grant to stop
+advancement or remove access remains a separate explicit action. Making a
+source private, moving or deleting it, or freezing or revoking its grant
+invalidates its policy eligibility. Restoring,
+rejoining, or moving the source back cannot recreate or restart a frozen or
+revoked grant; a fresh source/share decision is required.
+
+Implementation must reject attempts to use another member's source, a stale or
+revoked policy version, a changed device/backend/Project scope, a
+renderer-selected source identifier, an ambiguous mapping, or a frozen/revoked
+grant. A changed initial set or source/mapping revision before execution must
+conflict and require new review, without partial execution or wildcard
+backfill. An existing Conversation moved into the Project after enablement
+must not make its already-captured Sessions eligible. Rejections create no
+grant and publish no Team-visible revision.
 
 Policy-created grants use fidelity `lcm_leaves`. This is summary sharing; it
 does not create Conversation Source Access. An owner may separately enable
@@ -89,13 +174,14 @@ before the Personal mutation commits.
 
 When a Personal owner action such as Conversation deletion, movement out of a
 shared Project, or Personal Project deletion affects an active Team grant, the
-exact source owner uses the per-grant Native-review
+exact source owner uses the target per-grant Native-review
 `shared_memory.grant.freeze` action and waits for each required Team freeze
-before the Personal action reports completion. This does not make the Personal
-command a Team action or require Team enrollment when no active Team grant is
-affected. Team-authoritative deletion, member removal, and membership departure
-freeze their affected grants through a Bundled stage of the exact parent Team
-action.
+before the Personal action reports completion. This action is not implemented
+yet. This does not make the Personal command a Team action or require Team
+enrollment when no active Team grant is affected. Team-authoritative deletion,
+member removal, and membership departure freeze their affected grants through a
+target Bundled stage of the exact parent Team action; those lifecycle freezes
+are not implemented yet either.
 
 Every freeze pins future advancement at the last actually published revision
 and its complete immutable authorized representation closure. It is grant-
@@ -103,7 +189,7 @@ specific: it does not revoke the grant or change the source owner's consent.
 Already-published material remains recallable while the grant remains
 otherwise authorized; later messages and revisions are excluded. The atomic
 Team-backend operation serializes with in-flight advancement. The exact source
-owner can request the per-grant action while their Desktop is online; a
+owner can request the target per-grant action while their Desktop is online; a
 narrowed authoritative Team lifecycle action can run while source-owner
 Desktops are offline. Neither operation revokes a Cross-Identity Sync
 relationship that may serve other grants.
@@ -131,9 +217,10 @@ for member Conversations. New grants or another explicit sharing action are
 required to advance them again.
 
 Moving a Conversation out of a shared Project is a local owner control. Before
-detaching the Conversation, the source owner uses the separate per-grant
+detaching the Conversation, the source owner uses the target separate per-grant
 Native-review `shared_memory.grant.freeze` action for every affected old
-Project-policy grant. This pins the old grant at its current published closure.
+Project-policy grant. This action is not implemented yet. It pins the old grant
+at its current published closure.
 The old grant and already-published Team material remain under their existing
 authorization unless the owner separately revokes that exact grant. Sharing to
 a new shared destination requires a new explicit confirmation and exact source
@@ -142,7 +229,8 @@ grant.
 
 Deleting a Personal Project is a local owner control and does not require Team
 enrollment or browser approval. If the Project has active Team grants, the
-source owner uses `shared_memory.grant.freeze` Native review for every grant
+source owner uses the target `shared_memory.grant.freeze` Native-review action
+for every grant
 attached to each child Conversation's exact Captured Session and supported
 Project Source revision. This includes separately created explicit grants, not
 only Project-policy grants. Wait for every required Team freeze before the

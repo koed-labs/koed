@@ -112,16 +112,19 @@ source owner's separate approval for each required exact-grant freeze through
 `shared_memory.grant.freeze` and wait for those Team operations before reporting
 completion. It cannot invoke or impersonate a Team lifecycle action.
 
-| Exact action                           | Tier          | Authority and effect boundary                                                                                                                                                                                |
-| -------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `workspace_project.delete`             | Step-up       | Exact Workspace Project owner with current Team membership and Workspace authority; delete shared Project metadata without archiving its Workspace or revoking grants.                                       |
-| `workspace_project.member_remove`      | Step-up       | Workspace Project owner with current Team membership and Workspace authority; disable only the named member's access to this Project, never global Team Membership.                                          |
-| `workspace_project.leave`              | Step-up       | Self-service only for a current member with Workspace Project access; disable only the caller's access and freeze only their affected grants. It does not change Team Membership or another member's access. |
-| `project_source.team_metadata.delete`  | Step-up       | Source uploader or Workspace Project owner with current authority; delete Team metadata only, not the owner's Personal Note content.                                                                         |
-| `shared_memory.grant.freeze`           | Native review | Exact source owner and one exact Share Grant; pin published authorization without revoking the grant or changing consent.                                                                                    |
-| `project.lifecycle.freeze_grant`       | Bundled stage | Backend-only substage of the exact outer lifecycle action; inherits its target, authority, request binding, and approval. It cannot be requested as a standalone action.                                     |
-| `workspace_project.restore`            | Direct        | Only the Workspace Project owner with current Team membership and Workspace authority; restores Team metadata only and does not restore another User's Personal records or resume grants.                    |
-| `project_source.team_metadata.restore` | Direct        | Source uploader or Workspace Project owner with current authority; restores Team metadata only. Personal Note content remains restorable only by its owner.                                                  |
+| Exact action                                             | Tier          | Authority and effect boundary                                                                                                                                                                                                                              |
+| -------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace_project.delete`                               | Step-up       | Exact Workspace Project owner with current Team membership and Workspace authority; delete shared Project metadata without archiving its Workspace or revoking grants.                                                                                     |
+| `workspace_project.member_remove`                        | Step-up       | Workspace Project owner with current Team membership and Workspace authority; disable only the named member's access to this Project, never global Team Membership.                                                                                        |
+| `workspace_project.leave`                                | Step-up       | Self-service only for a current non-owner member with Workspace Project access; reject the Workspace Project owner. Disable only the caller's access and freeze only their affected grants. It does not change Team Membership or another member's access. |
+| `project_source.team_metadata.delete`                    | Step-up       | Source uploader or Workspace Project owner with current authority; delete Team metadata only, not the owner's Personal Note content.                                                                                                                       |
+| `shared_memory.grant.freeze`                             | Native review | Exact source owner and one exact Share Grant; pin published authorization without revoking the grant or changing consent.                                                                                                                                  |
+| `project.lifecycle.freeze_grant`                         | Bundled stage | Backend-only substage of the exact outer lifecycle action; inherits its target, authority, request binding, and approval. It cannot be requested as a standalone action.                                                                                   |
+| `shared_memory.project_share_policy.enable`              | Native review | Review summary-sharing disclosure and bind a versioned policy plus a bounded manifest built by the source owner's trusted local edge from authoritative local capture and Project state; it never shares another member's sources.                         |
+| `shared_memory.project_share_policy.revoke`              | Native review | Exact source owner and current policy version; disable future policy-based grant issuance. Existing Share Grants continue under their own consent and lifecycle unless separately frozen or revoked.                                                       |
+| `shared_memory.project_share_policy.apply_session_grant` | Bundled stage | Backend-only stage under one current policy version; one-use exact per-grant backend authority for one eligible Captured Session, never a reusable UI Action Grant or generic pending-share approval.                                                      |
+| `workspace_project.restore`                              | Direct        | Only the Workspace Project owner with current Team membership and Workspace authority; restores Team metadata only and does not restore another User's Personal records or resume grants.                                                                  |
+| `project_source.team_metadata.restore`                   | Direct        | Source uploader or Workspace Project owner with current authority; restores Team metadata only. Personal Note content remains restorable only by its owner.                                                                                                |
 
 ### Target initial Curated Memory approval (Implementation Pending)
 
@@ -133,6 +136,85 @@ Step-up when the initial Pending Share enables `curated_assertions` or shares
 raw `memory_events`. Every initial Curated activation requires its own
 disclosure and Step-up; Full access does not bypass the requirement. This is a
 target contract, not a claim that this policy is already implemented.
+
+### Target Project Share Policy consent and per-session authority (Implementation Pending)
+
+The actions above are target policy, not current routes or behavior. Each
+member enables summary sharing for only their own sources through the explicit
+Native-review `shared_memory.project_share_policy.enable` action. Its reviewed,
+versioned consent is separate from the expiring, single-use UI Action Grant
+that records that decision. Bind consent to the source owner, the currently
+enrolled source-owner device credential generation and backend origin, Team,
+Workspace, exact Workspace Project, the owner's exact Personal Project, and
+fidelity `lcm_leaves`. It excludes `curated_assertions`, raw `memory_events`,
+and Conversation Source Access. Full access and another member's policy cannot
+authorize these sources.
+
+When the owner enables the policy, the owner's trusted local edge builds a
+bounded manifest from authoritative local capture and Project state for the
+currently eligible Captured Sessions whose Conversations are already
+associated with the exact shared Project. Native review binds consent to that
+manifest. It contains each exact Session ID, its source revision, trusted
+Conversation-to-session mapping revision, and approved summary scope. The
+renderer cannot supply or alter the authoritative set. The Team Backend
+validates authenticated source-owner/device provenance, exact Project link,
+current policy scope, and source/mapping versions; the remote Team Backend
+never reads the owner's Personal database. It creates a separate Share Grant
+for each Session through the Bundled
+`shared_memory.project_share_policy.apply_session_grant` stage, using a fresh,
+one-use backend authority bound to that exact Session and policy scope. If the
+set or any bound source or mapping revision changes before execution, the
+initial batch conflicts and requires new review; it must not widen or backfill
+a different set.
+
+While the versioned policy remains active, the Team Backend may use that same
+Bundled stage for each newly captured eligible source whose Conversation is
+already associated with the exact shared Project at capture time, with a
+separate fresh, one-use backend authority bound to one exact owner-owned
+Captured Session.
+This backend authority is not exposed to the renderer and cannot authorize
+another source, action, destination, or later operation. The Backend verifies
+the current owner and device association, backend origin, Team membership and
+Workspace Access, Project link, policy version and scope, and trusted mapping
+from the owner's Conversation to that exact Captured Session before issuing
+and again before consuming authority. It derives eligibility from
+authenticated capture and trusted source association; a renderer-supplied
+path, Project flag, or arbitrary source ID is not authority. This is a
+separately allowlisted stage, not generic reuse of or a bypass around
+`shared_memory.pending_share`; that action keeps its accepted tier for ordinary
+exact shares. Once created, a Share Grant remains bound to its exact Captured
+Session and follows its own grant consent and lifecycle for future revisions.
+
+Moving an existing Conversation into the shared Project after policy enablement
+does not add its already-captured Sessions to the reviewed initial set or make
+them eligible for future policy issuance; sharing each requires a separate
+exact source-sharing confirmation. A missing or ambiguous
+Conversation-to-session mapping, including multiple candidate sessions, fails
+closed.
+
+The source owner may disable this durable policy with the exact
+Native-review `shared_memory.project_share_policy.revoke` action bound to the
+current policy version. Revocation prevents future policy-based grant
+issuance only. Existing Share Grants continue to advance under their own exact
+grant consent and lifecycle; policy revocation does not change their state,
+consent, advancement, or published evidence. Freezing or revoking an
+individual grant to stop advancement or remove access remains a separate
+explicit action. Credential rotation or re-enrollment, backend change, source
+owner change, Project-link change, mapping change, or scope mismatch fails
+closed and requires new reviewed consent; authority is never migrated
+automatically. Making a source private, moving or deleting it, or freezing or
+revoking its grant invalidates its policy eligibility. Restoring, rejoining, or
+moving it back cannot recreate or restart a frozen or revoked grant; a fresh
+source/share decision is required.
+
+Implementation must include regression checks that reject another member's
+source, stale or revoked policy versions, changed device/backend/Project scope,
+renderer-selected source identifiers, ambiguous mappings, and a source whose
+grant is frozen or revoked. A changed initial set or source/mapping revision
+before execution must conflict and require new review, without partial
+execution or wildcard backfill. A Conversation moved into the Project after
+policy enablement must not make its existing Sessions eligible. Each rejection
+must create no new grant and no Team-visible revision.
 
 `project.lifecycle.freeze_grant` is permitted only inside an exact parent
 operation such as `workspace_project.delete`,
@@ -146,13 +228,37 @@ required stage of that already approved operation. Its freeze remains
 grant-specific and cannot change an unrelated Share Grant or Cross-Identity
 Sync relationship.
 
-This target matrix does not change the existing `team.leave` Native review tier
-or its authoritative last-Team-owner guard. It also does not weaken
+This target matrix does not change the accepted/current `team.leave` Native
+review tier or its authoritative last-Team-owner guard. The conditional target
+below does not change current behavior. It also does not weaken
 `team.workspace.access_update`: access expansion or disablement remains
 Step-up. Workspace restoration, Team membership, invitations, and Team-governed
 access recovery continue to use the existing Team actions and authority checks;
 a Project owner cannot restore Team membership or another User's Personal
 resource.
+
+### Target Team leave escalation for owner-owned Projects (Implementation Pending)
+
+The accepted action matrix above records current behavior: `team.leave` uses
+Native review. In the target lifecycle, a leave with no Workspace Projects
+owned by the departing member keeps Native review. If current server-side
+preflight finds one or more owner-owned Workspace Projects that would be
+deleted, `team.leave` requires Step-up before any copy-back, tombstone, or
+destructive change. The browser review binds the exact Team and membership
+version, the complete current set of owned Workspace Project IDs and versions,
+and all associated copy-back, tombstone, and removal effects. This conditional
+Step-up is as strong as the separate `workspace_project.delete` review; a
+Native `team.leave` grant cannot authorize or smuggle Project deletion.
+
+The Team Backend checks last-Team-owner eligibility before any destructive
+work, then derives the owned-Project set and exact versions. It repeats both
+checks when consuming the Step-up authority. Any membership, ownership, set,
+version, or authority change invalidates the approval and returns a conflict;
+there is no automatic retry or copy-back under stale authority. The user must
+review a new exact operation. The Step-up covers only the exact current leave
+and deletion set, not wildcard Project authority. Ordinary non-owner leave
+remains Native review. This target condition does not alter the accepted
+matrix or claim that conditional escalation is implemented.
 
 The representation fidelity order is `lcm_rollups`, `lcm_leaves`, then
 `memory_events`. Unknown actions, missing current state needed for a conditional

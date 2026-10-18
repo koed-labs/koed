@@ -34,7 +34,8 @@ The shared Project entity, Project Share Policy, Project-owner lifecycle,
 Project deletion behavior below, and atomic grant-advancement freeze are
 intended behavior and require implementation before they are available. They
 must not be inferred from the current Project mapping or existing Share Grant
-routes.
+routes. In particular, `shared_memory.grant.freeze` and
+`project.lifecycle.freeze_grant` are target actions, not existing routes.
 
 ## Sharing and ownership
 
@@ -45,19 +46,72 @@ their Conversations, sources, or Personal Memory. This does not constrain
 ordinary Team Workspaces or local Project-to-Workspace mappings used for
 recall.
 
-Each member's own Desktop applies the Project Share Policy to that member's
-own Conversations after the member confirms the summary-sharing disclosure
-once when joining. The policy excludes the Project's HQ Conversation and
-Conversations the owner marks private. It does not introduce a Conversation
-grant type. Every policy-created Share Grant binds to one exact owner-owned
-Captured Session selected through the owner's trusted mapping from a
-Conversation to its captured source. A missing or ambiguous mapping, including
-multiple candidate Captured Sessions, creates no implicit grant. Each included
-session requires an explicit bounded source mapping and its own grant, and a
-grant can advance only revisions of its bound session. Creating or moving a
-Conversation into the Project does not itself create a grant; moving an existing
-Conversation into a shared Project requires a separate summary-sharing
-confirmation.
+Each member's own Desktop applies the Project Share Policy only to that
+member's own eligible Conversations. At join, the member reviews the
+summary-sharing disclosure and explicitly enables a versioned policy through
+the target Native-review `shared_memory.project_share_policy.enable` action.
+This durable owner consent is separate from the expiring, single-use UI Action
+Grant that records the enable decision. Bind it to the source owner, current
+enrolled device credential generation and backend origin, Team, Workspace,
+exact Workspace Project, the owner's exact Personal Project, and `lcm_leaves`
+fidelity. It grants no other member's sources, Curated Memory, raw
+`memory_events`, or Conversation Source Access. Credential rotation or
+re-enrollment, backend or source-owner change, Project-link change, or a
+mismatch between the bound policy scope and source mapping fails closed and
+requires new reviewed consent. A newly captured Session may use a new exact
+mapping under the same current scope only through the Bundled stage; a changed
+or ambiguous existing mapping receives no inherited authority and requires a
+fresh source/share decision.
+
+The policy excludes the Project's HQ Conversation and Conversations the owner
+marks private. It does not introduce a Conversation grant type. Each
+policy-created Share Grant binds to one exact owner-owned Captured Session.
+When the owner enables the policy, the owner's trusted local edge builds a
+bounded manifest from authoritative local capture and Project state for the
+currently eligible Captured Sessions whose Conversations are already
+associated with the exact shared Project. Native review binds consent to that
+manifest. It contains each exact Session ID, source revision, trusted
+Conversation-to-session mapping revision, and approved summary scope. The
+renderer cannot supply or alter the authoritative set. The Team Backend
+validates authenticated source-owner/device provenance, exact Project link,
+current policy scope, and source/mapping versions; the remote Team Backend
+never reads the owner's Personal database. It creates one Share Grant per
+Session through the
+target Bundled `shared_memory.project_share_policy.apply_session_grant`
+stage, with a fresh one-use authority for that exact grant. If the initial set
+or a bound source or mapping revision changes before execution, the batch
+conflicts and requires new review; it must not widen or backfill a different
+set.
+
+While the versioned policy remains active, newly captured eligible Sessions
+may also receive a grant through that Bundled stage only if their Conversation
+was already associated with the exact shared Project at capture time. A
+trusted source mapping must resolve the Conversation to exactly one supported
+Captured Session. The Team Backend verifies the owner/device source
+association, current membership and Workspace Access, Project link, policy
+version and scope; eligibility cannot come from a renderer-supplied path,
+Project flag, or arbitrary source ID. The stage is separate from the UI Action
+Grant and cannot authorize
+another source or later operation. Each grant can advance only its bound
+Session under its own consent and lifecycle.
+
+An existing Conversation moved into the shared Project after policy enablement
+does not add its already-captured Sessions to the reviewed initial set or make
+them eligible for future policy issuance; the owner separately confirms
+sharing of each exact source through `shared_memory.pending_share`. An
+ambiguous mapping or multiple candidate Sessions creates no grant. Creating a
+Conversation in a shared Project is not itself a grant. Frozen, revoked,
+private, moved, or deleted sources lose policy eligibility. Restoring,
+rejoining, or moving a source back does not recreate or restart a grant; a
+fresh source/share decision is required. The source owner may disable the
+policy using the target Native-review
+`shared_memory.project_share_policy.revoke` action bound to the current policy
+version. Revocation disables future policy-based issuance only. Existing
+grants continue to advance under their own consent and lifecycle; policy
+revocation does not revoke, freeze, or change their advancement or published
+evidence. Freezing or revoking an existing grant to stop advancement or remove
+access remains a separate action. These enable, apply, and revoke actions are
+target behavior and are not implemented today.
 
 Project Sources are shared only through each uploader's own supported grants;
 the Project Share Policy does not grant another member's Conversations or
@@ -111,9 +165,10 @@ Deleting a Conversation is a local, owner-controlled action. It hides the
 Conversation from active lists while its Personal Memory stays in recall; it
 does not require Team enrollment or browser approval when no Team grant is
 affected. For each active Team Share Grant attached to its exact Captured
-Session, the source owner uses the existing per-grant
-`shared_memory.grant.freeze` Native review and waits for every required Team
-freeze before reporting deletion complete. That Team operation pins the last
+Session, the source owner uses the target per-grant
+`shared_memory.grant.freeze` Native-review action and waits for every required
+Team freeze before reporting deletion complete. This action is not implemented
+yet. That Team operation pins the last
 actually published revision and complete immutable authorized representation
 closure. Published material remains recallable under existing authorization;
 later messages and revisions are excluded. The freeze does not revoke the
@@ -130,8 +185,9 @@ workflow freezes grants for the exact source revisions before deleting the
 metadata. It does not delete the uploader's Personal Note content or revisions;
 only the source owner can trash or forget that Personal data through the local
 Note lifecycle. If local Note trash affects active Team grants, the source
-owner separately approves each required `shared_memory.grant.freeze` and waits
-for those Team operations before reporting the local trash complete. A purely
+owner separately requests each required target `shared_memory.grant.freeze`
+Native-review operation and waits for those Team operations before reporting
+the local trash complete. The target action is not implemented yet. A purely
 Personal Note operation needs no Team enrollment or browser approval. Published
 Team material remains recallable under existing authorization and later
 revisions are excluded. Source trash state is separate from Note revision
@@ -145,9 +201,10 @@ action. It does not require Team enrollment or browser approval. The batch
 includes its HQ Conversation, Conversations, Work Items, Project Sources, and
 Decks as one batch. Before reporting success, freeze every active Team grant
 attached to a child Conversation's exact Captured Session or a supported
-Project Source Note revision. The source owner approves each exact grant through
-`shared_memory.grant.freeze` Native review; this includes explicit grants
-created outside the Project Share Policy. Wait for every required Team freeze
+Project Source Note revision. The source owner requests a target
+`shared_memory.grant.freeze` Native-review operation for each exact grant; this
+includes explicit grants created outside the Project Share Policy. This target
+action is not implemented yet. Wait for every required Team freeze
 before reporting deletion complete or purging child records. Personal Memory
 assertions remain and keep the Project label. After confirmation, stop local
 Agent work running in the Project and pause its Scheduled Jobs. Show an Undo
@@ -238,9 +295,10 @@ again.
 
 Moving a Conversation out of a shared Project is a local owner-controlled
 action; it does not need Team enrollment if no Team grant is affected. Before
-detaching, the source owner uses the existing per-grant
-`shared_memory.grant.freeze` Native review for each old Project-policy grant
-and waits for those Team freezes. Each freeze also pins any attached
+detaching, the source owner uses the target per-grant
+`shared_memory.grant.freeze` Native-review action for each old Project-policy
+grant and waits for those Team freezes. This target action is not implemented
+yet. Each freeze also pins any attached
 continuous Conversation Source Access frontier. The old grant and previously
 published Team material remain under their existing authorization unless the
 owner separately revokes that exact grant. A new shared destination requires a
@@ -252,14 +310,17 @@ required to advance again.
 
 ### Leave a shared Project
 
-A member may leave one shared Project without leaving the Team through the
-target `workspace_project.leave` self-service action in ADR 0024. It is Step-up
-and disables only the caller's access to this Workspace Project; it does not
-remove global Team Membership or grant authority over another member. The Team
-Backend invalidates the caller's Project link, freezes only their affected
-grants and attached continuous source-access frontiers, and stops accepting
-their Project progress. This target operation may complete while the member's
-Desktop is offline and does not write to their Personal database. On
+A current non-owner member may leave one shared Project without leaving the
+Team through the target Step-up `workspace_project.leave` self-service action
+in ADR 0024. The Team Backend rejects the Workspace Project owner; the owner
+must use the explicit Step-up `workspace_project.delete` lifecycle or a
+separately accepted ownership-transfer action. This contract does not define a
+transfer action. Leave disables only the caller's access to this Workspace
+Project; it does not remove global Team Membership or affect another member.
+The Team Backend invalidates only the caller's Project link, freezes only their
+affected grants and attached continuous source-access frontiers, and stops
+accepting their Project progress. These are target effects and are not
+implemented today. It does not write to the caller's Personal database. On
 reconciliation, that member's Desktop detaches their own Conversations to Just
 me and pauses their own Scheduled Jobs before using the shared Project again.
 Project-scoped jobs check the authoritative Workspace Project lifecycle before
@@ -272,47 +333,76 @@ is no longer posted to the Project.
 
 ### Leave a Team
 
-Before any copy-back or destructive change, the Team backend validates leave
+Before any copy-back or destructive change, the Team Backend validates leave
 eligibility. If leaving would remove the last member with Team role `owner`,
 the operation is refused until the existing ownership-transfer workflow is
-complete. Project ownership does not satisfy or bypass this guard. Keep the
-existing `team.leave` Native review tier and authoritative last-owner check.
+complete. Project ownership does not satisfy or bypass this guard. The current
+`team.leave` action uses Native review, but that approval cannot authorize the
+Step-up deletion of an owned Workspace Project.
 
-For each Workspace Project the departing member owns, their own Desktop copies
-the authorized records back to their Personal Project idempotently; the Team
-Backend never writes another backend's Personal database. Remove those scoped
-Team records only after copy-back succeeds and Team version and authority are
-revalidated. If this removes the Workspace Project, the Team Backend first
-commits the shared-Project tombstone, invalidates Project links, freezes every
-affected grant and attached continuous source-access frontier, and stops
-accepting Project progress. It also disables Project-scoped job dispatch. This
-authoritative cleanup does not wait for other members' Desktops and does not
-write to their Personal databases. On reconciliation, each member's own
-Desktop detaches their Conversations to Just me and pauses their own Project
-Scheduled Jobs before using the shared Project again. Project-scoped jobs fail
-closed when the Workspace Project is tombstoned or lifecycle authority cannot
-be confirmed. The Workspace itself is not archived and grants are not revoked;
-remaining members retain already-published Team Memory under existing
-authorization.
+In the target flow, the Team Backend derives the complete set of Workspace
+Projects currently owned by the departing member. If the set is empty, ordinary
+leave remains Native review. If the set is non-empty, the exact `team.leave`
+operation escalates to Step-up before any copy-back, tombstone, or destructive
+change. The browser review binds the Team and exact membership version, the
+complete owned-Project ID/version set, and every associated copy-back,
+tombstone, and removal effect. The Backend checks last-owner eligibility first,
+then rechecks membership, ownership, the complete set and versions, and current
+authority when consuming approval. A changed membership, ownership, Project
+set, version, or authority invalidates the approval. Return a conflict and
+require a new exact review; do not retry or begin copy-back under stale
+authority. This conditional Step-up approval does not grant wildcard Project
+authority.
+
+After exact authorization, the departing member's own Desktop copies their
+authorized records from each Workspace Project they own back to their Personal
+Project, idempotently. The Team Backend never writes another backend's Personal
+database. Only after copy-back succeeds and Team version and authority are
+revalidated may the Backend remove the member's Project link and scoped Team
+metadata. Previously published Team representations are retained under their
+grants for other authorized members.
+
+For every Workspace Project linked to the departing member, including Projects
+they do not own, the Team Backend invalidates only that member's Project link,
+freezes their affected grants and attached continuous source-access frontiers,
+stops accepting their Project progress, and denies dispatch of that member's
+Project-scoped Scheduled Jobs. These authority changes do not wait for the
+member's Desktop and do not write to any Personal database. On reconciliation,
+the departing member's own Desktop detaches their own Conversations to Just me
+and pauses their own Project Scheduled Jobs before using a linked Project
+again. Other members retain published material under existing authorization
+and keep their own links, grants, progress, and jobs unless an owned Project is
+tombstoned.
+
+If an owned Project is removed, the approved operation tombstones that exact
+Workspace Project, freezes all of its affected grants and continuous source
+frontiers, invalidates its remaining Project links, archives its Project
+Thread, and stops accepting all Project progress. It does not archive the
+Workspace or revoke grants; remaining members retain already-published Team
+Memory under existing authorization, while later revisions are excluded. Each
+member's own Desktop detaches their own Conversations to Just me and pauses
+their own Project Scheduled Jobs when it reconciles the authoritative
+Project tombstone, before that member can use the shared Project again. The
+Team operation does not wait for offline Desktops. Project-scoped jobs check
+authoritative lifecycle before dispatch and fail closed if the Project is
+tombstoned or lifecycle authority cannot be confirmed.
 
 After successful copy-back and Workspace Project cleanup, disable the departing
 member's Workspace Access for affected Workspaces, then disable their Team
-Membership last. The existing team.leave Native review remains the outer
-approval; lifecycle freezes are Bundled stages of that exact operation, with
-no separate approval. Leaving has no Undo; return requires a new Team invite.
-
-A failed or interrupted local copy-back, Team cleanup, or authority
-revalidation does not authorize removal of Workspace Project records or
-disablement of Team Membership. Retry the same idempotent operation after
-revalidating version and authority. Do not report leave as complete while
-copy-back or a required Team lifecycle stage is incomplete.
+Membership last. Lifecycle freezes are Bundled stages of the exact authorized
+leave operation and receive no separate approval. Leaving has no Undo; return
+requires a new Team invite. A failed or interrupted copy-back, Team cleanup, or
+authority revalidation does not authorize removal of Workspace Project records
+or Team Membership. Do not report leave as complete while copy-back or a
+required Team lifecycle stage is incomplete.
 
 ### Remove a member from one Project
 
-The Workspace Project owner may remove a member through the Step-up action in
-ADR 0024. It disables only that member's Workspace Access for this Project and
-does not remove global Team Membership. The Team Backend freezes only that
-member's affected grants and attached continuous source-access frontiers at
+The Workspace Project owner may remove a member through the target Step-up
+action in ADR 0024. It disables only that member's Workspace Access for this
+Project and does not remove global Team Membership. The Team Backend freezes
+only that member's affected grants and attached continuous source-access
+frontiers at
 their last published authorized closure, invalidates only that member's
 Workspace Project link, and stops accepting their Project progress. It does not
 write to the member's Personal database. On reconciliation, the member's own
@@ -329,12 +419,13 @@ actually published semantic revision and immutable authorized representation
 closure; unpublished work does not become visible. The Team backend serializes
 the operation against in-flight advancement so one transaction determines the
 pinned boundary. For a Personal command that affects a Team grant, the exact
-source owner explicitly requests each per-grant freeze through Native review
-and waits for it before the Personal command reports completion. A Team
-lifecycle freeze is a Bundled stage only of an exact allowlisted outer Team
-action and inherits that action's target, authority, request binding, and
-approval; callers cannot request the stage independently. It can run while the
-source owner's Desktop is offline.
+source owner explicitly requests each target per-grant freeze through Native
+review and waits for it before the Personal command reports completion. This
+target action is not implemented yet. A Team lifecycle freeze is a Bundled
+stage only of an exact allowlisted outer Team action and inherits that action's
+target, authority, request binding, and approval; callers cannot request the
+stage independently. These target freezes are not implemented yet and can run
+while the source owner's Desktop is offline.
 
 If the grant has attached continuous Conversation Source Access, the same
 atomic operation pins its last authorized sanitized source generation and
@@ -396,7 +487,8 @@ These rules specify behavior, not routes, database columns, or a particular
 API. A Team-authoritative Project lifecycle operation must not claim success
 until the Team Backend has completed its required grant and access changes. A
 Personal command remains a local owner operation; when it affects a Team grant,
-it must wait for the exact owner-authorized freeze or revocation to complete
-before reporting success. Existing code for explicit Share Grants, personal
+it must wait for the exact owner-authorized target freeze or revocation to
+complete before reporting success. The target freeze is not implemented today.
+Existing code for explicit Share Grants, personal
 forgetting, Workspace Access, or source access must not be treated as an
 implementation of the Project Share Policy or its lifecycle freeze.
