@@ -94,6 +94,66 @@ closed.
 | `team.legal_hold.release_request`          | Step-up                                                                                                        |
 | `team.legal_hold.release_confirm`          | Separate Step-up decision                                                                                      |
 
+## Intended Project Sharing and Lifecycle Action Matrix (Implementation Pending)
+
+The following exact allowlisted action names and tiers are the target contract
+for Project sharing and lifecycle work. They do not mean that the actions,
+endpoints, or APIs exist today. As with the accepted matrix above, the Team
+Backend selects the tier from the allowlisted action and authoritative state;
+callers cannot select or downgrade a tier. Bind every request to the exact
+User, source owner, Team, Workspace, resource identity, destination when
+present, expected version, request hash, idempotency key, expiry, and
+single-use authority.
+
+Local Personal Project and Conversation commands are not Team actions. Their
+owner controls them locally and does not need Team enrollment or browser
+approval. If a local command affects existing Team grants, it must obtain the
+source owner's separate approval for each required exact-grant freeze through
+`shared_memory.grant.freeze` and wait for those Team operations before reporting
+completion. It cannot invoke or impersonate a Team lifecycle action.
+
+| Exact action                           | Tier          | Authority and effect boundary                                                                                                                                                                                |
+| -------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workspace_project.delete`             | Step-up       | Exact Workspace Project owner with current Team membership and Workspace authority; delete shared Project metadata without archiving its Workspace or revoking grants.                                       |
+| `workspace_project.member_remove`      | Step-up       | Workspace Project owner with current Team membership and Workspace authority; disable only the named member's access to this Project, never global Team Membership.                                          |
+| `workspace_project.leave`              | Step-up       | Self-service only for a current member with Workspace Project access; disable only the caller's access and freeze only their affected grants. It does not change Team Membership or another member's access. |
+| `project_source.team_metadata.delete`  | Step-up       | Source uploader or Workspace Project owner with current authority; delete Team metadata only, not the owner's Personal Note content.                                                                         |
+| `shared_memory.grant.freeze`           | Native review | Exact source owner and one exact Share Grant; pin published authorization without revoking the grant or changing consent.                                                                                    |
+| `project.lifecycle.freeze_grant`       | Bundled stage | Backend-only substage of the exact outer lifecycle action; inherits its target, authority, request binding, and approval. It cannot be requested as a standalone action.                                     |
+| `workspace_project.restore`            | Direct        | Only the Workspace Project owner with current Team membership and Workspace authority; restores Team metadata only and does not restore another User's Personal records or resume grants.                    |
+| `project_source.team_metadata.restore` | Direct        | Source uploader or Workspace Project owner with current authority; restores Team metadata only. Personal Note content remains restorable only by its owner.                                                  |
+
+### Target initial Curated Memory approval (Implementation Pending)
+
+The accepted matrix above records current `shared_memory.pending_share`
+behavior. Before the redesign's Curated-sharing policy ships, strengthen
+initial `shared_memory.pending_share` tier selection. The target tier is Native
+review for derived representations that do not enable Curated Memory, and
+Step-up when the initial Pending Share enables `curated_assertions` or shares
+raw `memory_events`. Every initial Curated activation requires its own
+disclosure and Step-up; Full access does not bypass the requirement. This is a
+target contract, not a claim that this policy is already implemented.
+
+`project.lifecycle.freeze_grant` is permitted only inside an exact parent
+operation such as `workspace_project.delete`,
+`workspace_project.member_remove`, `workspace_project.leave`,
+`project_source.team_metadata.delete`, `team.leave`, `team.member.disable`, or
+the Step-up `team.workspace.access_update` path that disables access. The last
+of these remains for an authorized workspace manager; self-service Project
+leave uses `workspace_project.leave`. A lifecycle freeze runs only as a
+Team-authoritative stage. It receives no independent approval because it is a
+required stage of that already approved operation. Its freeze remains
+grant-specific and cannot change an unrelated Share Grant or Cross-Identity
+Sync relationship.
+
+This target matrix does not change the existing `team.leave` Native review tier
+or its authoritative last-Team-owner guard. It also does not weaken
+`team.workspace.access_update`: access expansion or disablement remains
+Step-up. Workspace restoration, Team membership, invitations, and Team-governed
+access recovery continue to use the existing Team actions and authority checks;
+a Project owner cannot restore Team membership or another User's Personal
+resource.
+
 The representation fidelity order is `lcm_rollups`, `lcm_leaves`, then
 `memory_events`. Unknown actions, missing current state needed for a conditional
 tier, and attempts to invoke Bundled stages outside their accepted workflow
