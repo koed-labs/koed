@@ -6,11 +6,6 @@ Status: Accepted.
 
 Supersedes: [0002 Deferred Multi-User Memory Access](./0002-defer-multi-user-memory-access.md).
 
-Related decisions:
-
-- [0057 Project-Backed Workspaces And Project Share Policy](./0057-project-backed-workspaces-and-project-share-policy.md)
-- [Project-sharing lifecycle](../project-sharing-lifecycle.md)
-
 ## Context
 
 Koed's first self-hosted boundary was personal-memory only. Multi-user memory
