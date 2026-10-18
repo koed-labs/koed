@@ -75,23 +75,58 @@ the Bundled stage; a changed or ambiguous existing mapping receives no
 inherited authority and requires a fresh source/share decision. Authority is
 not migrated automatically.
 
-The policy does not create a Conversation grant type. Each policy-created Share
+The policy does not create a Conversation grant type. Each resulting Share
 Grant binds to one exact, owner-owned Captured Session. When the owner enables
-the policy, the owner's trusted local edge builds a bounded manifest from
-authoritative local capture and Project state for the currently eligible
+the policy, the owner's trusted local edge builds a bounded candidate manifest
+from authoritative local capture and Project state for currently eligible
 Captured Sessions whose Conversations are already associated with the exact
-shared Project. Native review binds consent to that manifest. It contains each
-exact Session ID, source revision, trusted Conversation-to-session mapping
-revision, and approved summary scope. The renderer cannot supply or alter the
-authoritative set. The Team Backend validates authenticated source-owner/device
-provenance, exact Project link, current policy scope, and source/mapping
-versions; the remote Team Backend never reads the owner's Personal database.
-It creates one Share Grant per Session through the backend-only Bundled
-`shared_memory.project_share_policy.apply_session_grant` stage, with a fresh
-one-use backend authority for that exact Session and scope. If the initial set
-or any bound source or mapping revision changes before execution, the initial
-batch conflicts and requires new review; it must not widen or backfill a
-different set.
+shared Project. Before Native review binds the issuance set, the Team Backend
+validates authenticated source-owner/device provenance, the exact Project
+link, current policy scope, source/mapping versions, and destination state. It
+excludes any Session whose `(logicalMemoryId, teamWorkspaceId)` destination
+already has a Share Grant row in any lifecycle state or an unresolved Pending
+Share operation. Native review binds consent to the remaining exact Session
+IDs, source revisions, trusted Conversation-to-session mapping revisions, and
+approved summary scope. The renderer cannot supply or alter the candidate or
+filtered set. The remote Team Backend never reads the owner's Personal
+database. Existing destinations are skipped without adopting, mutating, or
+renewing their grant or Pending Share consent; frozen or revoked grants and
+private, moved, or deleted sources cannot be restarted. If an independent
+authorized grant or Pending Share operation wins a race after review, serialize
+against destination uniqueness and skip that destination without failing the
+batch. Retries use the same operation identity and are idempotent. Any source,
+mapping, or policy-scope drift still conflicts and requires new review; the
+initial batch must not widen or backfill a different set.
+
+An unresolved Pending Share includes any operation that can still prepare,
+activate, or retry, including a retryable `failed` or `needs_attention`
+operation. It is not limited to operations selected by the worker's current
+in-flight query. Policy issuance cannot replace or adopt that operation.
+
+The Bundled stage issues a fresh one-use backend authority for each exact
+policy-scoped Pending Share operation; it does not directly insert or publish a
+Share Grant. The trusted owner local edge uses that authority through the
+existing owner-authorized Pending Share preparation and acceptance flow,
+preserving its durable operation/outbox and unavailable Workspace access. The
+source-owner local runtime retains source preparation and owner-private
+relationship work. The existing Team worker resumes the durable Pending Share,
+requires the exact consented source revision, creates the authoritative
+encrypted preview, and materializes the selected Team representation. It does
+not read the owner's Personal database or synthesize Personal records. The
+Team worker does not call an LLM to generate or augment the representation;
+deterministic Team-side materialization and indexing remain part of the
+existing protocol. The representation stays unavailable while staging;
+activation publishes it and activates the Share Grant together only after the
+complete, immutable, authorized, sanitized `lcm_leaves` closure and current
+authority checks pass.
+Missing, partial, or unsanitized content remains unavailable and cannot be
+exposed. Activation rechecks the exact source and Project link, Pending Share
+consent and operation binding, and current lifecycle/freeze state while
+serialized against freeze, delete, private, and leave actions. A freeze or
+tombstone that wins prevents an earlier Pending Share from publishing new
+material; if no revision was previously published, the frozen grant exposes no
+bytes. See [Asynchronous semantic sharing](../self-hosted-to-hosted-sync.md#asynchronous-semantic-sharing)
+for the existing Pending Share and activation protocol.
 
 While the versioned policy remains active, the Team Backend may use the same
 Bundled stage for each newly captured eligible source whose Conversation is
@@ -103,10 +138,15 @@ from the owner's Conversation to that exact Captured Session. It issues and
 consumes a fresh one-use backend authority bound to that one Session, source
 owner, active policy version, and complete scope. This authority is not
 exposed to the renderer and cannot authorize another source, action,
-destination, or later operation. The stage is not a generic reuse of an
-expiring UI Action Grant and does not bypass the existing
-`shared_memory.pending_share` approval. After creation, that exact Share Grant
-and its own consent and lifecycle govern its revision advancement.
+destination, or later operation. Before authorizing a future Session, the
+Backend skips a destination that already has a Share Grant row in any lifecycle
+state or an unresolved Pending Share operation. A concurrent authorized
+operation that wins destination serialization is also skipped, never adopted
+or treated as a batch failure; retries keep the same operation identity. The
+stage is not a generic reuse of an expiring UI Action Grant and does not bypass
+the Pending Share state machine or its safe-activation protocol. After atomic
+activation, that exact Share Grant and its own consent and lifecycle govern its
+revision advancement.
 
 Eligibility comes from authenticated capture and trusted source association,
 not a renderer-supplied path, Project flag, or arbitrary source identifier. The
@@ -143,6 +183,11 @@ revoked grant; a fresh source/share decision is required.
 Implementation must reject attempts to use another member's source, a stale or
 revoked policy version, a changed device/backend/Project scope, a
 renderer-selected source identifier, an ambiguous mapping, or a frozen/revoked
+grant. Existing destination grant rows (including revoked rows) and unresolved
+Pending Share operations must be skipped without changing their consent or
+lifecycle; concurrent destination races must not create duplicates or fail the
+batch. A staged Pending Share remains unavailable unless the complete
+authorized, sanitized `lcm_leaves` closure can be published atomically with the
 grant. A changed initial set or source/mapping revision before execution must
 conflict and require new review, without partial execution or wildcard
 backfill. An existing Conversation moved into the Project after enablement
@@ -257,9 +302,9 @@ implemented.
 - Memory remains owned by each originating User; the Team receives only the
   representation allowed by that User's grant.
 - Existing privacy filtering and Team representation rules in ADR 0049 apply.
-- A Project's policy creates grants with separate revocation and retention
-  lifecycles, rather than one Project-wide grant that would remove
-  per-Conversation control.
+- A Project's policy authorizes separate per-Session grants with independent
+  revocation and retention lifecycles, rather than one Project-wide grant that
+  would remove per-Conversation control.
 - Exact source access, Curated Memory, and semantic summary sharing remain
   separate authority decisions.
 - The Project entity and Team-side Workspace Project are required before this
