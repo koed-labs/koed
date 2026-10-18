@@ -5,6 +5,12 @@ on infrastructure controlled by the operator.
 
 ## Language
 
+**Agent**:
+A named, User-owned persona with optional role and look, bound to one AI Client
+instance and permission defaults. The User's Chief of Staff is the default
+Agent.
+_Avoid_: AI Client, subagent, bot
+
 **AI Client**:
 An external AI tool that produces conversations and may call Koed for capture or recall.
 _Avoid_: MCP server, model provider, assistant
@@ -49,6 +55,11 @@ _Avoid_: Visibility, capture target, pause
 **Capture Target**:
 The activity boundary a capture policy applies to.
 _Avoid_: Capture state, visibility, search domain
+
+**Chief of Staff**:
+The User's default Agent. Each Project has one private HQ Conversation between
+its owner and their Chief of Staff.
+_Avoid_: Team Agent, Project Thread
 
 **Captured Session**:
 Koed's record of memory capture for a conversation.
@@ -95,6 +106,12 @@ _Avoid_: Supported recall path, normal memory tool
 Non-blocking operational information used to inspect Koed behavior.
 _Avoid_: Health gate, setup requirement, authorization rule
 
+**Due Date**:
+The calendar date on which a Work Item is due, with no time of day. Each viewer
+uses their own time zone to decide whether that date is today, tomorrow, or
+overdue; the shared calendar date stays the same.
+_Avoid_: Due time, UTC instant
+
 **Embedding Service**:
 A local service that turns memory text into retrieval vectors.
 _Avoid_: LLM provider, synthesis service, model provider
@@ -102,6 +119,17 @@ _Avoid_: LLM provider, synthesis service, model provider
 **Evidence Bundle**:
 Recalled memory evidence plus citation and retrieval metadata handed to an AI client for synthesis.
 _Avoid_: Answer, summary, search result
+
+**Flashcard Deck**:
+A Project artefact containing question-and-answer cards. Each User's study
+progress belongs to that User, even when the Deck is shared.
+_Avoid_: Shared study progress, Memory Event
+
+**HQ Conversation**:
+The private Conversation between a Project's owner and their Chief of Staff.
+Each User has their own HQ Conversation; the Project Share Policy does not
+share it.
+_Avoid_: Project Thread, shared Conversation
 
 **Koed**:
 The Apache-2.0-licensed Koed distribution for operator-managed memory
@@ -192,9 +220,30 @@ background-service activity.
 _Avoid_: Agent status, read receipt, exact activity log
 
 **Project**:
-A local AI-client or code context such as a repository, working directory,
-filepath, ref, branch, or cwd.
-_Avoid_: Workspace, stable shared memory ID
+A User-owned container for that User's Conversations, sources, and work, with
+an optional folder. A local code context such as a repository, working
+directory, filepath, ref, branch, or cwd may resolve to a Project.
+_Avoid_: Workspace Project, repository context alone
+
+**Project Share Policy**:
+For each member, the policy shares summary representations of that member's
+eligible Conversations through exact Captured Session Share Grants in a shared
+Project. It excludes that member's HQ and private Conversations. It never
+creates Conversation Source Access, grants another User's sources, or
+automatically shares Project Source Note revisions, which require separate
+explicit grants.
+_Avoid_: Project-wide grant, automatic Conversation Source Access
+
+**Project Source**:
+A document, folder, or repository attached to a Project as input material. Its
+Team-side metadata and the uploader's Personal source content are separate
+records with separate ownership and lifecycle.
+_Avoid_: Conversation, Team-owned source content
+
+**Project Thread**:
+A human-only Team Chat Thread bound to a Workspace Project. Its messages are
+not Memory and are not Agent input.
+_Avoid_: Conversation, Captured Session, agent thread
 
 **Projection**:
 The transformation from captured source activity into Koed semantic memory
@@ -208,6 +257,20 @@ _Avoid_: Synthesis, answer generation, summarization
 **Retrieval Scope**:
 The caller's choice of which visible memory classes recall may search.
 _Avoid_: Visibility, search domain, access level
+
+**Just me**:
+A private Project or Conversation label in the interface. It is not a Memory
+assertion scope and does not set an assertion to Me scope.
+_Avoid_: Me-scoped assertion, Team membership state
+
+**Me assertion scope**:
+The classification for a Personal Memory assertion that is not limited to one
+Project. It is distinct from the **Just me** interface label.
+_Avoid_: Project context, private Conversation label
+
+**Scheduled Job**:
+A recurring instruction run by an Agent on a schedule, with run history.
+_Avoid_: Project Thread, background capture
 
 **Search Domain**:
 The boundary that limits recall to one session, the current Project or resolved
@@ -324,6 +387,17 @@ _Avoid_: Project metadata, Team membership, API token permission
 The Soft Delete state for a Workspace.
 _Avoid_: Share revocation, Access Suspension, Project removal
 
+**Workspace Project**:
+The Team-side collaboration identity for a shared Project. It is linked to
+participating Users' own Projects and is bound to one Workspace. It does not
+own those Users' Conversations, Project Sources, or Personal Memory.
+_Avoid_: Personal Project, Workspace, Team-owned memory
+
+**Work Item**:
+A to-do or ticket belonging to a Project, with a status and optional Agent,
+Due Date, or pull request link.
+_Avoid_: Team Chat Message, Project Source
+
 ## Relationships
 
 - **Koed** is operated by one **Operator**
@@ -336,8 +410,13 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **User** may have **Team Membership** in zero or more **Teams**
 - A **Team** may have one or more **Workspaces**
 - A **Workspace** has one stable shared ID for memories
+- A **Workspace Project** belongs to one **Team** and one dedicated
+  **Workspace**
+- A participating **User** links their own **Project** to a **Workspace
+  Project**; this does not merge or transfer ownership of that **Project**
 - A **User** may have **Workspace Access** through a **Team**
-- A **Project** may resolve to one **Workspace**
+- A local **Project** may resolve to a **Workspace** for recall, but that
+  mapping does not create a **Workspace Project** or a **Share Grant**
 - **Cross-Identity Sync** keeps one logical memory lifespan available across
   identities or deployments without creating a fork
 - **Fork/Import** creates a separate memory lifespan only when explicitly
@@ -351,6 +430,22 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A local **API Token** or **Remote MCP Grant** authorizes the **Local AI Runtime** to work against its configured backend without conferring **Team Membership** or **Workspace Access**
 - A **Remote MCP Grant** may delegate Team recall only within the owning **User's** current **Team Membership**, **Workspace Access**, and active **Share Grants**
 - A **Project** may provide local context for zero or more **Conversations**
+- Each **Project** belongs to one **User** and may contain that User's
+  **Conversations**, **Project Sources**, **Work Items**, **Flashcard Decks**,
+  and **Scheduled Jobs**
+- An **HQ Conversation** belongs to one **Project** and is excluded from its
+  **Project Share Policy**
+- A **Project Source** belongs to a **Project** and has an owning **User**
+- A **Workspace Project** may link participating Users' **Projects** without
+  merging their personal records or ownership
+- The Workspace Project's owner binding represents the corresponding Project
+  owner's Team identity for Project-scoped actions; it does not change that
+  member's Team role
+- **Work Items**, shared source metadata, **Flashcard Decks**, and a **Project
+  Thread** may belong to a **Workspace Project**; each User's Personal Memory
+  and study progress remain personal
+- A **Project Thread** is a **Team Chat Thread** and its messages are never
+  **Memory** or **Agent** input under the current policy
 - An **AI Client** produces one or more **Conversations**
 - A **Supported AI Client Integration** requires one **Transcript Watcher** for automatic capture correctness
 - A **Supported AI Client Integration** uses one **Supported Capture Hook** for low-latency signals and completion evidence
@@ -364,6 +459,9 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Supported Capture Hook** may wake the **Transcript Watcher** without providing transcript content
 - Missing, duplicate, delayed, or reordered **Supported Capture Hook** signals do not create capture gaps or duplicate **Memory Events**
 - A **Transcript Watcher** may create a **Captured Session**
+- A **Share Grant** authorizes one exact supported, user-owned source identity;
+  a **Conversation** may resolve context to a **Captured Session**, but a
+  **Conversation** is not itself a grantable source
 - A **Captured Session Checkpoint** preserves the source identity of one **Captured Session**
 - A receiving Personal device may inspect a **Captured Session Checkpoint** but does not gain authority to edit or resume the originating **Conversation**
 - An **Embedding Service** supports **Recall**
@@ -373,7 +471,7 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - An **AI Client** performs **Synthesis** from recalled evidence
 - **Personal Memory** belongs to exactly one **User**
 - **Team-shared Memory** remains owned by the originating **User**
-- A **Share Grant** makes one user-owned memory source recallable to one
+- A **Share Grant** makes one exact user-owned memory source recallable to one
   **Team** in one **Workspace**; the first implemented source is a
   **Captured Session**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
@@ -416,8 +514,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 > **Dev:** "Does **Memory Answer** mean the backend generated the final answer?"
 > **Domain expert:** "No — **Memory Answer** is the supported recall entry point; **Answer Synthesis** belongs to the **AI Client**."
 
-> **Dev:** "Can we use the local repo path as the Team memory boundary?"
-> **Domain expert:** "No — a **Project** is local context. **Workspace** is the stable shared ID for memories."
+> **Dev:** "Does a **Project** become the Team's shared container when linked?"
+> **Domain expert:** "No — each **Project** remains user-owned. A distinct **Workspace Project** links participating Projects to one **Workspace**."
 
 > **Dev:** "Does sharing a session move it into Team ownership?"
 > **Domain expert:** "No — **Team-shared Memory** remains user-owned and is recallable through a **Share Grant**."
@@ -436,9 +534,11 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - "ask" in a **Capture Policy** can sound like a backend prompt; resolved: it blocks automatic capture unless an AI client implements the consent step.
 - "visibility" and "scope" are easy to conflate; resolved: **Personal Memory** describes stored memory visibility, while **Retrieval Scope** describes a recall request.
 - "global" can sound like all stored memory; resolved: a global **Search Domain** still only searches memory visible under the selected **Retrieval Scope**.
-- "project" and "workspace" are easy to conflate; resolved: **Project** is
-  local AI-client/code context, while **Workspace** is the stable shared ID for
-  memories.
+- "project" and "workspace" are easy to conflate; resolved: a **Project** is
+  a User-owned container, a **Workspace Project** is its Team-side
+  collaboration identity, and a **Workspace** is the stable shared ID for
+  memories. A local code context may resolve to a Project but does not create
+  the Workspace Project or transfer Project ownership.
 - "team memory" can sound like the Team owns the memory; resolved:
   **Team-shared Memory** remains owned by the originating **User** and is
   accessed through a **Share Grant**.
