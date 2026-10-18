@@ -147,6 +147,14 @@ Team Chat Threads express their scope and kind directly.
 | Group direct message      | Team     | no    | yes  | no        | immutable enabled member set   |
 | Shared-session discussion | Team     | no    | yes  | yes       | current shared-source audience |
 
+The accepted **Project Thread** target is a human-only **Team Chat Thread**
+bound to a **Workspace Project** in its backing **Workspace**; this binding is
+not implemented yet. Under the current policy in [ADR
+0013](./adr/0013-team-collaboration-authority.md), Team Chat messages never
+become **Memory** or **Agent** input, and Agents do not read them for HQ
+catch-up. Any later opt-in policy that changes these boundaries requires a new
+ADR.
+
 The data model enforces valid scope combinations and durable identity:
 
 - unique active normalized Personal-channel names per owner;
