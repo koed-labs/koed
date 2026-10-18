@@ -26,6 +26,14 @@ enables membership and initial Workspace Access. Outside the isolated
 developer profile, Team administration requires a current verified external
 identity. An enrolled-device path also requires the exact one-use Action Grant.
 
+Private-VPS hosting is a location, not an identity profile. A Team backend
+hosted there can use the existing `team_self_hosted` deployment profile with
+operator-configured WorkOS/AuthKit, as described in
+[Configuration](../configuration.md). The literal `private_vps` profile remains
+local-session-only and fails closed for verified-Team invitation operations.
+This does not add an identity provider or change D5's Koed-hosted-cloud
+default.
+
 The redesign adds an in-app Accept / Decline card in Desktop. It must not turn
 an invite ID into a bearer credential, reveal other people's invitations, or
 replace the existing email, backend, expiry, identity, device, or action
@@ -155,21 +163,28 @@ use timestamps as the authority boundary.
 At invitation creation, resolve the addressed User from normalized email. For a
 known User, immutably bind the exact recipient User ID and current generation.
 If a membership row is disabled, also capture its exact version/status/reason;
-that issuance snapshot is required for `member_left` rejoin. For a known User
-with no membership row, bind the authoritative no-row state and generation zero
-only when the backend establishes no prior leave; otherwise fail closed. An
-unknown recipient retains the existing unbound first-invite flow. For an
-enabled row without an issuance-time disabled-row snapshot, capture the
-current exact membership version/status/reason at review. The renderer cannot
-supply or change these bindings; changing an issuance binding requires
-revocation and a new invite.
+that immutable issuance snapshot is required for `member_left` rejoin and can
+never be refreshed. For a known User with no membership row, establish row
+absence and no prior leave, then bind the User ID and generation zero; the exact
+current row state or absence is bound at fresh review, not as an immutable
+issuance snapshot. An unknown recipient retains the
+existing unbound first-invite flow. Existing enabled-member invitations follow
+the current enabled-membership rules and require no immutable membership
+issuance snapshot. For an existing enabled row, capture its current exact
+version/status/reason at review. The renderer cannot supply or change the
+immutable issuance bindings; changing one requires revocation and a new invite.
 
-Native review and acceptance bind and recheck the exact invite version,
-authenticated recipient, current generation, and membership state. For an
-existing row, state means exact version/status/reason; for no row, it means the
-authoritative absence of a row. The enrolled one-use review binds this state to
-the approved operation, and acceptance must still match. Copied-link acceptance
-keeps its fresh-session requirement and checks the same state atomically.
+At each fresh Native review, bind the exact invite version, authenticated
+recipient, current generation, and current membership state. For an existing
+row, that state is its exact version/status/reason; for no row, it is
+authoritative row absence. Acceptance must recheck the same review-time state
+under serialization. If membership changes after review, fail closed and require
+a new review without rewriting the invitation's immutable bindings. If another
+same-Team invitation enables this never-left User first, a pending invitation
+for a different Workspace may be reviewed against the current enabled row at
+generation zero under existing rules; the earlier no-row state is not a stale
+issuance snapshot. Copied-link acceptance keeps its fresh-session requirement
+and checks the exact current state atomically.
 
 A `member_left` rejoin requires the invite's bound User ID and generation to
 match the authenticated recipient and current generation, plus its issuance
@@ -180,8 +195,11 @@ a stale snapshot with fresh review state. Thus, another invite captured against
 the prior disabled version cannot restore old access after one invite succeeds.
 Legacy or unbound invites cannot reactivate `member_left` or be used after the
 leave generation advances, including for an enabled membership after rejoin.
-The generation also blocks an old-email invite if the User changes email away
-and back. A legacy first invite remains usable only when the recipient's
+A pre-leave invitation becomes stale when a successful leave advances the
+generation, even if the User later changes email away from and back to the
+invited address. An email change without a successful leave does not advance
+the generation or independently invalidate an otherwise-current email-bound
+invitation. A legacy first invite remains usable only when the recipient's
 lifecycle is established as never-left.
 
 HQ-704 must atomically revoke still-pending invitations in the exact Team whose
@@ -207,14 +225,27 @@ HQ-703 must ship generation storage/backfill, the successful-leave increment,
 and invite binding/review/acceptance enforcement as one deployable security
 change. Do not enable the `member_left` exception or issue generation-bound
 invites while any leave path can commit without advancing the generation.
-Existing unbound invites remain compatible only for established first-time,
-never-left membership; fail closed when generation is positive or prior leave
-cannot be ruled out. HQ-704 adds the required same-Team invalidation and broader
-leave lifecycle on top, preserving atomic generation updates and serialization.
+Existing unbound unknown-recipient or legacy invites remain compatible only
+when the authoritative membership lifecycle establishes generation zero and no
+prior leave. For an enabled member, preserve the existing enabled-membership
+acceptance rules and validate every issuance binding that is present; absence of
+an immutable enabled-row snapshot alone does not invalidate the invitation.
+For a known User with no row at invitation creation, establish no prior leave
+and bind the User ID and generation zero; at fresh review, bind the exact
+current row state or authoritative absence, not creation-time absence as an
+immutable issuance snapshot. If another same-Team invitation enables this
+never-left User first, existing enabled-member rules apply to the pending
+invitation at generation zero. Fail closed when generation is positive or prior
+leave cannot be ruled out. HQ-704 adds the required same-Team
+invalidation and broader leave lifecycle on top, preserving atomic generation
+updates and serialization.
 Regression coverage groups backfill and failed-leave behavior, exact
 recipient/generation/snapshot matching, manager/User-disabled rejection,
-legacy and old-email stale invites, same-Team-only cleanup, create/accept/leave
-races, and absence of partial membership or access changes.
+legacy invites and pre-leave old-email invites after a successful leave and
+an address change away and back, two same-Team/different-Workspace first
+invites without leave, membership creation between review and consumption with
+a required new review, same-Team-only cleanup, create/accept/leave races, and
+absence of partial membership or access changes.
 
 ### Decline as a versioned recipient decision
 
@@ -231,7 +262,22 @@ or production Team deployments.
 
 The backend binds the action to the exact invitation, current recipient,
 backend, and expected version; it does not create membership or Workspace
-Access. The current `team.invite.accept` action uses Native review. The target
+Access. Before decline, it also confirms the invitation's recipient is the
+enabled, non-deleted authenticated Koed User and that the User's current
+normalized email and backend match the invitation. It rechecks any D9
+generation or issuance-time membership state bound to the invitation, as for
+discovery and acceptance. Validate any immutable D9 issuance binding when
+present; it is not replaced with fresh review state. At review, bind the exact
+current membership row state or authoritative row absence, and require that
+state at consumption. A membership change requires a fresh review. Permit an
+unbound unknown-recipient or legacy invite only when authoritative current
+lifecycle establishes never-left (`generation = 0`), including enabled-member
+cases under existing rules. For an invite created when no row existed, bind the exact current row state at
+review: if still absent, bind authoritative absence; if another invitation has
+enabled the User at generation zero, apply existing enabled-member rules.
+Otherwise fail closed. Do not fabricate an issuance or membership-row snapshot. No Team Membership is required to
+decline.
+The current `team.invite.accept` action uses Native review. The target
 `team.invite.decline` contract in the implementation-pending section of ADR
 0024 also uses Native review. The Team Backend derives the recipient from the
 current authenticated Koed User and binds approval and execution to that exact

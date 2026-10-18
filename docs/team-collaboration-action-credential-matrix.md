@@ -37,6 +37,7 @@ Every matrix row names one of these behaviors.
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FC-P`      | Require the current local Personal owner for the exact thread or source. Reject missing identity with `401`, wrong owner/scope with `403`, and return no remote fallback or cross-User data.                                                                                                                                                                                             |
 | `FC-TR`     | Require a valid `BS` or correctly scoped `UDC`, then re-evaluate enabled Team Membership and the exact Team/thread/Workspace/participant or Share Grant predicates before selection and decrypt. Reject `PAT`, wrong operation family, path substitution, stale lifecycle, and inaccessible resources with `403` and no protected DTO.                                                   |
+| `FC-INV`    | Use the authenticated recipient; validate invite identity, backend, status, expiry, version, and lifecycle. No Team Membership or role is needed for own invitations. Return no token or unrelated data; reject caller filters and stale requests.                                                                                                                                       |
 | `FC-TW`     | Apply `FC-TR` plus current write authority, input bounds, idempotency, optimistic version, rate limits, and transactional outbox. Reject stale version or idempotency conflict with `409`; encryption or outbox failure aborts the write.                                                                                                                                                |
 | `FC-SA`     | Require the Personal source owner, exact enrolled identity link, exact preview/consent/policy binding, current Workspace share authority, and an explicit representation intersection. Reject drift, fallback fidelity, wrong owner, missing policy, or invalid authority before materialization or disclosure.                                                                          |
 | `FC-ADM`    | Require current server-side role/capability checks and either fresh `BS` or a valid scoped `UDC` plus exact one-use `AG` where stated. Reject absent, expired, replayed, wrong-device, wrong-backend, wrong-Team, wrong-action, or request-hash-mismatched grants with `403`; reject stale versions with `409`.                                                                          |
@@ -51,8 +52,9 @@ Every matrix row names one of these behaviors.
 ## HTTP Operations
 
 Every listed route is implemented unless its row explicitly identifies a
-restricted transitional lifecycle route. The state column describes ownership
-of the operation; it does not relax any credential or authorization predicate.
+restricted transitional lifecycle route or marks a target as implementation
+pending. The state column describes ownership of the operation; it does not
+relax any credential or authorization predicate.
 
 ### Personal Collaboration
 
@@ -157,6 +159,7 @@ Asynchronous additions retain the same credential boundary:
 | `GET /v1/teams/:teamId/invites`                     | Current target                           | `BS`; `UDC(team_workspace_read)`                            | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | No                                                       | Current management role; never return reusable credential material beyond the one-time creation response.                                                                                                                      | `FC-TR`     |
 | `POST /v1/teams/:teamId/invites`                    | Current target                           | Fresh `BS`; `UDC(action_grant)` plus `AG`                   | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | Exact `team.invite.create` confirmation                  | Current role, invite limits, destination Workspace, backend origin, normalized email, expiry, and one-time token handling.                                                                                                     | `FC-ADM`    |
 | `DELETE /v1/teams/:teamId/invites/:inviteId`        | Current target                           | Fresh `BS`; `UDC(action_grant)` plus `AG`                   | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | Exact `team.invite.revoke` confirmation                  | Exact Team/invite binding and expected version; replay is rejected.                                                                                                                                                            | `FC-ADM`    |
+| `GET /v1/team-invites/mine`                         | Target (Implementation Pending)          | `UDC(team_workspace_read)`                                  | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | No                                                       | Authenticated recipient only; no caller filters or membership requirement. ADR 0060 defines identity/backend/lifecycle checks and display-safe response; listing grants no Team access.                                        | `FC-INV`    |
 | `POST /v1/team-invites/accept`                      | Current target                           | Fresh verified `BS`; verified `UDC(action_grant)` plus `AG` | `PAT`, `LEC`, unverified local session, direct `RT` HTTP     | Remote    | Explicit invite token and exact device grant for `UDC`   | Bind token hash, verified provider identity and email, backend origin, expiry, and expected version. Outside the isolated developer profile, local session auth plus token possession alone never creates Team authority.      | `FC-ADM`    |
 | `GET /v1/teams/:teamId/audit-events`                | Current target                           | `BS`; `UDC(team_workspace_read)`                            | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | No                                                       | Current audit-view authority; return content-safe records only.                                                                                                                                                                | `FC-TR`     |
 | `GET /v1/teams/:teamId/entitlement`                 | Current target                           | `BS`; `UDC(team_workspace_read)`                            | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | No                                                       | Current authorized Team management view; entitlement still gates other operations server-side.                                                                                                                                 | `FC-TR`     |
@@ -172,6 +175,9 @@ Asynchronous additions retain the same credential boundary:
 | `POST /v1/team-workspaces/:teamWorkspaceId/archive` | Current target                           | Fresh `BS`; `UDC(action_grant)` plus `AG`                   | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | Exact `team.workspace.archive` confirmation              | Resolve Team from authorized Workspace, then require role, expected version, and retained archive semantics.                                                                                                                   | `FC-ADM`    |
 | `POST /v1/team-workspaces/:teamWorkspaceId/restore` | Current target                           | Fresh `BS`; `UDC(action_grant)` plus `AG`                   | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | Exact `team.workspace.restore` confirmation              | Resolve Team from authorized Workspace and restore only at expected version.                                                                                                                                                   | `FC-ADM`    |
 | `PUT /v1/team-workspaces/:teamWorkspaceId/access`   | Current target                           | Fresh `BS`; `UDC(action_grant)` plus `AG`                   | `PAT`, `LEC`, direct `RT` HTTP                               | Remote    | Exact `team.workspace.access_update` confirmation        | Current management role, target User membership, Workspace/Team binding, expected version, and independent `workspace.memory.share_owned` value.                                                                               | `FC-ADM`    |
+
+The current `POST /v1/team-invites/accept` token route is distinct from the
+target ID/version recipient action defined below.
 
 ### High-Risk Confirmation And Retention
 
@@ -234,6 +240,50 @@ an exact Action Grant. No renderer-facing route accepts an arbitrary upstream
 method/path/body tuple. Any future control must extend this matrix and its
 exact schema, credential, server-authority, and failure contract before it is
 exposed.
+
+### Target In-App Invitation Decisions (Implementation Pending)
+
+The target ID/version recipient actions below are defined in [ADR
+0060](./adr/0060-in-app-team-invites.md). Their approval tier follows the exact
+action registration in [ADR 0024](./adr/0024-tiered-desktop-action-approval.md):
+`UDC(action_grant)` mediates an `AG` issued after the exact Native review
+assigned to these actions. This narrow target rule does not change the general
+`AG` boundary; browser Step-up or fresh-`BS` remains required for actions
+assigned those paths. It does not claim these actions or endpoints are
+implemented.
+
+For this inbox and both decisions, resolve the recipient only from the exact
+authenticated Koed User ID and any immutable recipient User binding on the
+invite. Require the matching backend and current normalized Koed email to
+match the invitation's normalized recipient email. Outside the isolated
+`developer` profile, require a currently verified WorkOS/AuthKit identity in
+that backend's configured provider environment, with its verified normalized
+email matching the same User and invitation. That profile keeps only its
+existing local-auth exception; the email match still applies. Deny disabled or
+deleted Users. Check Team and Workspace eligibility and every bound D9
+generation and issuance-time membership state that is present before
+returning or deciding an invite. For a known User with no row at invitation creation, establish no prior leave
+and bind User ID and generation zero only; at fresh review bind the exact
+current row state or authoritative absence, not creation-time absence as an
+immutable issuance snapshot. If another same-Team invitation enables the User
+first, existing enabled-member rules apply to the pending invitation at
+generation zero. Consumption must match the exact review-time state, and a
+concurrent membership change requires a new review without rewriting the invite.
+A disabled-row issuance snapshot remains mandatory for `member_left` rejoin and
+is never refreshed. An unbound unknown-recipient or legacy invite is allowed
+only when authoritative current lifecycle establishes never-left (generation zero); preserve existing enabled-member rules. If the row remains absent at review, bind and check authoritative absence;
+if another invitation has enabled the User at generation zero, apply existing
+enabled-member rules. Otherwise fail closed. Do not fabricate an issuance or
+membership-row snapshot. No enabled Team Membership or role is
+required to review or decide the recipient's own invitation. Discovery and decisions return only recipient-bound display-safe
+invitation data, never tokens or roster; the inbox accepts no caller-supplied
+recipient filters. Any binding or state drift fails closed and requires an
+authoritative refresh.
+
+| Operation                                           | State                           | Allowed                             | Denied                         | Authority | High-risk or consent | Authorization notes                                                                                                                                                                                                                                                                                                                                               | Fail closed |
+| --------------------------------------------------- | ------------------------------- | ----------------------------------- | ------------------------------ | --------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `team.invite.accept` (exact invite ID and version)  | Target (Implementation Pending) | `UDC(action_grant)` plus exact `AG` | `PAT`, `LEC`, direct `RT` HTTP | Remote    | Exact Native review  | Bind the current authenticated recipient identity, normalized email, backend, pending invite, expiry, and expected version. No prior Team Membership or role is required. Recheck Team, Workspace, generation, the exact review-time membership state, and any immutable disabled-row issuance snapshot atomically before granting access; ID is a selector only. | `FC-INV`    |
+| `team.invite.decline` (exact invite ID and version) | Target (Implementation Pending) | `UDC(action_grant)` plus exact `AG` | `PAT`, `LEC`, direct `RT` HTTP | Remote    | Exact Native review  | Bind the current authenticated recipient identity, normalized email, backend, pending invite, expiry, and expected version. No Team Membership or role is required. Decline changes only the invitation state and grants no Team Membership or Workspace Access; ID is a selector only.                                                                           | `FC-INV`    |
 
 ## Electron IPC Commands
 
