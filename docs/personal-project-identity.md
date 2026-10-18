@@ -10,7 +10,8 @@ implemented.
 
 A Personal Project is a User-owned container for Conversations, sources, and
 work. It can have an optional folder and can exist without a repository or
-Conversation. A code context may resolve to a Personal Project, but a path,
+ordinary Conversation; its logical HQ Conversation is created on first open.
+A code context may resolve to a Personal Project, but a path,
 branch, commit, or remote URL is not the Project's durable identity.
 Project names need not be unique; the short ticket key is unique per owner.
 
@@ -29,11 +30,19 @@ records a salted common-directory hash so the device can recognize worktrees
 that belong to the same local Git repository. That hash is a local matching
 signal; it does not identify a repository across devices.
 
-Current and historical remote aliases are non-authoritative matching signals.
-They do not change the local Project ID, link a Team Workspace, or authorize
-Team access. The separate `KOED_HOME/config/project-team-workspaces.json`
-configuration supplies explicit MCP recall routing; it does not create a
-shared Project or grant Team access. See [Team Workspace Project mapping](./team-workspace-project-mapping.md).
+Outside PDS V1's paired-device alias rule, current and historical remote
+aliases are non-authoritative matching signals. They do not change the local
+Project ID, link a Team Workspace, or authorize Team access. PDS V1 separately
+allows authenticated paired Personal devices to use keyed canonical-remote
+tokens for local Project grouping/search under [§9 of the PDS protocol](./personal-device-sync-protocol.md#9-project-aliases).
+Auto-match requires exactly one token intersection mapping to exactly one
+local Project on each device, with no explicit deny, manual override, or
+competing current or historical token; otherwise the protocol requires User
+confirmation. That match does not create, merge, or assign first-class
+Personal Project records, choose a Workspace, or grant Team access.
+The separate `KOED_HOME/config/project-team-workspaces.json` configuration
+supplies explicit MCP recall routing; it does not create a shared Project or
+grant Team access. See [Team Workspace Project mapping](./team-workspace-project-mapping.md).
 
 Today, session metadata carries automatic Project context and explicit User
 overrides. First-class Personal Project records and their durable local-context
@@ -43,12 +52,21 @@ association are target behavior, not part of current storage.
 
 Each Personal Project has a stable, owner-scoped identity independent of its
 folder and local discovery metadata. A Project may be created for non-code work
-or before it has a folder, local context, or Conversation. Local discovery
+or before it has a folder, local context, or ordinary Conversation. Local discovery
 continues to supply code context; it does not replace the Personal Project
 record.
 
-Preserve an exact existing local-context association. If a context has no
-existing Project candidate, register its Personal Project normally. A verified
+Preserve an exact existing association to an active Personal Project. A context
+already associated with a soft-deleted Project retains that association for
+restore, but the deleted Project is not eligible for new-session assignment.
+Capture continues under the existing Personal Capture Policy; the new Captured
+Session remains in Personal Memory without a first-class Personal Project
+assignment until the User explicitly restores that Project or chooses a new
+one. Do not implicitly
+revive a deleted Project, hide a new Session under it, drop capture, or wait
+for UI before capture. If there is no existing Project candidate and no
+retained association to a soft-deleted Project, register its Personal Project
+normally. A verified
 same-device worktree group reuses one Personal Project, while each context
 keeps its own device-local Project ID. Automatically associating a newly
 discovered linked checkout requires trusted local Git worktree facts and prior
@@ -64,17 +82,21 @@ provenance, multiple possible Project associations, or a remote-only match
 requires one-time User confirmation before suggested reuse or reassignment.
 Persist the choice so the same unresolved association does not prompt again.
 Never guess, silently merge two Personal Projects, or override an existing
-explicit Project assignment. Remote aliases may suggest a match but never
-authorize association by themselves; renaming a remote does not change
-Project identity. If the User declines or an ambiguous match is not confirmed,
+explicit Project assignment. For first-class Personal Project association,
+remote aliases may suggest a match but never authorize association by
+themselves; renaming a remote does not change Project identity. If the User
+declines or an ambiguous match is not confirmed,
 keep the context separate and leave unresolved history for review.
 
 Concurrent first captures in a verified same-device worktree group must
 atomically reuse one Personal Project. Ambiguous association history remains
-for User review rather than being resolved by race order. Multiple devices
-register their own Projects in this release. Do not infer cross-device identity
-from a matching remote URL, project name, path, branch, or commit. Cross-device
-association waits for a separately accepted trusted personal-device policy.
+for User review rather than being resolved by race order. This target adds no
+cross-device Personal Project association or merge. PDS V1's separate,
+authenticated paired-device alias matching uses keyed canonical-remote tokens
+only for local Project grouping/search under §9; it does not establish
+first-class Personal Project identity. Outside that PDS rule, remote URL,
+project name, path, branch, or commit do not establish cross-device Project
+identity.
 
 A non-code Project may have no local discovery context. Adding or changing a
 folder does not change its stable Project identity.
@@ -106,11 +128,11 @@ and the Team backend's current authorization records.
 
 ## HQ Conversation Uniqueness
 
-Each Personal Project has at most one private HQ Conversation. Opening or
-creating it is get-or-create: concurrent first opens return the same
-Conversation. A shared Workspace Project can therefore have a different
-private HQ Conversation for each participating member, through that member's
-Personal Project.
+Each Personal Project has one logical private HQ Conversation, created on
+first open using get-or-create so concurrent first opens return the same
+Conversation. A Project may exist without an ordinary Conversation. A shared
+Workspace Project can therefore have a different private HQ Conversation for
+each participating member, through that member's Personal Project.
 
 ## Lifecycle Boundary
 

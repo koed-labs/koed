@@ -57,8 +57,9 @@ The activity boundary a capture policy applies to.
 _Avoid_: Capture state, visibility, search domain
 
 **Chief of Staff**:
-The User's default Agent. Each Project has one private HQ Conversation between
-its owner and their Chief of Staff.
+The User's default Agent. Each Project has one logical, private HQ Conversation
+between its owner and their Chief of Staff, created on first open. Ordinary
+Conversations remain optional.
 _Avoid_: Team Agent, Project Thread
 
 **Captured Session**:

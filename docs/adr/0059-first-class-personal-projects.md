@@ -13,8 +13,8 @@ Related decisions:
 
 A Project is a User-owned container for Conversations, sources, and work, with
 an optional folder. A local code context may resolve to a Project. That model
-must also support Projects without a repository or Conversation, such as a
-course, trip, or investor deck, and give Project-scoped records a durable
+must also support Projects without a repository or ordinary Conversation, such
+as a course, trip, or investor deck, and give Project-scoped records a durable
 owner-scoped identity.
 
 Today, code Project discovery is device-local metadata in
@@ -36,7 +36,8 @@ identity, a name, an optional folder, an optional link to local Project
 discovery metadata, an owner-unique short key for ticket references, an
 active or deleted lifecycle, and a version. Names need not be unique; the
 short ticket key is unique per owner. A Project can exist without a folder,
-repository, or Conversation. Project-scoped records introduced
+repository, or ordinary Conversation; its logical HQ Conversation is created
+on first open. Project-scoped records introduced
 by the redesign, including Project Sources, Work Items, Flashcard Decks,
 Scheduled Jobs, and Project-scoped Curated Memory, refer to the Personal
 Project identity. Personal Project identity is distinct from a path, branch,
@@ -46,11 +47,20 @@ commit, or remote URL.
 
 Continue using the existing device-local discovery in
 `KOED_HOME/config/projects.json` as the source of local code context. On first
-capture resolution, preserve an exact existing local-context association; if
-there is no existing Project candidate, register a Personal Project normally.
-Existing Captured Sessions are associated lazily. The existing capture fields
-remain available to older clients; this decision adds the Personal Project
-identity and association without replacing their current behavior.
+capture resolution, preserve an exact existing association to an active
+Personal Project. If there is no existing Project candidate and no retained
+association to a soft-deleted Project, register a Personal Project normally. A
+context already associated with a soft-deleted Project retains that association
+for restore, but the deleted Project is not eligible for new-session
+assignment. Capture continues under the existing Personal Capture Policy; the
+new Captured Session remains in Personal Memory without a first-class Personal
+Project assignment until the User explicitly restores that Project or chooses
+a new one. The retained association remains available for restore. Do not
+implicitly revive a deleted Project, hide a new Session under it, drop capture,
+or wait for UI before capture. Existing Captured Sessions are associated
+lazily. The existing capture fields remain available to older clients; this
+decision adds the Personal Project identity and association without replacing
+their current behavior.
 
 A local Project ID is device-local. Separate worktrees have separate local
 Project IDs, while a device-salted common-directory hash identifies worktrees
@@ -62,28 +72,33 @@ Personal Project. The common-directory hash is only a candidate signal. Target
 association history must retain sufficient per-checkout Git-directory
 identity and its prior folder to distinguish a new linked checkout from a
 known checkout whose path changed; current discovery is not claimed to store
-that history. This identity and history remain device-local and establish no
-relationship across devices.
+that history. This Personal Project identity and association history remain
+device-local. Existing PDS V1 paired-device matching of keyed canonical-remote
+tokens for local Project grouping and search remains governed by §9 of the
+[Personal-device sync protocol](../personal-device-sync-protocol.md#9-project-aliases);
+it does not create, merge, or assign a first-class Personal Project.
 
 A changed path for a known checkout, missing, insufficient, or ambiguous
 provenance, multiple possible Project associations, or a remote-only match
 requires one-time User confirmation before suggested reuse or reassignment.
 Persist the User's choice so the same unresolved association does not prompt
 again. Never guess, silently merge two Personal Projects, or override an
-existing explicit Project assignment. Remote aliases can suggest a possible
-match but never authorize association by themselves, change Project identity,
-link a Team Workspace, or grant Team access. Renaming or replacing a remote
-leaves the existing local Project identity unchanged. A new context with no
-existing Project candidate registers normally.
+existing explicit Project assignment. For first-class Personal Project
+association, remote aliases can suggest a possible match but never authorize
+association by themselves, change Project identity, link a Team Workspace, or
+grant Team access. Renaming or replacing a remote leaves the existing local
+Project identity unchanged. A new context with no existing Project candidate
+registers normally.
 
 Concurrent first captures in a verified same-device worktree group must
 atomically reuse one Personal Project. Ambiguous association history remains
 for User review rather than being resolved by race order.
 
-Each device registers its own local Projects in this release. Do not
-implicitly associate Projects across devices by remote URL or repository name.
-Cross-device Project association requires a separately accepted trusted
-personal-device policy.
+This decision introduces no cross-device Personal Project association or
+Project-record merge. PDS V1's authenticated paired-device alias matching is a
+separate local grouping/search behavior and does not change Personal Project
+identity. Outside that protocol's exact keyed-token rule, raw remote URLs and
+repository names do not establish first-class Project identity.
 
 ### Existing assignments and HQ Conversations
 
@@ -94,11 +109,12 @@ unchanged and report them for review; do not guess or merge their Projects.
 New automatic assignments use the same Personal Project identity while
 existing automatic Project fields remain compatible with older clients.
 
-A Personal Project has at most one private HQ Conversation. Opening or creating
-that Conversation is get-or-create, so concurrent first opens resolve to the
-same Conversation. For a shared Project, each member's Personal Project is
-linked separately to the Team-side Workspace Project, and each member keeps
-their own private HQ Conversation.
+A Personal Project has one logical private HQ Conversation, created on first
+open using get-or-create so concurrent first opens resolve to the same
+Conversation. A Project may exist without an ordinary Conversation. For a
+shared Project, each member's Personal Project is linked separately to the
+Team-side Workspace Project, and each member keeps their own private HQ
+Conversation.
 
 ### Personal ownership and Team linkage
 
@@ -128,7 +144,8 @@ implemented.
 ## Consequences
 
 - Projects can represent non-code work and can exist before they have a folder
-  or Conversation.
+  or ordinary Conversation; the logical HQ Conversation is created on first
+  open.
 - Existing discovery remains local and is reused as association input; raw
   paths stay under `KOED_HOME`.
 - The Project model can link several local worktree contexts to one Personal
