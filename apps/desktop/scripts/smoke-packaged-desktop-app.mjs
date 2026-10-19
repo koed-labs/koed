@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-/* global clearTimeout, console, process, setTimeout */
+/* global AbortSignal, URL, clearTimeout, console, process, setTimeout */
 import { listPackage } from "@electron/asar";
 import {
   cpSync,
   readdirSync,
   existsSync,
+  readFileSync,
   mkdirSync,
   statSync,
   writeFileSync
@@ -814,6 +815,40 @@ const smokeMissingAssets = (layout, koedHome) => {
   };
 };
 
+const readSmokeApiReadyUrl = (koedHome) => {
+  const runtimeStatePath = resolve(koedHome, "run", "koed-server.json");
+  const runtimeState = JSON.parse(readFileSync(runtimeStatePath, "utf8"));
+  if (typeof runtimeState?.apiUrl !== "string") {
+    throw new Error(
+      `Packaged runtime state missing apiUrl: ${runtimeStatePath}`
+    );
+  }
+  const apiUrl = new URL(runtimeState.apiUrl);
+  const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  if (apiUrl.protocol !== "http:" || !loopbackHosts.has(apiUrl.hostname)) {
+    throw new Error(
+      `Packaged smoke readiness requires loopback API URL: ${apiUrl.origin}`
+    );
+  }
+  return new URL("/ready", apiUrl);
+};
+
+// The public /ready endpoint avoids repeated API-token and MCP doctor checks.
+const fetchSmokeApiReadiness = async (koedHome, fetcher) => {
+  const response = await fetcher(readSmokeApiReadyUrl(koedHome), {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(5_000)
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload: await response.json().catch(() => null)
+  };
+};
+
+// Full status probes hit rate-limited AI Client endpoints; keep retries coarse.
+const FULL_STATUS_RETRY_INTERVAL_MS = 30_000;
+
 export const waitForHealthyStatus = async (
   {
     layout,
@@ -827,20 +862,51 @@ export const waitForHealthyStatus = async (
     now = Date.now,
     isRunning = pidIsRunning,
     runCommand = runPackagedCommand,
+    fetcher = globalThis.fetch,
+    statusProbeIntervalMs = FULL_STATUS_RETRY_INTERVAL_MS,
     delay = sleep
   } = {}
 ) => {
   const startedAt = now();
   let lastStatus = null;
+  let nextStatusProbeAt = startedAt;
   while (now() - startedAt < timeoutMs) {
     if (!isRunning(supervisorPid)) {
       throw new Error(
         `Packaged daemon supervisor ${supervisorPid} exited before becoming healthy.`
       );
     }
+    const apiReadiness = await fetchSmokeApiReadiness(koedHome, fetcher).catch(
+      (error) => ({ error })
+    );
+    if ("error" in apiReadiness) {
+      lastStatus = {
+        apiReadiness: {
+          state: "unavailable",
+          message:
+            apiReadiness.error instanceof Error
+              ? apiReadiness.error.message
+              : String(apiReadiness.error)
+        }
+      };
+      await delay(pollIntervalMs);
+      continue;
+    }
+    lastStatus = {
+      apiReadiness: apiReadiness.payload ?? { httpStatus: apiReadiness.status }
+    };
+    if (!apiReadiness.ok) {
+      await delay(pollIntervalMs);
+      continue;
+    }
+    if (now() < nextStatusProbeAt) {
+      await delay(Math.min(pollIntervalMs, nextStatusProbeAt - now()));
+      continue;
+    }
     const status = await runCommand(layout, koedHome, ["status", "--json"]);
     if (status.status !== 0) {
       lastStatus = parseJsonOutput("status --json", status.stdout || "{}");
+      nextStatusProbeAt = now() + statusProbeIntervalMs;
       await delay(pollIntervalMs);
       continue;
     }
@@ -852,7 +918,7 @@ export const waitForHealthyStatus = async (
       assertNoSourceCheckoutResolution("status --json", lastStatus);
       return lastStatus;
     } catch {
-      // A daemon may need time to load its native models and start every service.
+      nextStatusProbeAt = now() + statusProbeIntervalMs;
     }
     await delay(pollIntervalMs);
   }
