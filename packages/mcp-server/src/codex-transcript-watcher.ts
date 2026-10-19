@@ -1183,6 +1183,16 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
               artifact.providerCursorOffset < boundary
             )
               return;
+            if (
+              this.localProjectAssociation?.isCompleted({
+                sourceKind: "codex",
+                externalSessionId: identity.sessionId,
+                localProjectId: sourceProject.localProjectId,
+                artifactId: artifact.id,
+                providerCursorOffset: artifact.providerCursorOffset
+              })
+            )
+              return;
             await this.localProjectAssociation?.prepare({
               sourceKind: "codex",
               externalSessionId: identity.sessionId,

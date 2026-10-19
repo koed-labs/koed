@@ -138,16 +138,14 @@ export const startClaudeTranscriptWatcher = (
     const boundary = completeTranscriptBoundary(target);
     if (!artifact?.sessionId || artifact.providerCursorOffset < boundary)
       return;
-    const response = await client.getEffectiveCapturePolicy({
-      projectId: identity.cwd,
-      threadId: identity.sessionId
-    });
-    const policy = response.policy as Record<string, unknown> | undefined;
     if (
-      policy?.captureState === "disabled" ||
-      policy?.captureState === "ask" ||
-      (typeof policy?.pauseUntil === "string" &&
-        Date.parse(policy.pauseUntil) > Date.now())
+      association.isCompleted({
+        sourceKind: "claude-code",
+        externalSessionId: identity.sessionId,
+        localProjectId: project.localProjectId,
+        artifactId: artifact.id,
+        providerCursorOffset: artifact.providerCursorOffset
+      })
     )
       return;
     await association.prepare({

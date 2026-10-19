@@ -461,6 +461,7 @@ describe("Codex Transcript Watcher source journal", () => {
       complete: vi.fn(async () => undefined),
       discardBlocked: vi.fn(async () => undefined),
       replay: vi.fn(async () => undefined),
+      isCompleted: vi.fn(() => false),
       confirm: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined)
     };
@@ -500,6 +501,13 @@ describe("Codex Transcript Watcher source journal", () => {
     await waitFor(
       () => vi.mocked(bridge.complete).mock.calls.length > completedBefore
     );
+    vi.mocked(bridge.isCompleted).mockReturnValue(true);
+    const exactCompleted = vi.mocked(bridge.complete).mock.calls.length;
+    const exactPrepared = vi.mocked(bridge.prepare).mock.calls.length;
+    await watcher.scanNow();
+    expect(bridge.prepare).toHaveBeenCalledTimes(exactPrepared);
+    expect(bridge.complete).toHaveBeenCalledTimes(exactCompleted);
+    vi.mocked(bridge.isCompleted).mockReturnValue(false);
 
     client.policyPaused = true;
     const blocked = transcriptPath(root, "rollout-blocked.jsonl");
@@ -2226,11 +2234,20 @@ describe("Codex Transcript Watcher source journal", () => {
 
   it("prioritizes a newly created transcript from its filesystem event", async () => {
     const root = temporaryDirectory();
-    mkdirSync(path.join(root, "codex", "sessions"), { recursive: true });
+    const sessionDirectory = path.join(
+      root,
+      "codex",
+      "sessions",
+      "2026",
+      "01",
+      "01"
+    );
+    mkdirSync(sessionDirectory, { recursive: true });
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(
       client,
       watcherConfig(root, {
+        roots: [sessionDirectory],
         debounceMs: 5,
         maxEntriesPerScan: 1,
         maxFilesPerScan: 1
@@ -2257,7 +2274,14 @@ describe("Codex Transcript Watcher source journal", () => {
         line(userRecord("prioritize this live session"))
     );
 
-    await waitFor(() => client.artifacts.has("filesystem-live"), 5_000);
+    await waitFor(
+      () =>
+        client.artifacts.has("filesystem-live") &&
+        client.itemBatches
+          .flat()
+          .some((item) => item.rawText === "prioritize this live session"),
+      5_000
+    );
     expect(
       client.itemBatches
         .flat()

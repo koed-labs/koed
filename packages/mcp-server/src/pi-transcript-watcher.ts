@@ -613,7 +613,16 @@ export const startPiTranscriptWatcher = (
     const boundary = completeTranscriptBoundary(target);
     if (!artifact?.sessionId || artifact.providerCursorOffset < boundary)
       return;
-    if (!(await policyAllowsCapture(client, signal))) return;
+    if (
+      association.isCompleted({
+        sourceKind: "pi",
+        externalSessionId: identity.id,
+        localProjectId: project.localProjectId,
+        artifactId: artifact.id,
+        providerCursorOffset: artifact.providerCursorOffset
+      })
+    )
+      return;
     await association.prepare({
       sourceKind: "pi",
       externalSessionId: identity.id,

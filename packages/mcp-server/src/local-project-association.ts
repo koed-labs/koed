@@ -35,15 +35,18 @@ interface LocalRecord extends Omit<
   sessionId?: string;
   artifactId?: string;
   requiredSourceOffset: number;
+  acceptedProviderCursorOffset?: number;
   gitDir: string | null;
   commonDir: string | null;
   gitDirIdentity: string | null;
+  folderIdentity: string | null;
   folder: string;
   remoteFingerprints: string[];
   projectId?: string | null;
   confirmationId?: string;
   confirmationVersion?: number;
   confirmationFactsKey?: string;
+  requiresConfirmation?: boolean;
   createdAt: string;
 }
 
@@ -51,6 +54,15 @@ interface LocalState {
   version: 1;
   history: LocalRecord[];
   pending: LocalRecord[];
+  completed: Array<{
+    ownerUserId: string;
+    deviceId: string;
+    sourceKind: VerifiedLocalProjectContext["sourceKind"];
+    externalSessionId: string;
+    localProjectId: string;
+    artifactId: string;
+    providerCursorOffset: number;
+  }>;
 }
 
 export interface LocalProjectAssociationService {
@@ -76,6 +88,13 @@ export interface LocalProjectAssociationService {
     externalSessionId: string
   ): Promise<void>;
   replay(): Promise<void>;
+  isCompleted(input: {
+    sourceKind: VerifiedLocalProjectContext["sourceKind"];
+    externalSessionId: string;
+    localProjectId: string;
+    artifactId: string;
+    providerCursorOffset: number;
+  }): boolean;
   confirm(input: {
     localProjectId: string;
     choice: { projectId: string } | { separate: true };
@@ -105,19 +124,31 @@ const git = async (cwd: string, args: string[]): Promise<string | null> =>
     );
   });
 
-const emptyState = (): LocalState => ({ version: 1, history: [], pending: [] });
+const emptyState = (): LocalState => ({
+  version: 1,
+  history: [],
+  pending: [],
+  completed: []
+});
 
 const confirmationFactsKey = (
   row: Pick<
     LocalRecord,
-    "localProjectId" | "folderHash" | "gitDirHash" | "commonDirHash"
+    | "localProjectId"
+    | "folderHash"
+    | "gitDirHash"
+    | "commonDirHash"
+    | "gitDirIdentity"
+    | "folderIdentity"
   >
 ): string =>
   JSON.stringify([
     row.localProjectId,
     row.folderHash,
     row.gitDirHash,
-    row.commonDirHash
+    row.commonDirHash,
+    row.gitDirIdentity,
+    row.folderIdentity
   ]);
 
 const readState = (file: string): LocalState => {
@@ -130,7 +161,10 @@ const readState = (file: string): LocalState => {
   ) {
     throw new Error("Local Project association state is malformed");
   }
-  return parsed as LocalState;
+  return {
+    ...parsed,
+    completed: Array.isArray(parsed.completed) ? parsed.completed : []
+  } as LocalState;
 };
 
 const writeState = (file: string, state: LocalState): void => {
@@ -203,11 +237,19 @@ const checkoutFacts = async (
   | "createdAt"
   | "requiredSourceOffset"
 > | null> => {
+  const catalogFolder = path.resolve(
+    catalog.project.path.projectRoot ?? catalog.project.path.cwd
+  );
   let folder: string;
+  let folderIdentity: string | null;
   try {
-    folder = realpathSync(
-      catalog.project.path.projectRoot ?? catalog.project.path.cwd
-    );
+    folder = realpathSync(catalogFolder);
+    const folderStat = statSync(folder);
+    if (!folderStat.isDirectory()) return null;
+    folderIdentity =
+      folderStat.dev > 0 && folderStat.ino > 0
+        ? `${folderStat.dev}:${folderStat.ino}`
+        : null;
   } catch {
     return null;
   }
@@ -221,18 +263,22 @@ const checkoutFacts = async (
   const root = rootValue ? path.resolve(rootValue) : null;
   if (!root || !gitDirValue || !commonDirValue || !worktreesValue) {
     if (catalog.project.git) return null;
-    const derivedId = deriveLocalProjectId({ salt: catalog.salt, cwd: folder });
+    const derivedId = deriveLocalProjectId({
+      salt: catalog.salt,
+      cwd: catalogFolder
+    });
     if (derivedId !== catalog.project.localProjectId) return null;
     return {
       localProjectId: derivedId,
       displayName: catalog.project.displayName,
       commonDirHash: null,
       gitDirHash: null,
-      folderHash: hmacProjectValue(catalog.salt, folder),
+      folderHash: hmacProjectValue(catalog.salt, catalogFolder),
       gitDir: null,
       commonDir: null,
       gitDirIdentity: null,
-      folder,
+      folderIdentity,
+      folder: catalogFolder,
       remoteFingerprints: [],
       verifiedNewLinkedCheckout: false,
       hasRemoteCandidate: false,
@@ -301,6 +347,7 @@ const checkoutFacts = async (
     gitDir,
     commonDir,
     gitDirIdentity,
+    folderIdentity,
     folder,
     remoteFingerprints,
     verifiedNewLinkedCheckout:
@@ -436,6 +483,53 @@ export const createLocalProjectAssociationService = (input: {
           // Capture-time facts remain valid for this captured session even if
           // the checkout has since moved or disappeared.
           const facts = refreshed ?? pending;
+          const choiceMatchesFacts = Boolean(
+            pending.confirmationId &&
+            refreshed &&
+            pending.confirmationFactsKey === confirmationFactsKey(refreshed)
+          );
+          const staleChoice = Boolean(
+            pending.confirmationId && !choiceMatchesFacts
+          );
+          if (staleChoice) {
+            await serialized(() => {
+              const state = readState(stateFile);
+              const current = state.pending.find(
+                (row) =>
+                  row.ownerUserId === ownerUserId &&
+                  row.deviceId === deviceId &&
+                  row.sourceKind === pending.sourceKind &&
+                  row.externalSessionId === pending.externalSessionId
+              );
+              if (!current || current.confirmationId !== pending.confirmationId)
+                return;
+              if (refreshed) Object.assign(current, refreshed);
+              current.requiresConfirmation = true;
+              delete current.confirmationId;
+              delete current.confirmationFactsKey;
+              delete current.confirmedProjectId;
+              delete current.confirmedSeparate;
+              const historyRow = state.history.find(
+                (row) =>
+                  row.ownerUserId === ownerUserId &&
+                  row.deviceId === deviceId &&
+                  row.localProjectId === pending.localProjectId &&
+                  row.confirmationId === pending.confirmationId
+              );
+              if (historyRow) {
+                if (refreshed) Object.assign(historyRow, refreshed);
+                historyRow.requiresConfirmation = true;
+                delete historyRow.confirmationId;
+                delete historyRow.confirmationFactsKey;
+                delete historyRow.confirmedProjectId;
+                delete historyRow.confirmedSeparate;
+              }
+              writeState(stateFile, state);
+            });
+          }
+          const requiresConfirmation = Boolean(
+            pending.requiresConfirmation || staleChoice
+          );
           const result = await repository.associateVerifiedCapturedSession({
             sourceKind: pending.sourceKind,
             ownerUserId,
@@ -449,11 +543,14 @@ export const createLocalProjectAssociationService = (input: {
             verifiedNewLinkedCheckout: facts.verifiedNewLinkedCheckout,
             hasRemoteCandidate: facts.hasRemoteCandidate,
             hasMovedCheckoutCandidate: facts.hasMovedCheckoutCandidate,
-            ...(pending.confirmedProjectId
+            ...(requiresConfirmation ? { requiresConfirmation: true } : {}),
+            ...(!requiresConfirmation && pending.confirmedProjectId
               ? { confirmedProjectId: pending.confirmedProjectId }
               : {}),
-            ...(pending.confirmedSeparate ? { confirmedSeparate: true } : {}),
-            ...(pending.confirmationId
+            ...(!requiresConfirmation && pending.confirmedSeparate
+              ? { confirmedSeparate: true }
+              : {}),
+            ...(!requiresConfirmation && pending.confirmationId
               ? { confirmationVersion: pending.confirmationVersion }
               : {}),
             sessionId: pending.sessionId!,
@@ -490,7 +587,33 @@ export const createLocalProjectAssociationService = (input: {
                 current?.confirmationId === pending.confirmationId &&
                 current?.artifactId === pending.artifactId &&
                 current?.sessionId === pending.sessionId &&
-                current?.requiredSourceOffset === pending.requiredSourceOffset;
+                current?.requiredSourceOffset ===
+                  pending.requiredSourceOffset &&
+                current?.acceptedProviderCursorOffset ===
+                  pending.acceptedProviderCursorOffset;
+              if (
+                sameAttempt &&
+                result.sessionAssigned &&
+                current?.artifactId &&
+                current.acceptedProviderCursorOffset !== undefined
+              ) {
+                state.completed = state.completed.filter(
+                  (row) =>
+                    row.ownerUserId !== ownerUserId ||
+                    row.deviceId !== deviceId ||
+                    row.sourceKind !== pending.sourceKind ||
+                    row.externalSessionId !== pending.externalSessionId
+                );
+                state.completed.push({
+                  ownerUserId,
+                  deviceId,
+                  sourceKind: pending.sourceKind,
+                  externalSessionId: pending.externalSessionId,
+                  localProjectId: pending.localProjectId,
+                  artifactId: current.artifactId,
+                  providerCursorOffset: current.acceptedProviderCursorOffset
+                });
+              }
               if (sameAttempt)
                 state.pending = state.pending.filter((row) => row !== current);
               if (pending.confirmationId) {
@@ -560,6 +683,29 @@ export const createLocalProjectAssociationService = (input: {
     return replayPromise;
   };
   return {
+    isCompleted: (candidate) => {
+      const state = readState(stateFile);
+      if (
+        state.pending.some(
+          (row) =>
+            row.ownerUserId === ownerUserId &&
+            row.deviceId === deviceId &&
+            row.sourceKind === candidate.sourceKind &&
+            row.externalSessionId === candidate.externalSessionId
+        )
+      )
+        return false;
+      return state.completed.some(
+        (row) =>
+          row.ownerUserId === ownerUserId &&
+          row.deviceId === deviceId &&
+          row.sourceKind === candidate.sourceKind &&
+          row.externalSessionId === candidate.externalSessionId &&
+          row.localProjectId === candidate.localProjectId &&
+          row.artifactId === candidate.artifactId &&
+          row.providerCursorOffset === candidate.providerCursorOffset
+      );
+    },
     prepare: (candidate) =>
       serialized(async () => {
         if (
@@ -610,6 +756,10 @@ export const createLocalProjectAssociationService = (input: {
               }
             : {})
         };
+        if (existing?.confirmationId && !sameConfirmationFacts)
+          record.requiresConfirmation = true;
+        else if (existing?.requiresConfirmation && !sameConfirmationFacts)
+          record.requiresConfirmation = true;
         if (!existing) state.history.push(record);
         if (
           !state.pending.some(
@@ -642,6 +792,7 @@ export const createLocalProjectAssociationService = (input: {
           return;
         record.sessionId = artifact.sessionId;
         record.artifactId = artifact.id;
+        record.acceptedProviderCursorOffset = artifact.providerCursorOffset;
         writeState(stateFile, state);
       });
       void replay().catch(() => {
@@ -713,6 +864,7 @@ export const createLocalProjectAssociationService = (input: {
         ]) {
           delete row.confirmedProjectId;
           delete row.confirmedSeparate;
+          delete row.requiresConfirmation;
           row.confirmationId = confirmationId;
           row.confirmationVersion = confirmationVersion;
           row.confirmationFactsKey = factsKey;

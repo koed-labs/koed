@@ -13,6 +13,8 @@ export interface VerifiedLocalProjectContext {
   verifiedNewLinkedCheckout: boolean;
   hasRemoteCandidate: boolean;
   hasMovedCheckoutCandidate: boolean;
+  /** Local evidence changed after an earlier confirmation; await a fresh choice. */
+  requiresConfirmation?: boolean;
   /** An exact, locally persisted User choice. */
   confirmedProjectId?: string;
   confirmedSeparate?: boolean;
@@ -66,8 +68,9 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         id: string;
         automatic_personal_project_id: string | null;
         project_override_personal_project_id: string | null;
+        project_override_id: string | null;
       }>(
-        `select id, automatic_personal_project_id, project_override_personal_project_id
+        `select id, automatic_personal_project_id, project_override_personal_project_id, project_override_id
            from sessions
           where id=$1 and owner_user_id=$2 and external_session_id=$3
             and visibility='personal' and invalidated_at is null
@@ -120,6 +123,15 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
           for update of c`,
         [input.ownerUserId, input.deviceId, input.localProjectId]
       );
+      if (input.requiresConfirmation) {
+        await client.query("commit");
+        return {
+          state: "unresolved",
+          projectId: null,
+          sessionAssigned: false,
+          reason: "local_identity_changed"
+        };
+      }
       let projectId = exact.rows[0]?.project_id ?? null;
       let reason: string | undefined;
       const exactActive = Boolean(
@@ -281,11 +293,17 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
           )
         : { rows: [] as { id: string }[] };
       const assignableId = active.rows[0]?.id ?? null;
-      let assigned = false;
+      let assigned = Boolean(
+        assignableId &&
+        found.automatic_personal_project_id === assignableId &&
+        !found.project_override_personal_project_id &&
+        !found.project_override_id
+      );
       if (
         assignableId &&
         !found.automatic_personal_project_id &&
-        !found.project_override_personal_project_id
+        !found.project_override_personal_project_id &&
+        !found.project_override_id
       ) {
         const updated = await client.query(
           `update sessions set automatic_personal_project_id=$4,updated_at=now()

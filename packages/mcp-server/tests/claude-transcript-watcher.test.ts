@@ -172,6 +172,7 @@ describe("Claude transcript watcher", () => {
       complete: vi.fn(async () => undefined),
       discardBlocked: vi.fn(async () => undefined),
       replay: vi.fn(() => delayedReplay),
+      isCompleted: vi.fn(() => false),
       confirm: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined)
     };
@@ -198,12 +199,19 @@ describe("Claude transcript watcher", () => {
           providerCursorOffset: Buffer.byteLength(source)
         })
       );
+      blocked = true;
       const before = vi.mocked(bridge.complete).mock.calls.length;
       await watcher.scanNow();
       expect(vi.mocked(bridge.complete).mock.calls.length).toBeGreaterThan(
         before
       );
-      blocked = true;
+      vi.mocked(bridge.isCompleted).mockReturnValue(true);
+      const completed = vi.mocked(bridge.complete).mock.calls.length;
+      const prepared = vi.mocked(bridge.prepare).mock.calls.length;
+      await watcher.scanNow();
+      expect(bridge.prepare).toHaveBeenCalledTimes(prepared);
+      expect(bridge.complete).toHaveBeenCalledTimes(completed);
+      vi.mocked(bridge.isCompleted).mockReturnValue(false);
       const blockedId = randomUUID();
       fs.writeFileSync(
         path.join(path.dirname(transcriptPath), `${blockedId}.jsonl`),

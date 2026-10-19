@@ -7,6 +7,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
@@ -27,7 +28,12 @@ type TestState = {
     confirmedSeparate?: boolean;
     confirmationId?: string;
   }>;
-  history: Array<{ projectId?: string }>;
+  history: Array<{
+    projectId?: string;
+    gitDirIdentity?: string | null;
+    folderIdentity?: string | null;
+    confirmationVersion?: number;
+  }>;
 };
 type TestCatalog = {
   projects: Array<{
@@ -43,6 +49,7 @@ type AssociationCall = {
   hasMovedCheckoutCandidate: boolean;
   confirmedSeparate?: boolean;
   confirmationVersion?: number;
+  requiresConfirmation?: boolean;
 };
 const readTestState = (file: string): TestState =>
   JSON.parse(readFileSync(file, "utf8")) as TestState;
@@ -258,6 +265,140 @@ describe("local Project association durability", () => {
       expect(mocks.associate).toHaveBeenCalledWith(
         expect.not.objectContaining({ confirmedSeparate: true })
       );
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("marks only an exact assigned artifact frontier complete", async () => {
+    const { koedHome, folders, environment } = fixture();
+    const service = createLocalProjectAssociationService({
+      koedHome,
+      environment,
+      captureClient: {
+        apiUrl: environment.MEMORY_API_URL,
+        apiToken: environment.MEMORY_API_TOKEN
+      }
+    })!;
+    const externalSessionId = "completed-codex";
+    const localProjectId = folders[0]!.localProjectId;
+    const artifactId = randomUUID();
+    mocks.associate.mockResolvedValue({
+      state: "resolved",
+      projectId: randomUUID(),
+      sessionAssigned: true
+    });
+    try {
+      await service.prepare({
+        sourceKind: "codex",
+        externalSessionId,
+        sourceProjectPath: folders[0]!.cwd,
+        localProjectId,
+        requiredSourceOffset: 0
+      });
+      await service.complete("codex", externalSessionId, {
+        id: artifactId,
+        sessionId: randomUUID(),
+        externalSessionId,
+        providerCursorOffset: 0
+      });
+      await service.replay();
+      expect(
+        service.isCompleted({
+          sourceKind: "codex",
+          externalSessionId,
+          localProjectId,
+          artifactId,
+          providerCursorOffset: 0
+        })
+      ).toBe(true);
+      expect(
+        service.isCompleted({
+          sourceKind: "codex",
+          externalSessionId,
+          localProjectId,
+          artifactId,
+          providerCursorOffset: 1
+        })
+      ).toBe(false);
+      expect(
+        service.isCompleted({
+          sourceKind: "pi",
+          externalSessionId,
+          localProjectId,
+          artifactId,
+          providerCursorOffset: 0
+        })
+      ).toBe(false);
+      mocks.associate.mockResolvedValue({
+        state: "resolved",
+        projectId: randomUUID(),
+        sessionAssigned: false
+      });
+      const laterSession = "deleted-mapping-new-session";
+      const laterArtifact = randomUUID();
+      await service.prepare({
+        sourceKind: "codex",
+        externalSessionId: laterSession,
+        sourceProjectPath: folders[0]!.cwd,
+        localProjectId,
+        requiredSourceOffset: 0
+      });
+      await service.complete("codex", laterSession, {
+        id: laterArtifact,
+        sessionId: randomUUID(),
+        externalSessionId: laterSession,
+        providerCursorOffset: 0
+      });
+      await service.replay();
+      expect(
+        service.isCompleted({
+          sourceKind: "codex",
+          externalSessionId: laterSession,
+          localProjectId,
+          artifactId: laterArtifact,
+          providerCursorOffset: 0
+        })
+      ).toBe(false);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("uses the catalog's logical non-Git symlink path after verifying its directory", async () => {
+    const { koedHome, folders, environment } = fixture();
+    const alias = path.join(koedHome, "alias");
+    symlinkSync(folders[0]!.cwd, alias, "dir");
+    const localProjectId = deriveLocalProjectId({
+      salt: "test-only-local-salt",
+      cwd: alias
+    });
+    const catalogFile = path.join(koedHome, "config", "projects.json");
+    const catalog = JSON.parse(
+      readFileSync(catalogFile, "utf8")
+    ) as TestCatalog;
+    catalog.projects[0]!.path.cwd = alias;
+    catalog.projects[0]!.localProjectId = localProjectId;
+    writeFileSync(catalogFile, JSON.stringify(catalog));
+    const service = testService({ koedHome, folders, environment });
+    try {
+      expect(
+        await service.prepare({
+          sourceKind: "pi",
+          externalSessionId: "symlink",
+          sourceProjectPath: alias,
+          localProjectId
+        })
+      ).toBe(true);
+      const state = JSON.parse(
+        readFileSync(
+          path.join(koedHome, "config", "project-associations.json"),
+          "utf8"
+        )
+      ) as {
+        history: Array<{ folder: string }>;
+      };
+      expect(state.history[0]?.folder).toBe(alias);
     } finally {
       await service.close();
     }
@@ -589,6 +730,106 @@ describe("local Project association durability", () => {
       );
       expect(
         state.pending.some((row) => row.externalSessionId === "moved")
+      ).toBe(true);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("withholds an outage-time choice after the same checkout path is reinitialized", async () => {
+    const { koedHome, folders, environment } = fixture();
+    const cwd = folders[0]!.cwd;
+    execFileSync("git", ["init", "-q", cwd]);
+    const catalogFile = path.join(koedHome, "config", "projects.json");
+    const catalog = JSON.parse(
+      readFileSync(catalogFile, "utf8")
+    ) as TestCatalog;
+    catalog.projects[0]!.path.projectRoot = cwd;
+    catalog.projects[0]!.localProjectId = deriveLocalProjectId({
+      salt: "test-only-local-salt",
+      cwd,
+      projectRoot: cwd
+    });
+    catalog.projects[0]!.git = { remoteAliases: [] };
+    writeFileSync(catalogFile, JSON.stringify(catalog));
+    const localProjectId = catalog.projects[0]!.localProjectId;
+    const service = testService({ koedHome, folders, environment });
+    try {
+      mocks.associate.mockRejectedValue(new Error("database unavailable"));
+      expect(
+        await service.prepare({
+          sourceKind: "codex",
+          externalSessionId: "reinit",
+          sourceProjectPath: cwd,
+          localProjectId
+        })
+      ).toBe(true);
+      await service.complete("codex", "reinit", randomUUID());
+      await service.confirm({ localProjectId, choice: { separate: true } });
+      const stateFile = path.join(
+        koedHome,
+        "config",
+        "project-associations.json"
+      );
+      const priorIdentity = readTestState(stateFile).history[0]?.gitDirIdentity;
+      renameSync(path.join(cwd, ".git"), path.join(cwd, ".git-retired"));
+      execFileSync("git", ["init", "-q", cwd]);
+      mocks.associate.mockReset();
+      mocks.associate.mockResolvedValue({
+        state: "unresolved",
+        projectId: null,
+        sessionAssigned: false
+      });
+      await service.replay();
+      const call = associationCalls().at(-1)?.[0];
+      expect(call).toMatchObject({ requiresConfirmation: true });
+      expect(call).not.toHaveProperty("confirmedSeparate");
+      const state = readTestState(stateFile);
+      expect(state.pending[0]).not.toHaveProperty("confirmationId");
+      expect(state.pending[0]).not.toHaveProperty("confirmedSeparate");
+      expect(state.history[0]?.gitDirIdentity).toBeTruthy();
+      expect(state.history[0]?.gitDirIdentity).not.toBe(priorIdentity);
+      expect(state.history[0]?.confirmationVersion).toBe(1);
+
+      const confirmedProjectId = randomUUID();
+      mocks.associate.mockResolvedValue({
+        state: "resolved",
+        projectId: confirmedProjectId,
+        sessionAssigned: true
+      });
+      await service.confirm({ localProjectId, choice: { separate: true } });
+      expect(readTestState(stateFile).history[0]).toMatchObject({
+        projectId: confirmedProjectId,
+        confirmationVersion: 2,
+        gitDirIdentity: state.history[0]?.gitDirIdentity
+      });
+
+      const movedPath = path.join(koedHome, "reinitialized-moved");
+      renameSync(cwd, movedPath);
+      const moved = realpathSync(movedPath);
+      const entry = catalog.projects[0]!;
+      entry.path.cwd = moved;
+      entry.path.projectRoot = moved;
+      entry.localProjectId = deriveLocalProjectId({
+        salt: "test-only-local-salt",
+        cwd: moved,
+        projectRoot: moved
+      });
+      writeFileSync(catalogFile, JSON.stringify(catalog));
+      expect(
+        await service.prepare({
+          sourceKind: "codex",
+          externalSessionId: "moved-reinit",
+          sourceProjectPath: moved,
+          localProjectId: entry.localProjectId
+        })
+      ).toBe(true);
+      await service.complete("codex", "moved-reinit", randomUUID());
+      await service.replay();
+      expect(
+        associationCalls().find(
+          ([row]) => row.externalSessionId === "moved-reinit"
+        )?.[0].hasMovedCheckoutCandidate
       ).toBe(true);
     } finally {
       await service.close();

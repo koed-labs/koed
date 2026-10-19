@@ -44,6 +44,15 @@ describe("Pi transcript watcher", () => {
     fs.mkdirSync(sessions);
     fs.mkdirSync(cwd);
     fs.mkdirSync(path.join(koedHome, "config"), { recursive: true });
+    fs.mkdirSync(path.join(koedHome, "state"), { recursive: true });
+    fs.writeFileSync(
+      path.join(koedHome, "state", "pi-transcript-watcher.json"),
+      JSON.stringify({
+        version: 1,
+        activatedAt: "2020-01-01T00:00:00.000Z",
+        baselines: {}
+      })
+    );
     fs.writeFileSync(
       path.join(koedHome, "config", "projects.json"),
       JSON.stringify({
@@ -66,7 +75,7 @@ describe("Pi transcript watcher", () => {
     });
     const artifacts = new Map<string, Record<string, unknown>>();
     const segments = new Map<string, Record<string, unknown>>();
-    let blockedId: string | undefined;
+    let blocked = false;
     const client = {
       async lookupConversationSourceArtifact(input: {
         externalSessionId: string;
@@ -75,10 +84,10 @@ describe("Pi transcript watcher", () => {
         if (!artifact) throw new MemoryApiError("not found", { status: 404 });
         return { artifact };
       },
-      async getEffectiveCapturePolicy(input: { threadId: string }) {
+      async getEffectiveCapturePolicy() {
         return {
           policy: {
-            captureState: input.threadId === blockedId ? "disabled" : "enabled"
+            captureState: blocked ? "disabled" : "enabled"
           }
         };
       },
@@ -137,6 +146,7 @@ describe("Pi transcript watcher", () => {
       complete: vi.fn(async () => undefined),
       discardBlocked: vi.fn(async () => undefined),
       replay: vi.fn(() => delayedReplay),
+      isCompleted: vi.fn(() => false),
       confirm: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined)
     };
@@ -167,12 +177,20 @@ describe("Pi transcript watcher", () => {
           providerCursorOffset: Buffer.byteLength(source)
         })
       );
+      blocked = true;
       const before = vi.mocked(bridge.complete).mock.calls.length;
       await watcher.scanNow();
       expect(vi.mocked(bridge.complete).mock.calls.length).toBeGreaterThan(
         before
       );
-      blockedId = randomUUID();
+      vi.mocked(bridge.isCompleted).mockReturnValue(true);
+      const completed = vi.mocked(bridge.complete).mock.calls.length;
+      const prepared = vi.mocked(bridge.prepare).mock.calls.length;
+      await watcher.scanNow();
+      expect(bridge.prepare).toHaveBeenCalledTimes(prepared);
+      expect(bridge.complete).toHaveBeenCalledTimes(completed);
+      vi.mocked(bridge.isCompleted).mockReturnValue(false);
+      const blockedId = randomUUID();
       fs.writeFileSync(
         path.join(sessions, `${blockedId}.jsonl`),
         line({ type: "session", version: 3, id: blockedId, cwd })

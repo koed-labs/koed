@@ -102,6 +102,7 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
     const b = await repository.associateVerifiedCapturedSession(second);
     expect(a.projectId).toBeTruthy();
     expect(again.projectId).toBe(a.projectId);
+    expect(again.sessionAssigned).toBe(true);
     expect(b.projectId).not.toBe(a.projectId);
     const projects = await pool.query<{ name: string; key: string }>(
       `select name,key from projects where owner_user_id=$1 order by created_at,id`,
@@ -112,6 +113,40 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
       "Same name"
     ]);
     expect(new Set(projects.rows.map((row) => row.key)).size).toBe(2);
+  });
+
+  it("keeps a locally changed checkout unresolved until a new confirmation", async () => {
+    const captured = await fixture();
+    expect(
+      await repository.associateVerifiedCapturedSession({
+        ...captured,
+        requiresConfirmation: true,
+        confirmedSeparate: true,
+        confirmationVersion: 1
+      })
+    ).toMatchObject({
+      state: "unresolved",
+      projectId: null,
+      sessionAssigned: false,
+      reason: "local_identity_changed"
+    });
+    const [projects, contexts, sessions] = await Promise.all([
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from projects where owner_user_id=$1`,
+        [captured.ownerUserId]
+      ),
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from project_local_contexts where owner_user_id=$1`,
+        [captured.ownerUserId]
+      ),
+      pool.query<{ automatic_personal_project_id: string | null }>(
+        `select automatic_personal_project_id from sessions where id=$1`,
+        [captured.sessionId]
+      )
+    ]);
+    expect(projects.rows[0]?.count).toBe("0");
+    expect(contexts.rows[0]?.count).toBe("0");
+    expect(sessions.rows[0]?.automatic_personal_project_id).toBeNull();
   });
 
   it("requires the exact accepted source kind for every provider", async () => {
