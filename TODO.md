@@ -59,6 +59,12 @@ Follow-ups:
 - Deliver Desktop on-demand Privacy only after install, upgrade, startup, integration setup, and rollback validation; preserve existing bundled Privacy until then.
 - Deliver opt-in Desktop Install CLI separately, with relocation, removal, and Electron helper validation.
 
+## HQ shell design system
+
+- Add and validate an HQ-scoped forced-colors treatment before claiming
+  forced-colors support for the HQ shell. Preserve existing application
+  forced-colors behavior.
+
 ## Memory Answer evidence-selection follow-ups
 
 Recall now preserves complete observed references when candidates with the same
