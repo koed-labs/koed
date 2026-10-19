@@ -13,6 +13,12 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import {
+  defaultHqLayoutPreferences,
+  hqLayoutPreferencesGetChannel,
+  hqLayoutPreferencesSetChannel,
+  type HqLayoutPreferences
+} from "./hq-layout-preferences-protocol.js";
+import {
   clipboardWriteChannel,
   collaborationCommandChannel,
   hardwareAccelerationGetChannel,
@@ -129,6 +135,14 @@ describe("desktop IPC command registry", () => {
         return { preference, resolvedDark: preference === "dark" };
       }
     );
+    let hqLayoutPreferences: HqLayoutPreferences = {
+      ...defaultHqLayoutPreferences
+    };
+    const getHqLayoutPreferences = vi.fn(() => ({ ...hqLayoutPreferences }));
+    const setHqLayoutPreferences = vi.fn((preferences: HqLayoutPreferences) => {
+      hqLayoutPreferences = { ...preferences };
+      return { ...hqLayoutPreferences };
+    });
     let hardwareAccelerationEnabled = true;
     const getHardwareAcceleration = vi.fn(async () => ({
       enabled: hardwareAccelerationEnabled,
@@ -224,6 +238,8 @@ describe("desktop IPC command registry", () => {
         writeClipboard,
         getThemePreference,
         setThemePreference,
+        getHqLayoutPreferences,
+        setHqLayoutPreferences,
         getHardwareAcceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
@@ -243,6 +259,8 @@ describe("desktop IPC command registry", () => {
       writeClipboard,
       getThemePreference,
       setThemePreference,
+      getHqLayoutPreferences,
+      setHqLayoutPreferences,
       getHardwareAcceleration,
       setHardwareAcceleration,
       getLaunchAtStartup,
@@ -572,6 +590,34 @@ describe("desktop IPC command registry", () => {
     await expect(
       set(renderer("https://attacker.example/"), "light")
     ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
+
+  it("gets and sets strict HQ layout preferences only for trusted renderers", async () => {
+    const { registered, getHqLayoutPreferences, setHqLayoutPreferences } =
+      register();
+    const get = registered.get(hqLayoutPreferencesGetChannel)!;
+    const set = registered.get(hqLayoutPreferencesSetChannel)!;
+    const value: HqLayoutPreferences = {
+      sidebarWidth: 360,
+      rightColumnWidth: 512,
+      rightColumnHidden: true
+    };
+
+    await expect(get(renderer())).resolves.toEqual(defaultHqLayoutPreferences);
+    await expect(set(renderer(), value)).resolves.toEqual(value);
+    expect(getHqLayoutPreferences).toHaveBeenCalledOnce();
+    expect(setHqLayoutPreferences).toHaveBeenCalledWith(value);
+
+    await expect(get(renderer(), "unexpected")).rejects.toThrow();
+    await expect(set(renderer(), { ...value, extra: true })).rejects.toThrow();
+    await expect(
+      set(renderer(), { ...value, sidebarWidth: 199 })
+    ).rejects.toThrow();
+    await expect(set(renderer(), value, "unexpected")).rejects.toThrow();
+    await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
+      "Untrusted Desktop IPC sender"
+    );
+    expect(setHqLayoutPreferences).toHaveBeenCalledOnce();
   });
 
   it("gets and sets hardware acceleration only for trusted renderers", async () => {

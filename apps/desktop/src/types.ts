@@ -15,6 +15,7 @@ import type {
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
+import type { HqLayoutPreferencesApi } from "./ipc/hq-layout-preferences-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -181,6 +182,7 @@ export interface DesktopApi {
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };
   managedProject?: ManagedProjectDesktopApi;
+  hqLayout?: HqLayoutPreferencesApi;
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };
