@@ -78,6 +78,18 @@ pnpm desktop:start
 pnpm desktop:dev
 ```
 
+## Browser Validation
+
+`pnpm --filter @koed/desktop test:browser` builds the Desktop and runs the
+workspace, collaboration, managed-preview, and HQ Electron validation pages.
+The HQ runner currently checks only that the empty HQ scaffold and deterministic
+test fixture mount cleanly. The prepared fixture handle is test-only; feature
+tickets must connect their implemented consumers through the existing mock API
+and IPC seams. It does not populate a product UI. Acceptance cases remain
+explicit skips in this browser report, and out-of-harness cases need results
+from their actual owning suites. This smoke test does not claim that the HQ
+product interface or its behaviors are implemented.
+
 ## Package A Local `.app`
 
 Build an unsigned macOS app directory for local packaging smoke tests:
