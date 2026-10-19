@@ -196,6 +196,17 @@ Workspace from normal navigation without physically deleting retained content.
 - Removed or unauthorized Users cannot send messages, read history, update read
   state, or receive realtime activity.
 
+Team Chat supports a separately versioned v2 message path for human replies and
+mentions of Users. V2 sends and history use `/v2/collaboration/teams/.../messages`,
+and v2 realtime uses the `/v2/collaboration/realtime/...` routes; the strict v1
+message and realtime payloads remain unchanged. A reply must reference a message
+in the same authorized thread. Mention IDs must be unique Users in the current
+message audience. The reply reference is a same-thread foreign key; mention IDs
+are stored in encrypted message metadata. The standard Desktop consumer remains
+on v1 until it adopts this contract. These fields do not change sender kinds,
+grant requirements, notifications, Memory, or Agent input; no Team Chat UI
+behavior is implied here.
+
 ### Encryption
 
 Remote Team message bodies, thread and channel names, topics, descriptions,

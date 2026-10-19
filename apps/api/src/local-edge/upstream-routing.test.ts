@@ -489,6 +489,89 @@ describe("local edge upstream routing", () => {
     ).not.toThrow();
   });
 
+  it("allows only the explicit Team v2 message and realtime routes", () => {
+    const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const threadId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const messagePath = `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages`;
+    expect(
+      String(safeUpstreamProxyUrl(backend(), `${messagePath}?beforeSequence=4`))
+    ).toBe(`https://team.example.test/koed${messagePath}?beforeSequence=4`);
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages/../messages`
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        messagePath.replace("/teams/", "/personal/")
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}%2fmessages`
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(backend(), "/v2/collaboration/teams")
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_read", "GET", messagePath)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_write", "POST", messagePath)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "GET",
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}/../${threadId}/messages`
+      )
+    ).toThrow("Upstream path is not allowed for operation family");
+
+    for (const action of ["snapshot", "ack"]) {
+      const path = `/v2/collaboration/realtime/${action}`;
+      expect(String(safeUpstreamProxyUrl(backend(), path))).toBe(
+        `https://team.example.test/koed${path}`
+      );
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_read", "POST", path)
+      ).not.toThrow();
+    }
+    expect(
+      String(
+        safeUpstreamProxyUrl(
+          backend(),
+          "/v2/collaboration/realtime/stream?scope=team"
+        )
+      )
+    ).toBe(
+      "https://team.example.test/koed/v2/collaboration/realtime/stream?scope=team"
+    );
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_read",
+        "GET",
+        "/v2/collaboration/realtime/stream"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_read", "POST", messagePath)
+    ).toThrow("Upstream path is not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_write", "GET", messagePath)
+    ).toThrow("Upstream path is not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_read",
+        "GET",
+        "/v2/collaboration/realtime/teams"
+      )
+    ).toThrow("Upstream path is not allowed for operation family");
+  });
+
   it("drops insecure remote HTTP entries from a hand-edited registry", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "koed-upstream-routing-"));
     tempDirectories.push(directory);

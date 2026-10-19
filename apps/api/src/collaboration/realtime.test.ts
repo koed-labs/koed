@@ -315,6 +315,44 @@ const createRepositoryFixture = () => {
         updatedAt: matching.occurredAt
       };
     }),
+    getTeamMessageV2ForRealtime: vi.fn(async (actor: ActorContext, input) => {
+      const matching = events.find(
+        (candidate) =>
+          candidate.threadId === input.threadId &&
+          candidate.messageId === input.messageId
+      );
+      if (
+        !matching ||
+        matching.scope !== "team" ||
+        !canAccess(actor, { scope: "team", teamId: matching.teamId! })
+      ) {
+        return null;
+      }
+      const sender = users.get(matching.actorPrincipalId ?? "");
+      if (!sender) return null;
+      return {
+        id: input.messageId,
+        threadId: input.threadId,
+        threadSequence: matching.cursor,
+        audienceVersion: 1,
+        scope: "team" as const,
+        personalOwnerUserId: null,
+        teamId: matching.teamId,
+        teamWorkspaceId: matching.teamWorkspaceId,
+        senderKind: "user" as const,
+        senderPrincipalId: sender.id,
+        senderUserId: sender.id,
+        senderDisplayName: sender.displayName,
+        recipientStatus: null,
+        bodyText: "Authorized realtime message",
+        metadata: {},
+        provenance: { kind: "user_message" as const, id: matching.id },
+        createdAt: matching.occurredAt,
+        updatedAt: matching.occurredAt,
+        replyToMessageId: null,
+        mentionsUserIds: []
+      };
+    }),
     getReceiptStateForRealtime: vi.fn<
       CollaborationRealtimeMaterializationRepository["getReceiptStateForRealtime"]
     >(async () => null),
@@ -732,6 +770,30 @@ const createTeamSnapshot = async (
   }>(response);
 };
 
+const createTeamRealtimeV2Snapshot = async (
+  app: Awaited<ReturnType<typeof buildTestServer>>,
+  userId: string,
+  teamId: string,
+  binding = {
+    clientInstanceId: "client-instance-0001",
+    subscriptionKey: "subscription-key-0001"
+  },
+  headers: Record<string, string> = sessionHeaders(userId)
+) => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/v2/collaboration/realtime/snapshot",
+    headers,
+    payload: { scope: "team", teamId, ...binding }
+  });
+  expect(response.statusCode).toBe(200);
+  return jsonBody<{
+    messageContractVersion: 2;
+    cursor: string;
+    subscription: CollaborationSubscriptionRecord;
+  }>(response);
+};
+
 const openTeamStream = async (
   app: Awaited<ReturnType<typeof buildTestServer>>,
   input: {
@@ -803,6 +865,72 @@ const openTeamStream = async (
       );
       await new Promise((resolve) => setTimeout(resolve, durationMs));
       expect(closed).toBe(false);
+    },
+    close() {
+      controller.abort();
+      reader.releaseLock();
+    }
+  };
+};
+
+const openTeamRealtimeV2Stream = async (
+  app: Awaited<ReturnType<typeof buildTestServer>>,
+  input: {
+    userId: string;
+    teamId: string;
+    cursor: string;
+    clientInstanceId?: string;
+    subscriptionKey?: string;
+    headers?: Record<string, string>;
+  }
+) => {
+  if (!app.server.listening) {
+    await app.listen({ port: 0, host: "127.0.0.1" });
+  }
+  const address = app.server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("test server did not listen on TCP");
+  }
+  const controller = new AbortController();
+  const url = new URL(
+    `http://127.0.0.1:${address.port}/v2/collaboration/realtime/stream`
+  );
+  url.searchParams.set("scope", "team");
+  url.searchParams.set("teamId", input.teamId);
+  url.searchParams.set(
+    "clientInstanceId",
+    input.clientInstanceId ?? "client-instance-0001"
+  );
+  url.searchParams.set(
+    "subscriptionKey",
+    input.subscriptionKey ?? "subscription-key-0001"
+  );
+  url.searchParams.set("cursor", input.cursor);
+  const response = await fetch(url, {
+    headers: input.headers ?? sessionHeaders(input.userId),
+    signal: controller.signal
+  });
+  expect(response.status).toBe(200);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  return {
+    get text() {
+      return text;
+    },
+    async readUntil(eventName: string, timeoutMs = 1_000) {
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        while (!text.includes(`event: ${eventName}\n`)) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        expect(text).toContain(`event: ${eventName}\n`);
+        return text;
+      } finally {
+        clearTimeout(timeout);
+      }
     },
     close() {
       controller.abort();
@@ -1051,6 +1179,41 @@ describe("collaboration realtime protocol", () => {
         })
       ).statusCode
     ).toBe(403);
+    const v2Payload = {
+      scope: "team",
+      teamId: fixture.ids.teamA,
+      clientInstanceId: "client-instance-0001",
+      subscriptionKey: "subscription-key-0001"
+    };
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v2/collaboration/realtime/snapshot",
+          headers: { authorization: "Bearer api-token" },
+          payload: v2Payload
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v2/collaboration/realtime/ack",
+          headers: { authorization: "Bearer api-token" },
+          payload: {}
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/v2/collaboration/realtime/stream",
+          headers: { authorization: "Bearer api-token" }
+        })
+      ).statusCode
+    ).toBe(403);
     expect(
       (
         await app.inject({
@@ -1063,6 +1226,68 @@ describe("collaboration realtime protocol", () => {
         })
       ).statusCode
     ).toBe(403);
+  });
+
+  it("isolates Team realtime V2 cursors and preserves Team-only message extensions", async () => {
+    const fixture = createRepositoryFixture();
+    const app = await buildTestServer(fixture);
+    const legacy = await createTeamSnapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+    const versioned = await createTeamRealtimeV2Snapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+
+    expect(versioned.messageContractVersion).toBe(2);
+    expect(versioned.subscription.id).not.toBe(legacy.subscription.id);
+    const query = new URLSearchParams({
+      scope: "team",
+      teamId: fixture.ids.teamA,
+      clientInstanceId: "client-instance-0001",
+      subscriptionKey: "subscription-key-0001"
+    });
+    const v2WithLegacyCursor = await app.inject({
+      method: "GET",
+      url: `/v2/collaboration/realtime/stream?${query}&cursor=${encodeURIComponent(legacy.cursor)}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    const v1WithVersionedCursor = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/realtime/stream?${query}&cursor=${encodeURIComponent(versioned.cursor)}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(v2WithLegacyCursor.statusCode).toBe(403);
+    expect(v1WithVersionedCursor.statusCode).toBe(403);
+
+    const stream = await openTeamRealtimeV2Stream(app, {
+      userId: fixture.ids.alice,
+      teamId: fixture.ids.teamA,
+      cursor: versioned.cursor
+    });
+    try {
+      const body = await stream.readUntil("collaboration_event");
+      expect(eventData(body, "collaboration_event")).toMatchObject({
+        messageContractVersion: 2,
+        type: "message_created",
+        resource: { scope: "team", teamId: fixture.ids.teamA },
+        update: {
+          type: "message_created_v2",
+          message: {
+            scope: "team",
+            teamId: fixture.ids.teamA,
+            replyToMessageId: null,
+            mentionsUserIds: []
+          }
+        }
+      });
+      expect(body).not.toContain('"scope":"personal"');
+    } finally {
+      stream.close();
+    }
   });
 
   it("requires Personal read scope for Personal realtime", async () => {
@@ -2870,7 +3095,25 @@ describe("collaboration realtime protocol", () => {
     }
   });
 
-  it("reauthorizes recovery and denies revoked Team access", async () => {
+  it("reauthorizes recovery and denies revoked Team access in v2", async () => {
+    const fixture = createRepositoryFixture();
+    const app = await buildTestServer(fixture);
+    const snapshot = await createTeamRealtimeV2Snapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+    fixture.revokedTeams.add(fixture.ids.teamA);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v2/collaboration/realtime/stream?scope=team&teamId=${fixture.ids.teamA}&clientInstanceId=client-instance-0001&subscriptionKey=subscription-key-0001&cursor=${encodeURIComponent(snapshot.cursor)}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("reauthorizes recovery and denies revoked Team access in v1", async () => {
     const fixture = createRepositoryFixture();
     const app = await buildTestServer(fixture);
     const snapshot = await createTeamSnapshot(
@@ -2888,7 +3131,56 @@ describe("collaboration realtime protocol", () => {
     expect(response.statusCode).toBe(403);
   });
 
-  it("independently revokes an idle memoized device credential within the authorization bound", async () => {
+  it("independently revokes an idle memoized device credential within the authorization bound in v2", async () => {
+    const fixture = createRepositoryFixture();
+    fixture.events.splice(0);
+    const deviceState = {
+      active: true,
+      operationFamilies: new Set(["team_workspace_read"])
+    };
+    const device = createDeviceAuth(fixture, deviceState);
+    const app = await buildTestServer(fixture, {
+      auth: device.auth,
+      heartbeatMs: 10_000,
+      authorizationRecheckMs: 30
+    });
+    const headers = deviceHeaders();
+    const snapshot = await createTeamRealtimeV2Snapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA,
+      undefined,
+      headers
+    );
+    const stream = await openTeamRealtimeV2Stream(app, {
+      userId: fixture.ids.alice,
+      teamId: fixture.ids.teamA,
+      cursor: snapshot.cursor,
+      headers
+    });
+    try {
+      await stream.readUntil("ready");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const revokedAt = Date.now();
+      deviceState.active = false;
+      const body = await stream.readUntil("access_revoked", 500);
+
+      expect(Date.now() - revokedAt).toBeLessThan(250);
+      expect(eventData(body, "access_revoked")).toEqual({
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
+        messageContractVersion: 2,
+        subscription: { id: snapshot.subscription.id },
+        reason: "access_revoked"
+      });
+      expect(
+        device.resolveDeviceCredentialContext.mock.calls.length
+      ).toBeGreaterThan(3);
+    } finally {
+      stream.close();
+    }
+  });
+
+  it("independently revokes an idle memoized device credential within the authorization bound in v1", async () => {
     const fixture = createRepositoryFixture();
     fixture.events.splice(0);
     const deviceState = {

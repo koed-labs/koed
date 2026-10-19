@@ -13,6 +13,10 @@ import {
   collaborationMessageBodySchema,
   collaborationMessagePageSchema,
   collaborationMessageSchema,
+  teamCollaborationMessageV2RendererSchema,
+  teamCollaborationMessagePageV2Schema,
+  teamCollaborationRealtimeUpdateV2Schema,
+  teamCollaborationRealtimeV2EventSchema,
   collaborationNameSchema,
   collaborationOpaqueCursorSchema,
   pendingShareSchema,
@@ -1471,6 +1475,196 @@ describe("collaboration renderer commands", () => {
         }
       }).success
     ).toBe(false);
+  });
+
+  it("keeps v1 strict while validating the explicit Team message v2 path", () => {
+    const v2Message = {
+      ...message(),
+      scope: "team" as const,
+      teamId: ids.team,
+      replyToMessageId: ids.message,
+      mentionsUserIds: [ids.otherUser]
+    };
+    expect(
+      collaborationMessageSchema.safeParse({
+        ...message(),
+        replyToMessageId: ids.message,
+        mentionsUserIds: [ids.otherUser]
+      }).success
+    ).toBe(false);
+    expect(
+      teamCollaborationMessageV2RendererSchema.safeParse(v2Message).success
+    ).toBe(true);
+    expect(
+      teamCollaborationMessageV2RendererSchema.safeParse({
+        ...v2Message,
+        mentionsUserIds: [ids.otherUser, ids.otherUser]
+      }).success
+    ).toBe(false);
+
+    const v2Send = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.send_team_message_v2",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        clientMessageId: ids.message,
+        body: "Replying to this message",
+        replyToMessageId: ids.message,
+        mentionsUserIds: [ids.otherUser]
+      }
+    };
+    expect(collaborationRendererCommandSchema.safeParse(v2Send).success).toBe(
+      true
+    );
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        ...v2Send,
+        command: "collaboration.send_message",
+        input: {
+          thread: v2Send.input.thread,
+          clientMessageId: ids.message,
+          body: "Replying to this message",
+          replyToMessageId: ids.message,
+          mentionsUserIds: [ids.otherUser]
+        }
+      }).success
+    ).toBe(false);
+  });
+
+  it("accepts only the Team v2 message extension in versioned realtime", () => {
+    const v2Message = {
+      ...message(),
+      scope: "team" as const,
+      teamId: ids.team,
+      replyToMessageId: ids.message,
+      mentionsUserIds: [ids.otherUser]
+    };
+    const delivery = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      messageContractVersion: 2,
+      type: "update",
+      subscriptionId: ids.subscription,
+      deliveryId: ids.delivery,
+      eventId: ids.event,
+      occurredAt: timestamp,
+      family: "message_created",
+      resource: {
+        scope: "team",
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        threadId: ids.thread,
+        messageId: ids.message,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: { type: "message_created_v2", message: v2Message }
+    };
+    expect(
+      teamCollaborationRealtimeUpdateV2Schema.safeParse(delivery).success
+    ).toBe(true);
+    expect(
+      teamCollaborationRealtimeUpdateV2Schema.safeParse({
+        ...delivery,
+        update: { type: "message_created", message: message() }
+      }).success
+    ).toBe(false);
+    expect(
+      teamCollaborationRealtimeUpdateV2Schema.safeParse({
+        ...delivery,
+        family: "thread_lifecycle",
+        resource: {
+          ...delivery.resource,
+          messageId: null
+        },
+        update: { type: "thread_removed", threadId: ids.thread }
+      }).success
+    ).toBe(true);
+    const personalDelivery = {
+      ...delivery,
+      resource: {
+        scope: "personal",
+        teamId: null,
+        workspaceId: null,
+        threadId: ids.thread,
+        messageId: ids.message,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: { type: "message_created", message: message() }
+    };
+    expect(
+      teamCollaborationRealtimeUpdateV2Schema.safeParse(personalDelivery)
+        .success
+    ).toBe(false);
+    const validTeamEvent = {
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      messageContractVersion: 2,
+      eventId: ids.event,
+      cursor: "crt1.abcdefghijklmnop",
+      type: "message_created",
+      occurredAt: timestamp,
+      subscription: { id: ids.subscription },
+      resource: {
+        scope: "team",
+        type: "collaboration_message",
+        id: ids.message,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        threadId: ids.thread,
+        messageId: ids.message,
+        sharedSessionId: null,
+        shareGrantId: null,
+        logicalMemoryId: null
+      },
+      actor: { principalId: ids.user },
+      update: { type: "message_created_v2", message: v2Message }
+    };
+    expect(
+      teamCollaborationRealtimeV2EventSchema.safeParse(validTeamEvent).success
+    ).toBe(true);
+    expect(
+      teamCollaborationRealtimeV2EventSchema.safeParse({
+        ...validTeamEvent,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION + 1
+      }).success
+    ).toBe(false);
+    expect(
+      teamCollaborationRealtimeV2EventSchema.safeParse({
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
+        messageContractVersion: 2,
+        eventId: ids.event,
+        cursor: "crt1.abcdefghijklmnop",
+        type: "message_created",
+        occurredAt: timestamp,
+        subscription: { id: ids.subscription },
+        resource: {
+          scope: "personal",
+          type: "collaboration_message",
+          id: ids.message,
+          teamId: null,
+          teamWorkspaceId: null,
+          threadId: ids.thread,
+          messageId: ids.message,
+          sharedSessionId: null,
+          shareGrantId: null,
+          logicalMemoryId: null
+        },
+        actor: { principalId: ids.user },
+        update: { type: "message_created", message: message() }
+      }).success
+    ).toBe(false);
+    expect(
+      teamCollaborationMessagePageV2Schema.safeParse({
+        snapshotRevision: revision,
+        olderCursor: null,
+        newerCursor: null,
+        hasOlder: false,
+        hasNewer: false,
+        threadId: ids.thread,
+        items: [v2Message]
+      }).success
+    ).toBe(true);
   });
 
   it("binds a retry to the original client message identity and exact body", () => {

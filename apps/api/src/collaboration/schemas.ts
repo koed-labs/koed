@@ -6,6 +6,7 @@ import {
   COLLABORATION_MESSAGE_MAX_UTF8_BYTES,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
+  COLLABORATION_TEAM_MESSAGE_MENTION_MAX,
   COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES
 } from "@koed/shared";
 
@@ -171,6 +172,66 @@ export const createCollaborationMessageSchema = z
   })
   .strict();
 
+const distinctTeamMessageMentionUserIdsSchema = z
+  .array(strictUuidSchema)
+  .max(COLLABORATION_TEAM_MESSAGE_MENTION_MAX)
+  .superRefine((userIds, context) => {
+    if (new Set(userIds).size !== userIds.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Mentioned User IDs must be unique"
+      });
+    }
+  });
+
+export const createTeamCollaborationMessageV2Schema = z
+  .object({
+    bodyText: messageBodySchema,
+    replyToMessageId: strictUuidSchema.nullable(),
+    mentionsUserIds: distinctTeamMessageMentionUserIdsSchema
+  })
+  .strict();
+
+export const teamCollaborationMessageV2ApiSchema = z
+  .object({
+    id: strictUuidSchema,
+    threadId: strictUuidSchema,
+    threadSequence: z.number().int().safe().positive(),
+    audienceVersion: z.number().int().safe().positive(),
+    scope: z.literal("team"),
+    personalOwnerUserId: z.null(),
+    teamId: strictUuidSchema,
+    teamWorkspaceId: strictUuidSchema.nullable(),
+    senderKind: z.literal("user"),
+    senderPrincipalId: z.string().nullable(),
+    senderUserId: strictUuidSchema.nullable(),
+    senderDisplayName: z.string().nullable(),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
+    bodyText: z.string(),
+    metadata: z.record(z.string(), z.unknown()),
+    provenance: z
+      .object({
+        kind: z.string(),
+        id: z.string(),
+        details: z.record(z.string(), z.unknown()).optional()
+      })
+      .strict(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    replyToMessageId: strictUuidSchema.nullable(),
+    mentionsUserIds: distinctTeamMessageMentionUserIdsSchema
+  })
+  .strict();
+
+export const teamCollaborationMessageV2ApiPageSchema = z
+  .object({
+    messages: z.array(teamCollaborationMessageV2ApiSchema).max(200),
+    hasMore: z.boolean(),
+    nextBeforeSequence: z.number().int().safe().positive().nullable(),
+    nextAfterSequence: z.number().int().safe().positive().nullable()
+  })
+  .strict();
+
 export const listCollaborationMessagesQuerySchema = z
   .object({
     afterSequence: z.coerce.number().int().safe().min(0).optional(),
@@ -182,6 +243,24 @@ export const listCollaborationMessagesQuerySchema = z
     (input) =>
       input.afterSequence === undefined || input.beforeSequence === undefined,
     { message: "afterSequence and beforeSequence cannot be combined" }
+  );
+
+export const listTeamCollaborationMessagesV2QuerySchema = z
+  .object({
+    afterSequence: z.coerce.number().int().safe().min(0).optional(),
+    beforeSequence: z.coerce.number().int().safe().positive().optional(),
+    limit: pageLimitSchema
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.afterSequence === undefined ||
+      input.beforeSequence === undefined ||
+      input.beforeSequence > input.afterSequence,
+    {
+      path: ["beforeSequence"],
+      message: "beforeSequence must be greater than afterSequence"
+    }
   );
 
 export const advanceCollaborationReadStateSchema = z
@@ -228,6 +307,15 @@ export const collaborationRealtimeSnapshotSchema = z
   })
   .and(collaborationRealtimeScopeSchema);
 
+export const teamCollaborationRealtimeV2SnapshotSchema = z
+  .object({
+    clientInstanceId: realtimeBindingKeySchema,
+    subscriptionKey: realtimeBindingKeySchema,
+    scope: z.literal("team"),
+    teamId: strictUuidSchema
+  })
+  .strict();
+
 export const collaborationRealtimeStreamQuerySchema = z
   .object({
     clientInstanceId: realtimeBindingKeySchema,
@@ -235,6 +323,16 @@ export const collaborationRealtimeStreamQuerySchema = z
     cursor: realtimeCursorSchema.optional()
   })
   .and(collaborationRealtimeScopeSchema);
+
+export const teamCollaborationRealtimeV2StreamQuerySchema = z
+  .object({
+    clientInstanceId: realtimeBindingKeySchema,
+    subscriptionKey: realtimeBindingKeySchema,
+    cursor: realtimeCursorSchema.optional(),
+    scope: z.literal("team"),
+    teamId: strictUuidSchema
+  })
+  .strict();
 
 export const collaborationRealtimeAckSchema = z
   .object({
@@ -245,3 +343,6 @@ export const collaborationRealtimeAckSchema = z
     subscriptionKey: realtimeBindingKeySchema
   })
   .strict();
+
+export const teamCollaborationRealtimeV2AckSchema =
+  collaborationRealtimeAckSchema;

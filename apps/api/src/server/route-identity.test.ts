@@ -557,17 +557,26 @@ describe("route identity contract", () => {
         "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/restore",
         "GET /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
         "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        "GET /v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        "POST /v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
         "PUT /v1/collaboration/teams/{teamId}/threads/{threadId}/delivery-state",
         "PUT /v1/collaboration/teams/{teamId}/threads/{threadId}/read-state",
         "POST /v1/collaboration/realtime/snapshot",
         "POST /v1/collaboration/realtime/ack",
         "GET /v1/collaboration/realtime/stream",
+        "POST /v2/collaboration/realtime/snapshot",
+        "POST /v2/collaboration/realtime/ack",
+        "GET /v2/collaboration/realtime/stream",
         "POST /v1/local-edge/collaboration/command",
         "POST /v1/local-edge/collaboration/realtime/subscriptions",
+        "POST /v2/local-edge/collaboration/realtime/subscriptions",
         "POST /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
+        "POST /v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
         "GET /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/stream",
+        "GET /v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/stream",
         "DELETE /v1/local-edge/collaboration/realtime/backends/{backendId}/subscriptions",
-        "DELETE /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}"
+        "DELETE /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}",
+        "DELETE /v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}"
       ],
       shared_memory: [
         "PUT /v1/shared-memory/source-owner-policies/{logicalMemoryId}",
@@ -666,7 +675,9 @@ describe("route identity contract", () => {
     }
 
     const localCollaboration = implementedRouteIdentityContracts.filter(
-      (contract) => contract.path.startsWith("/v1/local-edge/collaboration/")
+      (contract) =>
+        contract.path.startsWith("/v1/local-edge/collaboration/") ||
+        contract.path.startsWith("/v2/local-edge/collaboration/")
     );
     expect(localCollaboration).toEqual(
       expect.arrayContaining([

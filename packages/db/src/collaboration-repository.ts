@@ -23,12 +23,14 @@ const THREAD_TOPIC_MARKER = "[koed encrypted collaboration topic]";
 const MESSAGE_BODY_MARKER = "[koed encrypted collaboration message]";
 const MESSAGE_METADATA_MARKER = "[koed encrypted collaboration metadata]";
 const MESSAGE_PROVENANCE_MARKER = "[koed encrypted collaboration provenance]";
+const TEAM_MESSAGE_V2_METADATA_KEY = "__koed_team_message_v2";
 const PERSONAL_NOTE_TITLE_MARKER = "[koed encrypted personal note title]";
 const PERSONAL_NOTE_BODY_MARKER = "[koed encrypted personal note body]";
 const OUTBOX_REPLAY_DAYS = 30;
 const MAX_THREAD_NAME_CODE_POINTS = 80;
 const MAX_THREAD_TOPIC_BYTES = 1_024;
 const MAX_MESSAGE_BODY_BYTES = 32_768;
+const MAX_TEAM_MESSAGE_MENTIONS = 20;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 512;
 const MAX_DM_PARTICIPANTS = 40;
 const MAX_PAGE_SIZE = 200;
@@ -134,6 +136,18 @@ export interface CollaborationMessageRecord {
   provenance: CollaborationMessageProvenance;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TeamCollaborationMessageV2Record extends CollaborationMessageRecord {
+  replyToMessageId: string | null;
+  mentionsUserIds: string[];
+}
+
+export interface TeamCollaborationMessageV2PageRecord {
+  messages: TeamCollaborationMessageV2Record[];
+  hasMore: boolean;
+  nextBeforeSequence: number | null;
+  nextAfterSequence: number | null;
 }
 
 export interface CollaborationMessagePageRecord {
@@ -391,6 +405,16 @@ export interface CollaborationRepository {
       provenance?: CollaborationMessageProvenance;
     }
   ): Promise<CollaborationMessageRecord | null>;
+  sendTeamMessageV2(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      idempotencyKey: string;
+      bodyText: string;
+      replyToMessageId: string | null;
+      mentionsUserIds: string[];
+    }
+  ): Promise<TeamCollaborationMessageV2Record | null>;
   listMessages(
     actor: ActorContext,
     input: {
@@ -400,6 +424,15 @@ export interface CollaborationRepository {
       limit?: number;
     }
   ): Promise<CollaborationMessagePageRecord | null>;
+  listTeamMessagesV2(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      afterSequence?: number;
+      beforeSequence?: number;
+      limit?: number;
+    }
+  ): Promise<TeamCollaborationMessageV2PageRecord | null>;
   createPersonalNote(
     actor: ActorContext,
     input: { body: string; idempotencyKey: string }
@@ -499,6 +532,10 @@ export interface CollaborationRealtimeMaterializationRepository {
     actor: ActorContext,
     input: { threadId: string; messageId: string }
   ): Promise<CollaborationMessageRecord | null>;
+  getTeamMessageV2ForRealtime(
+    actor: ActorContext,
+    input: { threadId: string; messageId: string }
+  ): Promise<TeamCollaborationMessageV2Record | null>;
   getReceiptStateForRealtime(
     actor: ActorContext,
     input: { threadId: string }
@@ -572,6 +609,7 @@ type AuthorizedThreadRow = {
 type MessageRow = {
   id: string;
   thread_id: string;
+  reply_to_message_id: string | null;
   thread_sequence: string | number;
   audience_version: number;
   scope: CollaborationScope;
@@ -747,6 +785,29 @@ const requireBoundedText = (
     throw new TypeError(`${field} must contain 1 to ${maximum} characters`);
   }
   return trimmed;
+};
+
+const canonicalTeamMentionUserIds = (value: unknown): string[] => {
+  if (!Array.isArray(value) || value.length > MAX_TEAM_MESSAGE_MENTIONS) {
+    throw new TypeError(
+      `mentionsUserIds must contain at most ${MAX_TEAM_MESSAGE_MENTIONS} User IDs`
+    );
+  }
+  const userIds = value.map((candidate) => {
+    if (
+      typeof candidate !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        candidate
+      )
+    ) {
+      throw new TypeError("mentionsUserIds must contain UUIDs");
+    }
+    return candidate.toLowerCase();
+  });
+  if (new Set(userIds).size !== userIds.length) {
+    throw new TypeError("mentionsUserIds must be unique");
+  }
+  return userIds.sort();
 };
 
 const normalizeRequiredText = (value: string, field: string): string => {
@@ -1446,9 +1507,11 @@ const currentThreadAudienceMembers = async (
 
 const ensureCurrentThreadAudience = async (
   client: pg.PoolClient,
-  thread: AuthorizedThreadRow
+  thread: AuthorizedThreadRow,
+  currentMembers?: string[]
 ): Promise<number> => {
-  const members = await currentThreadAudienceMembers(client, thread);
+  const members =
+    currentMembers ?? (await currentThreadAudienceMembers(client, thread));
   if (members.length === 0) {
     throw new CollaborationStateConflictError(
       "Collaboration thread has no authorized audience"
@@ -1911,16 +1974,73 @@ const mapMessageRow = async (
     senderDisplayName: row.sender_display_name,
     recipientStatus: row.recipient_status,
     bodyText,
-    metadata: metadata as Record<string, unknown>,
+    metadata: Object.fromEntries(
+      Object.entries(metadata as Record<string, unknown>).filter(
+        ([key]) => key !== TEAM_MESSAGE_V2_METADATA_KEY
+      )
+    ),
     provenance: provenance as CollaborationMessageProvenance,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString()
   };
 };
 
+const teamMessageV2FieldsFromMetadata = (value: unknown): string[] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Encrypted collaboration message metadata is unavailable");
+  }
+  const teamMessageV2 = (value as Record<string, unknown>)[
+    TEAM_MESSAGE_V2_METADATA_KEY
+  ];
+  if (teamMessageV2 === undefined) return [];
+  if (
+    typeof teamMessageV2 !== "object" ||
+    teamMessageV2 === null ||
+    Array.isArray(teamMessageV2) ||
+    !Array.isArray((teamMessageV2 as Record<string, unknown>).mentionsUserIds)
+  ) {
+    throw new Error("Encrypted Team Chat v2 mention metadata is invalid");
+  }
+  const mentionsUserIds = (teamMessageV2 as { mentionsUserIds: unknown[] })
+    .mentionsUserIds;
+  if (
+    mentionsUserIds.length > MAX_TEAM_MESSAGE_MENTIONS ||
+    mentionsUserIds.some((userId) => typeof userId !== "string")
+  ) {
+    throw new Error("Encrypted Team Chat v2 mention metadata is invalid");
+  }
+  return mentionsUserIds as string[];
+};
+
+const mapTeamMessageV2Row = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  row: MessageRow
+): Promise<TeamCollaborationMessageV2Record> => {
+  if (row.scope !== "team") {
+    throw new Error("Team Chat v2 cannot map a Personal collaboration message");
+  }
+  const message = await mapMessageRow(client, actor, provider, row);
+  const metadata = await decryptMessageField(
+    client,
+    actor,
+    provider,
+    row,
+    "metadata"
+  );
+  const mentionsUserIds = teamMessageV2FieldsFromMetadata(metadata);
+  return {
+    ...message,
+    replyToMessageId: row.reply_to_message_id,
+    mentionsUserIds
+  };
+};
+
 const selectMessageColumnsSql = `
   cm.id,
   cm.thread_id,
+  cm.reply_to_message_id,
   cm.thread_sequence,
   cm.audience_version,
   cm.scope,
@@ -3523,8 +3643,13 @@ const sendCollaborationMessage = async (
     bodyText: string;
     metadata?: Record<string, unknown>;
     provenance?: CollaborationMessageProvenance;
+    messageContractVersion?: 2;
+    replyToMessageId?: string | null;
+    mentionsUserIds?: string[];
   }
-): Promise<CollaborationMessageRecord | null> => {
+): Promise<
+  CollaborationMessageRecord | TeamCollaborationMessageV2Record | null
+> => {
   const idempotencyKey = requireBoundedText(
     input.idempotencyKey,
     "idempotencyKey",
@@ -3563,6 +3688,37 @@ const sendCollaborationMessage = async (
   }
   requireBoundedText(provenance.kind, "provenance.kind", 120);
   requireBoundedText(provenance.id, "provenance.id", 512);
+  const teamMessageV2 = input.messageContractVersion === 2;
+  if (
+    !teamMessageV2 &&
+    (input.replyToMessageId !== undefined ||
+      input.mentionsUserIds !== undefined)
+  ) {
+    throw new TypeError("Team Chat v2 fields require the v2 message contract");
+  }
+  const replyToMessageId = teamMessageV2
+    ? (input.replyToMessageId ?? null)
+    : null;
+  if (
+    replyToMessageId !== null &&
+    (typeof replyToMessageId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        replyToMessageId
+      ))
+  ) {
+    throw new TypeError("replyToMessageId must be a UUID or null");
+  }
+  const mentionsUserIds = teamMessageV2
+    ? canonicalTeamMentionUserIds(input.mentionsUserIds ?? [])
+    : [];
+  if (teamMessageV2) {
+    if (Object.hasOwn(metadata, TEAM_MESSAGE_V2_METADATA_KEY)) {
+      throw new TypeError("metadata contains a reserved message property");
+    }
+    metadata[TEAM_MESSAGE_V2_METADATA_KEY] = { mentionsUserIds };
+  } else if (Object.hasOwn(metadata, TEAM_MESSAGE_V2_METADATA_KEY)) {
+    throw new TypeError("metadata contains a reserved message property");
+  }
 
   // The thread lock serializes sequence allocation and same-thread idempotency.
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
@@ -3571,14 +3727,61 @@ const sendCollaborationMessage = async (
     forUpdate: true
   });
   if (!thread) return null;
+  if (teamMessageV2 && thread.scope !== "team") {
+    throw new CollaborationStateConflictError(
+      "Team Chat v2 cannot be used for Personal messages"
+    );
+  }
+  let currentAudienceMembers: string[] | undefined;
+  if (teamMessageV2) {
+    currentAudienceMembers = await currentThreadAudienceMembers(client, thread);
+    if (!currentAudienceMembers.includes(actor.userId)) {
+      throw new CollaborationStateConflictError(
+        "Collaboration thread audience is unavailable"
+      );
+    }
+    if (
+      mentionsUserIds.some(
+        (userId) => !currentAudienceMembers!.includes(userId)
+      )
+    ) {
+      throw new CollaborationStateConflictError(
+        "One or more mentioned Users are unavailable in this message audience"
+      );
+    }
+    if (replyToMessageId !== null) {
+      const replyTarget = await client.query(
+        `select 1 from collaboration_messages where thread_id = $1 and id = $2 limit 1`,
+        [thread.id, replyToMessageId]
+      );
+      if (replyTarget.rowCount !== 1) {
+        throw new CollaborationStateConflictError(
+          "Reply target is unavailable in this thread"
+        );
+      }
+    }
+  }
   const idempotencyKeyHash = hashDomain("message-idempotency", idempotencyKey);
-  const messageRequestHash = requestHash({
-    threadId: thread.id,
-    senderPrincipalId: actor.userId,
-    bodyText,
-    metadata,
-    provenance
-  });
+  const messageRequestHash = requestHash(
+    teamMessageV2
+      ? {
+          messageContractVersion: 2,
+          threadId: thread.id,
+          senderPrincipalId: actor.userId,
+          bodyText,
+          metadata,
+          provenance,
+          replyToMessageId,
+          mentionsUserIds
+        }
+      : {
+          threadId: thread.id,
+          senderPrincipalId: actor.userId,
+          bodyText,
+          metadata,
+          provenance
+        }
+  );
   const existing = await client.query<MessageRow>(
     `
       select ${selectMessageColumnsSql}
@@ -3598,14 +3801,20 @@ const sendCollaborationMessage = async (
       );
     }
     await attachRecipientStatuses(client, actor, existing.rows);
-    return mapMessageRow(client, actor, provider, existing.rows[0]);
+    return teamMessageV2
+      ? mapTeamMessageV2Row(client, actor, provider, existing.rows[0])
+      : mapMessageRow(client, actor, provider, existing.rows[0]);
   }
 
   const threadSequence = Number(thread.next_sequence);
   if (!Number.isSafeInteger(threadSequence) || threadSequence <= 0) {
     throw new Error("Collaboration thread sequence is exhausted");
   }
-  const audienceVersion = await ensureCurrentThreadAudience(client, thread);
+  const audienceVersion = await ensureCurrentThreadAudience(
+    client,
+    thread,
+    currentAudienceMembers
+  );
   const messageId = uuidFromHash(
     `koed:collaboration:message:v1\n${thread.id}\n${actor.userId}\n${idempotencyKeyHash}`
   );
@@ -3624,6 +3833,7 @@ const sendCollaborationMessage = async (
       insert into collaboration_messages (
         id,
         thread_id,
+        reply_to_message_id,
         thread_sequence,
         audience_version,
         scope,
@@ -3642,13 +3852,13 @@ const sendCollaborationMessage = async (
         provenance_marker
       )
       values (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        'user', $9, $9, $10, $11, $12, $13,
-        'encrypted', $14, $15
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        'user', $10, $10, $11, $12, $13, $14, 'encrypted', $15, $16
       )
       returning
         id,
         thread_id,
+        reply_to_message_id,
         thread_sequence,
         audience_version,
         scope,
@@ -3667,6 +3877,7 @@ const sendCollaborationMessage = async (
     [
       messageId,
       thread.id,
+      replyToMessageId,
       threadSequence,
       audienceVersion,
       thread.scope,
@@ -3737,7 +3948,70 @@ const sendCollaborationMessage = async (
   );
   inserted.rows[0]!.sender_display_name = sender.rows[0]?.display_name ?? null;
   await attachRecipientStatuses(client, actor, inserted.rows);
-  return mapMessageRow(client, actor, provider, inserted.rows[0]!);
+  return teamMessageV2
+    ? mapTeamMessageV2Row(client, actor, provider, inserted.rows[0]!)
+    : mapMessageRow(client, actor, provider, inserted.rows[0]!);
+};
+
+const listTeamCollaborationMessagesV2 = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    threadId: string;
+    afterSequence?: number;
+    beforeSequence?: number;
+    limit?: number;
+  }
+): Promise<TeamCollaborationMessageV2PageRecord | null> => {
+  const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
+    required: "read",
+    includeArchived: true
+  });
+  if (!thread) return null;
+  if (thread.scope !== "team") return null;
+  const afterSequence = requireNonNegativeInteger(
+    input.afterSequence ?? 0,
+    "afterSequence"
+  );
+  const beforeSequence =
+    input.beforeSequence === undefined
+      ? null
+      : requirePositiveInteger(input.beforeSequence, "beforeSequence");
+  if (beforeSequence !== null && beforeSequence <= afterSequence) {
+    throw new TypeError("beforeSequence must be greater than afterSequence");
+  }
+  const limit = boundedLimit(input.limit, MAX_PAGE_SIZE, 50);
+  const ascending = input.afterSequence !== undefined;
+  const result = await client.query<MessageRow>(
+    `
+      select ${selectMessageColumnsSql}
+      from collaboration_messages cm
+      left join users sender on sender.id = cm.sender_user_id
+      where cm.thread_id = $1
+        and cm.thread_sequence > $2
+        and ($3::bigint is null or cm.thread_sequence < $3)
+      order by cm.thread_sequence ${ascending ? "asc" : "desc"}
+      limit $4
+    `,
+    [thread.id, afterSequence, beforeSequence, limit + 1]
+  );
+  const hasMore = result.rows.length > limit;
+  const pageRows = result.rows.slice(0, limit);
+  if (!ascending) pageRows.reverse();
+  await attachRecipientStatuses(client, actor, pageRows);
+  const messages: TeamCollaborationMessageV2Record[] = [];
+  for (const row of pageRows) {
+    messages.push(await mapTeamMessageV2Row(client, actor, provider, row));
+  }
+  return {
+    messages,
+    hasMore,
+    nextBeforeSequence:
+      messages.length > 0 ? messages[0]!.threadSequence : null,
+    nextAfterSequence:
+      messages.length > 0 ? messages[messages.length - 1]!.threadSequence : null
+  };
 };
 
 const listCollaborationMessages = async (
@@ -3824,6 +4098,33 @@ const getCollaborationMessageForRealtime = async (
   if (!result.rows[0]) return null;
   await attachRecipientStatuses(client, actor, result.rows);
   return mapMessageRow(client, actor, provider, result.rows[0]);
+};
+
+const getTeamCollaborationMessageV2ForRealtime = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  input: { threadId: string; messageId: string }
+): Promise<TeamCollaborationMessageV2Record | null> => {
+  const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
+    required: "read",
+    includeArchived: true
+  });
+  if (!thread || thread.scope !== "team") return null;
+  const result = await client.query<MessageRow>(
+    `
+      select ${selectMessageColumnsSql}
+      from collaboration_messages cm
+      left join users sender on sender.id = cm.sender_user_id
+      where cm.id = $1
+        and cm.thread_id = $2
+      limit 1
+    `,
+    [input.messageId, thread.id]
+  );
+  if (!result.rows[0]) return null;
+  await attachRecipientStatuses(client, actor, result.rows);
+  return mapTeamMessageV2Row(client, actor, provider, result.rows[0]);
 };
 
 const listCollaborationMessageReceiptsForRealtime = async (
@@ -4385,8 +4686,33 @@ export const createCollaborationRepository = (
       );
     },
 
+    async sendTeamMessageV2(actor, input) {
+      return withTransaction(pool, async (client) => {
+        const message = await sendCollaborationMessage(
+          client,
+          actor,
+          await requireThreadProvider(client, input.threadId),
+          { ...input, messageContractVersion: 2 }
+        );
+        if (!message) return null;
+        if (!("replyToMessageId" in message)) {
+          throw new Error("Team Chat v2 message mapping is unavailable");
+        }
+        return message;
+      });
+    },
+
     async listMessages(actor, input) {
       return listCollaborationMessages(
+        pool,
+        actor,
+        await requireThreadProvider(pool, input.threadId),
+        input
+      );
+    },
+
+    async listTeamMessagesV2(actor, input) {
+      return listTeamCollaborationMessagesV2(
         pool,
         actor,
         await requireThreadProvider(pool, input.threadId),
@@ -5118,6 +5444,15 @@ export const createCollaborationRepository = (
 
     async getMessageForRealtime(actor, input) {
       return getCollaborationMessageForRealtime(
+        pool,
+        actor,
+        await requireThreadProvider(pool, input.threadId),
+        input
+      );
+    },
+
+    async getTeamMessageV2ForRealtime(actor, input) {
+      return getTeamCollaborationMessageV2ForRealtime(
         pool,
         actor,
         await requireThreadProvider(pool, input.threadId),

@@ -116,6 +116,29 @@ const teamMessage = {
   failure: null
 };
 
+const teamMessageV2Record = {
+  id: ids.messageThree,
+  threadId: ids.thread,
+  threadSequence: 2,
+  audienceVersion: 1,
+  scope: "team" as const,
+  personalOwnerUserId: null,
+  teamId: ids.team,
+  teamWorkspaceId: ids.workspace,
+  senderKind: "user" as const,
+  senderPrincipalId: ids.participant,
+  senderUserId: ids.participant,
+  senderDisplayName: "Alice",
+  recipientStatus: "sent" as const,
+  bodyText: "hello v2",
+  metadata: {},
+  provenance: { kind: "user_message", id: ids.clientMessage },
+  createdAt: iso,
+  updatedAt: iso,
+  replyToMessageId: ids.message,
+  mentionsUserIds: [ids.participantTwo]
+};
+
 const teamMessageAt = (sequence: number) => ({
   ...teamMessage,
   id:
@@ -909,6 +932,16 @@ interface HarnessOptions {
 const resultPayloadFor = (
   command: CollaborationRendererCommand
 ): Record<string, unknown> => {
+  if (command.command === "collaboration.send_team_message_v2") {
+    return {
+      message: {
+        ...teamMessageV2Record,
+        bodyText: command.input.body,
+        replyToMessageId: command.input.replyToMessageId,
+        mentionsUserIds: command.input.mentionsUserIds
+      }
+    };
+  }
   if (
     command.command === "collaboration.send_message" ||
     command.command === "collaboration.retry_message"
@@ -1488,6 +1521,28 @@ const supportedMappings: Array<{
     method: "POST",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
     body: { bodyText: "hello" },
+    idempotencyKey: ids.clientMessage
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.send_team_message_v2",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        clientMessageId: ids.clientMessage,
+        body: "hello v2",
+        replyToMessageId: ids.message,
+        mentionsUserIds: [ids.participantTwo]
+      }
+    },
+    method: "POST",
+    path: `/koed/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
+    body: {
+      bodyText: "hello v2",
+      replyToMessageId: ids.message,
+      mentionsUserIds: [ids.participantTwo]
+    },
     idempotencyKey: ids.clientMessage
   },
   {
@@ -3542,6 +3597,124 @@ describe("local-edge collaboration command route", () => {
     ).toBe(true);
   });
 
+  it("keeps v2 Team history cursors separate from the unchanged v1 cursor contract", async () => {
+    const response = (call: FetchCall) => {
+      const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+      if (
+        path ===
+        `/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
+      ) {
+        return Response.json({
+          messages: [{ ...teamMessageV2Record, threadSequence: 3 }],
+          hasMore: true,
+          nextBeforeSequence: 3,
+          nextAfterSequence: 3
+        });
+      }
+      return remoteCompositionResponse(call);
+    };
+    const harness = createHarness({ response });
+    const v2Command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load_team_message_page_v2",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        direction: "older",
+        cursor: null,
+        limit: 1
+      }
+    } as CollaborationRendererCommand;
+    const v2 = parseResult((await injectCommand(harness.app, v2Command)).body);
+    expect(v2).toMatchObject({
+      ok: true,
+      data: {
+        page: {
+          items: [
+            {
+              id: ids.messageThree,
+              sequence: 3,
+              replyToMessageId: ids.message,
+              mentionsUserIds: [ids.participantTwo]
+            }
+          ],
+          hasOlder: true
+        }
+      }
+    });
+    if (!v2.ok || v2.command !== v2Command.command) {
+      throw new Error("Expected Team message v2 page");
+    }
+    const v2Cursor = v2.data.page.olderCursor;
+    expect(v2Cursor).toMatch(/^ctm2\./);
+
+    const newerV2Command = {
+      ...v2Command,
+      requestId: randomUUID(),
+      input: { ...v2Command.input, direction: "newer" as const }
+    };
+    const newerV2 = parseResult(
+      (await injectCommand(harness.app, newerV2Command)).body
+    );
+    expect(newerV2.ok).toBe(true);
+    const newerRequest = harness.calls.findLast((call) => {
+      const url = new URL(call.url);
+      return (
+        url.pathname.endsWith(
+          `/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
+        ) && url.searchParams.get("afterSequence") === "0"
+      );
+    });
+    expect(newerRequest).toBeDefined();
+    expect(new URL(newerRequest!.url).searchParams.get("beforeSequence")).toBe(
+      "4"
+    );
+
+    const v1Command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load_message_page",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        direction: "older",
+        cursor: v2Cursor,
+        limit: 1
+      }
+    } as CollaborationRendererCommand;
+    expect(
+      parseResult((await injectCommand(harness.app, v1Command)).body)
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" }
+    });
+
+    const v1First = parseResultAs<MessagePageTestResult>(
+      (
+        await injectCommand(harness.app, {
+          ...v1Command,
+          requestId: randomUUID(),
+          input: { ...v1Command.input, cursor: null }
+        })
+      ).body
+    );
+    if (!v1First.ok || v1First.command !== "collaboration.load_message_page") {
+      throw new Error("Expected legacy Team message page");
+    }
+    const v1Cursor = v1First.data.page.olderCursor;
+    expect(v1Cursor).toMatch(/^ctmc1\./);
+    expect(
+      parseResult(
+        (
+          await injectCommand(harness.app, {
+            ...v2Command,
+            requestId: randomUUID(),
+            input: { ...v2Command.input, cursor: v1Cursor }
+          })
+        ).body
+      )
+    ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+  });
+
   it.each(["", localAuthorization, `${desktopAuthorization.slice(0, -1)}c`])(
     "rejects missing, LEC, or tampered DLC for Personal commands",
     async (authorization) => {
@@ -4169,7 +4342,9 @@ describe("local-edge collaboration command route", () => {
         }
       },
       {
-        command: supportedMappings[8]!.command,
+        command: supportedMappings.find(
+          ({ command }) => command.command === "collaboration.mark_read"
+        )!.command,
         payload: { readState: canonicalReadState },
         expected: { data: { readState } }
       }

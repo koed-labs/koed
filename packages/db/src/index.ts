@@ -85,6 +85,8 @@ export {
   type CollaborationEventFamily,
   type CollaborationLifecycle,
   type CollaborationMessagePageRecord,
+  type TeamCollaborationMessageV2Record,
+  type TeamCollaborationMessageV2PageRecord,
   type CollaborationMessageProvenance,
   type CollaborationMessageRecord,
   type CollaborationOutboxEventRecord,

@@ -96,6 +96,12 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.send_team_message_v2": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.retry_message": {
     scope: "dynamic",
     desktop: write,
@@ -122,6 +128,10 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     desktop: read,
     teamOperation: true,
     teamResultMatcher: true
+  },
+  "collaboration.load_team_message_page_v2": {
+    scope: "team",
+    desktop: read
   },
   "collaboration.load_shared_source_page": { scope: "team", desktop: read },
   "collaboration.create_invitation": { scope: "team", desktop: write },
@@ -388,6 +398,26 @@ describe("collaboration command registry", () => {
       path: "/v1/teams/presence/activity",
       body: { teamIds: [teamId] },
       resultKey: "acceptedTeamIds"
+    });
+
+    const teamV2Send = command("collaboration.send_team_message_v2", {
+      thread: { scope: "team", teamId, threadId },
+      clientMessageId,
+      body: "A quoted reply",
+      replyToMessageId: messageId,
+      mentionsUserIds: ["00000000-0000-4000-8000-000000000007"]
+    });
+    expect(teamCollaborationOperationFor(teamV2Send)).toEqual({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages`,
+      body: {
+        bodyText: "A quoted reply",
+        replyToMessageId: messageId,
+        mentionsUserIds: ["00000000-0000-4000-8000-000000000007"]
+      },
+      resultKey: "message",
+      idempotencyKey: clientMessageId
     });
   });
 });
