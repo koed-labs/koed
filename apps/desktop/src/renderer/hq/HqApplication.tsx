@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -15,6 +16,7 @@ import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
 import { HqSearch } from "./HqSearch.js";
 import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
+import { hqSettingsShortcut } from "./settings/HqSettings.js";
 import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 
@@ -39,6 +41,7 @@ export function HqApplication({
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const shellActions = useRef<HqShellActions>(null);
+  const settingsReturnFocus = useRef<HTMLElement | null>(null);
   usePersonalProjectsLoader({
     personalMemoryReady,
     store: personalMemoryStore
@@ -126,10 +129,59 @@ export function HqApplication({
       )
   ]);
   destinations.push(...hqLayoutCommands(Boolean(renderSettings)));
-  const openSettings = () => {
+  const openSettings = useCallback(() => {
+    if (!renderSettings || settingsOpen) return;
+    const active = document.activeElement;
+    settingsReturnFocus.current =
+      active instanceof HTMLElement &&
+      active !== document.body &&
+      active !== document.documentElement &&
+      active.tabIndex >= 0 &&
+      !active.closest('[role="dialog"]')
+        ? active
+        : (document.querySelector<HTMLElement>("button.hq-account") ??
+          document.querySelector<HTMLElement>(
+            'button[aria-label="Search and commands"]'
+          ));
     shellActions.current?.dismissOverlays();
+    setSearchOpen(false);
     setSettingsOpen(true);
-  };
+  }, [renderSettings, settingsOpen]);
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    requestAnimationFrame(() => {
+      const opener = settingsReturnFocus.current;
+      const fallback = [
+        document.querySelector<HTMLElement>("button.hq-account"),
+        document.querySelector<HTMLElement>(
+          'button[aria-label="Show project navigation"]'
+        ),
+        document.querySelector<HTMLElement>(
+          'button[aria-label="Search and commands"]'
+        )
+      ].find((element) => element && element.getClientRects().length > 0);
+      (opener?.isConnected && opener.getClientRects().length
+        ? opener
+        : fallback
+      )?.focus();
+    });
+  }, []);
+  useEffect(() => {
+    if (!renderSettings) return;
+    const keyDown = (event: KeyboardEvent) => {
+      if (
+        !hqSettingsShortcut(event) ||
+        document.querySelector(
+          '[role="dialog"]:not(.hq-search):not([data-hq-sidebar-dialog])'
+        )
+      )
+        return;
+      event.preventDefault();
+      openSettings();
+    };
+    window.addEventListener("keydown", keyDown);
+    return () => window.removeEventListener("keydown", keyDown);
+  }, [openSettings, renderSettings]);
   const invoke = (command: HqCommand) => {
     const action = command.action;
     switch (action.kind) {
@@ -172,7 +224,9 @@ export function HqApplication({
             onRetryProjects={() => {
               void personalMemoryStore?.loadProjects();
             }}
-            onOpenSearchAndCommands={() => setSearchOpen(true)}
+            onOpenSearchAndCommands={() => {
+              if (!settingsOpen) setSearchOpen(true);
+            }}
             onSelectProject={(projectId) =>
               selectRoute({ kind: "project", projectId })
             }
@@ -217,9 +271,7 @@ export function HqApplication({
         onOpenChange={setSearchOpen}
         onInvoke={invoke}
       />
-      {settingsOpen && renderSettings
-        ? renderSettings(() => setSettingsOpen(false))
-        : null}
+      {settingsOpen && renderSettings ? renderSettings(closeSettings) : null}
     </>
   );
 }

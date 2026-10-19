@@ -48,6 +48,22 @@ the HQ title and selected identity, with empty content until their dedicated
 surfaces are implemented. The context pane remains an empty HQ scaffold. New
 chat, New Project, and Now stay disabled until their owning flows are available.
 
+HQ Settings opens as a modal above the workspace, preserving its selection
+and scroll position. It uses its own presentation for General, Agents, Teams,
+Services, and About. The modal traps focus, dims the workspace, and restores
+focus to its opener when closed. A nested confirmation closes before Settings
+when the User presses Escape. General keeps the device theme, startup registration, and hardware
+acceleration controls. Agents keeps AI Client setup, repair, removal, status
+checks, and the existing local model and flow assignment controls. Integration
+changes still require explicit consent and use the existing trusted Desktop
+commands. Failed capability checks show the last known results as unverified.
+Teams uses the existing Team Connection client; removing the remote connection
+clears authorized Team state on this device and keeps Personal Memory local.
+The Teams section is hidden when Team collaboration is disabled. Services
+exposes status refresh, diagnostics, logs, and content-free embedding progress.
+Settings dialogs carry the scoped HQ theme into their portals. These renderer
+changes do not change runtime permissions, credentials, or backend authority.
+
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).

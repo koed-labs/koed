@@ -85,6 +85,7 @@ import {
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
 import { HqApplication } from "./hq/HqApplication.js";
+import { HqSettings } from "./hq/settings/HqSettings.js";
 import "./app.css";
 
 const CollaborationRoutes = lazy(async () => {
@@ -1170,6 +1171,26 @@ export function App({
       <HqApplication
         personalMemoryStore={personalMemoryStore}
         personalMemoryReady={personalMemoryReady}
+        accountIdentity={
+          snapshot
+            ? { displayName: snapshot.navigation.personalOwner.displayName }
+            : undefined
+        }
+        renderSettings={(onClose) => (
+          <HqSettings
+            collaborationClient={client}
+            collaborationSnapshot={snapshot}
+            hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
+            launchAtStartup={window.koedDesktop?.launchAtStartup}
+            localAiClients={window.koedDesktop?.localAiClients}
+            onClose={onClose}
+            onThemeChange={(preference) => void themeStore.set(preference)}
+            statusStore={activeStatusStore}
+            teamCollaborationEnabled={teamCollaborationEnabled}
+            theme={theme.preference}
+            version={__KOED_DESKTOP_VERSION__}
+          />
+        )}
       />
     );
   }
