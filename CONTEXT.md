@@ -98,6 +98,11 @@ A verified, bounded source snapshot exported at a completed turn boundary so a
 User may explicitly create a new Conversation lineage in an AI Client.
 _Avoid_: live collaboration, ownership transfer, continuing the owner's Conversation
 
+**Curated Memory Assertion**:
+A reviewed, source-linked durable statement in Personal Memory. It is canonical
+Memory, distinct from a pending proposal.
+_Avoid_: proposal, Memory Event, unsupported fact
+
 **Diagnostic Memory Tool**:
 A low-level memory tool exposed only for debugging or inspection.
 _Avoid_: Supported recall path, normal memory tool
@@ -175,6 +180,11 @@ the local edge to perform Team operations. It is distinct from a Personal API
 Token and from the upstream device credential used against the Team Backend.
 _Avoid_: API Token, upstream credential, browser session
 
+**Managed Conversation**:
+A User-owned Conversation whose AI Client execution Koed manages. It is distinct
+from an externally created Conversation that Koed only captures.
+_Avoid_: Captured Session, Agent Conversation
+
 **MCP Server**:
 The integration surface that exposes Koed memory tools to an AI Client through
 a local adapter or an authorized remote connection.
@@ -227,9 +237,9 @@ _Avoid_: Agent status, read receipt, exact activity log
 
 **Project**:
 A User-owned container for that User's Conversations, Project Sources, and
-work, with an optional folder. A local AI Client or code context such as a
-repository, working directory, filepath, ref, branch, or cwd may resolve to a
-Project.
+work, with an optional folder. A local AI Client execution context or code
+context such as a repository, working directory, filepath, ref, branch, or cwd
+may resolve to a Project.
 _Avoid_: Workspace Project, repository context alone, stable shared memory ID
 
 **Project Share Policy**:
