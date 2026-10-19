@@ -164,13 +164,19 @@ describe("local work queue repository", () => {
     });
     const repo = createLocalWorkQueueRepository(pool as never);
 
-    await expect(repo.getJobCounts(["pending", "delayed"])).resolves.toEqual({
+    await expect(
+      repo.getJobCounts(["pending", "delayed"], "memory-embed")
+    ).resolves.toEqual({
       pending: 2,
       delayed: 1
     });
     expect(pool.query).toHaveBeenCalledWith(
       expect.stringContaining("available_at > now()"),
-      [["pending", "delayed"]]
+      [["pending", "delayed"], "memory-embed"]
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("queue_name = $2"),
+      expect.anything()
     );
   });
 
@@ -197,6 +203,33 @@ describeDb("local work queue priority integration", () => {
     try {
       await runDbMigrations(pool);
     } finally {
+      await pool.end();
+    }
+  });
+
+  it("counts jobs only in the requested queue", async () => {
+    const pool = createDbPool();
+    const repository = createLocalWorkQueueRepository(pool);
+    const memoryQueue = `memory-${randomUUID()}`;
+    const lcmQueue = `lcm-${randomUUID()}`;
+    try {
+      await repository.enqueue({
+        queueName: memoryQueue,
+        jobName: "a",
+        data: {}
+      });
+
+      await expect(
+        repository.getJobCounts(["pending"], memoryQueue)
+      ).resolves.toEqual({ pending: 1 });
+      await expect(
+        repository.getJobCounts(["pending"], lcmQueue)
+      ).resolves.toEqual({ pending: 0 });
+    } finally {
+      await pool.query(
+        "delete from local_work_queue where queue_name = any($1::text[])",
+        [[memoryQueue, lcmQueue]]
+      );
       await pool.end();
     }
   });

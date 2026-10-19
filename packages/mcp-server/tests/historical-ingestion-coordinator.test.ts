@@ -22,6 +22,7 @@ import {
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
+import { historicalCompletionOutcome } from "../src/automatic-historical-provider.js";
 import {
   createClaudeHistoricalProviderAdapter,
   type ClaudeHistoricalCandidate
@@ -876,6 +877,80 @@ describe("provider-neutral historical ingestion coordination", () => {
 
     expect(calls).toEqual(["oldest-unrepresentable", "newest"]);
     await coordinator.stop();
+  });
+
+  it("reports a completion conflict without blocking a newer selection", async () => {
+    const koedHome = temporaryDirectory();
+    const calls: string[] = [];
+    const errors: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "conflict-then-newer-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry, index) => ({
+          aiClient: "conflict-then-newer-provider",
+          candidateId: entry.id,
+          frontierOffset: 40,
+          frontierLine: 2,
+          latestActivityAt: `2026-08-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`
+        })),
+      async processNextBatch({ selection }) {
+        calls.push(selection.candidateId);
+        return selection.candidateId === "oldest-conflicted"
+          ? {
+              state: "source_exhausted",
+              selection,
+              runId: "run-conflict",
+              diagnosticCode: "historical_import_state_conflict"
+            }
+          : { state: "completed", selection, runId: "run-conflict" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 60_000,
+      onError: (code) => errors.push(code)
+    });
+
+    coordinator.offerCandidates([
+      { id: "oldest-conflicted" },
+      { id: "newest" }
+    ]);
+    await vi.waitFor(() =>
+      expect(calls).toEqual(["oldest-conflicted", "newest"])
+    );
+
+    expect(errors).toEqual(["historical_import_state_conflict"]);
+    expect(coordinator.snapshot().runCompleted).toBe(false);
+    await coordinator.stop();
+  });
+
+  it.each([
+    [undefined, { completed: false }],
+    ["historical_import_completion_pending", { completed: false }],
+    ["historical_import_transition_already_applied", { completed: true }],
+    [
+      "historical_import_state_conflict",
+      { completed: false, diagnosticCode: "historical_import_state_conflict" }
+    ]
+  ])("classifies a completion 409 with code %s", (code, expected) => {
+    expect(
+      historicalCompletionOutcome(
+        new MemoryApiError("conflict", {
+          status: 409,
+          payload: { error: "conflict", ...(code ? { code } : {}) }
+        })
+      )
+    ).toEqual(expected);
+  });
+
+  it("leaves non-conflict completion errors to the caller", () => {
+    expect(
+      historicalCompletionOutcome(new MemoryApiError("down", { status: 503 }))
+    ).toBeNull();
+    expect(historicalCompletionOutcome(new Error("boom"))).toBeNull();
   });
 
   it("finishes selected source ranges in chronological order", async () => {

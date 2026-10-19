@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodexHistoryMetadataReader } from "../src/codex-history-metadata.js";
 import { CodexAppServerClient } from "../src/codex-app-server-runner.js";
 
@@ -18,6 +18,11 @@ const fixture = (
     hydrated?: boolean;
     invalidPage?: "missing-id" | "empty-cursor" | "oversized";
     failingThread?: string;
+    largePage?: {
+      threadId: string;
+      bytes: number;
+      shape: "response" | "notification" | "error";
+    };
     idleMs?: number;
   } = {}
 ) => {
@@ -39,6 +44,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   appendFileSync(${JSON.stringify(log)}, JSON.stringify(message) + "\\n");
   if (message.method === "initialized") return;
   if (message.method === "initialize") return send({ id: message.id, result: { codexHome: options.wrongHome ? "/wrong/home" : process.env.CODEX_HOME } });
+  const large = options.largePage;
+  if (message.method === "thread/turns/list" && large?.threadId === message.params.threadId) {
+    const blob = "A".repeat(large.bytes);
+    // Real app-server error responses serialize id after error.
+    if (large.shape === "error") return process.stdout.write('{"error":{"code":-32000,"message":"' + blob + '"},"id":' + message.id + "}\\n");
+    if (large.shape === "notification") send({ method: "thread/status/changed", params: { blob } });
+    else return send({ id: message.id, result: { data: [{ id: "turn-1", items: [{ type: "userMessage", content: [{ type: "image", url: "data:image/png;base64," + blob }] }] }], nextCursor: null } });
+  }
   if (message.method === "thread/turns/list" && message.params.limit === 1 && message.params.itemsView === "summary") return send({ id: message.id, result: { data: options.invalidPage === "missing-id" ? [{}] : options.invalidPage === "oversized" ? [{id: "one"}, {id: "two"}] : [], nextCursor: options.invalidPage === "empty-cursor" ? "" : null } });
   if (message.method !== "thread/read" || message.params.includeTurns !== false) return send({ id: message.id, error: { message: "Unexpected operation" } });
   if (message.params.threadId === options.failingThread) return send({ id: message.id, error: { message: "Thread lineage unavailable" } });
@@ -50,7 +63,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     binary,
     codexHome: home,
     env: { ...process.env, CODEX_HOME: "/unused/status-check-home" },
-    requestTimeoutMs: 1000,
+    requestTimeoutMs: 5000,
     ...(options.idleMs ? { idleMs: options.idleMs } : {})
   });
   return {
@@ -134,6 +147,104 @@ describe("native history metadata connection", () => {
         f.requests().filter((value) => value.method === "initialize")
       ).toHaveLength(1);
     } finally {
+      await f.reader.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it("accepts an image-bearing summary page above 256 KiB", async () => {
+    const f = fixture({
+      largePage: {
+        threadId: "thread-images",
+        bytes: 540_000,
+        shape: "response"
+      }
+    });
+    try {
+      await expect(f.reader.readThread("thread-images")).resolves.toMatchObject(
+        { id: "thread-images" }
+      );
+    } finally {
+      await f.reader.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it("rejects only the thread whose native page exceeds the line capacity", async () => {
+    const f = fixture({
+      largePage: {
+        threadId: "thread-oversized",
+        bytes: 2 * 1024 * 1024,
+        shape: "response"
+      }
+    });
+    try {
+      const [oversized, healthy] = await Promise.allSettled([
+        f.reader.readThread("thread-oversized"),
+        f.reader.readThread("thread-healthy")
+      ]);
+      expect(oversized).toMatchObject({
+        status: "rejected",
+        reason: { message: "codex_history_response_oversized" }
+      });
+      expect(healthy).toMatchObject({
+        status: "fulfilled",
+        value: { id: "thread-healthy" }
+      });
+      await expect(f.reader.readThread("thread-later")).resolves.toMatchObject({
+        id: "thread-later"
+      });
+      expect(
+        f.requests().filter((value) => value.method === "initialize")
+      ).toHaveLength(1);
+    } finally {
+      await f.reader.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each(["notification", "error"] as const)(
+    "fails the connection for an oversized %s line it cannot attribute",
+    async (shape) => {
+      const f = fixture({
+        largePage: { threadId: "thread-1", bytes: 2 * 1024 * 1024, shape }
+      });
+      try {
+        await expect(f.reader.readThread("thread-1")).rejects.toThrow(
+          "codex_history_metadata_unavailable"
+        );
+      } finally {
+        await f.reader.close();
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }
+  );
+  it("bounds the bytes discarded from an oversized response", async () => {
+    const f = fixture({
+      largePage: { threadId: "thread-1", bytes: 1024 * 1024, shape: "response" }
+    });
+    const client = new CodexAppServerClient(
+      f.binary,
+      f.home,
+      { ...process.env, CODEX_HOME: f.home },
+      undefined,
+      {
+        configOverrides: [
+          "features.background_paginated_rollout_migration=false"
+        ],
+        maxLineBytes: 1024,
+        oversizedResponsePolicy: "reject_request",
+        maxDiscardedLineBytes: 64 * 1024
+      }
+    );
+    try {
+      await client.initialize("fixture-owner");
+      await expect(
+        client.readThreadTurnsPage("thread-1", { limit: 1 })
+      ).rejects.toThrow("response exceeded stdout line byte capacity");
+      await vi.waitFor(() => expect(client.isClosed()).toBe(true));
+      await expect(client.readThread("thread-2")).rejects.toThrow(
+        "discarded stdout line byte capacity exceeded"
+      );
+    } finally {
+      await client.closeAndWait().catch(() => undefined);
       await f.reader.close();
       rmSync(f.root, { recursive: true, force: true });
     }

@@ -105,6 +105,31 @@ const requireSource = async (
   return source;
 };
 
+// A rejected transition is either already applied, a completion that still
+// waits for downstream work, or a conflict with another state change.
+const transitionConflict = (
+  kind: "run" | "source",
+  current: { state: string } | null,
+  input: { expectedState: string; state: string }
+): Error => {
+  const label =
+    kind === "run" ? "Historical import run" : "Historical import source";
+  if (current?.state === input.state)
+    return Object.assign(new Error(`${label} transition already applied`), {
+      statusCode: 409,
+      code: "historical_import_transition_already_applied"
+    });
+  if (current?.state === input.expectedState && input.state === "completed")
+    return Object.assign(new Error(`${label} completion is pending`), {
+      statusCode: 409,
+      code: "historical_import_completion_pending"
+    });
+  return Object.assign(new Error(`${label} state conflict`), {
+    statusCode: 409,
+    code: "historical_import_state_conflict"
+  });
+};
+
 const policyProjectId = (
   source: HistoricalImportSourceRecord
 ): string | undefined => {
@@ -138,7 +163,7 @@ const requireImportPolicy = async (
   ) {
     throw Object.assign(
       new Error("Historical import blocked by effective Capture Policy"),
-      { statusCode: 409 }
+      { statusCode: 409, code: "historical_import_capture_policy_blocked" }
     );
   }
   return policy;
@@ -240,7 +265,8 @@ const registerCreateSourceRoute = (
         .createHistoricalImportSource({ userId: user.id }, input);
       if (!source) {
         throw Object.assign(new Error("Historical import run not found"), {
-          statusCode: 409
+          statusCode: 409,
+          code: "historical_import_run_not_found"
         });
       }
       return {
@@ -295,9 +321,13 @@ const registerRunTransitionRoute = (
           { runId, ...input }
         );
       if (!run) {
-        throw Object.assign(new Error("Historical import run state conflict"), {
-          statusCode: 409
-        });
+        throw transitionConflict(
+          "run",
+          await context
+            .requireRepository()
+            .getHistoricalImportRun({ userId: user.id }, runId),
+          input
+        );
       }
       return { run: presentRun(run) };
     }
@@ -328,9 +358,10 @@ const registerSourceTransitionRoute = (
         { sourceId, ...input }
       );
       if (!updated) {
-        throw Object.assign(
-          new Error("Historical import source state conflict"),
-          { statusCode: 409 }
+        throw transitionConflict(
+          "source",
+          await repo.getHistoricalImportSource({ userId: user.id }, sourceId),
+          input
         );
       }
       return { source: presentSource(updated) };
