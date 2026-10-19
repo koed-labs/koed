@@ -32,6 +32,15 @@ modal sheet that traps focus and closes with Escape or its close button, then
 returns focus to the opener. These are local layout preferences, not Personal
 Memory or Team data.
 
+The HQ sidebar reads the existing Personal Projects and loose Conversations
+index. It nests Conversations under their Project, shows three Conversations
+per Project and five loose Conversations before a **Show more** control, and
+keeps subagent threads out of the list. Group folds are stored separately in
+`userData/hq-sidebar-preferences.json`; the open scroll position is preserved
+while navigating. **Search and commands** opens the existing command palette.
+New chat, New Project, and Now stay disabled until their owning flows are
+available.
+
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).

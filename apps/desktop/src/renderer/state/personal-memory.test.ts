@@ -106,6 +106,7 @@ describe("PersonalMemoryStore", () => {
 
     const snapshot = await store.loadProjects();
 
+    expect(snapshot.projectsLoaded).toBe(true);
     expect(snapshot.projectsById.get(source.id)).toMatchObject({
       name: "Koed",
       remoteDisplay: "github.com/koed-labs/koed",
@@ -127,7 +128,23 @@ describe("PersonalMemoryStore", () => {
     const snapshot = await store.loadProjects();
 
     expect(snapshot.error).toBeNull();
+    expect(snapshot.projectsLoaded).toBe(false);
     expect(snapshot.projectsById.get(source.id)).toMatchObject(source);
+  });
+
+  it("does not mark a failed Projects refresh as authoritative", async () => {
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => {
+          throw new Error("Project graph unavailable");
+        })
+      })
+    );
+
+    const snapshot = await store.loadProjects({ silent: true });
+
+    expect(snapshot.projectsLoaded).toBe(false);
+    expect(snapshot.error).toBe("Project graph unavailable");
   });
 
   it("normalizes project shells and preserves unchanged project references", async () => {

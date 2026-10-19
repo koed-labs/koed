@@ -1,9 +1,15 @@
 import { useLayoutEffect, useMemo } from "react";
+import type {
+  PersonalDesktopApi,
+  PersonalDesktopProject,
+  PersonalDesktopProjectMetadata
+} from "@koed/shared/personal-desktop";
 
 import { App } from "./renderer/App.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
+const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
 
 const seededData = {
   fixedAt: FIXTURE_TIME,
@@ -197,6 +203,95 @@ const seededData = {
   teamMessageSourceIds: []
 } as const;
 
+const sidebarConversation = (
+  projectId: string,
+  projectName: string,
+  index: number,
+  threadKind: "conversation" | "subagent" = "conversation"
+) => {
+  const sessionId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  return {
+    eventCount: 1,
+    id: `${projectId}-conversation-${index}`,
+    invalidatedCount: 0,
+    latestAt: SIDEBAR_FIXTURE_TIME,
+    name:
+      threadKind === "subagent" ? `Subagent ${index}` : `Conversation ${index}`,
+    originDevice: null,
+    parentSessionId: threadKind === "subagent" ? sessionId : null,
+    parentThreadId: threadKind === "subagent" ? `${projectId}-parent` : null,
+    projectAssignmentSource: null,
+    projectId,
+    projectName,
+    projectPath: null,
+    presentation: null,
+    sample: "",
+    sessionId,
+    sourceAiClient: null,
+    threadKind
+  };
+};
+
+const sidebarProjectGroups: PersonalDesktopProject[] = [
+  ...[
+    { id: "hq103-koed", name: "Koed" },
+    { id: "hq103-notes", name: "Research notes" },
+    { id: "hq103-trip", name: "Travel planning" },
+    { id: "hq103-work", name: "Work" }
+  ].map(({ id, name }, projectIndex) => ({
+    eventCount: 5,
+    id,
+    name,
+    path: null,
+    threads: [
+      ...Array.from({ length: 4 }, (_, index) =>
+        sidebarConversation(id, name, (projectIndex + 1) * 20 + index + 1)
+      ),
+      sidebarConversation(id, name, (projectIndex + 1) * 20 + 9, "subagent")
+    ]
+  })),
+  {
+    eventCount: 7,
+    id: "hq103-loose",
+    name: "Chats",
+    path: null,
+    threads: Array.from({ length: 7 }, (_, index) =>
+      sidebarConversation("hq103-loose", "Chats", 90 + index + 1)
+    )
+  }
+];
+
+const sidebarProjectMetadata: PersonalDesktopProjectMetadata[] =
+  sidebarProjectGroups.map((project) => ({
+    contextKind: project.id === "hq103-loose" ? "independent" : "project",
+    discoveredAt: SIDEBAR_FIXTURE_TIME,
+    git: { branch: null, isWorktree: false, remotes: [] },
+    lastSeenAt: SIDEBAR_FIXTURE_TIME,
+    localProjectId: project.id,
+    displayName: project.name,
+    path: { cwd: `/hq-validation/${project.id}`, projectRoot: null },
+    schemaVersion: 1
+  }));
+
+const sidebarPersonalMemoryApi: PersonalDesktopApi = {
+  listProjects: async () => structuredClone(sidebarProjectGroups),
+  listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
+  loadEventPage: async () => [],
+  assignSessionProject: async () => ({ projectId: null }),
+  updateSessionTitle: async ({ title }) => ({ title }),
+  updateSessionPresentation: async () => ({
+    presentation: {
+      displayMode: "automatic",
+      pinnedAt: null,
+      snoozedAt: null,
+      snoozedUntil: null,
+      updatedAt: SIDEBAR_FIXTURE_TIME,
+      version: 0
+    }
+  }),
+  subscribe: () => () => undefined
+};
+
 type Mutable<T> = T extends string
   ? string
   : T extends number
@@ -350,6 +445,7 @@ export function HqValidationApp() {
     <App
       hqEnabled
       onboardingComplete
+      personalMemoryApi={sidebarPersonalMemoryApi}
       statusReadyOverride
       teamCollaborationEnabled
     />

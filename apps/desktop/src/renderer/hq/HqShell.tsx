@@ -12,6 +12,7 @@ import {
   type ReactNode
 } from "react";
 
+import type { DesktopRoute } from "../navigation.js";
 import { HqLayoutPreferencesStore } from "../state/hq-layout-preferences.js";
 import "./hq-shell.css";
 
@@ -123,7 +124,15 @@ function ContextPanel({
   );
 }
 
-export function HqShell({ children }: { children?: ReactNode } = {}) {
+export function HqShell({
+  children,
+  sidebar
+}: {
+  children?: ReactNode;
+  onBack?: () => void;
+  route?: DesktopRoute;
+  sidebar?: ReactNode;
+} = {}) {
   const storeRef = useRef<HqLayoutPreferencesStore | null>(null);
   if (!storeRef.current) storeRef.current = new HqLayoutPreferencesStore();
   const store = storeRef.current;
@@ -230,33 +239,38 @@ export function HqShell({ children }: { children?: ReactNode } = {}) {
           size={sidebarWidth}
         >
           <ResizablePanel className="hq-sidebar" primary>
-            <aside
-              aria-label="Project navigation"
-              className="hq-sidebar__inner"
-              id="hq-project-navigation"
-            >
-              <header className="hq-sidebar__brand">
-                <span className="hq-brand-name">Koed</span>
-                <span className="hq-brand-section">HQ</span>
-              </header>
-              <nav aria-label="Project navigation" className="hq-sidebar__nav">
-                <div className="hq-sidebar__section-heading">
-                  <span>PROJECTS</span>
-                  <button
-                    aria-label="Narrow project navigation"
-                    className="hq-icon-button hq-sidebar__collapse"
-                    onClick={() => {
-                      store.setSidebarWidth(200);
-                      void store.flush();
-                    }}
-                    title="Narrow project navigation"
-                    type="button"
-                  >
-                    <ArrowLeft aria-hidden="true" />
-                  </button>
-                </div>
-              </nav>
-            </aside>
+            {sidebar ?? (
+              <aside
+                aria-label="Project navigation"
+                className="hq-sidebar__inner"
+                id="hq-project-navigation"
+              >
+                <header className="hq-sidebar__brand">
+                  <span className="hq-brand-name">Koed</span>
+                  <span className="hq-brand-section">HQ</span>
+                </header>
+                <nav
+                  aria-label="Project navigation"
+                  className="hq-sidebar__nav"
+                >
+                  <div className="hq-sidebar__section-heading">
+                    <span>PROJECTS</span>
+                    <button
+                      aria-label="Narrow project navigation"
+                      className="hq-icon-button hq-sidebar__collapse"
+                      onClick={() => {
+                        store.setSidebarWidth(200);
+                        void store.flush();
+                      }}
+                      title="Narrow project navigation"
+                      type="button"
+                    >
+                      <ArrowLeft aria-hidden="true" />
+                    </button>
+                  </div>
+                </nav>
+              </aside>
+            )}
           </ResizablePanel>
           <ResizableHandle
             aria-label="Resize project navigation"

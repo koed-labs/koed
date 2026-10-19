@@ -85,6 +85,8 @@ import {
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
 import { HqShell } from "./hq/HqShell.js";
+import { HqSidebar } from "./hq/HqSidebar.js";
+import { usePersonalProjectsLoader } from "./hq/use-personal-projects-loader.js";
 import "./app.css";
 
 const CollaborationRoutes = lazy(async () => {
@@ -674,11 +676,12 @@ export function App({
   const route = currentNavigationEntry(navigation).route;
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;
-  useEffect(() => {
-    if (route.kind === "personal-memory-ask") {
-      void personalMemoryStore?.loadProjects({ silent: true });
-    }
-  }, [personalMemoryStore, route.kind]);
+  usePersonalProjectsLoader({
+    hqEnabled,
+    personalMemoryReady,
+    routeKind: route.kind,
+    store: personalMemoryStore
+  });
   const snapshot = useMemo(
     () =>
       teamCollaborationEnabled
@@ -1164,8 +1167,6 @@ export function App({
       />
     );
   }
-
-  if (hqEnabled) return <HqShell />;
 
   const activeScope =
     route.kind === "inbox"
@@ -1994,6 +1995,127 @@ export function App({
             : "Loading collaboration"
         }
       />
+    );
+  }
+
+  if (hqEnabled) {
+    const sidebarProjects =
+      personalMemorySnapshot?.projectOrder.flatMap((projectId) => {
+        const project = personalMemorySnapshot.projectsById.get(projectId);
+        return project ? [project] : [];
+      }) ?? [];
+    const sidebarAuthority = {
+      backendId: null,
+      principalId: snapshot?.navigation.personalOwner.id ?? "local-personal"
+    };
+
+    return (
+      <ToastProvider>
+        <HqShell
+          onBack={() => traverseHistory("back")}
+          route={route}
+          sidebar={
+            <HqSidebar
+              groupsReady={Boolean(personalMemorySnapshot?.projectsLoaded)}
+              loading={
+                !personalMemorySnapshot ||
+                personalMemorySnapshot.loading ||
+                (personalMemorySnapshot.revision === 0 &&
+                  !personalMemorySnapshot.error)
+              }
+              onOpenSearchAndCommands={() => setCommandOpen(true)}
+              onSelectConversation={(projectId, sessionId) =>
+                navigate({
+                  authority: sidebarAuthority,
+                  route: {
+                    kind: "personal-memory-session",
+                    projectId,
+                    sessionId
+                  }
+                })
+              }
+              onSelectProject={(projectId) =>
+                navigate({
+                  authority: sidebarAuthority,
+                  route: { kind: "personal-memory-project", projectId }
+                })
+              }
+              projects={sidebarProjects}
+              route={route}
+            />
+          }
+        >
+          <CollaborationAnnouncementToast
+            announcement={collaboration.announcement}
+            clearAnnouncement={collaboration.clearAnnouncement}
+          />
+          {teamCollaborationEnabled ? (
+            <ActionGrantStatus
+              actionGrants={collaboration.actionGrants}
+              client={client}
+            />
+          ) : null}
+          {content}
+        </HqShell>
+
+        <CommandPalette
+          commands={commands}
+          onInvoke={invokeCommand}
+          onOpenChange={setCommandOpen}
+          open={commandOpen}
+        />
+
+        {devicesOpen ? (
+          <DevicesModal
+            initialPairingLink={pendingDevicePairingLink}
+            onClose={() => {
+              setDevicesOpen(false);
+              clearPendingDevicePairingLink();
+            }}
+            onPairingLinkConsumed={clearPendingDevicePairingLink}
+          />
+        ) : null}
+
+        {snapshot ? (
+          <Suspense fallback={null}>
+            <CollaborationModalLayer
+              client={client}
+              markdownAdapters={collaboration.markdownAdapters}
+              onModalChange={collaboration.setModal}
+              onViewShare={(shareKey) => {
+                collaboration.setModal(null);
+                navigate({
+                  authority: {
+                    backendId: null,
+                    principalId: snapshot.navigation.personalOwner.id
+                  },
+                  route: { kind: "personal-memory-shares", shareKey }
+                });
+              }}
+              modal={
+                teamCollaborationEnabled ||
+                collaboration.modal?.kind === "personal_channel" ||
+                collaboration.modal?.kind === "edit_personal_channel"
+                  ? collaboration.modal
+                  : null
+              }
+              snapshot={snapshot}
+            />
+          </Suspense>
+        ) : null}
+
+        <div
+          aria-atomic="true"
+          aria-live="polite"
+          className="desktop-live-region"
+        >
+          {collaboration.liveAnnouncement ? (
+            <span key={collaboration.liveAnnouncement.id}>
+              {collaboration.liveAnnouncement.text}
+            </span>
+          ) : null}
+        </div>
+      </ToastProvider>
     );
   }
 

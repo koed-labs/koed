@@ -1,0 +1,433 @@
+// @vitest-environment happy-dom
+
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type {
+  HqSidebarPreferences,
+  HqSidebarPreferencesApi
+} from "../../ipc/hq-sidebar-preferences-protocol.js";
+import type { DesktopProject } from "../../project-memory-ui.js";
+import type { DesktopRoute } from "../navigation.js";
+import { HqSidebar } from "./HqSidebar.js";
+
+const actEnvironment = globalThis as {
+  IS_REACT_ACT_ENVIRONMENT?: boolean;
+};
+
+const timestamp = (day: number): string =>
+  `2026-10-${String(day).padStart(2, "0")}T12:00:00.000Z`;
+
+const thread = (
+  projectId: string,
+  sessionId: string,
+  index: number,
+  threadKind: "conversation" | "subagent" = "conversation"
+): PersonalDesktopProjectThread => ({
+  eventCount: 1,
+  id: `${projectId}-thread-${index}`,
+  invalidatedCount: 0,
+  latestAt: timestamp(Math.max(1, 25 - index)),
+  name: threadKind === "subagent" ? `Agent ${index}` : `Chat ${index}`,
+  originDevice: null,
+  parentSessionId: threadKind === "subagent" ? sessionId : null,
+  parentThreadId: threadKind === "subagent" ? `${projectId}-parent` : null,
+  projectAssignmentSource: null,
+  projectId,
+  projectName: projectId,
+  projectPath: null,
+  presentation: null,
+  sample: "",
+  sessionId,
+  sourceAiClient: null,
+  threadKind
+});
+
+const project = (
+  id: string,
+  name: string,
+  count: number,
+  contextKind: "project" | "independent" = "project"
+): DesktopProject => ({
+  branch: null,
+  catalogued: false,
+  contextKind,
+  discoveredAt: null,
+  eventCount: count,
+  id,
+  isWorktree: false,
+  lastSeenAt: null,
+  localProjectId: null,
+  name,
+  path: null,
+  remoteDisplay: null,
+  threads: Array.from({ length: count }, (_, index) =>
+    thread(
+      id,
+      `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      index + 1
+    )
+  ).concat(
+    thread(
+      id,
+      `00000000-0000-4000-8000-${String(count + 1).padStart(12, "0")}`,
+      count + 1,
+      "subagent"
+    )
+  )
+});
+
+const initialRoute: DesktopRoute = { kind: "personal-memory-projects" };
+
+describe("HQ sidebar", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let rootUnmounted = false;
+  let desktopDescriptor: PropertyDescriptor | undefined;
+  let persisted: HqSidebarPreferences;
+  let api: HqSidebarPreferencesApi;
+  const projects = [
+    project("project-a", "Alpha", 4),
+    project("project-b", "Beta", 4),
+    project("loose-chats", "Chats", 7, "independent")
+  ];
+  const onSelectProject = vi.fn();
+  const onSelectConversation = vi.fn();
+  const onOpenSearchAndCommands = vi.fn();
+
+  const render = async (
+    route: DesktopRoute = initialRoute,
+    options: { groupsReady?: boolean; loading?: boolean } = {},
+    renderedProjects: readonly DesktopProject[] = projects
+  ) => {
+    await act(async () => {
+      root.render(
+        <HqSidebar
+          groupsReady={options.groupsReady}
+          loading={options.loading}
+          onOpenSearchAndCommands={onOpenSearchAndCommands}
+          onSelectConversation={onSelectConversation}
+          onSelectProject={onSelectProject}
+          projects={renderedProjects}
+          route={route}
+        />
+      );
+      rootUnmounted = false;
+      await Promise.resolve();
+    });
+  };
+
+  beforeEach(() => {
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+    persisted = { foldedGroups: {} };
+    api = {
+      get: vi.fn(async () => structuredClone(persisted)),
+      set: vi.fn(async (next) => {
+        persisted = structuredClone(next);
+        return structuredClone(persisted);
+      })
+    };
+    desktopDescriptor = Object.getOwnPropertyDescriptor(window, "koedDesktop");
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: { hqSidebar: api }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    rootUnmounted = false;
+    onSelectProject.mockClear();
+    onSelectConversation.mockClear();
+    onOpenSearchAndCommands.mockClear();
+  });
+
+  afterEach(async () => {
+    if (!rootUnmounted) {
+      await act(async () => root.unmount());
+      rootUnmounted = true;
+    }
+    container.remove();
+    if (desktopDescriptor) {
+      Object.defineProperty(window, "koedDesktop", desktopDescriptor);
+    } else {
+      delete window.koedDesktop;
+    }
+    vi.restoreAllMocks();
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  });
+
+  it("renders real personal groups, caps lists, and filters subagents", async () => {
+    await render();
+
+    expect(
+      container.querySelector('[data-hq-sidebar-group="just-me"]')
+    ).not.toBeNull();
+    expect(
+      [...container.querySelectorAll("[data-hq-project-link]")].map(
+        (element) => element.textContent
+      )
+    ).toEqual(["Alpha", "Beta"]);
+    expect(container.querySelectorAll("[data-hq-chat-title]")).toHaveLength(11);
+    expect(
+      [...container.querySelectorAll("[data-hq-chat-title]")].some((element) =>
+        element.textContent?.startsWith("Agent")
+      )
+    ).toBe(false);
+    expect(
+      [...container.querySelectorAll(".hq-sidebar__more")].map(
+        (element) => element.textContent
+      )
+    ).toEqual(["Show 1 more", "Show 1 more", "Show 2 more"]);
+    expect(container.textContent).not.toContain("Shared");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".hq-sidebar__more")?.click();
+    });
+    expect(container.querySelectorAll("[data-hq-chat-title]")).toHaveLength(12);
+  });
+
+  it("keeps primary fork/resume Conversations and caps after filtering subagents", async () => {
+    const forkProject = project("forked-project", "Forked", 4);
+    const primaryConversation = forkProject.threads[0];
+    expect(primaryConversation).toBeDefined();
+    const forkedProjects: DesktopProject[] = [
+      {
+        ...forkProject,
+        threads: forkProject.threads.map((conversation, index) =>
+          index === 0
+            ? {
+                ...conversation,
+                parentSessionId: conversation.sessionId,
+                parentThreadId: "resumed-primary-parent"
+              }
+            : conversation
+        )
+      }
+    ];
+
+    await render(initialRoute, {}, forkedProjects);
+
+    expect(container.querySelectorAll("[data-hq-chat-title]")).toHaveLength(3);
+    expect(container.querySelector("[data-hq-chat-title]")?.textContent).toBe(
+      "Chat 1"
+    );
+    expect(container.textContent).toContain("Show 1 more");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".hq-sidebar__more")?.click();
+    });
+
+    expect(container.querySelectorAll("[data-hq-chat-title]")).toHaveLength(4);
+    expect(
+      [...container.querySelectorAll("[data-hq-chat-title]")].some((element) =>
+        element.textContent?.startsWith("Agent")
+      )
+    ).toBe(false);
+  });
+
+  it("keeps project and conversation selection scoped and preserves scroll", async () => {
+    const selectedRoute: DesktopRoute = {
+      kind: "personal-memory-session",
+      projectId: "project-b",
+      sessionId: "00000000-0000-4000-8000-000000000001"
+    };
+    await render(selectedRoute);
+
+    const selectedChats = container.querySelectorAll(
+      '[data-hq-chat-row][data-selected="true"]'
+    );
+    expect(selectedChats).toHaveLength(1);
+    expect(
+      [...selectedChats].map((element) =>
+        element.getAttribute("data-hq-chat-project")
+      )
+    ).toEqual(["project-b"]);
+    expect(
+      container.querySelector(
+        '[data-hq-project-link="project-b"][data-selected="true"]'
+      )
+    ).not.toBeNull();
+    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(
+      container
+        .querySelector('[data-hq-project-link="project-b"]')
+        ?.hasAttribute("aria-current")
+    ).toBe(false);
+    expect(
+      container.querySelectorAll('[data-hq-chat-row][aria-current="page"]')
+    ).toHaveLength(1);
+
+    const scroll = container.querySelector<HTMLElement>(
+      "[data-hq-sidebar-scroll]"
+    );
+    expect(scroll).not.toBeNull();
+    if (!scroll) return;
+    scroll.scrollTop = 86;
+    scroll.dispatchEvent(new Event("scroll"));
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          "[data-hq-project-row] .hq-sidebar__project-link"
+        )
+        ?.click();
+    });
+    expect(onSelectProject).toHaveBeenCalledWith("project-a");
+    await render({ kind: "personal-memory-project", projectId: "project-a" });
+    expect(scroll.scrollTop).toBe(86);
+    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(
+      container
+        .querySelector('[data-hq-project-link="project-a"]')
+        ?.getAttribute("aria-current")
+    ).toBe("page");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-hq-chat-row]")?.click();
+    });
+    expect(onSelectConversation).toHaveBeenCalledWith(
+      "project-a",
+      "00000000-0000-4000-8000-000000000001"
+    );
+  });
+
+  it("opens Search and commands on Meta+K or Ctrl+K and removes the listener on unmount", async () => {
+    const addListener = vi.spyOn(window, "addEventListener");
+    const removeListener = vi.spyOn(window, "removeEventListener");
+    await render();
+
+    const keydownCalls = addListener.mock.calls.filter(
+      ([type]) => type === "keydown"
+    );
+    const shortcutListener = keydownCalls.at(-1)?.[1];
+    expect(shortcutListener).toBeTypeOf("function");
+
+    const metaK = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "k",
+      metaKey: true
+    });
+    const ctrlK = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "k"
+    });
+    await act(async () => {
+      window.dispatchEvent(metaK);
+      window.dispatchEvent(ctrlK);
+    });
+
+    expect(metaK.defaultPrevented).toBe(true);
+    expect(ctrlK.defaultPrevented).toBe(true);
+    expect(onOpenSearchAndCommands).toHaveBeenCalledTimes(2);
+
+    await act(async () => root.unmount());
+    rootUnmounted = true;
+    expect(removeListener).toHaveBeenCalledWith("keydown", shortcutListener);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { ctrlKey: true, key: "k" })
+    );
+    expect(onOpenSearchAndCommands).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists folds across remounts while leaving future actions unavailable", async () => {
+    await render();
+    const newChat = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="New chat"]'
+    );
+    const newProject = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="New project"]'
+    );
+    const now = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Now"]'
+    );
+    expect(newChat?.disabled).toBe(true);
+    expect(newProject?.disabled).toBe(true);
+    expect(now?.disabled).toBe(true);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-hq-sidebar-group="just-me"]')
+        ?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.set).toHaveBeenCalledOnce());
+    expect(
+      container.querySelector("#hq-group-just-me")?.hasAttribute("hidden")
+    ).toBe(true);
+    expect(persisted.foldedGroups["just-me"]).toBe(true);
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+    expect(
+      container.querySelector("#hq-group-just-me")?.hasAttribute("hidden")
+    ).toBe(true);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Search and commands"]'
+        )
+        ?.click();
+    });
+    expect(onOpenSearchAndCommands).toHaveBeenCalledOnce();
+  });
+
+  it("does not prune remembered groups during Projects loading or error", async () => {
+    persisted = { foldedGroups: { "project:previously-known": true } };
+
+    await render(initialRoute, { groupsReady: false, loading: true });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(api.set).not.toHaveBeenCalled();
+
+    await render(initialRoute, { groupsReady: false, loading: false });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(api.set).not.toHaveBeenCalled();
+
+    await render(initialRoute, { groupsReady: true, loading: false });
+    await vi.waitFor(() => expect(api.set).toHaveBeenCalledOnce());
+    expect(api.set).toHaveBeenCalledWith({ foldedGroups: {} });
+  });
+
+  it("keeps a fold intent locally when an incomplete list would exceed the native cap", async () => {
+    const staleGroups = Object.fromEntries(
+      Array.from({ length: 1001 }, (_, index) => [
+        `project:stale-${index}`,
+        true
+      ])
+    );
+    persisted = { foldedGroups: staleGroups };
+
+    await render(initialRoute, { groupsReady: false, loading: true });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-hq-project-link="project-a"]')
+        ?.closest("li")
+        ?.querySelector<HTMLButtonElement>("[data-hq-project-chevron]")
+        ?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('[data-hq-project-link="project-a"]')
+        ?.closest("li")
+        ?.querySelector(".hq-sidebar__nested-list")
+        ?.hasAttribute("hidden")
+    ).toBe(true);
+    expect(api.set).not.toHaveBeenCalled();
+
+    await render(initialRoute, { groupsReady: true, loading: false });
+    await vi.waitFor(() => expect(api.set).toHaveBeenCalledOnce());
+    const saved = vi.mocked(api.set).mock.calls[0]?.[0];
+    expect(saved?.foldedGroups).toEqual({ "project:project-a": true });
+    expect(Object.keys(saved?.foldedGroups ?? {}).length).toBeLessThanOrEqual(
+      1001
+    );
+  });
+});

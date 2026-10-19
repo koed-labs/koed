@@ -16,6 +16,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { HqLayoutPreferencesApi } from "./ipc/hq-layout-preferences-protocol.js";
+import type { HqSidebarPreferencesApi } from "./ipc/hq-sidebar-preferences-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -183,6 +184,7 @@ export interface DesktopApi {
   };
   managedProject?: ManagedProjectDesktopApi;
   hqLayout?: HqLayoutPreferencesApi;
+  hqSidebar?: HqSidebarPreferencesApi;
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };

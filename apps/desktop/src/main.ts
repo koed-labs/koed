@@ -57,9 +57,18 @@ import {
   writeHqLayoutPreferences
 } from "./window/hq-layout-preferences.js";
 import {
+  hqSidebarPreferencesPath,
+  readHqSidebarPreferences,
+  writeHqSidebarPreferences
+} from "./window/hq-sidebar-preferences.js";
+import {
   defaultHqLayoutPreferences,
   type HqLayoutPreferences
 } from "./ipc/hq-layout-preferences-protocol.js";
+import {
+  defaultHqSidebarPreferences,
+  type HqSidebarPreferences
+} from "./ipc/hq-sidebar-preferences-protocol.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
@@ -113,6 +122,9 @@ app.setName(appName);
 let themePreference: DesktopThemePreference = "system";
 let hqLayoutPreferences: HqLayoutPreferences = {
   ...defaultHqLayoutPreferences
+};
+let hqSidebarPreferences: HqSidebarPreferences = {
+  ...defaultHqSidebarPreferences
 };
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -376,6 +388,10 @@ const bootstrap = async () => {
     app.getPath("userData")
   );
   hqLayoutPreferences = readHqLayoutPreferences(hqLayoutPreferencesFile);
+  const hqSidebarPreferencesFile = hqSidebarPreferencesPath(
+    app.getPath("userData")
+  );
+  hqSidebarPreferences = readHqSidebarPreferences(hqSidebarPreferencesFile);
   const managedConversationDraftStore = createManagedConversationDraftStore({
     userDataPath: app.getPath("userData")
   });
@@ -427,6 +443,17 @@ const bootstrap = async () => {
       );
       hqLayoutPreferences = persisted;
       return { ...persisted };
+    },
+    getHqSidebarPreferences: () => ({
+      foldedGroups: { ...hqSidebarPreferences.foldedGroups }
+    }),
+    setHqSidebarPreferences: (preferences) => {
+      const persisted = writeHqSidebarPreferences(
+        hqSidebarPreferencesFile,
+        preferences
+      );
+      hqSidebarPreferences = persisted;
+      return { foldedGroups: { ...persisted.foldedGroups } };
     },
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
