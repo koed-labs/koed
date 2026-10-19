@@ -323,6 +323,13 @@
       "when": 1792075334482,
       "tag": "0045_agent_seal_waiting_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1792378041824,
+      "tag": "0046_hq706_message_contract",
+      "breakpoints": true
     }
   ]
 }

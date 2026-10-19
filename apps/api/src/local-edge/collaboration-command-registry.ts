@@ -76,6 +76,13 @@ const teamThreadPath = (thread: {
 }): string =>
   `/v1/collaboration/teams/${encodeURIComponent(thread.teamId)}/threads/${encodeURIComponent(thread.threadId)}`;
 
+const teamThreadV2Path = (thread: {
+  scope: "team";
+  teamId: string;
+  threadId: string;
+}): string =>
+  `/v2/collaboration/teams/${encodeURIComponent(thread.teamId)}/threads/${encodeURIComponent(thread.threadId)}`;
+
 const personalThreadScope = (
   command: CommandFor<"collaboration.rename_thread">
 ): CollaborationCommandScope =>
@@ -208,6 +215,21 @@ const teamMessageOperation = (
     idempotencyKey: command.input.clientMessageId
   };
 };
+
+const teamMessageV2Operation = (
+  command: CommandFor<"collaboration.send_team_message_v2">
+): TeamCollaborationUpstreamOperation => ({
+  operationFamily: "team_chat_write",
+  method: "POST",
+  path: `${teamThreadV2Path(command.input.thread)}/messages`,
+  body: {
+    bodyText: command.input.body,
+    replyToMessageId: command.input.replyToMessageId,
+    mentionsUserIds: command.input.mentionsUserIds
+  },
+  resultKey: "message",
+  idempotencyKey: command.input.clientMessageId
+});
 
 const matchesThreadIdentity = (
   command:
@@ -446,6 +468,45 @@ export const collaborationCommandRegistry = {
     teamOperation: teamMessageOperation,
     matchesTeamResult: matchesMessage
   },
+  "collaboration.send_team_message_v2": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: teamMessageV2Operation,
+    matchesTeamResult: (command, result) => {
+      const mentionsUserIds = result.mentionsUserIds;
+      const replyToMessageId = result.replyToMessageId;
+      const expectedReplyToMessageId = command.input.replyToMessageId;
+      const replyMatches =
+        replyToMessageId === null
+          ? expectedReplyToMessageId === null
+          : typeof replyToMessageId === "string" &&
+            expectedReplyToMessageId !== null &&
+            replyToMessageId.toLowerCase() ===
+              expectedReplyToMessageId.toLowerCase();
+      const expectedMentions = command.input.mentionsUserIds
+        .map((id) => id.toLowerCase())
+        .sort();
+      const actualMentions =
+        Array.isArray(mentionsUserIds) &&
+        mentionsUserIds.every((id): id is string => typeof id === "string")
+          ? mentionsUserIds.map((id) => id.toLowerCase()).sort()
+          : null;
+      return (
+        result.scope === "team" &&
+        typeof result.threadId === "string" &&
+        result.threadId.toLowerCase() ===
+          command.input.thread.threadId.toLowerCase() &&
+        typeof result.teamId === "string" &&
+        result.teamId.toLowerCase() ===
+          command.input.thread.teamId.toLowerCase() &&
+        result.body === command.input.body &&
+        replyMatches &&
+        actualMentions !== null &&
+        actualMentions.length === expectedMentions.length &&
+        expectedMentions.every((id, index) => actualMentions[index] === id)
+      );
+    }
+  },
   "collaboration.retry_message": {
     scope: threadScope,
     desktopOperationFamily: write,
@@ -523,6 +584,10 @@ export const collaborationCommandRegistry = {
       };
     },
     matchesTeamResult: () => false
+  },
+  "collaboration.load_team_message_page_v2": {
+    scope: "team",
+    desktopOperationFamily: read
   },
   "collaboration.load_shared_source_page": {
     scope: "team",

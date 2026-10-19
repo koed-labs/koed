@@ -338,6 +338,9 @@ export const localEdgeTeamMemoryExpandSchema = localEdgeTeamMemoryBaseSchema
 export const createLocalEdgeCollaborationSubscriptionSchema =
   localCollaborationBindingSchema;
 
+export const createLocalEdgeTeamRealtimeV2SubscriptionSchema =
+  localTeamCollaborationBindingSchema;
+
 export const localEdgeCollaborationSubscriptionParamsSchema = z
   .object({ subscriptionId: z.uuid() })
   .strict();
@@ -348,6 +351,9 @@ export const localEdgeCollaborationBackendParamsSchema = z
 
 export const localEdgeCollaborationStreamQuerySchema =
   localCollaborationBindingSchema;
+
+export const localEdgeTeamRealtimeV2StreamQuerySchema =
+  localTeamCollaborationBindingSchema;
 
 export const acknowledgeLocalEdgeCollaborationDeliverySchema =
   z.discriminatedUnion("scope", [
@@ -363,6 +369,15 @@ export const acknowledgeLocalEdgeCollaborationDeliverySchema =
     })
   ]);
 
+export const acknowledgeLocalEdgeTeamRealtimeV2DeliverySchema =
+  localTeamCollaborationBindingSchema
+    .extend({
+      delivery_id: localCollaborationDeliveryIdSchema,
+      event_id: z.uuid().nullable(),
+      expected_version: z.number().int().safe().min(0)
+    })
+    .strict();
+
 export const unsubscribeLocalEdgeCollaborationSchema = z.discriminatedUnion(
   "scope",
   [
@@ -374,3 +389,8 @@ export const unsubscribeLocalEdgeCollaborationSchema = z.discriminatedUnion(
     })
   ]
 );
+
+export const unsubscribeLocalEdgeTeamRealtimeV2Schema =
+  localTeamCollaborationBindingSchema
+    .extend({ expected_version: z.number().int().safe().positive() })
+    .strict();

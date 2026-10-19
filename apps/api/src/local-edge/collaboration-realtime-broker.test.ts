@@ -10,7 +10,13 @@ import type {
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+  TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+  TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
   collaborationRendererEventSchema,
+  teamCollaborationRealtimeUpdateV2Schema,
   type CollaborationRendererEvent
 } from "@koed/shared";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -51,6 +57,7 @@ interface MemoryRow {
   credentialBindingHash: string;
   teamId: string | null;
   protocolVersion: number;
+  messageContractVersion: 1 | 2;
   remoteSubscriptionId: string;
   remoteCursor: string;
   lastAcknowledgedEventId: string | null;
@@ -138,8 +145,9 @@ class MemoryPool {
         credentialBindingHash: values[3] as string,
         teamId: (values[4] as string | null) ?? null,
         protocolVersion: values[5] as number,
-        remoteSubscriptionId: values[6] as string,
-        remoteCursor: values[7] as string,
+        messageContractVersion: values[6] as 1 | 2,
+        remoteSubscriptionId: values[7] as string,
+        remoteCursor: values[8] as string,
         lastAcknowledgedEventId: null,
         state: normalized.includes("'requires_snapshot'")
           ? "requires_snapshot"
@@ -149,7 +157,7 @@ class MemoryPool {
         updatedAt: now,
         lastConnectedAt: null,
         lastAcknowledgedAt: null,
-        expiresAt: values[8] as Date,
+        expiresAt: values[9] as Date,
         revokedAt: null
       };
       this.rows.push(row);
@@ -166,7 +174,8 @@ class MemoryPool {
           candidate.credentialBindingHash === values[2] &&
           candidate.scope === values[3] &&
           candidate.teamId === values[4] &&
-          candidate.protocolVersion === values[5]
+          candidate.protocolVersion === values[5] &&
+          candidate.messageContractVersion === values[6]
       );
       return { rows: row ? [row as T] : [] };
     }
@@ -180,7 +189,8 @@ class MemoryPool {
           candidate.credentialBindingHash === values[1] &&
           candidate.scope === values[2] &&
           candidate.teamId === values[3] &&
-          candidate.protocolVersion === values[4]
+          candidate.protocolVersion === values[4] &&
+          candidate.messageContractVersion === values[5]
       );
       return { rows: row ? [row as T] : [] };
     }
@@ -265,7 +275,7 @@ class MemoryPool {
     }
     if (
       normalized.startsWith("update local_edge_collaboration_subscriptions") &&
-      normalized.includes("credential_binding_hash <> $5")
+      normalized.includes("credential_binding_hash <> $6")
     ) {
       const rows = this.rows.filter(
         (candidate) =>
@@ -273,7 +283,8 @@ class MemoryPool {
           candidate.scope === values[1] &&
           candidate.teamId === values[2] &&
           candidate.protocolVersion === values[3] &&
-          candidate.credentialBindingHash !== values[4] &&
+          candidate.messageContractVersion === values[4] &&
+          candidate.credentialBindingHash !== values[5] &&
           (candidate.state === "active" ||
             candidate.state === "requires_snapshot")
       );
@@ -296,7 +307,8 @@ class MemoryPool {
           candidate.scope === values[3] &&
           candidate.teamId === values[4] &&
           candidate.protocolVersion === values[5] &&
-          candidate.version === values[6]
+          candidate.messageContractVersion === values[6] &&
+          candidate.version === values[7]
       );
       if (!row) return { rows: [] as T[] };
       row.state = "expired";
@@ -590,6 +602,11 @@ const snapshotResponse = (teamId: string) => ({
   cursor: snapshotCursor
 });
 
+const teamRealtimeV2SnapshotResponse = (teamId: string) => ({
+  ...snapshotResponse(teamId),
+  messageContractVersion: 2
+});
+
 const personalSnapshotResponse = () => ({
   protocolVersion: COLLABORATION_CONTRACT_VERSION,
   subscription: {
@@ -673,6 +690,55 @@ const remoteEvent = (
   },
   actor: { principalId: remotePrincipalA },
   update: messageUpdate(eventId, "team")
+});
+
+const remoteTeamMessageV2Event = (eventId: string, cursor: string) => ({
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
+  messageContractVersion: 2,
+  eventId,
+  cursor,
+  type: "message_created",
+  occurredAt: "2026-07-17T00:01:00.000Z",
+  subscription: { id: remoteSubscriptionId },
+  resource: {
+    scope: "team",
+    type: "collaboration_message",
+    id: eventId,
+    teamId: teamA,
+    teamWorkspaceId: null,
+    threadId,
+    messageId: eventId,
+    sharedSessionId: null,
+    shareGrantId: null,
+    logicalMemoryId: null
+  },
+  actor: { principalId: remotePrincipalA },
+  update: {
+    type: "message_created_v2",
+    message: {
+      id: eventId,
+      threadId,
+      scope: "team",
+      teamId: teamA,
+      sequence: 1,
+      sender: {
+        id: remotePrincipalA,
+        displayName: "Remote member",
+        membershipState: "enabled"
+      },
+      senderKind: "user",
+      body: `Message ${eventId}`,
+      createdAt: "2026-07-17T00:01:00.000Z",
+      updatedAt: "2026-07-17T00:01:00.000Z",
+      editedAt: null,
+      deletedAt: null,
+      delivery: "sent",
+      recipientStatus: null,
+      failure: null,
+      replyToMessageId: null,
+      mentionsUserIds: []
+    }
+  }
 });
 
 const remotePresenceEvent = (
@@ -812,6 +878,34 @@ const createHarness = async (
                 transport: "sse"
               }
             }
+          },
+          teamCollaborationV2: {
+            state: "validated",
+            checkedAt: "2099-01-01T00:00:00.000Z",
+            expiresAt: "2099-01-01T00:15:00.000Z",
+            schemaVersion: TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+            payload: {
+              product: "koed",
+              apiVersion: "v2",
+              capabilitySchemaVersion:
+                TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+              teamCollaboration: {
+                availability: "available",
+                messageContractVersion: 2,
+                messageEndpointTemplate:
+                  TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+                realtime: {
+                  protocolVersion: COLLABORATION_CONTRACT_VERSION,
+                  messageContractVersion: 2,
+                  snapshotEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+                  streamEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
+                  acknowledgementEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT
+                }
+              }
+            }
           }
         }
       }))
@@ -859,13 +953,16 @@ const createHarness = async (
       return Response.json(
         body?.scope === "personal"
           ? personalSnapshotResponse()
-          : snapshotResponse(String(body?.teamId))
+          : pathname.includes("/v2/")
+            ? teamRealtimeV2SnapshotResponse(String(body?.teamId))
+            : snapshotResponse(String(body?.teamId))
       );
     }
     if (pathname.endsWith("/ack")) {
       return options.ackStatus && options.ackStatus !== 200
         ? new Response("denied", { status: options.ackStatus })
         : Response.json({
+            ...(pathname.includes("/v2/") ? { messageContractVersion: 2 } : {}),
             subscription: {
               ...(body?.scope === "personal"
                 ? personalSnapshotResponse().subscription
@@ -1021,6 +1118,20 @@ const createSnapshot = async (
   return { response, body: response.json() as Record<string, any> };
 };
 
+const createTeamRealtimeV2Snapshot = async (harness: Harness) => {
+  const response = await harness.app.inject({
+    method: "POST",
+    url: "/v2/local-edge/collaboration/realtime/subscriptions",
+    headers: localHeaders(),
+    payload: {
+      scope: "team",
+      upstream_backend_id: "backend-a",
+      team_id: teamA
+    }
+  });
+  return { response, body: response.json() as Record<string, any> };
+};
+
 const createPersonalSnapshot = async (harness: Harness) => {
   const response = await harness.app.inject({
     method: "POST",
@@ -1051,6 +1162,42 @@ const acknowledgeSnapshot = async (
     }
   });
 
+const acknowledgeTeamRealtimeV2Snapshot = async (
+  harness: Harness,
+  created: Record<string, any>
+) =>
+  harness.app.inject({
+    method: "POST",
+    url: `/v2/local-edge/collaboration/realtime/subscriptions/${created.subscription.id}/ack`,
+    headers: localHeaders(),
+    payload: {
+      scope: "team",
+      upstream_backend_id: "backend-a",
+      team_id: teamA,
+      delivery_id: created.delivery.deliveryId,
+      event_id: null,
+      expected_version: created.subscription.version
+    }
+  });
+
+const unsubscribeTeamRealtimeV2 = async (
+  harness: Harness,
+  created: Record<string, any>,
+  overrides: Record<string, unknown> = {}
+) =>
+  harness.app.inject({
+    method: "DELETE",
+    url: `/v2/local-edge/collaboration/realtime/subscriptions/${created.subscription.id}`,
+    headers: localHeaders(),
+    payload: {
+      scope: "team",
+      upstream_backend_id: "backend-a",
+      team_id: teamA,
+      expected_version: created.subscription.version,
+      ...overrides
+    }
+  });
+
 const acknowledgePersonalSnapshot = async (
   harness: Harness,
   created: Record<string, any>
@@ -1072,6 +1219,29 @@ const openLocalStream = async (harness: Harness, subscriptionId: string) => {
   const controller = new AbortController();
   const url = new URL(
     `/v1/local-edge/collaboration/realtime/subscriptions/${subscriptionId}/stream`,
+    baseUrl
+  );
+  url.searchParams.set("upstream_backend_id", "backend-a");
+  url.searchParams.set("team_id", teamA);
+  url.searchParams.set("scope", "team");
+  const response = await fetch(url, {
+    headers: {
+      authorization: desktopAuthorization,
+      origin: "http://localhost:5174"
+    },
+    signal: controller.signal
+  });
+  return { response, controller };
+};
+
+const openTeamRealtimeV2Stream = async (
+  harness: Harness,
+  subscriptionId: string
+) => {
+  const baseUrl = await harness.baseUrl();
+  const controller = new AbortController();
+  const url = new URL(
+    `/v2/local-edge/collaboration/realtime/subscriptions/${subscriptionId}/stream`,
     baseUrl
   );
   url.searchParams.set("upstream_backend_id", "backend-a");
@@ -1618,6 +1788,299 @@ describe("local collaboration realtime broker", () => {
     expect(missingUpstream.calls).toHaveLength(0);
   });
 
+  it("keeps Team realtime V2 subscriptions, events, and acknowledgements version-bound", async () => {
+    const harness = await createHarness({
+      stream: () =>
+        sseResponse([
+          {
+            event: "ready",
+            data: {
+              protocolVersion: COLLABORATION_CONTRACT_VERSION,
+              messageContractVersion: 2,
+              subscription: { id: remoteSubscriptionId },
+              cursor: snapshotCursor
+            }
+          },
+          {
+            event: "collaboration_event",
+            data: remoteTeamMessageV2Event(eventA, eventCursorA)
+          }
+        ])
+    });
+    harnesses.push(harness);
+
+    const created = await createTeamRealtimeV2Snapshot(harness);
+    expect(created.response.statusCode).toBe(200);
+    expect(created.body).toMatchObject({
+      messageContractVersion: 2,
+      subscription: {
+        messageContractVersion: 2,
+        scope: { scope: "team", teamId: teamA }
+      }
+    });
+    expect(harness.pool.rows).toHaveLength(1);
+    expect(harness.pool.rows[0]).toMatchObject({
+      scope: "team",
+      teamId: teamA,
+      messageContractVersion: 2,
+      state: "requires_snapshot"
+    });
+    expect(
+      new URL(
+        harness.calls.find((call) =>
+          new URL(call.url).pathname.endsWith("/snapshot")
+        )!.url
+      ).pathname
+    ).toBe("/koed/v2/collaboration/realtime/snapshot");
+
+    const wrongVersionAck = await acknowledgeSnapshot(harness, created.body);
+    expect(wrongVersionAck.statusCode).toBe(403);
+    const snapshotAck = await acknowledgeTeamRealtimeV2Snapshot(
+      harness,
+      created.body
+    );
+    expect(snapshotAck.statusCode).toBe(200);
+    expect(snapshotAck.json()).toMatchObject({
+      messageContractVersion: 2,
+      subscription: { messageContractVersion: 2 }
+    });
+
+    const { response, controller } = await openTeamRealtimeV2Stream(
+      harness,
+      created.body.subscription.id
+    );
+    expect(response.status).toBe(200);
+    const stream = await readStream(response);
+    controller.abort();
+    const localEvent = stream
+      .split("\n\n")
+      .filter((block) => block.includes('"messageContractVersion":2'))
+      .map((block) =>
+        block.split("\n").find((line) => line.startsWith("data: "))
+      )
+      .find(Boolean);
+    expect(localEvent).toBeDefined();
+    const update = teamCollaborationRealtimeUpdateV2Schema.parse(
+      JSON.parse(localEvent!.slice(6))
+    );
+    expect(update).toMatchObject({
+      messageContractVersion: 2,
+      type: "update",
+      subscriptionId: created.body.subscription.id,
+      family: "message_created",
+      update: {
+        type: "message_created_v2",
+        message: { replyToMessageId: null, mentionsUserIds: [] }
+      }
+    });
+    expect(JSON.stringify(update)).not.toContain(remoteSubscriptionId);
+    expect(JSON.stringify(update)).not.toContain("crt1.");
+    expect(
+      harness.calls.some(
+        (call) =>
+          new URL(call.url).pathname ===
+          "/koed/v2/collaboration/realtime/stream"
+      )
+    ).toBe(true);
+
+    const eventAck = await harness.app.inject({
+      method: "POST",
+      url: `/v2/local-edge/collaboration/realtime/subscriptions/${created.body.subscription.id}/ack`,
+      headers: localHeaders(),
+      payload: {
+        scope: "team",
+        upstream_backend_id: "backend-a",
+        team_id: teamA,
+        delivery_id: update.deliveryId,
+        event_id: update.eventId,
+        expected_version: harness.pool.rows[0]!.version
+      }
+    });
+    expect(eventAck.statusCode).toBe(200);
+    expect(
+      harness.calls.some(
+        (call) =>
+          new URL(call.url).pathname === "/koed/v2/collaboration/realtime/ack"
+      )
+    ).toBe(true);
+
+    const legacy = await createSnapshot(harness);
+    expect(legacy.response.statusCode).toBe(200);
+    expect(legacy.body).not.toHaveProperty("messageContractVersion");
+    expect(harness.pool.rows).toHaveLength(2);
+    expect(harness.pool.rows.map((row) => row.messageContractVersion)).toEqual([
+      2, 1
+    ]);
+    expect(harness.pool.rows[0]?.state).toBe("active");
+  });
+
+  it("expires a Team v2 local subscription only through its bound unsubscribe path", async () => {
+    let upstreamAborted = false;
+    const encoder = new TextEncoder();
+    const harness = await createHarness({
+      stream: (init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `event: ready\ndata: ${JSON.stringify({
+                    protocolVersion: COLLABORATION_CONTRACT_VERSION,
+                    messageContractVersion: 2,
+                    subscription: { id: remoteSubscriptionId },
+                    cursor: snapshotCursor
+                  })}\n\n`
+                )
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `event: collaboration_event\ndata: ${JSON.stringify(
+                    remoteTeamMessageV2Event(eventA, eventCursorA)
+                  )}\n\n`
+                )
+              );
+              init?.signal?.addEventListener(
+                "abort",
+                () => {
+                  upstreamAborted = true;
+                  controller.close();
+                },
+                { once: true }
+              );
+            }
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } }
+        )
+    });
+    harnesses.push(harness);
+
+    const created = await createTeamRealtimeV2Snapshot(harness);
+    expect(created.response.statusCode).toBe(200);
+    const snapshotAck = await acknowledgeTeamRealtimeV2Snapshot(
+      harness,
+      created.body
+    );
+    expect(snapshotAck.statusCode).toBe(200);
+
+    const { response, controller } = await openTeamRealtimeV2Stream(
+      harness,
+      created.body.subscription.id
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let streamText = "";
+    const hasUpdateEvent = (text: string): boolean =>
+      text.split("\n\n").some((block) => {
+        const dataLine = block
+          .split("\n")
+          .find((line) => line.startsWith("data: "));
+        if (!dataLine) return false;
+        try {
+          return JSON.parse(dataLine.slice(6)).type === "update";
+        } catch {
+          return false;
+        }
+      });
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      streamText += decoder.decode(chunk.value, { stream: true });
+      if (hasUpdateEvent(streamText)) break;
+    }
+    const eventBlock = streamText.split("\n\n").find((block) => {
+      const eventLine = block
+        .split("\n")
+        .find((line) => line.startsWith("event:"));
+      const dataLine = block
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      if (eventLine !== "event: collaboration" || !dataLine) return false;
+      try {
+        return JSON.parse(dataLine.slice(6)).type === "update";
+      } catch {
+        return false;
+      }
+    });
+    expect(eventBlock).toBeDefined();
+    const eventDataLine = eventBlock
+      ?.split("\n")
+      .find((line) => line.startsWith("data: "));
+    expect(eventDataLine).toBeDefined();
+    const update = teamCollaborationRealtimeUpdateV2Schema.parse(
+      JSON.parse(eventDataLine!.slice(6))
+    );
+    expect(update.deliveryId).toBeDefined();
+    const row = harness.pool.rows[0]!;
+
+    const wrongVersion = await harness.app.inject({
+      method: "DELETE",
+      url: `/v1/local-edge/collaboration/realtime/subscriptions/${created.body.subscription.id}`,
+      headers: localHeaders(),
+      payload: {
+        scope: "team",
+        upstream_backend_id: "backend-a",
+        team_id: teamA,
+        expected_version: row.version
+      }
+    });
+    expect(wrongVersion.statusCode).toBe(404);
+    expect(row.state).toBe("active");
+
+    const wrongBackend = await unsubscribeTeamRealtimeV2(
+      harness,
+      {
+        ...created.body,
+        subscription: { ...created.body.subscription, version: row.version }
+      },
+      { upstream_backend_id: "backend-b" }
+    );
+    expect(wrongBackend.statusCode).toBe(404);
+    expect(row.state).toBe("active");
+
+    const activeVersion = row.version;
+    const removed = await unsubscribeTeamRealtimeV2(harness, {
+      ...created.body,
+      subscription: { ...created.body.subscription, version: activeVersion }
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({
+      messageContractVersion: 2,
+      subscription: { state: "expired" }
+    });
+    expect(row.state).toBe("expired");
+    expect(upstreamAborted).toBe(true);
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+
+    const ackAfterUnsubscribe = await harness.app.inject({
+      method: "POST",
+      url: `/v2/local-edge/collaboration/realtime/subscriptions/${created.body.subscription.id}/ack`,
+      headers: localHeaders(),
+      payload: {
+        scope: "team",
+        upstream_backend_id: "backend-a",
+        team_id: teamA,
+        delivery_id: update.deliveryId,
+        event_id: update.eventId,
+        expected_version: row.version
+      }
+    });
+    expect(ackAfterUnsubscribe.statusCode).toBe(403);
+    expect(
+      harness.calls.filter((call) =>
+        new URL(call.url).pathname.endsWith("/ack")
+      )
+    ).toHaveLength(0);
+
+    const replay = await unsubscribeTeamRealtimeV2(harness, {
+      ...created.body,
+      subscription: { ...created.body.subscription, version: activeVersion }
+    });
+    expect(replay.statusCode).toBe(409);
+    controller.abort();
+    reader.releaseLock();
+  });
+
   it("never exposes remote URL, credential, binding keys, subscription ID, or cursor", async () => {
     const harness = await createHarness();
     harnesses.push(harness);
@@ -1815,6 +2278,7 @@ describe("local collaboration realtime broker", () => {
       subscriptionId: body.subscription.id,
       update: { type: "message_created" }
     });
+    expect(payload).not.toHaveProperty("messageContractVersion");
     expect(JSON.stringify(payload)).not.toContain("cursor");
     expect(JSON.stringify(payload)).not.toContain("bodyText");
     expect(JSON.stringify(payload)).not.toContain(remoteSubscriptionId);

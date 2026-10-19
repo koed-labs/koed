@@ -318,6 +318,110 @@ describe("Team collaboration feature switch", () => {
     await app.close();
   });
 
+  it("gates every Team v2 route before handlers while preserving Personal v1", async () => {
+    const app = Fastify();
+    let handlerCalls = 0;
+    registerTeamCollaborationFeatureGate(app, { enabled: false });
+    app.route({
+      method: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      url: "/v2/collaboration/teams/:teamId/threads/:threadId/messages",
+      handler: async () => {
+        handlerCalls += 1;
+        return { routed: true };
+      }
+    });
+    app.post("/v2/collaboration/realtime/snapshot", async () => {
+      handlerCalls += 1;
+      return { routed: true };
+    });
+    app.post("/v2/collaboration/realtime/ack", async () => {
+      handlerCalls += 1;
+      return { routed: true };
+    });
+    app.get("/v2/collaboration/realtime/stream", async () => {
+      handlerCalls += 1;
+      return { routed: true };
+    });
+    app.post(
+      "/v2/local-edge/collaboration/realtime/subscriptions",
+      async () => {
+        handlerCalls += 1;
+        return { routed: true };
+      }
+    );
+    app.post(
+      "/v2/local-edge/collaboration/realtime/subscriptions/:subscriptionId/ack",
+      async () => {
+        handlerCalls += 1;
+        return { routed: true };
+      }
+    );
+    app.get(
+      "/v2/local-edge/collaboration/realtime/subscriptions/:subscriptionId/stream",
+      async () => {
+        handlerCalls += 1;
+        return { routed: true };
+      }
+    );
+    app.delete(
+      "/v2/local-edge/collaboration/realtime/subscriptions/:subscriptionId",
+      async () => {
+        handlerCalls += 1;
+        return { routed: true };
+      }
+    );
+    app.post("/v1/collaboration/personal/notes", async () => {
+      handlerCalls += 1;
+      return { routed: true };
+    });
+
+    const teamId = "22222222-2222-4222-8222-222222222222";
+    const threadId = "33333333-3333-4333-8333-333333333333";
+    const subscriptionId = "44444444-4444-4444-8444-444444444444";
+    const teamResponses = await Promise.all([
+      ...(["GET", "POST", "PUT", "PATCH", "DELETE"] as const).map((method) =>
+        app.inject({
+          method,
+          url: `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages`
+        })
+      ),
+      app.inject({
+        method: "POST",
+        url: "/v2/collaboration/realtime/snapshot"
+      }),
+      app.inject({ method: "POST", url: "/v2/collaboration/realtime/ack" }),
+      app.inject({ method: "GET", url: "/v2/collaboration/realtime/stream" }),
+      app.inject({
+        method: "POST",
+        url: "/v2/local-edge/collaboration/realtime/subscriptions"
+      }),
+      app.inject({
+        method: "POST",
+        url: `/v2/local-edge/collaboration/realtime/subscriptions/${subscriptionId}/ack`
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v2/local-edge/collaboration/realtime/subscriptions/${subscriptionId}/stream`
+      }),
+      app.inject({
+        method: "DELETE",
+        url: `/v2/local-edge/collaboration/realtime/subscriptions/${subscriptionId}`
+      })
+    ]);
+    const personal = await app.inject({
+      method: "POST",
+      url: "/v1/collaboration/personal/notes"
+    });
+
+    for (const response of teamResponses) {
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toBe("");
+    }
+    expect(personal.statusCode).toBe(200);
+    expect(handlerCalls).toBe(1);
+    await app.close();
+  });
+
   it("reports Team capabilities unavailable while preserving Personal Memory", () => {
     const capabilities = buildCapabilitiesResponse({
       deploymentProfile: "team_self_hosted",

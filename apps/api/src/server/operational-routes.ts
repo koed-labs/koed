@@ -37,6 +37,7 @@ import { z } from "zod";
 import type { ApiRouteContext } from "./context.js";
 import type { WebTransportGatewayMetrics } from "../realtime-transport/index.js";
 import {
+  buildTeamCollaborationV2CapabilitiesResponse,
   buildCapabilitiesResponse,
   type DeploymentProfile,
   type CommercialBillingInput,
@@ -1054,6 +1055,14 @@ export const registerOperationalRoutes = (
       },
       "public"
     )
+  );
+
+  app.get("/v2/capabilities", () =>
+    buildTeamCollaborationV2CapabilitiesResponse({
+      deploymentProfile: config.deploymentProfile,
+      developerTeamBackendEnabled: config.developerTeamBackendEnabled,
+      teamCollaborationEnabled: config.teamCollaborationEnabled
+    })
   );
 
   app.get("/v1/capabilities/authenticated", async (request) => {

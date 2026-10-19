@@ -20,6 +20,8 @@ import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
   collaborationCommandResultSchema,
   collaborationMessageSchema,
+  teamCollaborationMessageV2RendererSchema,
+  teamCollaborationMessagePageV2Schema,
   collaborationReadStateSchema,
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
@@ -32,6 +34,7 @@ import {
   RemoteResponseLimitError,
   type CollaborationCommandResult,
   type CollaborationMessagePage,
+  type TeamCollaborationMessageV2Renderer,
   type CollaborationRendererCommand,
   type CollaborationSafeError,
   type CollaborationSelection,
@@ -83,6 +86,7 @@ import {
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
+  upstreamSupportsCollaborationCommands,
   upstreamBackendById,
   type LocalEdgeUpstreamBackend,
   type LocalEdgeUpstreamRegistry
@@ -91,10 +95,10 @@ import {
 const COMMAND_BODY_LIMIT_BYTES = 128 * 1024;
 const UPSTREAM_RESPONSE_LIMIT_BYTES = 2 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 30_000;
-const COLLABORATION_CAPABILITY_SCHEMA_VERSION = 9;
 const PERSONAL_SUBSCRIPTION_TTL_MS = 24 * 60 * 60 * 1_000;
 const PERSONAL_CURSOR_PREFIX = "cpc1";
 const TEAM_MESSAGE_CURSOR_PREFIX = "ctmc1";
+const TEAM_MESSAGE_V2_CURSOR_PREFIX = "ctm2";
 
 const backendIdSchema = z
   .string()
@@ -218,10 +222,12 @@ type SupportedCommand = Extract<
   | { command: "collaboration.archive_thread" }
   | { command: "collaboration.restore_thread" }
   | { command: "collaboration.send_message" }
+  | { command: "collaboration.send_team_message_v2" }
   | { command: "collaboration.retry_message" }
   | { command: "collaboration.mark_read" }
   | { command: "collaboration.mark_delivered" }
   | { command: "collaboration.load_message_page" }
+  | { command: "collaboration.load_team_message_page_v2" }
 >;
 
 interface PersonalRemoteContext {
@@ -345,6 +351,46 @@ const canonicalMessageSchema = z
       .strict(),
     createdAt: z.string(),
     updatedAt: z.string()
+  })
+  .strict();
+
+const remoteTeamMessageV2Schema = z
+  .object({
+    id: z.uuid(),
+    threadId: z.uuid(),
+    threadSequence: z.number().int().safe().positive(),
+    audienceVersion: z.number().int().safe().positive(),
+    scope: z.literal("team"),
+    personalOwnerUserId: z.null(),
+    teamId: z.uuid(),
+    teamWorkspaceId: z.uuid().nullable(),
+    senderKind: z.literal("user"),
+    senderPrincipalId: z.string().nullable(),
+    senderUserId: z.uuid().nullable(),
+    senderDisplayName: z.string().nullable(),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
+    bodyText: z.string(),
+    metadata: z.record(z.string(), z.unknown()),
+    provenance: z
+      .object({
+        kind: z.string(),
+        id: z.string(),
+        details: z.record(z.string(), z.unknown()).optional()
+      })
+      .strict(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    replyToMessageId: z.uuid().nullable(),
+    mentionsUserIds: z.array(z.uuid()).max(20)
+  })
+  .strict();
+
+const remoteTeamMessageV2PageSchema = z
+  .object({
+    messages: z.array(remoteTeamMessageV2Schema).max(200),
+    hasMore: z.boolean(),
+    nextBeforeSequence: z.number().int().safe().positive().nullable(),
+    nextAfterSequence: z.number().int().safe().positive().nullable()
   })
   .strict();
 
@@ -615,6 +661,12 @@ const teamMessageCursorPayloadSchema = z
   .strict();
 
 type TeamMessageCursorPayload = z.infer<typeof teamMessageCursorPayloadSchema>;
+const teamMessageV2CursorPayloadSchema = teamMessageCursorPayloadSchema.extend({
+  version: z.literal(2)
+});
+type TeamMessageV2CursorPayload = z.infer<
+  typeof teamMessageV2CursorPayloadSchema
+>;
 
 const safeError = (
   code: CollaborationSafeError["code"],
@@ -971,6 +1023,46 @@ const decodeTeamMessageCursor = (
   return parsed.data;
 };
 
+const encodeTeamMessageV2Cursor = (
+  credential: DesktopLocalCredentialAuthorization,
+  payload: TeamMessageV2CursorPayload
+): string =>
+  encodeSignedCursor(
+    credential,
+    TEAM_MESSAGE_V2_CURSOR_PREFIX,
+    "team-collaboration-message-v2-cursor",
+    payload
+  );
+
+const decodeTeamMessageV2Cursor = (
+  credential: DesktopLocalCredentialAuthorization,
+  cursor: string,
+  expected: Pick<
+    TeamMessageV2CursorPayload,
+    "backendId" | "principalUserId" | "teamId" | "threadId" | "direction"
+  >
+): TeamMessageV2CursorPayload | null => {
+  const decoded = decodeSignedCursor(
+    credential,
+    TEAM_MESSAGE_V2_CURSOR_PREFIX,
+    "team-collaboration-message-v2-cursor",
+    cursor
+  );
+  const parsed = teamMessageV2CursorPayloadSchema.safeParse(decoded);
+  if (
+    !parsed.success ||
+    parsed.data.backendId !== expected.backendId ||
+    parsed.data.principalUserId !== expected.principalUserId ||
+    parsed.data.teamId !== expected.teamId ||
+    parsed.data.threadId !== expected.threadId ||
+    parsed.data.direction !== expected.direction ||
+    parsed.data.boundarySequence > parsed.data.snapshotSequence
+  ) {
+    return null;
+  }
+  return parsed.data;
+};
+
 const personalSnapshotRevision = (
   credential: DesktopLocalCredentialAuthorization,
   ownerUserId: string,
@@ -1079,18 +1171,10 @@ const personalMessagePage = async (input: {
 };
 
 const supportsCollaborationCommands = (
-  backend: LocalEdgeUpstreamBackend
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
 ): boolean => {
-  const availability =
-    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
-      ?.availability;
-  return (
-    backend.capabilities?.schemaVersion ===
-      COLLABORATION_CAPABILITY_SCHEMA_VERSION &&
-    backend.capabilities.payload?.capabilitySchemaVersion ===
-      COLLABORATION_CAPABILITY_SCHEMA_VERSION &&
-    (availability === "available" || availability === "partial")
-  );
+  return upstreamSupportsCollaborationCommands(backend, messageContractVersion);
 };
 
 const isSafeBackend = (backend: LocalEdgeUpstreamBackend): boolean => {
@@ -1211,6 +1295,40 @@ const targetMessageFrom = (value: unknown): unknown => {
   };
 };
 
+const targetTeamMessageV2From = (
+  value: unknown
+): TeamCollaborationMessageV2Renderer | null => {
+  const parsed = remoteTeamMessageV2Schema.safeParse(value);
+  if (!parsed.success) return null;
+  const message = parsed.data;
+  const senderUserId = message.senderUserId;
+  if (!senderUserId) return null;
+  const target = teamCollaborationMessageV2RendererSchema.safeParse({
+    id: message.id.toLowerCase(),
+    threadId: message.threadId.toLowerCase(),
+    scope: "team",
+    teamId: message.teamId.toLowerCase(),
+    sequence: message.threadSequence,
+    sender: {
+      id: senderUserId.toLowerCase(),
+      displayName: message.senderDisplayName ?? "Team member",
+      membershipState: "enabled"
+    },
+    senderKind: message.senderKind,
+    body: message.bodyText,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    editedAt: null,
+    deletedAt: null,
+    delivery: "sent",
+    recipientStatus: message.recipientStatus,
+    failure: null,
+    replyToMessageId: message.replyToMessageId?.toLowerCase() ?? null,
+    mentionsUserIds: message.mentionsUserIds.map((id) => id.toLowerCase())
+  });
+  return target.success ? target.data : null;
+};
+
 const targetReadStateFrom = (value: unknown): unknown => {
   const target = collaborationReadStateSchema.safeParse(value);
   if (target.success) return target.data;
@@ -1236,7 +1354,11 @@ const targetResultValue = (
   value: unknown
 ): unknown => {
   if (operation.resultKey === "thread") return targetThreadFrom(value, command);
-  if (operation.resultKey === "message") return targetMessageFrom(value);
+  if (operation.resultKey === "message") {
+    return command.command === "collaboration.send_team_message_v2"
+      ? targetTeamMessageV2From(value)
+      : targetMessageFrom(value);
+  }
   if (operation.resultKey === "person") {
     const person = remoteRosterMemberSchema.safeParse(value);
     return person.success ? remotePersonFrom(person.data) : null;
@@ -1392,6 +1514,19 @@ const teamPageRevision = (
   `ctpr1.${credentialHmac(
     credential,
     "team-collaboration-page",
+    `${payload.backendId}\n${payload.principalUserId}\n${payload.teamId}\n${payload.threadId}\n${payload.snapshotSequence}`
+  )}`;
+
+const teamMessageV2PageRevision = (
+  credential: DesktopLocalCredentialAuthorization,
+  payload: Pick<
+    TeamMessageV2CursorPayload,
+    "backendId" | "principalUserId" | "teamId" | "threadId" | "snapshotSequence"
+  >
+): string =>
+  `ctpr2.${credentialHmac(
+    credential,
+    "team-collaboration-message-v2-page",
     `${payload.backendId}\n${payload.principalUserId}\n${payload.teamId}\n${payload.threadId}\n${payload.snapshotSequence}`
   )}`;
 
@@ -2229,6 +2364,110 @@ const teamMessagePage = async (input: {
   };
 };
 
+const teamMessageV2Page = async (input: {
+  fetcher: typeof fetch;
+  credential: DesktopLocalCredentialAuthorization;
+  context: TeamReadContext;
+  teamId: string;
+  thread: Record<string, unknown>;
+  direction: "older" | "newer";
+  cursor: string | null;
+  limit: number;
+}): Promise<unknown | null> => {
+  if (
+    input.thread.scope !== "team" ||
+    typeof input.thread.teamId !== "string" ||
+    input.thread.teamId.toLowerCase() !== input.teamId.toLowerCase() ||
+    typeof input.thread.id !== "string" ||
+    typeof input.thread.latestSequence !== "number"
+  ) {
+    return null;
+  }
+  const teamId = input.teamId.toLowerCase();
+  const threadId = input.thread.id.toLowerCase();
+  const decoded = input.cursor
+    ? decodeTeamMessageV2Cursor(input.credential, input.cursor, {
+        backendId: input.context.backendId,
+        principalUserId: input.context.principal.id,
+        teamId,
+        threadId,
+        direction: input.direction
+      })
+    : null;
+  if (input.cursor && !decoded) throw new TypeError("Invalid message cursor");
+  const snapshotSequence =
+    decoded?.snapshotSequence ?? input.thread.latestSequence;
+  if (snapshotSequence > input.thread.latestSequence) {
+    throw new TypeError("Invalid message cursor snapshot");
+  }
+  const boundarySequence = decoded?.boundarySequence ?? 0;
+  const payload = await requireRemoteJson(input.fetcher, {
+    backend: input.context.backend,
+    upstreamAuthorization: input.context.upstreamAuthorization,
+    operationFamily: "team_chat_read",
+    method: "GET",
+    path: queryPath(
+      `/v2/collaboration/teams/${encodeURIComponent(teamId)}/threads/${encodeURIComponent(threadId)}/messages`,
+      input.direction === "older"
+        ? {
+            beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
+            limit: input.limit
+          }
+        : {
+            afterSequence: boundarySequence,
+            beforeSequence: snapshotSequence + 1,
+            limit: input.limit
+          }
+    )
+  });
+  const page = remoteTeamMessageV2PageSchema.parse(payload);
+  const items = page.messages.map(targetTeamMessageV2From);
+  if (
+    items.some((message) => message === null) ||
+    items.some(
+      (message) => message!.teamId !== teamId || message!.threadId !== threadId
+    )
+  ) {
+    return null;
+  }
+  const messages = items.filter(
+    (message): message is TeamCollaborationMessageV2Renderer => message !== null
+  );
+  const firstSequence = messages[0]?.sequence ?? null;
+  const lastSequence = messages.at(-1)?.sequence ?? null;
+  const hasOlder = firstSequence !== null && firstSequence > 1;
+  const hasNewer = lastSequence !== null && lastSequence < snapshotSequence;
+  const cursorBase = {
+    version: 2 as const,
+    backendId: input.context.backendId,
+    principalUserId: input.context.principal.id,
+    teamId,
+    threadId,
+    snapshotSequence
+  };
+  return teamCollaborationMessagePageV2Schema.parse({
+    snapshotRevision: teamMessageV2PageRevision(input.credential, cursorBase),
+    olderCursor: hasOlder
+      ? encodeTeamMessageV2Cursor(input.credential, {
+          ...cursorBase,
+          direction: "older",
+          boundarySequence: firstSequence!
+        })
+      : null,
+    newerCursor: hasNewer
+      ? encodeTeamMessageV2Cursor(input.credential, {
+          ...cursorBase,
+          direction: "newer",
+          boundarySequence: lastSequence!
+        })
+      : null,
+    hasOlder,
+    hasNewer,
+    threadId,
+    items: messages
+  });
+};
+
 const findTeamInSnapshot = (
   snapshot: CollaborationSnapshot,
   teamId: string
@@ -2971,7 +3210,8 @@ export const registerCollaborationCommandRoute = (
       | "action_grant"
       | "share_grant_management"
       | "managed_execution",
-    backendId?: string
+    backendId?: string,
+    messageContractVersion: 1 | 2 = 1
   ): Promise<TeamReadContext | null> => {
     const registry = readRegistry(options.upstreamBackendsPath);
     const backend = backendId
@@ -3011,7 +3251,7 @@ export const registerCollaborationCommandRoute = (
     });
     if (
       decision.action !== "live_upstream_proxy" ||
-      !supportsCollaborationCommands(backend)
+      !supportsCollaborationCommands(backend, messageContractVersion)
     ) {
       return null;
     }
@@ -3690,6 +3930,58 @@ export const registerCollaborationCommandRoute = (
           failureResult(input.command, safeError("temporarily_unavailable"))
         );
       }
+      if (input.command.command === "collaboration.load_team_message_page_v2") {
+        const threadRef = input.command.input.thread;
+        const context = await resolveTeamReadContext(
+          "team_chat_read",
+          input.upstream_backend_id,
+          2
+        );
+        if (!context) {
+          return failureResult(
+            input.command,
+            safeError("temporarily_unavailable")
+          );
+        }
+        try {
+          const threadPayload = await requireRemoteJson(options.fetch, {
+            backend: context.backend,
+            upstreamAuthorization: context.upstreamAuthorization,
+            operationFamily: "team_chat_read",
+            method: "GET",
+            path: `/v1/collaboration/teams/${encodeURIComponent(threadRef.teamId.toLowerCase())}/threads/${encodeURIComponent(threadRef.threadId.toLowerCase())}`
+          });
+          const thread = threadDtoFromRemote(threadPayload.thread);
+          if (
+            !thread ||
+            typeof thread.id !== "string" ||
+            thread.id.toLowerCase() !== threadRef.threadId.toLowerCase() ||
+            typeof thread.teamId !== "string" ||
+            thread.teamId.toLowerCase() !== threadRef.teamId.toLowerCase()
+          ) {
+            return failureResult(input.command, safeError("not_available"));
+          }
+          const page = await teamMessageV2Page({
+            fetcher: options.fetch,
+            credential,
+            context,
+            teamId: threadRef.teamId,
+            thread,
+            direction: input.command.input.direction,
+            cursor: input.command.input.cursor,
+            limit: input.command.input.limit
+          });
+          return page
+            ? (personalSuccessResult(input.command, { page }) ??
+                failureResult(input.command, safeError("internal_error")))
+            : failureResult(input.command, safeError("not_available"));
+        } catch (error) {
+          return failureResult(
+            input.command,
+            safeErrorFromUnknown(error, "invalid_input")
+          );
+        }
+      }
       const operation = teamCollaborationOperationFor(input.command);
       if (!operation) {
         if (input.command.command === "collaboration.select") {
@@ -3906,10 +4198,12 @@ export const registerCollaborationCommandRoute = (
           : null,
         upstreamCredentialAvailable: Boolean(upstreamAuthorization)
       });
+      const messageContractVersion =
+        input.command.command === "collaboration.send_team_message_v2" ? 2 : 1;
       if (
         decision.action !== "live_upstream_proxy" ||
         !upstreamAuthorization ||
-        !supportsCollaborationCommands(backend)
+        !supportsCollaborationCommands(backend, messageContractVersion)
       ) {
         return failureResult(
           input.command,

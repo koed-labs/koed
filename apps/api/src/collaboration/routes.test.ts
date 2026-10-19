@@ -7,7 +7,9 @@ import type {
   CollaborationThreadRecord,
   CreateCollaborationThreadInput,
   MemorySourceRepository,
-  PersonalNoteRecord
+  PersonalNoteRecord,
+  TeamCollaborationMessageV2Record,
+  TeamCollaborationMessageV2PageRecord
 } from "@koed/db";
 import {
   CollaborationIdempotencyConflictError,
@@ -461,6 +463,36 @@ const createCollaborationFixture = () => {
       thread.latestSequence = message.threadSequence;
       return message;
     },
+    async sendTeamMessageV2(actor, input) {
+      const thread = authorizedThread(actor, input.threadId, "write");
+      if (!thread || thread.scope !== "team") return null;
+      const audienceUserIds = [...users.keys()].filter((userId) =>
+        canRead(userId, thread)
+      );
+      if (
+        input.mentionsUserIds.some(
+          (userId) => !audienceUserIds.includes(userId)
+        ) ||
+        (input.replyToMessageId !== null &&
+          !(messages.get(input.threadId) ?? []).some(
+            (message) => message.id === input.replyToMessageId
+          ))
+      ) {
+        return null;
+      }
+      const message = await repository.sendMessage(actor, {
+        threadId: input.threadId,
+        idempotencyKey: input.idempotencyKey,
+        bodyText: input.bodyText
+      });
+      return message
+        ? ({
+            ...message,
+            replyToMessageId: input.replyToMessageId,
+            mentionsUserIds: input.mentionsUserIds
+          } satisfies TeamCollaborationMessageV2Record)
+        : null;
+    },
     async listMessages(actor, input) {
       if (!authorizedThread(actor, input.threadId, "read", true)) return null;
       const all = messages.get(input.threadId) ?? [];
@@ -478,6 +510,20 @@ const createCollaborationFixture = () => {
         nextBeforeSequence: selected[0]?.threadSequence ?? null,
         nextAfterSequence: selected[selected.length - 1]?.threadSequence ?? null
       };
+    },
+    async listTeamMessagesV2(actor, input) {
+      const page = await repository.listMessages(actor, input);
+      if (!page) return null;
+      return {
+        ...page,
+        messages: page.messages.map(
+          (message): TeamCollaborationMessageV2Record => ({
+            ...message,
+            replyToMessageId: null,
+            mentionsUserIds: []
+          })
+        )
+      } satisfies TeamCollaborationMessageV2PageRecord;
     },
     async listPersonalNotes(actor, input = {}) {
       const selected = [...notes.values()]
@@ -1103,6 +1149,144 @@ describe("collaboration HTTP routes", () => {
         })
       ).statusCode
     ).toBe(201);
+    const v2TeamMessageUrl = `/v2/collaboration/teams/${fixture.ids.teamA}/threads/${fixture.workspaceThread.id}/messages`;
+    const v2Denied = await app.inject({
+      method: "POST",
+      url: v2TeamMessageUrl,
+      headers: {
+        ...deviceHeaders(fixture.ids.alice, ["team_chat_read"]),
+        "idempotency-key": "v2-read-scope-cannot-write"
+      },
+      payload: {
+        bodyText: "Must be denied",
+        replyToMessageId: null,
+        mentionsUserIds: []
+      }
+    });
+    expect(v2Denied.statusCode).toBe(403);
+    const personalApiTokenV2Read = await app.inject({
+      method: "GET",
+      url: v2TeamMessageUrl,
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    const personalApiTokenV2Write = await app.inject({
+      method: "POST",
+      url: v2TeamMessageUrl,
+      headers: {
+        authorization: "Bearer personal-api-token",
+        "idempotency-key": "personal-token-cannot-write-team-v2"
+      },
+      payload: {
+        bodyText: "Must be denied",
+        replyToMessageId: null,
+        mentionsUserIds: []
+      }
+    });
+    expect(personalApiTokenV2Read.statusCode).toBe(403);
+    expect(personalApiTokenV2Write.statusCode).toBe(403);
+    const duplicateCanonicalMention = await app.inject({
+      method: "POST",
+      url: v2TeamMessageUrl,
+      headers: {
+        ...deviceHeaders(fixture.ids.alice, ["team_chat_write"]),
+        "idempotency-key": "v2-duplicate-case-variant-mention"
+      },
+      payload: {
+        bodyText: "Duplicate canonical mention",
+        replyToMessageId: null,
+        mentionsUserIds: [fixture.ids.bob, fixture.ids.bob.toUpperCase()]
+      }
+    });
+    expect(duplicateCanonicalMention.statusCode).toBe(400);
+    const v2Created = await app.inject({
+      method: "POST",
+      url: v2TeamMessageUrl,
+      headers: {
+        ...deviceHeaders(fixture.ids.alice, ["team_chat_write"]),
+        "idempotency-key": "v2-write-scope-can-write"
+      },
+      payload: {
+        bodyText: "Versioned Team message",
+        replyToMessageId: null,
+        mentionsUserIds: [fixture.ids.bob.toUpperCase()]
+      }
+    });
+    expect(v2Created.statusCode).toBe(201);
+    expect(
+      jsonBody<{ message: Record<string, unknown> }>(v2Created).message
+    ).toMatchObject({
+      scope: "team",
+      threadId: fixture.workspaceThread.id,
+      replyToMessageId: null,
+      mentionsUserIds: [fixture.ids.bob]
+    });
+    const boundedV2Page = await app.inject({
+      method: "GET",
+      url: `${v2TeamMessageUrl}?afterSequence=1&beforeSequence=3&limit=1`,
+      headers: deviceHeaders(fixture.ids.alice, ["team_chat_read"])
+    });
+    expect(boundedV2Page.statusCode).toBe(200);
+    expect(
+      jsonBody<{ messages: Array<Record<string, unknown>> }>(boundedV2Page)
+        .messages
+    ).toMatchObject([
+      {
+        scope: "team",
+        threadId: fixture.workspaceThread.id,
+        bodyText: "Versioned Team message",
+        replyToMessageId: null,
+        mentionsUserIds: []
+      }
+    ]);
+    const initialNewerV2Page = await app.inject({
+      method: "GET",
+      url: `${v2TeamMessageUrl}?afterSequence=0&beforeSequence=3&limit=1`,
+      headers: deviceHeaders(fixture.ids.alice, ["team_chat_read"])
+    });
+    expect(initialNewerV2Page.statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `${v2TeamMessageUrl}?afterSequence=2&beforeSequence=2&limit=1`,
+          headers: deviceHeaders(fixture.ids.alice, ["team_chat_read"])
+        })
+      ).statusCode
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `${teamMessagesUrl}?afterSequence=1&beforeSequence=3&limit=1`,
+          headers: deviceHeaders(fixture.ids.alice, ["team_chat_read"])
+        })
+      ).statusCode
+    ).toBe(400);
+    const v1AfterV2 = await app.inject({
+      method: "GET",
+      url: teamMessagesUrl,
+      headers: deviceHeaders(fixture.ids.alice, ["team_chat_read"])
+    });
+    expect(v1AfterV2.statusCode).toBe(200);
+    const v1Messages = jsonBody<{ messages: Record<string, unknown>[] }>(
+      v1AfterV2
+    ).messages;
+    expect(v1Messages.at(-1)).not.toHaveProperty("replyToMessageId");
+    expect(v1Messages.at(-1)).not.toHaveProperty("mentionsUserIds");
+    const v1WithV2Fields = await app.inject({
+      method: "POST",
+      url: teamMessagesUrl,
+      headers: {
+        ...deviceHeaders(fixture.ids.alice, ["team_chat_write"]),
+        "idempotency-key": "v1-rejects-v2-fields"
+      },
+      payload: {
+        bodyText: "V1 remains strict",
+        replyToMessageId: null,
+        mentionsUserIds: []
+      }
+    });
+    expect(v1WithV2Fields.statusCode).toBe(400);
     expect(
       (
         await app.inject({

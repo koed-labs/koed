@@ -398,6 +398,13 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v2/capabilities",
+    "public",
+    "operations",
+    "Explicit Team message contract v2 capability discovery."
+  ),
+  route(
+    "GET",
     "/v1/capabilities/authenticated",
     "session",
     "operations",
@@ -1360,6 +1367,26 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+    "session_or_device_credential",
+    "collaboration",
+    "List authorized Team collaboration messages using the Team v2 message contract.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+    "session_or_device_credential",
+    "collaboration",
+    "Post an authorized Team collaboration message using the Team v2 message contract.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "PUT",
     "/v1/collaboration/teams/{teamId}/threads/{threadId}/delivery-state",
     "session_or_device_credential",
@@ -1405,6 +1432,36 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "collaboration",
     "Subscribe to authorized Team collaboration realtime updates.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/collaboration/realtime/snapshot",
+    "session_or_device_credential",
+    "collaboration",
+    "Read an authorized Team collaboration realtime v2 snapshot.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/collaboration/realtime/ack",
+    "session_or_device_credential",
+    "collaboration",
+    "Acknowledge authorized Team collaboration realtime v2 delivery.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v2/collaboration/realtime/stream",
+    "session_or_device_credential",
+    "collaboration",
+    "Subscribe to authorized Team collaboration realtime v2 updates.",
     "request_time_team_membership",
     "implemented",
     teamDeploymentModes
@@ -2524,10 +2581,30 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v2/local-edge/collaboration/realtime/subscriptions",
+    "local_edge_client_credential",
+    "collaboration",
+    "Create a locally authenticated Team collaboration realtime v2 subscription.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
     "local_edge_client_credential",
     "collaboration",
     "Acknowledge a local-edge collaboration realtime delivery.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
+    "local_edge_client_credential",
+    "collaboration",
+    "Acknowledge a local-edge Team collaboration realtime v2 delivery.",
     "future_request_time",
     "implemented",
     localEdgeDeploymentModes
@@ -2538,6 +2615,16 @@ export const routeIdentityContracts = [
     "local_edge_client_credential",
     "collaboration",
     "Subscribe to local-edge collaboration realtime delivery.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/stream",
+    "local_edge_client_credential",
+    "collaboration",
+    "Subscribe to local-edge Team collaboration realtime v2 delivery.",
     "future_request_time",
     "implemented",
     localEdgeDeploymentModes
@@ -2558,6 +2645,16 @@ export const routeIdentityContracts = [
     "local_edge_client_credential",
     "collaboration",
     "End a local-edge collaboration realtime subscription.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v2/local-edge/collaboration/realtime/subscriptions/{subscriptionId}",
+    "local_edge_client_credential",
+    "collaboration",
+    "End a local-edge Team collaboration realtime v2 subscription.",
     "future_request_time",
     "implemented",
     localEdgeDeploymentModes

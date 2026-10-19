@@ -4,6 +4,8 @@ import {
   assertSecureHttpTransport,
   isTeamMemoryAnswerTaskCapability,
   readLocalEdgeUpstreamRegistry,
+  teamCollaborationV2CapabilitiesSchema,
+  TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
   upstreamAdvertisesCapability,
   upstreamBackendById,
   type LocalEdgeUpstreamBackend,
@@ -113,17 +115,63 @@ export const activeUpstreamBackend = (
     : null;
 
 export const upstreamSupportsCollaborationRealtime = (
-  backend: LocalEdgeUpstreamBackend
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
 ): boolean => {
   const availability =
     backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
       ?.availability;
-  return (
+  const supportsV1 =
     backend.capabilities?.schemaVersion === 9 &&
     backend.capabilities.payload?.capabilitySchemaVersion === 9 &&
     (availability === "available" || availability === "partial") &&
     backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
-      COLLABORATION_CONTRACT_VERSION
+      COLLABORATION_CONTRACT_VERSION;
+  return (
+    supportsV1 &&
+    (messageContractVersion === 1 ||
+      upstreamSupportsTeamCollaborationV2(backend))
+  );
+};
+
+export const upstreamSupportsTeamCollaborationV2 = (
+  backend: LocalEdgeUpstreamBackend,
+  now = Date.now()
+): boolean => {
+  const snapshot = backend.capabilities?.teamCollaborationV2;
+  if (
+    snapshot?.state !== "validated" ||
+    snapshot.schemaVersion !==
+      TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION ||
+    typeof snapshot.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(snapshot.expiresAt)) ||
+    Date.parse(snapshot.expiresAt) <= now
+  ) {
+    return false;
+  }
+  const parsed = teamCollaborationV2CapabilitiesSchema.safeParse(
+    snapshot.payload
+  );
+  return (
+    parsed.success && parsed.data.teamCollaboration.availability === "available"
+  );
+};
+
+export const upstreamSupportsCollaborationCommands = (
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
+): boolean => {
+  const availability =
+    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
+      ?.availability;
+  const supportsV1 =
+    backend.capabilities?.schemaVersion === 9 &&
+    backend.capabilities.payload?.capabilitySchemaVersion === 9 &&
+    (availability === "available" || availability === "partial");
+  return (
+    supportsV1 &&
+    (messageContractVersion === 1 ||
+      upstreamSupportsTeamCollaborationV2(backend))
   );
 };
 
@@ -314,7 +362,23 @@ export const safeUpstreamProxyUrl = (
   upstreamBackend: LocalEdgeUpstreamBackend,
   path: string
 ): URL => {
-  if (!path.startsWith("/v1/") || path.startsWith("/v1/local-edge/")) {
+  const requestedUrl = new URL(path, "http://koed.local");
+  const rawPathname = path.split(/[?#]/, 1)[0] ?? "";
+  const isTeamMessageV2Path =
+    rawPathname === requestedUrl.pathname &&
+    /^\/v2\/collaboration\/teams\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/messages$/i.test(
+      rawPathname
+    );
+  const isTeamRealtimeV2Path =
+    rawPathname === requestedUrl.pathname &&
+    /^\/v2\/collaboration\/realtime\/(?:snapshot|ack|stream)$/.test(
+      rawPathname
+    );
+  const isAllowedV2Path = isTeamMessageV2Path || isTeamRealtimeV2Path;
+  if (
+    (!path.startsWith("/v1/") && !isAllowedV2Path) ||
+    path.startsWith("/v1/local-edge/")
+  ) {
     throw Object.assign(new Error("Unsupported upstream proxy path"), {
       statusCode: 400
     });
@@ -329,9 +393,11 @@ export const safeUpstreamProxyUrl = (
     });
   }
   const v1Prefix = `${basePath}/v1/`.replace(/\/{2,}/g, "/");
+  const v2Prefix = `${basePath}/v2/`.replace(/\/{2,}/g, "/");
   const localEdgePrefix = `${basePath}/v1/local-edge/`.replace(/\/{2,}/g, "/");
   if (
-    !parsed.pathname.startsWith(v1Prefix) ||
+    (!parsed.pathname.startsWith(v1Prefix) &&
+      !(isAllowedV2Path && parsed.pathname.startsWith(v2Prefix))) ||
     parsed.pathname.startsWith(localEdgePrefix)
   ) {
     throw Object.assign(new Error("Unsupported upstream proxy path"), {
@@ -348,6 +414,8 @@ export const assertUpstreamOperationPathAllowed = (
 ): void => {
   const parsed = new URL(path, "http://koed.local");
   const pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+  const rawPathname = path.split(/[?#]/, 1)[0] ?? "";
+  const canonicalV2Path = rawPathname === parsed.pathname;
   const deny = () => {
     throw Object.assign(
       new Error("Upstream path is not allowed for operation family"),
@@ -405,13 +473,39 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
+  if (
+    operationFamily === "team_chat_read" ||
+    operationFamily === "team_chat_write"
+  ) {
+    const expectedMethod =
+      operationFamily === "team_chat_read" ? "GET" : "POST";
+    if (
+      canonicalV2Path &&
+      method === expectedMethod &&
+      /^\/v2\/collaboration\/teams\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/messages$/i.test(
+        rawPathname
+      )
+    ) {
+      return;
+    }
+    deny();
+  }
+
   if (operationFamily === "team_workspace_read") {
     if (
       (method === "GET" && pathname === "/v1/team-context") ||
       (method === "POST" &&
         pathname === "/v1/collaboration/realtime/snapshot") ||
       (method === "GET" && pathname === "/v1/collaboration/realtime/stream") ||
-      (method === "POST" && pathname === "/v1/collaboration/realtime/ack")
+      (method === "POST" && pathname === "/v1/collaboration/realtime/ack") ||
+      (method === "POST" &&
+        canonicalV2Path &&
+        /^\/v2\/collaboration\/realtime\/(?:snapshot|ack)$/.test(
+          rawPathname
+        )) ||
+      (method === "GET" &&
+        canonicalV2Path &&
+        rawPathname === "/v2/collaboration/realtime/stream")
     ) {
       return;
     }
