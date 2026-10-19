@@ -7,6 +7,7 @@ Related decisions:
 
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0024 Tiered Desktop Action Approval](./0024-tiered-desktop-action-approval.md)
+- [0061 Pull Request Merge as a Runner-Owned Source-Control Mutation](./0061-pull-request-merge.md)
 - [0055 Runner-Owned Worktrees And Execution Checkpoints](./0055-runner-owned-worktrees-and-execution-checkpoints.md)
 - [0035 File Access Uses Runner-Owned Rooted Capabilities](./0035-runner-owned-rooted-file-authority.md)
 - [0036 Terminals Are Runner-Owned Scoped Executions](./0036-runner-owned-scoped-terminal-authority.md)
@@ -136,9 +137,14 @@ close, reopen, label, reviewer assignment, and destructive branch actions are
 separate mutations. Each mutation requires an expected head object id and
 remote state, an idempotency key, current credential generation, and the
 approval tier from ADR 0024. Force push, history rewrite, protected-branch
-changes, merge, repository administration, secrets, workflows, package
+changes, repository administration, secrets, workflows, package
 publication, and deploy-key management are unavailable until separately
 designed and approved.
+
+Pull-request merge has a separate design in ADR 0061. It remains unavailable
+at runtime unless the runner and provider driver advertise and enforce that
+ADR's exact repository-allowed method, Native review, expected-head condition,
+and single-use dispatch rules.
 
 AI Clients may propose a structured operation but cannot choose credentials,
 hosts, accounts, repository ids, arbitrary refs, arbitrary provider endpoints,
