@@ -8,10 +8,6 @@ const release = readFileSync(
   resolve(root, ".github/workflows/release.yml"),
   "utf8"
 );
-const recovery = readFileSync(
-  resolve(root, ".github/workflows/release-desktop-assets.yml"),
-  "utf8"
-);
 
 test("asset jobs only run for absent releases or resumable drafts", () => {
   assert.match(
@@ -26,9 +22,7 @@ test("asset jobs only run for absent releases or resumable drafts", () => {
 
 test("release retries verify existing asset bytes and never clobber", () => {
   assert.doesNotMatch(release, /--clobber/);
-  assert.doesNotMatch(recovery, /--clobber/);
   assert.match(release, /scripts\/ensure-release-assets\.mjs/);
-  assert.match(recovery, /scripts\/ensure-release-assets\.mjs/);
 });
 
 test("official promotion invokes configured adapter behind signer and approval gates", () => {
@@ -49,5 +43,4 @@ test("official promotion invokes configured adapter behind signer and approval g
   assert.match(adapter, /main\(\)\.catch\([\s\S]*process\.exitCode = 1/);
   assert.doesNotMatch(adapter, /process\.exit\(0\)/);
   assert.doesNotMatch(release, /draft=false|npm publish|npm dist-tag/);
-  assert.doesNotMatch(recovery, /draft=false/);
 });

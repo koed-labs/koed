@@ -9,23 +9,25 @@ pull requests build and smoke only the unpacked `.app`; the Changesets release
 pull request and manual/scheduled full validation build DMG/ZIP outputs for
 validation but do not publish those candidate files.
 
-The post-merge `Release` workflow is the authority for downloadable unsigned
-Desktop artifacts. It cold-builds and validates the native runtime from the
-exact release commit, packages and verifies the app and mounted DMG, runs the
-complete packaged native smoke, and uploads the checksummed DMG/ZIP only while
-the GitHub release remains a draft. See `docs/ci-validation.md` for dispatch
-options and pull-request routing.
+The post-merge `Release` workflow publishes signed/notarized Desktop assets,
+not these internal candidates. See [Desktop notarization](desktop-notarization.md)
+for protected-environment setup, publication gates, and clean-Mac acceptance.
+See `docs/ci-validation.md` for validation dispatch options and PR routing.
+To create internal candidates locally, run `pnpm desktop:package:internal:mac`;
+artifacts appear under `apps/desktop/release`.
 
 ## GitHub Release assets
 
-When the `Release` workflow creates a new GitHub Release, it first creates it as a draft. It then runs a macOS job that:
+The normal release path cold-builds and validates the macOS arm64 native runtime,
+uses electron-builder's built-in signing/notarization, verifies the app and mounted
+DMG, runs packaged native smoke and composition policy, and uploads DMG/ZIP plus
+`koed-desktop-macos-arm64.sha256` to a draft. Publication requires successful signing
+and all existing server/metadata/promotion gates. Administrator setup and real
+signed-release acceptance are still required before claiming operational success.
 
-1. builds and validates the macOS arm64 native runtime;
-2. packages unsigned Desktop DMG/ZIP artifacts;
-3. runs packaged Desktop native smoke;
-4. uploads the unsigned DMG, ZIP, and `koed-desktop-macos-arm64-unsigned.sha256` checksum file to the GitHub Release.
-
-The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing draft release name. Draft releases do not necessarily have a Git tag, so the workflow resolves the draft's `targetCommitish` to an immutable commit SHA before checkout. It then confirms that source contains both the pinned hermetic OpenSSL builder and the safe Desktop symlink/sealing behavior, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present. The recovery workflow deliberately rejects published releases and source such as `v0.4.3` that predates the safe packaging boundary; repair those through a patch release instead of mixing current build tooling into historical source.
+Manual Desktop asset recovery is disabled. Fix failures and rerun the normal
+pipeline; rebuild old versions through patch releases. Uploads never overwrite
+different existing bytes, so a conflicting rerun also requires a patch release.
 
 Packaged Desktop smoke launches the real packaged manager with a private inherited
 IPC harness and temporary user-data directory. The manager owns supervisor
@@ -46,13 +48,17 @@ not Privacy assets. A separate Team launch verifies startup fails closed without
 verified Privacy assets; empty production signer trust roots block positive Team
 provisioning. Supervisor output is written to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
 
-These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
+Only local/internal candidates and historical unsigned releases use the unsigned
+installation instructions below. New production assets must pass signed-release
+gates; do not bypass Gatekeeper to validate a signed release.
 
 ## Install/open manually
 
-Download the `Koed-<version>-arm64.dmg` or `Koed-<version>-arm64.zip` asset,
-along with `koed-desktop-macos-arm64-unsigned.sha256`, from the GitHub Release
-for the version under test.
+For a local/internal candidate, use `Koed-<version>-arm64.dmg` or
+`Koed-<version>-arm64.zip` from `apps/desktop/release`. Historical unsigned releases
+may include `koed-desktop-macos-arm64-unsigned.sha256`. For new signed release
+assets, follow [normal download-and-launch acceptance](desktop-notarization.md#first-signed-release-clean-mac-acceptance)
+instead of the warning bypasses below.
 
 DMG path:
 

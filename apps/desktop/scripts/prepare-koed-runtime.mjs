@@ -5,14 +5,12 @@ import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifa
 import {
   existsSync,
   mkdirSync,
-  readlinkSync,
-  readdirSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
-import { relative, resolve } from "node:path";
+import { resolve } from "node:path";
+import { inventoryRuntime } from "./finalize-runtime-manifests.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
   stageSharedAppRuntime
@@ -84,40 +82,7 @@ if (missing.length > 0) {
   throw new Error(`Prepared Koed runtime is missing: ${missing.join(", ")}`);
 }
 
-const hashFile = (path) =>
-  createHash("sha256").update(readFileSync(path)).digest("hex");
-const runtimeFiles = [];
-const visit = (directory, prefix = "") => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = resolve(directory, entry.name);
-    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) {
-      const target = realpathSync(path);
-      const relativeTarget = relative(runtimeRoot, target);
-      if (relativeTarget.startsWith("..") || relativeTarget.startsWith("/"))
-        throw new Error(
-          `Bundled runtime symlink escapes root: ${relativePath}`
-        );
-      runtimeFiles.push({
-        path: relativePath,
-        kind: "symlink",
-        sha256: createHash("sha256").update(readlinkSync(path)).digest("hex")
-      });
-    } else if (entry.isDirectory()) visit(path, relativePath);
-    else if (entry.isFile())
-      runtimeFiles.push({
-        path: relativePath,
-        kind: "file",
-        sha256: hashFile(path)
-      });
-    else
-      throw new Error(
-        `Bundled runtime contains unsupported entry: ${relativePath}`
-      );
-  }
-};
-visit(runtimeRoot);
-runtimeFiles.sort((left, right) => left.path.localeCompare(right.path));
+const runtimeFiles = inventoryRuntime(runtimeRoot);
 const bundleManifest = {
   schemaVersion: 1,
   productVersion: JSON.parse(

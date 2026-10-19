@@ -32,7 +32,6 @@ test("active workflows build the renamed public Koed Server package", () => {
   for (const workflowPath of [
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
-    ".github/workflows/release-desktop-assets.yml",
     ".github/workflows/native-runtime-cache.yml",
     ".github/workflows/native-runtime-linux-cache.yml"
   ]) {
@@ -113,10 +112,7 @@ test("unknown paths fail closed into packaged validation", () => {
 });
 
 test("draft release workflows resolve releases through API IDs", () => {
-  for (const workflowPath of [
-    ".github/workflows/release.yml",
-    ".github/workflows/release-desktop-assets.yml"
-  ]) {
+  for (const workflowPath of [".github/workflows/release.yml"]) {
     const workflow = readFileSync(resolve(workflowPath), "utf8");
     assert.match(workflow, /gh api --paginate --slurp/);
     assert.match(

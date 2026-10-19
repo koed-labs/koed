@@ -8,7 +8,8 @@ The service accepts only the immutable configured repository/owner IDs, the
 `koed-labs/koed` repository, and these main-branch workflow/event pairs:
 
 - `.github/workflows/release.yml`: `push`.
-- `.github/workflows/release-desktop-assets.yml`: `workflow_dispatch`.
+
+Manual Desktop asset recovery is disabled; its former workflow is not authorized.
 
 GitHub JWTs must use issuer `https://token.actions.githubusercontent.com`, audience
 `koed-component-signer`, RS256, valid expiry/not-before and an issue age below ten
