@@ -420,7 +420,13 @@ const createRepositoryFixture = () => {
     async sendMessage() {
       throw new Error("unused");
     },
+    async sendTeamMessageV2() {
+      throw new Error("unused");
+    },
     async listMessages() {
+      throw new Error("unused");
+    },
+    async listTeamMessagesV2() {
       throw new Error("unused");
     },
     async advanceDeliveryState() {
@@ -2109,6 +2115,9 @@ describe("collaboration realtime protocol", () => {
     const repository = {
       isEventAuthorized: vi.fn(async () => true),
       getMessageForRealtime: vi.fn(async () => null),
+      getTeamMessageV2ForRealtime: vi.fn(async () => {
+        throw new Error("Unexpected Team message materialization");
+      }),
       getReceiptStateForRealtime: vi.fn(async () => null),
       listMessageReceiptsForRealtime: vi.fn(async () => []),
       getPersonalMemoryForRealtime: vi.fn<

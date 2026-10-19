@@ -12,7 +12,8 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
-  collaborationSafeErrorMessages
+  collaborationSafeErrorMessages,
+  type CollaborationCommandResult
 } from "@koed/shared";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
@@ -780,6 +781,9 @@ const createPersonalRepository = (): CommandRepository => {
             bodyText: input.bodyText
           })
         : null,
+    sendTeamMessageV2: async () => {
+      throw new Error("Unexpected Team message send");
+    },
     listMessages: async (actor, input) => {
       const thread = ownedThread(actor, input.threadId);
       if (!thread) return null;
@@ -800,6 +804,9 @@ const createPersonalRepository = (): CommandRepository => {
         nextBeforeSequence: selected[0]?.threadSequence ?? null,
         nextAfterSequence: selected.at(-1)?.threadSequence ?? null
       };
+    },
+    listTeamMessagesV2: async () => {
+      throw new Error("Unexpected Team message page");
     },
     advanceReadState: async (actor, input) =>
       ownedThread(actor, input.threadId)
@@ -3625,7 +3632,9 @@ describe("local-edge collaboration command route", () => {
         limit: 1
       }
     } as CollaborationRendererCommand;
-    const v2 = parseResult((await injectCommand(harness.app, v2Command)).body);
+    const v2 = parseResultAs<CollaborationCommandResult>(
+      (await injectCommand(harness.app, v2Command)).body
+    );
     expect(v2).toMatchObject({
       ok: true,
       data: {
@@ -3642,7 +3651,7 @@ describe("local-edge collaboration command route", () => {
         }
       }
     });
-    if (!v2.ok || v2.command !== v2Command.command) {
+    if (!v2.ok || v2.command !== "collaboration.load_team_message_page_v2") {
       throw new Error("Expected Team message v2 page");
     }
     const v2Cursor = v2.data.page.olderCursor;
@@ -3653,11 +3662,16 @@ describe("local-edge collaboration command route", () => {
       requestId: randomUUID(),
       input: { ...v2Command.input, direction: "newer" as const }
     };
-    const newerV2 = parseResult(
+    const newerV2 = parseResultAs<CollaborationCommandResult>(
       (await injectCommand(harness.app, newerV2Command)).body
     );
-    expect(newerV2.ok).toBe(true);
-    const newerRequest = harness.calls.findLast((call) => {
+    if (
+      !newerV2.ok ||
+      newerV2.command !== "collaboration.load_team_message_page_v2"
+    ) {
+      throw new Error("Expected Team message v2 page");
+    }
+    const newerRequest = [...harness.calls].reverse().find((call) => {
       const url = new URL(call.url);
       return (
         url.pathname.endsWith(
