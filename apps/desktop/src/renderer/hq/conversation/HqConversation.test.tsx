@@ -156,6 +156,11 @@ describe("HQ blank Conversation", () => {
     }));
     const fixture = setup(start);
     await fixture.render();
+    const line = container.querySelector(".hq-composer__visibility");
+    expect(line?.textContent).toBe("Just me");
+    expect(line?.nextElementSibling).toBe(
+      container.querySelector("form.hq-composer")
+    );
     await fixture.enter("Ship the fix");
     await act(async () =>
       container

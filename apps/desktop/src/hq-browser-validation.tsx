@@ -11,7 +11,11 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationSnapshotSchema
 } from "@koed/shared/collaboration";
-import type { CollaborationRendererClient } from "./collaboration/renderer-client.js";
+import type {
+  CollaborationClientListener,
+  CollaborationClientUpdate,
+  CollaborationRendererClient
+} from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
@@ -97,12 +101,46 @@ const settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
   selection: { kind: "personal_memory" },
   view: { kind: "empty" }
 });
+const hq105VisibilityListeners = new Set<CollaborationClientListener>();
+const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
+  for (const listener of hq105VisibilityListeners)
+    void listener(settingsCollaborationSnapshot, update);
+};
 const settingsCollaborationClient = {
   current: () => settingsCollaborationSnapshot,
   load: async () => settingsCollaborationSnapshot,
   currentSelection: () => settingsCollaborationSnapshot.selection,
-  subscribe: () => () => undefined,
+  subscribe: (listener: CollaborationClientListener) => {
+    hq105VisibilityListeners.add(listener);
+    return () => hq105VisibilityListeners.delete(listener);
+  },
   currentRemoteUrl: () => "https://fixture.example.test",
+  listOwnedSharedMemoryGrants: async ({
+    logicalMemoryId
+  }: {
+    logicalMemoryId: string;
+  }) => {
+    hq105VisibilityReads.grants += 1;
+    if (logicalMemoryId !== hq105LogicalMemoryId)
+      throw new Error("Unknown HQ visibility fixture identity");
+    return hq105ShareActive
+      ? [
+          {
+            lifecycle: "active",
+            source: {
+              kind: "captured_session",
+              logicalMemoryId: hq105LogicalMemoryId,
+              sessionId: hq105CapturedSessionId
+            }
+          }
+        ]
+      : [];
+  },
+  listOwnedShares: async ({ cursor }: { cursor: string | null }) => {
+    hq105VisibilityReads.shares += 1;
+    if (cursor !== null) throw new Error("Unexpected HQ visibility page");
+    return { shares: [], nextCursor: null };
+  },
   connectRemote: async () => {
     settingsOperations.push("connect");
   },
@@ -168,6 +206,28 @@ const installSettingsDesktop = () => {
 };
 
 let hq104SentPrompt = "";
+const hq105LogicalMemoryId = "00000000-0000-4000-8000-000000000105";
+const hq105CapturedSessionId = "00000000-0000-4000-8000-000000000091";
+const hq105VisibilityReads = { grants: 0, shares: 0 };
+let hq105ShareActive = false;
+const hq105VisibilityFixture = {
+  setShared(active: boolean) {
+    hq105ShareActive = active;
+    publishHq105VisibilityUpdate({
+      kind: "realtime",
+      realtimeUpdate: {
+        type: "owned_share_status_changed",
+        pendingShareId: "00000000-0000-4000-8000-000000000109",
+        sourceTitle: "Conversation 91",
+        state: active ? "activated" : "revoked",
+        stage: "complete",
+        workspaceAccessState: active ? "active" : "revoked",
+        sourceUpdateState: active ? "active" : "stopped",
+        redactedFailureCode: null
+      }
+    });
+  }
+};
 let hq104SentMessageId = "";
 const hq104Recovery = new Map<string, string>();
 const hq104Identity = {
@@ -177,6 +237,7 @@ const hq104Identity = {
   threadId: "hq104-thread",
   executionOwner: { driverId: "codex" as const, instanceId: "codex.fixture" }
 };
+const resumedFixtureIdentities = new Map<string, typeof hq104Identity>();
 const hq104ManagedConversations = {
   launchOptions: async () => ({
     operation: "launch_options",
@@ -217,50 +278,70 @@ const hq104ManagedConversations = {
     executionId: hq104Identity.executionId,
     conversation: hq104Identity
   }),
-  resume: async () => ({
-    operation: "resume",
-    status: "ready",
-    conversation: hq104Identity
-  }),
+  resume: async (input: {
+    projectId: string;
+    capturedSessionId: string;
+    threadId: string;
+  }) => {
+    const conversation = {
+      ...hq104Identity,
+      executionId:
+        input.threadId === hq104Identity.threadId
+          ? hq104Identity.executionId
+          : input.threadId,
+      projectId: input.projectId,
+      capturedSessionId: input.capturedSessionId,
+      threadId: input.threadId
+    };
+    resumedFixtureIdentities.set(conversation.executionId, conversation);
+    return { operation: "resume", status: "ready", conversation };
+  },
   send: async (input: {
+    executionId: string;
+    capturedSessionId: string;
+    threadId: string;
     prompt: string;
     idempotencyKey: string;
     clientUserMessageId: string;
   }) => {
-    hq104SentPrompt = input.prompt;
-    hq104SentMessageId = input.clientUserMessageId;
+    if (input.executionId === hq104Identity.executionId) {
+      hq104SentPrompt = input.prompt;
+      hq104SentMessageId = input.clientUserMessageId;
+    }
     return {
       operation: "send",
       status: "queued",
-      conversation: hq104Identity,
+      conversation:
+        resumedFixtureIdentities.get(input.executionId) ?? hq104Identity,
       idempotencyKey: input.idempotencyKey,
       clientUserMessageId: input.clientUserMessageId
     };
   },
-  runtime: async () => ({
+  runtime: async (executionId: string) => ({
     operation: "runtime",
-    executionId: hq104Identity.executionId,
+    executionId,
     executionGeneration: 1,
     executionStateVersion: 1,
     executionState: "running",
     executionLastErrorCode: null,
-    latestCommand: hq104SentMessageId
-      ? {
-          id: "hq104-prompt-command",
-          sequence: 1,
-          executionGeneration: 1,
-          commandKind: "prompt",
-          clientUserMessageId: hq104SentMessageId,
-          state: "completed",
-          lastErrorCode: null,
-          updatedAt: FIXTURE_TIME
-        }
-      : null,
+    latestCommand:
+      executionId === hq104Identity.executionId && hq104SentMessageId
+        ? {
+            id: "hq104-prompt-command",
+            sequence: 1,
+            executionGeneration: 1,
+            commandKind: "prompt",
+            clientUserMessageId: hq104SentMessageId,
+            state: "completed",
+            lastErrorCode: null,
+            updatedAt: FIXTURE_TIME
+          }
+        : null,
     items: []
   }),
-  usage: async () => ({
+  usage: async (executionId: string) => ({
     operation: "usage",
-    executionId: hq104Identity.executionId,
+    executionId,
     provider: "codex",
     model: "gpt-fixture",
     reasoningEffort: "medium",
@@ -490,6 +571,7 @@ const sidebarConversation = (
     id: `${projectId}-conversation-${index}`,
     invalidatedCount: 0,
     latestAt: SIDEBAR_FIXTURE_TIME,
+    ...(index === 91 ? { logicalMemoryId: hq105LogicalMemoryId } : {}),
     name:
       threadKind === "subagent" ? `Subagent ${index}` : `Conversation ${index}`,
     originDevice: null,
@@ -561,34 +643,49 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
   },
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async ({ threadId }) =>
-    threadId === hq104Identity.threadId && hq104SentPrompt
+    threadId === "hq103-loose-conversation-91"
       ? [
           {
-            id: "hq104-user",
+            id: "hq105-conversation-91-user",
             actor: "user",
             eventType: "message",
             timestamp: FIXTURE_TIME,
             sourceEventTime: FIXTURE_TIME,
             sourceSequence: 1,
-            content: hq104SentPrompt,
-            contentPreview: hq104SentPrompt,
-            invalidatedAt: null,
-            metadata: { clientUserMessageId: hq104SentMessageId }
-          },
-          {
-            id: "hq104-assistant",
-            actor: "assistant",
-            eventType: "message",
-            timestamp: FIXTURE_TIME,
-            sourceEventTime: FIXTURE_TIME,
-            sourceSequence: 2,
-            content: "I can help with that. Here is the first step.",
-            contentPreview: "I can help with that.",
+            content: "Captured message for Conversation 91.",
+            contentPreview: "Captured message for Conversation 91.",
             invalidatedAt: null,
             metadata: {}
           }
         ]
-      : [],
+      : threadId === hq104Identity.threadId && hq104SentPrompt
+        ? [
+            {
+              id: "hq104-user",
+              actor: "user",
+              eventType: "message",
+              timestamp: FIXTURE_TIME,
+              sourceEventTime: FIXTURE_TIME,
+              sourceSequence: 1,
+              content: hq104SentPrompt,
+              contentPreview: hq104SentPrompt,
+              invalidatedAt: null,
+              metadata: { clientUserMessageId: hq104SentMessageId }
+            },
+            {
+              id: "hq104-assistant",
+              actor: "assistant",
+              eventType: "message",
+              timestamp: FIXTURE_TIME,
+              sourceEventTime: FIXTURE_TIME,
+              sourceSequence: 2,
+              content: "I can help with that. Here is the first step.",
+              contentPreview: "I can help with that.",
+              invalidatedAt: null,
+              metadata: {}
+            }
+          ]
+        : [],
   assignSessionProject: async () => ({ projectId: null }),
   updateSessionTitle: async ({ title }) => ({ title }),
   updateSessionPresentation: async () => ({
@@ -747,12 +844,36 @@ export function HqValidationApp() {
     hq104SentPrompt = "";
     hq104SentMessageId = "";
     hq104Recovery.clear();
+    resumedFixtureIdentities.clear();
+    hq105VisibilityReads.grants = 0;
+    hq105VisibilityReads.shares = 0;
+    hq105ShareActive = false;
+    (
+      window as Window & {
+        __koedHqVisibilityReads?: typeof hq105VisibilityReads;
+      }
+    ).__koedHqVisibilityReads = hq105VisibilityReads;
+    (
+      window as Window & {
+        __koedHqVisibilityFixture?: typeof hq105VisibilityFixture;
+      }
+    ).__koedHqVisibilityFixture = hq105VisibilityFixture;
     window.__koedHqFixture = fixture;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
       restoreDesktop();
       delete window.__koedHqFixture;
+      delete (
+        window as Window & {
+          __koedHqVisibilityReads?: typeof hq105VisibilityReads;
+        }
+      ).__koedHqVisibilityReads;
+      delete (
+        window as Window & {
+          __koedHqVisibilityFixture?: typeof hq105VisibilityFixture;
+        }
+      ).__koedHqVisibilityFixture;
       delete document.documentElement.dataset.hqFixtureReady;
       delete document.documentElement.dataset.browserValidationReady;
     };

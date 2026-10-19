@@ -13,6 +13,7 @@ import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { PersonalDesktopConversationEvent } from "@koed/shared/personal-desktop";
 import type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
 import type { ManagedConversationPendingSend } from "../../state/use-managed-conversation-lifecycle.js";
+import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import { HqActiveConversation } from "./HqConversation.js";
 
 (
@@ -120,7 +121,8 @@ describe("HQ active Conversation", () => {
     runtimeItems: ManagedConversationRuntimeItem[] = [],
     managedProject: ManagedProjectDesktopApi | null = null,
     recovered: ManagedConversationPendingSend | null = null,
-    recoveryStatus: "ready" | "unavailable" = "ready"
+    recoveryStatus: "ready" | "unavailable" = "ready",
+    visibilityClient?: CollaborationRendererClient
   ) {
     let latestCommand: {
       id: string;
@@ -202,6 +204,10 @@ describe("HQ active Conversation", () => {
       act(async () =>
         root.render(
           <HqActiveConversation
+            visibilityClient={visibilityClient}
+            visibilityOwnerId={visibilityClient ? "owner-1" : null}
+            visibilityRevision="revision-1"
+            visibilityConnected={Boolean(visibilityClient)}
             api={api}
             managedProject={managedProject}
             store={
@@ -303,7 +309,34 @@ describe("HQ active Conversation", () => {
   });
 
   it("follows a replacement execution and canonical detail under the same route", async () => {
-    const f = fixture();
+    const initialThread = {
+      ...thread,
+      logicalMemoryId: "00000000-0000-4000-8000-000000000105"
+    };
+    const initialDraft = {
+      ...draft,
+      thread: initialThread
+    } as ManagedConversationDraft;
+    let releaseVisibility!: (value: []) => void;
+    const visibilityRead = new Promise<[]>(
+      (resolve) => (releaseVisibility = resolve)
+    );
+    const visibilityClient = {
+      listOwnedSharedMemoryGrants: vi.fn(() => visibilityRead),
+      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null })),
+      subscribe: () => () => undefined
+    } as unknown as CollaborationRendererClient;
+    const f = fixture(
+      "ready",
+      "queued",
+      initialDraft,
+      [],
+      [],
+      null,
+      null,
+      "ready",
+      visibilityClient
+    );
     let releaseOld!: () => void;
     const oldResumePending = new Promise<void>((resolve) => {
       releaseOld = resolve;
@@ -315,9 +348,14 @@ describe("HQ active Conversation", () => {
       threadId: "thread-2"
     };
     const replacementDraft = {
-      ...draft,
+      ...initialDraft,
       conversation: replacementIdentity,
-      thread: { ...thread, id: "thread-2", sessionId: "session-2" }
+      thread: {
+        ...initialThread,
+        id: "thread-2",
+        sessionId: "session-2",
+        logicalMemoryId: "00000000-0000-4000-8000-000000000205"
+      }
     } as ManagedConversationDraft;
     vi.mocked(f.api.resume).mockImplementation(async (input) => {
       if (input.threadId !== "thread-2") {
@@ -335,11 +373,17 @@ describe("HQ active Conversation", () => {
       };
     });
     await f.render();
-    await f.render(replacementDraft, thread);
+    await f.render(replacementDraft, initialThread);
     await act(async () => {
       releaseOld();
       await oldResumePending;
+      releaseVisibility([]);
+      await visibilityRead;
     });
+    expect(container.querySelector(".hq-composer__visibility")).toBeNull();
+    expect(visibilityClient.listOwnedSharedMemoryGrants).toHaveBeenCalledTimes(
+      1
+    );
     expect(vi.mocked(f.api.resume)).toHaveBeenCalledWith({
       projectId: "project-1",
       capturedSessionId: "session-2",

@@ -40,6 +40,10 @@ const emptySnapshot = () => null;
 export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
+  visibilityClient,
+  visibilityOwnerId,
+  visibilityRevision,
+  visibilityConnected,
   renderSettings,
   accountIdentity,
   managedConversations,
@@ -52,6 +56,10 @@ export function HqApplication({
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
+  visibilityClient?: CollaborationRendererClient;
+  visibilityOwnerId?: string | null;
+  visibilityRevision?: string | null;
+  visibilityConnected?: boolean;
   renderSettings?: (onClose: () => void) => ReactNode;
   accountIdentity?: HqAccountIdentity;
   managedConversations?: ManagedConversationDesktopApi | null;
@@ -374,6 +382,10 @@ export function HqApplication({
             personalMemoryStore ? (
             <HqActiveConversation
               key={route.sessionId}
+              visibilityClient={visibilityClient}
+              visibilityOwnerId={visibilityOwnerId}
+              visibilityRevision={visibilityRevision}
+              visibilityConnected={visibilityConnected ?? false}
               api={managedConversations ?? null}
               managedProject={managedProject ?? null}
               store={personalMemoryStore}
