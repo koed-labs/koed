@@ -65,8 +65,7 @@ export class HqLayoutPreferencesStore {
 
   load = (): Promise<HqLayoutPreferencesSnapshot> => {
     if (this.#loadPromise) return this.#loadPromise;
-    const startingRevisions = { ...this.#revisions };
-    this.#loadPromise = this.#load(startingRevisions);
+    this.#loadPromise = this.#load();
     return this.#loadPromise;
   };
 
@@ -99,33 +98,29 @@ export class HqLayoutPreferencesStore {
     await this.#flushWrite();
   };
 
-  async #load(startingRevisions: PreferenceRevisions) {
+  async #load() {
     try {
       const loaded = this.#api
         ? hqLayoutPreferencesSchema.parse(await this.#api.get())
         : { ...defaultHqLayoutPreferences };
-      const changedDuringLoad = preferenceKeys.some(
-        (key) => this.#revisions[key] !== startingRevisions[key]
-      );
+      const hasUserChanges = Object.values(this.#revisions).some(Boolean);
       const preferences: HqLayoutPreferences = {
         sidebarWidth:
-          this.#revisions.sidebarWidth !== startingRevisions.sidebarWidth
+          this.#revisions.sidebarWidth > 0
             ? this.#snapshot.preferences.sidebarWidth
             : loaded.sidebarWidth,
         rightColumnWidth:
-          this.#revisions.rightColumnWidth !==
-          startingRevisions.rightColumnWidth
+          this.#revisions.rightColumnWidth > 0
             ? this.#snapshot.preferences.rightColumnWidth
             : loaded.rightColumnWidth,
         rightColumnHidden:
-          this.#revisions.rightColumnHidden !==
-          startingRevisions.rightColumnHidden
+          this.#revisions.rightColumnHidden > 0
             ? this.#snapshot.preferences.rightColumnHidden
             : loaded.rightColumnHidden
       };
       this.#loaded = true;
       this.#replace({ error: null, loading: false, preferences });
-      if (changedDuringLoad) this.#scheduleWrite();
+      if (hasUserChanges) this.#scheduleWrite();
     } catch (cause) {
       this.#loaded = true;
       this.#replace({
@@ -148,8 +143,16 @@ export class HqLayoutPreferencesStore {
     const changedKeys = preferenceKeys.filter(
       (key) => preferences[key] !== this.#snapshot.preferences[key]
     );
+    const explicitPreloadIntents = this.#loaded
+      ? []
+      : preferenceKeys.filter(
+          (key) =>
+            key in patch && preferences[key] === this.#snapshot.preferences[key]
+        );
+    const revisedKeys = new Set([...changedKeys, ...explicitPreloadIntents]);
+    if (revisedKeys.size === 0) return;
+    for (const key of revisedKeys) this.#revisions[key] += 1;
     if (changedKeys.length === 0) return;
-    for (const key of changedKeys) this.#revisions[key] += 1;
     this.#replace({ error: null, loading: false, preferences });
     this.#scheduleWrite();
   }

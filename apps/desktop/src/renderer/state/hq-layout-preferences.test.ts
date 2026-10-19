@@ -54,6 +54,72 @@ describe("HQ layout preference renderer state", () => {
     store.dispose();
   });
 
+  it("keeps edits made before the first load starts", async () => {
+    const pending = deferred<typeof defaultHqLayoutPreferences>();
+    const set = vi.fn(async (value) => value);
+    const api: HqLayoutPreferencesApi = {
+      get: vi.fn(() => pending.promise),
+      set
+    };
+    const store = new HqLayoutPreferencesStore(api, 120);
+
+    store.setSidebarWidth(350);
+    const flushing = store.flush();
+    expect(api.get).toHaveBeenCalledOnce();
+    expect(set).not.toHaveBeenCalled();
+
+    pending.resolve({
+      sidebarWidth: 268,
+      rightColumnWidth: 612,
+      rightColumnHidden: true
+    });
+    await flushing;
+
+    expect(store.current().preferences).toEqual({
+      sidebarWidth: 350,
+      rightColumnWidth: 612,
+      rightColumnHidden: true
+    });
+    expect(set).toHaveBeenCalledOnce();
+    expect(set).toHaveBeenCalledWith({
+      sidebarWidth: 350,
+      rightColumnWidth: 612,
+      rightColumnHidden: true
+    });
+    store.dispose();
+  });
+
+  it("preserves an explicit default-width reset made before the first load", async () => {
+    const pending = deferred<typeof defaultHqLayoutPreferences>();
+    const set = vi.fn(async (value) => value);
+    const store = new HqLayoutPreferencesStore(
+      {
+        get: () => pending.promise,
+        set
+      },
+      120
+    );
+
+    store.setRightColumnWidth(null);
+    const flushing = store.flush();
+    pending.resolve({
+      ...defaultHqLayoutPreferences,
+      rightColumnWidth: 520
+    });
+    await flushing;
+
+    expect(store.current().preferences.rightColumnWidth).toBeNull();
+    expect(set).toHaveBeenCalledOnce();
+    expect(set).toHaveBeenCalledWith({
+      ...defaultHqLayoutPreferences,
+      rightColumnWidth: null
+    });
+    store.setRightColumnWidth(null);
+    await store.flush();
+    expect(set).toHaveBeenCalledOnce();
+    store.dispose();
+  });
+
   it("coalesces changes and serializes writes without stale responses reverting state", async () => {
     vi.useFakeTimers();
     const first = deferred<typeof defaultHqLayoutPreferences>();
