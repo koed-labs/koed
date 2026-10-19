@@ -150,7 +150,7 @@ function readDeclarations(block: string): Record<string, string> {
 function pickDeclarations(
   declarations: Record<string, string>,
   names: readonly string[]
-): Record<string, string> {
+): Record<string, string | undefined> {
   return Object.fromEntries(names.map((name) => [name, declarations[name]]));
 }
 
