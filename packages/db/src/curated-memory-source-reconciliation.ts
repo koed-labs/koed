@@ -25,11 +25,12 @@ export const createCuratedMemorySourceReconciliationMethods = ({
     const client = await pool.connect();
     try {
       await client.query("begin");
-      await suppressCuratedMemoryWithoutActiveEvidenceWithClient(
-        client,
-        actor,
-        envelopeEncryptionProvider
-      );
+      const suppressed =
+        await suppressCuratedMemoryWithoutActiveEvidenceWithClient(
+          client,
+          actor,
+          envelopeEncryptionProvider
+        );
       const assertionRows = await client.query<{ id: string }>(
         `
           select id
@@ -188,7 +189,9 @@ export const createCuratedMemorySourceReconciliationMethods = ({
         `,
         [assertionIds, actor.userId]
       );
-      await onCuratedMemoryChanged?.(actor, client);
+      await onCuratedMemoryChanged?.(actor, client, [
+        ...new Set([...suppressed, ...assertionIds])
+      ]);
       await client.query("commit");
       return {
         assertionsScanned: assertionIds.length,

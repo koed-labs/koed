@@ -62,6 +62,24 @@ export const expectedVersionSchema = z
   .object({ expectedVersion: z.number().int().positive() })
   .strict();
 
+// The optional exact set is reserved for the later Workspace Project cleanup
+// implementation. HQ-715 binds and reviews it, while its current execution
+// path denies any nonempty set before changing Team state.
+export const teamLeaveActionSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    expectedTeamVersion: z.number().int().positive().optional(),
+    expectedOwnedWorkspaceProjects: z
+      .array(
+        z
+          .object({ id: z.uuid(), version: z.number().int().positive() })
+          .strict()
+      )
+      .max(100)
+      .optional()
+  })
+  .strict();
+
 export const updateTeamMemberRoleSchema = z
   .object({
     role: teamRoleSchema,

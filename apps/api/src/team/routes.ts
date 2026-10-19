@@ -25,6 +25,7 @@ import {
   createTeamSchema,
   createTeamWorkspaceSchema,
   expectedVersionSchema,
+  teamLeaveActionSchema,
   listTeamInvitesQuerySchema,
   listTeamWorkspacesQuerySchema,
   setTeamBillingSeatPolicySchema,
@@ -335,6 +336,11 @@ export const registerTeamRoutes = (
         path: requestPath(request),
         body: input.body
       }),
+      approvedRequest: {
+        method: request.method.toUpperCase(),
+        path: requestPath(request),
+        body: input.body
+      },
       execute: async ({ team, sync, externalAuth }) => {
         const repository = { ...team, ...sync, ...externalAuth };
         if (requireIdentity) {
@@ -718,7 +724,7 @@ export const registerTeamRoutes = (
     async (request) => {
       const actor = await authenticateAdminActor(request);
       const { teamId } = teamIdParamsSchema.parse(request.params);
-      const input = expectedVersionSchema.parse(request.body);
+      const input = teamLeaveActionSchema.parse(request.body);
       return (
         await runVersioned(() =>
           runHighRiskTeamWrite(

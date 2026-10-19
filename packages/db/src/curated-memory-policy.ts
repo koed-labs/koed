@@ -334,7 +334,7 @@ export const createCuratedMemoryPolicyMethods = ({
             )
           : null;
         if (id) {
-          await onCuratedMemoryChanged?.(actor, client);
+          await onCuratedMemoryChanged?.(actor, client, [id]);
         }
         await client.query("commit");
       }
@@ -359,7 +359,7 @@ export const createCuratedMemoryPolicyMethods = ({
           envelopeEncryptionProvider
         );
       if (suppressed.length > 0) {
-        await onCuratedMemoryChanged?.(actor, client);
+        await onCuratedMemoryChanged?.(actor, client, suppressed);
       }
       await client.query("commit");
       assertionsSuppressed = suppressed.length;

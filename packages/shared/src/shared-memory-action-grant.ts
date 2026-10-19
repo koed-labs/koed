@@ -8,6 +8,77 @@ import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
 
+// Internal only: a future Workspace Project operation must consume its own
+// exact approved outer action before using this stage. It is deliberately
+// absent from the client action-grant registry and has no public route.
+export const PROJECT_LIFECYCLE_FREEZE_PARENT_ACTIONS = [
+  "workspace_project.delete",
+  "workspace_project.member_remove",
+  "workspace_project.leave",
+  "project_source.team_metadata.delete",
+  "team.leave",
+  "team.member.disable",
+  "team.workspace.access_update"
+] as const;
+
+export type ProjectLifecycleFreezeParentAction =
+  (typeof PROJECT_LIFECYCLE_FREEZE_PARENT_ACTIONS)[number];
+
+export interface ProjectLifecycleFreezeStageBinding {
+  action: "project.lifecycle.freeze_grant";
+  outerAction: ProjectLifecycleFreezeParentAction;
+  outerActionGrantId: string;
+  outerMutationId: string;
+  outerTargetId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  targetUserId: string;
+  shareGrantId: string;
+  expectedGrantVersion: number;
+  effect: "delete" | "remove" | "leave" | "disable";
+}
+
+export const projectLifecycleFreezeStageBindingHash = (
+  input: ProjectLifecycleFreezeStageBinding
+): string => {
+  const effects: Record<
+    ProjectLifecycleFreezeParentAction,
+    ProjectLifecycleFreezeStageBinding["effect"]
+  > = {
+    "workspace_project.delete": "delete",
+    "workspace_project.member_remove": "remove",
+    "workspace_project.leave": "leave",
+    "project_source.team_metadata.delete": "delete",
+    "team.leave": "leave",
+    "team.member.disable": "disable",
+    "team.workspace.access_update": "disable"
+  };
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (
+    input.action !== "project.lifecycle.freeze_grant" ||
+    !Object.prototype.hasOwnProperty.call(effects, input.outerAction) ||
+    effects[input.outerAction] !== input.effect ||
+    !Number.isSafeInteger(input.expectedGrantVersion) ||
+    input.expectedGrantVersion < 1 ||
+    [
+      input.outerActionGrantId,
+      input.outerMutationId,
+      input.outerTargetId,
+      input.teamId,
+      input.teamWorkspaceId,
+      input.targetUserId,
+      input.shareGrantId
+    ].some((value) => !uuid.test(value))
+  ) {
+    throw new TypeError("Project lifecycle freeze stage binding is incomplete");
+  }
+  return highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.sharedMemoryScope,
+    input
+  );
+};
+
 export type SharedMemoryRepresentation =
   | SharedMemoryFidelityCeiling
   | "curated_assertions";
@@ -236,6 +307,30 @@ export const sharedMemoryRevokeActionGrantBinding = (input: {
       teamWorkspaceId: input.teamWorkspaceId,
       expectedGrantVersion: input.expectedGrantVersion,
       reasonCode: input.reasonCode,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryFreezeActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  shareGrantId: string;
+  expectedGrantVersion: number;
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: "shared_memory.grant.freeze",
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "POST",
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/freeze`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      expectedGrantVersion: input.expectedGrantVersion,
       authority: authorityBody(input.referenceId)
     }
   });

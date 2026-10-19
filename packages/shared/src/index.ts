@@ -880,6 +880,8 @@ export {
 } from "./upstream-desktop-credential-custody.js";
 export {
   SHARED_MEMORY_AUTHORITY_ACTION,
+  PROJECT_LIFECYCLE_FREEZE_PARENT_ACTIONS,
+  projectLifecycleFreezeStageBindingHash,
   sharedMemoryGrantManagementRequestHash,
   sharedMemoryGrantManagementScopeHash,
   sharedMemoryPreviewActionGrantBinding,
@@ -887,11 +889,14 @@ export {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryFreezeActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
 export type {
   SharedMemoryActionGrantBinding,
+  ProjectLifecycleFreezeStageBinding,
+  ProjectLifecycleFreezeParentAction,
   SharedMemoryRepresentation as SharedMemoryActionGrantRepresentation
 } from "./shared-memory-action-grant.js";
 export {

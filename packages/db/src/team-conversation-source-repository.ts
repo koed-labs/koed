@@ -8,7 +8,10 @@ import type {
 } from "./types.js";
 
 export type TeamConversationSourceGrantMode = "snapshot" | "continuous";
-export type TeamConversationSourceGrantLifecycle = "active" | "revoked";
+export type TeamConversationSourceGrantLifecycle =
+  | "active"
+  | "frozen_empty"
+  | "revoked";
 
 export interface TeamConversationSourceGrantRecord {
   id: string;
@@ -431,6 +434,154 @@ const listVerifiedComponents = async (
   return components;
 };
 
+// A frozen grant reads its published source-set copy. Never fall back to a
+// later owner-side generation (or to an older, invalidated publication).
+const frozenSourceState = async (
+  client: pg.Pool | pg.PoolClient,
+  shareGrantId: string,
+  viewerUserId: string
+): Promise<{
+  frozen: boolean;
+  access: {
+    grant: TeamConversationSourceGrantRecord;
+    artifact: ConversationSourceArtifactRecord;
+    components: ConversationSourceArtifactRecord[];
+    segments: ConversationSourceSegmentRecord[];
+  } | null;
+}> => {
+  const marker = await client.query<Row>(
+    `select frozen_at,freeze_source_access_expected
+       from team_memory_share_grants where id=$1`,
+    [shareGrantId]
+  );
+  if (
+    !marker.rows[0]?.frozen_at ||
+    marker.rows[0].freeze_source_access_expected === false
+  ) {
+    return { frozen: false, access: null };
+  }
+  if (marker.rows[0].freeze_source_access_expected !== true) {
+    return { frozen: true, access: null };
+  }
+  const result = await client.query<Row>(
+    `select source_grant.*, source_grant.source_generation_id as grant_source_generation_id,
+            header.source_snapshot
+       from team_conversation_source_grants source_grant
+       join team_memory_share_grants share_grant
+         on share_grant.id=source_grant.share_grant_id
+        and share_grant.team_id=source_grant.team_id
+        and share_grant.team_workspace_id=source_grant.team_workspace_id
+        and share_grant.lifecycle='active' and share_grant.revoked_at is null
+        and share_grant.personal_deleted_at is null
+       join team_memory_grant_freeze_sources header
+         on header.share_grant_id=share_grant.id
+        and header.team_id=share_grant.team_id
+        and header.team_workspace_id=share_grant.team_workspace_id
+        and header.purged_at is null and header.suppressed_at is null
+       join source_owner_representation_consents consent
+         on consent.id=share_grant.consent_id
+        and consent.state in ('active','paused') and consent.revoked_at is null
+        and (consent.expires_at is null or consent.expires_at>now())
+       join users owner on owner.id=source_grant.owner_user_id
+        and owner.disabled_at is null and owner.deleted_at is null
+       join teams team on team.id=source_grant.team_id
+        and team.lifecycle='active' and team.entitlement_status in ('active','grace')
+       join team_memberships membership
+         on membership.team_id=source_grant.team_id
+        and membership.user_id=$2 and membership.status='enabled'
+        and membership.disabled_at is null
+       join users viewer on viewer.id=membership.user_id
+        and viewer.disabled_at is null and viewer.deleted_at is null
+       join team_workspaces workspace
+         on workspace.id=source_grant.team_workspace_id
+        and workspace.team_id=source_grant.team_id
+        and workspace.lifecycle='active' and workspace.archived_at is null
+       join team_workspace_access_grants access
+         on access.team_workspace_id=workspace.id
+        and access.team_id=source_grant.team_id
+        and access.user_id=$2 and access.disabled_at is null
+        and access.access in ('read','write')
+      where source_grant.share_grant_id=$1
+        and source_grant.lifecycle='active' and source_grant.revoked_at is null
+        and source_grant.mode='snapshot'
+      limit 1`,
+    [shareGrantId, viewerUserId]
+  );
+  const row = result.rows[0];
+  const snapshot = row?.source_snapshot as Record<string, unknown> | undefined;
+  const published = snapshot?.published as Record<string, unknown> | null;
+  const closures = published?.sourceComponentClosures;
+  if (!row || snapshot?.schemaVersion !== 1 || !Array.isArray(closures)) {
+    return { frozen: true, access: null };
+  }
+  const grant = mapGrant(row);
+  const components: ConversationSourceArtifactRecord[] = [];
+  const segments: ConversationSourceSegmentRecord[] = [];
+  for (const closure of closures) {
+    if (!closure || typeof closure !== "object")
+      return { frozen: true, access: null };
+    const entry = closure as Record<string, unknown>;
+    const source = entry.artifact as Row | undefined;
+    const sourceSegments = entry.segments;
+    if (!source || !Array.isArray(sourceSegments))
+      return { frozen: true, access: null };
+    const component = mapArtifact({
+      ...source,
+      artifact_id: source.id,
+      artifact_owner_user_id: source.owner_user_id,
+      artifact_session_id: source.session_id,
+      artifact_lifecycle: source.lifecycle,
+      artifact_created_at: source.created_at,
+      artifact_updated_at: source.updated_at
+    });
+    if (
+      component.ownerUserId !== grant.ownerUserId ||
+      component.sourceGenerationId !== grant.sourceGenerationId ||
+      component.logicalSourceId !== grant.logicalSourceId ||
+      component.lifecycle !== "finalized"
+    )
+      return { frozen: true, access: null };
+    components.push(component);
+    for (const raw of sourceSegments) {
+      if (!raw || typeof raw !== "object")
+        return { frozen: true, access: null };
+      const segment = raw as Row;
+      const mapped = mapSegment({
+        ...segment,
+        segment_id: segment.id,
+        segment_artifact_id: segment.artifact_id,
+        segment_storage_provider: segment.storage_provider,
+        segment_created_at: segment.created_at
+      });
+      if (mapped.artifactId !== component.id)
+        return { frozen: true, access: null };
+      if (
+        component.sourceComponentRole !== "primary" ||
+        (grant.maximumSegmentIndex !== null &&
+          mapped.segmentIndex <= grant.maximumSegmentIndex)
+      )
+        segments.push(mapped);
+    }
+  }
+  const artifact = components.find(
+    (component) =>
+      component.sourceComponentId === "main" &&
+      component.sourceComponentRole === "primary"
+  );
+  if (
+    !artifact ||
+    artifact.id !== grant.artifactId ||
+    components.length !== closures.length ||
+    (components.length > 1 && artifact.sourceSetFinalizedAt === null) ||
+    (grant.maximumSegmentIndex !== null &&
+      segments.filter((segment) => segment.artifactId === artifact.id)
+        .length !==
+        grant.maximumSegmentIndex + 1)
+  )
+    return { frozen: true, access: null };
+  return { frozen: true, access: { grant, artifact, components, segments } };
+};
+
 const notifySourceGrant = (
   client: pg.Pool | pg.PoolClient,
   input: { shareGrantId: string; reason: "grant_changed" | "revoked" }
@@ -825,6 +976,16 @@ export const createTeamConversationSourceRepository = (
   },
 
   async getTeamConversationSourceAccess(actor, input) {
+    const frozen = await frozenSourceState(
+      pool,
+      input.shareGrantId,
+      actor.userId
+    );
+    if (frozen.frozen) {
+      if (!frozen.access) return null;
+      const { grant, artifact, components } = frozen.access;
+      return { grant, artifact, components };
+    }
     const result = await pool.query<Row>(
       `select source_grant.*,
               source_grant.source_generation_id as grant_source_generation_id,
@@ -850,6 +1011,61 @@ export const createTeamConversationSourceRepository = (
     try {
       await client.query("begin");
       await client.query("set transaction isolation level repeatable read");
+      const frozen = await frozenSourceState(
+        client,
+        input.shareGrantId,
+        actor.userId
+      );
+      if (frozen.frozen) {
+        if (!frozen.access) {
+          await client.query("rollback");
+          return null;
+        }
+        const { grant, artifact, components, segments } = frozen.access;
+        const selectedComponent = input.sourceComponentId
+          ? components.find(
+              (component) =>
+                component.sourceComponentId === input.sourceComponentId
+            )
+          : artifact;
+        if (!selectedComponent) {
+          await client.query("rollback");
+          return null;
+        }
+        const selectedSegments = segments
+          .filter(
+            (segment) =>
+              segment.artifactId === selectedComponent.id &&
+              segment.segmentIndex > input.afterSegmentIndex
+          )
+          .sort((a, b) => a.segmentIndex - b.segmentIndex)
+          .slice(0, limit);
+        if (input.recordAudit !== false) {
+          await recordAuditEventWithClient(client, {
+            actorUserId: actor.userId,
+            ownerUserId: grant.ownerUserId,
+            visibility: "personal",
+            action: "team_conversation_source.manifest_read",
+            targetTable: "team_conversation_source_grants",
+            targetId: grant.id,
+            metadata: {
+              teamId: grant.teamId,
+              teamWorkspaceId: grant.teamWorkspaceId,
+              shareGrantId: grant.shareGrantId,
+              segmentCount: selectedSegments.length,
+              afterSegmentIndex: input.afterSegmentIndex
+            }
+          });
+        }
+        await client.query("commit");
+        return {
+          grant,
+          artifact,
+          components,
+          selectedComponent,
+          segments: selectedSegments
+        };
+      }
       const access = await client.query<Row>(
         `select source_grant.*,
                 source_grant.source_generation_id as grant_source_generation_id,
@@ -941,6 +1157,19 @@ export const createTeamConversationSourceRepository = (
   },
 
   async getTeamConversationSourceSegment(actor, input) {
+    const frozen = await frozenSourceState(
+      pool,
+      input.shareGrantId,
+      actor.userId
+    );
+    if (frozen.frozen) {
+      if (!frozen.access) return null;
+      const { grant, artifact, components, segments } = frozen.access;
+      const segment = segments.find(
+        (candidate) => candidate.id === input.segmentId
+      );
+      return segment ? { grant, artifact, components, segment } : null;
+    }
     const result = await pool.query<Row>(
       `select source_grant.*,
               source_grant.source_generation_id as grant_source_generation_id,

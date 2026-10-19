@@ -2,10 +2,13 @@
 
 ## Status
 
-Accepted design; runtime implementation is pending.
+Accepted design; grant-freeze foundation is implemented. Project lifecycle
+workflows remain pending.
 
-This ADR defines target behavior. The Project records, routes, and grant-freeze
-operations described here are not currently implemented.
+This ADR defines target behavior. HQ-715 implements the exact owner-reviewed
+Share Grant freeze, immutable published closure, and current Team lifecycle
+parent integration. Workspace Project records, Project routes, and their
+Personal lifecycle callers remain pending.
 
 Related decisions:
 

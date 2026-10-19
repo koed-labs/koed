@@ -1,10 +1,10 @@
 # Shared Project State
 
 Status: Target contract under [ADR 0062](./adr/0062-shared-project-state.md).
-The repository currently supports explicit user-owned Share Grants, revisioned
-Personal Notes, and local Project-to-Workspace recall mapping. It does not yet
-implement the Workspace Project records, Project collaboration routes, or
-Project lifecycle freeze actions described here.
+The repository supports explicit user-owned Share Grants, an owner-reviewed
+per-grant freeze, revisioned Personal Notes, and local Project-to-Workspace
+recall mapping. It does not yet implement Workspace Project records, Project
+collaboration routes, or Project lifecycle callers described here.
 
 This document applies the accepted D1, D4, and D9 outcomes. It does not change
 ADR 0004's user-owned memory model, ADR 0013's Team Chat boundary, ADR 0057's
@@ -232,8 +232,9 @@ eligible parent only for its existing manager-authorized Step-up disablement
 path; access expansion and Native-review `write`-to-`read` reduction are not
 eligible. The action remains manager-only and is not a member self-leave path.
 Standalone freeze remains Native review for the exact source owner, and restore
-is never a Bundled parent. Both
-freeze actions are target behavior; current runtime routes are not implemented.
+is never a Bundled parent. The standalone route and current Team parent stages
+are implemented; Workspace Project parent stages await their authoritative
+Project routes and state.
 
 For an attached continuous Conversation Source Access capability, the same
 atomic freeze pins the last authorized sanitized source generation and
@@ -365,11 +366,11 @@ projection and the `personal_note` logical-memory/source adapter. The source
 adapter is supported by the existing Shared Memory repository. Project Source
 ingestion and Team-side Workspace Project records are not implemented.
 
-The target `shared_memory.grant.freeze` and
-`project.lifecycle.freeze_grant` action names are present in ADR 0024's target
-action contract, but they are not runtime routes or implemented action
-handlers. The target Workspace Project and Project Source delete, leave,
-member-removal, restore, and Team-leave workflows are likewise not current
-routes. Do not treat local Project mapping, Workspace Access updates, grant
-revocation, or Note revision support as an implementation of these target
-Project lifecycle operations.
+`shared_memory.grant.freeze` is an implemented Native-review route for the
+exact source owner and Share Grant. The backend-only
+`project.lifecycle.freeze_grant` stage has an exact allowlisted parent binding;
+it remains unavailable until a Workspace Project parent can supply and verify
+authoritative Project state. Current Team leave, member disable, and Workspace
+Access disable freeze affected grants in their own transactions. The target
+Workspace Project and Project Source delete, leave, member-removal, and restore
+workflows remain pending. Local Project mapping is not Project authority.

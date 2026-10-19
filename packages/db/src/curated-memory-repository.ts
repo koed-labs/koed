@@ -111,7 +111,8 @@ export interface CuratedMemoryRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   onCuratedMemoryChanged?: (
     actor: ActorContext,
-    client: pg.PoolClient
+    client: pg.PoolClient,
+    assertionIds: readonly string[]
   ) => Promise<void>;
 }
 

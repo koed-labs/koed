@@ -783,7 +783,21 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         updated.rows[0]!
       );
       if (assertionId) {
-        await onCuratedMemoryChanged?.(actor, client);
+        const linked = await client.query<{ id: string }>(
+          `select linked.id
+             from curated_memory_assertions changed
+             join curated_memory_assertions linked
+               on linked.topic_id=changed.topic_id
+              and linked.owner_user_id=changed.owner_user_id
+            where changed.id=$1 and changed.owner_user_id=$2
+           union select $1::uuid`,
+          [assertionId, actor.userId]
+        );
+        await onCuratedMemoryChanged?.(
+          actor,
+          client,
+          linked.rows.map((row) => row.id)
+        );
       }
       await client.query("commit");
       return mapProposal(hydratedUpdated);

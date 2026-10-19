@@ -239,6 +239,17 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "shared_memory.grant.freeze",
+      mutationId: uuid(8),
+      teamId: uuid(1),
+      teamWorkspaceId: uuid(2),
+      shareGrantId: uuid(7),
+      expectedGrantVersion: 1
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
       action: "shared_memory.conversation_source_grant",
       mutationId: uuid(6),
       teamId: uuid(1),

@@ -521,6 +521,25 @@ const buildAccessRecord = (row: {
 
 export interface TeamAccessRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  freezeShareGrantForParent?: (
+    client: pg.PoolClient,
+    input: {
+      actorUserId: string;
+      shareGrantId: string;
+      expectedGrantVersion: number;
+      mutationId: string;
+      parent: {
+        action:
+          | "team.leave"
+          | "team.member.disable"
+          | "team.workspace.access_update";
+        teamId: string;
+        targetUserId: string;
+        targetVersion: number;
+        teamWorkspaceId?: string;
+      };
+    }
+  ) => Promise<void>;
 }
 
 export const createTeamAccessRepository = (
@@ -630,12 +649,116 @@ export const createTeamAccessRepository = (
   const withTeamAccessTransaction = async <T>(
     work: (tx: TeamAccessTransaction, client: pg.PoolClient) => Promise<T>
   ): Promise<T> => {
-    const client = await pool.connect();
-    try {
-      return await createDb(client).transaction((tx) => work(tx, client));
-    } finally {
-      client.release();
+    // Legacy row triggers can acquire the publication fence after their row
+    // lock, while freeze takes the fence first. PostgreSQL aborts one whole
+    // transaction on a deadlock/serialization conflict; retry its complete
+    // authoritative operation, including all parent freezes, never a step.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const client = await pool.connect();
+      try {
+        return await createDb(client).transaction((tx) => work(tx, client));
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (attempt === 2 || (code !== "40P01" && code !== "40001")) {
+          throw error;
+        }
+      } finally {
+        client.release();
+      }
     }
+    throw new Error("Team action retry limit exhausted");
+  };
+
+  const freezeSourceOwnerGrantsForParent = async (
+    client: pg.PoolClient,
+    parent: {
+      action:
+        | "team.leave"
+        | "team.member.disable"
+        | "team.workspace.access_update";
+      actorUserId: string;
+      teamId: string;
+      targetUserId: string;
+      targetVersion: number;
+      teamWorkspaceId?: string;
+    }
+  ): Promise<void> => {
+    const grants = await client.query<{
+      id: string;
+      grant_version: number;
+    }>(
+      `select id,grant_version from team_memory_share_grants
+        where team_id=$1 and owner_user_id=$2
+          and ($3::uuid is null or team_workspace_id=$3)
+          and lifecycle='active' and revoked_at is null
+          and frozen_at is null
+        order by id for update`,
+      [parent.teamId, parent.targetUserId, parent.teamWorkspaceId ?? null]
+    );
+    if (grants.rows.length === 0) return;
+    if (!options.freezeShareGrantForParent) {
+      throw new Error("Backend parent freeze stage is unavailable");
+    }
+    for (const grant of grants.rows) {
+      await options.freezeShareGrantForParent(client, {
+        actorUserId: parent.actorUserId,
+        shareGrantId: grant.id,
+        expectedGrantVersion: grant.grant_version,
+        mutationId: randomUUID(),
+        parent: {
+          action: parent.action,
+          teamId: parent.teamId,
+          targetUserId: parent.targetUserId,
+          targetVersion: parent.targetVersion,
+          teamWorkspaceId: parent.teamWorkspaceId
+        }
+      });
+    }
+  };
+
+  const ownedWorkspaceProjectSet = async (
+    client: pg.Pool | pg.PoolClient,
+    teamId: string,
+    memberId: string
+  ): Promise<Array<{ id: string; version: number }>> => {
+    // HQ-715 ships before the Team-side Workspace Project model. A genuinely
+    // absent relation proves the current authoritative set is empty. Once the
+    // relation exists, its own records must be queried; missing columns or an
+    // unavailable query fail closed. The conditional Step-up/copy-back flow is
+    // owned by the later Workspace Project ticket.
+    const state = await client.query<{
+      relation: string | null;
+      capability_state: string;
+    }>(
+      `select to_regclass('public.workspace_projects')::text as relation,
+              capability.state as capability_state
+         from project_lifecycle_schema_capabilities capability
+        where capability.capability='workspace_projects'`
+    );
+    if (!state.rows[0])
+      throw new Error("Workspace Project schema state unavailable");
+    if (
+      state.rows[0].capability_state === "absent" &&
+      state.rows[0].relation === null
+    )
+      return [];
+    if (
+      state.rows[0].capability_state !== "enabled" ||
+      state.rows[0].relation === null
+    ) {
+      throw new Error("Workspace Project schema capability is inconsistent");
+    }
+    const owned = await client.query<{ id: string; version: number }>(
+      `select project.id,project.version
+         from workspace_projects project
+         join team_memberships membership
+           on membership.id=project.owner_team_member_id
+        where membership.team_id=$1 and membership.id=$2
+          and project.lifecycle='active'
+        order by project.id`,
+      [teamId, memberId]
+    );
+    return owned.rows;
   };
 
   const withTeamAccessReadSnapshot = async <T>(
@@ -2475,7 +2598,7 @@ export const createTeamAccessRepository = (
       actor: ActorContext,
       input: { teamId: string; expectedVersion: number }
     ): Promise<TeamMembershipRecord | null> {
-      return db.transaction(async (tx) => {
+      return withTeamAccessTransaction(async (tx, client) => {
         await lockTeamOwnerLifecycle(tx, input.teamId);
         const membershipRows = await tx
           .select()
@@ -2518,6 +2641,28 @@ export const createTeamAccessRepository = (
           }
         }
 
+        if (
+          (await ownedWorkspaceProjectSet(client, input.teamId, membership.id))
+            .length > 0
+        ) {
+          return null;
+        }
+
+        await freezeSourceOwnerGrantsForParent(client, {
+          action: "team.leave",
+          actorUserId: actor.userId,
+          teamId: input.teamId,
+          targetUserId: actor.userId,
+          targetVersion: input.expectedVersion
+        });
+
+        await disableWorkspaceAccessGrantsForMembership(tx, {
+          teamId: input.teamId,
+          userId: actor.userId,
+          actorUserId: actor.userId,
+          reason: "member_left"
+        });
+
         const disabledRows = await tx
           .update(teamMemberships)
           .set({
@@ -2534,17 +2679,8 @@ export const createTeamAccessRepository = (
             )
           )
           .returning();
-        if (!disabledRows[0]) {
-          return null;
-        }
-        const disabledMembership = mapMembershipRecord(disabledRows[0]);
-
-        await disableWorkspaceAccessGrantsForMembership(tx, {
-          teamId: input.teamId,
-          userId: actor.userId,
-          actorUserId: actor.userId,
-          reason: "member_left"
-        });
+        const disabledRow = disabledRows[0] ?? staleVersion();
+        const disabledMembership = mapMembershipRecord(disabledRow);
 
         await insertTeamAudit(tx, {
           actorUserId: actor.userId,
@@ -3499,6 +3635,7 @@ export const createTeamAccessRepository = (
         .select({
           teamId: teams.id,
           teamName: teams.name,
+          teamVersion: teams.version,
           membership: teamMemberships,
           activeOwnerCount: sql<number>`(
             select count(*)::int
@@ -3526,8 +3663,13 @@ export const createTeamAccessRepository = (
         return null;
       }
       const membership = mapMembershipRecord(row.membership);
+      const ownedProjects = await ownedWorkspaceProjectSet(
+        pool,
+        teamId,
+        row.membership.id
+      );
       return {
-        team: { id: row.teamId, name: row.teamName },
+        team: { id: row.teamId, name: row.teamName, version: row.teamVersion },
         membership: {
           userId: membership.userId,
           role: membership.role,
@@ -3535,7 +3677,9 @@ export const createTeamAccessRepository = (
           version: membership.version,
           disabledAt: membership.disabledAt
         },
-        activeOwnerCount: row.activeOwnerCount
+        activeOwnerCount: row.activeOwnerCount,
+        ownedWorkspaceProjectCount: ownedProjects.length,
+        ownedWorkspaceProjects: ownedProjects
       };
     },
 
@@ -4251,7 +4395,7 @@ export const createTeamAccessRepository = (
         return null;
       }
 
-      return db.transaction(async (tx) => {
+      return withTeamAccessTransaction(async (tx, client) => {
         await lockTeamOwnerLifecycle(tx, input.teamId);
         const lockedManager = await getManagingMembershipForUpdate(
           tx,
@@ -4307,6 +4451,21 @@ export const createTeamAccessRepository = (
           }
         }
 
+        await freezeSourceOwnerGrantsForParent(client, {
+          action: "team.member.disable",
+          actorUserId: actor.userId,
+          teamId: input.teamId,
+          targetUserId: input.userId,
+          targetVersion: input.expectedVersion
+        });
+
+        await disableWorkspaceAccessGrantsForMembership(tx, {
+          teamId: input.teamId,
+          userId: input.userId,
+          actorUserId: actor.userId,
+          reason: "membership_disabled"
+        });
+
         const rows = await tx
           .update(teamMemberships)
           .set({
@@ -4324,17 +4483,9 @@ export const createTeamAccessRepository = (
             )
           )
           .returning();
-        if (!rows[0]) {
-          return null;
-        }
+        const disabledRow = rows[0] ?? staleVersion();
 
-        const membership = mapMembershipRecord(rows[0]);
-        await disableWorkspaceAccessGrantsForMembership(tx, {
-          teamId: input.teamId,
-          userId: input.userId,
-          actorUserId: actor.userId,
-          reason: "membership_disabled"
-        });
+        const membership = mapMembershipRecord(disabledRow);
         await insertTeamAudit(tx, {
           actorUserId: actor.userId,
           action: "team.member.disabled",
@@ -4387,7 +4538,7 @@ export const createTeamAccessRepository = (
         return null;
       }
 
-      const updated = await db.transaction(async (tx) => {
+      const updated = await withTeamAccessTransaction(async (tx, client) => {
         const lockedManager = await getManagingMembershipForUpdate(
           tx,
           actor,
@@ -4483,6 +4634,17 @@ export const createTeamAccessRepository = (
                 : undefined) ??
               true)
             : false;
+
+        if (input.access === "disabled" && previousAccess !== "disabled") {
+          await freezeSourceOwnerGrantsForParent(client, {
+            action: "team.workspace.access_update",
+            actorUserId: actor.userId,
+            teamId: accessContext.teamId,
+            targetUserId: input.userId,
+            targetVersion: input.expectedVersion!,
+            teamWorkspaceId: input.teamWorkspaceId
+          });
+        }
 
         const grantRows = existingGrant
           ? await tx

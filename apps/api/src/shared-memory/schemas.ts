@@ -469,3 +469,14 @@ export const revokeShareGrantSchema = z
     authority: sharedMemoryAuthoritySchema
   })
   .strict();
+
+/** Exact, one-use Native review intent. Kept separate from strict v1 grant DTOs. */
+export const freezeShareGrantSchema = z
+  .object({
+    mutationId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema,
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict();

@@ -6,7 +6,10 @@ import type {
   UserSessionContext
 } from "@koed/db";
 import Fastify from "fastify";
-import { sharedMemoryPreviewActionGrantBinding } from "@koed/shared";
+import {
+  sharedMemoryFreezeActionGrantBinding,
+  sharedMemoryPreviewActionGrantBinding
+} from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -210,7 +213,7 @@ const buildServer = async (overrides?: {
       activeOwnerCount: 1
     })),
     getTeamLeaveReview: vi.fn(async () => ({
-      team: { id: ids.team, name: "Koed Team" },
+      team: { id: ids.team, name: "Koed Team", version: 1 },
       membership: {
         userId: ids.alice,
         role: "member",
@@ -218,7 +221,8 @@ const buildServer = async (overrides?: {
         version: 3,
         disabledAt: null
       },
-      activeOwnerCount: 1
+      activeOwnerCount: 1,
+      ownedWorkspaceProjects: []
     })),
     getTeamWorkspaceCreationReview: vi.fn(async () => ({
       managerRole: "admin",
@@ -1033,6 +1037,26 @@ describe("high-risk action grant routes", () => {
         }
       }
     });
+    const freezeRequestId = randomUUID();
+    const freezeMutationId = randomUUID();
+    await sharedFixture.app.inject({
+      method: "POST",
+      url: "/v1/high-risk/action-grants",
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {
+        version: 1,
+        clientRequestId: freezeRequestId,
+        grantCommitment: `v1:${"f".repeat(64)}`,
+        intent: {
+          action: "shared_memory.grant.freeze",
+          mutationId: freezeMutationId,
+          teamId: ids.team,
+          teamWorkspaceId: ids.target,
+          shareGrantId: ids.target,
+          expectedGrantVersion: 1
+        }
+      }
+    });
 
     const createCalls = (
       fixture.repository.createActionGrant as ReturnType<typeof vi.fn>
@@ -1094,6 +1118,26 @@ describe("high-risk action grant routes", () => {
       targetId: ids.target,
       scopeHash: expectedSharedBinding.scopeHash,
       requestHash: expectedSharedBinding.requestHash
+    });
+    const expectedFreezeBinding = sharedMemoryFreezeActionGrantBinding({
+      referenceId: freezeRequestId,
+      mutationId: freezeMutationId,
+      teamId: ids.team,
+      teamWorkspaceId: ids.target,
+      shareGrantId: ids.target,
+      expectedGrantVersion: 1
+    });
+    expect(
+      (sharedFixture.repository.createActionGrant as ReturnType<typeof vi.fn>)
+        .mock.calls[1]?.[0]
+    ).toMatchObject({
+      operationFamily: "share_grant_management",
+      action: expectedFreezeBinding.action,
+      teamId: ids.team,
+      targetId: ids.target,
+      scopeHash: expectedFreezeBinding.scopeHash,
+      requestHash: expectedFreezeBinding.requestHash,
+      approvalTier: "native_review"
     });
     await fixture.app.close();
     await sharedFixture.app.close();
