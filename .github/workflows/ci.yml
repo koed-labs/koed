@@ -108,7 +108,7 @@ jobs:
 
   tests:
     name: Tests
-    needs: static-checks
+    needs: changes
     runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     services:
@@ -183,7 +183,7 @@ jobs:
 
   build:
     name: Build
-    needs: static-checks
+    needs: changes
     runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
 
@@ -226,10 +226,8 @@ jobs:
 
   relevant-packaged-smoke:
     name: Relevant packaged Desktop app smoke
-    needs:
-      - changes
-      - build
-    if: needs.changes.outputs.run_app_smoke == 'true' && needs.build.result == 'success'
+    needs: changes
+    if: needs.changes.outputs.run_app_smoke == 'true'
     runs-on: macos-14
     timeout-minutes: 60
 
@@ -299,7 +297,7 @@ jobs:
       - name: Build ad-hoc-signed unpacked Desktop app
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/dist/native-runtime/macos-arm64/koed-runtime
-        run: pnpm desktop:package:mac
+        run: pnpm --filter @koed/desktop package:mac:assemble
 
       - name: Verify Desktop app code integrity
         run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app

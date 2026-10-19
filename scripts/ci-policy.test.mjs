@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 import {
   evaluateCiPolicy,
   fileAffectsPackaging,
@@ -258,17 +259,93 @@ test("app-only smoke stages once-validated runtime without a PR archive", () => 
   assert.doesNotMatch(fullValidation, /--no-archive/);
 });
 
-test("app-only smoke starts after Build without waiting for Tests", () => {
-  const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
-  const relevantSmoke = workflow
-    .split("  relevant-packaged-smoke:")[1]
-    .split("  release-candidate-validation:")[0];
-  const needs = relevantSmoke.split("    if:")[0];
+test("policy schedules independent jobs while the required gate joins every result", () => {
+  const { jobs } = parse(
+    readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
+  );
+  for (const name of [
+    "static-checks",
+    "tests",
+    "build",
+    "relevant-packaged-smoke"
+  ]) {
+    assert.deepEqual(jobs[name].needs, "changes", name);
+  }
+  assert.equal(
+    jobs["relevant-packaged-smoke"].if,
+    "needs.changes.outputs.run_app_smoke == 'true'"
+  );
+  for (const name of [
+    "release-candidate-validation",
+    "native-runtime-linux-x64"
+  ]) {
+    assert.deepEqual(jobs[name].needs, [
+      "changes",
+      "static-checks",
+      "tests",
+      "build"
+    ]);
+  }
+  assert.equal(jobs["ci-required"].if, "always()");
+  assert.deepEqual(jobs["ci-required"].needs, [
+    "changes",
+    "static-checks",
+    "tests",
+    "build",
+    "relevant-packaged-smoke",
+    "release-candidate-validation",
+    "native-runtime-linux-x64"
+  ]);
+  assert.equal(
+    jobs["ci-required"].steps.at(-1).run,
+    "node .github/scripts/ci-required.mjs"
+  );
+});
 
-  assert.match(needs, /- changes/);
-  assert.match(needs, /- build/);
-  assert.doesNotMatch(needs, /- tests/);
-  assert.match(relevantSmoke, /needs\.build\.result == 'success'/);
+test("macOS smoke assembles outputs built earlier in its own checkout", () => {
+  const { jobs } = parse(
+    readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
+  );
+  const steps = jobs["relevant-packaged-smoke"].steps;
+  const indexOf = (name) => steps.findIndex((step) => step.name === name);
+  const build = indexOf("Build workspace");
+  const assemble = indexOf("Build ad-hoc-signed unpacked Desktop app");
+  assert.ok(indexOf("Checkout") < indexOf("Install dependencies"));
+  assert.ok(indexOf("Install dependencies") < build);
+  assert.ok(build < assemble);
+  assert.equal(steps[build].run, "pnpm build");
+  assert.equal(
+    steps[assemble].run,
+    "pnpm --filter @koed/desktop package:mac:assemble"
+  );
+  assert.ok(assemble < indexOf("Verify Desktop app code integrity"));
+  assert.ok(assemble < indexOf("Run packaged Desktop native smoke"));
+  assert.ok(assemble < indexOf("Run packaged Desktop missing-asset smoke"));
+  assert.equal(steps.filter((step) => step.run === "pnpm build").length, 1);
+});
+
+test("default macOS packaging builds before the existing assembly sequence", () => {
+  const { scripts } = JSON.parse(
+    readFileSync(resolve("apps/desktop/package.json"), "utf8")
+  );
+  assert.equal(
+    scripts["package:mac"],
+    "pnpm package:workspace:build && pnpm package:mac:assemble"
+  );
+  const assemble = scripts["package:mac:assemble"];
+  const orderedCommands = [
+    "pnpm package:runtime",
+    "rm -rf release/mac release/mac-*",
+    "KOED_ADHOC_SIGN_MACOS_APP=true CSC_IDENTITY_AUTO_DISCOVERY=false /usr/bin/time -p electron-builder --mac dir",
+    'if [ ! -d release/mac ]; then set -- release/mac-*; [ -d "$1" ] && mv "$1" release/mac; fi'
+  ];
+  let previous = -1;
+  for (const command of orderedCommands) {
+    const next = assemble.indexOf(command);
+    assert.ok(next > previous, command);
+    previous = next;
+  }
+  assert.doesNotMatch(assemble, /package:workspace:build|pnpm build:package/);
 });
 
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {
@@ -465,4 +542,34 @@ test("stable required result accepts only policy-correct success and skips", () 
     }).ok,
     true
   );
+});
+
+test("required aggregation rejects failures and cancellations in every selected job", () => {
+  const policy = {
+    run_app_smoke: "true",
+    run_full_validation: "true",
+    run_linux_native: "true"
+  };
+  const results = {
+    changes: "success",
+    static_checks: "success",
+    tests: "success",
+    build: "success",
+    relevant_packaged_smoke: "success",
+    release_candidate_validation: "success",
+    native_runtime_linux_x64: "success"
+  };
+  assert.equal(evaluateRequiredJobs({ policy, results }).ok, true);
+  for (const name of Object.keys(results)) {
+    for (const result of ["failure", "cancelled"]) {
+      assert.equal(
+        evaluateRequiredJobs({
+          policy,
+          results: { ...results, [name]: result }
+        }).ok,
+        false,
+        `${name}: ${result}`
+      );
+    }
+  }
 });
