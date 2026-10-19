@@ -12,15 +12,25 @@ commands, sharing, connection settings, and cached Team routes from navigation
 history. Retained Team data remains stored behind its existing authority and
 lifecycle boundaries; disabling the UI does not delete it.
 
-The experimental HQ shell is an empty renderer scaffold. It is off by default
-and appears only when `KOED_DESKTOP_HQ_ENABLED` is exactly `true`, after
-onboarding and local setup. This flag selects the Desktop shell; it does not
-change Team authorization or collaboration settings. Desktop reads the flag
+The experimental HQ is a resizable layout frame. It is off by default and
+appears only when `KOED_DESKTOP_HQ_ENABLED` is exactly `true`, after
+onboarding and local setup. With this flag enabled, the window can be narrowed
+to 320 pixels so the mobile context sheet is reachable; when it is off, the
+existing 960-pixel minimum remains. This flag selects the Desktop shell; it
+does not change Team authorization or collaboration settings. Desktop reads the flag
 from its inherited process environment; it does not automatically load the
 repository-root or Desktop `.env` files. To enable the shell from the
 repository root, run
 `KOED_DESKTOP_HQ_ENABLED=true pnpm desktop:start`. The `.env.example` files
 catalogue setup values and do not configure Desktop's launch environment.
+
+HQ stores its resizable pane widths and context-pane visibility in the native
+Electron `userData/hq-layout-preferences.json` file. Drag a divider or focus it
+and use the arrow keys to resize; double-click a divider to reset its width.
+The context pane can be hidden and restored. On narrow windows, it opens as a
+modal sheet that traps focus and closes with Escape or its close button, then
+returns focus to the opener. These are local layout preferences, not Personal
+Memory or Team data.
 
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and

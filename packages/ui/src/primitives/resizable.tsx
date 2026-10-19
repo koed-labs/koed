@@ -18,6 +18,7 @@ type ResizeContextValue = {
   max: number;
   min: number;
   onSizeChange: (size: number) => void;
+  reverse: boolean;
   size: number;
 };
 
@@ -30,6 +31,7 @@ function Resizable({
   min = 240,
   max = 640,
   onSizeChange,
+  reverse = false,
   style,
   ...props
 }: ComponentProps<"div"> & {
@@ -38,10 +40,11 @@ function Resizable({
   min?: number;
   max?: number;
   onSizeChange: (size: number) => void;
+  reverse?: boolean;
 }) {
   const value = useMemo(
-    () => ({ direction, max, min, onSizeChange, size }),
-    [direction, max, min, onSizeChange, size]
+    () => ({ direction, max, min, onSizeChange, reverse, size }),
+    [direction, max, min, onSizeChange, reverse, size]
   );
   return (
     <ResizeContext value={value}>
@@ -83,7 +86,7 @@ function ResizableHandle({ className, ...props }: ComponentProps<"div">) {
   if (!context) {
     throw new Error("ResizableHandle must be used inside Resizable.");
   }
-  const { direction, max, min, onSizeChange, size } = context;
+  const { direction, max, min, onSizeChange, reverse, size } = context;
   const clamp = useCallback(
     (value: number) => Math.min(max, Math.max(min, value)),
     [max, min]
@@ -103,9 +106,19 @@ function ResizableHandle({ className, ...props }: ComponentProps<"div">) {
       return;
     const coordinate =
       direction === "horizontal" ? event.clientX : event.clientY;
+    const resizeSign = reverse ? -1 : 1;
     onSizeChange(
-      clamp(startRef.current.size + coordinate - startRef.current.coordinate)
+      clamp(
+        startRef.current.size +
+          (coordinate - startRef.current.coordinate) * resizeSign
+      )
     );
+  };
+  const finishPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    startRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
   return (
     <div
@@ -130,15 +143,13 @@ function ResizableHandle({ className, ...props }: ComponentProps<"div">) {
               : 0;
         if (delta) {
           event.preventDefault();
-          onSizeChange(clamp(size + delta));
+          onSizeChange(clamp(size + delta * (reverse ? -1 : 1)));
         }
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={(event) => {
-        startRef.current = null;
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
+      onPointerUp={finishPointer}
+      onPointerCancel={finishPointer}
       role="separator"
       tabIndex={0}
       {...props}

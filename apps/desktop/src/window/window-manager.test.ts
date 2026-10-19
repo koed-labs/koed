@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { createMainWindowOptions } from "./window-manager.js";
 
 describe("Desktop main window security", () => {
+  it("keeps the legacy minimum width unless HQ is exactly enabled", () => {
+    expect(createMainWindowOptions("/opt/koed/desktop").minWidth).toBe(960);
+    expect(
+      createMainWindowOptions("/opt/koed/desktop", undefined, undefined, true)
+        .minWidth
+    ).toBe(320);
+  });
+
   it("isolates and sandboxes the renderer without Node access", () => {
     const options = createMainWindowOptions("/opt/koed/desktop");
 

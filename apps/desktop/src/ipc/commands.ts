@@ -48,6 +48,14 @@ import {
 } from "./managed-conversation-protocol.js";
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
+import type { HqLayoutPreferences } from "./hq-layout-preferences-protocol.js";
+import {
+  hqLayoutPreferencesGetArgsSchema,
+  hqLayoutPreferencesGetChannel,
+  hqLayoutPreferencesResultSchema,
+  hqLayoutPreferencesSetArgsSchema,
+  hqLayoutPreferencesSetChannel
+} from "./hq-layout-preferences-protocol.js";
 import type { ManagedPreviewController } from "../window/managed-preview-controller.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 import {
@@ -158,6 +166,10 @@ export const registerDesktopCommandHandlers = (
       preference: DesktopThemePreference;
       resolvedDark: boolean;
     };
+    getHqLayoutPreferences: () => HqLayoutPreferences;
+    setHqLayoutPreferences: (
+      preferences: HqLayoutPreferences
+    ) => HqLayoutPreferences;
     getHardwareAcceleration?: () => Promise<{
       enabled: boolean;
       managedByEnvironment: boolean;
@@ -270,6 +282,32 @@ export const registerDesktopCommandHandlers = (
     }
     return options.setThemePreference(value);
   });
+
+  ipcMain.handle(
+    hqLayoutPreferencesGetChannel,
+    async (event, ...args: unknown[]) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      hqLayoutPreferencesGetArgsSchema.parse(args);
+      return hqLayoutPreferencesResultSchema.parse(
+        options.getHqLayoutPreferences()
+      );
+    }
+  );
+
+  ipcMain.handle(
+    hqLayoutPreferencesSetChannel,
+    async (event, ...args: unknown[]) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      const [preferences] = hqLayoutPreferencesSetArgsSchema.parse(args);
+      return hqLayoutPreferencesResultSchema.parse(
+        options.setHqLayoutPreferences(preferences)
+      );
+    }
+  );
 
   ipcMain.handle(hardwareAccelerationGetChannel, async (event) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
