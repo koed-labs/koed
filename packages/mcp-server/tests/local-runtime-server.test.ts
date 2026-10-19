@@ -285,7 +285,8 @@ describe("Local AI Runtime", () => {
         await expect(
           new LocalAiRuntimeClient(environment).callTool(
             "memory_answer",
-            { query: "decision" },
+            // Global recall skips repository pinning for the missing fixture cwd.
+            { query: "decision", search_domain: "global" },
             { cwd: "/fixture" },
             undefined,
             "invocation-1"
