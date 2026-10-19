@@ -51,13 +51,59 @@ Follow-ups:
 - Validate physical Studio-to-Electron capture, later-turn updates, and offline
   catch-up on the updated runtime.
 
+## Public Koed Server release gates
+
+Headless macOS arm64 / Node 24 signed Base and Privacy installation plus Personal
+and Team startup/readiness/shutdown is locally verified with test-only keys.
+Packaged Electron macOS arm64 Team activation/readiness/shutdown also passes.
+Linux, the broader Desktop lifecycle matrix, and production signing/publication
+acceptance remain open below.
+
+Follow-up to the public `@koed-labs/server` distribution. Merging that work
+publishes nothing; do not merge the "Version Koed" release PR until these are closed:
+
+- Complete full v2 build/sign/install/start/shutdown lifecycle acceptance.
+  The authorized GitHub signing-only rehearsal passed and its temporary branch
+  authorization was revoked.
+  The approved KMS public root is embedded; Cloud Run signing and trust-root
+  repository configuration are implemented independently from publication approval.
+- Confirm npm organization/package ownership and publication credentials.
+- Validate Linux/native artifacts and packaged Electron runtime/helper/fuse behavior
+  on supported targets (Linux x64 CI jobs are currently skipped).
+- Verify packaged Desktop relocation, failure-injection rollback, uninstall and
+  terminal-helper behavior.
+- Run an authorized release rehearsal, then promotion with
+  `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
+
 ## Server distribution split (PR #404)
 
-- Land the private Server package and `koed` command migration with existing runtime assembly.
-- Land the separate lazy CLI loading/help extraction without component provisioning commands.
+- Completed: private Server package and `koed` command migration (#408, merged).
+- Completed: lazy CLI loading/help extraction (#409, merged).
 - Validate built, signed, installed, and started headless components end to end before enabling npm publication and release promotion.
 - Deliver Desktop on-demand Privacy only after install, upgrade, startup, integration setup, and rollback validation; preserve existing bundled Privacy until then.
 - Deliver opt-in Desktop Install CLI separately, with relocation, removal, and Electron helper validation.
+
+## Distribution integration follow-up at PR #404
+
+Implemented with regression coverage: stopped first Privacy asset installation,
+owned Desktop bundle upgrade admission, selected-runtime Privacy readiness and
+private Claude Code/Pi setup/repair. Bundle verification, supervisor RPC and Privacy
+transactions, status runtime selection and assembly exception policy now have shared
+implementation seams. Packaged positive Team activation/readiness/shutdown now
+passes locally with test-only signing; fresh review and the remaining lifecycle
+acceptance are still required.
+
+- Completed local signed component admission, native-operation coverage, and packaged Team startup acceptance for Node 24.14.0 and the exact Electron 39.8.10 / embedded Node 22.22.1 macOS arm64 payload. Other Electron targets remain unvalidated.
+- Passed packaged-manager Team `setup_core` after Privacy activation and before
+  daemon start using packaged Electron Node mode, a disposable test-signed app,
+  the real private supervisor, and an isolated fixture PostgreSQL. Team readiness
+  reached healthy and shutdown succeeded. Full GUI launch for this check remains
+  unverified after macOS aborted a separate disposable app launch before IPC.
+  Stopped management starts no services; `setup_core` requires reachable
+  PostgreSQL to provision or revalidate the local API Token.
+- Run packaged Team upgrade, relocation, rollback,
+  uninstall and helper/fuse acceptance, plus Linux native validation.
+- Keep production signing/trust-root/npm/promotion gates closed until authorized rehearsal.
 
 ## Memory Answer evidence-selection follow-ups
 

@@ -1,7 +1,8 @@
 ---
 "@koed/koed": minor
+"@koed-labs/server": minor
 ---
 
-Rename the internal Server package to `@koed-labs/server` and the terminal command to `koed`. Replace `koed-server` commands with `koed` and `pnpm koed-server` with `pnpm koed`. The package remains private; npm installation is not available in this release.
+Publish Koed Server as `@koed-labs/server` with the `koed` command. Packaged service startup uses only a version-matched, verified, pinned component generation and fails closed without downloading or falling back to checkout files. The old `koed-server` executable alias is removed; native runtime and model provisioning remain explicit setup steps, with privacy components provisioned when required.
 
-CLI help now loads without initializing service-start modules; operational commands retain the existing implementation.
+Headless releases use canonical manifests with v2 domain-separated SHA-256 digest signatures compatible with managed Ed25519 signing, payload-relative archives and explicit Node 24 ABI metadata. The public npm bundle includes its runtime helpers; promotion streams large assets and uses npm-valid candidate tags. The approved KMS public root and authenticated signing service support production component verification; publication remains gated pending release acceptance and explicit authorization.

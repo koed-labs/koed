@@ -1,20 +1,19 @@
 #!/usr/bin/env node
-/* global clearTimeout, console, process, setTimeout */
+/* global AbortSignal, URL, clearTimeout, console, process, setTimeout */
 import { listPackage } from "@electron/asar";
 import {
   cpSync,
   readdirSync,
   existsSync,
+  readFileSync,
   mkdirSync,
-  mkdtempSync,
   statSync,
   writeFileSync
 } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   createOwnedDiagnosticsDir,
   readDiagnosticWindow,
@@ -22,10 +21,12 @@ import {
 } from "./smoke-diagnostics.mjs";
 import {
   removeSmokeHome,
+  createSmokeHome,
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
+import { launchPackagedDesktop } from "./packaged-desktop-lifecycle.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -34,18 +35,18 @@ const sleep = (ms) =>
 const sleepSync = (ms) =>
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-const parseArgs = (argv) => {
+export const parseArgs = (argv) => {
   const options = {
     json: false,
     build: false,
     missingAssets: false,
     maskNativeAssets: false,
+    skipRendererFaults: false,
     embeddingModelSource: undefined,
-    privacyModelSource: undefined,
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
     timeoutMs: 180_000,
-    pollIntervalMs: 2_000
+    pollIntervalMs: 5_000
   };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -66,21 +67,16 @@ const parseArgs = (argv) => {
       options.maskNativeAssets = true;
       continue;
     }
+    if (value === "--skip-renderer-faults") {
+      options.skipRendererFaults = true;
+      continue;
+    }
     if (value === "--embedding-model-source") {
       const source = argv[index + 1]?.trim();
       if (!source) {
         throw new Error("--embedding-model-source requires a path.");
       }
       options.embeddingModelSource = resolve(source);
-      index += 1;
-      continue;
-    }
-    if (value === "--privacy-model-source") {
-      const source = argv[index + 1]?.trim();
-      if (!source) {
-        throw new Error("--privacy-model-source requires a path.");
-      }
-      options.privacyModelSource = resolve(source);
       index += 1;
       continue;
     }
@@ -137,12 +133,12 @@ Options:
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
+  --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
   --embedding-model-source  Pre-seed the pinned embedding model from this file
-  --privacy-model-source    Pre-seed the pinned Privacy Filter model directory
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
-  --poll-interval-ms <num>  Poll interval (default 2000)
+  --poll-interval-ms <num>  Poll interval (default 5000)
   --help, -h                Show this help
 `;
 
@@ -171,14 +167,6 @@ const seedEmbeddingModel = (koedHome, source) => {
   const target = resolve(koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
   mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
   cpSync(source, target, { preserveTimestamps: true });
-  return target;
-};
-
-const seedPrivacyModel = (koedHome, source) => {
-  assertExists("Cached Privacy Filter model", source);
-  const target = resolve(koedHome, "models", "privacy");
-  mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
-  cpSync(source, target, { recursive: true, preserveTimestamps: true });
   return target;
 };
 
@@ -312,10 +300,18 @@ const isolatedSmokeApiPort = (koedHome) =>
 const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
-    ...extraEnv,
     ELECTRON_RUN_AS_NODE: "1",
     KOED_HOME: koedHome,
+    HOME: resolve(koedHome, "test-home"),
+    KOED_DEVICE_PROOF_DIR: resolve(
+      koedHome,
+      "..",
+      `.${basename(koedHome)}-device-proof`
+    ),
     CODEX_HOME: resolve(koedHome, "codex"),
+    CLAUDE_CONFIG_DIR: resolve(koedHome, "claude"),
+    PI_CODEROOT: resolve(koedHome, "pi"),
+    PI_CONFIG_DIR: resolve(koedHome, "pi-config"),
     CODEX_CONFIG_PATH: resolve(koedHome, "codex", "config.toml"),
     MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
     KOED_PACKAGED_DESKTOP: "1",
@@ -324,8 +320,12 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     API_HOST_PORT: isolatedSmokeApiPort(koedHome),
     KOED_RUNTIME_MODE: "local-personal",
     KOED_DEPENDENCY_MODE: "bundled-local",
-    KOED_TEAM_COLLABORATION_ENABLED: "true",
-    WORK_QUEUE_BACKEND: "local"
+    KOED_TEAM_COLLABORATION_ENABLED: "false",
+    WORK_QUEUE_BACKEND: "local",
+    MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+    MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
+    MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
+    ...extraEnv
   };
   delete env.KOED_REPO_ROOT;
   delete env.KOED_SERVER_CLI;
@@ -566,6 +566,36 @@ const assertPackagedDaemonReady = (
   }
 };
 
+export const assertFailClosedPrivacy = (payload) => {
+  if (
+    payload?.available !== false ||
+    payload?.state !== "unavailable" ||
+    !(
+      /Production Privacy Filter signer trust is not configured/.test(
+        payload.message ?? ""
+      ) ||
+      payload.message ===
+        "Privacy Filter is not required by current runtime configuration."
+    )
+  ) {
+    throw new Error(
+      `Privacy signer trust did not fail closed: ${JSON.stringify(payload)}`
+    );
+  }
+};
+export const assertFailClosedTeamStart = (payload) => {
+  if (
+    payload?.ok !== false ||
+    typeof payload?.startedPid === "number" ||
+    !/privacy/i.test(payload.error ?? "") ||
+    !/required|missing|verified|trust|component/i.test(payload.error ?? "")
+  ) {
+    throw new Error(
+      `Team Privacy gate did not fail closed: ${JSON.stringify(payload)}`
+    );
+  }
+};
+
 const assertInstalled = (payload, label) => {
   if (payload?.ok !== true || !payload?.state) {
     throw new Error(
@@ -785,6 +815,40 @@ const smokeMissingAssets = (layout, koedHome) => {
   };
 };
 
+const readSmokeApiReadyUrl = (koedHome) => {
+  const runtimeStatePath = resolve(koedHome, "run", "koed-server.json");
+  const runtimeState = JSON.parse(readFileSync(runtimeStatePath, "utf8"));
+  if (typeof runtimeState?.apiUrl !== "string") {
+    throw new Error(
+      `Packaged runtime state missing apiUrl: ${runtimeStatePath}`
+    );
+  }
+  const apiUrl = new URL(runtimeState.apiUrl);
+  const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  if (apiUrl.protocol !== "http:" || !loopbackHosts.has(apiUrl.hostname)) {
+    throw new Error(
+      `Packaged smoke readiness requires loopback API URL: ${apiUrl.origin}`
+    );
+  }
+  return new URL("/ready", apiUrl);
+};
+
+// The public /ready endpoint avoids repeated API-token and MCP doctor checks.
+const fetchSmokeApiReadiness = async (koedHome, fetcher) => {
+  const response = await fetcher(readSmokeApiReadyUrl(koedHome), {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(5_000)
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload: await response.json().catch(() => null)
+  };
+};
+
+// Full status probes hit rate-limited AI Client endpoints; keep retries coarse.
+const FULL_STATUS_RETRY_INTERVAL_MS = 30_000;
+
 export const waitForHealthyStatus = async (
   {
     layout,
@@ -798,20 +862,51 @@ export const waitForHealthyStatus = async (
     now = Date.now,
     isRunning = pidIsRunning,
     runCommand = runPackagedCommand,
+    fetcher = globalThis.fetch,
+    statusProbeIntervalMs = FULL_STATUS_RETRY_INTERVAL_MS,
     delay = sleep
   } = {}
 ) => {
   const startedAt = now();
   let lastStatus = null;
+  let nextStatusProbeAt = startedAt;
   while (now() - startedAt < timeoutMs) {
     if (!isRunning(supervisorPid)) {
       throw new Error(
         `Packaged daemon supervisor ${supervisorPid} exited before becoming healthy.`
       );
     }
-    const status = runCommand(layout, koedHome, ["status", "--json"]);
+    const apiReadiness = await fetchSmokeApiReadiness(koedHome, fetcher).catch(
+      (error) => ({ error })
+    );
+    if ("error" in apiReadiness) {
+      lastStatus = {
+        apiReadiness: {
+          state: "unavailable",
+          message:
+            apiReadiness.error instanceof Error
+              ? apiReadiness.error.message
+              : String(apiReadiness.error)
+        }
+      };
+      await delay(pollIntervalMs);
+      continue;
+    }
+    lastStatus = {
+      apiReadiness: apiReadiness.payload ?? { httpStatus: apiReadiness.status }
+    };
+    if (!apiReadiness.ok) {
+      await delay(pollIntervalMs);
+      continue;
+    }
+    if (now() < nextStatusProbeAt) {
+      await delay(Math.min(pollIntervalMs, nextStatusProbeAt - now()));
+      continue;
+    }
+    const status = await runCommand(layout, koedHome, ["status", "--json"]);
     if (status.status !== 0) {
       lastStatus = parseJsonOutput("status --json", status.stdout || "{}");
+      nextStatusProbeAt = now() + statusProbeIntervalMs;
       await delay(pollIntervalMs);
       continue;
     }
@@ -823,7 +918,7 @@ export const waitForHealthyStatus = async (
       assertNoSourceCheckoutResolution("status --json", lastStatus);
       return lastStatus;
     } catch {
-      // A daemon may need time to load its native models and start every service.
+      nextStatusProbeAt = now() + statusProbeIntervalMs;
     }
     await delay(pollIntervalMs);
   }
@@ -905,7 +1000,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
 
   phaseStarted = beginPhase("required model verification or install");
   const requiredModelStatuses = {};
-  for (const kind of ["embedding", "privacy"]) {
+  for (const kind of ["embedding"]) {
     const modelStatus = runPackagedCommand(layout, koedHome, [
       "models",
       "status",
@@ -957,53 +1052,20 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   finishPhase(timings, "required model verification or install", phaseStarted);
 
-  phaseStarted = beginPhase("packaged privacy runtime verification");
-  const privacyProvider = process.platform === "darwin" ? "coreml" : "cpu";
-  const privacyRuntime = spawnSync(
-    process.execPath,
-    [
-      resolve(
-        sourceCheckoutRoot,
-        "scripts/validate-packaged-privacy-runtime.mjs"
-      ),
-      "--runtime-root",
-      layout.runtimeRoot,
-      "--transformers-cache",
-      resolve(koedHome, "models/privacy/transformers-cache"),
-      "--provider",
-      privacyProvider
-    ],
-    {
-      cwd: sourceCheckoutRoot,
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024
-    }
-  );
-  if (privacyRuntime.status !== 0) {
-    throw new Error(
-      `packaged privacy runtime verification failed with ${privacyRuntime.status}: ${privacyRuntime.stderr || privacyRuntime.stdout}`
-    );
-  }
-  const privacyRuntimeJson = parseJsonOutput(
-    "packaged privacy runtime verification",
-    privacyRuntime.stdout
-  );
-  if (
-    privacyRuntimeJson.ok !== true ||
-    privacyRuntimeJson.provider !== privacyProvider
-  ) {
-    throw new Error(
-      `packaged privacy runtime verification returned an invalid result: ${privacyRuntime.stdout}`
-    );
-  }
-  finishPhase(timings, "packaged privacy runtime verification", phaseStarted);
+  const desktop = options.desktop;
+  const managerCommand = async (command) => {
+    const payload = await desktop.invoke(command);
+    assertNoSourceCheckoutResolution(`manager ${command}`, payload);
+    return {
+      status: payload?.ok === false ? 1 : 0,
+      stdout: JSON.stringify(payload),
+      stderr: ""
+    };
+  };
+  const pollManager = { runCommand: () => managerCommand("status") };
 
   phaseStarted = beginPhase("first daemon start and health");
-  const start = runPackagedCommand(layout, koedHome, [
-    "start",
-    "--daemon",
-    "--json"
-  ]);
+  const start = await managerCommand("start_daemon");
   if (start.status !== 0) {
     throw new Error(
       `start --daemon --json failed with ${start.status}: ${start.stderr || start.stdout}`
@@ -1020,21 +1082,20 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     );
   }
 
-  const firstStatus = await waitForHealthyStatus({
-    layout,
-    koedHome,
-    timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
-    supervisorPid: startJson.startedPid
-  });
+  const firstStatus = await waitForHealthyStatus(
+    {
+      layout,
+      koedHome,
+      timeoutMs: options.timeoutMs,
+      pollIntervalMs: options.pollIntervalMs,
+      supervisorPid: startJson.startedPid
+    },
+    pollManager
+  );
   finishPhase(timings, "first daemon start and health", phaseStarted);
 
   phaseStarted = beginPhase("packaged core and Codex setup");
-  const coreSetup = runPackagedCommand(layout, koedHome, [
-    "setup",
-    "core",
-    "--json"
-  ]);
+  const coreSetup = await managerCommand("setup_core");
   const coreSetupJson = parseJsonOutput("setup core --json", coreSetup.stdout);
   assertNoSourceCheckoutResolution("setup core --json", coreSetupJson);
   if (coreSetup.status !== 0 || coreSetupJson.ok !== true) {
@@ -1042,12 +1103,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `setup core --json failed with ${coreSetup.status}: ${coreSetup.stderr || coreSetup.stdout}`
     );
   }
-  const codexSetup = runPackagedCommand(layout, koedHome, [
-    "setup",
-    "codex",
-    "--without-memory-guidance",
-    "--json"
-  ]);
+  const codexSetup = await managerCommand("setup_codex");
   const codexSetupJson = parseJsonOutput(
     "setup codex --without-memory-guidance --json",
     codexSetup.stdout
@@ -1061,7 +1117,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `setup codex --without-memory-guidance --json failed with ${codexSetup.status}: ${codexSetup.stderr || codexSetup.stdout}`
     );
   }
-  const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
+  const doctor = await managerCommand("doctor");
   const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
   assertNoSourceCheckoutResolution("doctor --json", doctorJson);
   if (doctor.status !== 0 || doctorJson.ok !== true) {
@@ -1069,18 +1125,23 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
     );
   }
-  const reconnectJson = await waitForHealthyStatus({
-    layout,
-    koedHome,
-    timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
-    supervisorPid: startJson.startedPid,
-    requireClientIntegration: true
-  });
+  const reconnectJson = await waitForHealthyStatus(
+    {
+      layout,
+      koedHome,
+      timeoutMs: options.timeoutMs,
+      pollIntervalMs: options.pollIntervalMs,
+      supervisorPid: startJson.startedPid,
+      requireClientIntegration: true
+    },
+    pollManager
+  );
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
   phaseStarted = beginPhase("daemon stop, restart, and health");
-  const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+  const privacyStatus = await desktop.invoke("privacy_status");
+  assertFailClosedPrivacy(privacyStatus);
+  const stop = await managerCommand("stop");
   if (stop.status !== 0) {
     throw new Error(
       `stop --json failed with ${stop.status}: ${stop.stderr || stop.stdout}`
@@ -1088,15 +1149,17 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const stopJson = parseJsonOutput("stop --json", stop.stdout);
   assertNoSourceCheckoutResolution("stop --json", stopJson);
-  if (stopJson.ok !== true) {
-    throw new Error(`stop --json was not ok: ${stop.stdout}`);
+  if (
+    stopJson.ok !== true ||
+    stopJson.state !== "stopped" ||
+    pidIsRunning(startJson.startedPid)
+  ) {
+    throw new Error(
+      `Manager stop did not terminate owned supervisor: ${stop.stdout}`
+    );
   }
 
-  const restart = runPackagedCommand(layout, koedHome, [
-    "start",
-    "--daemon",
-    "--json"
-  ]);
+  const restart = await managerCommand("start_daemon");
   if (restart.status !== 0) {
     throw new Error(
       `reopen start --daemon --json failed with ${restart.status}: ${restart.stderr || restart.stdout}`
@@ -1107,21 +1170,28 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   if (restartJson.ok === true && typeof restartJson.startedPid === "number") {
     options.daemonPids?.push(restartJson.startedPid);
   }
-  if (restartJson.ok !== true || typeof restartJson.startedPid !== "number") {
+  if (
+    restartJson.ok !== true ||
+    typeof restartJson.startedPid !== "number" ||
+    restartJson.startedPid === startJson.startedPid
+  ) {
     throw new Error(
       `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`
     );
   }
-  const reopenedStatus = await waitForHealthyStatus({
-    layout,
-    koedHome,
-    timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
-    supervisorPid: restartJson.startedPid
-  });
+  const reopenedStatus = await waitForHealthyStatus(
+    {
+      layout,
+      koedHome,
+      timeoutMs: options.timeoutMs,
+      pollIntervalMs: options.pollIntervalMs,
+      supervisorPid: restartJson.startedPid
+    },
+    pollManager
+  );
   assertPackagedDaemonReady(reopenedStatus, "status --json after restart");
 
-  const finalStop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+  const finalStop = await managerCommand("stop");
   if (finalStop.status !== 0) {
     throw new Error(
       `final stop --json failed with ${finalStop.status}: ${finalStop.stderr || finalStop.stdout}`
@@ -1129,8 +1199,14 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const finalStopJson = parseJsonOutput("stop --json", finalStop.stdout);
   assertNoSourceCheckoutResolution("final stop --json", finalStopJson);
-  if (finalStopJson.ok !== true) {
-    throw new Error(`final stop --json was not ok: ${finalStop.stdout}`);
+  if (
+    finalStopJson.ok !== true ||
+    finalStopJson.state !== "stopped" ||
+    pidIsRunning(restartJson.startedPid)
+  ) {
+    throw new Error(
+      `Manager final stop did not terminate owned supervisor: ${finalStop.stdout}`
+    );
   }
   finishPhase(timings, "daemon stop, restart, and health", phaseStarted);
 
@@ -1141,7 +1217,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     installedRuntimeStatus: installedRuntimeStatusJson,
     modelStatus: requiredModelStatuses.embedding,
     requiredModelStatuses,
-    privacyRuntime: privacyRuntimeJson,
+    privacyStatus,
     coreSetup: coreSetupJson,
     codexSetup: codexSetupJson,
     doctor: doctorJson,
@@ -1154,6 +1230,48 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     startPid: startJson.startedPid,
     restartPid: restartJson.startedPid
   };
+};
+
+const smokeTeamFailClosed = async (layout, options, daemonPids) => {
+  const koedHome = createSmokeHome("koed-desktop-team-smoke-");
+  const desktop = launchPackagedDesktop({
+    executable: layout.executable,
+    env: createSmokeEnv(layout, koedHome, {
+      KOED_TEAM_COLLABORATION_ENABLED: "true"
+    }),
+    koedHome,
+    timeoutMs: options.timeoutMs
+  });
+  try {
+    await desktop.ready;
+    const start = await desktop.invoke("start_daemon");
+    if (typeof start?.startedPid === "number")
+      daemonPids.push(start.startedPid);
+    assertFailClosedTeamStart(start);
+    const status = await desktop.invoke("status");
+    assertNoSourceCheckoutResolution("Team manager status", status);
+    if (
+      status?.privacyService?.state === "healthy" ||
+      status?.api?.state === "healthy"
+    ) {
+      throw new Error(
+        `Team services became healthy without verified Privacy assets: ${JSON.stringify(status)}`
+      );
+    }
+    return {
+      startRejected: true,
+      privacyHealthy: false,
+      positiveProvisioning:
+        "not exercised: signed Privacy install requires separate acceptance"
+    };
+  } finally {
+    try {
+      await desktop.invoke("quit");
+    } finally {
+      killPidBestEffort(desktop.child.pid);
+      removeSmokeHome(koedHome);
+    }
+  }
 };
 
 const run = async () => {
@@ -1177,8 +1295,9 @@ const run = async () => {
     }
   );
 
-  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
+  const koedHome = createSmokeHome("koed-desktop-smoke-");
   const daemonPids = [];
+  let desktop;
   try {
     const executionPlan = smokeExecutionPlan(options);
     if (executionPlan.missingAssets) {
@@ -1220,33 +1339,46 @@ const run = async () => {
         seedEmbeddingModel(koedHome, options.embeddingModelSource)
       );
     }
-    if (options.privacyModelSource) {
-      await measurePhase(timings, "privacy model pre-seed", async () =>
-        seedPrivacyModel(koedHome, options.privacyModelSource)
-      );
-    }
     const collaborationBroker = await measurePhase(
       timings,
       "collaboration broker",
       async () => smokePackagedCollaborationBroker(layout, koedHome)
     );
-    const rendererFaults = await measurePhase(
-      timings,
-      "renderer fault checks",
-      async () =>
-        smokePackagedRendererFaults({
-          executable: layout.executable,
-          env: createSmokeEnv(layout, koedHome, {
-            ELECTRON_RUN_AS_NODE: undefined
-          }),
-          koedHome
-        })
-    );
+    const rendererFaults = options.skipRendererFaults
+      ? { skipped: true, reason: "explicit local acceptance option" }
+      : await measurePhase(timings, "renderer fault checks", async () =>
+          smokePackagedRendererFaults({
+            executable: layout.executable,
+            env: createSmokeEnv(layout, koedHome, {
+              ELECTRON_RUN_AS_NODE: undefined
+            }),
+            koedHome
+          })
+        );
+    desktop = launchPackagedDesktop({
+      executable: layout.executable,
+      env: createSmokeEnv(layout, koedHome),
+      koedHome,
+      timeoutMs: options.timeoutMs
+    });
+    await desktop.ready;
     const result = await smokeHealthyDaemon(layout, koedHome, {
       ...options,
+      desktop,
       daemonPids,
       timings
     });
+    const teamFailClosed = await smokeTeamFailClosed(
+      layout,
+      options,
+      daemonPids
+    );
+    const quit = await desktop.invoke("quit");
+    if (quit?.ok !== true) {
+      throw new Error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+    }
+    killPidBestEffort(desktop.child.pid);
+    desktop = undefined;
     if (options.exportEmbeddingModel) {
       await measurePhase(timings, "embedding model cache export", async () =>
         exportEmbeddingModel(koedHome, options.exportEmbeddingModel)
@@ -1264,7 +1396,8 @@ const run = async () => {
             collaborationBroker,
             rendererFaults,
             runtime: { ok: result.install.ok, state: result.install.state },
-            privacyRuntime: result.privacyRuntime,
+            privacyStatus: result.privacyStatus,
+            teamFailClosed,
             status: {
               ok: result.firstStatus.ok,
               state: result.firstStatus.state
@@ -1299,7 +1432,20 @@ const run = async () => {
       { cause: error }
     );
   } finally {
-    runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+    if (desktop) {
+      try {
+        const stop = await desktop.invoke("quit");
+        if (stop?.ok !== true) {
+          console.error(`Manager cleanup failed: ${JSON.stringify(stop)}`);
+          process.exitCode = 1;
+        }
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      } finally {
+        killPidBestEffort(desktop.child.pid);
+      }
+    }
     for (const pid of daemonPids.toReversed()) {
       killPidBestEffort(pid);
     }

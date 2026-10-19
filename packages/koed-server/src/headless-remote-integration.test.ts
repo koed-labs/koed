@@ -29,7 +29,7 @@ const fixture = () => {
   const koedHome = resolve(root, "koed");
   const codexHome = resolve(root, "codex");
   const runtimeRoot = resolve(root, "runtime");
-  const dist = resolve(runtimeRoot, "mcp-server/dist");
+  const dist = resolve(runtimeRoot, "packages/mcp-server/dist");
   mkdirSync(dist, { recursive: true });
   mkdirSync(resolve(dist, "prompts"));
   for (const file of [
@@ -42,7 +42,7 @@ const fixture = () => {
   }
   writeFileSync(
     resolve(dist, "prompts/codex-global-agent-guidance.md"),
-    "# Koed Memory\nConsult Koed for memory.\n"
+    "# Koed Memory\nConsult Koed with memory_answer.\n"
   );
   mkdirSync(codexHome);
   writeFileSync(
@@ -56,7 +56,7 @@ const fixture = () => {
   const environment = {
     KOED_HOME: koedHome,
     CODEX_HOME: codexHome,
-    KOED_JS_RUNTIME_ROOT: runtimeRoot,
+    KOED_REPO_ROOT: runtimeRoot,
     MEMORY_CODEX_APP_SERVER_BINARY: "/bin/sh",
     KOED_CODEX_STOP_DELIVERY: "0",
     MEMORY_API_TOKEN: "personal-secret-must-not-leak"
@@ -83,48 +83,56 @@ afterEach(() => {
 });
 
 describe("headless remote integration", () => {
-  it("requires explicit consent and honors cancellation before creating local state", () => {
+  it("requires explicit consent and honors cancellation before creating local state", async () => {
     const { options, koedHome } = fixture();
     const setupHarness = vi.fn(() => ({ ok: true }));
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        consent: false,
-        setupHarness
-      }).state
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          consent: false,
+          setupHarness
+        })
+      ).state
     ).toBe("consent_required");
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        consent: undefined,
-        setupHarness
-      }).state
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          consent: undefined,
+          setupHarness
+        })
+      ).state
     ).toBe("consent_required");
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        signal: AbortSignal.abort(),
-        setupHarness
-      }).state
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          signal: AbortSignal.abort(),
+          setupHarness
+        })
+      ).state
     ).toBe("cancelled");
     expect(setupHarness).not.toHaveBeenCalled();
     expect(existsSync(koedHome)).toBe(false);
   });
 
-  it("fails closed without authenticated remote credentials and never uses a Personal API Token", () => {
+  it("fails closed without authenticated remote credentials and never uses a Personal API Token", async () => {
     const { options, koedHome } = fixture();
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        credentialAvailable: undefined
-      }).ok
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          credentialAvailable: undefined
+        })
+      ).ok
     ).toBe(false);
     expect(existsSync(koedHome)).toBe(false);
   });
 
-  it("uses the existing Codex setup with only local integration artifacts and is repeatable", () => {
+  it("uses the existing Codex setup with only local integration artifacts and is repeatable", async () => {
     const { options, environment, codexHome } = fixture();
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(true);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(true);
     const configPath = resolve(codexHome, "config.toml");
     const instructionsPath = resolve(codexHome, "AGENTS.md");
     const config = readFileSync(configPath, "utf8");
@@ -138,7 +146,8 @@ describe("headless remote integration", () => {
     expect(config).toContain("[mcp_servers.koed]");
     expect(config).toContain("--koed-home");
     expect(instructions).toContain("Keep my own instructions.");
-    expect(instructions).toContain("Consult Koed for memory.");
+    expect(instructions).toContain("<!-- >>> koed-memory-guidance -->");
+    expect(instructions).toContain("memory_answer");
     expect(config + instructions + descriptor).not.toContain(
       "personal-secret-must-not-leak"
     );
@@ -154,7 +163,7 @@ describe("headless remote integration", () => {
     expect(
       statSync(headlessRemoteIntegrationPath(environment)).mode & 0o777
     ).toBe(0o600);
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(true);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(config);
     expect(readFileSync(instructionsPath, "utf8")).toBe(instructions);
     expect(
@@ -162,30 +171,52 @@ describe("headless remote integration", () => {
     ).toBe(descriptor);
   });
 
-  it("checks only registered harnesses and credential readiness without mutation", () => {
+  it("waits for asynchronous harness setup and diagnostic results", async () => {
     const { options, environment } = fixture();
-    setupHeadlessRemoteIntegration(options);
+    const setupHarness = vi.fn(async () => {
+      await Promise.resolve();
+      return { ok: true };
+    });
+    expect(
+      (await setupHeadlessRemoteIntegration({ ...options, setupHarness })).ok
+    ).toBe(true);
+    expect(readHeadlessRemoteIntegration(environment)?.harnesses).toEqual([
+      "codex"
+    ]);
+    const checkHarness = vi.fn(async () => false);
+    expect(
+      (await checkHeadlessRemoteIntegration({ ...options, checkHarness })).state
+    ).toBe("needs_attention");
+  });
+
+  it("checks only registered harnesses and credential readiness without mutation", async () => {
+    const { options, environment } = fixture();
+    await setupHeadlessRemoteIntegration(options);
     const before = readFileSync(
       headlessRemoteIntegrationPath(environment),
       "utf8"
     );
     const checkHarness = vi.fn(() => true);
     expect(
-      checkHeadlessRemoteIntegration({ ...options, checkHarness }).ok
+      (await checkHeadlessRemoteIntegration({ ...options, checkHarness })).ok
     ).toBe(true);
     expect(
-      checkHeadlessRemoteIntegration({
-        ...options,
-        credentialAvailable: () => false,
-        checkHarness
-      }).ok
+      (
+        await checkHeadlessRemoteIntegration({
+          ...options,
+          credentialAvailable: () => false,
+          checkHarness
+        })
+      ).ok
     ).toBe(false);
     expect(
-      checkHeadlessRemoteIntegration({
-        ...options,
-        harness: "claude",
-        checkHarness
-      }).ok
+      (
+        await checkHeadlessRemoteIntegration({
+          ...options,
+          harness: "claude",
+          checkHarness
+        })
+      ).ok
     ).toBe(false);
     expect(checkHarness).toHaveBeenCalledTimes(1);
     expect(
@@ -193,29 +224,33 @@ describe("headless remote integration", () => {
     ).toBe(before);
   });
 
-  it("retains existing registrations when adding another harness or setup fails", () => {
+  it("retains existing registrations when adding another harness or setup fails", async () => {
     const { options, environment } = fixture();
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(true);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(true);
     const setupHarness = vi.fn<
       (harness: string, environment: NodeJS.ProcessEnv) => { ok: boolean }
     >(() => ({ ok: false }));
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        harness: "claude",
-        setupHarness
-      }).ok
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          harness: "claude",
+          setupHarness
+        })
+      ).ok
     ).toBe(false);
     expect(readHeadlessRemoteIntegration(environment)?.harnesses).toEqual([
       "codex"
     ]);
     setupHarness.mockReturnValue({ ok: true });
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        harness: "claude",
-        setupHarness
-      }).ok
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          harness: "claude",
+          setupHarness
+        })
+      ).ok
     ).toBe(true);
     expect(readHeadlessRemoteIntegration(environment)?.harnesses).toEqual([
       "codex",
@@ -226,9 +261,9 @@ describe("headless remote integration", () => {
     );
   });
 
-  it("requires consent for removal and retains registration on removal failure", () => {
+  it("requires consent for removal and retains registration on removal failure", async () => {
     const { options, environment } = fixture();
-    setupHeadlessRemoteIntegration(options);
+    await setupHeadlessRemoteIntegration(options);
     const removeHarness = vi.fn(() => ({ ok: false }));
     expect(
       removeHeadlessRemoteIntegration({
@@ -246,9 +281,9 @@ describe("headless remote integration", () => {
     ]);
   });
 
-  it("removes only the selected registered harness and keeps OAuth credentials and unrelated settings", () => {
+  it("removes only the selected registered harness and keeps OAuth credentials and unrelated settings", async () => {
     const { options, environment, koedHome, codexHome } = fixture();
-    setupHeadlessRemoteIntegration(options);
+    await setupHeadlessRemoteIntegration(options);
     const credentialPath = resolve(koedHome, HEADLESS_REMOTE_CREDENTIAL_REF);
     writeFileSync(credentialPath, "protected-credential-payload", {
       mode: 0o600
@@ -291,7 +326,7 @@ describe("headless remote integration", () => {
     expect(removeHarness).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects unsafe endpoints, arbitrary credential paths, and backend replacement", () => {
+  it("rejects unsafe endpoints, arbitrary credential paths, and backend replacement", async () => {
     const { options, environment } = fixture();
     const setupHarness = vi.fn(() => ({ ok: true }));
     for (const backendUrl of [
@@ -301,29 +336,38 @@ describe("headless remote integration", () => {
       "https://memory.example.test#secret"
     ]) {
       expect(
-        setupHeadlessRemoteIntegration({ ...options, backendUrl, setupHarness })
-          .ok
+        (
+          await setupHeadlessRemoteIntegration({
+            ...options,
+            backendUrl,
+            setupHarness
+          })
+        ).ok
       ).toBe(false);
     }
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        credentialRef: "/tmp/secret",
-        setupHarness
-      }).ok
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          credentialRef: "/tmp/secret",
+          setupHarness
+        })
+      ).ok
     ).toBe(false);
     expect(setupHarness).not.toHaveBeenCalled();
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(true);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(true);
     const before = readFileSync(
       headlessRemoteIntegrationPath(environment),
       "utf8"
     );
     expect(
-      setupHeadlessRemoteIntegration({
-        ...options,
-        backendUrl: "https://other.example.test",
-        setupHarness
-      }).ok
+      (
+        await setupHeadlessRemoteIntegration({
+          ...options,
+          backendUrl: "https://other.example.test",
+          setupHarness
+        })
+      ).ok
     ).toBe(false);
     expect(
       readFileSync(headlessRemoteIntegrationPath(environment), "utf8")
@@ -331,21 +375,25 @@ describe("headless remote integration", () => {
     expect(setupHarness).not.toHaveBeenCalled();
   });
 
-  it("refuses symlinked and publicly readable managed configuration", () => {
+  it("refuses symlinked and publicly readable managed configuration", async () => {
     const { options, environment, root, koedHome } = fixture();
     mkdirSync(resolve(koedHome, "config"), { recursive: true, mode: 0o700 });
     const external = resolve(root, "external.json");
     writeFileSync(external, "unchanged", { mode: 0o600 });
     symlinkSync(external, headlessRemoteIntegrationPath(environment));
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(false);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(false);
     expect(removeHeadlessRemoteIntegration(options).ok).toBe(false);
     expect(readFileSync(external, "utf8")).toBe("unchanged");
     rmSync(headlessRemoteIntegrationPath(environment));
-    expect(setupHeadlessRemoteIntegration(options).ok).toBe(true);
+    expect((await setupHeadlessRemoteIntegration(options)).ok).toBe(true);
     chmodSync(headlessRemoteIntegrationPath(environment), 0o644);
     expect(
-      checkHeadlessRemoteIntegration({ ...options, checkHarness: () => true })
-        .ok
+      (
+        await checkHeadlessRemoteIntegration({
+          ...options,
+          checkHarness: () => true
+        })
+      ).ok
     ).toBe(false);
     expect(removeHeadlessRemoteIntegration(options).ok).toBe(false);
   });

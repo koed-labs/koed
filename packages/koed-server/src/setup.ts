@@ -36,7 +36,12 @@ import {
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -85,6 +90,7 @@ type SpawnSyncLike = (
 ) => SpawnSyncReturns<string>;
 
 export interface KoedServerSetupOptions {
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
   environment?: NodeJS.ProcessEnv;
   spawnSync?: SpawnSyncLike;
   readFileSync?: typeof nodeReadFileSync;
@@ -466,33 +472,46 @@ export const removeCodexIntegration = ({
   }
 };
 
-export const repairCodexIntegration = ({
-  environment = process.env,
-  readFileSync = nodeReadFileSync,
-  writeFileSync = nodeWriteFileSync,
-  mkdirSync = nodeMkdirSync,
-  existsSync = nodeExistsSync,
-  checkPid = isProcessRunning,
-  resolveRuntime = resolveKoedAppRuntime,
-  registerAiClient = registerExplicitAiClient,
-  resolveCodexExecutable = resolveCodexExecutablePath,
-  now = () => new Date()
-}: Omit<
-  KoedServerSetupOptions,
-  "spawnSync"
-> = {}): KoedServerRepairCodexResult =>
-  configureCodexProfile({
-    environment,
-    readFileSync,
-    writeFileSync,
-    mkdirSync,
+export const repairCodexIntegration = async (
+  options: Omit<KoedServerSetupOptions, "spawnSync"> = {}
+): Promise<KoedServerRepairCodexResult> => {
+  if (resolveKoedAppRuntimeExecution() !== "packaged")
+    return configureCodexProfile(options);
+  const readFileSync = options.readFileSync ?? nodeReadFileSync;
+  const existsSync = options.existsSync ?? nodeExistsSync;
+  let environment = options.environment ?? process.env;
+  const paths = resolveKoedServerPaths(environment);
+  ensureKoedHome(paths);
+  environment = applyActiveRuntimeUrls(
+    applyPersistedLocalPorts(paths, environment),
+    readActiveRuntimeState(
+      paths.runtimeStatePath,
+      readFileSync,
+      options.checkPid ?? isProcessRunning
+    )
+  );
+  const repoEnv = loadRepoEnv(paths.repoRoot);
+  if (!resolveActiveIntegrationApiToken(paths, environment, repoEnv))
+    return configureCodexProfile({ ...options, environment });
+  const runtime = await resolveVerifiedPackagedRuntime(
+    paths,
+    { ...repoEnv, ...environment, KOED_HOME: paths.koedHome },
+    {
+      components: ["base"],
+      processes: ["local-ai-runtime"],
+      queue: "bullmq",
+      native: [],
+      models: []
+    },
     existsSync,
-    checkPid,
-    resolveRuntime,
-    registerAiClient,
-    resolveCodexExecutable,
-    now
+    options.desktopRuntimeCapability
+  );
+  return configureCodexProfile({
+    ...options,
+    environment,
+    resolveRuntime: () => runtime
   });
+};
 
 export const configureCodexIntegrationForRemoteBackend = (
   options: Omit<KoedServerSetupOptions, "spawnSync"> & {
@@ -697,6 +716,17 @@ type BundledDatabaseResolution =
   | { ok: true; environment: NodeJS.ProcessEnv }
   | { ok: false; error: string; action: string };
 
+const resolveEffectiveApiTokenPepper = (
+  invocationEnvironment: NodeJS.ProcessEnv,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  persistedPepper?: string
+): string | undefined =>
+  trimValue(invocationEnvironment.API_TOKEN_PEPPER) ??
+  trimValue(environment.API_TOKEN_PEPPER) ??
+  trimValue(repoEnv.API_TOKEN_PEPPER) ??
+  trimValue(persistedPepper);
+
 const resolveBundledDatabaseEnvironment = (
   paths: KoedServerPaths,
   invocationEnvironment: NodeJS.ProcessEnv,
@@ -718,13 +748,22 @@ const resolveBundledDatabaseEnvironment = (
         action: `Fix or remove ${persisted.path}, then rerun koed setup core --json.`
       };
     }
+    const apiTokenPepper =
+      recoveryCommand === "core"
+        ? resolveEffectiveApiTokenPepper(
+            invocationEnvironment,
+            environment,
+            repoEnv,
+            persisted.state === "valid"
+              ? persisted.secrets.API_TOKEN_PEPPER
+              : undefined
+          )
+        : undefined;
     return {
       ok: true,
       environment: {
         DATABASE_URL: explicitDatabaseUrl,
-        ...(persisted.state === "valid" && persisted.secrets.API_TOKEN_PEPPER
-          ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
-          : {})
+        ...(apiTokenPepper ? { API_TOKEN_PEPPER: apiTokenPepper } : {})
       }
     };
   }
@@ -760,17 +799,24 @@ const resolveBundledDatabaseEnvironment = (
     ...environment,
     ...(password ? { POSTGRES_PASSWORD: password } : {})
   };
+  const apiTokenPepper =
+    recoveryCommand === "core"
+      ? resolveEffectiveApiTokenPepper(
+          invocationEnvironment,
+          environment,
+          repoEnv,
+          persisted.state === "valid"
+            ? persisted.secrets.API_TOKEN_PEPPER
+            : undefined
+        )
+      : undefined;
   return {
     ok: true,
     environment: {
       ...localPostgresEnv(
         resolveLocalPostgresRuntimePaths(paths, postgresEnvironment)
       ),
-      ...(recoveryCommand === "core" &&
-      persisted.state === "valid" &&
-      persisted.secrets.API_TOKEN_PEPPER
-        ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
-        : {})
+      ...(apiTokenPepper ? { API_TOKEN_PEPPER: apiTokenPepper } : {})
     }
   };
 };
@@ -979,11 +1025,31 @@ export const setupCore = async (
     command: "provision local API Token"
   };
   try {
-    const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-      context.paths,
-      context.childEnv,
-      options.existsSync ?? nodeExistsSync
-    );
+    const runtime = options.resolveRuntime
+      ? options.resolveRuntime(
+          context.paths,
+          context.childEnv,
+          options.existsSync ?? nodeExistsSync
+        )
+      : resolveKoedAppRuntimeExecution() === "packaged"
+        ? await resolveVerifiedPackagedRuntime(
+            context.paths,
+            context.childEnv,
+            {
+              components: ["base"],
+              processes: ["api"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            options.existsSync ?? nodeExistsSync,
+            options.desktopRuntimeCapability
+          )
+        : resolveKoedAppRuntime(
+            context.paths,
+            context.childEnv,
+            options.existsSync ?? nodeExistsSync
+          );
     if (runtime.missing.length > 0) {
       throw new Error(
         `Koed runtime artifacts are missing: ${runtime.missing.join(", ")}.`
@@ -1063,11 +1129,31 @@ export const setupCodex = async (
       }
     );
   }
-  const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-    paths,
-    environment,
-    options.existsSync ?? nodeExistsSync
-  );
+  const runtime = options.resolveRuntime
+    ? options.resolveRuntime(
+        paths,
+        environment,
+        options.existsSync ?? nodeExistsSync
+      )
+    : resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          environment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          options.existsSync ?? nodeExistsSync,
+          options.desktopRuntimeCapability
+        )
+      : resolveKoedAppRuntime(
+          paths,
+          environment,
+          options.existsSync ?? nodeExistsSync
+        );
   if (runtime.kind === "packaged") {
     return repairCodexIntegration({
       environment,
@@ -1077,7 +1163,8 @@ export const setupCodex = async (
       existsSync: options.existsSync,
       checkPid: options.checkPid,
       now: options.now,
-      resolveRuntime: options.resolveRuntime,
+      resolveRuntime: () => runtime,
+      desktopRuntimeCapability: options.desktopRuntimeCapability,
       registerAiClient: options.registerAiClient,
       resolveCodexExecutable: options.resolveCodexExecutable
     });

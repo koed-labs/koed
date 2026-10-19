@@ -21,6 +21,7 @@ export interface KoedServerSupervisorLock {
   acquired: boolean;
   lockPath: string;
   ownerPid?: number;
+  processIdentity?: string;
 }
 
 const processIsRunning = (pid: number): boolean => {
@@ -29,11 +30,12 @@ const processIsRunning = (pid: number): boolean => {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== "ESRCH";
   }
 };
 
-const resolveProcessIdentity = (pid: number): string | null => {
+export const resolveProcessIdentity = (pid: number): string | null => {
   if (!processIsRunning(pid)) return null;
   try {
     if (process.platform === "linux") {
@@ -137,11 +139,12 @@ export const acquireKoedServerSupervisorLock = (
       } finally {
         closeSync(descriptor);
       }
-      return { acquired: true, lockPath, ownerPid: pid };
+      return { acquired: true, lockPath, ownerPid: pid, processIdentity };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const owner = readSupervisorLock(lockPath);
-      if (owner && isRunning(owner.pid)) {
+      if (!owner) return { acquired: false, lockPath };
+      if (isRunning(owner.pid)) {
         const ownerIdentity = identify(owner.pid);
         if (!ownerIdentity && isRunning(owner.pid)) {
           return { acquired: false, lockPath, ownerPid: owner.pid };
@@ -175,7 +178,13 @@ export const releaseKoedServerSupervisorLock = (
   pid = process.pid
 ): boolean => {
   const owner = readSupervisorLock(lock.lockPath);
-  if (!lock.acquired || owner?.pid !== pid) return false;
+  if (
+    !lock.acquired ||
+    owner?.pid !== pid ||
+    !lock.processIdentity ||
+    owner.processIdentity !== lock.processIdentity
+  )
+    return false;
   rmSync(lock.lockPath, { force: true });
   return true;
 };

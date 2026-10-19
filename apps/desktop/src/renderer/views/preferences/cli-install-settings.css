@@ -1,0 +1,36 @@
+.koed-cli-install-settings {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.koed-cli-install-settings h2 {
+  margin: 1rem 0 0;
+  font-size: 1rem;
+}
+
+.koed-cli-install-settings p {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+
+.koed-cli-install-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.koed-cli-install-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.koed-cli-install-progress {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.koed-cli-install-progress progress {
+  inline-size: 100%;
+}

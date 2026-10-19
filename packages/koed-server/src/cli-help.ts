@@ -76,6 +76,10 @@ Commands:
   package install --json Verify and install standalone koed-server package
   package activate --json Activate an installed koed-server package version
   package cleanup --json Remove inactive versions and stale cached archives
+  components status --json Inspect required, installed, staged, and active components
+  components install --component <id> --json Stage a signed exact-version component
+  components activate --version <version> --json Activate a complete staged generation
+  components cleanup --json Remove inactive unreferenced generations
   upstream list --json   List registered upstream backend status
   upstream register --json Register or update an upstream backend
   upstream refresh --json Refresh cached upstream capabilities

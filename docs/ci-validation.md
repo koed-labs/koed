@@ -61,6 +61,85 @@ a check that cannot run.
 
 ## App-only packaged smoke
 
+### PR404 local acceptance status
+
+The startup regression is covered with the real supervisor lock acquired before
+standalone and Desktop generation pinning. The start-only exemption requires the
+current PID and exact live process identity; foreign ownership, existing pins,
+lifecycle races, activation, and cleanup retain their denial guards.
+
+Local Node 24.13.1 validation passed 766 Server tests and 900 Desktop tests,
+production/test typechecking, and native package rebuild/integrity verification.
+The rebuilt full Personal/Base smoke passed healthy API, database, embedding,
+Worker, Local AI Runtime, and MCP status; core/Codex setup and doctor; reconnect;
+and owned-supervisor stop/restart/final stop. The manager now requests status and
+startup status through nonce- and request-ID-correlated private supervisor IPC.
+Doctor, core setup, Codex setup/repair, and guided setup use that channel while
+the owned supervisor is running. The supervisor passes its sealed, reverified
+Desktop capability directly to runtime selection. Public CLI and environment
+flags remain unable to authenticate a Desktop-owned generation.
+
+The same full smoke separately rejects Team startup without authenticated Privacy
+assets. Masked-native-assets diagnostics pass and restore the assets. Positive
+Team provisioning remains blocked by empty production signer trust roots; negative
+Team coverage does not waive that gate. Homebrew Node 24 still lacks
+`libsimdjson.30.dylib`; local checks used the explicit npm-provided Node 24 binary
+instead. Full-smoke evidence: `/tmp/pr404-status-smoke-final.log` (exit 0);
+masked-assets evidence: `/tmp/pr404-status-masked-final.log` (exit 0). No commit,
+push, signing authorization, or trust-root changes were performed.
+
+The component release builder declares Node `>=24 <25` with the build runtime’s
+measured modules ABI (tested with Node `24.14.0`, ABI 137, N-API 10) and
+the exact measured Desktop runtime, Electron `39.8.10` with embedded Node
+`22.22.1` (ABI 140, N-API 10), for macOS arm64 only. It confirms the installed
+Electron package matches `pnpm-lock.yaml` and measures the bundled runtime with
+`ELECTRON_RUN_AS_NODE=1`; other targets remain Node-only until their Electron
+payloads pass the same checks. One test-signed Base+Privacy payload passed addon
+operations under both runtimes: argon2 hash/verify, Sharp PNG encode/decode,
+ONNX Runtime native load and real pinned Privacy model inference, msgpackr-extract
+pack/unpack, and node-pty terminal IO/exit. The acceptance runner reports
+payload and manifest digests and runtime identities. The full Node 24 signed
+Team install/start/doctor/stop smoke passed with isolated PostgreSQL, llama.cpp,
+test keys, and synthetic state. Packaged app Personal lifecycle also passed; renderer fault/CDP injection was
+explicitly skipped with `--skip-renderer-faults` because the local display did not
+expose its target. That renderer check remains unverified.
+The copied Electron app then installed and activated the test-signed Privacy
+archive through private IPC, started the Desktop supervisor, reached healthy Team
+status for API/Postgres+pgvector/Worker/embedding/native Privacy/Local AI/MCP, and
+stopped cleanly. This used a disposable test-only app copy and trust root, isolated
+synthetic `KOED_HOME`, and the read-only public Qwen3 model. The original packaged
+app and production roots remain unchanged; a test-signed installation is still
+rejected there. That run explicitly started the daemon after Privacy admission.
+Desktop now dispatches stopped `setup_core` and doctor through private supervisor
+IPC after checking for a healthy unowned API; manager regressions cover the former
+standalone-owner mismatch and the unowned refusal. The compiled Desktop manager
+was also run under the packaged Electron binary's Node mode against the original
+test app resource path, with the signed Privacy generation and real private
+supervisor/nonce/capability checks. `setup_core` succeeded before daemon startup
+while an isolated fixture PostgreSQL was reachable; that fixture process was then
+stopped so the supervisor could start and own PostgreSQL normally. Team status
+reached healthy and shutdown succeeded. Evidence is saved at
+`/private/tmp/koed-electron-compat.QvsEvG/packaged-manager-setupcore-result.json`
+and `packaged-manager-setupcore.log`. This validates the packaged manager/private
+IPC integration, not full GUI launch: a separate copied-app attempt still aborted
+in macOS before smoke IPC bootstrap. Stopped management itself starts no services,
+and `setup_core` still requires reachable PostgreSQL while it provisions or
+revalidates the local API Token.
+
+Compatibility payload evidence: Base archive SHA-256
+`17bc2293a14088c4cd9cde5d6310616acbb8274469372b161ba4170c5ab94100`, manifest
+SHA-256 `3395f35a35e18d6878b019f5c99c18bbe4ff5ae399743f47c170aa0ce3e9ea90`;
+Privacy archive SHA-256
+`0ff16254af7cdf7c1e2c18662e7d38780a90eb15eef8755c83674114a2c4afd2`, manifest
+SHA-256 `eeb639227bb412105c62279e0be5d1b49b29b1b9ef8d10f7077531ba639939c8`.
+
+Validation limitations: root `pnpm test` reached database integration tests but
+failed with `Missing required environment variable: DATABASE_URL`. Root
+`pnpm fmt:prettier:check` also sees pre-existing unformatted local
+`.superpowers/sdd/2026-10-05-publish-koed-labs-server/` planning files; changed-file
+formatting and root lint pass. These unrelated failures were not repaired or
+hidden.
+
 Relevant pull requests restore a macOS arm64 native payload using a key that
 includes the pinned sources, native build and validation scripts, platform,
 architecture, and Xcode fingerprint. The workflow validates that trusted
@@ -80,10 +159,13 @@ This tier builds and ad-hoc-signs the Electron `dir` target, verifies the
 unpacked `.app` once, and runs the complete healthy packaged smoke. The pinned
 embedding model is restored by SHA-256 and copied into the smoke's
 otherwise-empty `KOED_HOME`; model status verifies the checksum before the
-daemon starts. The smoke also installs the pinned Privacy model, starts the
-Privacy Filter Service from the exact packaged app runtime, verifies CPU and
-Core ML classifier parity on Apple Silicon, and performs an authenticated
-classification before starting the daemon. A second focused mode temporarily
+daemon starts. Personal/Base smoke does not install or require Privacy assets.
+It launches the real packaged Desktop manager and exercises start, status, stop,
+and restart through private inherited IPC. Only the manager creates the private
+supervisor channel; smoke environment flags do not grant authority. A separate
+Team launch must reject startup without verified Privacy assets. Production
+signer trust roots remain empty, so positive Team provisioning is blocked, not
+waived or substituted with unsigned assets. A second focused mode temporarily
 masks the packaged `postgres`
 and `llama.cpp` directories, runs only packaged-CLI `package status`,
 `runtime status`, and `doctor --json` assertions, and restores the directories.

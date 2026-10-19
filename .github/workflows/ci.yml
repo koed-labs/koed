@@ -10,6 +10,10 @@ on:
     - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
+      component_signing_rehearsal:
+        description: Sign and verify synthetic components only; never publish
+        type: boolean
+        default: false
       validation_level:
         description: Additional packaged Desktop validation
         type: choice
@@ -38,6 +42,7 @@ env:
 
 jobs:
   changes:
+    if: github.event_name != 'workflow_dispatch' || !inputs.component_signing_rehearsal
     name: Select CI validation tier
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -635,7 +640,7 @@ jobs:
 
   ci-required:
     name: CI required
-    if: always()
+    if: always() && !(github.event_name == 'workflow_dispatch' && inputs.component_signing_rehearsal)
     needs:
       - changes
       - static-checks
@@ -664,3 +669,29 @@ jobs:
           FULL_VALIDATION_RESULT: ${{ needs.release-candidate-validation.result }}
           LINUX_NATIVE_RESULT: ${{ needs.native-runtime-linux-x64.result }}
         run: node .github/scripts/ci-required.mjs
+
+  component-signing-rehearsal:
+    name: KMS component signing rehearsal
+    if: github.event_name == 'workflow_dispatch' && inputs.component_signing_rehearsal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @koed-labs/server build
+      - name: Sign and verify oversized synthetic manifests with KMS
+        env:
+          KOED_COMPONENT_SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          KOED_COMPONENT_SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+        run: node scripts/component-signing-rehearsal.mjs
