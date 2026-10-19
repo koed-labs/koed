@@ -18,6 +18,11 @@ export const appEnvSources = [
     label: "Privacy service",
     dir: "apps/privacy-service",
     prefix: "PRIVACY"
+  },
+  {
+    label: "Desktop (launch environment only; .env is not loaded)",
+    dir: "apps/desktop",
+    prefix: "DESKTOP"
   }
 ];
 

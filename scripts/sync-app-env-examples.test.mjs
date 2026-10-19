@@ -168,11 +168,20 @@ test("sync output is deterministic", () => {
   fs.mkdirSync(path.join(root, "apps/worker"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/embedding-service"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/privacy-service"), { recursive: true });
+  fs.mkdirSync(path.join(root, "apps/desktop"), { recursive: true });
 
-  for (const app of ["api", "worker", "embedding-service", "privacy-service"]) {
+  for (const app of [
+    "api",
+    "worker",
+    "embedding-service",
+    "privacy-service",
+    "desktop"
+  ]) {
     fs.writeFileSync(
       path.join(root, `apps/${app}/.env.example`),
-      "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"
+      app === "desktop"
+        ? "# @root KOED_DESKTOP_HQ_ENABLED=false\nKOED_DESKTOP_HQ_ENABLED=false\n"
+        : "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"
     );
   }
 
@@ -182,6 +191,10 @@ test("sync output is deterministic", () => {
   );
 
   const first = syncRootEnvExample(root).next;
+  assert.match(
+    first,
+    /# Desktop \(launch environment only; \.env is not loaded\) app\nKOED_DESKTOP_HQ_ENABLED=false/
+  );
   fs.writeFileSync(path.join(root, ".env.example"), first);
   const second = syncRootEnvExample(root).next;
 
