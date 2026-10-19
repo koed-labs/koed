@@ -58,15 +58,22 @@ const seededData = {
   ],
   privateHqConversations: [
     { id: "hq-koed-main-mark", projectId: "koed-main", owner: "Mark" },
+    { id: "hq-koed-main-local", projectId: "koed-main", owner: "You" },
     {
       id: "hq-investor-deck-sam",
       projectId: "investor-deck",
       owner: "Sam"
     },
+    {
+      id: "hq-investor-deck-local",
+      projectId: "investor-deck",
+      owner: "You"
+    },
     { id: "hq-koed-mobile-local", projectId: "koed-mobile", owner: "You" },
     { id: "hq-japan-trip-local", projectId: "japan-trip", owner: "You" },
     { id: "hq-econ-101-lena", projectId: "econ-101", owner: "Lena" },
-    { id: "hq-econ-101-omar", projectId: "econ-101", owner: "Omar" }
+    { id: "hq-econ-101-omar", projectId: "econ-101", owner: "Omar" },
+    { id: "hq-econ-101-local", projectId: "econ-101", owner: "You" }
   ],
   capturedSessions: [
     {

@@ -1092,7 +1092,7 @@ const runValidation = async () => {
       assert.equal(fixture.fixedAt, "2026-10-19T09:00:00.000Z");
       assert.equal(fixture.projects, 5);
       assert.equal(fixture.conversations, 5);
-      assert.equal(fixture.privateHqConversations, 6);
+      assert.equal(fixture.privateHqConversations, 9);
       assert.equal(fixture.capturedSessions, 2);
       assert.equal(fixture.runtimeItems, 3);
       assert.equal(fixture.memories, 2);
@@ -1125,6 +1125,25 @@ const runValidation = async () => {
       );
       assert.ok(
         fixture.snapshot.privateHqConversations.every(({ owner }) => owner)
+      );
+      assert.deepEqual(
+        fixture.snapshot.privateHqConversations
+          .filter(({ owner }) => owner === "You")
+          .map(({ projectId }) => projectId)
+          .sort(),
+        [...expectedFixtureIdentities].sort()
+      );
+      assert.deepEqual(
+        fixture.snapshot.privateHqConversations
+          .filter(({ owner }) => owner !== "You")
+          .map(({ projectId, owner }) => `${projectId}:${owner}`)
+          .sort(),
+        [
+          "econ-101:Lena",
+          "econ-101:Omar",
+          "investor-deck:Sam",
+          "koed-main:Mark"
+        ]
       );
       assert.ok(
         fixture.snapshot.capturedSessions.every(
