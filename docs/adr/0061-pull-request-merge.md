@@ -55,14 +55,25 @@ refs, expected revisions, or approval results.
 
 ### Target DTO contract
 
-Extend the shared source-control contract additively. Keep current behavior
-unchanged until the corresponding contract, service, and provider driver have
-landed and advertise the capability.
+Preserve the existing version-1 request, response, and capability DTO shapes.
+The current source-control routes do not negotiate a contract version. Introduce
+the merge operation, merge-capability value, and expanded review/result DTOs
+only through an explicitly negotiated newer source-control contract or a
+versioned route; advertising a capability alone is not negotiation. Existing
+version-1 clients continue to receive and send unchanged version-1 DTOs. HQ-408
+conformance tests must verify that compatibility and that newer DTOs are used
+only by clients that negotiated the newer contract.
 
-- **Capability and operation.** Keep the existing `mutationBase` and all
-  existing operation variants unchanged. Add a `review_request_merge`
-  discriminated-union variant that reuses `mutationBase` and adds only the
-  merge-specific fields, including `reviewRequestNumber`, `targetBranch`, the
+Within that newer contract, extend the shared source-control contract
+additively. Keep current merge behavior unchanged until the corresponding
+contract, service, and provider driver have landed and advertise the negotiated
+capability.
+
+- **Capability and operation.** Keep version 1's `mutationBase` and all
+  version 1 operation variants unchanged. In the negotiated newer contract,
+  use a version-appropriate base that retains the non-merge bindings and
+  fields. Add a `review_request_merge` discriminated-union variant with only
+  the merge-specific fields, including `reviewRequestNumber`, `targetBranch`, the
   repository-allowed `mergeMethod`, and `readinessSnapshotDigest`. The
   operation's `expectedHeadObjectId`, `credentialGeneration`, and
   `idempotencyKey` remain bound by the reused base; do not add merge fields to
