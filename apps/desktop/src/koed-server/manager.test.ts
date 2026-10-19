@@ -4624,6 +4624,104 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
   });
 
+  it("lists a bounded owner-authenticated execution inventory without caller owner fields", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-now-list-"));
+    const credentialDirectory = resolve(koedHome, "config");
+    mkdirSync(credentialDirectory, { recursive: true });
+    writeFileSync(
+      resolve(credentialDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "local_app_token" })
+    );
+    let executions: unknown[] = [
+      {
+        id: "execution-1",
+        projectId: "project-1",
+        sessionId: "session-1",
+        providerThreadId: "thread-1",
+        state: "ready"
+      }
+    ];
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/v1/managed-conversations");
+      expect(url.searchParams.get("limit")).toBe("500");
+      expect(url.searchParams.has("ownerId")).toBe(false);
+      expect(new Headers(init?.headers).get("authorization")).toBeTruthy();
+      return new Response(JSON.stringify({ executions }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: { state: "healthy", url: "http://127.0.0.1:4170" }
+                }
+              : { ok: true }
+          ),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    try {
+      await expect(
+        manager.managedConversation({ operation: "list" })
+      ).resolves.toEqual({
+        operation: "list",
+        complete: true,
+        executions: [
+          {
+            executionId: "execution-1",
+            projectId: "project-1",
+            sessionId: "session-1",
+            threadId: "thread-1",
+            state: "ready"
+          }
+        ]
+      });
+      executions = Array.from({ length: 500 }, (_, index) => ({
+        id: `execution-${index}`,
+        projectId: "project-1",
+        sessionId: null,
+        providerThreadId: null,
+        state: "ready"
+      }));
+      await expect(
+        manager.managedConversation({ operation: "list" })
+      ).resolves.toMatchObject({ complete: false });
+      executions = [
+        {
+          id: "malformed",
+          projectId: "project-1",
+          sessionId: null,
+          providerThreadId: null,
+          state: 42
+        }
+      ];
+      await expect(
+        manager.managedConversation({ operation: "list" })
+      ).rejects.toThrow();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("scopes managed Conversation drafts and recovery to the authenticated owner and backend", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));
     const credentialDirectory = resolve(koedHome, "config");

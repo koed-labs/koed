@@ -23,6 +23,18 @@ import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
 const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
+const hq108Overflow =
+  new URLSearchParams(window.location.search).get("nowOverflow") === "yes";
+const hq108Executions = Array.from(
+  { length: hq108Overflow ? 7 : 2 },
+  (_, index) => ({
+    executionId: `hq108-execution-${index}`,
+    projectId: index % 2 === 0 ? "hq103-koed" : "hq103-notes",
+    sessionId: `hq108-session-${index}`,
+    threadId: `hq108-thread-${index}`,
+    state: "ready"
+  })
+);
 
 // Deterministic renderer-only Settings fixture. No native/profile command is dispatched.
 const settingsOperations: string[] = [];
@@ -239,6 +251,11 @@ const hq104Identity = {
 };
 const resumedFixtureIdentities = new Map<string, typeof hq104Identity>();
 const hq104ManagedConversations = {
+  list: async () => ({
+    operation: "list",
+    complete: true,
+    executions: hq108Executions
+  }),
   launchOptions: async () => ({
     operation: "launch_options",
     options: {
@@ -288,7 +305,11 @@ const hq104ManagedConversations = {
       executionId:
         input.threadId === hq104Identity.threadId
           ? hq104Identity.executionId
-          : input.threadId,
+          : (hq108Executions.find(
+              ({ sessionId, threadId }) =>
+                sessionId === input.capturedSessionId &&
+                threadId === input.threadId
+            )?.executionId ?? input.threadId),
       projectId: input.projectId,
       capturedSessionId: input.capturedSessionId,
       threadId: input.threadId
@@ -337,7 +358,40 @@ const hq104ManagedConversations = {
             updatedAt: FIXTURE_TIME
           }
         : null,
-    items: []
+    items: hq108Executions.some(
+      (execution) => execution.executionId === executionId
+    )
+      ? [
+          {
+            id: `${executionId}-item`,
+            executionGeneration: 1,
+            providerTurnId: null,
+            providerItemId: null,
+            itemKind: executionId.endsWith("-1")
+              ? "user_input"
+              : "command_approval",
+            presentation: {
+              mode: "expanded",
+              renderer: executionId.endsWith("-1") ? "user_input" : "approval",
+              policyKey: "hq108-fixture",
+              policyRevision: 1,
+              reason: "Pending"
+            },
+            state: "pending",
+            payload: executionId.endsWith("-1")
+              ? {
+                  questions: [
+                    { id: "date", question: "Choose the review date" }
+                  ]
+                }
+              : { command: ["review", "release"] },
+            revision: 1,
+            createdAt: FIXTURE_TIME,
+            updatedAt: FIXTURE_TIME,
+            answered: false
+          }
+        ]
+      : []
   }),
   usage: async (executionId: string) => ({
     operation: "usage",
@@ -594,7 +648,14 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
     { id: "hq103-koed", name: "Koed" },
     { id: "hq103-notes", name: "Research notes" },
     { id: "hq103-trip", name: "Travel planning" },
-    { id: "hq103-work", name: "Work" }
+    { id: "hq103-work", name: "Work" },
+    ...(hq108Overflow
+      ? [
+          { id: "hq108-extra-1", name: "Garden" },
+          { id: "hq108-extra-2", name: "Course notes" },
+          { id: "hq108-extra-3", name: "Reading list" }
+        ]
+      : [])
   ].map(({ id, name }, projectIndex) => ({
     eventCount: 5,
     id,

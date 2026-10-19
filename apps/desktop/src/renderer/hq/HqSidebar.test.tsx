@@ -104,6 +104,8 @@ describe("HQ sidebar", () => {
       groupsReady?: boolean;
       loading?: boolean;
       projectsError?: boolean;
+      nowActive?: boolean;
+      onOpenNow?: () => void;
     } = {},
     renderedProjects: readonly DesktopProject[] = projects
   ) => {
@@ -114,6 +116,8 @@ describe("HQ sidebar", () => {
           loading={options.loading}
           onOpenSearchAndCommands={onOpenSearchAndCommands}
           onRetryProjects={onRetryProjects}
+          onOpenNow={options.onOpenNow}
+          nowActive={options.nowActive}
           onSelectConversation={onSelectConversation}
           onSelectProject={onSelectProject}
           projectsError={options.projectsError}
@@ -358,6 +362,22 @@ describe("HQ sidebar", () => {
       new KeyboardEvent("keydown", { ctrlKey: true, key: "k" })
     );
     expect(onOpenSearchAndCommands).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks Now as current only while its destination is active", async () => {
+    const openNow = vi.fn();
+    await render({ kind: "home" }, { onOpenNow: openNow, nowActive: true });
+    const now = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Now"]'
+    );
+    expect(now?.getAttribute("aria-current")).toBe("page");
+    await act(async () => now?.click());
+    expect(openNow).toHaveBeenCalledOnce();
+    await render(
+      { kind: "project", projectId: "project-a" },
+      { onOpenNow: openNow, nowActive: false }
+    );
+    expect(now?.hasAttribute("aria-current")).toBe(false);
   });
 
   it("persists folds across remounts while leaving future actions unavailable", async () => {

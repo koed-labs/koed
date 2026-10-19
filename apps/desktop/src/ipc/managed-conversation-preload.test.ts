@@ -19,6 +19,22 @@ const identity = {
 };
 
 describe("Managed Conversation preload bridge", () => {
+  it("lists executions through the fixed owner-scoped command", async () => {
+    const invoke = vi.fn(async () => ({
+      operation: "list",
+      executions: [],
+      complete: true
+    }));
+    const api = createManagedConversationPreloadApi(invoke);
+    await expect(api.list!()).resolves.toEqual({
+      operation: "list",
+      executions: [],
+      complete: true
+    });
+    expect(invoke).toHaveBeenCalledWith(managedConversationCommandChannel, {
+      operation: "list"
+    });
+  });
   it("preserves a conditional settings change and rejects ownership fields", async () => {
     const invoke = vi.fn(async (_channel, request: any) => ({
       operation: "send",
@@ -196,6 +212,7 @@ describe("Managed Conversation preload bridge", () => {
       "inspect",
       "interrupt",
       "launchOptions",
+      "list",
       "readDraft",
       "readRecovery",
       "respond",

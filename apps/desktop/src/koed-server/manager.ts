@@ -3105,6 +3105,37 @@ export const createKoedServerManager = ({
   const managedConversation: ManagedConversationDesktopHandler = async (
     request
   ) => {
+    if (request.operation === "list") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/managed-conversations?limit=500", apiOrigin),
+          init: { method: "GET" }
+        }),
+        2 * 1_024 * 1_024
+      );
+      if (!Array.isArray(payload.executions))
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      return parseManagedConversationResult({
+        operation: "list",
+        complete: payload.executions.length < 500,
+        executions: payload.executions.map((raw) => {
+          const execution = objectValue(raw);
+          if (
+            !execution ||
+            !Object.hasOwn(execution, "sessionId") ||
+            !Object.hasOwn(execution, "providerThreadId")
+          )
+            throw new PersonalMemoryBoundaryError("invalid_response", false);
+          return {
+            executionId: execution?.id,
+            projectId: execution?.projectId,
+            sessionId: execution.sessionId,
+            threadId: execution.providerThreadId,
+            state: execution?.state
+          };
+        })
+      });
+    }
     if (request.operation === "launch_options") {
       const payload = await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => ({

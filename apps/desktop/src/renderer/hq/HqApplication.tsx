@@ -14,9 +14,13 @@ import {
 import type { PersonalMemoryStore } from "../state/personal-memory.js";
 import type { ManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
-import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
+import type {
+  CollaborationActionGrantProjection,
+  CollaborationRendererClient
+} from "../../collaboration/renderer-client.js";
 import type { DesktopApi } from "../../types.js";
 import {
   HqActiveConversation,
@@ -33,9 +37,13 @@ import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
 import { hqSettingsShortcut } from "./settings/HqSettings.js";
 import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
+import { NowView } from "./now/NowView.js";
+import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 
 const subscribeEmpty = () => () => undefined;
 const emptySnapshot = () => null;
+const emptyApprovals: readonly CollaborationActionGrantProjection[] = [];
+const approvalsEmptySnapshot = () => emptyApprovals;
 
 export function HqApplication({
   personalMemoryStore,
@@ -77,6 +85,7 @@ export function HqApplication({
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [blankOpen, setBlankOpen] = useState(false);
+  const [inventoryTarget, setInventoryTarget] = useState<NowNeed | null>(null);
   const [blankProjectId, setBlankProjectId] = useState<string | null>(null);
   const [blankProjectError, setBlankProjectError] = useState("");
   const [blankIntent, setBlankIntent] = useState(0);
@@ -92,6 +101,11 @@ export function HqApplication({
     personalMemoryStore?.subscribe ?? subscribeEmpty,
     personalMemoryStore?.current ?? emptySnapshot,
     personalMemoryStore?.current ?? emptySnapshot
+  );
+  const approvals = useSyncExternalStore(
+    visibilityClient?.subscribeActionGrants ?? subscribeEmpty,
+    visibilityClient?.currentActionGrants ?? approvalsEmptySnapshot,
+    approvalsEmptySnapshot
   );
   const projects = useMemo(() => {
     const loaded =
@@ -112,6 +126,10 @@ export function HqApplication({
     );
   const resolveBlankProject = useCallback(() => {
     if (!onResolveIndependent) return;
+    if (!snapshot?.projectsLoaded) {
+      setBlankProjectError("Load Projects before starting a Conversation.");
+      return;
+    }
     setBlankProjectError("");
     void onResolveIndependent()
       .then((resolved) => {
@@ -126,8 +144,24 @@ export function HqApplication({
             : "Chats project is unavailable."
         )
       );
-  }, [onResolveIndependent, personalMemoryStore]);
+  }, [onResolveIndependent, personalMemoryStore, snapshot?.projectsLoaded]);
+  useEffect(() => {
+    if (
+      selection.route.kind === "home" &&
+      snapshot?.projectsLoaded &&
+      !blankProjectId &&
+      !blankProjectError
+    )
+      resolveBlankProject();
+  }, [
+    selection.route.kind,
+    snapshot?.projectsLoaded,
+    blankProjectId,
+    blankProjectError,
+    resolveBlankProject
+  ]);
   const selectRoute = (next: HqRoute) => {
+    setInventoryTarget(null);
     setBlankOpen(false);
     setBlankLaunchPending(false);
     setAttachAfterStart(null);
@@ -153,6 +187,29 @@ export function HqApplication({
           (thread) => sessionSelectionId(thread) === route.sessionId
         )
       : undefined;
+  const inventoryThread: PersonalDesktopProjectThread | undefined =
+    route.kind === "conversation" &&
+    inventoryTarget?.executionId === route.sessionId &&
+    inventoryTarget.projectId === route.projectId &&
+    inventoryTarget.sessionId &&
+    inventoryTarget.threadId &&
+    project
+      ? {
+          id: inventoryTarget.threadId,
+          name: `Conversation in ${project.name}`,
+          sessionId: inventoryTarget.sessionId,
+          sourceAiClient: null,
+          projectId: project.id,
+          projectName: project.name,
+          projectPath: project.path,
+          projectAssignmentSource: null,
+          eventCount: 0,
+          invalidatedCount: 0,
+          latestAt: inventoryTarget.createdAt,
+          sample: "",
+          presentation: null
+        }
+      : undefined;
   const draftEntry =
     route.kind === "conversation"
       ? findHqConversationDraft(
@@ -162,13 +219,23 @@ export function HqApplication({
         )
       : null;
   const draft = draftEntry?.[1] ?? null;
-  const conversationThread = conversation ?? draft?.thread;
+  const conversationThread = conversation ?? draft?.thread ?? inventoryThread;
+  const openNowNeed = (need: NowNeed) => {
+    const destination = nowConversationDestination(need, projects);
+    if (!destination) return;
+    selectRoute({
+      kind: "conversation",
+      projectId: destination.projectId,
+      sessionId: destination.routeId
+    });
+    if (destination.synthetic) setInventoryTarget(need);
+  };
   const title =
     route.kind === "conversation"
       ? conversationThread?.name || "Conversation"
       : route.kind === "project"
         ? project?.name || "Project"
-        : "HQ";
+        : "Now";
   // A successful graph read with unavailable metadata is incomplete, even
   // though the shared store deliberately does not expose a global error.
   const incompleteProjects = Boolean(
@@ -314,6 +381,8 @@ export function HqApplication({
             onSelectProject={(projectId) =>
               selectRoute({ kind: "project", projectId })
             }
+            onOpenNow={() => selectRoute({ kind: "home" })}
+            nowActive={route.kind === "home" && !blankOpen}
             onSelectConversation={(projectId, sessionId) =>
               selectRoute({ kind: "conversation", projectId, sessionId })
             }
@@ -348,7 +417,8 @@ export function HqApplication({
           aria-label={title}
           className="hq-destination"
         >
-          {blankOpen && managedConversationLifecycle ? (
+          {(blankOpen || route.kind === "home") &&
+          managedConversationLifecycle ? (
             <>
               {blankProjectError ? (
                 <div role="alert">
@@ -360,6 +430,7 @@ export function HqApplication({
               ) : null}
               <HqBlankConversation
                 key={blankIntent}
+                variant={route.kind === "home" && !blankOpen ? "now" : "blank"}
                 api={managedConversations ?? null}
                 localAiClients={localAiClients}
                 projects={projects}
@@ -375,7 +446,38 @@ export function HqApplication({
                   if (attachRequested) setAttachAfterStart(sessionId);
                 }}
               />
+              {route.kind === "home" && !blankOpen ? (
+                <NowView
+                  key={visibilityOwnerId ?? "no-owner"}
+                  projects={projects}
+                  api={managedConversations}
+                  lifecycle={managedConversationLifecycle}
+                  approvals={approvals}
+                  projectsReady={Boolean(snapshot?.projectsLoaded)}
+                  projectsLoading={Boolean(snapshot?.loading)}
+                  projectsError={Boolean(snapshot?.error) || incompleteProjects}
+                  onSelectProject={(projectId) =>
+                    selectRoute({ kind: "project", projectId })
+                  }
+                  onSelectConversation={openNowNeed}
+                />
+              ) : null}
             </>
+          ) : route.kind === "home" ? (
+            <NowView
+              key={visibilityOwnerId ?? "no-owner"}
+              projects={projects}
+              api={managedConversations}
+              lifecycle={managedConversationLifecycle}
+              approvals={approvals}
+              projectsReady={Boolean(snapshot?.projectsLoaded)}
+              projectsLoading={Boolean(snapshot?.loading)}
+              projectsError={Boolean(snapshot?.error) || incompleteProjects}
+              onSelectProject={(projectId) =>
+                selectRoute({ kind: "project", projectId })
+              }
+              onSelectConversation={openNowNeed}
+            />
           ) : route.kind === "conversation" &&
             project &&
             conversationThread &&
@@ -392,6 +494,9 @@ export function HqApplication({
               project={project}
               thread={conversationThread}
               draft={draft}
+              inventoryOnly={Boolean(
+                inventoryThread && !conversation && !draft
+              )}
               lifecycle={managedConversationLifecycle}
               openFilePickerOnReady={attachAfterStart === route.sessionId}
               onRetryStart={() =>
@@ -410,20 +515,16 @@ export function HqApplication({
             <p
               className="hq-destination__empty"
               role={
-                route.kind !== "home" &&
-                (!project || (route.kind === "conversation" && !conversation))
+                !project || (route.kind === "conversation" && !conversation)
                   ? "status"
                   : undefined
               }
             >
-              {route.kind !== "home" &&
-              (!project || (route.kind === "conversation" && !conversation))
+              {!project || (route.kind === "conversation" && !conversation)
                 ? `This ${route.kind === "project" ? "Project" : "Conversation"} is no longer available.`
-                : route.kind === "home"
-                  ? "Choose a Project or Conversation from the sidebar."
-                  : route.kind === "project"
-                    ? "Your Project workspace will appear here."
-                    : "Your Conversation will appear here."}
+                : route.kind === "project"
+                  ? "Your Project workspace will appear here."
+                  : "Your Conversation will appear here."}
             </p>
           )}
         </section>

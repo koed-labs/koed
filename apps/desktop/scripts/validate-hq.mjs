@@ -1,4 +1,5 @@
 import { validateHqSettings } from "./validate-hq-settings.mjs";
+import { validateHqNow } from "./validate-hq-now.mjs";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -1141,6 +1142,12 @@ const runValidation = async () => {
         assert.deepEqual(recovered, { error: false, projects: 4 });
       }
     );
+    await runAssertion(
+      "HQ108 Now home, existing Needs you sources, route and folds",
+      async () => {
+        await validateHqNow(window, pagePath, captureScreenshot, delay);
+      }
+    );
     // Context is a Project capability; exercise HQ102 layout in a real
     // Project route rather than keeping its panel on Home or Conversations.
     await window.webContents.executeJavaScript(
@@ -1383,12 +1390,14 @@ const runValidation = async () => {
         await delay(20);
         const folds = await window.webContents.executeJavaScript(`(() => ({
           expanded: !(document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? true),
-          disabledActions: ['New project', 'Now'].every((label) => document.querySelector('button[aria-label="' + label + '"]')?.disabled),
+          newProjectDisabled: document.querySelector('button[aria-label="New project"]')?.disabled === true,
+          nowEnabled: document.querySelector('button[aria-label="Now"]')?.disabled === false,
           newChatEnabled: document.querySelector('button[aria-label="New chat"]')?.disabled === false,
           searchLabel: document.querySelector('button[aria-label="Search and commands"]')?.getAttribute('aria-label')
         }))()`);
         assert.equal(folds.expanded, true);
-        assert.equal(folds.disabledActions, true);
+        assert.equal(folds.newProjectDisabled, true);
+        assert.equal(folds.nowEnabled, true);
         assert.equal(folds.newChatEnabled, true);
         assert.equal(folds.searchLabel, "Search and commands");
 
@@ -2430,7 +2439,7 @@ const runValidation = async () => {
     );
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

@@ -105,6 +105,15 @@ export type ManagedConversationLaunchOptionsRequest = {
   operation: "launch_options";
 };
 
+export type ManagedConversationListRequest = { operation: "list" };
+export type ManagedConversationListEntry = {
+  executionId: string;
+  projectId: string;
+  sessionId: string | null;
+  threadId: string | null;
+  state: string;
+};
+
 export type ManagedConversationDraftScope = {
   projectId: string;
   capturedSessionId: string;
@@ -231,6 +240,7 @@ export type ManagedConversationControlActionRequest = {
 export type ManagedConversationRequest =
   | ManagedConversationStartRequest
   | ManagedConversationLaunchOptionsRequest
+  | ManagedConversationListRequest
   | ManagedConversationDraftRequest
   | ManagedConversationRecoveryRequest
   | ManagedConversationInspectRequest
@@ -387,6 +397,11 @@ export type ManagedConversationCommandDiscoveryResult =
     };
 
 export type ManagedConversationResult =
+  | {
+      operation: "list";
+      executions: ManagedConversationListEntry[];
+      complete: boolean;
+    }
   | {
       operation: "launch_options";
       options: ManagedConversationLaunchOptions;
@@ -575,6 +590,10 @@ export const parseManagedConversationRequest = (
   if (input.operation === "launch_options") {
     exactKeys(input, ["operation"], "Managed Conversation launch options");
     return { operation: "launch_options" };
+  }
+  if (input.operation === "list") {
+    exactKeys(input, ["operation"], "Managed Conversation list");
+    return { operation: "list" };
   }
   if (
     input.operation === "recovery_read" ||
@@ -1511,6 +1530,61 @@ export const parseManagedConversationResult = (
   value: unknown
 ): ManagedConversationResult => {
   const result = record(value, "Managed Conversation result");
+  if (result.operation === "list") {
+    exactKeys(
+      result,
+      ["operation", "executions", "complete"],
+      "Managed Conversation list result"
+    );
+    if (
+      !Array.isArray(result.executions) ||
+      result.executions.length > 500 ||
+      typeof result.complete !== "boolean"
+    )
+      throw new TypeError("Managed Conversation list result is invalid.");
+    const seen = new Set<string>();
+    return {
+      operation: "list",
+      complete: result.complete,
+      executions: result.executions.map((entry) => {
+        const item = record(entry, "Managed Conversation list entry");
+        exactKeys(
+          item,
+          ["executionId", "projectId", "sessionId", "threadId", "state"],
+          "Managed Conversation list entry"
+        );
+        if (
+          typeof item.state !== "string" ||
+          !item.state.length ||
+          item.state.trim() !== item.state ||
+          item.state.length > 80
+        )
+          throw new TypeError("Managed Conversation list entry is invalid.");
+        const executionId = identifier(
+          item.executionId,
+          "Managed Conversation execution id"
+        );
+        if (seen.has(executionId))
+          throw new TypeError(
+            "Managed Conversation list contains duplicate executions."
+          );
+        seen.add(executionId);
+        return {
+          executionId,
+          projectId: identifier(item.projectId, "Project id"),
+          sessionId:
+            item.sessionId === null
+              ? null
+              : identifier(item.sessionId, "Captured Session id"),
+          threadId:
+            item.threadId === null
+              ? null
+              : identifier(item.threadId, "Conversation id"),
+          state: item.state as string
+        };
+      })
+    };
+  }
   if (result.operation === "launch_options") {
     exactKeys(
       result,
@@ -2174,6 +2248,9 @@ export const parseManagedConversationResult = (
 };
 
 export interface ManagedConversationDesktopApi {
+  list?: () => Promise<
+    Extract<ManagedConversationResult, { operation: "list" }>
+  >;
   launchOptions: () => Promise<
     Extract<ManagedConversationResult, { operation: "launch_options" }>
   >;
