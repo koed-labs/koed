@@ -126,6 +126,24 @@ completion. It cannot invoke or impersonate a Team lifecycle action.
 | `workspace_project.restore`                              | Direct        | Only the Workspace Project owner with current Team membership and Workspace authority; restores Team metadata only and does not restore another User's Personal records or resume grants.                                                                                    |
 | `project_source.team_metadata.restore`                   | Direct        | Source uploader or Workspace Project owner with current authority; restores Team metadata only. Personal Note content remains restorable only by its owner.                                                                                                                  |
 
+### Target in-app invitation decline approval (Implementation Pending)
+
+The accepted action matrix above remains unchanged. ADR 0060 defines the target
+`team.invite.decline` action as Native review. The Team Backend derives the
+recipient from the authenticated Koed User and binds the action to the exact
+pending, unexpired invitation, current backend origin, and expected version.
+Outside the explicitly enabled, isolated `developer` deployment profile,
+require a currently linked, verified WorkOS/AuthKit identity for the provider
+environment configured for that backend, with its email matching the current
+Koed User and the invitation. Only that isolated developer profile retains the
+local-auth exception used by the existing invite-acceptance route; it still
+requires the exact account-email, backend-origin, expiry, and version checks.
+This exception is unavailable to managed or production Team deployments. The
+recipient need not already be a Team member. Decline grants no membership or
+Workspace Access, and an invitation ID remains a selector rather than
+authority. This is a target contract; it does not claim the action or endpoint
+exists today.
+
 ### Target initial Curated Memory approval (Implementation Pending)
 
 The accepted matrix above records current `shared_memory.pending_share`

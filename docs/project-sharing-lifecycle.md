@@ -431,10 +431,14 @@ After successful copy-back and Workspace Project cleanup, disable the departing
 member's Workspace Access for affected Workspaces, then disable their Team
 Membership last. Lifecycle freezes are Bundled stages of the exact authorized
 leave operation and receive no separate approval. Leaving has no Undo; return
-requires a new Team invite. A failed or interrupted copy-back, Team cleanup, or
-authority revalidation does not authorize removal of Workspace Project records
-or Team Membership. Do not report leave as complete while copy-back or a
-required Team lifecycle stage is incomplete.
+requires a new Team invite. [ADR 0060](./adr/0060-in-app-team-invites.md)
+defines the target generation-bound
+invitation and rejoin checks; rejoining a `member_left` membership is not
+implemented until HQ-703 lands the leave-generation and invite-validation
+invariant. A failed or interrupted copy-back, Team cleanup, or authority
+revalidation does not authorize removal of Workspace Project records or Team
+Membership. Do not report leave as complete while copy-back or a required Team
+lifecycle stage is incomplete.
 
 ### Remove a member from one Project
 

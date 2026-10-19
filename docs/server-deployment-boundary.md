@@ -55,9 +55,16 @@ but the product contract is the server boundary, its public routes, its
 capabilities, and its dependency readiness.
 
 Koed-managed cloud should use the same server boundary with Koed-operated
-infrastructure. Cloud-only choices such as WorkOS/AuthKit, entitlement gates,
-support access, and managed backups attach to the same `koed-server` API and
+infrastructure. Koed-managed identity integration, entitlement gates, support
+access, and managed backups attach to the same `koed-server` API and
 authorization model.
+
+Team Self-Hosted may use the existing operator-configured WorkOS/AuthKit
+provider when running the `team_self_hosted` profile, as described in
+[Configuration](configuration.md). This is existing provider support, not a
+new identity-provider integration. Private-VPS hosting alone does not enable
+that profile: the literal `private_vps` profile remains local-session-only and
+fails closed for verified-Team operations that require WorkOS/AuthKit.
 
 ## Remote AI Clients
 
