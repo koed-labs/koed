@@ -60,13 +60,15 @@ import {
   pdsPortableMemoryEventContentHash,
   pdsPortableMemoryEventId,
   rawConversationTransportChunkGroupId,
+  repositoryScopeId,
   resolveSupportedEmbeddingModelConfig,
   type CapturedSessionSyncPackageV2,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ManagedKmsKeyring,
-  type PdsPortableMemoryEmbeddingV1
+  type PdsPortableMemoryEmbeddingV1,
+  type RepositoryIdentity
 } from "@koed/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -316,6 +318,48 @@ describeDb("memory repository visibility", () => {
       content: input.content,
       visibility: input.visibility,
       metadata: input.metadata
+    });
+
+  // Only repository assignment selects a Project, so Project-scoped fixtures
+  // capture into a Session that carries a selected repository identity.
+  const fixtureRepositoryIdentity = (name: string): RepositoryIdentity => ({
+    kind: "portable_repository",
+    key: `gr_${name}`,
+    root: `/checkout/${name}`,
+    branch: "main",
+    reason: "origin",
+    checkoutId: `checkout_${name}`,
+    originatingDeviceId: "fixture_device",
+    selectedRemote: "origin",
+    anchorDisplay: `example.test/${name}`
+  });
+  const projectScope = (name: string) =>
+    repositoryScopeId(fixtureRepositoryIdentity(name));
+  const projectSessionIds = new Map<string, string>();
+  const projectSessionId = async (userId: string, projectId: string) => {
+    const cacheKey = `${userId}:${projectId}`;
+    const cached = projectSessionIds.get(cacheKey);
+    if (cached) return cached;
+    const session = await repo.createCapturedSession(
+      { userId },
+      {
+        projectId,
+        externalSessionId: `project-fixture-${randomUUID()}`,
+        repositoryIdentity: fixtureRepositoryIdentity(projectId)
+      }
+    );
+    projectSessionIds.set(cacheKey, session.id);
+    return session.id;
+  };
+  const captureProjectEvent = async (
+    engine: ReturnType<typeof createMemoryEngine>,
+    userId: string,
+    input: Parameters<typeof captureUserEvent>[2]
+  ) =>
+    captureUserEvent(engine, userId, {
+      ...input,
+      sessionId:
+        input.sessionId ?? (await projectSessionId(userId, input.projectId))
     });
 
   const embedPendingSources = async () => {
@@ -17223,7 +17267,7 @@ describeDb("memory repository visibility", () => {
       targetId: event.id,
       metadata: {
         eventType: "user_prompt",
-        projectId: "audit-workspace"
+        projectId: "unassigned"
       }
     });
     expect(
@@ -17303,7 +17347,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content: "Aurora retrieval target for query instruction testing."
     });
@@ -17345,7 +17389,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -17374,7 +17418,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-disabled-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content: "Plain query embedding target for disabled instruction testing."
     });
@@ -17416,7 +17460,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -18368,17 +18412,17 @@ describeDb("memory repository visibility", () => {
     const projectA = `workspace-project-a-${randomUUID()}`;
     const projectB = `workspace-project-b-${randomUUID()}`;
 
-    const oldProjectA = await captureUserEvent(engine, alice.id, {
+    const oldProjectA = await captureProjectEvent(engine, alice.id, {
       projectId: projectA,
       content: "Boundary correlation project A old only.",
       metadata: { project: "a", age: "old" }
     });
-    const recentProjectB = await captureUserEvent(engine, alice.id, {
+    const recentProjectB = await captureProjectEvent(engine, alice.id, {
       projectId: projectB,
       content: "Boundary correlation project B recent only.",
       metadata: { project: "b", age: "recent" }
     });
-    const recentProjectA = await captureUserEvent(engine, alice.id, {
+    const recentProjectA = await captureProjectEvent(engine, alice.id, {
       projectId: projectA,
       content: "Boundary correlation project A recent valid.",
       metadata: { project: "a", age: "recent" }
@@ -18435,7 +18479,7 @@ describeDb("memory repository visibility", () => {
       query: "boundary correlation project",
       scope: "personal",
       searchDomain: "project",
-      projectId: projectA,
+      projectId: projectScope(projectA),
       recentDays: 30,
       limit: 10
     });
@@ -18450,7 +18494,11 @@ describeDb("memory repository visibility", () => {
     const expanded = await engine.expandMemoryNode(
       mixedNode.id,
       { userId: alice.id },
-      { searchDomain: "project", projectId: projectA, recentDays: 30 }
+      {
+        searchDomain: "project",
+        projectId: projectScope(projectA),
+        recentDays: 30
+      }
     );
     expect(expanded.sources).toHaveLength(0);
     expect(
@@ -18613,7 +18661,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-fresh-event-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
@@ -18627,7 +18675,7 @@ describeDb("memory repository visibility", () => {
       query: "lamp keeper Seraphina",
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "fresh_pending_search",
       strictLimit: true,
       limit: 1
@@ -18648,14 +18696,14 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-non-tool-fallback-${randomUUID()}`;
-    const agentEvent = await captureUserEvent(engine, alice.id, {
+    const agentEvent = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       actor: "agent",
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
       metadata: { kind: "story-source" }
     });
-    await captureUserEvent(engine, alice.id, {
+    await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       actor: "tool",
       content:
@@ -18674,7 +18722,7 @@ describeDb("memory repository visibility", () => {
         query: "lamp keeper Seraphina",
         scope: "personal",
         searchDomain: "project",
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         retrievalStage: stage,
         strictLimit: true,
         limit: 1
@@ -19967,13 +20015,13 @@ describeDb("memory repository visibility", () => {
     );
     const projects = await repo.listLcmGraphThreads(
       { userId: alice.id },
-      { projectId: "workspace-standalone-thread", limit: 10 }
+      { projectId: "unassigned", limit: 10 }
     );
     const thread = projects[0]?.threads[0];
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: "workspace-standalone-thread",
+        projectId: "unassigned",
         threadId: thread?.id,
         limit: 10
       }
@@ -21344,6 +21392,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `live-prompt-dedupe-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "api",
@@ -21421,7 +21470,7 @@ describeDb("memory repository visibility", () => {
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -21429,7 +21478,7 @@ describeDb("memory repository visibility", () => {
     const canonicalEvents = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         canonicalCapturedSessionEventsOnly: true,
         limit: 10
@@ -21504,12 +21553,14 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-approval-activity-${randomUUID()}@example.com`
     });
-    const projectId = randomUUID();
+    const projectName = randomUUID();
+    const projectId = projectScope(projectName);
     const parentThreadId = `approval-parent-${randomUUID()}`;
     const parent = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        projectId,
+        projectId: projectName,
+        repositoryIdentity: fixtureRepositoryIdentity(projectName),
         externalSessionId: parentThreadId,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -21519,7 +21570,8 @@ describeDb("memory repository visibility", () => {
     const helper = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        projectId,
+        projectId: projectName,
+        repositoryIdentity: fixtureRepositoryIdentity(projectName),
         externalSessionId: `approval-helper-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -22419,6 +22471,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `source-chronology-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -22499,7 +22552,7 @@ describeDb("memory repository visibility", () => {
     const firstPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1
       }
@@ -22507,7 +22560,7 @@ describeDb("memory repository visibility", () => {
     const secondPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1,
         cursorTimestamp: firstPage[0]!.timestamp,
@@ -22518,7 +22571,7 @@ describeDb("memory repository visibility", () => {
     const legacyCursorPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1,
         cursorTimestamp: firstPage[0]!.timestamp,
@@ -22528,7 +22581,7 @@ describeDb("memory repository visibility", () => {
     const threadIndex = await repo.listLcmGraphThreads(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -22562,6 +22615,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `display-source-${randomUUID()}`,
         sourceRuntime: "codex",
         captureMethod: "transcript",
@@ -22704,7 +22758,7 @@ describeDb("memory repository visibility", () => {
     const displayEvents = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         includeContent: true,
         limit: 10
@@ -22727,7 +22781,7 @@ describeDb("memory repository visibility", () => {
     const threads = await repo.listLcmGraphThreads(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -23227,6 +23281,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `complete-turn-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `complete-turn-session-${randomUUID()}`
@@ -23329,7 +23384,7 @@ describeDb("memory repository visibility", () => {
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -31284,7 +31339,10 @@ describeDb("memory repository visibility", () => {
       projectAssignmentSource: null,
       capturedProjectProvenance: { outcome: "ambiguous" }
     });
-    expect(graph[0]).toMatchObject({ id: "unassigned", name: "Unassigned" });
+    expect(graph[0]).toMatchObject({
+      id: "unassigned",
+      name: "Unresolved history"
+    });
   });
 
   it("preserves automatic Project assignment on incomplete idempotent replays", async () => {
@@ -31441,13 +31499,7 @@ describeDb("memory repository visibility", () => {
           projectName: "Source Project A",
           projectPath: "/work/source-a"
         },
-        detectedProjects: [
-          {
-            id: "project-a",
-            name: "Project A",
-            path: "/work/source-a"
-          }
-        ]
+        repositoryIdentity: fixtureRepositoryIdentity("project-a")
       }
     );
     const event = await repo.createMemoryEvent(
@@ -31507,7 +31559,13 @@ describeDb("memory repository visibility", () => {
     const moved = await repo.moveCapturedSessionToProject(
       { userId: owner.id },
       captured.id,
-      { id: "project-b", name: "Project B", path: "/work/manual-b" }
+      {
+        id: projectScope("project-b"),
+        name: "Project B",
+        path: "/checkout/project-b",
+        repositoryIdentity: fixtureRepositoryIdentity("project-b"),
+        expectedAssignmentVersion: 1
+      }
     );
     const redetected = await repo.createCapturedSession(
       { userId: owner.id },
@@ -31519,23 +31577,23 @@ describeDb("memory repository visibility", () => {
           projectName: "Source Project C",
           projectPath: "/work/source-c"
         },
-        detectedProjects: [
-          {
-            id: "project-c",
-            name: "Project C",
-            path: "/work/source-c"
-          }
-        ]
+        repositoryIdentity: fixtureRepositoryIdentity("project-c")
       }
     );
     const rejectedOtherOwner = await repo.moveCapturedSessionToProject(
       { userId: member.id },
       captured.id,
-      { id: "project-c", name: "Project C", path: null }
+      {
+        id: projectScope("project-c"),
+        name: "Project C",
+        path: null,
+        repositoryIdentity: fixtureRepositoryIdentity("project-c"),
+        expectedAssignmentVersion: 2
+      }
     );
     const personalProjects = await repo.listLcmGraphThreads(
       { userId: owner.id },
-      { projectId: "project-b", limit: 20 }
+      { projectId: projectScope("project-b"), limit: 20 }
     );
     const teamProjects = await repo.listLcmGraphThreads(
       { userId: member.id },
@@ -31547,7 +31605,7 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      projectId: "project-b",
+      projectId: projectScope("project-b"),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -31557,14 +31615,15 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      projectId: "project-a",
+      projectId: projectScope("project-a"),
       retrievalStage: "raw_fallback_search",
       strictLimit: false,
       limit: 1
     });
     const reset = await repo.resetCapturedSessionProject(
       { userId: owner.id },
-      captured.id
+      captured.id,
+      2
     );
     const ambiguous = await repo.createCapturedSession(
       { userId: owner.id },
@@ -31578,31 +31637,28 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(captured).toMatchObject({
-      project: { id: "project-a" },
+      project: { id: projectScope("project-a") },
       projectAssignmentSource: "detected",
-      capturedProjectProvenance: {
-        outcome: "unambiguous",
-        candidates: [{ id: "project-a" }]
+      repositoryAssignment: {
+        effective: fixtureRepositoryIdentity("project-a")
       }
     });
     expect(moved).toMatchObject({
-      project: { id: "project-b" },
-      projectOverride: { id: "project-b" },
+      project: { id: projectScope("project-b") },
+      projectOverride: { id: projectScope("project-b") },
       projectAssignmentSource: "user_override"
     });
     expect(redetected).toMatchObject({
       id: captured.id,
-      automaticProject: { id: "project-c" },
-      project: { id: "project-b" },
+      automaticProject: { id: projectScope("project-a") },
+      project: { id: projectScope("project-b") },
       projectAssignmentSource: "user_override",
-      capturedProjectProvenance: {
-        candidates: [{ id: "project-a" }]
-      }
+      capturedProjectProvenance: captured.capturedProjectProvenance
     });
     expect(rejectedOtherOwner).toBeNull();
     expect(personalProjects).toEqual([
       expect.objectContaining({
-        id: "project-b",
+        id: projectScope("project-b"),
         eventCount: 1,
         threads: [
           expect.objectContaining({
@@ -31618,9 +31674,9 @@ describeDb("memory repository visibility", () => {
     expect(oldProjectRecall.results).toHaveLength(0);
     expect(teamProjects).toEqual([]);
     expect(reset).toMatchObject({
-      automaticProject: { id: "project-c" },
+      automaticProject: { id: projectScope("project-a") },
       projectOverride: null,
-      project: { id: "project-c" },
+      project: { id: projectScope("project-a") },
       projectAssignmentSource: "detected"
     });
     expect(ambiguous).toMatchObject({
@@ -31641,6 +31697,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         cwd,
+        repositoryIdentity: fixtureRepositoryIdentity("canonical-project"),
         externalSessionId: `canonical-project-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `canonical-project-session-${randomUUID()}`
@@ -31711,7 +31768,7 @@ describeDb("memory repository visibility", () => {
 
     expect(projection.memoryEventsCreated).toBe(1);
     expect(projects).toHaveLength(1);
-    expect(projects[0]?.id).toBe(cwd);
+    expect(projects[0]?.id).toBe(projectScope("canonical-project"));
     expect(projects[0]?.threads).toHaveLength(1);
   });
 
@@ -35929,6 +35986,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted",
+          sessionId: await projectSessionId(owner.id, "curated-encrypted"),
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -35941,6 +35999,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted",
+          sessionId: await projectSessionId(owner.id, "curated-encrypted"),
           actor: "agent",
           eventType: "captured",
           rawEventType: "agent_message",
@@ -35953,6 +36012,10 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted-other-workspace",
+          sessionId: await projectSessionId(
+            owner.id,
+            "curated-encrypted-other-workspace"
+          ),
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -35975,7 +36038,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            projectId: "curated-encrypted",
+            projectId: projectScope("curated-encrypted"),
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -35987,7 +36050,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            projectId: "curated-encrypted-missing",
+            projectId: projectScope("curated-encrypted-missing"),
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -36074,7 +36137,7 @@ describeDb("memory repository visibility", () => {
           {
             query: sentinel,
             searchDomain: "project",
-            projectId: "curated-encrypted"
+            projectId: projectScope("curated-encrypted")
           }
         )
       ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -36397,6 +36460,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         projectId: "curated-project-active",
+        sessionId: await projectSessionId(owner.id, "curated-project-active"),
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -36409,6 +36473,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         projectId: "curated-project-deleted",
+        sessionId: await projectSessionId(owner.id, "curated-project-deleted"),
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -36457,7 +36522,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          projectId: "curated-project-deleted"
+          projectId: projectScope("curated-project-deleted")
         }
       )
     ).resolves.toEqual([]);
@@ -36467,7 +36532,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          projectId: "curated-project-active"
+          projectId: projectScope("curated-project-active")
         }
       )
     ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -36636,7 +36701,8 @@ describeDb("memory repository visibility", () => {
             externalSessionId: `curated-ambiguous-${suffix}-${randomUUID()}`,
             sourceRuntime: "codex",
             captureMethod: "api",
-            cwd: "/same/project"
+            cwd: "/same/project",
+            repositoryIdentity: fixtureRepositoryIdentity("same-project")
           }
         )
       )
@@ -36670,7 +36736,7 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.resolveCuratedMemoryProposalEvidence(
         { userId: owner.id },
-        { projectId: "/same/project", exactQuote }
+        { projectId: projectScope("same-project"), exactQuote }
       )
     ).rejects.toMatchObject({ statusCode: 409 });
     await expect(
