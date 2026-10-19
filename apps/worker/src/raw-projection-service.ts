@@ -173,6 +173,8 @@ const logHistoricalDecision = (
         reason: decision.admitted ? null : decision.reason,
         pendingRows: backlog.historicalImportRows,
         pendingBytes: backlog.historicalImportBytes,
+        liveRows: backlog.liveProjectionRows,
+        parkedLiveRows: backlog.parkedLiveProjectionRows,
         projectedRows: report.projected,
         scannedRows: report.scanned
       }

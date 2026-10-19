@@ -229,6 +229,10 @@ export interface CodexAppServerClientOptions {
   maxTurnStates?: number;
   maxTurnBytes?: number;
   maxLineBytes?: number;
+  // "reject_request" fails only the request whose response line is oversized
+  // and discards that line; any other oversized line still fails the client.
+  oversizedResponsePolicy?: "fail_connection" | "reject_request";
+  maxDiscardedLineBytes?: number;
   captureProcessMetrics?: boolean;
   transientEventHandler?: (
     event: CodexAppServerRawEvent
@@ -259,6 +263,15 @@ export class CodexAppServerResponseError extends Error {
   }
 }
 
+// The response exceeded the stdout line capacity and was discarded unread; the
+// connection itself remains usable.
+export class CodexAppServerOversizedResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexAppServerOversizedResponseError";
+  }
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_INTERRUPT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_SERVER_REQUEST_TIMEOUT_MS = 30_000;
@@ -269,6 +282,12 @@ const DEFAULT_MAX_PENDING_RAW_EVENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_TURN_STATES = 100;
 const DEFAULT_MAX_TURN_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_LINE_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_DISCARDED_LINE_BYTES = 64 * 1024 * 1024;
+// Successful app-server responses serialize `id` before `result`; error
+// responses and notifications do not match and stay connection failures.
+const RESPONSE_LINE_PREFIX_BYTES = 64;
+const responseLinePrefix =
+  /^\s*\{\s*(?:"jsonrpc"\s*:\s*"2\.0"\s*,\s*)?"id"\s*:\s*(\d{1,15})\s*,\s*"result"\s*:/;
 const supportedProviderRequestMethods = new Set([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
@@ -563,6 +582,8 @@ export class CodexAppServerClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly childClosed: Promise<void>;
   private stdoutBuffer = Buffer.alloc(0);
+  // Bytes dropped so far from an oversized response line awaiting its newline.
+  private discardedLineBytes: number | null = null;
   private readonly stderrChunks: string[] = [];
   private readonly rawEvents: CodexAppServerRawEvent[] = [];
   private readonly rawEventByteLengths: number[] = [];
@@ -591,6 +612,10 @@ export class CodexAppServerClient {
   private readonly maxTurnStates: number;
   private readonly maxTurnBytes: number;
   private readonly maxLineBytes: number;
+  private readonly oversizedResponsePolicy:
+    | "fail_connection"
+    | "reject_request";
+  private readonly maxDiscardedLineBytes: number;
   private readonly transientEventHandler?: (
     event: CodexAppServerRawEvent
   ) => void | Promise<void>;
@@ -673,6 +698,12 @@ export class CodexAppServerClient {
     this.maxLineBytes = positiveFiniteInteger(
       options.maxLineBytes,
       DEFAULT_MAX_LINE_BYTES
+    );
+    this.oversizedResponsePolicy =
+      options.oversizedResponsePolicy ?? "fail_connection";
+    this.maxDiscardedLineBytes = positiveFiniteInteger(
+      options.maxDiscardedLineBytes,
+      DEFAULT_MAX_DISCARDED_LINE_BYTES
     );
     const configArguments = (options.configOverrides ?? []).flatMap(
       (override) => ["--config", override]
@@ -1202,10 +1233,29 @@ export class CodexAppServerClient {
     if (this.terminalError || chunk.length === 0) {
       return;
     }
-    const input =
-      this.stdoutBuffer.length === 0
-        ? chunk
-        : Buffer.concat([this.stdoutBuffer, chunk]);
+    let input: Buffer;
+    if (this.discardedLineBytes !== null) {
+      const newline = chunk.indexOf(0x0a);
+      this.discardedLineBytes += newline === -1 ? chunk.length : newline;
+      if (this.discardedLineBytes > this.maxDiscardedLineBytes) {
+        this.failTerminal(
+          new CodexAppServerCapacityError(
+            `Codex app-server discarded stdout line byte capacity exceeded (${this.maxDiscardedLineBytes} bytes)`
+          )
+        );
+        return;
+      }
+      if (newline === -1) {
+        return;
+      }
+      this.discardedLineBytes = null;
+      input = chunk.subarray(newline + 1);
+    } else {
+      input =
+        this.stdoutBuffer.length === 0
+          ? chunk
+          : Buffer.concat([this.stdoutBuffer, chunk]);
+    }
     let start = 0;
     while (true) {
       const newline = input.indexOf(0x0a, start);
@@ -1213,12 +1263,11 @@ export class CodexAppServerClient {
         break;
       }
       if (newline - start > this.maxLineBytes) {
-        this.failTerminal(
-          new CodexAppServerCapacityError(
-            `Codex app-server stdout line byte capacity exceeded (${this.maxLineBytes} bytes)`
-          )
-        );
-        return;
+        if (!this.rejectOversizedResponse(input.subarray(start, newline))) {
+          return;
+        }
+        start = newline + 1;
+        continue;
       }
       const line = input.subarray(start, newline).toString("utf8");
       this.handleLine(line.endsWith("\r") ? line.slice(0, -1) : line);
@@ -1229,17 +1278,47 @@ export class CodexAppServerClient {
     }
     const remainder = input.subarray(start);
     if (remainder.length > this.maxLineBytes) {
-      this.failTerminal(
-        new CodexAppServerCapacityError(
-          `Codex app-server stdout line byte capacity exceeded (${this.maxLineBytes} bytes)`
-        )
-      );
+      if (!this.rejectOversizedResponse(remainder)) {
+        return;
+      }
+      this.stdoutBuffer = Buffer.alloc(0);
+      this.discardedLineBytes = remainder.length;
       return;
     }
     this.stdoutBuffer = Buffer.from(remainder);
   }
 
+  // Rejects the pending request that owns an oversized response line, so the
+  // caller can discard the line. Returns false after failing the client.
+  private rejectOversizedResponse(line: Buffer): boolean {
+    const match =
+      this.oversizedResponsePolicy === "reject_request"
+        ? responseLinePrefix.exec(
+            line.subarray(0, RESPONSE_LINE_PREFIX_BYTES).toString("utf8")
+          )
+        : null;
+    const id = match ? Number(match[1]) : undefined;
+    const pending = id === undefined ? undefined : this.pending.get(id);
+    if (id === undefined || !pending) {
+      this.failTerminal(
+        new CodexAppServerCapacityError(
+          `Codex app-server stdout line byte capacity exceeded (${this.maxLineBytes} bytes)`
+        )
+      );
+      return false;
+    }
+    this.pending.delete(id);
+    clearTimeout(pending.timeout);
+    pending.reject(
+      new CodexAppServerOversizedResponseError(
+        `Codex app-server ${pending.method} response exceeded stdout line byte capacity (${this.maxLineBytes} bytes)`
+      )
+    );
+    return true;
+  }
+
   private handleStdoutEnd(): void {
+    this.discardedLineBytes = null;
     if (this.terminalError || this.stdoutBuffer.length === 0) {
       this.stdoutBuffer = Buffer.alloc(0);
       return;

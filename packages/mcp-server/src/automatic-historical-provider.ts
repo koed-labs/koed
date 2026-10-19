@@ -181,19 +181,46 @@ export const transitionAutomaticHistoricalSource = async <
   );
 };
 
+export type HistoricalCompletionResult =
+  | { completed: true }
+  | { completed: false; diagnosticCode?: string };
+
+// Classifies a rejected completion transition, or returns null for any other
+// error. A 409 without a code comes from an API that predates the codes and
+// keeps the earlier pending-completion behavior.
+export const historicalCompletionOutcome = (
+  error: unknown
+): HistoricalCompletionResult | null => {
+  if (!(error instanceof MemoryApiError) || error.status !== 409) return null;
+  const payload = error.payload;
+  const code =
+    typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    typeof payload.code === "string"
+      ? payload.code
+      : undefined;
+  if (code === "historical_import_transition_already_applied")
+    return { completed: true };
+  if (code === undefined || code === "historical_import_completion_pending")
+    return { completed: false };
+  return { completed: false, diagnosticCode: code };
+};
+
 export const completeAutomaticHistoricalSource = async (
   client: MemoryApiClient,
   sourceId: string
-): Promise<boolean> => {
+): Promise<HistoricalCompletionResult> => {
   try {
     await client.transitionHistoricalImportSource(sourceId, {
       expectedState: "importing",
       state: "completed"
     });
-    return true;
+    return { completed: true };
   } catch (error) {
-    if (error instanceof MemoryApiError && error.status === 409) return false;
-    throw error;
+    const outcome = historicalCompletionOutcome(error);
+    if (!outcome) throw error;
+    return outcome;
   }
 };
 
@@ -207,6 +234,11 @@ export const completeAutomaticHistoricalRun = async (
       state: "completed"
     });
   } catch (error) {
-    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
+    // Every selected source was observed as completed or skipped, so a pending
+    // or applied completion is safe after a Local AI Runtime restart.
+    const outcome = historicalCompletionOutcome(error);
+    if (!outcome) throw error;
+    if (!outcome.completed && outcome.diagnosticCode)
+      throw new Error(outcome.diagnosticCode, { cause: error });
   }
 };

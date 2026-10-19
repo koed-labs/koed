@@ -2386,54 +2386,62 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     expect(readThread).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps healthy threads capturable when another thread in the same home fails", async () => {
-    const root = temporaryDirectory();
-    const readThread = vi.fn(async (id: string) => {
-      if (id === "metadata-broken")
-        throw new Error("codex_history_thread_unavailable");
-      return {
-        id,
-        path: transcriptPath(root, "rollout-2026-01-01-healthy.jsonl"),
-        raw: { id, turns: [] }
+  it.each([
+    "codex_history_thread_unavailable",
+    "codex_history_response_oversized"
+  ])(
+    "keeps healthy threads capturable when another thread in the same home fails with %s",
+    async (failure) => {
+      const root = temporaryDirectory();
+      const readThread = vi.fn(async (id: string) => {
+        if (id === "metadata-broken") throw new Error(failure);
+        return {
+          id,
+          path: transcriptPath(root, "rollout-2026-01-01-healthy.jsonl"),
+          raw: { id, turns: [] }
+        };
+      });
+      const reader: CodexHistoryMetadataReader = {
+        readThread,
+        close: vi.fn().mockResolvedValue(undefined)
       };
-    });
-    const reader: CodexHistoryMetadataReader = {
-      readThread,
-      close: vi.fn().mockResolvedValue(undefined)
-    };
-    const client = new FakeWatcherClient();
-    const watcher = trackedWatcher(
-      client,
-      watcherConfig(root),
-      undefined,
-      reader
-    );
-    await watcher.scanNow();
-    // Discovery visits the newer, failing transcript first.
-    for (const [id, name] of [
-      ["metadata-broken", "rollout-2026-01-02-broken.jsonl"],
-      ["metadata-healthy", "rollout-2026-01-01-healthy.jsonl"]
-    ] as const) {
-      const record = sessionRecord(id);
-      writeFileSync(
-        transcriptPath(root, name),
-        line({
-          ...record,
-          ordinal: 0,
-          payload: { ...record.payload, history_mode: "paginated" }
-        })
+      const client = new FakeWatcherClient();
+      const watcher = trackedWatcher(
+        client,
+        watcherConfig(root),
+        undefined,
+        reader
       );
+      await watcher.scanNow();
+      // Discovery visits the newer, failing transcript first.
+      for (const [id, name] of [
+        ["metadata-broken", "rollout-2026-01-02-broken.jsonl"],
+        ["metadata-healthy", "rollout-2026-01-01-healthy.jsonl"]
+      ] as const) {
+        const record = sessionRecord(id);
+        writeFileSync(
+          transcriptPath(root, name),
+          line({
+            ...record,
+            ordinal: 0,
+            payload: { ...record.payload, history_mode: "paginated" }
+          })
+        );
+      }
+      await watcher.scanNow();
+      expect(readThread.mock.calls.map(([id]) => id)).toEqual([
+        "metadata-broken",
+        "metadata-healthy"
+      ]);
+      expect([...client.artifacts.keys()]).toEqual(["metadata-healthy"]);
+      expect(watcher.snapshot().lastErrorCode).toBe(failure);
+      await watcher.scanNow();
+      // An oversized first page stays oversized, so its retries back off.
+      expect(
+        readThread.mock.calls.filter(([id]) => id === "metadata-broken")
+      ).toHaveLength(failure === "codex_history_response_oversized" ? 1 : 2);
     }
-    await watcher.scanNow();
-    expect(readThread.mock.calls.map(([id]) => id)).toEqual([
-      "metadata-broken",
-      "metadata-healthy"
-    ]);
-    expect([...client.artifacts.keys()]).toEqual(["metadata-healthy"]);
-    expect(watcher.snapshot().lastErrorCode).toBe(
-      "codex_history_thread_unavailable"
-    );
-  });
+  );
 
   it("does not capture a directory symlink pointing outside the configured source root", async () => {
     const root = temporaryDirectory();

@@ -984,11 +984,11 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
 - `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`: maximum memory owner scopes checked on each worker catch-up pass. Default `10`.
-- `MEMORY_HISTORICAL_IMPORT_BATCH_ROWS`: hard maximum raw rows selected for one historical Projection batch. An atomic segment larger than this cap remains pending until the Operator raises the cap. Default `100`; valid range `1`–`1000`.
-- `MEMORY_HISTORICAL_IMPORT_BATCH_BYTES`: hard maximum raw payload bytes selected for one historical Projection batch. An atomic segment larger than this cap remains pending until the Operator raises the cap. Default `1000000`; valid range `1`–`10000000`.
+- `MEMORY_HISTORICAL_IMPORT_BATCH_ROWS`: maximum raw rows selected for one historical Projection batch. Segments stay atomic: if the oldest pending segment alone is larger than this cap, Koed projects that segment by itself in its own batch, so it cannot block later segments. Default `100`; valid range `1`–`1000`.
+- `MEMORY_HISTORICAL_IMPORT_BATCH_BYTES`: maximum raw payload bytes selected for one historical Projection batch. An oldest segment larger than this cap is projected by itself, as for the row cap. Default `1000000`; valid range `1`–`10000000`.
 - `MEMORY_HISTORICAL_IMPORT_BATCH_RUNTIME_MS`: maximum historical Projection runtime before yielding at next Projection boundary. Default `15000`; valid range `100`–`60000`.
 - `MEMORY_HISTORICAL_IMPORT_CONCURRENCY`: historical Projection worker slots. Must remain `1`; values outside `1`–`1` fail configuration validation.
-- `MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX`: live raw-Projection rows permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
+- `MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX`: live raw-Projection rows permitted before historical admission pauses. Default `0`; valid range `0`–`10000`. Rows that a Projection pass left waiting for an agent seal do not count while their turn stays open. An open turn has no completion signal and activity within `MEMORY_AGENT_TURN_STALE_MS`. Rows that Projection has not scanned yet, including user, system and raw-only rows, still count. Diagnostics report these rows as `parkedLiveProjectionRows`. Once a turn completes or goes stale, its rows count again.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_ENABLED`: set to `false` to disable automatic

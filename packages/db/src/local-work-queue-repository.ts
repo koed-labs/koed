@@ -54,7 +54,10 @@ export interface LocalWorkQueueRepository {
     errorMessage: string;
     retry: boolean;
   }): Promise<boolean>;
-  getJobCounts(statuses: string[]): Promise<Record<string, number>>;
+  getJobCounts(
+    statuses: string[],
+    queueName: string
+  ): Promise<Record<string, number>>;
   getOldestPendingAgeMs(queueName: string): Promise<number | null>;
 }
 
@@ -370,7 +373,7 @@ export const createLocalWorkQueueRepository = (
     return (result.rowCount ?? 0) > 0;
   },
 
-  async getJobCounts(statuses) {
+  async getJobCounts(statuses, queueName) {
     if (statuses.length === 0) {
       return {};
     }
@@ -382,11 +385,14 @@ export const createLocalWorkQueueRepository = (
                end as status,
                count(*)::text as count
         from local_work_queue
-        where status = any($1::text[])
-           or ('delayed' = any($1::text[]) and status = 'pending')
+        where queue_name = $2
+          and (
+            status = any($1::text[])
+            or ('delayed' = any($1::text[]) and status = 'pending')
+          )
         group by 1
       `,
-      [statuses]
+      [statuses, queueName]
     );
     return Object.fromEntries(
       statuses.map((status) => [
