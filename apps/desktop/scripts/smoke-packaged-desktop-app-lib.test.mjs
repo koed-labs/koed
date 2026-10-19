@@ -1,3 +1,4 @@
+/* global Response */
 import assert from "node:assert/strict";
 import {
   existsSync,
@@ -111,16 +112,46 @@ const healthyStatus = () =>
     ].map((component) => [component, { state: "healthy" }])
   );
 
-const statusPollHarness = (snapshots, { running = true } = {}) => {
+const statusPollHarness = (
+  snapshots,
+  { running = true, readinessStatuses = [200], statusProbeIntervalMs } = {}
+) => {
   let elapsed = 0;
   let polls = 0;
+  let readinessPolls = 0;
+  const readyRequests = [];
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-smoke-status-"));
+  mkdirSync(resolve(koedHome, "run"), { recursive: true });
+  writeFileSync(
+    resolve(koedHome, "run", "koed-server.json"),
+    JSON.stringify({ apiUrl: "http://127.0.0.1:3300" })
+  );
   return {
     get polls() {
       return polls;
     },
+    get readinessPolls() {
+      return readinessPolls;
+    },
+    readyRequests,
+    koedHome,
+    cleanup: () => rmSync(koedHome, { recursive: true, force: true }),
     dependencies: {
       now: () => elapsed,
       isRunning: () => running,
+      fetcher: async (url, options) => {
+        readyRequests.push({
+          url: String(url),
+          authorization:
+            options?.headers?.authorization ?? options?.headers?.Authorization
+        });
+        const status =
+          readinessStatuses[
+            Math.min(readinessPolls++, readinessStatuses.length - 1)
+          ];
+        return new Response(JSON.stringify({ status }), { status });
+      },
+      ...(statusProbeIntervalMs === undefined ? {} : { statusProbeIntervalMs }),
       runCommand: () => {
         const snapshot = snapshots[Math.min(polls++, snapshots.length - 1)];
         return { status: 0, stdout: JSON.stringify(snapshot) };
@@ -139,47 +170,92 @@ const reconnectPollOptions = {
   requireClientIntegration: true
 };
 
-test("reconnect waits through transient Privacy Filter Service health failures", async () => {
+const waitForHarnessStatus = (harness, options = {}) =>
+  waitForHealthyStatus(
+    { ...reconnectPollOptions, koedHome: harness.koedHome, ...options },
+    harness.dependencies
+  );
+
+test("reconnect waits through transient Privacy Filter Service health failures", async (t) => {
   const pending = healthyStatus();
   pending.privacyService.state = "starting";
   const healthy = healthyStatus();
-  const harness = statusPollHarness([pending, healthy]);
-  assert.deepEqual(
-    await waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
-    healthy
-  );
+  const harness = statusPollHarness([pending, healthy], {
+    statusProbeIntervalMs: 1
+  });
+  t.after(harness.cleanup);
+  assert.deepEqual(await waitForHarnessStatus(harness), healthy);
   assert.equal(harness.polls, 2);
 });
 
-test("reconnect does not accept healthy services until client integration is ready", async () => {
+test("readiness polling avoids repeated full status probes", async (t) => {
+  const healthy = healthyStatus();
+  const harness = statusPollHarness([healthy], {
+    readinessStatuses: [503, 200]
+  });
+  t.after(harness.cleanup);
+  assert.deepEqual(await waitForHarnessStatus(harness), healthy);
+  assert.equal(harness.readinessPolls, 2);
+  assert.equal(harness.polls, 1);
+  assert.deepEqual(harness.readyRequests, [
+    { url: "http://127.0.0.1:3300/ready", authorization: undefined },
+    { url: "http://127.0.0.1:3300/ready", authorization: undefined }
+  ]);
+});
+
+test("full status probes stay throttled while API readiness remains healthy", async (t) => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const harness = statusPollHarness([pending, healthyStatus()], {
+    statusProbeIntervalMs: 4
+  });
+  t.after(harness.cleanup);
+  await waitForHarnessStatus(harness);
+  assert.equal(harness.polls, 2);
+  assert.equal(harness.readinessPolls, 5);
+});
+
+test("default full status retry interval is thirty seconds", async (t) => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const harness = statusPollHarness([pending, healthyStatus()]);
+  t.after(harness.cleanup);
+  await waitForHarnessStatus(harness, {
+    timeoutMs: 30_001,
+    pollIntervalMs: 15_000
+  });
+  assert.equal(harness.polls, 2);
+  assert.equal(harness.readinessPolls, 3);
+});
+
+test("reconnect does not accept healthy services until client integration is ready", async (t) => {
   const pending = healthyStatus();
   pending.captureHook.state = "starting";
-  const harness = statusPollHarness([pending, healthyStatus()]);
-  const result = await waitForHealthyStatus(
-    reconnectPollOptions,
-    harness.dependencies
-  );
+  const harness = statusPollHarness([pending, healthyStatus()], {
+    statusProbeIntervalMs: 1
+  });
+  t.after(harness.cleanup);
+  const result = await waitForHarnessStatus(harness);
   assert.equal(result.captureHook.state, "healthy");
   assert.equal(harness.polls, 2);
 });
 
-test("reconnect fails with the last status if privacy never recovers", async () => {
+test("reconnect fails with the last status if privacy never recovers", async (t) => {
   const pending = healthyStatus();
   pending.privacyService.state = "starting";
-  const harness = statusPollHarness([pending]);
+  const harness = statusPollHarness([pending], { statusProbeIntervalMs: 1 });
+  t.after(harness.cleanup);
   await assert.rejects(
-    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
+    waitForHarnessStatus(harness),
     /Timed out waiting for packaged daemon health.*Last status:[\s\S]*privacyService[\s\S]*starting/
   );
   assert.equal(harness.polls, 10);
 });
 
-test("reconnect fails immediately if the daemon supervisor exited", async () => {
+test("reconnect fails immediately if the daemon supervisor exited", async (t) => {
   const harness = statusPollHarness([healthyStatus()], { running: false });
-  await assert.rejects(
-    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
-    /supervisor 123 exited/
-  );
+  t.after(harness.cleanup);
+  await assert.rejects(waitForHarnessStatus(harness), /supervisor 123 exited/);
   assert.equal(harness.polls, 0);
 });
 
