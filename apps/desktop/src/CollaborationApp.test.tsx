@@ -1440,9 +1440,10 @@ describe("CollaborationApp", () => {
     );
     await act(async () =>
       [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore original…")!
+        .find((button) => button.textContent === "Restore")!
         .click()
     );
+    // The restore page replaces the move page with its own Restore confirmation.
     await act(async () =>
       [...document.querySelectorAll("button")]
         .find((button) => button.textContent === "Restore")!
