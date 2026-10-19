@@ -23,10 +23,20 @@ export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 5;
+export const TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION = 1;
+export const TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE =
+  "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages";
+export const TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT =
+  "/v2/collaboration/realtime/snapshot";
+export const TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT =
+  "/v2/collaboration/realtime/stream";
+export const TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT =
+  "/v2/collaboration/realtime/ack";
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
 export const COLLABORATION_MESSAGE_MAX_UTF8_BYTES = 32_768;
+export const COLLABORATION_TEAM_MESSAGE_MENTION_MAX = 20;
 export const COLLABORATION_HISTORY_PAGE_MAX_ITEMS = 100;
 export const COLLABORATION_SOURCE_PAGE_MAX_ITEMS = 100;
 export const COLLABORATION_MAX_DM_PARTICIPANTS = 40;
@@ -189,6 +199,21 @@ const distinctUuidArray = (minimum: number, maximum: number) =>
       }
     });
 
+const distinctCanonicalUuidArray = (minimum: number, maximum: number) =>
+  z
+    .array(z.uuid())
+    .min(minimum)
+    .max(maximum)
+    .transform((values) => values.map((value) => value.toLowerCase()))
+    .superRefine((values, context) => {
+      if (new Set(values).size !== values.length) {
+        context.addIssue({
+          code: "custom",
+          message: "Identifiers must be distinct"
+        });
+      }
+    });
+
 export const collaborationNameSchema = boundedCodePoints(
   COLLABORATION_NAME_MAX_CODE_POINTS
 );
@@ -211,6 +236,44 @@ export const collaborationTimestampSchema = z
   .string()
   .max(64)
   .datetime({ offset: true });
+
+export const teamCollaborationV2CapabilitiesSchema = z
+  .object({
+    product: z.literal("koed"),
+    apiVersion: z.literal("v2"),
+    capabilitySchemaVersion: z.literal(
+      TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION
+    ),
+    teamCollaboration: z
+      .object({
+        availability: z.enum(["available", "unavailable"]),
+        messageContractVersion: z.literal(2),
+        messageEndpointTemplate: z.literal(
+          TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE
+        ),
+        realtime: z
+          .object({
+            protocolVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+            messageContractVersion: z.literal(2),
+            snapshotEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT
+            ),
+            streamEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT
+            ),
+            acknowledgementEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT
+            )
+          })
+          .strict()
+      })
+      .strict()
+  })
+  .strict();
+
+export type TeamCollaborationV2Capabilities = z.infer<
+  typeof teamCollaborationV2CapabilitiesSchema
+>;
 
 export const collaborationOpaqueCursorSchema = z
   .string()
@@ -787,6 +850,48 @@ export const collaborationMessageSchema = z
     }
   });
 
+export const teamCollaborationMessageV2RendererSchema = z
+  .object({
+    id: z.uuid(),
+    clientMessageId: z.uuid().nullable().optional(),
+    threadId: z.uuid(),
+    scope: z.literal("team"),
+    teamId: z.uuid(),
+    sequence: z.number().int().safe().positive(),
+    sender: participantSchema,
+    senderKind: z.literal("user"),
+    body: collaborationMessageBodySchema,
+    createdAt: collaborationTimestampSchema,
+    updatedAt: collaborationTimestampSchema,
+    editedAt: z.null(),
+    deletedAt: z.null(),
+    delivery: z.enum(["queued", "sent", "failed"]),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
+    failure: collaborationSafeErrorSchema.nullable(),
+    replyToMessageId: z.uuid().nullable(),
+    mentionsUserIds: distinctCanonicalUuidArray(
+      0,
+      COLLABORATION_TEAM_MESSAGE_MENTION_MAX
+    )
+  })
+  .strict()
+  .superRefine((message, context) => {
+    if (message.delivery !== "failed" && message.failure !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["failure"],
+        message: "Only failed messages may carry a safe failure"
+      });
+    }
+    if (message.delivery !== "sent" && message.recipientStatus !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["recipientStatus"],
+        message: "Only sent messages may carry a recipient status"
+      });
+    }
+  });
+
 const personalDurableSendAuthoritySchema = z
   .object({
     scope: z.literal("personal"),
@@ -938,6 +1043,35 @@ export const collaborationMessagePageSchema = z
         code: "custom",
         path: ["items"],
         message: "Every message must belong to the page thread"
+      });
+    }
+    for (let index = 1; index < page.items.length; index += 1) {
+      if (page.items[index - 1]!.sequence >= page.items[index]!.sequence) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "sequence"],
+          message: "Message page sequences must be strictly increasing"
+        });
+        break;
+      }
+    }
+  });
+
+export const teamCollaborationMessagePageV2Schema = z
+  .object({
+    ...pageMetadataShape,
+    threadId: z.uuid(),
+    items: z
+      .array(teamCollaborationMessageV2RendererSchema)
+      .max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
+  })
+  .strict()
+  .superRefine((page, context) => {
+    if (page.items.some((message) => message.threadId !== page.threadId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "Every Team Chat v2 message must belong to the page thread"
       });
     }
     for (let index = 1; index < page.items.length; index += 1) {
@@ -2542,6 +2676,22 @@ export const collaborationRendererCommandSchema = z
       clientMessageId: z.uuid(),
       body: collaborationMessageBodySchema
     }),
+    command("collaboration.send_team_message_v2", {
+      thread: z
+        .object({
+          scope: z.literal("team"),
+          teamId: z.uuid(),
+          threadId: z.uuid()
+        })
+        .strict(),
+      clientMessageId: z.uuid(),
+      body: collaborationMessageBodySchema,
+      replyToMessageId: z.uuid().nullable(),
+      mentionsUserIds: distinctCanonicalUuidArray(
+        0,
+        COLLABORATION_TEAM_MESSAGE_MENTION_MAX
+      )
+    }),
     command("collaboration.retry_message", {
       thread: collaborationThreadReferenceSchema,
       clientMessageId: z.uuid(),
@@ -2557,6 +2707,18 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.load_message_page", {
       thread: collaborationThreadReferenceSchema,
+      direction: z.enum(["older", "newer"]),
+      cursor: collaborationOpaqueCursorSchema.nullable(),
+      limit: z.number().int().min(1).max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
+    }),
+    command("collaboration.load_team_message_page_v2", {
+      thread: z
+        .object({
+          scope: z.literal("team"),
+          teamId: z.uuid(),
+          threadId: z.uuid()
+        })
+        .strict(),
       direction: z.enum(["older", "newer"]),
       cursor: collaborationOpaqueCursorSchema.nullable(),
       limit: z.number().int().min(1).max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
@@ -2904,10 +3066,12 @@ const commandNameSchema = z.enum([
   "collaboration.cancel_action_grant",
   ...threadResultCommands,
   "collaboration.send_message",
+  "collaboration.send_team_message_v2",
   "collaboration.retry_message",
   "collaboration.mark_read",
   "collaboration.mark_delivered",
   "collaboration.load_message_page",
+  "collaboration.load_team_message_page_v2",
   "collaboration.load_shared_source_page",
   "collaboration.create_invitation",
   "collaboration.list_invitations",
@@ -2998,6 +3162,10 @@ export const collaborationCommandResultSchema = z.union([
     ])
   ),
   successResult(
+    "collaboration.send_team_message_v2",
+    z.object({ message: teamCollaborationMessageV2RendererSchema }).strict()
+  ),
+  successResult(
     "collaboration.retry_message",
     z.union([
       z.object({ durableSend: collaborationDurableSendSchema }).strict(),
@@ -3015,6 +3183,10 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.load_message_page",
     z.object({ page: collaborationMessagePageSchema }).strict()
+  ),
+  successResult(
+    "collaboration.load_team_message_page_v2",
+    z.object({ page: teamCollaborationMessagePageV2Schema }).strict()
   ),
   successResult(
     "collaboration.load_shared_source_page",
@@ -3182,6 +3354,33 @@ const realtimeResourceSchema = z
       });
     }
   });
+
+const teamRealtimeResourceV2Schema = z
+  .object({
+    scope: z.literal("team"),
+    teamId: z.uuid(),
+    workspaceId: z.uuid().nullable(),
+    threadId: z.uuid().nullable(),
+    messageId: z.uuid().nullable(),
+    sharedSessionId: z.uuid().nullable(),
+    shareGrantId: z.uuid().nullable()
+  })
+  .strict();
+
+const teamRealtimeEventResourceV2Schema = z
+  .object({
+    scope: z.literal("team"),
+    type: z.string(),
+    id: z.string(),
+    teamId: z.uuid(),
+    teamWorkspaceId: z.uuid().nullable(),
+    threadId: z.uuid().nullable(),
+    messageId: z.uuid().nullable(),
+    sharedSessionId: z.uuid().nullable(),
+    shareGrantId: z.uuid().nullable(),
+    logicalMemoryId: z.uuid().nullable()
+  })
+  .strict();
 
 export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
   z
@@ -3389,6 +3588,16 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
             .strict()
         ])
         .nullable()
+    })
+    .strict()
+]);
+
+export const teamCollaborationRendererUpdateV2Schema = z.union([
+  collaborationRendererUpdateSchema,
+  z
+    .object({
+      type: z.literal("message_created_v2"),
+      message: teamCollaborationMessageV2RendererSchema
     })
     .strict()
 ]);
@@ -3761,6 +3970,107 @@ export const collaborationRendererEventSchema = z.discriminatedUnion("type", [
   collaborationDurableSendEventSchema
 ]);
 
+export const teamCollaborationRealtimeUpdateV2Schema = z
+  .object({
+    contractVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+    messageContractVersion: z.literal(2),
+    type: z.literal("update"),
+    subscriptionId: z.uuid(),
+    deliveryId: collaborationDeliveryIdSchema,
+    eventId: z.uuid(),
+    occurredAt: collaborationTimestampSchema,
+    family: collaborationRealtimeEventFamilySchema,
+    resource: teamRealtimeResourceV2Schema,
+    update: teamCollaborationRendererUpdateV2Schema
+  })
+  .strict()
+  .superRefine((delivery, context) => {
+    if (delivery.update.type === "message_created") {
+      context.addIssue({
+        code: "custom",
+        path: ["update", "message"],
+        message: "Team v2 realtime uses the Team v2 message DTO"
+      });
+      return;
+    }
+    if (delivery.update.type === "message_created_v2") {
+      if (
+        !["message_created", "shared_session_discussion_activity"].includes(
+          delivery.family
+        ) ||
+        delivery.resource.scope !== "team" ||
+        delivery.resource.threadId !== delivery.update.message.threadId ||
+        delivery.resource.messageId !== delivery.update.message.id ||
+        delivery.resource.teamId !== delivery.update.message.teamId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["update", "message"],
+          message: "Team Chat v2 message must match its authorized event"
+        });
+      }
+      return;
+    }
+    const legacy = collaborationRendererEventSchema.safeParse({
+      contractVersion: delivery.contractVersion,
+      type: delivery.type,
+      subscriptionId: delivery.subscriptionId,
+      deliveryId: delivery.deliveryId,
+      eventId: delivery.eventId,
+      occurredAt: delivery.occurredAt,
+      family: delivery.family,
+      resource: delivery.resource,
+      update: delivery.update
+    });
+    if (!legacy.success) {
+      context.addIssue({
+        code: "custom",
+        path: ["update"],
+        message: "Realtime update does not match its event family"
+      });
+    }
+  });
+
+export const teamCollaborationRealtimeV2EventSchema = z
+  .object({
+    protocolVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+    messageContractVersion: z.literal(2),
+    eventId: z.uuid(),
+    cursor: collaborationOpaqueCursorSchema,
+    type: collaborationRealtimeEventFamilySchema,
+    occurredAt: collaborationTimestampSchema,
+    subscription: z.object({ id: z.uuid() }).strict(),
+    resource: teamRealtimeEventResourceV2Schema,
+    actor: z.object({ principalId: z.string().nullable() }).strict(),
+    update: teamCollaborationRendererUpdateV2Schema
+  })
+  .strict()
+  .superRefine((event, context) => {
+    if (event.update.type === "message_created_v2") {
+      if (
+        !["message_created", "shared_session_discussion_activity"].includes(
+          event.type
+        ) ||
+        event.resource.scope !== "team" ||
+        event.resource.threadId !== event.update.message.threadId ||
+        event.resource.messageId !== event.update.message.id ||
+        event.resource.teamId !== event.update.message.teamId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["update", "message"],
+          message: "Team Chat v2 message must match its authorized event"
+        });
+      }
+    } else if (event.update.type === "message_created") {
+      context.addIssue({
+        code: "custom",
+        path: ["update", "message"],
+        message: "Team v2 realtime uses the Team v2 message DTO"
+      });
+    }
+  });
+
 export type CollaborationLimits = z.infer<typeof collaborationLimitsSchema>;
 export type CollaborationBackendIdentity = z.infer<
   typeof collaborationBackendIdentitySchema
@@ -3777,6 +4087,18 @@ export type CollaborationTeamPerson = z.infer<
 >;
 export type CollaborationThread = z.infer<typeof collaborationThreadSchema>;
 export type CollaborationMessage = z.infer<typeof collaborationMessageSchema>;
+export type TeamCollaborationMessageV2Renderer = z.infer<
+  typeof teamCollaborationMessageV2RendererSchema
+>;
+export type TeamCollaborationMessagePageV2 = z.infer<
+  typeof teamCollaborationMessagePageV2Schema
+>;
+export type TeamCollaborationRealtimeUpdateV2 = z.infer<
+  typeof teamCollaborationRealtimeUpdateV2Schema
+>;
+export type TeamCollaborationRealtimeV2Event = z.infer<
+  typeof teamCollaborationRealtimeV2EventSchema
+>;
 export type CollaborationDurableSend = z.infer<
   typeof collaborationDurableSendSchema
 >;

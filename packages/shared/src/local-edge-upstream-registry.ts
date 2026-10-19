@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
+import type { TeamCollaborationV2Capabilities } from "./collaboration-contract.js";
 
 export type LocalEdgeUpstreamRoutePolicyKey =
   | "personalMemoryRead"
@@ -45,6 +46,13 @@ export interface LocalEdgeUpstreamBackend {
         string,
         { availability?: "available" | "partial" | "unavailable" }
       >;
+    };
+    teamCollaborationV2?: {
+      state?: "validated" | "unsupported" | "stale" | "failed";
+      checkedAt?: string | null;
+      expiresAt?: string | null;
+      schemaVersion?: number | null;
+      payload?: TeamCollaborationV2Capabilities;
     };
   };
 }

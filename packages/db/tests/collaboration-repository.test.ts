@@ -1115,6 +1115,201 @@ describeDb("Collaboration repository", () => {
     expect(queued.rows[0]!.count).toBe("0");
   });
 
+  it("stores Team message v2 reply and mention data without changing v1 records", async () => {
+    const fixture = await createTeamFixture();
+    const thread = await repository.createThread(actor(fixture.ownerUserId), {
+      kind: "dm",
+      idempotencyKey: `v2-message-thread:${randomUUID()}`,
+      teamId: fixture.teamId,
+      participantUserIds: [fixture.memberUserId]
+    });
+    const otherThread = await repository.createThread(
+      actor(fixture.ownerUserId),
+      {
+        kind: "dm",
+        idempotencyKey: `v2-message-other-thread:${randomUUID()}`,
+        teamId: fixture.teamId,
+        participantUserIds: [fixture.secondMemberUserId]
+      }
+    );
+    if (!thread || !otherThread) {
+      throw new Error("Expected authorized Team Chat threads");
+    }
+    const original = await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: thread.id,
+      idempotencyKey: `v2-message-original:${randomUUID()}`,
+      bodyText: "Legacy Team Chat message"
+    });
+    const otherMessage = await repository.sendMessage(
+      actor(fixture.ownerUserId),
+      {
+        threadId: otherThread.id,
+        idempotencyKey: `v2-message-other:${randomUUID()}`,
+        bodyText: "Message in another authorized thread"
+      }
+    );
+    if (!original || !otherMessage) {
+      throw new Error("Expected stored Team Chat messages");
+    }
+
+    const idempotencyKey = `v2-message-send:${randomUUID()}`;
+    const input = {
+      threadId: thread.id,
+      idempotencyKey,
+      bodyText: "A reply that mentions the current recipient",
+      replyToMessageId: original.id,
+      mentionsUserIds: [fixture.memberUserId]
+    };
+    const sent = await repository.sendTeamMessageV2(
+      actor(fixture.ownerUserId),
+      input
+    );
+    expect(sent).toMatchObject({
+      threadId: thread.id,
+      replyToMessageId: original.id,
+      mentionsUserIds: [fixture.memberUserId]
+    });
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), input)
+    ).resolves.toEqual(sent);
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), {
+        ...input,
+        mentionsUserIds: []
+      })
+    ).rejects.toBeInstanceOf(CollaborationIdempotencyConflictError);
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), {
+        ...input,
+        idempotencyKey: `v2-message-cross-thread:${randomUUID()}`,
+        replyToMessageId: otherMessage.id
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), {
+        ...input,
+        idempotencyKey: `v2-message-outside-audience:${randomUUID()}`,
+        mentionsUserIds: [fixture.secondMemberUserId]
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+
+    const legacyPage = await repository.listMessages(
+      actor(fixture.memberUserId),
+      { threadId: thread.id }
+    );
+    const legacyV2Send = legacyPage?.messages.find(
+      (message) => message.id === sent!.id
+    );
+    expect(legacyV2Send).toMatchObject({
+      id: sent!.id,
+      bodyText: input.bodyText
+    });
+    expect(legacyV2Send).not.toHaveProperty("replyToMessageId");
+    expect(legacyV2Send?.metadata).not.toHaveProperty("__koed_team_message_v2");
+
+    const v2Page = await (async () => {
+      const decryptSpy = vi.spyOn(provider, "decrypt");
+      try {
+        const page = await repository.listTeamMessagesV2(
+          actor(fixture.memberUserId),
+          { threadId: thread.id }
+        );
+        expect(decryptSpy).toHaveBeenCalledTimes(6);
+        return page;
+      } finally {
+        decryptSpy.mockRestore();
+      }
+    })();
+    expect(
+      v2Page?.messages.find((message) => message.id === original.id)
+    ).toMatchObject({ replyToMessageId: null, mentionsUserIds: [] });
+    expect(
+      v2Page?.messages.find((message) => message.id === sent!.id)
+    ).toMatchObject({
+      replyToMessageId: original.id,
+      mentionsUserIds: [fixture.memberUserId]
+    });
+
+    const finalReply = await repository.sendTeamMessageV2(
+      actor(fixture.memberUserId),
+      {
+        threadId: thread.id,
+        idempotencyKey: `v2-message-final-reply:${randomUUID()}`,
+        bodyText: "The third message in the reply chain",
+        replyToMessageId: sent!.id,
+        mentionsUserIds: []
+      }
+    );
+    expect(finalReply?.replyToMessageId).toBe(sent!.id);
+
+    await pool.query(
+      `update team_memberships
+          set status = 'disabled', disabled_at = now(), version = version + 1
+        where team_id = $1 and user_id = $2`,
+      [fixture.teamId, fixture.memberUserId]
+    );
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), input)
+    ).resolves.toEqual(sent);
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), {
+        ...input,
+        mentionsUserIds: []
+      })
+    ).rejects.toBeInstanceOf(CollaborationIdempotencyConflictError);
+
+    await pool.query(
+      `update team_memberships
+          set status = 'disabled', disabled_at = now(), version = version + 1
+        where team_id = $1 and user_id = $2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), input)
+    ).resolves.toBeNull();
+
+    await expect(
+      pool.query("delete from collaboration_messages where id = $1", [
+        original.id
+      ])
+    ).rejects.toMatchObject({ code: "23503" });
+    const intactChain = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from collaboration_messages
+        where thread_id = $1`,
+      [thread.id]
+    );
+    expect(intactChain.rows[0]!.count).toBe("3");
+
+    // Clear fixture-owned retention references before deleting the thread's messages.
+    await pool.query("delete from collaboration_outbox where thread_id = $1", [
+      thread.id
+    ]);
+    await pool.query(
+      "delete from collaboration_receipt_states where thread_id = $1",
+      [thread.id]
+    );
+    const deletedChain = await pool.query<{ id: string }>(
+      `with thread_message_ids as (
+         select id from collaboration_messages where thread_id = $1
+       ), deleted_thread_messages as (
+         delete from collaboration_messages
+          where id in (select id from thread_message_ids)
+          returning id
+       )
+       select id from deleted_thread_messages`,
+      [thread.id]
+    );
+    expect(deletedChain.rowCount).toBe(3);
+    const remainingChain = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from collaboration_messages
+        where thread_id = $1`,
+      [thread.id]
+    );
+    expect(remainingChain.rows[0]!.count).toBe("0");
+  });
+
   it("converges two clients on channel-name and participant-set identities", async () => {
     const personalOwnerUserId = await createUser("Natural Personal Owner");
     const personalKeyA = `personal-name-a:${randomUUID()}`;

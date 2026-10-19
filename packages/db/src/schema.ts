@@ -8849,6 +8849,7 @@ export const collaborationMessages = pgTable(
     threadId: uuid("thread_id")
       .notNull()
       .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    replyToMessageId: uuid("reply_to_message_id"),
     threadSequence: bigint("thread_sequence", { mode: "number" }).notNull(),
     audienceVersion: integer("audience_version").notNull(),
     scope: collaborationScope("scope").notNull(),
@@ -8890,6 +8891,11 @@ export const collaborationMessages = pgTable(
       columns: [table.threadId, table.scope],
       foreignColumns: [collaborationThreads.id, collaborationThreads.scope],
       name: "collaboration_messages_thread_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.replyToMessageId],
+      foreignColumns: [table.threadId, table.id],
+      name: "collaboration_messages_reply_same_thread_fk"
     }).onDelete("restrict"),
     foreignKey({
       columns: [table.threadId, table.personalOwnerUserId],
@@ -9337,6 +9343,9 @@ export const localEdgeCollaborationSubscriptions = pgTable(
     credentialBindingHash: text("credential_binding_hash").notNull(),
     teamId: uuid("team_id"),
     protocolVersion: integer("protocol_version").notNull(),
+    messageContractVersion: integer("message_contract_version")
+      .notNull()
+      .default(1),
     remoteSubscriptionId: uuid("remote_subscription_id").notNull(),
     remoteCursor: text("remote_cursor").notNull(),
     lastAcknowledgedEventId: uuid("last_acknowledged_event_id"),
@@ -9358,7 +9367,8 @@ export const localEdgeCollaborationSubscriptions = pgTable(
       .on(
         table.upstreamBackendId,
         table.credentialBindingHash,
-        table.protocolVersion
+        table.protocolVersion,
+        table.messageContractVersion
       )
       .where(sql`${table.scope} = 'personal' and ${table.teamId} is null`),
     uniqueIndex("local_edge_collaboration_subscriptions_team_binding_unique")
@@ -9366,7 +9376,8 @@ export const localEdgeCollaborationSubscriptions = pgTable(
         table.upstreamBackendId,
         table.credentialBindingHash,
         table.teamId,
-        table.protocolVersion
+        table.protocolVersion,
+        table.messageContractVersion
       )
       .where(sql`${table.scope} = 'team' and ${table.teamId} is not null`),
     index("local_edge_collaboration_subscriptions_active_idx").on(
@@ -9381,6 +9392,8 @@ export const localEdgeCollaborationSubscriptions = pgTable(
           or (${table.scope} = 'team' and ${table.teamId} is not null))
         and length(${table.credentialBindingHash}) = 64
         and ${table.protocolVersion} > 0
+        and ${table.messageContractVersion} in (1, 2)
+        and (${table.scope} = 'team' or ${table.messageContractVersion} = 1)
         and length(${table.remoteCursor}) between 16 and 4096
         and ${table.version} > 0
         and ${table.expiresAt} > ${table.createdAt}`

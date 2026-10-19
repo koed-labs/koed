@@ -18,6 +18,8 @@ import {
   collaborationRealtimeEventFamilySchema,
   collaborationRendererEventSchema,
   collaborationRendererUpdateSchema,
+  teamCollaborationRealtimeUpdateV2Schema,
+  teamCollaborationRealtimeV2EventSchema,
   collaborationSafeErrorMessages,
   isLoopbackHostname,
   readLocalEdgeClientCredentialAuthorization,
@@ -33,12 +35,16 @@ import {
   type PersonalRealtimeMaterializationRepository
 } from "../collaboration/realtime.js";
 import {
+  acknowledgeLocalEdgeTeamRealtimeV2DeliverySchema,
   acknowledgeLocalEdgeCollaborationDeliverySchema,
+  createLocalEdgeTeamRealtimeV2SubscriptionSchema,
   createLocalEdgeCollaborationSubscriptionSchema,
   localEdgeCollaborationBackendParamsSchema,
   localEdgeCollaborationStreamQuerySchema,
+  localEdgeTeamRealtimeV2StreamQuerySchema,
   localEdgeCollaborationSubscriptionParamsSchema,
-  unsubscribeLocalEdgeCollaborationSchema
+  unsubscribeLocalEdgeCollaborationSchema,
+  unsubscribeLocalEdgeTeamRealtimeV2Schema
 } from "./schemas.js";
 import {
   activeUpstreamBackend,
@@ -55,6 +61,13 @@ const protocolVersion = COLLABORATION_CONTRACT_VERSION;
 const remoteSnapshotPath = "/v1/collaboration/realtime/snapshot";
 const remoteStreamPath = "/v1/collaboration/realtime/stream";
 const remoteAckPath = "/v1/collaboration/realtime/ack";
+const remoteSnapshotV2Path = "/v2/collaboration/realtime/snapshot";
+const remoteStreamV2Path = "/v2/collaboration/realtime/stream";
+const remoteAckV2Path = "/v2/collaboration/realtime/ack";
+const localSnapshotV2Path =
+  "/v2/local-edge/collaboration/realtime/subscriptions";
+const localAckV2Path = `${localSnapshotV2Path}/:subscriptionId/ack`;
+const localStreamV2Path = `${localSnapshotV2Path}/:subscriptionId/stream`;
 const remotePrincipalStatusPath = "/v1/local-edge/device-credentials/status";
 const defaultSnapshotBytes = 4 * 1024 * 1024;
 const defaultRemoteEventBytes = 512 * 1024;
@@ -230,6 +243,90 @@ const remoteAckResponseSchema = z
   .object({ subscription: remoteSubscriptionSchema })
   .strict();
 
+const remoteTeamSnapshotV2Schema = z
+  .object({
+    protocolVersion: z.literal(protocolVersion),
+    messageContractVersion: z.literal(2),
+    subscription: remoteSubscriptionSchema,
+    snapshot: z
+      .object({
+        scope: z.literal("team"),
+        personalOwnerUserId: z.null(),
+        teamId: z.uuid(),
+        highWaterCursor: remoteCursorSchema,
+        threads: z.array(remoteThreadSchema).max(5_000)
+      })
+      .strict(),
+    cursor: remoteCursorSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.cursor !== value.snapshot.highWaterCursor ||
+      value.subscription.scope !== "team" ||
+      value.subscription.personalOwnerUserId !== null ||
+      value.subscription.teamId !== value.snapshot.teamId ||
+      value.subscription.state !== "active"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["subscription"],
+        message: "Team v2 snapshot binding is invalid"
+      });
+    }
+  });
+
+const remoteAckV2ResponseSchema = z
+  .object({
+    messageContractVersion: z.literal(2),
+    subscription: remoteSubscriptionSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.subscription.scope !== "team" ||
+      value.subscription.personalOwnerUserId !== null
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["subscription", "scope"],
+        message: "Team v2 acknowledgement cannot bind Personal data"
+      });
+    }
+  });
+
+const remoteControlV2Schema = z
+  .object({
+    protocolVersion: z.literal(protocolVersion),
+    messageContractVersion: z.literal(2),
+    subscription: z.object({ id: z.uuid() }).strict(),
+    reason: z.enum([
+      "access_revoked",
+      "requires_snapshot",
+      "backpressure",
+      "server_shutdown",
+      "stream_replaced"
+    ])
+  })
+  .strict();
+
+const remoteReadyV2Schema = z
+  .object({
+    protocolVersion: z.literal(protocolVersion),
+    messageContractVersion: z.literal(2),
+    subscription: z.object({ id: z.uuid() }).strict(),
+    cursor: remoteCursorSchema
+  })
+  .strict();
+
+const remoteHeartbeatV2Schema = z
+  .object({
+    protocolVersion: z.literal(protocolVersion),
+    messageContractVersion: z.literal(2),
+    subscription: z.object({ id: z.uuid() }).strict()
+  })
+  .strict();
+
 const remoteEventSchema = z
   .object({
     protocolVersion: z.literal(protocolVersion),
@@ -338,6 +435,7 @@ interface LocalSubscriptionRow {
   credentialBindingHash: string;
   teamId: string | null;
   protocolVersion: number;
+  messageContractVersion: 1 | 2;
   remoteSubscriptionId: string;
   remoteCursor: string;
   lastAcknowledgedEventId: string | null;
@@ -358,6 +456,7 @@ interface LocalBinding {
   upstreamBackendIdentity: string;
   remotePrincipalId: string;
   teamId: string | null;
+  messageContractVersion: 1 | 2;
   credentialBindingHash: string;
   clientInstanceId: string;
   subscriptionKey: string;
@@ -588,6 +687,7 @@ const iso = (value: Date | string | null): string | null =>
 const publicSubscription = (row: LocalSubscriptionRow) => ({
   id: row.id,
   protocolVersion: row.protocolVersion,
+  ...(row.messageContractVersion === 2 ? { messageContractVersion: 2 } : {}),
   scope:
     row.scope === "personal"
       ? ({ scope: "personal" } as const)
@@ -625,6 +725,7 @@ const selectColumns = `
   credential_binding_hash as "credentialBindingHash",
   team_id as "teamId",
   protocol_version as "protocolVersion",
+  message_contract_version as "messageContractVersion",
   remote_subscription_id as "remoteSubscriptionId",
   remote_cursor as "remoteCursor",
   last_acknowledged_event_id as "lastAcknowledgedEventId",
@@ -1090,14 +1191,20 @@ export const createCollaborationRealtimeBroker = (
   const authorizeTeam = async (
     credential: DesktopLocalCredentialAuthorization,
     upstreamBackendId: string,
-    teamId: string
+    teamId: string,
+    messageContractVersion: 1 | 2 = 1
   ): Promise<LocalBinding> => {
     const registry = readLocalEdgeUpstreamRegistry(
       options.upstreamBackendsPath
     );
     const upstreamBackend = upstreamBackendById(registry, upstreamBackendId);
     if (!upstreamBackend) fail("Upstream backend is unavailable", 424);
-    if (!upstreamSupportsCollaborationRealtime(upstreamBackend!)) {
+    if (
+      !upstreamSupportsCollaborationRealtime(
+        upstreamBackend!,
+        messageContractVersion
+      )
+    ) {
       fail("Upstream collaboration realtime protocol is unavailable", 424);
     }
     const localEdgeCredential = readLocalEdgeCredential(
@@ -1146,7 +1253,8 @@ export const createCollaborationRealtimeBroker = (
       upstreamBackendIdentity,
       authorizedLocalEdgeCredential.credentialKeyId,
       remotePrincipalId,
-      teamId
+      teamId,
+      ...(messageContractVersion === 2 ? ["message-contract-v2"] : [])
     ]);
     return {
       localOwnerUserId: credential.ownerUserId,
@@ -1155,16 +1263,19 @@ export const createCollaborationRealtimeBroker = (
       upstreamBackendIdentity,
       remotePrincipalId,
       teamId,
+      messageContractVersion,
       credentialBindingHash: bindingHash,
       clientInstanceId: `lcb1.${hmac(options.brokerSecret, "client-instance", [
         bindingHash,
         upstreamBackendId,
-        teamId
+        teamId,
+        ...(messageContractVersion === 2 ? ["2"] : [])
       ])}`,
       subscriptionKey: `lcb1.${hmac(options.brokerSecret, "subscription-key", [
         bindingHash,
         upstreamBackendId,
-        teamId
+        teamId,
+        ...(messageContractVersion === 2 ? ["2"] : [])
       ])}`,
       upstreamBackend: upstreamBackend!,
       upstreamAuthorization: upstreamAuthorization!
@@ -1245,6 +1356,7 @@ export const createCollaborationRealtimeBroker = (
       upstreamBackendIdentity,
       remotePrincipalId,
       teamId: null,
+      messageContractVersion: 1,
       credentialBindingHash: bindingHash,
       clientInstanceId: `lcb1.${hmac(options.brokerSecret, "client-instance", [
         bindingHash,
@@ -1271,13 +1383,15 @@ export const createCollaborationRealtimeBroker = (
          and credential_binding_hash = $2
          and scope = $3::collaboration_scope
          and team_id is not distinct from $4::uuid
-         and protocol_version = $5`,
+         and protocol_version = $5
+         and message_contract_version = $6`,
       [
         binding.upstreamBackendId,
         binding.credentialBindingHash,
         binding.scope,
         binding.teamId,
-        protocolVersion
+        protocolVersion,
+        binding.messageContractVersion
       ]
     );
     return result.rows[0] ?? null;
@@ -1295,14 +1409,16 @@ export const createCollaborationRealtimeBroker = (
          and credential_binding_hash = $3
          and scope = $4::collaboration_scope
          and team_id is not distinct from $5::uuid
-         and protocol_version = $6`,
+         and protocol_version = $6
+         and message_contract_version = $7`,
       [
         subscriptionId,
         binding.upstreamBackendId,
         binding.credentialBindingHash,
         binding.scope,
         binding.teamId,
-        protocolVersion
+        protocolVersion,
+        binding.messageContractVersion
       ]
     );
     return (
@@ -1400,7 +1516,7 @@ export const createCollaborationRealtimeBroker = (
     pending: PendingSnapshot
   ): Promise<LocalSubscriptionRow> =>
     withTransaction(requirePool(options.pool), async (client) => {
-      const lockKey = `${pending.binding.upstreamBackendId}:${pending.binding.scope}:${pending.binding.teamId ?? "personal"}:${protocolVersion}`;
+      const lockKey = `${pending.binding.upstreamBackendId}:${pending.binding.scope}:${pending.binding.teamId ?? "personal"}:${protocolVersion}:${pending.binding.messageContractVersion}`;
       await client.query(
         "select pg_advisory_xact_lock(hashtextextended($1, 0))",
         [lockKey]
@@ -1413,13 +1529,15 @@ export const createCollaborationRealtimeBroker = (
            and scope = $3::collaboration_scope
            and team_id is not distinct from $4::uuid
            and protocol_version = $5
+           and message_contract_version = $6
          for update`,
         [
           pending.binding.upstreamBackendId,
           pending.binding.credentialBindingHash,
           pending.binding.scope,
           pending.binding.teamId,
-          protocolVersion
+          protocolVersion,
+          pending.binding.messageContractVersion
         ]
       );
       const existing = selected.rows[0];
@@ -1430,9 +1548,10 @@ export const createCollaborationRealtimeBroker = (
         const inserted = await client.query<LocalSubscriptionRow>(
           `insert into local_edge_collaboration_subscriptions (
              id, scope, upstream_backend_id, credential_binding_hash, team_id,
-             protocol_version, remote_subscription_id, remote_cursor,
+             protocol_version, message_contract_version,
+             remote_subscription_id, remote_cursor,
              last_acknowledged_event_id, state, version, expires_at
-           ) values ($1, $2::collaboration_scope, $3, $4, $5, $6, $7, $8, null, 'active', 1, $9)
+           ) values ($1, $2::collaboration_scope, $3, $4, $5, $6, $7, $8, $9, null, 'active', 1, $10)
            returning ${selectColumns}`,
           [
             pending.localSubscriptionId,
@@ -1441,6 +1560,7 @@ export const createCollaborationRealtimeBroker = (
             pending.binding.credentialBindingHash,
             pending.binding.teamId,
             protocolVersion,
+            pending.binding.messageContractVersion,
             pending.remoteSubscriptionId,
             pending.remoteCursor,
             pending.remoteExpiresAt
@@ -1484,7 +1604,7 @@ export const createCollaborationRealtimeBroker = (
     pending: Omit<PendingSnapshot, "expectedVersion">
   ): Promise<LocalSubscriptionRow> =>
     withTransaction(requirePool(options.pool), async (client) => {
-      const lockKey = `${pending.binding.upstreamBackendId}:${pending.binding.scope}:${pending.binding.teamId ?? "personal"}:${protocolVersion}`;
+      const lockKey = `${pending.binding.upstreamBackendId}:${pending.binding.scope}:${pending.binding.teamId ?? "personal"}:${protocolVersion}:${pending.binding.messageContractVersion}`;
       await client.query(
         "select pg_advisory_xact_lock(hashtextextended($1, 0))",
         [lockKey]
@@ -1498,13 +1618,15 @@ export const createCollaborationRealtimeBroker = (
            and scope = $2::collaboration_scope
            and team_id is not distinct from $3::uuid
            and protocol_version = $4
-           and credential_binding_hash <> $5
+           and message_contract_version = $5
+           and credential_binding_hash <> $6
            and state in ('active', 'requires_snapshot')`,
         [
           pending.binding.upstreamBackendId,
           pending.binding.scope,
           pending.binding.teamId,
           protocolVersion,
+          pending.binding.messageContractVersion,
           pending.binding.credentialBindingHash
         ]
       );
@@ -1516,13 +1638,15 @@ export const createCollaborationRealtimeBroker = (
            and scope = $3::collaboration_scope
            and team_id is not distinct from $4::uuid
            and protocol_version = $5
+           and message_contract_version = $6
          for update`,
         [
           pending.binding.upstreamBackendId,
           pending.binding.credentialBindingHash,
           pending.binding.scope,
           pending.binding.teamId,
-          protocolVersion
+          protocolVersion,
+          pending.binding.messageContractVersion
         ]
       );
       const existing = selected.rows[0];
@@ -1530,9 +1654,10 @@ export const createCollaborationRealtimeBroker = (
         const inserted = await client.query<LocalSubscriptionRow>(
           `insert into local_edge_collaboration_subscriptions (
              id, scope, upstream_backend_id, credential_binding_hash, team_id,
-             protocol_version, remote_subscription_id, remote_cursor,
+             protocol_version, message_contract_version,
+             remote_subscription_id, remote_cursor,
              last_acknowledged_event_id, state, version, expires_at
-           ) values ($1, $2::collaboration_scope, $3, $4, $5, $6, $7, $8, null, 'requires_snapshot', 1, $9)
+           ) values ($1, $2::collaboration_scope, $3, $4, $5, $6, $7, $8, $9, null, 'requires_snapshot', 1, $10)
            returning ${selectColumns}`,
           [
             pending.localSubscriptionId,
@@ -1541,6 +1666,7 @@ export const createCollaborationRealtimeBroker = (
             pending.binding.credentialBindingHash,
             pending.binding.teamId,
             protocolVersion,
+            pending.binding.messageContractVersion,
             pending.remoteSubscriptionId,
             pending.remoteCursor,
             pending.remoteExpiresAt
@@ -1587,6 +1713,7 @@ export const createCollaborationRealtimeBroker = (
            and scope = $4::collaboration_scope
            and team_id is not distinct from $5::uuid
            and protocol_version = $6
+           and message_contract_version = $7
          for update`,
         [
           pending.localSubscriptionId,
@@ -1594,7 +1721,8 @@ export const createCollaborationRealtimeBroker = (
           pending.binding.credentialBindingHash,
           pending.binding.scope,
           pending.binding.teamId,
-          protocolVersion
+          protocolVersion,
+          pending.binding.messageContractVersion
         ]
       );
       const row = selected.rows[0];
@@ -1860,15 +1988,44 @@ export const createCollaborationRealtimeBroker = (
   ): Promise<void> => {
     if (!parsed.data || connection.stopped) return;
     if (parsed.event === "ready" || parsed.event === "heartbeat") {
+      if (connection.binding.messageContractVersion === 2) {
+        try {
+          const readyOrHeartbeat = JSON.parse(parsed.data) as unknown;
+          if (parsed.event === "ready") {
+            const ready = remoteReadyV2Schema.parse(readyOrHeartbeat);
+            if (
+              ready.subscription.id !== connection.row.remoteSubscriptionId ||
+              ready.cursor !== connection.row.remoteCursor
+            ) {
+              fail("Upstream collaboration stream binding is invalid", 502);
+            }
+          } else {
+            const heartbeat = remoteHeartbeatV2Schema.parse(readyOrHeartbeat);
+            if (
+              heartbeat.subscription.id !== connection.row.remoteSubscriptionId
+            ) {
+              fail("Upstream collaboration stream binding is invalid", 502);
+            }
+          }
+        } catch {
+          fail("Upstream collaboration stream event is invalid", 502);
+        }
+      }
       if (parsed.event === "heartbeat") {
         await writeLocalComment(connection.reply, "heartbeat");
       }
       return;
     }
     if (parsed.event === "control" || parsed.event === "access_revoked") {
-      let control: z.infer<typeof remoteControlSchema>;
+      let control:
+        | z.infer<typeof remoteControlSchema>
+        | z.infer<typeof remoteControlV2Schema>;
       try {
-        control = remoteControlSchema.parse(JSON.parse(parsed.data));
+        const value: unknown = JSON.parse(parsed.data);
+        control =
+          connection.binding.messageContractVersion === 2
+            ? remoteControlV2Schema.parse(value)
+            : remoteControlSchema.parse(value);
       } catch {
         fail("Upstream collaboration control event is invalid", 502);
       }
@@ -1905,9 +2062,15 @@ export const createCollaborationRealtimeBroker = (
       return;
     }
     if (parsed.event !== "collaboration_event") return;
-    let event: z.infer<typeof remoteEventSchema>;
+    let event:
+      | z.infer<typeof remoteEventSchema>
+      | z.infer<typeof teamCollaborationRealtimeV2EventSchema>;
     try {
-      event = remoteEventSchema.parse(JSON.parse(parsed.data));
+      const value: unknown = JSON.parse(parsed.data);
+      event =
+        connection.binding.messageContractVersion === 2
+          ? teamCollaborationRealtimeV2EventSchema.parse(value)
+          : remoteEventSchema.parse(value);
     } catch {
       fail("Upstream collaboration event is invalid", 502);
     }
@@ -1950,9 +2113,9 @@ export const createCollaborationRealtimeBroker = (
     options.onRemoteNavigationInvalidated?.(
       connection.binding.upstreamBackendId
     );
-    const payload = rendererUpdateEvent({
+    const payloadBase = {
       contractVersion: protocolVersion,
-      type: "update",
+      type: "update" as const,
       subscriptionId: connection.localSubscriptionId,
       deliveryId: hmac(options.brokerSecret, "event-delivery", [
         connection.localSubscriptionId,
@@ -1971,7 +2134,14 @@ export const createCollaborationRealtimeBroker = (
         shareGrantId: event!.resource.shareGrantId
       },
       update: event!.update
-    });
+    };
+    const payload =
+      connection.binding.messageContractVersion === 2
+        ? teamCollaborationRealtimeUpdateV2Schema.parse({
+            ...payloadBase,
+            messageContractVersion: 2
+          })
+        : rendererUpdateEvent(payloadBase);
     const bytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
     const pending: PendingRemoteEvent = {
       kind: "remote_event",
@@ -1995,7 +2165,16 @@ export const createCollaborationRealtimeBroker = (
     }, ackDeadlineMs);
     deadline.unref?.();
     pendingEventDeadlines.set(pending.deliveryId, deadline);
-    await writeRendererEvent(connection.reply, payload, payload.deliveryId);
+    if (connection.binding.messageContractVersion === 2) {
+      await writeLocalEvent(
+        connection.reply,
+        "collaboration",
+        payload,
+        payload.deliveryId
+      );
+    } else {
+      await writeRendererEvent(connection.reply, payload, payload.deliveryId);
+    }
   };
 
   const flushPersonalReplay = async (
@@ -2108,12 +2287,16 @@ export const createCollaborationRealtimeBroker = (
   const openRemoteStream = async (
     connection: ActiveConnection
   ): Promise<Response> => {
+    const path =
+      connection.binding.messageContractVersion === 2
+        ? remoteStreamV2Path
+        : remoteStreamPath;
     assertUpstreamOperationPathAllowed(
       connection.binding.scope === "personal"
         ? "personal_collaboration_read"
         : "team_workspace_read",
       "GET",
-      remoteStreamPath
+      path
     );
     const query = new URLSearchParams({
       scope: connection.binding.scope,
@@ -2128,7 +2311,7 @@ export const createCollaborationRealtimeBroker = (
       return await upstreamFetch(
         safeUpstreamProxyUrl(
           connection.binding.upstreamBackend,
-          `${remoteStreamPath}?${query.toString()}`
+          `${path}?${query.toString()}`
         ),
         {
           method: "GET",
@@ -2241,557 +2424,516 @@ export const createCollaborationRealtimeBroker = (
     if (registered) return;
     registered = true;
 
-    options.app.post(
-      "/v1/local-edge/collaboration/realtime/subscriptions",
-      async (request) => {
-        const credential = await authorizeLocalOwner(request);
-        const input = parseOrFail(
-          createLocalEdgeCollaborationSubscriptionSchema,
-          request.body
-        );
-        if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = authorizePersonal(credential);
-          const hasPendingForBinding = [
-            ...pendingPersonalSnapshots.values()
-          ].some(
-            (pending) =>
-              pending.binding.credentialBindingHash ===
-              binding.credentialBindingHash
-          );
-          if (
-            !hasPendingForBinding &&
-            pendingSnapshotCount() >= maxConnections
-          ) {
-            fail("Local collaboration snapshot limit reached", 429);
-          }
-          const snapshot = await repository().getAuthorizedSnapshot(
-            { userId: binding.localOwnerUserId },
-            { scope: "personal", includeArchived: true }
-          );
-          if (!snapshot) {
-            return fail("Personal collaboration snapshot is unavailable", 403);
-          }
-          const authorizedSnapshot = snapshot;
-          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
-          const subscription = await repository().createSubscription(
-            { userId: binding.localOwnerUserId },
-            {
-              ...personalSubscriptionBinding(binding),
-              scope: "personal",
-              snapshotHighWaterCursor: authorizedSnapshot.highWaterCursor,
-              expiresAt
-            }
-          );
-          if (!subscription) {
-            return fail(
-              "Personal collaboration subscription cannot be created",
-              403
-            );
-          }
-          const createdSubscription = subscription;
-          const localSubscriptionId = createdSubscription.id;
-          const deliveryId = hmac(
-            options.brokerSecret,
-            "personal-snapshot-delivery",
-            [
-              localSubscriptionId,
-              binding.localOwnerUserId,
-              String(authorizedSnapshot.highWaterCursor)
-            ]
-          );
-          const responsePayload = {
-            protocolVersion,
-            subscription: {
-              id: localSubscriptionId,
-              protocolVersion,
-              scope: { scope: "personal" as const },
-              state: "awaiting_snapshot_ack",
-              version: 1,
-              expiresAt: expiresAt.toISOString()
-            },
-            delivery: {
-              deliveryId,
-              eventId: null,
-              type: "snapshot",
-              snapshot: {
-                scope: "personal",
-                personalOwnerUserId: binding.localOwnerUserId,
-                highWaterCursor: authorizedSnapshot.highWaterCursor,
-                threads: authorizedSnapshot.threads
-              }
-            }
-          };
-          if (
-            Buffer.byteLength(JSON.stringify(responsePayload), "utf8") >
-            maxSnapshotBytes
-          ) {
-            fail("Local collaboration snapshot is too large", 413);
-          }
-          for (const [key, pending] of pendingPersonalSnapshots) {
-            if (pending.localSubscriptionId === localSubscriptionId) {
-              pendingPersonalSnapshots.delete(key);
-            }
-          }
-          pendingPersonalSnapshots.set(deliveryId, {
-            kind: "personal_snapshot",
-            localSubscriptionId,
-            expectedVersion: 1,
-            binding,
-            deliveryId,
-            highWaterCursor: authorizedSnapshot.highWaterCursor,
-            expiresAt
-          });
-          return responsePayload;
-        }
-        const binding =
-          input.scope === "personal"
-            ? await authorizeRemotePersonal(credential)
-            : await authorizeTeam(
-                credential,
-                input.upstream_backend_id,
-                input.team_id
-              );
-        const existing = await loadByBinding(binding);
-        const hasPendingForBinding = [...pendingSnapshots.values()].some(
+    const handleCreateSubscription = async (
+      request: FastifyRequest,
+      messageContractVersion: 1 | 2
+    ) => {
+      const credential = await authorizeLocalOwner(request);
+      const input = parseOrFail(
+        messageContractVersion === 2
+          ? createLocalEdgeTeamRealtimeV2SubscriptionSchema
+          : createLocalEdgeCollaborationSubscriptionSchema,
+        request.body
+      );
+      if (
+        messageContractVersion === 1 &&
+        input.scope === "personal" &&
+        !configuredRemotePersonalBackend()
+      ) {
+        const binding = authorizePersonal(credential);
+        const hasPendingForBinding = [
+          ...pendingPersonalSnapshots.values()
+        ].some(
           (pending) =>
-            pending.binding.upstreamBackendId === binding.upstreamBackendId &&
             pending.binding.credentialBindingHash ===
-              binding.credentialBindingHash &&
-            pending.binding.scope === binding.scope &&
-            pending.binding.teamId === binding.teamId
+            binding.credentialBindingHash
         );
         if (!hasPendingForBinding && pendingSnapshotCount() >= maxConnections) {
           fail("Local collaboration snapshot limit reached", 429);
         }
-        const rawSnapshot = await postRemote(binding, remoteSnapshotPath, {
-          scope: binding.scope,
-          ...(binding.teamId ? { teamId: binding.teamId } : {}),
-          clientInstanceId: binding.clientInstanceId,
-          subscriptionKey: binding.subscriptionKey
-        });
-        let remote: z.infer<typeof remoteSnapshotSchema>;
-        try {
-          remote = remoteSnapshotSchema.parse(rawSnapshot);
-        } catch {
-          fail("Upstream collaboration snapshot is invalid", 502);
+        const snapshot = await repository().getAuthorizedSnapshot(
+          { userId: binding.localOwnerUserId },
+          { scope: "personal", includeArchived: true }
+        );
+        if (!snapshot) {
+          return fail("Personal collaboration snapshot is unavailable", 403);
         }
-        if (
-          remote!.snapshot.scope !== binding.scope ||
-          remote!.snapshot.teamId !== binding.teamId ||
-          (binding.scope === "personal" &&
-            remote!.snapshot.personalOwnerUserId !== binding.remotePrincipalId)
-        ) {
-          fail("Upstream collaboration snapshot binding is invalid", 502);
-        }
-        const localSubscriptionId = existing?.id ?? randomUUID();
-        const deliveryId = hmac(options.brokerSecret, "snapshot-delivery", [
-          localSubscriptionId,
-          remote!.subscription.id,
-          remote!.cursor
-        ]);
-        const remoteExpiresAt = new Date(remote!.subscription.expiresAt);
-        if (
-          !Number.isFinite(remoteExpiresAt.getTime()) ||
-          remoteExpiresAt <= now()
-        ) {
-          fail("Upstream collaboration snapshot is expired", 502);
-        }
-        const currentConnection = connections.get(localSubscriptionId);
-        if (currentConnection) stopConnection(currentConnection);
-        for (const [key, pending] of pendingSnapshots) {
-          if (pending.localSubscriptionId === localSubscriptionId) {
-            pendingSnapshots.delete(key);
+        const authorizedSnapshot = snapshot;
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+        const subscription = await repository().createSubscription(
+          { userId: binding.localOwnerUserId },
+          {
+            ...personalSubscriptionBinding(binding),
+            scope: "personal",
+            snapshotHighWaterCursor: authorizedSnapshot.highWaterCursor,
+            expiresAt
           }
+        );
+        if (!subscription) {
+          return fail(
+            "Personal collaboration subscription cannot be created",
+            403
+          );
         }
-        const pendingSnapshot = {
-          kind: "snapshot",
-          localSubscriptionId,
-          binding,
-          deliveryId,
-          remoteSubscriptionId: remote!.subscription.id,
-          remoteCursor: remote!.cursor,
-          remoteExpiresAt
-        } satisfies Omit<PendingSnapshot, "expectedVersion">;
-        const awaiting = await persistAwaitingSnapshot(pendingSnapshot);
-        for (const [key, pending] of pendingSnapshots) {
-          if (
-            pending.binding.upstreamBackendId === binding.upstreamBackendId &&
-            pending.binding.scope === binding.scope &&
-            pending.binding.teamId === binding.teamId &&
-            pending.binding.credentialBindingHash !==
-              binding.credentialBindingHash
-          ) {
-            pendingSnapshots.delete(key);
-          }
-        }
-        for (const connection of connections.values()) {
-          if (
-            connection.binding.upstreamBackendId ===
-              binding.upstreamBackendId &&
-            connection.binding.scope === binding.scope &&
-            connection.binding.teamId === binding.teamId &&
-            connection.binding.credentialBindingHash !==
-              binding.credentialBindingHash
-          ) {
-            stopConnection(connection);
-          }
-        }
-        pendingSnapshots.set(deliveryId, {
-          ...pendingSnapshot,
-          expectedVersion: awaiting.version
-        });
-        return {
+        const createdSubscription = subscription;
+        const localSubscriptionId = createdSubscription.id;
+        const deliveryId = hmac(
+          options.brokerSecret,
+          "personal-snapshot-delivery",
+          [
+            localSubscriptionId,
+            binding.localOwnerUserId,
+            String(authorizedSnapshot.highWaterCursor)
+          ]
+        );
+        const responsePayload = {
           protocolVersion,
           subscription: {
             id: localSubscriptionId,
             protocolVersion,
-            scope:
-              binding.scope === "personal"
-                ? { scope: "personal" as const }
-                : { scope: "team" as const, teamId: binding.teamId! },
+            scope: { scope: "personal" as const },
             state: "awaiting_snapshot_ack",
-            version: awaiting.version,
-            expiresAt: remoteExpiresAt.toISOString()
+            version: 1,
+            expiresAt: expiresAt.toISOString()
           },
           delivery: {
             deliveryId,
             eventId: null,
             type: "snapshot",
             snapshot: {
-              scope: binding.scope,
-              ...(binding.scope === "personal"
-                ? {
-                    personalOwnerUserId: binding.localOwnerUserId,
-                    highWaterCursor: 0
-                  }
-                : { teamId: binding.teamId! }),
-              threads: remote!.snapshot.threads
+              scope: "personal",
+              personalOwnerUserId: binding.localOwnerUserId,
+              highWaterCursor: authorizedSnapshot.highWaterCursor,
+              threads: authorizedSnapshot.threads
             }
           }
         };
+        if (
+          Buffer.byteLength(JSON.stringify(responsePayload), "utf8") >
+          maxSnapshotBytes
+        ) {
+          fail("Local collaboration snapshot is too large", 413);
+        }
+        for (const [key, pending] of pendingPersonalSnapshots) {
+          if (pending.localSubscriptionId === localSubscriptionId) {
+            pendingPersonalSnapshots.delete(key);
+          }
+        }
+        pendingPersonalSnapshots.set(deliveryId, {
+          kind: "personal_snapshot",
+          localSubscriptionId,
+          expectedVersion: 1,
+          binding,
+          deliveryId,
+          highWaterCursor: authorizedSnapshot.highWaterCursor,
+          expiresAt
+        });
+        return responsePayload;
       }
-    );
+      const binding =
+        input.scope === "personal"
+          ? await authorizeRemotePersonal(credential)
+          : await authorizeTeam(
+              credential,
+              input.upstream_backend_id,
+              input.team_id,
+              messageContractVersion
+            );
+      const existing = await loadByBinding(binding);
+      const hasPendingForBinding = [...pendingSnapshots.values()].some(
+        (pending) =>
+          pending.binding.upstreamBackendId === binding.upstreamBackendId &&
+          pending.binding.credentialBindingHash ===
+            binding.credentialBindingHash &&
+          pending.binding.scope === binding.scope &&
+          pending.binding.teamId === binding.teamId
+      );
+      if (!hasPendingForBinding && pendingSnapshotCount() >= maxConnections) {
+        fail("Local collaboration snapshot limit reached", 429);
+      }
+      const remotePath =
+        messageContractVersion === 2
+          ? remoteSnapshotV2Path
+          : remoteSnapshotPath;
+      const rawSnapshot = await postRemote(binding, remotePath, {
+        scope: binding.scope,
+        ...(binding.teamId ? { teamId: binding.teamId } : {}),
+        clientInstanceId: binding.clientInstanceId,
+        subscriptionKey: binding.subscriptionKey
+      });
+      let remote:
+        | z.infer<typeof remoteSnapshotSchema>
+        | z.infer<typeof remoteTeamSnapshotV2Schema>;
+      try {
+        remote =
+          messageContractVersion === 2
+            ? remoteTeamSnapshotV2Schema.parse(rawSnapshot)
+            : remoteSnapshotSchema.parse(rawSnapshot);
+      } catch {
+        fail("Upstream collaboration snapshot is invalid", 502);
+      }
+      if (
+        remote!.snapshot.scope !== binding.scope ||
+        remote!.snapshot.teamId !== binding.teamId ||
+        (binding.scope === "personal" &&
+          remote!.snapshot.personalOwnerUserId !== binding.remotePrincipalId)
+      ) {
+        fail("Upstream collaboration snapshot binding is invalid", 502);
+      }
+      const localSubscriptionId = existing?.id ?? randomUUID();
+      const deliveryId = hmac(options.brokerSecret, "snapshot-delivery", [
+        localSubscriptionId,
+        remote!.subscription.id,
+        remote!.cursor
+      ]);
+      const remoteExpiresAt = new Date(remote!.subscription.expiresAt);
+      if (
+        !Number.isFinite(remoteExpiresAt.getTime()) ||
+        remoteExpiresAt <= now()
+      ) {
+        fail("Upstream collaboration snapshot is expired", 502);
+      }
+      const currentConnection = connections.get(localSubscriptionId);
+      if (currentConnection) stopConnection(currentConnection);
+      for (const [key, pending] of pendingSnapshots) {
+        if (pending.localSubscriptionId === localSubscriptionId) {
+          pendingSnapshots.delete(key);
+        }
+      }
+      const pendingSnapshot = {
+        kind: "snapshot",
+        localSubscriptionId,
+        binding,
+        deliveryId,
+        remoteSubscriptionId: remote!.subscription.id,
+        remoteCursor: remote!.cursor,
+        remoteExpiresAt
+      } satisfies Omit<PendingSnapshot, "expectedVersion">;
+      const awaiting = await persistAwaitingSnapshot(pendingSnapshot);
+      for (const [key, pending] of pendingSnapshots) {
+        if (
+          pending.binding.upstreamBackendId === binding.upstreamBackendId &&
+          pending.binding.scope === binding.scope &&
+          pending.binding.teamId === binding.teamId &&
+          pending.binding.messageContractVersion ===
+            binding.messageContractVersion &&
+          pending.binding.credentialBindingHash !==
+            binding.credentialBindingHash
+        ) {
+          pendingSnapshots.delete(key);
+        }
+      }
+      for (const connection of connections.values()) {
+        if (
+          connection.binding.upstreamBackendId === binding.upstreamBackendId &&
+          connection.binding.scope === binding.scope &&
+          connection.binding.teamId === binding.teamId &&
+          connection.binding.messageContractVersion ===
+            binding.messageContractVersion &&
+          connection.binding.credentialBindingHash !==
+            binding.credentialBindingHash
+        ) {
+          stopConnection(connection);
+        }
+      }
+      pendingSnapshots.set(deliveryId, {
+        ...pendingSnapshot,
+        expectedVersion: awaiting.version
+      });
+      return {
+        protocolVersion,
+        ...(messageContractVersion === 2
+          ? { messageContractVersion: 2 as const }
+          : {}),
+        subscription: {
+          id: localSubscriptionId,
+          protocolVersion,
+          ...(messageContractVersion === 2
+            ? { messageContractVersion: 2 as const }
+            : {}),
+          scope:
+            binding.scope === "personal"
+              ? { scope: "personal" as const }
+              : { scope: "team" as const, teamId: binding.teamId! },
+          state: "awaiting_snapshot_ack",
+          version: awaiting.version,
+          expiresAt: remoteExpiresAt.toISOString()
+        },
+        delivery: {
+          deliveryId,
+          eventId: null,
+          type: "snapshot",
+          snapshot: {
+            scope: binding.scope,
+            ...(binding.scope === "personal"
+              ? {
+                  personalOwnerUserId: binding.localOwnerUserId,
+                  highWaterCursor: 0
+                }
+              : { teamId: binding.teamId! }),
+            threads: remote!.snapshot.threads
+          }
+        }
+      };
+    };
 
     options.app.post(
-      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/ack",
-      async (request) => {
-        const credential = await authorizeLocalOwner(request);
-        const params = parseOrFail(
-          localEdgeCollaborationSubscriptionParamsSchema,
-          request.params
-        );
-        const input = parseOrFail(
-          acknowledgeLocalEdgeCollaborationDeliverySchema,
-          request.body
-        );
-        if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = authorizePersonal(credential);
-          const snapshot = pendingPersonalSnapshots.get(input.delivery_id);
-          if (snapshot) {
-            if (
-              input.event_id !== null ||
-              params.subscriptionId !== snapshot.localSubscriptionId ||
-              input.expected_version !== snapshot.expectedVersion ||
-              binding.credentialBindingHash !==
-                snapshot.binding.credentialBindingHash
-            ) {
-              fail("Local collaboration delivery cannot be acknowledged", 403);
-            }
-            const subscription = await recoverPersonalSubscription(
-              snapshot.localSubscriptionId,
-              binding
-            );
-            pendingPersonalSnapshots.delete(input.delivery_id);
-            return {
-              protocolVersion,
-              subscription: publicPersonalSubscription(
-                subscription,
-                binding.localOwnerUserId
-              )
-            };
-          }
-          const pendingCandidate = pendingEvents.get(input.delivery_id);
-          if (!pendingCandidate || pendingCandidate.kind !== "personal_event") {
-            if (input.event_id === null) {
-              await recoverPersonalSubscription(params.subscriptionId, binding);
-              return fail(
-                "Collaboration snapshot acknowledgement was lost",
-                409
-              );
-            }
-            return fail(
-              "Local collaboration delivery cannot be acknowledged",
-              403
-            );
-          }
-          const pending = pendingCandidate as PendingPersonalEvent;
-          if (
-            input.event_id !== pending.eventId ||
-            params.subscriptionId !== pending.localSubscriptionId ||
-            binding.credentialBindingHash !==
-              pending.binding.credentialBindingHash
-          ) {
-            fail("Local collaboration delivery cannot be acknowledged", 403);
-          }
-          const order =
-            pendingEventOrder.get(pending.localSubscriptionId) ?? [];
-          if (order[0] !== pending.deliveryId) {
-            fail(
-              "Local collaboration deliveries must be acknowledged in order",
-              409
-            );
-          }
-          const subscription = await repository().acknowledgeSubscription(
-            { userId: binding.localOwnerUserId },
-            {
-              ...personalSubscriptionBinding(binding),
-              subscriptionId: pending.localSubscriptionId,
-              eventId: pending.eventId,
-              cursor: pending.cursor
-            }
-          );
-          if (!subscription) {
-            return fail(
-              "Local collaboration delivery cannot be acknowledged",
-              403
-            );
-          }
-          const acknowledgedSubscription =
-            subscription as CollaborationSubscriptionRecord;
-          removePendingEvent(pending.deliveryId);
-          const connection = personalConnections.get(
-            pending.localSubscriptionId
-          );
-          if (connection) {
-            connection.subscription = acknowledgedSubscription;
-            connection.cursor = Math.max(connection.cursor, pending.cursor);
-          }
-          return {
-            protocolVersion,
-            subscription: publicPersonalSubscription(
-              acknowledgedSubscription,
-              binding.localOwnerUserId
-            )
-          };
-        }
-        const binding =
-          input.scope === "personal"
-            ? await authorizeRemotePersonal(credential)
-            : await authorizeTeam(
-                credential,
-                input.upstream_backend_id,
-                input.team_id
-              );
-        const snapshot = pendingSnapshots.get(input.delivery_id);
+      "/v1/local-edge/collaboration/realtime/subscriptions",
+      (request) => handleCreateSubscription(request, 1)
+    );
+    options.app.post(localSnapshotV2Path, (request) =>
+      handleCreateSubscription(request, 2)
+    );
+
+    const handleAcknowledgeDelivery = async (
+      request: FastifyRequest,
+      messageContractVersion: 1 | 2
+    ) => {
+      const credential = await authorizeLocalOwner(request);
+      const params = parseOrFail(
+        localEdgeCollaborationSubscriptionParamsSchema,
+        request.params
+      );
+      const input = parseOrFail(
+        messageContractVersion === 2
+          ? acknowledgeLocalEdgeTeamRealtimeV2DeliverySchema
+          : acknowledgeLocalEdgeCollaborationDeliverySchema,
+        request.body
+      );
+      if (
+        messageContractVersion === 1 &&
+        input.scope === "personal" &&
+        !configuredRemotePersonalBackend()
+      ) {
+        const binding = authorizePersonal(credential);
+        const snapshot = pendingPersonalSnapshots.get(input.delivery_id);
         if (snapshot) {
           if (
             input.event_id !== null ||
             params.subscriptionId !== snapshot.localSubscriptionId ||
             input.expected_version !== snapshot.expectedVersion ||
-            binding.upstreamBackendId !== snapshot.binding.upstreamBackendId ||
-            binding.scope !== snapshot.binding.scope ||
-            binding.teamId !== snapshot.binding.teamId ||
             binding.credentialBindingHash !==
               snapshot.binding.credentialBindingHash
           ) {
             fail("Local collaboration delivery cannot be acknowledged", 403);
           }
-          const row = await persistSnapshot(snapshot);
-          pendingSnapshots.delete(input.delivery_id);
-          return { protocolVersion, subscription: publicSubscription(row) };
+          const subscription = await recoverPersonalSubscription(
+            snapshot.localSubscriptionId,
+            binding
+          );
+          pendingPersonalSnapshots.delete(input.delivery_id);
+          return {
+            protocolVersion,
+            subscription: publicPersonalSubscription(
+              subscription,
+              binding.localOwnerUserId
+            )
+          };
         }
         const pendingCandidate = pendingEvents.get(input.delivery_id);
-        if (!pendingCandidate || pendingCandidate.kind !== "remote_event") {
+        if (!pendingCandidate || pendingCandidate.kind !== "personal_event") {
           if (input.event_id === null) {
-            const awaiting = await loadExact(params.subscriptionId, binding);
-            if (awaiting.state === "requires_snapshot") {
-              return fail(
-                "Collaboration snapshot acknowledgement was lost",
-                409
-              );
-            }
+            await recoverPersonalSubscription(params.subscriptionId, binding);
+            return fail("Collaboration snapshot acknowledgement was lost", 409);
           }
           return fail(
             "Local collaboration delivery cannot be acknowledged",
             403
           );
         }
-        const eventPending = pendingCandidate as PendingRemoteEvent;
+        const pending = pendingCandidate as PendingPersonalEvent;
         if (
-          input.event_id !== eventPending.eventId ||
-          params.subscriptionId !== eventPending.localSubscriptionId ||
-          binding.upstreamBackendId !==
-            eventPending.binding.upstreamBackendId ||
-          binding.scope !== eventPending.binding.scope ||
-          binding.teamId !== eventPending.binding.teamId ||
+          input.event_id !== pending.eventId ||
+          params.subscriptionId !== pending.localSubscriptionId ||
           binding.credentialBindingHash !==
-            eventPending.binding.credentialBindingHash
+            pending.binding.credentialBindingHash
         ) {
           fail("Local collaboration delivery cannot be acknowledged", 403);
         }
-        const order =
-          pendingEventOrder.get(eventPending.localSubscriptionId) ?? [];
-        if (order[0] !== eventPending.deliveryId) {
+        const order = pendingEventOrder.get(pending.localSubscriptionId) ?? [];
+        if (order[0] !== pending.deliveryId) {
           fail(
             "Local collaboration deliveries must be acknowledged in order",
             409
           );
         }
-        const rawAck = await postRemote(eventPending.binding, remoteAckPath, {
-          subscriptionId: eventPending.remoteSubscriptionId,
-          eventId: eventPending.eventId,
-          cursor: eventPending.remoteCursor,
-          clientInstanceId: eventPending.binding.clientInstanceId,
-          subscriptionKey: eventPending.binding.subscriptionKey
-        });
-        let remoteAck: z.infer<typeof remoteAckResponseSchema>;
-        try {
-          remoteAck = remoteAckResponseSchema.parse(rawAck);
-        } catch {
-          fail("Upstream collaboration acknowledgement is invalid", 502);
-        }
-        if (
-          remoteAck!.subscription.id !== eventPending.remoteSubscriptionId ||
-          remoteAck!.subscription.scope !== eventPending.binding.scope ||
-          remoteAck!.subscription.teamId !== eventPending.binding.teamId ||
-          (eventPending.binding.scope === "personal" &&
-            remoteAck!.subscription.personalOwnerUserId !==
-              eventPending.binding.remotePrincipalId) ||
-          remoteAck!.subscription.state !== "active" ||
-          remoteAck!.subscription.acknowledgedEventId !== eventPending.eventId
-        ) {
-          fail(
-            "Upstream collaboration acknowledgement binding is invalid",
-            502
+        const subscription = await repository().acknowledgeSubscription(
+          { userId: binding.localOwnerUserId },
+          {
+            ...personalSubscriptionBinding(binding),
+            subscriptionId: pending.localSubscriptionId,
+            eventId: pending.eventId,
+            cursor: pending.cursor
+          }
+        );
+        if (!subscription) {
+          return fail(
+            "Local collaboration delivery cannot be acknowledged",
+            403
           );
         }
-        await options.afterRemoteAck?.();
-        const row = await persistEventAck(eventPending, input.expected_version);
-        removePendingEvent(eventPending.deliveryId);
-        const connection = connections.get(eventPending.localSubscriptionId);
-        if (connection) connection.row = row;
-        return { protocolVersion, subscription: publicSubscription(row) };
+        const acknowledgedSubscription =
+          subscription as CollaborationSubscriptionRecord;
+        removePendingEvent(pending.deliveryId);
+        const connection = personalConnections.get(pending.localSubscriptionId);
+        if (connection) {
+          connection.subscription = acknowledgedSubscription;
+          connection.cursor = Math.max(connection.cursor, pending.cursor);
+        }
+        return {
+          protocolVersion,
+          subscription: publicPersonalSubscription(
+            acknowledgedSubscription,
+            binding.localOwnerUserId
+          )
+        };
       }
+      const binding =
+        input.scope === "personal"
+          ? await authorizeRemotePersonal(credential)
+          : await authorizeTeam(
+              credential,
+              input.upstream_backend_id,
+              input.team_id,
+              messageContractVersion
+            );
+      const snapshot = pendingSnapshots.get(input.delivery_id);
+      if (snapshot) {
+        if (
+          input.event_id !== null ||
+          params.subscriptionId !== snapshot.localSubscriptionId ||
+          input.expected_version !== snapshot.expectedVersion ||
+          binding.upstreamBackendId !== snapshot.binding.upstreamBackendId ||
+          binding.scope !== snapshot.binding.scope ||
+          binding.teamId !== snapshot.binding.teamId ||
+          binding.credentialBindingHash !==
+            snapshot.binding.credentialBindingHash
+        ) {
+          fail("Local collaboration delivery cannot be acknowledged", 403);
+        }
+        const row = await persistSnapshot(snapshot);
+        pendingSnapshots.delete(input.delivery_id);
+        return {
+          protocolVersion,
+          ...(messageContractVersion === 2
+            ? { messageContractVersion: 2 as const }
+            : {}),
+          subscription: publicSubscription(row)
+        };
+      }
+      const pendingCandidate = pendingEvents.get(input.delivery_id);
+      if (!pendingCandidate || pendingCandidate.kind !== "remote_event") {
+        if (input.event_id === null) {
+          const awaiting = await loadExact(params.subscriptionId, binding);
+          if (awaiting.state === "requires_snapshot") {
+            return fail("Collaboration snapshot acknowledgement was lost", 409);
+          }
+        }
+        return fail("Local collaboration delivery cannot be acknowledged", 403);
+      }
+      const eventPending = pendingCandidate as PendingRemoteEvent;
+      if (
+        input.event_id !== eventPending.eventId ||
+        params.subscriptionId !== eventPending.localSubscriptionId ||
+        binding.upstreamBackendId !== eventPending.binding.upstreamBackendId ||
+        binding.scope !== eventPending.binding.scope ||
+        binding.teamId !== eventPending.binding.teamId ||
+        binding.credentialBindingHash !==
+          eventPending.binding.credentialBindingHash
+      ) {
+        fail("Local collaboration delivery cannot be acknowledged", 403);
+      }
+      const order =
+        pendingEventOrder.get(eventPending.localSubscriptionId) ?? [];
+      if (order[0] !== eventPending.deliveryId) {
+        fail(
+          "Local collaboration deliveries must be acknowledged in order",
+          409
+        );
+      }
+      const remotePath =
+        messageContractVersion === 2 ? remoteAckV2Path : remoteAckPath;
+      const rawAck = await postRemote(eventPending.binding, remotePath, {
+        subscriptionId: eventPending.remoteSubscriptionId,
+        eventId: eventPending.eventId,
+        cursor: eventPending.remoteCursor,
+        clientInstanceId: eventPending.binding.clientInstanceId,
+        subscriptionKey: eventPending.binding.subscriptionKey
+      });
+      let remoteAck:
+        | z.infer<typeof remoteAckResponseSchema>
+        | z.infer<typeof remoteAckV2ResponseSchema>;
+      try {
+        remoteAck =
+          messageContractVersion === 2
+            ? remoteAckV2ResponseSchema.parse(rawAck)
+            : remoteAckResponseSchema.parse(rawAck);
+      } catch {
+        fail("Upstream collaboration acknowledgement is invalid", 502);
+      }
+      if (
+        remoteAck!.subscription.id !== eventPending.remoteSubscriptionId ||
+        remoteAck!.subscription.scope !== eventPending.binding.scope ||
+        remoteAck!.subscription.teamId !== eventPending.binding.teamId ||
+        (eventPending.binding.scope === "personal" &&
+          remoteAck!.subscription.personalOwnerUserId !==
+            eventPending.binding.remotePrincipalId) ||
+        remoteAck!.subscription.state !== "active" ||
+        remoteAck!.subscription.acknowledgedEventId !== eventPending.eventId
+      ) {
+        fail("Upstream collaboration acknowledgement binding is invalid", 502);
+      }
+      await options.afterRemoteAck?.();
+      const row = await persistEventAck(eventPending, input.expected_version);
+      removePendingEvent(eventPending.deliveryId);
+      const connection = connections.get(eventPending.localSubscriptionId);
+      if (connection) connection.row = row;
+      return {
+        protocolVersion,
+        ...(messageContractVersion === 2
+          ? { messageContractVersion: 2 as const }
+          : {}),
+        subscription: publicSubscription(row)
+      };
+    };
+
+    options.app.post(
+      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/ack",
+      (request) => handleAcknowledgeDelivery(request, 1)
+    );
+    options.app.post(localAckV2Path, (request) =>
+      handleAcknowledgeDelivery(request, 2)
     );
 
-    options.app.get(
-      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/stream",
-      async (request, reply) => {
-        const credential = await authorizeLocalOwner(request);
-        const params = parseOrFail(
-          localEdgeCollaborationSubscriptionParamsSchema,
-          request.params
+    const handleSubscriptionStream = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      messageContractVersion: 1 | 2
+    ) => {
+      const credential = await authorizeLocalOwner(request);
+      const params = parseOrFail(
+        localEdgeCollaborationSubscriptionParamsSchema,
+        request.params
+      );
+      const input = parseOrFail(
+        messageContractVersion === 2
+          ? localEdgeTeamRealtimeV2StreamQuerySchema
+          : localEdgeCollaborationStreamQuerySchema,
+        request.query
+      );
+      if (
+        messageContractVersion === 1 &&
+        input.scope === "personal" &&
+        !configuredRemotePersonalBackend()
+      ) {
+        const binding = authorizePersonal(credential);
+        const subscription = await recoverPersonalSubscription(
+          params.subscriptionId,
+          binding
         );
-        const input = parseOrFail(
-          localEdgeCollaborationStreamQuerySchema,
-          request.query
+        const existingConnection = personalConnections.get(
+          params.subscriptionId
         );
-        if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = authorizePersonal(credential);
-          const subscription = await recoverPersonalSubscription(
-            params.subscriptionId,
-            binding
-          );
-          const existingConnection = personalConnections.get(
-            params.subscriptionId
-          );
-          if (
-            connections.size +
-              personalConnections.size -
-              (existingConnection ? 1 : 0) >=
-            maxConnections
-          ) {
-            fail("Local collaboration realtime connection limit reached", 429);
-          }
-          if (existingConnection) stopPersonalConnection(existingConnection);
-          reply.hijack();
-          reply.raw.writeHead(200, {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache, no-transform",
-            connection: "keep-alive",
-            "x-accel-buffering": "no"
-          });
-          const connection: ActivePersonalConnection = {
-            localSubscriptionId: params.subscriptionId,
-            binding,
-            subscription,
-            reply,
-            abort: new AbortController(),
-            stopped: false,
-            seenEventIds: new Set(
-              pendingFor(params.subscriptionId).map((event) => event.eventId)
-            ),
-            cursor: Math.max(
-              subscription.acknowledgedCursor,
-              subscription.snapshotHighWaterCursor ?? 0
-            ),
-            flushing: false,
-            flushRequested: false,
-            listenNotification: null,
-            listenError: null,
-            listenClient: null
-          };
-          personalConnections.set(params.subscriptionId, connection);
-          await writePersonalLiveEvent(connection);
-          reply.raw.once("close", () => stopPersonalConnection(connection));
-          void (async () => {
-            try {
-              const client = await (
-                requirePool(options.pool).connect as unknown as () => Promise<
-                  ActivePersonalConnection["listenClient"]
-                >
-              )();
-              if (!client || connection.stopped) {
-                client?.release();
-                return;
-              }
-              connection.listenClient = client;
-              const onNotification = () => {
-                if (connection.stopped) return;
-                connection.flushRequested = true;
-                void drainPersonalReplay(connection).catch(async () => {
-                  if (!connection.stopped) {
-                    await sendPersonalControlAndStop(
-                      connection,
-                      "server_shutdown"
-                    );
-                  }
-                });
-              };
-              const onError = () => {
-                if (connection.stopped) return;
-                void sendPersonalControlAndStop(connection, "server_shutdown");
-              };
-              connection.listenNotification = onNotification;
-              connection.listenError = onError;
-              client.on?.("notification", onNotification);
-              client.on?.("error", onError);
-              await client.query("listen koed_collaboration_realtime");
-              await drainPersonalReplay(connection);
-            } catch {
-              if (!connection.stopped) {
-                await sendPersonalControlAndStop(connection, "server_shutdown");
-              }
-            }
-          })();
-          return;
-        }
-        const binding =
-          input.scope === "personal"
-            ? await authorizeRemotePersonal(credential)
-            : await authorizeTeam(
-                credential,
-                input.upstream_backend_id,
-                input.team_id
-              );
-        const row = await loadExact(params.subscriptionId, binding);
-        if (row.state === "revoked") {
-          fail("Local collaboration subscription access was revoked", 410);
-        }
-        if (row.state !== "active" || new Date(row.expiresAt) <= now()) {
-          fail("Local collaboration subscription is not active", 409);
-        }
-        const existingConnection = connections.get(params.subscriptionId);
         if (
           connections.size +
             personalConnections.size -
@@ -2800,17 +2942,7 @@ export const createCollaborationRealtimeBroker = (
         ) {
           fail("Local collaboration realtime connection limit reached", 429);
         }
-        if (existingConnection) stopConnection(existingConnection);
-        const connected = await requirePool(
-          options.pool
-        ).query<LocalSubscriptionRow>(
-          `update local_edge_collaboration_subscriptions
-           set last_connected_at = now(), updated_at = now()
-           where id = $1 and version = $2
-           returning ${selectColumns}`,
-          [row.id, row.version]
-        );
-        if (connected.rows[0]) Object.assign(row, connected.rows[0]);
+        if (existingConnection) stopPersonalConnection(existingConnection);
         reply.hijack();
         reply.raw.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
@@ -2818,22 +2950,137 @@ export const createCollaborationRealtimeBroker = (
           connection: "keep-alive",
           "x-accel-buffering": "no"
         });
-        const connection: ActiveConnection = {
+        const connection: ActivePersonalConnection = {
           localSubscriptionId: params.subscriptionId,
           binding,
-          row,
+          subscription,
           reply,
           abort: new AbortController(),
           stopped: false,
           seenEventIds: new Set(
             pendingFor(params.subscriptionId).map((event) => event.eventId)
-          )
+          ),
+          cursor: Math.max(
+            subscription.acknowledgedCursor,
+            subscription.snapshotHighWaterCursor ?? 0
+          ),
+          flushing: false,
+          flushRequested: false,
+          listenNotification: null,
+          listenError: null,
+          listenClient: null
         };
-        connections.set(params.subscriptionId, connection);
-        await writeConnectionEvent(connection, "connecting", 0, null, null);
-        reply.raw.once("close", () => stopConnection(connection));
-        void runConnection(connection);
+        personalConnections.set(params.subscriptionId, connection);
+        await writePersonalLiveEvent(connection);
+        reply.raw.once("close", () => stopPersonalConnection(connection));
+        void (async () => {
+          try {
+            const client = await (
+              requirePool(options.pool).connect as unknown as () => Promise<
+                ActivePersonalConnection["listenClient"]
+              >
+            )();
+            if (!client || connection.stopped) {
+              client?.release();
+              return;
+            }
+            connection.listenClient = client;
+            const onNotification = () => {
+              if (connection.stopped) return;
+              connection.flushRequested = true;
+              void drainPersonalReplay(connection).catch(async () => {
+                if (!connection.stopped) {
+                  await sendPersonalControlAndStop(
+                    connection,
+                    "server_shutdown"
+                  );
+                }
+              });
+            };
+            const onError = () => {
+              if (connection.stopped) return;
+              void sendPersonalControlAndStop(connection, "server_shutdown");
+            };
+            connection.listenNotification = onNotification;
+            connection.listenError = onError;
+            client.on?.("notification", onNotification);
+            client.on?.("error", onError);
+            await client.query("listen koed_collaboration_realtime");
+            await drainPersonalReplay(connection);
+          } catch {
+            if (!connection.stopped) {
+              await sendPersonalControlAndStop(connection, "server_shutdown");
+            }
+          }
+        })();
+        return;
       }
+      const binding =
+        input.scope === "personal"
+          ? await authorizeRemotePersonal(credential)
+          : await authorizeTeam(
+              credential,
+              input.upstream_backend_id,
+              input.team_id,
+              messageContractVersion
+            );
+      const row = await loadExact(params.subscriptionId, binding);
+      if (row.state === "revoked") {
+        fail("Local collaboration subscription access was revoked", 410);
+      }
+      if (row.state !== "active" || new Date(row.expiresAt) <= now()) {
+        fail("Local collaboration subscription is not active", 409);
+      }
+      const existingConnection = connections.get(params.subscriptionId);
+      if (
+        connections.size +
+          personalConnections.size -
+          (existingConnection ? 1 : 0) >=
+        maxConnections
+      ) {
+        fail("Local collaboration realtime connection limit reached", 429);
+      }
+      if (existingConnection) stopConnection(existingConnection);
+      const connected = await requirePool(
+        options.pool
+      ).query<LocalSubscriptionRow>(
+        `update local_edge_collaboration_subscriptions
+           set last_connected_at = now(), updated_at = now()
+           where id = $1 and version = $2
+           returning ${selectColumns}`,
+        [row.id, row.version]
+      );
+      if (connected.rows[0]) Object.assign(row, connected.rows[0]);
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      });
+      const connection: ActiveConnection = {
+        localSubscriptionId: params.subscriptionId,
+        binding,
+        row,
+        reply,
+        abort: new AbortController(),
+        stopped: false,
+        seenEventIds: new Set(
+          pendingFor(params.subscriptionId).map((event) => event.eventId)
+        )
+      };
+      connections.set(params.subscriptionId, connection);
+      await writeConnectionEvent(connection, "connecting", 0, null, null);
+      reply.raw.once("close", () => stopConnection(connection));
+      void runConnection(connection);
+    };
+
+    options.app.get(
+      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/stream",
+      (request, reply) => handleSubscriptionStream(request, reply, 1)
+    );
+    options.app.get(localStreamV2Path, (request, reply) =>
+      handleSubscriptionStream(request, reply, 2)
     );
 
     options.app.delete(
@@ -2886,99 +3133,47 @@ export const createCollaborationRealtimeBroker = (
       }
     );
 
-    options.app.delete(
-      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId",
-      async (request) => {
-        const credential = await authorizeLocalOwner(request);
-        const params = parseOrFail(
-          localEdgeCollaborationSubscriptionParamsSchema,
-          request.params
+    const handleUnsubscribe = async (
+      request: FastifyRequest,
+      messageContractVersion: 1 | 2
+    ) => {
+      const credential = await authorizeLocalOwner(request);
+      const params = parseOrFail(
+        localEdgeCollaborationSubscriptionParamsSchema,
+        request.params
+      );
+      const input = parseOrFail(
+        messageContractVersion === 2
+          ? unsubscribeLocalEdgeTeamRealtimeV2Schema
+          : unsubscribeLocalEdgeCollaborationSchema,
+        request.body
+      );
+      if (
+        messageContractVersion === 1 &&
+        input.scope === "personal" &&
+        !configuredRemotePersonalBackend()
+      ) {
+        const binding = authorizePersonal(credential);
+        const subscription = await recoverPersonalSubscription(
+          params.subscriptionId,
+          binding
         );
-        const input = parseOrFail(
-          unsubscribeLocalEdgeCollaborationSchema,
-          request.body
-        );
-        if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = authorizePersonal(credential);
-          const subscription = await recoverPersonalSubscription(
-            params.subscriptionId,
-            binding
-          );
-          if (input.expected_version !== 1) {
-            fail("Local collaboration subscription changed", 409);
-          }
-          await repository().revokeSubscriptions({
-            scope: "personal",
-            backendIdentityHash: sha256("koed:desktop-local"),
-            principalIdHash: collaborationSubscriptionPrincipalHash(
-              binding.localOwnerUserId
-            ),
-            reason: "client_replaced"
-          });
-          const connection = personalConnections.get(params.subscriptionId);
-          if (connection) stopPersonalConnection(connection);
-          for (const [deliveryId, pending] of pendingPersonalSnapshots) {
-            if (pending.localSubscriptionId === params.subscriptionId) {
-              pendingPersonalSnapshots.delete(deliveryId);
-            }
-          }
-          for (const [deliveryId, pending] of pendingEvents) {
-            if (pending.localSubscriptionId === params.subscriptionId) {
-              removePendingEvent(deliveryId);
-            }
-          }
-          pendingEventOrder.delete(params.subscriptionId);
-          return {
-            protocolVersion,
-            subscription: {
-              ...publicPersonalSubscription(
-                subscription,
-                binding.localOwnerUserId
-              ),
-              state: "expired"
-            }
-          };
-        }
-        const binding =
-          input.scope === "personal"
-            ? await authorizeRemotePersonal(credential)
-            : await authorizeTeam(
-                credential,
-                input.upstream_backend_id,
-                input.team_id
-              );
-        await loadExact(params.subscriptionId, binding);
-        const result = await requirePool(
-          options.pool
-        ).query<LocalSubscriptionRow>(
-          `update local_edge_collaboration_subscriptions
-           set state = 'expired', version = version + 1, updated_at = now()
-           where id = $1
-             and upstream_backend_id = $2
-             and credential_binding_hash = $3
-             and scope = $4::collaboration_scope
-             and team_id is not distinct from $5::uuid
-             and protocol_version = $6
-             and version = $7
-           returning ${selectColumns}`,
-          [
-            params.subscriptionId,
-            binding.upstreamBackendId,
-            binding.credentialBindingHash,
-            binding.scope,
-            binding.teamId,
-            protocolVersion,
-            input.expected_version
-          ]
-        );
-        const row =
-          result.rows[0] ??
+        if (input.expected_version !== 1) {
           fail("Local collaboration subscription changed", 409);
-        const connection = connections.get(params.subscriptionId);
-        if (connection) stopConnection(connection);
-        for (const [deliveryId, pending] of pendingSnapshots) {
+        }
+        await repository().revokeSubscriptions({
+          scope: "personal",
+          backendIdentityHash: sha256("koed:desktop-local"),
+          principalIdHash: collaborationSubscriptionPrincipalHash(
+            binding.localOwnerUserId
+          ),
+          reason: "client_replaced"
+        });
+        const connection = personalConnections.get(params.subscriptionId);
+        if (connection) stopPersonalConnection(connection);
+        for (const [deliveryId, pending] of pendingPersonalSnapshots) {
           if (pending.localSubscriptionId === params.subscriptionId) {
-            pendingSnapshots.delete(deliveryId);
+            pendingPersonalSnapshots.delete(deliveryId);
           }
         }
         for (const [deliveryId, pending] of pendingEvents) {
@@ -2987,8 +3182,83 @@ export const createCollaborationRealtimeBroker = (
           }
         }
         pendingEventOrder.delete(params.subscriptionId);
-        return { protocolVersion, subscription: publicSubscription(row) };
+        return {
+          protocolVersion,
+          subscription: {
+            ...publicPersonalSubscription(
+              subscription,
+              binding.localOwnerUserId
+            ),
+            state: "expired"
+          }
+        };
       }
+      const binding =
+        input.scope === "personal"
+          ? await authorizeRemotePersonal(credential)
+          : await authorizeTeam(
+              credential,
+              input.upstream_backend_id,
+              input.team_id,
+              messageContractVersion
+            );
+      await loadExact(params.subscriptionId, binding);
+      const result = await requirePool(
+        options.pool
+      ).query<LocalSubscriptionRow>(
+        `update local_edge_collaboration_subscriptions
+           set state = 'expired', version = version + 1, updated_at = now()
+           where id = $1
+             and upstream_backend_id = $2
+             and credential_binding_hash = $3
+             and scope = $4::collaboration_scope
+             and team_id is not distinct from $5::uuid
+             and protocol_version = $6
+             and message_contract_version = $7
+             and version = $8
+           returning ${selectColumns}`,
+        [
+          params.subscriptionId,
+          binding.upstreamBackendId,
+          binding.credentialBindingHash,
+          binding.scope,
+          binding.teamId,
+          protocolVersion,
+          messageContractVersion,
+          input.expected_version
+        ]
+      );
+      const row =
+        result.rows[0] ?? fail("Local collaboration subscription changed", 409);
+      const connection = connections.get(params.subscriptionId);
+      if (connection) stopConnection(connection);
+      for (const [deliveryId, pending] of pendingSnapshots) {
+        if (pending.localSubscriptionId === params.subscriptionId) {
+          pendingSnapshots.delete(deliveryId);
+        }
+      }
+      for (const [deliveryId, pending] of pendingEvents) {
+        if (pending.localSubscriptionId === params.subscriptionId) {
+          removePendingEvent(deliveryId);
+        }
+      }
+      pendingEventOrder.delete(params.subscriptionId);
+      return {
+        protocolVersion,
+        ...(messageContractVersion === 2
+          ? { messageContractVersion: 2 as const }
+          : {}),
+        subscription: publicSubscription(row)
+      };
+    };
+
+    options.app.delete(
+      "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId",
+      (request) => handleUnsubscribe(request, 1)
+    );
+    options.app.delete(
+      "/v2/local-edge/collaboration/realtime/subscriptions/:subscriptionId",
+      (request) => handleUnsubscribe(request, 2)
     );
   };
 

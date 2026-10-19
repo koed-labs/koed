@@ -72,9 +72,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0045_agent_seal_waiting_marker";
+const expectedLatestMigrationTag = "0046_hq706_message_contract";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 45;
+const expectedLatestMigrationIndex = 46;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -761,6 +761,10 @@ const assertLatestSchema = async (pool) => {
     memory_questions: [["team_authorization", "jsonb", "YES"]],
     conversation_items: [
       ["agent_seal_waiting_at", "timestamp with time zone", "YES"]
+    ],
+    collaboration_messages: [["reply_to_message_id", "uuid", "YES"]],
+    local_edge_collaboration_subscriptions: [
+      ["message_contract_version", "integer", "NO"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -836,6 +840,18 @@ const assertLatestSchema = async (pool) => {
       "f",
       "team_workspaces",
       "a"
+    ],
+    [
+      "collaboration_messages",
+      "collaboration_messages_reply_same_thread_fk",
+      "f",
+      "collaboration_messages",
+      "r"
+    ],
+    [
+      "local_edge_collaboration_subscriptions",
+      "local_edge_collaboration_subscriptions_values_check",
+      "c"
     ]
   ].map(([table, name, ...contract]) => [
     table,
@@ -845,7 +861,8 @@ const assertLatestSchema = async (pool) => {
   const constraints = await pool.query(
     `
     select relation.relname as table_name, constraint_row.conname, constraint_row.contype,
-      constraint_row.convalidated, referenced.relname as referenced_table, constraint_row.confdeltype
+      constraint_row.convalidated, referenced.relname as referenced_table, constraint_row.confdeltype,
+      pg_get_constraintdef(constraint_row.oid) as definition
     from pg_constraint constraint_row join pg_class relation on relation.oid = constraint_row.conrelid
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     left join pg_class referenced on referenced.oid = constraint_row.confrelid
@@ -875,6 +892,46 @@ const assertLatestSchema = async (pool) => {
         `Latest migration constraint ${name} is missing or incorrect: ${JSON.stringify(row)}`
       );
     }
+  }
+  const replyConstraint = constraints.rows.find(
+    (constraint) =>
+      constraint.conname === "collaboration_messages_reply_same_thread_fk"
+  );
+  if (
+    !replyConstraint?.definition?.includes(
+      "FOREIGN KEY (thread_id, reply_to_message_id) REFERENCES collaboration_messages(thread_id, id) ON DELETE RESTRICT"
+    )
+  ) {
+    throw new Error(
+      `Team Chat reply constraint does not enforce same-thread references: ${JSON.stringify(replyConstraint)}`
+    );
+  }
+  const messageContractColumn = await pool.query(
+    `select column_default from information_schema.columns
+     where table_schema = 'public' and table_name = 'local_edge_collaboration_subscriptions'
+       and column_name = 'message_contract_version'`
+  );
+  if (messageContractColumn.rows[0]?.column_default !== "1") {
+    throw new Error(
+      `Local realtime message contract version must default to v1: ${JSON.stringify(messageContractColumn.rows[0])}`
+    );
+  }
+  const messageContractConstraint = constraints.rows.find(
+    (constraint) =>
+      constraint.conname ===
+      "local_edge_collaboration_subscriptions_values_check"
+  );
+  if (
+    !messageContractConstraint?.definition?.includes(
+      "message_contract_version = ANY (ARRAY[1, 2])"
+    ) ||
+    !messageContractConstraint.definition.includes(
+      "(scope = 'team'::collaboration_scope) OR (message_contract_version = 1)"
+    )
+  ) {
+    throw new Error(
+      `Local realtime message contract version constraint is missing: ${JSON.stringify(messageContractConstraint)}`
+    );
   }
   const indexes =
     await pool.query(`select indexname from pg_indexes where schemaname = 'public'

@@ -16,7 +16,8 @@ import type {
   CollaborationThreadRecord,
   DeviceCredentialAuthContext,
   ManagedConversationRepository,
-  SharedMemoryRepository
+  SharedMemoryRepository,
+  TeamCollaborationMessageV2Record
 } from "@koed/db";
 import {
   calculateCollaborationReconnectDelay,
@@ -28,12 +29,15 @@ import {
   collaborationRealtimeEventFamilySchema,
   collaborationTeamPersonSchema,
   collaborationThreadSchema,
+  teamCollaborationRealtimeV2EventSchema,
+  teamCollaborationRealtimeUpdateV2Schema,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   personalMemoryEntrySchema,
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId,
   sharedMemorySessionSchema,
   type CollaborationRendererEvent,
+  type TeamCollaborationRealtimeUpdateV2,
   type PersonalMemoryEntry
 } from "@koed/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -42,7 +46,10 @@ import { collaborationRealtimeProtocolVersion } from "../server/capabilities.js"
 import {
   collaborationRealtimeAckSchema,
   collaborationRealtimeSnapshotSchema,
-  collaborationRealtimeStreamQuerySchema
+  collaborationRealtimeStreamQuerySchema,
+  teamCollaborationRealtimeV2AckSchema,
+  teamCollaborationRealtimeV2SnapshotSchema,
+  teamCollaborationRealtimeV2StreamQuerySchema
 } from "./schemas.js";
 import { publicTeamRosterMember } from "../team/presence.js";
 import { publicCollaborationThread } from "./public-thread.js";
@@ -101,6 +108,7 @@ type CursorPayload = {
   kind: "koed_collaboration_realtime_cursor";
   version: 1;
   protocolVersion: typeof protocolVersion;
+  messageContractVersion?: 2;
   backendIdentityHash: string;
   principalIdHash: string;
   clientInstanceHash: string;
@@ -127,6 +135,7 @@ type StreamClient = {
   principalIdHash: string;
   binding: RealtimeSubscriptionBinding;
   scope: RealtimeScopeInput;
+  messageContractVersion: 1 | 2;
   subscriptionId: string;
   cursor: number;
   sink: CollaborationRealtimeEventSink;
@@ -167,6 +176,7 @@ export interface CollaborationRealtimeTransportStreamInput {
   clientInstanceId: string;
   subscriptionKey: string;
   cursor: string;
+  messageContractVersion?: 1 | 2;
   reauthenticate: () => Promise<CollaborationRealtimeTransportPrincipal>;
 }
 
@@ -331,6 +341,8 @@ export const decryptCollaborationRealtimeCursor = (
       parsed.kind !== "koed_collaboration_realtime_cursor" ||
       parsed.version !== 1 ||
       parsed.protocolVersion !== protocolVersion ||
+      (parsed.messageContractVersion !== undefined &&
+        parsed.messageContractVersion !== 2) ||
       !Number.isSafeInteger(parsed.cursor) ||
       parsed.cursor < 0 ||
       (parsed.scope !== "personal" && parsed.scope !== "team") ||
@@ -353,19 +365,26 @@ const bindingFor = (input: {
   deviceCredentialId: string | null;
   clientInstanceId: string;
   subscriptionKey: string;
+  messageContractVersion?: 1 | 2;
 }): RealtimeSubscriptionBinding => ({
   backendIdentityHash: input.backendIdentityHash,
   principalIdHash: collaborationRealtimePrincipalHash(input.userId),
   deviceCredentialId: input.deviceCredentialId,
   clientInstanceHash: bindingHash("client-instance", input.clientInstanceId),
-  subscriptionKeyHash: bindingHash("subscription-key", input.subscriptionKey),
+  subscriptionKeyHash: bindingHash(
+    "subscription-key",
+    input.messageContractVersion === 2
+      ? `team-message-v2:${input.subscriptionKey}`
+      : input.subscriptionKey
+  ),
   protocolVersion
 });
 
 const assertCursorMatches = (
   payload: CursorPayload,
   binding: RealtimeSubscriptionBinding,
-  scope: RealtimeScopeInput
+  scope: RealtimeScopeInput,
+  messageContractVersion: 1 | 2 = 1
 ) => {
   const matches =
     payload.backendIdentityHash === binding.backendIdentityHash &&
@@ -373,6 +392,7 @@ const assertCursorMatches = (
     payload.clientInstanceHash === binding.clientInstanceHash &&
     payload.subscriptionKeyHash === binding.subscriptionKeyHash &&
     payload.protocolVersion === binding.protocolVersion &&
+    (payload.messageContractVersion ?? 1) === messageContractVersion &&
     payload.scope === scope.scope &&
     (scope.scope === "personal"
       ? payload.teamId === null
@@ -406,13 +426,14 @@ type RendererUpdate = Extract<
   CollaborationRendererEvent,
   { type: "update" }
 >["update"];
+type RendererUpdateV2 = TeamCollaborationRealtimeUpdateV2["update"];
 
 const sharedSessionCompanionUnavailable = Symbol(
   "shared-session-companion-unavailable"
 );
 
 export type EventMaterialization =
-  | { action: "deliver"; update: RendererUpdate }
+  | { action: "deliver"; update: RendererUpdate | RendererUpdateV2 }
   | { action: "skip" }
   | { action: "requires_snapshot" };
 
@@ -821,6 +842,51 @@ const rendererMessageFromRecord = (
   };
 };
 
+const rendererTeamMessageV2FromRecord = (
+  message: TeamCollaborationMessageV2Record,
+  user: RealtimeAuth["user"]
+): RendererUpdateV2 | null => {
+  if (
+    message.senderKind !== "user" ||
+    !message.senderUserId ||
+    message.scope !== "team" ||
+    !message.teamId
+  ) {
+    return null;
+  }
+  return {
+    type: "message_created_v2",
+    message: {
+      id: message.id,
+      threadId: message.threadId,
+      scope: "team",
+      teamId: message.teamId,
+      sequence: message.threadSequence,
+      sender: {
+        id: message.senderUserId,
+        displayName: displayName(
+          message.senderDisplayName,
+          message.senderUserId === user.id
+            ? displayName(user.displayName, "Team member")
+            : "Team member"
+        ),
+        membershipState: "enabled"
+      },
+      senderKind: "user",
+      body: message.bodyText,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      editedAt: null,
+      deletedAt: null,
+      delivery: "sent",
+      recipientStatus: message.recipientStatus,
+      failure: null,
+      replyToMessageId: message.replyToMessageId,
+      mentionsUserIds: message.mentionsUserIds
+    }
+  };
+};
+
 const rendererReceiptStateFromRecord = (
   readState: CollaborationReadStateRecord
 ): RendererUpdate => ({
@@ -977,9 +1043,40 @@ const validateRendererUpdate = (
   event: CollaborationOutboxEventRecord,
   family: string,
   subscriptionId: string,
-  update: RendererUpdate,
+  update: RendererUpdate | RendererUpdateV2,
+  messageContractVersion: 1 | 2 = 1,
   onInvalid?: (issues: Array<{ path: string; message: string }>) => void
-): RendererUpdate | null => {
+): RendererUpdate | RendererUpdateV2 | null => {
+  if (messageContractVersion === 2) {
+    const parsed = teamCollaborationRealtimeUpdateV2Schema.safeParse({
+      contractVersion: protocolVersion,
+      messageContractVersion: 2,
+      type: "update",
+      subscriptionId,
+      deliveryId: hashValue(`realtime-validation:${event.id}`),
+      eventId: event.id,
+      occurredAt: event.occurredAt,
+      family,
+      resource: {
+        scope: event.scope,
+        teamId: event.teamId,
+        workspaceId: event.teamWorkspaceId,
+        threadId: event.threadId,
+        messageId: event.messageId,
+        sharedSessionId: event.shareGrantId,
+        shareGrantId: event.shareGrantId
+      },
+      update
+    });
+    if (parsed.success) return parsed.data.update;
+    onInvalid?.(
+      parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message
+      }))
+    );
+    return null;
+  }
   const parsed = collaborationRendererEventSchema.safeParse({
     contractVersion: protocolVersion,
     type: "update",
@@ -1025,7 +1122,7 @@ const materializeEvent = async (
   );
   if (!parsedFamily.success) return { action: "requires_snapshot" };
   const family = parsedFamily.data;
-  let update: RendererUpdate | null = null;
+  let update: RendererUpdate | RendererUpdateV2 | null = null;
   switch (family) {
     case "personal_memory_changed":
     case "managed_conversation_changed":
@@ -1050,20 +1147,38 @@ const materializeEvent = async (
       ) {
         return { action: "requires_snapshot" };
       }
-      const message = await materializationRepository.getMessageForRealtime(
-        client.actor,
-        { threadId: event.threadId, messageId: event.messageId }
-      );
-      if (
-        !message ||
-        message.id !== event.messageId ||
-        message.threadId !== event.threadId ||
-        message.scope !== event.scope ||
-        message.teamId !== event.teamId
-      ) {
-        return { action: "requires_snapshot" };
+      if (client.messageContractVersion === 2 && event.scope === "team") {
+        const message =
+          await materializationRepository.getTeamMessageV2ForRealtime(
+            client.actor,
+            { threadId: event.threadId, messageId: event.messageId }
+          );
+        if (
+          !message ||
+          message.id !== event.messageId ||
+          message.threadId !== event.threadId ||
+          message.scope !== event.scope ||
+          message.teamId !== event.teamId
+        ) {
+          return { action: "requires_snapshot" };
+        }
+        update = rendererTeamMessageV2FromRecord(message, client.user);
+      } else {
+        const message = await materializationRepository.getMessageForRealtime(
+          client.actor,
+          { threadId: event.threadId, messageId: event.messageId }
+        );
+        if (
+          !message ||
+          message.id !== event.messageId ||
+          message.threadId !== event.threadId ||
+          message.scope !== event.scope ||
+          message.teamId !== event.teamId
+        ) {
+          return { action: "requires_snapshot" };
+        }
+        update = rendererMessageFromRecord(message, client.user);
       }
-      update = rendererMessageFromRecord(message, client.user);
       break;
     }
     case "receipt_state_updated": {
@@ -1148,13 +1263,24 @@ const materializeEvent = async (
         if (!materializationRepository || !event.messageId) {
           return { action: "requires_snapshot" };
         }
-        const message = await materializationRepository.getMessageForRealtime(
-          client.actor,
-          { threadId: event.threadId, messageId: event.messageId }
-        );
-        update = message
-          ? rendererMessageFromRecord(message, client.user)
-          : null;
+        if (client.messageContractVersion === 2) {
+          const message =
+            await materializationRepository.getTeamMessageV2ForRealtime(
+              client.actor,
+              { threadId: event.threadId, messageId: event.messageId }
+            );
+          update = message
+            ? rendererTeamMessageV2FromRecord(message, client.user)
+            : null;
+        } else {
+          const message = await materializationRepository.getMessageForRealtime(
+            client.actor,
+            { threadId: event.threadId, messageId: event.messageId }
+          );
+          update = message
+            ? rendererMessageFromRecord(message, client.user)
+            : null;
+        }
       } else if (event.resourceType === "collaboration_receipt_state") {
         if (event.actorPrincipalId !== client.actor.userId) {
           return { action: "skip" };
@@ -1279,6 +1405,7 @@ const materializeEvent = async (
         family,
         client.subscriptionId,
         update,
+        client.messageContractVersion,
         (issues) => {
           options.app.log.warn(
             {
@@ -1326,7 +1453,8 @@ const eventEnvelope = (input: {
   event: CollaborationOutboxEventRecord;
   cursor: string;
   subscriptionId: string;
-  update: RendererUpdate;
+  update: RendererUpdate | RendererUpdateV2;
+  messageContractVersion: 1 | 2;
 }) => {
   const grantScopedLogicalMemoryId =
     input.event.scope === "team" &&
@@ -1346,7 +1474,7 @@ const eventEnvelope = (input: {
           input.event.actorPrincipalId
         )
       : input.event.actorPrincipalId;
-  return {
+  const base = {
     protocolVersion,
     eventId: input.event.id,
     cursor: input.cursor,
@@ -1371,6 +1499,11 @@ const eventEnvelope = (input: {
     actor: { principalId: grantScopedActorPrincipalId },
     update: input.update
   };
+  if (input.messageContractVersion !== 2) return base;
+  return teamCollaborationRealtimeV2EventSchema.parse({
+    ...base,
+    messageContractVersion: 2
+  });
 };
 
 const authenticateRealtime = async (
@@ -1453,12 +1586,16 @@ const makeCursor = (
     subscriptionId: string;
     eventId: string | null;
     cursor: number;
+    messageContractVersion?: 1 | 2;
   }
 ): string =>
   encryptCursorPayload(secret, {
     kind: "koed_collaboration_realtime_cursor",
     version: 1,
     protocolVersion,
+    ...(input.messageContractVersion === 2
+      ? { messageContractVersion: 2 as const }
+      : {}),
     backendIdentityHash: input.binding.backendIdentityHash,
     principalIdHash: input.binding.principalIdHash,
     clientInstanceHash: input.binding.clientInstanceHash,
@@ -1487,7 +1624,10 @@ const closeClient = async (
         JSON.stringify({
           protocolVersion,
           subscription: { id: client.subscriptionId },
-          reason
+          reason,
+          ...(client.messageContractVersion === 2
+            ? { messageContractVersion: 2 }
+            : {})
         })
       );
     } else {
@@ -1496,7 +1636,10 @@ const closeClient = async (
         JSON.stringify({
           protocolVersion,
           subscription: { id: client.subscriptionId },
-          reason
+          reason,
+          ...(client.messageContractVersion === 2
+            ? { messageContractVersion: 2 }
+            : {})
         })
       );
     }
@@ -1715,13 +1858,15 @@ export const createCollaborationRealtimeService = async (
             scope: client.scope,
             subscriptionId: client.subscriptionId,
             eventId: event.id,
-            cursor: event.cursor
+            cursor: event.cursor,
+            messageContractVersion: client.messageContractVersion
           });
           const envelope = eventEnvelope({
             event,
             cursor,
             subscriptionId: client.subscriptionId,
-            update: materialized.update
+            update: materialized.update,
+            messageContractVersion: client.messageContractVersion
           });
           const serializedEnvelope = JSON.stringify(envelope);
           const bytes = Buffer.byteLength(serializedEnvelope, "utf8");
@@ -1910,13 +2055,20 @@ export const createCollaborationRealtimeService = async (
       userId: input.principal.user.id,
       deviceCredentialId: input.principal.deviceCredentialId,
       clientInstanceId: input.clientInstanceId,
-      subscriptionKey: input.subscriptionKey
+      subscriptionKey: input.subscriptionKey,
+      messageContractVersion: input.messageContractVersion
     });
     const parsedCursor = decryptCollaborationRealtimeCursor(
       options.cursorSecret,
       input.cursor
     );
-    assertCursorMatches(parsedCursor, binding, input.scope);
+    const messageContractVersion = input.messageContractVersion ?? 1;
+    assertCursorMatches(
+      parsedCursor,
+      binding,
+      input.scope,
+      messageContractVersion
+    );
 
     const assertCapacity = () => {
       const existing = clientsBySubscription.get(parsedCursor.subscriptionId);
@@ -1981,6 +2133,7 @@ export const createCollaborationRealtimeService = async (
           principalIdHash: binding.principalIdHash,
           binding,
           scope: input.scope,
+          messageContractVersion,
           subscriptionId: parsedCursor.subscriptionId,
           cursor: parsedCursor.cursor,
           sink,
@@ -2021,7 +2174,10 @@ export const createCollaborationRealtimeService = async (
             JSON.stringify({
               protocolVersion,
               subscription: { id: client.subscriptionId },
-              cursor: input.cursor
+              cursor: input.cursor,
+              ...(client.messageContractVersion === 2
+                ? { messageContractVersion: 2 }
+                : {})
             })
           );
         } catch (error) {
@@ -2047,7 +2203,10 @@ export const createCollaborationRealtimeService = async (
               "heartbeat",
               JSON.stringify({
                 protocolVersion,
-                subscription: { id: client.subscriptionId }
+                subscription: { id: client.subscriptionId },
+                ...(client.messageContractVersion === 2
+                  ? { messageContractVersion: 2 }
+                  : {})
               })
             )
             .catch(() => closeAndForget(client, "requires_snapshot"));
@@ -2219,6 +2378,195 @@ export const createCollaborationRealtimeService = async (
           clientInstanceId: query.clientInstanceId,
           subscriptionKey: query.subscriptionKey,
           cursor: token,
+          reauthenticate: createRealtimeReauthenticator(
+            request,
+            options.auth,
+            query
+          )
+        });
+        reply.hijack();
+        reply.raw.writeHead(200, {
+          ...corsHeaders,
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no"
+        });
+        await prepared.activate(createSseSink(reply));
+      }
+    );
+
+    options.app.post("/v2/collaboration/realtime/snapshot", async (request) => {
+      assertOrigin(request);
+      rejectBearerApiToken(request);
+      const input = teamCollaborationRealtimeV2SnapshotSchema.parse(
+        request.body
+      );
+      const realtimeAuth = await authenticateRealtime(
+        request,
+        options.auth,
+        input
+      );
+      const binding = bindingFor({
+        backendIdentityHash,
+        userId: realtimeAuth.user.id,
+        deviceCredentialId: realtimeAuth.deviceCredentialId,
+        clientInstanceId: input.clientInstanceId,
+        subscriptionKey: input.subscriptionKey,
+        messageContractVersion: 2
+      });
+      const repository = requireRepository(options.repository);
+      const snapshot = await repository.getAuthorizedSnapshot(
+        { userId: realtimeAuth.user.id },
+        { scope: "team", teamId: input.teamId }
+      );
+      if (!snapshot) {
+        throw Object.assign(
+          new Error("Collaboration realtime snapshot cannot be viewed"),
+          { statusCode: 403 }
+        );
+      }
+      const subscription = await repository.createSubscription(
+        { userId: realtimeAuth.user.id },
+        {
+          ...binding,
+          scope: "team",
+          teamId: input.teamId,
+          snapshotHighWaterCursor: snapshot.highWaterCursor,
+          expiresAt: new Date(Date.now() + subscriptionTtlMs)
+        }
+      );
+      if (!subscription) {
+        throw Object.assign(
+          new Error("Collaboration realtime subscription cannot be created"),
+          { statusCode: 403 }
+        );
+      }
+      const cursor = makeCursor(options.cursorSecret, {
+        binding,
+        scope: { scope: "team", teamId: input.teamId },
+        subscriptionId: subscription.id,
+        eventId: null,
+        cursor: snapshot.highWaterCursor,
+        messageContractVersion: 2
+      });
+      return {
+        protocolVersion,
+        messageContractVersion: 2,
+        subscription,
+        snapshot: {
+          scope: snapshot.scope,
+          personalOwnerUserId: snapshot.personalOwnerUserId,
+          teamId: snapshot.teamId,
+          highWaterCursor: cursor,
+          threads: snapshot.threads.map(publicCollaborationThread)
+        },
+        cursor
+      };
+    });
+
+    options.app.post("/v2/collaboration/realtime/ack", async (request) => {
+      assertOrigin(request);
+      rejectBearerApiToken(request);
+      const input = teamCollaborationRealtimeV2AckSchema.parse(request.body);
+      const cursor = decryptCollaborationRealtimeCursor(
+        options.cursorSecret,
+        input.cursor
+      );
+      if (
+        cursor.messageContractVersion !== 2 ||
+        cursor.scope !== "team" ||
+        !cursor.teamId
+      ) {
+        throw Object.assign(new Error("Realtime cursor cannot be used here"), {
+          statusCode: 403
+        });
+      }
+      const scope = { scope: "team" as const, teamId: cursor.teamId };
+      const realtimeAuth = await authenticateRealtime(
+        request,
+        options.auth,
+        scope
+      );
+      const binding = bindingFor({
+        backendIdentityHash,
+        userId: realtimeAuth.user.id,
+        deviceCredentialId: realtimeAuth.deviceCredentialId,
+        clientInstanceId: input.clientInstanceId,
+        subscriptionKey: input.subscriptionKey,
+        messageContractVersion: 2
+      });
+      if (cursor.subscriptionId !== input.subscriptionId) {
+        throw Object.assign(new Error("Realtime cursor cannot be used here"), {
+          statusCode: 403
+        });
+      }
+      assertCursorMatches(cursor, binding, scope, 2);
+      if (cursor.eventId !== input.eventId || cursor.cursor <= 0) {
+        throw Object.assign(new Error("Realtime acknowledgement is invalid"), {
+          statusCode: 400
+        });
+      }
+      const subscription = await requireRepository(
+        options.repository
+      ).acknowledgeSubscription(
+        { userId: realtimeAuth.user.id },
+        {
+          ...binding,
+          subscriptionId: input.subscriptionId,
+          eventId: input.eventId,
+          cursor: cursor.cursor
+        }
+      );
+      if (!subscription) {
+        throw Object.assign(
+          new Error("Collaboration realtime acknowledgement cannot be applied"),
+          { statusCode: 403 }
+        );
+      }
+      const client = clientsBySubscription.get(input.subscriptionId);
+      if (client) {
+        const retained = client.unacknowledged.filter(
+          (event) => event.cursor > cursor.cursor
+        );
+        client.unacknowledgedBytes = retained.reduce(
+          (total, event) => total + event.bytes,
+          0
+        );
+        client.unacknowledged = retained;
+      }
+      return { subscription, messageContractVersion: 2 };
+    });
+
+    options.app.get(
+      "/v2/collaboration/realtime/stream",
+      async (request, reply) => {
+        const corsHeaders = assertOrigin(request);
+        rejectBearerApiToken(request);
+        const query = teamCollaborationRealtimeV2StreamQuerySchema.parse(
+          request.query
+        );
+        const realtimeAuth = await authenticateRealtime(
+          request,
+          options.auth,
+          query
+        );
+        const headerCursor = request.headers["last-event-id"];
+        const token =
+          (Array.isArray(headerCursor) ? headerCursor[0] : headerCursor) ??
+          query.cursor;
+        if (!token) {
+          throw Object.assign(new Error("Realtime cursor is required"), {
+            statusCode: 400
+          });
+        }
+        const prepared = await prepareDurableStream({
+          principal: realtimeAuth,
+          scope: { scope: "team", teamId: query.teamId },
+          clientInstanceId: query.clientInstanceId,
+          subscriptionKey: query.subscriptionKey,
+          cursor: token,
+          messageContractVersion: 2,
           reauthenticate: createRealtimeReauthenticator(
             request,
             options.auth,
