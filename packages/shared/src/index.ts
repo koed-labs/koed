@@ -144,6 +144,18 @@ export {
   type EmbeddingStateSnapshot
 } from "./embedding-state.js";
 export {
+  dueInfo,
+  dueSoon,
+  parseCanonicalDueDate,
+  parseDue,
+  resolveDue,
+  type CanonicalDueDate,
+  type DueDateContext,
+  type DueDateTone,
+  type DueInfo,
+  type ParsedDueText
+} from "./due-date.js";
+export {
   decideHistoricalAdmission,
   type HistoricalAdmissionDecision,
   type HistoricalAdmissionInput,
