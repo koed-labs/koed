@@ -90,12 +90,20 @@ time, and version. The initial runner device is the device that creates the
 job; Settings can change that assignment. The schedule is:
 
 ```text
-{ kind: daily | weekdays | weekly | monthly,
-  at: "HH:MM",
-  dow?: [1..7],
-  dom?: 1..31,
-  tz: IANA }
+{ kind: "daily", at: "HH:MM", tz: "IANA" }
+{ kind: "weekdays", at: "HH:MM", tz: "IANA" }
+{ kind: "weekly", at: "HH:MM", dow: [1..7, ...], tz: "IANA" }
+{ kind: "monthly", at: "HH:MM", dom: 1..31, tz: "IANA" }
 ```
+
+These are strict variants selected by `kind`. `at` must be a valid 24-hour
+`HH:MM` time and `tz` must name a supported IANA time zone. `weekdays` means
+ISO Monday through Friday (1–5). `daily` and `weekdays` prohibit `dow` and
+`dom`; `weekly` requires a nonempty array of unique integer ISO weekdays in
+the range 1–7 and prohibits `dom`; `monthly` requires an integer `dom` in the
+range 1–31 and prohibits `dow`. Reject unknown fields and combinations that do
+not match their variant. ISO weekdays are numbered 1 for Monday through 7 for
+Sunday.
 
 `dom` values beyond a month's length run on that month's last day. Times are
 wall-clock times in the stored IANA timezone. A time in a spring-forward gap
@@ -107,6 +115,18 @@ hour runs once, at its first occurrence.
 Each `scheduled_job_runs` row is unique for `(job_id, scheduled_for)` and
 records its ID, job ID, scheduled time, `scheduled` or `manual` trigger,
 attempt, status, skip reason, start and finish times, execution ID, and error.
+That row is the stable occurrence identity. A retry increments its attempt on
+the same row and appends lifecycle events for a distinct immutable
+attempt/execution identity and lease/fence generation. Persist the attempt-start
+event before launching the turn; append later state, terminal, or uncertainty
+events with finish time, outcome, and error as they become known. Never
+overwrite an earlier event or its identity, fence, or timestamps. The
+events use existing run statuses; uncertainty describes incomplete knowledge
+of client effects and is not a new run status. The
+occurrence row may summarize the latest state but is not the only history. A
+stale attempt or approval callback cannot resume execution, launch another
+turn, invoke another Koed-mediated operation, or write a terminal result after
+a newer attempt or fence takes ownership.
 The normal lifecycle is:
 
 ```text
@@ -128,6 +148,53 @@ time. Each run is a new turn in the job's bound Conversation. Only
 the Local AI Runtime on the job's assigned `runner_device_id` may claim that
 job; another online device must never run it. The device assignment can be
 changed in Settings.
+
+### Project and Conversation lifecycle authority
+
+This is a target authorization contract, not an implementation claim. A job
+runs through its owner's Local AI Runtime and validates the current owner,
+bound Conversation lifecycle, job version, assigned device, and execution
+fence. If it has a Personal Project link, validate that link's current identity
+and version and the Project's current lifecycle version; validate the bound
+Conversation's current identity and lifecycle version. Preserve an explicit
+unscoped state when it has no Project.
+A job using a shared Project must also validate the owner's exact Team
+Workspace Project association, current Workspace Access, and authoritative
+Workspace Project lifecycle version. Keep the private Personal Project ID
+local; Team authority is the member-to-Workspace-Project association and does
+not depend on a Personal Project ID stored by Team.
+
+Recheck those bindings before claiming or renewing a lease, accepting a retry,
+resuming from an approval callback, launching a turn, performing a
+Koed-mediated operation, and committing a terminal result. Bind each attempt
+and callback to the versions and fence it reviewed; reject stale callbacks or
+worker writes after any bound value changes. Lifecycle invalidation denies
+later Koed launches and resumptions, requests cancellation of in-flight AI
+Client work where supported, and rejects stale Koed writes. It cannot promise
+to stop or roll back unrelated tool effects an AI Client has already
+performed. Keep the append-only attempt record so the User can review effects
+that completed or remain uncertain when the fence changed.
+
+The Team Backend is authoritative for a shared Workspace Project tombstone,
+link, access, and lifecycle version. If that authority is unavailable or
+cannot confirm current state, a shared-Project job must not claim or renew,
+resume after approval, launch a scheduled turn, perform a Koed-mediated
+operation, or commit completion using cached state. It fails closed until
+authority can be confirmed. This gate must work
+while an owner's Desktop is offline; no Team operation may rely on a write to
+that Desktop's Personal database. A Personal-only job does not depend on a
+Team Backend when it has no shared Project binding.
+
+Apply [Project-sharing lifecycle](./project-sharing-lifecycle.md) when a
+Conversation or Project is deleted or forgotten: deleting a Conversation
+pauses a job whose own chat it is; forgetting a Conversation deletes its
+Scheduled Job; deleting a Personal Project pauses its jobs before batch
+success, and restoring the Project does not resume them. A Team Project
+tombstone or member-access removal denies that member's Project-job dispatch
+immediately in Team authority, even while the member's Desktop is offline; the
+Desktop pauses its local job when it later reconciles. A stale approval,
+queued invocation, lease renewal, or completion callback cannot bypass these
+changes.
 
 ## Koed implementation anchors
 
@@ -165,17 +232,40 @@ These are implementation details to resolve while preserving the contract
 above, not open product decisions:
 
 - Store and validate the IANA timezone and schedule shape at the API boundary;
-  use one deterministic occurrence calculation for display and dispatch.
+  use the strict `kind`-discriminated variants above and one deterministic
+  occurrence calculation for display and dispatch. Reject extra or conflicting
+  `dow`/`dom` fields, empty or duplicate weekly weekdays, invalid `HH:MM`, and
+  unsupported IANA time zones before persistence or occurrence materialization.
 - Materialize each due occurrence idempotently under the
   `(job_id, scheduled_for)` uniqueness rule, including after restart and
   concurrent scheduler ticks. Keep manual runs distinct from scheduled
   occurrences.
-- Bind claims, renewals, retries, and terminal writes to the current job
-  version, assigned device, execution generation, and lease fence. A settings
-  change or stale runtime must not execute or commit an old assignment.
+- Bind claims, renewals, retries, approval resumes, turn launches, and terminal
+  writes to the current job version, assigned device, execution generation,
+  and lease fence. Validate the Personal Project link and lifecycle when
+  present, and preserve explicit absence for an unscoped job. For a shared
+  Project, also validate the owner's exact Team Workspace Project association,
+  Workspace Access, and authoritative lifecycle version; keep private Personal
+  Project IDs local. Fail closed when Team authority cannot confirm them.
+  Lifecycle invalidation denies later Koed launches/resumptions, requests
+  cancellation of in-flight AI Client work where supported, and rejects stale
+  Koed writes. Do not claim control over or rollback of unrelated tool effects
+  already performed inside an AI Client; retain uncertain or completed effects
+  in attempt history for User review.
+- Keep one stable occurrence row while appending per-attempt lifecycle events.
+  Persist attempt-start before turn dispatch; append later state, terminal, or
+  uncertainty events without overwriting prior identity, execution ID, fence,
+  timestamps, error, or outcome. Test that retry preserves the interrupted
+  attempt history while the newer attempt gets a distinct identity.
 - Test the DST gap/repeat rules, month-end clamp, 15-minute missed boundary,
   overlap while `waiting_approval`, same-row retry attempts, Run now, process
   restart, stale-fence rejection, and competing assigned/unassigned devices.
+- Test Project deletion, Conversation deletion/forget, Project-link changes,
+  Team lifecycle unavailability, stale approval callbacks, and lifecycle
+  changes between turn launch and terminal write. No stale Koed attempt may
+  launch/resume or commit a terminal result; cancellation of in-flight
+  AI Client work is requested where supported, while uncertain/completed tool
+  effects remain visible in appended attempt events.
 
 The acceptance boundary remains the Koed contract in this note and its
 owning implementation tests. No OpenDots runtime result substitutes for
