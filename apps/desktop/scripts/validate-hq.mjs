@@ -1141,6 +1141,18 @@ const runValidation = async () => {
         assert.deepEqual(recovered, { error: false, projects: 4 });
       }
     );
+    // Context is a Project capability; exercise HQ102 layout in a real
+    // Project route rather than keeping its panel on Home or Conversations.
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-hq-project-link="hq103-koed"]')?.click()`
+    );
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      mounted = await waitForHqFixture(window);
+      if (mounted.hasContext && mounted.hasContextHandle) break;
+      await delay(25);
+    }
+    assert.equal(mounted.hasContext, true);
+    assert.equal(mounted.hasContextHandle, true);
 
     await window.webContents.executeJavaScript(`(() => {
       document.documentElement.classList.remove('dark');
@@ -1371,11 +1383,13 @@ const runValidation = async () => {
         await delay(20);
         const folds = await window.webContents.executeJavaScript(`(() => ({
           expanded: !(document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? true),
-          disabledActions: ['New chat', 'New project', 'Now'].every((label) => document.querySelector('button[aria-label="' + label + '"]')?.disabled),
+          disabledActions: ['New project', 'Now'].every((label) => document.querySelector('button[aria-label="' + label + '"]')?.disabled),
+          newChatEnabled: document.querySelector('button[aria-label="New chat"]')?.disabled === false,
           searchLabel: document.querySelector('button[aria-label="Search and commands"]')?.getAttribute('aria-label')
         }))()`);
         assert.equal(folds.expanded, true);
         assert.equal(folds.disabledActions, true);
+        assert.equal(folds.newChatEnabled, true);
         assert.equal(folds.searchLabel, "Search and commands");
 
         const paletteSelector =
@@ -1734,6 +1748,12 @@ const runValidation = async () => {
         assert.ok(selectedConversation.includes("Conversation"));
         assert.equal(
           await window.webContents.executeJavaScript(
+            'Boolean(document.querySelector(\'button[aria-label="Show project context"], button[aria-label="Hide project context"]\'))'
+          ),
+          false
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
             "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=\"dialog\"]'))"
           ),
           false
@@ -1743,6 +1763,16 @@ const runValidation = async () => {
             "document.querySelectorAll('#hq-project-navigation').length"
           ),
           1
+        );
+        await openNavigation();
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-project-link="hq103-koed"]')?.click()`
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            'Boolean(document.querySelector(\'button[aria-label="Show project context"], button[aria-label="Hide project context"]\'))'
+          ),
+          true
         );
       }
     );
@@ -1992,8 +2022,278 @@ const runValidation = async () => {
       assert.deepEqual(rendererExceptions, []);
     });
 
+    await runAssertion(
+      "HQ104 composer and timeline (ticket-owned proof; S11.1 remains SKIP)",
+      async () => {
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 1280,
+          height: 800,
+          deviceScaleFactor: 1,
+          mobile: false
+        });
+        let desktopSidebarWidth = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          desktopSidebarWidth = await window.webContents
+            .executeJavaScript(`(() => {
+            const handle = document.querySelector('[data-hq-sidebar-handle]');
+            const rect = handle?.getBoundingClientRect();
+            const width = Number(handle?.getAttribute('aria-valuenow'));
+            return window.innerWidth === 1280 &&
+              !window.matchMedia('(max-width: 760px)').matches &&
+              rect?.width > 0 && rect?.height > 100 &&
+              Number.isFinite(width) && width >= 200
+                ? width : null;
+          })()`);
+          if (desktopSidebarWidth !== null) break;
+          await delay(25);
+        }
+        assert.ok(
+          desktopSidebarWidth !== null,
+          "HQ104 desktop sidebar handle did not become ready"
+        );
+        const restoredSidebarWidth =
+          desktopSidebarWidth === 268
+            ? desktopSidebarWidth
+            : await pointerResize(
+                "[data-hq-sidebar-handle]",
+                268 - desktopSidebarWidth
+              );
+        assert.equal(Number(restoredSidebarWidth), 268);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('button[aria-label="New chat"]')?.click()`
+        );
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const ready = await window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('[aria-label="Project: Chats"]') && document.querySelector('[aria-label="Permissions: Ask first"]') && document.querySelector('[aria-label^="Model and reasoning: GPT-5.5"]'))`
+          );
+          if (ready) break;
+          await delay(50);
+        }
+        const blank = await window.webContents.executeJavaScript(`(() => {
+        const composer = document.querySelector('.hq-composer');
+        const rect = composer?.getBoundingClientRect();
+        return {
+          composer: Boolean(composer),
+          width: Math.round(rect?.width ?? 0),
+          height: Math.round(rect?.height ?? 0),
+          project: document.querySelector('[aria-label^="Project:"]')?.getAttribute('aria-label'),
+          permission: document.querySelector('[aria-label^="Permissions:"]')?.getAttribute('aria-label'),
+          model: document.querySelector('[aria-label^="Model and reasoning:"]')?.getAttribute('aria-label'),
+          legacy: Boolean(document.querySelector('.native-conversation-surface'))
+        };
+      })()`);
+        assert.equal(blank.composer, true);
+        assert.equal(blank.width, 760);
+        assert.ok(blank.height >= 93 && blank.height < 110);
+        assert.equal(blank.project, "Project: Chats");
+        assert.equal(blank.permission, "Permissions: Ask first");
+        assert.ok(blank.model?.includes("GPT-5.5"));
+        assert.equal(blank.legacy, false);
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            'Boolean(document.querySelector(\'button[aria-label="Show project context"], button[aria-label="Hide project context"]\'))'
+          ),
+          false
+        );
+        await captureScreenshot("hq104-blank-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('dark', 'light')`
+        );
+        await captureScreenshot("hq104-blank-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('light', 'dark')`
+        );
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label^="Model and reasoning:"]')?.click()`
+        );
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const settled = await window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('.hq-reasoning__bars button[aria-label="Reasoning effort: Medium"]') && getComputedStyle(document.querySelector('.hq-conversation-menu--model')).opacity === '1')`
+          );
+          if (settled) break;
+          await delay(25);
+        }
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('.hq-reasoning__bars button[aria-label="Reasoning effort: Medium"]'))`
+          ),
+          true
+        );
+        await captureScreenshot("hq104-model-reasoning-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('dark', 'light')`
+        );
+        await captureScreenshot("hq104-model-reasoning-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('light', 'dark')`
+        );
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label="Choose AI Client and model"]')?.click()`
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            `Boolean([...document.querySelectorAll('[role="menuitemradio"]')].some((item) => item.textContent.includes('GPT-5.5')))`
+          ),
+          true
+        );
+        await captureScreenshot("hq104-model-list-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label^="Model and reasoning:"]')?.click()`
+        );
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label^="Permissions:"]')?.click()`
+        );
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const settled = await window.webContents.executeJavaScript(
+            `(() => { const menu=document.querySelector('.hq-conversation-menu'); if (!menu) return false; const style=getComputedStyle(menu); return style.opacity === '1' && style.backgroundColor.startsWith('rgb('); })()`
+          );
+          if (settled) break;
+          await delay(25);
+        }
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            `(() => { const menu=document.querySelector('.hq-conversation-menu'); if (!menu) return false; const style=getComputedStyle(menu); return style.opacity === '1' && style.backgroundColor.startsWith('rgb('); })()`
+          ),
+          true
+        );
+        const modes = await window.webContents.executeJavaScript(
+          `[...document.querySelectorAll('[role="menuitemradio"]')].map((item) => item.textContent.trim())`
+        );
+        assert.ok(modes.some((label) => label.includes("Ask first")));
+        assert.ok(modes.some((label) => label.includes("Full access")));
+        assert.equal(
+          modes.some((label) => label.includes("Auto-accept edits")),
+          false
+        );
+        await captureScreenshot("hq104-permissions-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('dark', 'light')`
+        );
+        await captureScreenshot("hq104-permissions-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('light', 'dark')`
+        );
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label^="Permissions:"]')?.click()`
+        );
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 1,
+          mobile: true
+        });
+        await delay(260);
+        const assertPhoneEffort = async (width) => {
+          const layout = await window.webContents.executeJavaScript(`(() => {
+            const toolbar = document.querySelector('.hq-composer__toolbar');
+            const model = toolbar?.querySelector('.hq-composer__model-trigger');
+            const effort = model?.querySelector('.hq-composer__effort-label');
+            const send = toolbar?.querySelector('.hq-composer__send');
+            const toolbarRect = toolbar?.getBoundingClientRect();
+            const modelRect = model?.getBoundingClientRect();
+            const sendRect = send?.getBoundingClientRect();
+            return {
+              effort: effort?.textContent?.trim() ?? '',
+              visible: Boolean(effort && getComputedStyle(effort).display !== 'none' && effort.getBoundingClientRect().width > 0),
+              oneRow: Boolean(toolbarRect && modelRect && sendRect && Math.abs((modelRect.top + modelRect.bottom) / 2 - (sendRect.top + sendRect.bottom) / 2) < 4 && modelRect.right <= sendRect.left && sendRect.right <= toolbarRect.right + 1)
+            };
+          })()`);
+          assert.deepEqual(
+            layout,
+            { effort: "Medium", visible: true, oneRow: true },
+            `Phone ${width}px reasoning control`
+          );
+        };
+        await assertPhoneEffort(390);
+        await captureScreenshot("hq104-blank-phone390.png");
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 320,
+          height: 700,
+          deviceScaleFactor: 1,
+          mobile: true
+        });
+        await delay(260);
+        await assertPhoneEffort(320);
+        await captureScreenshot("hq104-blank-phone320.png");
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 1280,
+          height: 800,
+          deviceScaleFactor: 1,
+          mobile: false
+        });
+        await window.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector('textarea[aria-label="Message your AI Client"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(input, 'Plan the next release');
+        input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      })()`);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('button[aria-label="Send message"]')?.click()`
+        );
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const ready = await window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('.hq-conversation__dock') && document.body.textContent.includes('I can help with that.'))`
+          );
+          if (ready) break;
+          await delay(50);
+        }
+        const active = await window.webContents.executeJavaScript(`(() => ({
+        route: document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route'),
+        project: document.querySelector('[data-hq-project-id]')?.getAttribute('data-hq-project-id'),
+        sent: document.body.textContent.includes('Plan the next release'),
+        reply: document.body.textContent.includes('I can help with that.'),
+        dock: Math.round(document.querySelector('.hq-conversation__dock .hq-composer')?.getBoundingClientRect().width ?? 0)
+      }))()`);
+        assert.deepEqual(active, {
+          route: "conversation",
+          project: "hq103-loose",
+          sent: true,
+          reply: true,
+          dock: 780
+        });
+        await captureScreenshot("hq104-conversation-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('dark', 'light')`
+        );
+        await captureScreenshot("hq104-conversation-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('light', 'dark')`
+        );
+
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 1,
+          mobile: true
+        });
+        await delay(260);
+        await assertPhoneEffort(390);
+        const phoneWidth = await window.webContents.executeJavaScript(
+          `Math.round(document.querySelector('.hq-conversation__dock .hq-composer')?.getBoundingClientRect().width ?? 0)`
+        );
+        assert.ok(
+          phoneWidth >= 340 && phoneWidth <= 358,
+          `Phone composer width ${phoneWidth}`
+        );
+        await captureScreenshot("hq104-conversation-phone390.png");
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 320,
+          height: 700,
+          deviceScaleFactor: 1,
+          mobile: true
+        });
+        await delay(260);
+        await assertPhoneEffort(320);
+        await captureScreenshot("hq104-conversation-phone320.png");
+        assert.deepEqual(rendererErrors, []);
+        assert.deepEqual(rendererExceptions, []);
+      }
+    );
+
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

@@ -1171,6 +1171,23 @@ export function App({
       <HqApplication
         personalMemoryStore={personalMemoryStore}
         personalMemoryReady={personalMemoryReady}
+        managedConversations={managedConversations}
+        localAiClients={window.koedDesktop?.localAiClients}
+        managedProject={managedProject}
+        managedConversationLifecycle={managedConversationLifecycle}
+        authorizeManagedConversationTransfer={
+          client.authorizeManagedConversationTransfer
+        }
+        markdownAdapters={collaboration.markdownAdapters}
+        onResolveIndependent={async () => {
+          const metadata = await platform.ensureIndependentProject();
+          if (!personalMemoryStore) return null;
+          const refreshed = await personalMemoryStore.loadProjects({
+            silent: true
+          });
+          if (refreshed.error) throw new Error(refreshed.error);
+          return refreshed.projectsById.get(metadata.localProjectId) ?? null;
+        }}
         accountIdentity={
           snapshot
             ? { displayName: snapshot.navigation.personalOwner.displayName }

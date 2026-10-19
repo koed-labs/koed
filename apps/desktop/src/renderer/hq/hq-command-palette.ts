@@ -14,7 +14,10 @@ export type HqCommand = Pick<DesktopCommand, "id" | "label" | "scope"> & {
 };
 
 /** Keep the shared command model; adapt only destinations HQ actually owns. */
-export function hqLayoutCommands(settingsAvailable: boolean): HqCommand[] {
+export function hqLayoutCommands(
+  settingsAvailable: boolean,
+  contextAvailable = true
+): HqCommand[] {
   const preferences = commandEntriesForSnapshot(null).find(
     ({ id }) => id === "route:preferences"
   );
@@ -25,12 +28,16 @@ export function hqLayoutCommands(settingsAvailable: boolean): HqCommand[] {
       scope: "Command",
       action: { kind: "toggle-sidebar" }
     },
-    {
-      id: "layout:context",
-      label: "Toggle context panel",
-      scope: "Command",
-      action: { kind: "toggle-context" }
-    },
+    ...(contextAvailable
+      ? [
+          {
+            id: "layout:context",
+            label: "Toggle context panel",
+            scope: "Command",
+            action: { kind: "toggle-context" as const }
+          }
+        ]
+      : []),
     ...(settingsAvailable && preferences
       ? [
           {

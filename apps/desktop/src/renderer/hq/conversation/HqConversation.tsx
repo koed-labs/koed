@@ -1,0 +1,2099 @@
+import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { ManagedConversationSettings } from "@koed/shared/ai-client-contract";
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuPopup,
+  DropdownMenuItem,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem
+} from "@koed/ui";
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Folder,
+  Paperclip,
+  RotateCcw,
+  Shield,
+  Square,
+  X
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
+import {
+  conversationEventText,
+  expandConversationDisplayEvents
+} from "../../../desktop-conversation.js";
+import type { DesktopProject } from "../../../project-memory-ui.js";
+import type {
+  ManagedConversationDesktopApi,
+  ManagedConversationIdentity,
+  ManagedConversationLaunchOptions,
+  ManagedConversationRuntimeItem
+} from "../../../ipc/managed-conversation-protocol.js";
+import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import type { PersonalMemoryStore } from "../../state/personal-memory.js";
+import type {
+  ManagedConversationLifecycle,
+  ManagedConversationDraft
+} from "../../state/use-managed-conversation-lifecycle.js";
+import { usePersonalMemoryDetail } from "../../views/personal/use-personal-memory-detail.js";
+import { useSlashCommandDiscovery } from "../../views/personal/use-slash-command-discovery.js";
+import {
+  applySlashCommandReplacement,
+  filterSlashCommands,
+  findActiveSlashCommand,
+  findUnverifiedSlashCommand,
+  type ManagedConversationSlashCommand
+} from "../../views/personal/ai-client-slash-suggestions.js";
+import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
+import type { DesktopApi } from "../../../types.js";
+import { assignmentFrom } from "../../views/preferences/local-ai-client-settings-helpers.js";
+import { HqRuntimeItem } from "./HqRuntimeItem.js";
+import {
+  hqPermissionLabel,
+  hqReasoningHeat,
+  hqReasoningLabel,
+  hqSelectionForInstance,
+  hqSelectionIsSupported,
+  hqSettingsChange,
+  type HqSelection
+} from "./hq-conversation-model.js";
+import "./hq-conversation.css";
+
+type Attachment = { commandId: string; label: string };
+const emptySelection: HqSelection = {
+  instanceId: "",
+  model: "",
+  reasoningEffort: "",
+  permissionMode: ""
+};
+const draftScope = (identity: ManagedConversationIdentity) => ({
+  projectId: identity.projectId,
+  capturedSessionId: identity.capturedSessionId,
+  threadId: identity.threadId
+});
+
+function Settings({
+  options,
+  selection,
+  onChange,
+  locked,
+  disabled
+}: {
+  options: ManagedConversationLaunchOptions | null;
+  selection: HqSelection;
+  onChange: (value: HqSelection) => void;
+  locked?: boolean;
+  disabled?: boolean;
+}) {
+  const instance = options?.instances.find(
+    (item) => item.instanceId === selection.instanceId
+  );
+  const model = instance?.models.find((item) => item.id === selection.model);
+  const supported = instance?.capabilities.permissionModes ?? [];
+  const [moreModes, setMoreModes] = useState(false);
+  const [modelList, setModelList] = useState(false);
+  const efforts = model?.supportedReasoningEfforts ?? [];
+  const effortIndex = Math.max(0, efforts.indexOf(selection.reasoningEffort));
+  const effortButtons = useRef<Array<HTMLButtonElement | null>>([]);
+  const chooseEffort = (index: number) => {
+    const effort = efforts[index];
+    if (effort) onChange({ ...selection, reasoningEffort: effort });
+  };
+  const chooseModel = (instanceId: string, modelId: string) => {
+    if (!options || (locked && instanceId !== selection.instanceId)) return;
+    const nextInstance = options.instances.find(
+      (item) => item.instanceId === instanceId
+    );
+    const next = nextInstance?.models.find((item) => item.id === modelId);
+    if (!nextInstance?.ready || !next) return;
+    const base =
+      instanceId === selection.instanceId
+        ? selection
+        : hqSelectionForInstance(options, instanceId);
+    onChange({
+      ...base,
+      model: next.id,
+      reasoningEffort: next.supportedReasoningEfforts.includes(
+        base.reasoningEffort
+      )
+        ? base.reasoningEffort
+        : (next.defaultReasoningEffort ??
+          next.supportedReasoningEfforts[0] ??
+          "")
+    });
+  };
+  const permission = (
+    mode: "supervised" | "full_access" | "auto_edit" | "auto"
+  ) => (
+    <DropdownMenuRadioItem
+      key={mode}
+      value={mode}
+      disabled={
+        disabled ||
+        !instance?.ready ||
+        !supported.some(
+          (item) => item.mode === mode && item.support === "supported"
+        )
+      }
+      className="hq-conversation-menu__item"
+    >
+      {hqPermissionLabel[mode]}
+      {selection.permissionMode === mode ? " ✓" : ""}
+    </DropdownMenuRadioItem>
+  );
+  return (
+    <>
+      <DropdownMenu onOpenChange={() => setMoreModes(false)}>
+        <DropdownMenuTrigger
+          className="hq-composer__setting-trigger hq-composer__permission-trigger"
+          aria-label={`Permissions: ${selection.permissionMode ? hqPermissionLabel[selection.permissionMode] : "Ask first unavailable"}`}
+          disabled={disabled}
+        >
+          <Shield size={15} />
+          <span>
+            {selection.permissionMode
+              ? hqPermissionLabel[selection.permissionMode]
+              : "Ask first unavailable"}
+          </span>
+          <ChevronDown size={14} />
+        </DropdownMenuTrigger>
+        <DropdownMenuPopup
+          side="top"
+          align="start"
+          className="hq-conversation-menu"
+        >
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>
+              {moreModes ? "More permissions" : "Permissions"}
+            </DropdownMenuLabel>
+          </DropdownMenuGroup>
+          {moreModes ? (
+            <DropdownMenuItem
+              closeOnClick={false}
+              onClick={() => setMoreModes(false)}
+            >
+              <ChevronLeft size={14} /> Back
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuRadioGroup
+            value={selection.permissionMode}
+            onValueChange={(value) =>
+              onChange({
+                ...selection,
+                permissionMode: value as HqSelection["permissionMode"]
+              })
+            }
+          >
+            {moreModes ? (
+              <>
+                {permission("auto_edit")}
+                {permission("auto")}
+              </>
+            ) : (
+              <>
+                {permission("supervised")}
+                {permission("full_access")}
+              </>
+            )}
+          </DropdownMenuRadioGroup>
+          {!moreModes ? (
+            <DropdownMenuItem
+              closeOnClick={false}
+              onClick={() => setMoreModes(true)}
+            >
+              More permissions <ChevronRight size={14} />
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuPopup>
+      </DropdownMenu>
+      <div className="hq-composer__spacer" />
+      <div className="hq-conversation-settings">
+        <DropdownMenu onOpenChange={() => setModelList(false)}>
+          <DropdownMenuTrigger
+            className="hq-composer__setting-trigger hq-composer__model-trigger"
+            aria-label={`Model and reasoning: ${(model?.displayName ?? selection.model) || "Unavailable"}${selection.reasoningEffort ? `, ${hqReasoningLabel(selection.reasoningEffort)}` : ""}; AI Client: ${instance?.displayName ?? "Unavailable"}`}
+            disabled={disabled}
+          >
+            <span>{(model?.displayName ?? selection.model) || "Model"}</span>
+            {selection.reasoningEffort ? (
+              <>
+                <span
+                  className="hq-composer__heat"
+                  style={{
+                    background: `var(--hq-heat-${hqReasoningHeat(effortIndex, efforts.length)})`
+                  }}
+                  aria-hidden="true"
+                />
+                <span className="hq-composer__effort-label">
+                  {hqReasoningLabel(selection.reasoningEffort)}
+                </span>
+              </>
+            ) : null}
+            <ChevronDown size={14} />
+          </DropdownMenuTrigger>
+          <DropdownMenuPopup
+            side="top"
+            align="end"
+            className="hq-conversation-menu hq-conversation-menu--model"
+          >
+            {modelList ? (
+              <>
+                <DropdownMenuItem
+                  closeOnClick={false}
+                  onClick={() => setModelList(false)}
+                >
+                  <ChevronLeft size={14} /> Back
+                </DropdownMenuItem>
+                <DropdownMenuRadioGroup
+                  value={`${selection.instanceId}\u0000${selection.model}`}
+                  onValueChange={(value) => {
+                    const [instanceId, modelId] = value.split("\u0000");
+                    if (instanceId && modelId) chooseModel(instanceId, modelId);
+                  }}
+                >
+                  {options?.instances.map((client) => (
+                    <DropdownMenuGroup key={client.instanceId}>
+                      <DropdownMenuLabel>
+                        {client.displayName}
+                      </DropdownMenuLabel>
+                      {client.models.map((item) => (
+                        <DropdownMenuRadioItem
+                          className="hq-conversation-menu__item"
+                          key={`${client.instanceId}:${item.id}`}
+                          value={`${client.instanceId}\u0000${item.id}`}
+                          disabled={
+                            !client.ready ||
+                            (locked &&
+                              client.instanceId !== selection.instanceId)
+                          }
+                        >
+                          {item.displayName ?? item.id}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  ))}
+                </DropdownMenuRadioGroup>
+                {locked ? (
+                  <p>Start a new Conversation to change AI Client.</p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="hq-reasoning__top">
+                  <div className="hq-reasoning__title">
+                    <strong>
+                      {hqReasoningLabel(selection.reasoningEffort)}
+                    </strong>
+                    <button
+                      type="button"
+                      onClick={() => setModelList(true)}
+                      aria-label="Choose AI Client and model"
+                    >
+                      {(model?.displayName ?? selection.model) ||
+                        "Select model"}
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="hq-reasoning__reset"
+                    aria-label="Reset reasoning effort"
+                    title="Reset reasoning effort"
+                    disabled={!model || !efforts.length}
+                    onClick={() => {
+                      if (!model) return;
+                      onChange({
+                        ...selection,
+                        reasoningEffort: efforts.includes("medium")
+                          ? "medium"
+                          : (model.defaultReasoningEffort ?? efforts[0] ?? "")
+                      });
+                    }}
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                </div>
+                {efforts.length ? (
+                  <div
+                    className="hq-reasoning__bars"
+                    role="radiogroup"
+                    aria-label="Reasoning effort"
+                  >
+                    {efforts.map((effort, index) => (
+                      <button
+                        key={effort}
+                        type="button"
+                        ref={(node) => {
+                          effortButtons.current[index] = node;
+                        }}
+                        role="radio"
+                        aria-label={`Reasoning effort: ${hqReasoningLabel(effort)}`}
+                        aria-checked={selection.reasoningEffort === effort}
+                        tabIndex={selection.reasoningEffort === effort ? 0 : -1}
+                        onClick={() => chooseEffort(index)}
+                        onKeyDown={(event) => {
+                          const next =
+                            event.key === "ArrowRight" ||
+                            event.key === "ArrowUp"
+                              ? (index + 1) % efforts.length
+                              : event.key === "ArrowLeft" ||
+                                  event.key === "ArrowDown"
+                                ? (index - 1 + efforts.length) % efforts.length
+                                : event.key === "Home"
+                                  ? 0
+                                  : event.key === "End"
+                                    ? efforts.length - 1
+                                    : -1;
+                          if (next < 0) return;
+                          event.preventDefault();
+                          chooseEffort(next);
+                          effortButtons.current[next]?.focus();
+                        }}
+                        style={
+                          {
+                            "--hq-reasoning-heat": `var(--hq-heat-${hqReasoningHeat(index, efforts.length)})`
+                          } as React.CSSProperties
+                        }
+                      >
+                        {Array.from(
+                          { length: hqReasoningHeat(index, efforts.length) },
+                          (_, segment) => (
+                            <i key={segment} aria-hidden="true" />
+                          )
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p>Reasoning effort is unavailable for this model.</p>
+                )}
+              </>
+            )}
+          </DropdownMenuPopup>
+        </DropdownMenu>
+      </div>
+    </>
+  );
+}
+
+function Composer({
+  value,
+  setValue,
+  onSubmit,
+  onAttach,
+  attachments,
+  onRemoveAttachment,
+  projects,
+  projectId,
+  onProjectChange,
+  options,
+  selection,
+  onSelectionChange,
+  locked,
+  busy,
+  canSend,
+  active,
+  onStop,
+  error,
+  slashCommands,
+  lockDraft
+}: {
+  value: string;
+  setValue: (value: string) => void;
+  onSubmit: () => void;
+  onAttach?: () => void;
+  attachments: Attachment[];
+  onRemoveAttachment: (id: string) => void;
+  projects: readonly DesktopProject[];
+  projectId: string;
+  onProjectChange?: (id: string) => void;
+  options: ManagedConversationLaunchOptions | null;
+  selection: HqSelection;
+  onSelectionChange: (value: HqSelection) => void;
+  locked?: boolean;
+  busy?: boolean;
+  canSend: boolean;
+  active?: boolean;
+  onStop?: () => void;
+  error?: string;
+  slashCommands?: ManagedConversationSlashCommand[];
+  lockDraft?: boolean;
+}) {
+  const input = useRef<HTMLTextAreaElement>(null);
+  const [cursor, setCursor] = useState(value.length);
+  const slash = findActiveSlashCommand({ text: value, cursorIndex: cursor });
+  const suggestions = slash
+    ? filterSlashCommands(slashCommands ?? [], slash.query).slice(0, 8)
+    : [];
+  useEffect(() => {
+    if (!locked) input.current?.focus();
+  }, [locked]);
+  return (
+    <div className="hq-composer-wrap">
+      <form
+        className="hq-composer"
+        aria-label="Conversation composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        {attachments.length ? (
+          <div className="hq-composer__attachments">
+            {attachments.map((item) => (
+              <span key={item.commandId}>
+                {item.label}
+                <button
+                  aria-label={`Remove ${item.label}`}
+                  type="button"
+                  onClick={() => onRemoveAttachment(item.commandId)}
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <textarea
+          ref={input}
+          aria-label="Message your AI Client"
+          placeholder="What do you want to get done?"
+          rows={1}
+          value={value}
+          disabled={busy || lockDraft}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setCursor(event.target.selectionStart);
+          }}
+          onClick={(event) => setCursor(event.currentTarget.selectionStart)}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              onSubmit();
+            }
+          }}
+        />
+        {slash && suggestions.length ? (
+          <div
+            className="hq-slash-list"
+            role="listbox"
+            aria-label="AI Client commands"
+          >
+            {suggestions.map((item) => (
+              <button
+                key={`${item.source}:${item.name}`}
+                role="option"
+                aria-selected="false"
+                type="button"
+                onClick={() => {
+                  const next = applySlashCommandReplacement({
+                    text: value,
+                    range: slash.range,
+                    commandName: item.name
+                  });
+                  setValue(next);
+                  setCursor(next.length);
+                  input.current?.focus();
+                }}
+              >
+                <b>/{item.name}</b>
+                <small>{item.description}</small>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="hq-composer__toolbar">
+          <button
+            aria-label="Attach a Project file"
+            title="Attach a Project file"
+            type="button"
+            onClick={onAttach}
+            disabled={!onAttach || busy}
+          >
+            <Paperclip size={17} />
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className="hq-composer__setting-trigger hq-composer__project-trigger"
+              aria-label={`Project: ${projects.find((item) => item.id === projectId)?.name ?? "Choose Project"}`}
+              disabled={!onProjectChange || busy}
+            >
+              <Folder size={15} />
+              <span>
+                {projects.find((item) => item.id === projectId)?.contextKind ===
+                "independent"
+                  ? "Just me"
+                  : (projects.find((item) => item.id === projectId)?.name ??
+                    "Choose Project")}
+              </span>
+              <ChevronDown size={14} />
+            </DropdownMenuTrigger>
+            <DropdownMenuPopup
+              side="top"
+              align="start"
+              className="hq-conversation-menu"
+            >
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Project</DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuRadioGroup
+                value={projectId}
+                onValueChange={(value) => onProjectChange?.(value)}
+              >
+                {projects.map((item) => (
+                  <DropdownMenuRadioItem
+                    className="hq-conversation-menu__item"
+                    key={item.id}
+                    value={item.id}
+                  >
+                    {item.contextKind === "independent" ? "Just me" : item.name}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuPopup>
+          </DropdownMenu>
+          <Settings
+            options={options}
+            selection={selection}
+            onChange={onSelectionChange}
+            locked={locked}
+            disabled={busy || active}
+          />
+          {active ? (
+            <button
+              className="hq-composer__send"
+              aria-label="Stop response"
+              type="button"
+              onClick={onStop}
+              disabled={!onStop || busy}
+            >
+              <Square size={15} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              className="hq-composer__send"
+              aria-label="Send message"
+              type="submit"
+              disabled={!canSend || busy}
+            >
+              <ArrowUp size={19} />
+            </button>
+          )}
+        </div>
+      </form>
+      {error ? (
+        <p className="hq-conversation-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function HqBlankConversation({
+  api,
+  localAiClients,
+  projects,
+  project,
+  onProjectChange,
+  lifecycle,
+  managedProject,
+  onStarted,
+  onLaunchAttempt
+}: {
+  api: ManagedConversationDesktopApi | null;
+  projects: readonly DesktopProject[];
+  project: DesktopProject | null;
+  localAiClients?: DesktopApi["localAiClients"];
+  onProjectChange: (id: string) => void;
+  lifecycle: ManagedConversationLifecycle;
+  managedProject: ManagedProjectDesktopApi | null;
+  onStarted: (
+    projectId: string,
+    routeId: string,
+    attachRequested: boolean
+  ) => void;
+  onLaunchAttempt?: () => void;
+}) {
+  const [options, setOptions] =
+    useState<ManagedConversationLaunchOptions | null>(null);
+  const [selection, setSelection] = useState<HqSelection>(emptySelection);
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [launchAttempted, setLaunchAttempted] = useState(false);
+  const [savedAssignmentUnavailable, setSavedAssignmentUnavailable] =
+    useState("");
+  const startRef = useRef<
+    Parameters<ManagedConversationDesktopApi["start"]>[0] | null
+  >(null);
+  const promptId = useRef<string | null>(null);
+  const attachIntent = useRef<boolean | null>(null);
+  const slash = useSlashCommandDiscovery(
+    api,
+    options?.instances.find((item) => item.instanceId === selection.instanceId)
+      ?.driverId ?? null,
+    selection.instanceId || null,
+    project?.id ?? null,
+    project?.path ?? null
+  );
+  useEffect(() => {
+    if (!api) return;
+    let alive = true;
+    void Promise.all([api.launchOptions(), localAiClients?.list()])
+      .then(([{ options }, settings]) => {
+        if (!alive) return;
+        setOptions(options);
+        const assignment = settings
+          ? assignmentFrom(settings.readModel, "conversations")
+          : null;
+        const preferred = assignment
+          ? options.instances.find(
+              (item) => item.instanceId === assignment.ai_client_instance_id
+            )
+          : null;
+        const instance = assignment
+          ? preferred
+          : options.instances.find(
+              (item) =>
+                item.ready &&
+                item.capabilities.permissionModes.some(
+                  (mode) =>
+                    mode.mode === "supervised" && mode.support === "supported"
+                )
+            );
+        const base = hqSelectionForInstance(
+          options,
+          instance?.instanceId ?? assignment?.ai_client_instance_id ?? ""
+        );
+        const assignedModel = instance?.models.find((item) =>
+          [item.id, item.fullId, item.model].includes(assignment?.model)
+        );
+        setSelection({
+          ...base,
+          model: assignment
+            ? (assignedModel?.id ?? assignment.model)
+            : base.model,
+          reasoningEffort: assignment
+            ? assignment.reasoning_effort === "none" &&
+              !assignedModel?.supportedReasoningEfforts.length
+              ? ""
+              : assignment.reasoning_effort
+            : base.reasoningEffort
+        });
+        setSavedAssignmentUnavailable(
+          assignment && (!preferred || !assignedModel)
+            ? "The saved Conversations AI Client or model is unavailable. Choose a supported AI Client and model before sending."
+            : ""
+        );
+      })
+      .catch(() => {
+        if (alive)
+          setError(
+            "AI Client options are unavailable. Retry when your AI Client is ready."
+          );
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, localAiClients]);
+  const start = async (requestedAttach = false) => {
+    const attach = attachIntent.current ?? requestedAttach;
+    if (
+      !api ||
+      !project ||
+      busy ||
+      !hqSelectionIsSupported(options, selection) ||
+      (!attach && !prompt.trim())
+    )
+      return;
+    const unverified = findUnverifiedSlashCommand(prompt, slash.commands);
+    if (unverified) {
+      setError(`/${unverified} is not verified and cannot be dispatched.`);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const instance = options!.instances.find(
+      (item) => item.instanceId === selection.instanceId
+    )!;
+    const launch = startRef.current ?? {
+      projectId: project.id,
+      contextKind: project.contextKind ?? "project",
+      aiClientDriverId: instance.driverId,
+      aiClientInstanceId: instance.instanceId,
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort || null,
+      permissionMode: selection.permissionMode as
+        | "supervised"
+        | "full_access"
+        | "auto_edit"
+        | "auto",
+      runnerKind: "local_device" as const,
+      idempotencyKey: `desktop-conversation:${crypto.randomUUID()}`
+    };
+    startRef.current = launch;
+    attachIntent.current = attach;
+    setLaunchAttempted(true);
+    onLaunchAttempt?.();
+    try {
+      const result = await api.start(launch);
+      // A starting execution may not have a captured identity yet. The
+      // execution-scoped placeholders are only a recovery route; lifecycle
+      // replaces them when the owner reports the canonical source identity.
+      const conversation = result.conversation ?? {
+        executionId: result.executionId,
+        projectId: launch.projectId,
+        capturedSessionId: result.executionId,
+        threadId: result.executionId,
+        executionOwner: {
+          driverId: launch.aiClientDriverId,
+          instanceId: launch.aiClientInstanceId
+        }
+      };
+      if (
+        !conversation.executionId ||
+        conversation.executionId !== result.executionId
+      )
+        throw new Error(
+          "Koed has not confirmed this Conversation execution. Retry start to recover the same launch; your message is unchanged."
+        );
+      const firstPrompt:
+        | {
+            clientUserMessageId: string;
+            prompt: string;
+            status: "queued" | "rejected" | "reconciling";
+            message: string;
+          }
+        | undefined = prompt.trim()
+        ? {
+            clientUserMessageId: promptId.current ?? crypto.randomUUID(),
+            prompt,
+            status: "rejected",
+            message: attach
+              ? "Attach a Project file, then send this saved draft."
+              : "The prompt was not sent. Your draft is available below."
+          }
+        : undefined;
+      if (firstPrompt) {
+        promptId.current = firstPrompt.clientUserMessageId;
+        try {
+          await api.writeDraft({
+            ...draftScope(conversation),
+            value: firstPrompt.prompt
+          });
+        } catch {
+          firstPrompt.message =
+            "Koed could not save this draft securely. The text remains in this Conversation; copy it before leaving.";
+        }
+        if (
+          !attach &&
+          firstPrompt.message !==
+            "Koed could not save this draft securely. The text remains in this Conversation; copy it before leaving."
+        )
+          try {
+            const sent = await api.send({
+              executionId: result.executionId,
+              capturedSessionId: conversation.capturedSessionId,
+              threadId: conversation.threadId,
+              idempotencyKey: `desktop-prompt:${firstPrompt.clientUserMessageId}`,
+              clientUserMessageId: firstPrompt.clientUserMessageId,
+              prompt: firstPrompt.prompt
+            });
+            firstPrompt.status = sent.status;
+            firstPrompt.message = sent.message ?? "";
+            if (sent.status === "queued")
+              await api
+                .deleteDraft(draftScope(conversation))
+                .catch(() => undefined);
+          } catch {
+            firstPrompt.status = "reconciling";
+            firstPrompt.message =
+              "Koed cannot confirm whether this prompt reached the AI Client. It will not resend automatically.";
+          }
+      }
+      const routeId = lifecycle.started(
+        project,
+        conversation,
+        result.status,
+        launch,
+        firstPrompt
+      );
+      if (routeId) onStarted(project.id, routeId, attach);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The AI Client could not start. Retry checks the same Conversation."
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="hq-conversation hq-conversation--blank">
+      <div className="hq-conversation__hero">
+        <h1>
+          {options?.instances.find(
+            (item) => item.instanceId === selection.instanceId
+          )?.displayName ?? "New Conversation"}
+        </h1>
+        <Composer
+          value={prompt}
+          setValue={setPrompt}
+          onSubmit={() => void start()}
+          onAttach={
+            managedProject && !launchAttempted
+              ? () => void start(true)
+              : undefined
+          }
+          attachments={[]}
+          onRemoveAttachment={() => undefined}
+          projects={projects}
+          projectId={project?.id ?? ""}
+          onProjectChange={launchAttempted ? undefined : onProjectChange}
+          options={options}
+          selection={selection}
+          onSelectionChange={
+            launchAttempted
+              ? () => undefined
+              : (value) => {
+                  setSelection(value);
+                  setSavedAssignmentUnavailable("");
+                }
+          }
+          locked={launchAttempted}
+          lockDraft={launchAttempted}
+          busy={busy}
+          canSend={Boolean(
+            api &&
+            project &&
+            prompt.trim() &&
+            hqSelectionIsSupported(options, selection)
+          )}
+          error={
+            error ||
+            savedAssignmentUnavailable ||
+            slash.error ||
+            (options && !selection.permissionMode
+              ? "Ask first is unavailable for this AI Client. Choose a supported mode explicitly to continue."
+              : "")
+          }
+          slashCommands={slash.commands}
+        />
+        {launchAttempted && error ? (
+          <button
+            className="hq-conversation__retry"
+            type="button"
+            disabled={busy}
+            onClick={() => void start()}
+          >
+            Retry the same launch
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function HqActiveConversation({
+  api,
+  managedProject,
+  store,
+  project,
+  thread,
+  draft,
+  onRetryStart,
+  markdownAdapters,
+  authorizeTransfer,
+  openFilePickerOnReady = false
+}: {
+  api: ManagedConversationDesktopApi | null;
+  managedProject: ManagedProjectDesktopApi | null;
+  store: PersonalMemoryStore;
+  project: DesktopProject;
+  thread: PersonalDesktopProjectThread;
+  draft: ManagedConversationDraft | null;
+  onRetryStart: () => void;
+  markdownAdapters: MarkdownPlatformAdapters;
+  authorizeTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
+  openFilePickerOnReady?: boolean;
+}) {
+  const detailThread = draft?.thread ?? thread;
+  const { detail, loadOlder, retry } = usePersonalMemoryDetail(
+    store,
+    detailThread,
+    !draft ||
+      draft.conversation.capturedSessionId !== draft.conversation.executionId
+  );
+  const identityKey = [
+    project.id,
+    draft?.conversation.executionId ?? "",
+    draft?.conversation.capturedSessionId ?? detailThread.sessionId ?? "",
+    draft?.conversation.threadId ?? detailThread.id
+  ].join("\u0000");
+  const identityKeyRef = useRef(identityKey);
+  identityKeyRef.current = identityKey;
+  const [resumed, setResumed] = useState<{
+    key: string;
+    status: "ready" | "read_only" | "reconciling";
+    conversation: ManagedConversationIdentity;
+  } | null>(null);
+  const resumeStatus = resumed?.key === identityKey ? resumed.status : null;
+  const conversation =
+    resumed?.key === identityKey
+      ? resumed.conversation
+      : (draft?.conversation ?? null);
+  const [runtimeState, setRuntimeState] = useState<{
+    key: string;
+    value: Awaited<ReturnType<ManagedConversationDesktopApi["runtime"]>>;
+  } | null>(null);
+  const runtime =
+    resumeStatus === "ready" && runtimeState?.key === identityKey
+      ? runtimeState.value
+      : null;
+  const [usageState, setUsageState] = useState<{
+    key: string;
+    value: Awaited<ReturnType<ManagedConversationDesktopApi["usage"]>>;
+  } | null>(null);
+  const usage = usageState?.key === identityKey ? usageState.value : null;
+  const [options, setOptions] =
+    useState<ManagedConversationLaunchOptions | null>(null);
+  const [selection, setSelection] = useState<HqSelection>(() =>
+    draft
+      ? {
+          instanceId: draft.launchInput.aiClientInstanceId,
+          model: draft.launchInput.model,
+          reasoningEffort: draft.launchInput.reasoningEffort ?? "",
+          permissionMode: draft.launchInput.permissionMode
+        }
+      : emptySelection
+  );
+  const [expected, setExpected] = useState<ManagedConversationSettings | null>(
+    () =>
+      draft
+        ? {
+            model: draft.launchInput.model,
+            reasoningEffort: draft.launchInput.reasoningEffort,
+            permissionMode: draft.launchInput.permissionMode
+          }
+        : null
+  );
+  const [expectedForExecution, setExpectedForExecution] = useState<
+    string | null
+  >(draft?.conversation.executionId ?? null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [prompt, setPrompt] = useState(
+    draft?.initialPrompt?.status === "rejected" ||
+      draft?.initialPrompt?.status === "reconciling"
+      ? draft.initialPrompt.prompt
+      : ""
+  );
+  const promptEdited = useRef(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [fileOpen, setFileOpen] = useState(false);
+  const initialFilePicker = useRef(openFilePickerOnReady);
+  const [files, setFiles] = useState<
+    Array<{ path: string; name: string; entryKind: string }>
+  >([]);
+  const [filePath, setFilePath] = useState("");
+  const [pendingFile, setPendingFile] = useState<{
+    commandId: string;
+    kind: "browse" | "mention";
+    path: string;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [uncertainSend, setUncertainSend] = useState(
+    draft?.initialPrompt?.status === "reconciling"
+  );
+  const [optimistic, setOptimistic] = useState<
+    Array<{ id: string; prompt: string }>
+  >([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const [devices, setDevices] = useState<
+    Awaited<ReturnType<ManagedConversationDesktopApi["targets"]>>["devices"]
+  >([]);
+  const [deviceId, setDeviceId] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferMessage, setTransferMessage] = useState("");
+  const pending = useRef<{
+    key: string;
+    messageId: string;
+    prompt: string;
+    attachments: Attachment[];
+    settingsChange: ReturnType<typeof hqSettingsChange>;
+  } | null>(
+    draft?.initialPrompt?.status === "reconciling"
+      ? {
+          key: `desktop-prompt:${draft.initialPrompt.clientUserMessageId}`,
+          messageId: draft.initialPrompt.clientUserMessageId,
+          prompt: draft.initialPrompt.prompt,
+          attachments: [],
+          settingsChange: null
+        }
+      : null
+  );
+  const lastSubmitted = useRef<typeof pending.current>(null);
+  const refreshedTerminalCommand = useRef<string | null>(null);
+  const draftWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const queueDraftOperation = useCallback(
+    <T,>(operation: () => Promise<T>): Promise<T> => {
+      const result = draftWriteChainRef.current.then(operation);
+      draftWriteChainRef.current = result.then(
+        () => undefined,
+        () => undefined
+      );
+      return result;
+    },
+    []
+  );
+  const executionId =
+    resumeStatus === "ready" ? (conversation?.executionId ?? null) : null;
+  useEffect(() => {
+    setBusy(false);
+    setFileOpen(false);
+    setPendingFile(null);
+    setTransferBusy(false);
+    setTransferMessage("");
+    setDevices([]);
+    setDeviceId("");
+  }, [identityKey]);
+  const slash = useSlashCommandDiscovery(
+    api,
+    conversation?.executionOwner?.driverId ??
+      draft?.conversation.executionOwner?.driverId ??
+      null,
+    conversation?.executionOwner?.instanceId ??
+      draft?.conversation.executionOwner?.instanceId ??
+      null,
+    project.id,
+    project.path ?? null
+  );
+  const runtimeBusy =
+    runtime?.latestCommand?.commandKind === "prompt" &&
+    ["queued", "blocked", "dispatching", "indeterminate"].includes(
+      runtime.latestCommand.state
+    );
+  const active =
+    runtimeBusy && runtime?.latestCommand?.state !== "indeterminate";
+  const refresh = useCallback(async () => {
+    if (!api || !executionId) return;
+    const [run, nextUsage, launch] = await Promise.allSettled([
+      api.runtime(executionId),
+      api.usage(executionId),
+      api.launchOptions()
+    ]);
+    if (identityKeyRef.current !== identityKey) return;
+    if (run.status === "fulfilled") {
+      setRuntimeState({ key: identityKey, value: run.value });
+      const latest = run.value.latestCommand;
+      const previous = lastSubmitted.current;
+      if (
+        latest?.commandKind === "prompt" &&
+        ["completed", "failed", "indeterminate"].includes(latest.state)
+      ) {
+        const key = `${latest.id}:${latest.updatedAt}:${conversation?.threadId ?? detailThread.id}`;
+        if (refreshedTerminalCommand.current !== key) {
+          refreshedTerminalCommand.current = key;
+          store.refreshFromDurableEvent();
+          void store.loadInitial(
+            {
+              ...detailThread,
+              id: conversation?.threadId ?? detailThread.id,
+              sessionId:
+                conversation?.capturedSessionId ?? detailThread.sessionId
+            },
+            { refresh: true }
+          );
+        }
+      }
+      if (
+        (latest?.lastErrorCode ?? run.value.executionLastErrorCode) ===
+        "ManagedConversationAuthenticationError"
+      ) {
+        const retained = previous?.prompt ?? draft?.initialPrompt?.prompt;
+        if (retained) {
+          setPrompt((current) => current || retained);
+          if (previous) setAttachments(previous.attachments);
+          if (conversation)
+            void queueDraftOperation(() =>
+              api.writeDraft({ ...draftScope(conversation), value: retained })
+            ).catch(() =>
+              setError(
+                "Authentication failed, and Koed could not save the restored draft. Copy it before leaving."
+              )
+            );
+        }
+        if (previous)
+          setOptimistic((current) =>
+            current.filter((item) => item.id !== previous.messageId)
+          );
+        lastSubmitted.current = null;
+        setError(
+          "The AI Client rejected authentication. Sign in, then retry this saved draft."
+        );
+      }
+      if (
+        previous &&
+        latest?.clientUserMessageId === previous.messageId &&
+        latest.state === "failed" &&
+        latest.lastErrorCode === "ManagedConversationSettingsUnavailableError"
+      ) {
+        setPrompt((current) => current || previous.prompt);
+        setAttachments(previous.attachments);
+        setOptimistic((current) =>
+          current.filter((item) => item.id !== previous.messageId)
+        );
+        setError(
+          "The selected settings became unavailable. Review them and send the restored draft manually."
+        );
+        lastSubmitted.current = null;
+      }
+      if (
+        pending.current &&
+        latest?.clientUserMessageId === pending.current.messageId
+      ) {
+        if (latest.state === "completed") {
+          pending.current = null;
+          setUncertainSend(false);
+          setPrompt("");
+          setAttachments([]);
+          setError("");
+          store.refreshFromDurableEvent();
+        } else if (latest.state === "failed") {
+          pending.current = null;
+          setUncertainSend(false);
+          setError(
+            "The AI Client rejected this prompt. Review the saved draft before retrying."
+          );
+        }
+      }
+    }
+    if (nextUsage.status === "fulfilled") {
+      setUsageState({ key: identityKey, value: nextUsage.value });
+      if (nextUsage.value.model && nextUsage.value.permissionMode) {
+        const settings = {
+          model: nextUsage.value.model,
+          reasoningEffort: nextUsage.value.reasoningEffort,
+          permissionMode: nextUsage.value.permissionMode
+        };
+        setExpected(settings);
+        setExpectedForExecution(executionId);
+        if (!settingsDirty && !pending.current) {
+          setSelection({
+            instanceId:
+              conversation?.executionOwner?.instanceId ??
+              draft?.conversation.executionOwner?.instanceId ??
+              "",
+            model: settings.model,
+            reasoningEffort: settings.reasoningEffort ?? "",
+            permissionMode: settings.permissionMode
+          });
+        }
+      }
+    }
+    if (launch.status === "fulfilled") setOptions(launch.value.options);
+  }, [
+    api,
+    identityKey,
+    executionId,
+    conversation?.executionOwner?.instanceId,
+    conversation?.threadId,
+    conversation?.capturedSessionId,
+    draft?.initialPrompt?.prompt,
+    draft?.conversation.executionOwner?.instanceId,
+    settingsDirty,
+    store,
+    detailThread,
+    queueDraftOperation
+  ]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  useEffect(() => {
+    if (!api || !executionId) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [api, executionId, refresh]);
+  useEffect(() => {
+    if (!api || !detailThread.sessionId) return;
+    let active = true;
+    void api
+      .resume({
+        projectId: project.id,
+        capturedSessionId: detailThread.sessionId,
+        threadId: detailThread.id
+      })
+      .then((result) => {
+        if (!active || identityKeyRef.current !== identityKey) return;
+        setResumed({
+          key: identityKey,
+          status: result.status,
+          conversation: result.conversation
+        });
+      })
+      .catch((cause: unknown) => {
+        if (!active || identityKeyRef.current !== identityKey) return;
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Unable to resume this Conversation."
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, identityKey, project.id, detailThread.id, detailThread.sessionId]);
+  useEffect(() => {
+    if (!api || !conversation) return;
+    let alive = true;
+    void api
+      .readDraft(draftScope(conversation))
+      .then((result) => {
+        if (
+          alive &&
+          !promptEdited.current &&
+          !(
+            draft?.initialPrompt?.status === "queued" &&
+            result.value === draft.initialPrompt.prompt
+          )
+        )
+          setPrompt((current) => current || result.value);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [
+    api,
+    conversation,
+    draft?.initialPrompt?.status,
+    draft?.initialPrompt?.prompt
+  ]);
+  const send = async (manualRetry = false) => {
+    const unverified = findUnverifiedSlashCommand(prompt, slash.commands);
+    if (unverified) {
+      setError(`/${unverified} is not verified and cannot be dispatched.`);
+      return;
+    }
+    if (
+      !api ||
+      !conversation?.executionId ||
+      resumeStatus !== "ready" ||
+      expectedForExecution !== conversation.executionId ||
+      !prompt.trim() ||
+      busy ||
+      runtimeBusy ||
+      runtime?.executionState === "failed" ||
+      (uncertainSend && !manualRetry) ||
+      !expected ||
+      !hqSelectionIsSupported(options, selection)
+    )
+      return;
+    const settingsChange = hqSettingsChange(expected, selection);
+    const submission =
+      pending.current &&
+      pending.current.prompt === prompt &&
+      JSON.stringify(pending.current.attachments) ===
+        JSON.stringify(attachments) &&
+      JSON.stringify(pending.current.settingsChange) ===
+        JSON.stringify(settingsChange)
+        ? pending.current
+        : {
+            key: `desktop-prompt:${crypto.randomUUID()}`,
+            messageId: crypto.randomUUID(),
+            prompt,
+            attachments,
+            settingsChange
+          };
+    pending.current = submission;
+    setBusy(true);
+    setError("");
+    setOptimistic((current) =>
+      current.some((item) => item.id === submission.messageId)
+        ? current
+        : [...current, { id: submission.messageId, prompt: submission.prompt }]
+    );
+    try {
+      await queueDraftOperation(() =>
+        api.writeDraft({
+          ...draftScope(conversation),
+          value: submission.prompt
+        })
+      );
+      if (identityKeyRef.current !== identityKey) return;
+    } catch {
+      if (identityKeyRef.current !== identityKey) return;
+      setOptimistic((current) =>
+        current.filter((item) => item.id !== submission.messageId)
+      );
+      setBusy(false);
+      setError("Koed could not save this draft securely. Nothing was sent.");
+      return;
+    }
+    try {
+      const result = await api.send({
+        executionId: conversation.executionId,
+        capturedSessionId: conversation.capturedSessionId,
+        threadId: conversation.threadId,
+        idempotencyKey: submission.key,
+        clientUserMessageId: submission.messageId,
+        prompt: submission.prompt,
+        fileMentionCommandIds: submission.attachments.map(
+          (item) => item.commandId
+        ),
+        ...(submission.settingsChange
+          ? { settingsChange: submission.settingsChange }
+          : {})
+      });
+      if (identityKeyRef.current !== identityKey) return;
+      setResumed((current) =>
+        current?.key === identityKey
+          ? { ...current, conversation: result.conversation }
+          : current
+      );
+      if (result.status === "rejected") {
+        setOptimistic((current) =>
+          current.filter((item) => item.id !== submission.messageId)
+        );
+        setError(
+          result.message ??
+            "The prompt was not sent. Review settings and retry manually."
+        );
+        pending.current = null;
+        setUncertainSend(false);
+        setSettingsDirty(false);
+        void refresh();
+      } else if (result.status === "reconciling") {
+        setUncertainSend(true);
+        setError(
+          result.message ??
+            "Koed cannot confirm whether this prompt arrived. It will not resend automatically."
+        );
+      } else {
+        lastSubmitted.current = submission;
+        pending.current = null;
+        setUncertainSend(false);
+        setSettingsDirty(false);
+        setPrompt("");
+        setAttachments([]);
+        await queueDraftOperation(() =>
+          api.deleteDraft(draftScope(result.conversation))
+        ).catch(() => undefined);
+        store.refreshFromDurableEvent();
+        void refresh();
+      }
+    } catch {
+      if (identityKeyRef.current !== identityKey) return;
+      setUncertainSend(true);
+      setError(
+        "Koed cannot confirm whether this prompt arrived. It will not resend automatically."
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setBusy(false);
+    }
+  };
+  const respond = async (
+    item: ManagedConversationRuntimeItem,
+    response: {
+      decision?: "accept" | "acceptForSession" | "decline" | "cancel";
+      answers?: Record<string, string[]>;
+    }
+  ) => {
+    if (
+      !api ||
+      !executionId ||
+      busy ||
+      item.answered ||
+      item.state !== "pending"
+    )
+      return;
+    setBusy(true);
+    try {
+      await api.respond({
+        executionId,
+        itemId: item.id,
+        itemKind: item.itemKind as Exclude<
+          ManagedConversationRuntimeItem["itemKind"],
+          "transient_output"
+        >,
+        executionGeneration: item.executionGeneration,
+        ...response
+      });
+      if (identityKeyRef.current !== identityKey) return;
+      await refresh();
+    } catch {
+      if (identityKeyRef.current !== identityKey) return;
+      setError(
+        "Koed could not confirm this response. Refresh before trying again."
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setBusy(false);
+    }
+  };
+  const control = async (action: "interrupt" | "stop") => {
+    if (
+      !api ||
+      !executionId ||
+      !runtime ||
+      busy ||
+      runtime.executionState !== "running"
+    )
+      return;
+    setBusy(true);
+    try {
+      await api[action]({
+        executionId,
+        executionGeneration: runtime.executionGeneration,
+        idempotencyKey: `desktop-${action}:${crypto.randomUUID()}`
+      });
+      if (identityKeyRef.current !== identityKey) return;
+      await refresh();
+    } catch {
+      if (identityKeyRef.current !== identityKey) return;
+      setError(
+        `Koed could not confirm ${action}. Refresh before trying again.`
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setBusy(false);
+    }
+  };
+  const transfer = async (kind: "handoff" | "fork") => {
+    if (
+      !authorizeTransfer ||
+      !api ||
+      !executionId ||
+      !deviceId ||
+      transferBusy ||
+      resumeStatus !== "ready"
+    )
+      return;
+    setTransferBusy(true);
+    setTransferMessage("Waiting for your approval…");
+    const operationId = crypto.randomUUID();
+    try {
+      const grant =
+        kind === "fork"
+          ? await authorizeTransfer({
+              operation: "fork",
+              executionId,
+              operationId,
+              targetDeviceId: deviceId,
+              reason: "user_requested"
+            })
+          : await authorizeTransfer({
+              operation: "handoff",
+              executionId,
+              operationId,
+              targetDeviceId: deviceId
+            });
+      if (identityKeyRef.current !== identityKey) return;
+      setTransferMessage(`Preparing ${kind === "fork" ? "fork" : "handoff"}…`);
+      if (kind === "fork")
+        await api.fork({
+          actionGrantId: grant.id,
+          executionId,
+          operationId,
+          targetDeviceId: deviceId,
+          reason: "user_requested"
+        });
+      else
+        await api.handoff({
+          actionGrantId: grant.id,
+          executionId,
+          operationId,
+          targetDeviceId: deviceId
+        });
+      if (identityKeyRef.current !== identityKey) return;
+      setTransferMessage(
+        kind === "fork"
+          ? "Fork queued. The original Conversation remains here."
+          : "Handoff queued. This device will stop writing after verification."
+      );
+    } catch (cause) {
+      if (identityKeyRef.current !== identityKey) return;
+      setTransferMessage(
+        cause instanceof Error
+          ? cause.message
+          : "The transfer could not be confirmed."
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setTransferBusy(false);
+    }
+  };
+  const settleFile = async (pending: {
+    commandId: string;
+    kind: "browse" | "mention";
+    path: string;
+  }) => {
+    if (!managedProject || !executionId) return;
+    const result = await managedProject.command({
+      operation: "file_result",
+      requestId: crypto.randomUUID(),
+      executionId,
+      commandId: pending.commandId
+    });
+    if (identityKeyRef.current !== identityKey) return;
+    if (result.operation !== "file_result")
+      throw new Error("File operation unavailable.");
+    if (result.command.state === "indeterminate")
+      throw new Error(
+        "Koed cannot confirm the file operation. It will not retry automatically."
+      );
+    if (["failed", "cancelled"].includes(result.command.state)) {
+      setPendingFile(null);
+      throw new Error("File operation failed. The draft is unchanged.");
+    }
+    if (result.command.state !== "completed" || !result.result) {
+      setPendingFile(pending);
+      setError(
+        "File operation is still running. Check the same operation to continue."
+      );
+      return;
+    }
+    setPendingFile(null);
+    if (pending.kind === "browse" && result.result.kind === "browse") {
+      setFiles(result.result.entries);
+      setFilePath(pending.path);
+      setFileOpen(true);
+      return;
+    }
+    if (pending.kind === "mention" && result.result.kind === "mention") {
+      setAttachments((current) =>
+        current.some((item) => item.commandId === pending.commandId)
+          ? current
+          : [...current, { commandId: pending.commandId, label: pending.path }]
+      );
+      setFileOpen(false);
+      return;
+    }
+    throw new Error("File result did not match the requested operation.");
+  };
+  const browse = async (path = "") => {
+    if (!managedProject || !executionId || !runtime) return;
+    if (pendingFile) {
+      setError("Check the current file operation before starting another.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const started = await managedProject.command({
+        operation: "file_start",
+        requestId: crypto.randomUUID(),
+        executionId,
+        executionGeneration: runtime.executionGeneration,
+        idempotencyKey: `desktop-file:${crypto.randomUUID()}`,
+        fileOperation: {
+          kind: "browse",
+          path,
+          offset: 0,
+          limit: 200,
+          revision: null
+        }
+      });
+      if (identityKeyRef.current !== identityKey) return;
+      if (started.operation !== "file_start")
+        throw new Error("File browser unavailable");
+      await settleFile({ commandId: started.command.id, kind: "browse", path });
+    } catch (cause) {
+      if (identityKeyRef.current !== identityKey) return;
+      setError(
+        cause instanceof Error ? cause.message : "File browser unavailable"
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setBusy(false);
+    }
+  };
+  const attach = async (path: string) => {
+    if (!managedProject || !executionId || !runtime) return;
+    if (pendingFile) {
+      setError("Check the current file operation before starting another.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const started = await managedProject.command({
+        operation: "file_start",
+        requestId: crypto.randomUUID(),
+        executionId,
+        executionGeneration: runtime.executionGeneration,
+        idempotencyKey: `desktop-file:${crypto.randomUUID()}`,
+        fileOperation: { kind: "mention", path, revision: null }
+      });
+      if (identityKeyRef.current !== identityKey) return;
+      if (started.operation !== "file_start")
+        throw new Error("File could not be attached");
+      await settleFile({
+        commandId: started.command.id,
+        kind: "mention",
+        path
+      });
+    } catch (cause) {
+      if (identityKeyRef.current !== identityKey) return;
+      setError(
+        cause instanceof Error ? cause.message : "File could not be attached"
+      );
+    } finally {
+      if (identityKeyRef.current === identityKey) setBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (!initialFilePicker.current || !runtime || resumeStatus !== "ready")
+      return;
+    initialFilePicker.current = false;
+    void browse();
+  }, [runtime, resumeStatus]);
+  const events = expandConversationDisplayEvents(detail?.events ?? []);
+  const visibleEvents = events.filter(
+    (event) =>
+      event.actor === "user" ||
+      event.actor === "assistant" ||
+      event.actor === "agent" ||
+      event.actor === "tool"
+  );
+  const visibleOptimistic = optimistic.filter(
+    (item) =>
+      !visibleEvents.some(
+        (event) =>
+          event.actor === "user" &&
+          event.metadata.clientUserMessageId === item.id
+      )
+  );
+  const lastUserPrompt = [...visibleEvents]
+    .reverse()
+    .find((event) => event.actor === "user");
+  const isBlank =
+    visibleEvents.length === 0 &&
+    visibleOptimistic.length === 0 &&
+    (!draft?.initialPrompt || draft.initialPrompt.status === "rejected");
+  const selectedProject = [project];
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (scroll && stickToBottom.current) scroll.scrollTop = scroll.scrollHeight;
+  }, [
+    visibleEvents.length,
+    visibleOptimistic.length,
+    runtime?.items.length,
+    active
+  ]);
+  return (
+    <div
+      className={`hq-conversation ${isBlank ? "hq-conversation--blank" : "hq-conversation--active"}`}
+    >
+      {!isBlank ? (
+        <div
+          className="hq-conversation__scroll"
+          ref={scrollRef}
+          onScroll={(event) => {
+            const target = event.currentTarget;
+            stickToBottom.current =
+              target.scrollHeight - target.scrollTop - target.clientHeight < 80;
+          }}
+        >
+          <div className="hq-conversation__thread">
+            {detail?.hasOlder ? (
+              <button type="button" onClick={() => void loadOlder()}>
+                Load older messages
+              </button>
+            ) : null}
+            {detail?.status === "error" ? (
+              <button type="button" onClick={() => void retry()}>
+                Retry loading messages
+              </button>
+            ) : null}
+            {visibleEvents.map((event) => {
+              const message = conversationEventText(event);
+              if (!message) return null;
+              const user = event.actor === "user";
+              return (
+                <article
+                  className={`hq-conversation__message ${user ? "hq-conversation__message--user" : "hq-conversation__message--assistant"}`}
+                  key={event.id}
+                >
+                  {!user ? <b>AI Client</b> : null}
+                  {user ? (
+                    <p className="hq-conversation__bubble">{message}</p>
+                  ) : (
+                    <SecureMarkdown
+                      source={message}
+                      adapters={markdownAdapters}
+                    />
+                  )}
+                  <div className="hq-conversation__actions">
+                    <button
+                      aria-label={`Copy ${user ? "message" : "reply"}`}
+                      type="button"
+                      onClick={() =>
+                        void markdownAdapters.writeClipboard(message)
+                      }
+                    >
+                      <Copy size={14} />
+                    </button>
+                    {!user && lastUserPrompt && !active ? (
+                      <button
+                        aria-label="Retry last prompt"
+                        type="button"
+                        onClick={() =>
+                          setPrompt(conversationEventText(lastUserPrompt))
+                        }
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+            {visibleOptimistic.map((item) => (
+              <article
+                className="hq-conversation__message hq-conversation__message--user"
+                key={item.id}
+              >
+                <p className="hq-conversation__bubble">{item.prompt}</p>
+                <small>Sending…</small>
+              </article>
+            ))}
+            {draft?.initialPrompt &&
+            draft.initialPrompt.status !== "rejected" &&
+            !visibleEvents.some(
+              (event) =>
+                event.actor === "user" &&
+                event.metadata.clientUserMessageId ===
+                  draft.initialPrompt?.clientUserMessageId
+            ) ? (
+              <article className="hq-conversation__message hq-conversation__message--user">
+                <p className="hq-conversation__bubble">
+                  {draft.initialPrompt.prompt}
+                </p>
+              </article>
+            ) : null}
+            {runtime?.items
+              .filter(
+                (item) =>
+                  item.itemKind === "transient_output" &&
+                  item.presentation.renderer === "message" &&
+                  !visibleEvents.some(
+                    (event) =>
+                      (event.actor === "assistant" ||
+                        event.actor === "agent") &&
+                      Date.parse(event.timestamp) >= Date.parse(item.createdAt)
+                  )
+              )
+              .map((item) =>
+                typeof item.payload.text === "string" ? (
+                  <article
+                    className="hq-conversation__message hq-conversation__message--assistant"
+                    key={item.id}
+                  >
+                    <b>AI Client</b>
+                    <SecureMarkdown
+                      source={item.payload.text}
+                      adapters={markdownAdapters}
+                    />
+                  </article>
+                ) : null
+              )}
+            {runtime?.items
+              .filter((item) => item.itemKind !== "transient_output")
+              .map((item) => (
+                <HqRuntimeItem
+                  key={item.id}
+                  item={item}
+                  busy={busy}
+                  onRespond={(response) => void respond(item, response)}
+                />
+              ))}
+            {active ? (
+              <p className="hq-conversation__working" role="status">
+                The AI Client is working…
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="hq-conversation__hero">
+          <h1>
+            {options?.instances.find(
+              (item) => item.instanceId === selection.instanceId
+            )?.displayName ?? "New Conversation"}
+          </h1>
+          {runtime?.items
+            .filter((item) => item.itemKind !== "transient_output")
+            .map((item) => (
+              <HqRuntimeItem
+                key={item.id}
+                item={item}
+                busy={busy}
+                onRespond={(response) => void respond(item, response)}
+              />
+            ))}
+        </div>
+      )}
+      <div
+        className={
+          isBlank ? "hq-conversation__hero-composer" : "hq-conversation__dock"
+        }
+      >
+        {draft?.status === "failed" || draft?.status === "reconciling" ? (
+          <button type="button" onClick={onRetryStart}>
+            <RotateCcw size={15} /> Retry starting Conversation
+          </button>
+        ) : null}
+        {runtime?.latestCommand?.state === "indeterminate" ? (
+          <p className="hq-conversation-error" role="alert">
+            Koed cannot prove whether the last command reached the AI Client. It
+            will not retry automatically.
+          </p>
+        ) : null}
+        <Composer
+          value={prompt}
+          setValue={(value) => {
+            if (uncertainSend) return;
+            promptEdited.current = true;
+            pending.current = null;
+            setPrompt(value);
+            if (api && conversation)
+              void queueDraftOperation(() =>
+                api.writeDraft({ ...draftScope(conversation), value })
+              ).catch(() =>
+                setError("Koed could not save this draft securely.")
+              );
+          }}
+          onSubmit={() => void send()}
+          onAttach={
+            managedProject &&
+            runtime &&
+            resumeStatus !== "read_only" &&
+            !uncertainSend
+              ? () => void browse()
+              : undefined
+          }
+          attachments={attachments}
+          onRemoveAttachment={(id) => {
+            if (!uncertainSend)
+              setAttachments((current) =>
+                current.filter((item) => item.commandId !== id)
+              );
+          }}
+          projects={selectedProject}
+          projectId={project.id}
+          options={options}
+          selection={selection}
+          onSelectionChange={(value) => {
+            if (!uncertainSend) {
+              setSelection(value);
+              setSettingsDirty(true);
+            }
+          }}
+          locked
+          lockDraft={uncertainSend || runtime?.executionState === "failed"}
+          busy={busy}
+          canSend={Boolean(
+            api &&
+            conversation?.executionId &&
+            expectedForExecution === conversation.executionId &&
+            resumeStatus !== "read_only" &&
+            resumeStatus !== "reconciling" &&
+            !uncertainSend &&
+            prompt.trim() &&
+            expected &&
+            !runtimeBusy &&
+            runtime?.executionState !== "failed" &&
+            hqSelectionIsSupported(options, selection)
+          )}
+          active={Boolean(active)}
+          onStop={() => void control("interrupt")}
+          error={
+            error ||
+            slash.error ||
+            (draft?.initialPrompt?.status === "rejected" &&
+            prompt === draft.initialPrompt.prompt
+              ? draft.initialPrompt.message
+              : "")
+          }
+          slashCommands={slash.commands}
+        />
+        {uncertainSend ? (
+          <div className="hq-conversation__uncertain">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void refresh()}
+            >
+              Check delivery
+            </button>
+            <button
+              type="button"
+              disabled={busy || Boolean(runtimeBusy)}
+              onClick={() => void send(true)}
+            >
+              Retry the same prompt
+            </button>
+          </div>
+        ) : null}
+        {usage?.usage ? (
+          <p
+            className="hq-conversation__usage"
+            title={`Input ${usage.usage.inputTokens ?? 0} · Output ${usage.usage.outputTokens ?? 0}`}
+          >
+            {usage.model ?? "AI Client"} ·{" "}
+            {usage.usage.usedTokens ?? usage.usage.totalProcessedTokens ?? 0}{" "}
+            tokens
+            {usage.usage.modelContextWindow
+              ? ` / ${usage.usage.modelContextWindow}`
+              : ""}
+          </p>
+        ) : null}
+        {resumeStatus === "read_only" ? (
+          <p role="status">This Captured Conversation is read-only.</p>
+        ) : null}
+        {authorizeTransfer && executionId && resumeStatus === "ready" ? (
+          <details
+            className="hq-conversation__transfer"
+            onToggle={(event) => {
+              if (!event.currentTarget.open || devices.length || !api) return;
+              void api
+                .targets()
+                .then((result) => {
+                  if (identityKeyRef.current !== identityKey) return;
+                  setDevices(result.devices);
+                  setDeviceId(result.devices[0]?.deviceId ?? "");
+                  setTransferMessage(
+                    result.devices.length
+                      ? ""
+                      : "No other enrolled Personal Device is available."
+                  );
+                })
+                .catch(() => {
+                  if (identityKeyRef.current === identityKey)
+                    setTransferMessage("Personal Devices are unavailable.");
+                });
+            }}
+          >
+            <summary>Switch device</summary>
+            <select
+              aria-label="Personal Device"
+              value={deviceId}
+              onChange={(event) => setDeviceId(event.target.value)}
+              disabled={!devices.length || transferBusy}
+            >
+              {devices.map((item) => (
+                <option key={item.deviceId} value={item.deviceId}>
+                  {item.label ?? `Device ${item.deviceId.slice(0, 8)}`}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!deviceId || transferBusy}
+              onClick={() => void transfer("handoff")}
+            >
+              Move
+            </button>
+            <button
+              type="button"
+              disabled={!deviceId || transferBusy}
+              onClick={() => void transfer("fork")}
+            >
+              Fork
+            </button>
+            {transferMessage ? <p role="status">{transferMessage}</p> : null}
+          </details>
+        ) : null}
+        {runtime?.executionState === "running" && !active ? (
+          <button
+            className="hq-conversation__stop"
+            type="button"
+            disabled={busy}
+            onClick={() => void control("stop")}
+          >
+            Stop Conversation
+          </button>
+        ) : null}
+        {fileOpen ? (
+          <div
+            className="hq-file-picker"
+            role="dialog"
+            aria-label="Attach a Project file"
+          >
+            <div>
+              <strong>Project files</strong>
+              <button
+                aria-label="Close file picker"
+                onClick={() => setFileOpen(false)}
+                type="button"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {filePath ? (
+              <button
+                onClick={() =>
+                  void browse(filePath.split("/").slice(0, -1).join("/"))
+                }
+                type="button"
+              >
+                ..
+              </button>
+            ) : null}
+            {files.map((item) => (
+              <button
+                key={item.path}
+                onClick={() =>
+                  item.entryKind === "directory"
+                    ? void browse(item.path)
+                    : void attach(item.path)
+                }
+                type="button"
+              >
+                {item.name}
+                {item.entryKind === "directory" ? "/" : ""}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {pendingFile ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setError("");
+              void settleFile(pendingFile).catch((cause: unknown) =>
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "File operation unavailable."
+                )
+              );
+            }}
+          >
+            Check file operation
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}

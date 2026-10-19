@@ -150,13 +150,15 @@ export function HqShell({
   title = "HQ",
   sidebar,
   actionsRef,
-  route
+  route,
+  contextAvailable = true
 }: {
   children?: ReactNode;
   title?: string;
   route?: HqRoute;
   sidebar?: ReactNode | ((layout: HqSidebarLayout) => ReactNode);
   actionsRef?: Ref<HqShellActions>;
+  contextAvailable?: boolean;
 } = {}) {
   const storeRef = useRef<HqLayoutPreferencesStore | null>(null);
   if (!storeRef.current) storeRef.current = new HqLayoutPreferencesStore();
@@ -179,7 +181,8 @@ export function HqShell({
   const previousMobileContextOpen = useRef(false);
   const previousMobileSidebarOpen = useRef(false);
   const previousRoute = useRef(route ? JSON.stringify(route) : "");
-  const rightIsVisible = !snapshot.preferences.rightColumnHidden;
+  const rightIsVisible =
+    contextAvailable && !snapshot.preferences.rightColumnHidden;
 
   useEffect(() => {
     void store.load();
@@ -218,6 +221,10 @@ export function HqShell({
   useEffect(() => {
     if (!narrow) setMobileSidebarOpen(false);
   }, [narrow]);
+
+  useEffect(() => {
+    if (!contextAvailable) setMobileContextOpen(false);
+  }, [contextAvailable]);
 
   const desktopRightIsVisible = rightIsVisible && !narrow;
   const sidebarMax = Math.max(
@@ -322,6 +329,7 @@ export function HqShell({
     void store.flush();
   };
   const toggleContext = () => {
+    if (!contextAvailable) return;
     if (narrow) {
       if (modalOpen) closeMobileContext();
       else showContext();
@@ -491,46 +499,48 @@ export function HqShell({
                       <h1>{title}</h1>
                     </div>
                     <div className="hq-main__actions">
-                      <HqControlTooltip label="Show or hide context panel">
-                        <Button
-                          aria-controls={
-                            narrow
-                              ? modalOpen
-                                ? "hq-context-dialog"
-                                : undefined
-                              : rightIsVisible
-                                ? "hq-context-panel"
-                                : undefined
-                          }
-                          aria-expanded={narrow ? modalOpen : rightIsVisible}
-                          aria-label={
-                            (narrow ? modalOpen : rightIsVisible)
-                              ? "Hide project context"
-                              : "Show project context"
-                          }
-                          className="hq-icon-button"
-                          onClick={() => {
-                            if (narrow) {
-                              if (modalOpen) closeMobileContext();
-                              else showContext();
-                            } else if (rightIsVisible) {
-                              store.setRightColumnHidden(true);
-                              void store.flush();
-                            } else {
-                              showContext();
+                      {contextAvailable ? (
+                        <HqControlTooltip label="Show or hide context panel">
+                          <Button
+                            aria-controls={
+                              narrow
+                                ? modalOpen
+                                  ? "hq-context-dialog"
+                                  : undefined
+                                : rightIsVisible
+                                  ? "hq-context-panel"
+                                  : undefined
                             }
-                          }}
-                          ref={contextOpenerRef}
-                          title={
-                            (narrow ? modalOpen : rightIsVisible)
-                              ? "Hide context"
-                              : "Show context"
-                          }
-                          type="button"
-                        >
-                          <PanelRight aria-hidden="true" />
-                        </Button>
-                      </HqControlTooltip>
+                            aria-expanded={narrow ? modalOpen : rightIsVisible}
+                            aria-label={
+                              (narrow ? modalOpen : rightIsVisible)
+                                ? "Hide project context"
+                                : "Show project context"
+                            }
+                            className="hq-icon-button"
+                            onClick={() => {
+                              if (narrow) {
+                                if (modalOpen) closeMobileContext();
+                                else showContext();
+                              } else if (rightIsVisible) {
+                                store.setRightColumnHidden(true);
+                                void store.flush();
+                              } else {
+                                showContext();
+                              }
+                            }}
+                            ref={contextOpenerRef}
+                            title={
+                              (narrow ? modalOpen : rightIsVisible)
+                                ? "Hide context"
+                                : "Show context"
+                            }
+                            type="button"
+                          >
+                            <PanelRight aria-hidden="true" />
+                          </Button>
+                        </HqControlTooltip>
+                      ) : null}
                     </div>
                   </header>
                   <div className="hq-main__content">
