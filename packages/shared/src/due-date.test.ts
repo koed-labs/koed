@@ -72,10 +72,30 @@ describe("resolveDue", () => {
     expect(resolveDue("22 Oct", today)).toBe("2026-10-22");
     expect(resolveDue("Oct 22", today)).toBe("2026-10-22");
     expect(resolveDue("Thu 22 Oct", today)).toBe("2026-10-22");
+    expect(resolveDue("Thu Oct 22", today)).toBe("2026-10-22");
+    expect(resolveDue("Thursday 22 October", today)).toBe("2026-10-22");
+    expect(resolveDue("Thursday October 22", today)).toBe("2026-10-22");
     expect(resolveDue("22Oct", today)).toBe("2026-10-22");
     expect(resolveDue("Oct22", today)).toBe("2026-10-22");
     expect(resolveDue("Thu22Oct", today)).toBe("2026-10-22");
+    expect(resolveDue("Thursday22October", today)).toBe("2026-10-22");
     expect(resolveDue("next Thu 22 Oct", today)).toBe("2026-10-22");
+  });
+
+  it("rejects weekday labels that conflict with the resolved month/day", () => {
+    const today = context("2026-10-19T12:00:00Z", "Europe/Oslo");
+    expect(resolveDue("Fri 22 Oct", today)).toBeNull();
+    expect(resolveDue("Friday October 22", today)).toBeNull();
+    expect(resolveDue("Fri22Oct", today)).toBeNull();
+    expect(resolveDue("Thu 22 Oct", today)).toBe("2026-10-22");
+    expect(resolveDue("Sun 25 Oct", today)).toBe("2026-10-25");
+    expect(resolveDue("Mon 25 Oct", today)).toBeNull();
+  });
+
+  it("checks weekday labels after rolling a month/day into the next year", () => {
+    const today = context("2026-10-19T12:00:00Z");
+    expect(resolveDue("Thu 19 Aug", today)).toBe("2027-08-19");
+    expect(resolveDue("Wed 19 Aug", today)).toBeNull();
   });
 
   it("keeps dates through 60 calendar days past and rolls later dates forward", () => {
@@ -165,6 +185,18 @@ describe("parseDue", () => {
       title: "Review notes",
       due: null
     });
+    expect(
+      parseDue("Review notes by Fri 22 Oct", context("2026-10-19T12:00:00Z"))
+    ).toEqual({
+      title: "Review notes by Fri 22 Oct",
+      due: null
+    });
+  });
+
+  it("extracts a matching weekday-labeled date without the marker", () => {
+    expect(
+      parseDue("Review notes by Thu 22 Oct", context("2026-10-19T12:00:00Z"))
+    ).toEqual({ title: "Review notes", due: "2026-10-22" });
   });
 });
 

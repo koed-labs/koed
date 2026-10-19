@@ -132,9 +132,15 @@ export const resolveDue = (
     difference =
       civilDayNumber(year, monthDay.month, monthDay.day) - todayNumber;
   }
-  return difference < -60
-    ? null
-    : formatCivilDate(year, monthDay.month, monthDay.day);
+  const resolvedDayNumber = civilDayNumber(year, monthDay.month, monthDay.day);
+  if (
+    difference < -60 ||
+    (monthDay.weekday !== null &&
+      weekdayNumber(resolvedDayNumber) !== monthDay.weekday)
+  ) {
+    return null;
+  }
+  return formatCivilDate(year, monthDay.month, monthDay.day);
 };
 
 /**
@@ -410,20 +416,24 @@ const weekdayExpressionParts = (phrase: string): { weekday: string } | null => {
 
 const monthDayExpressionParts = (
   phrase: string
-): { month: number; day: number } | null => {
+): { month: number; day: number; weekday: number | null } | null => {
   let normalized = phrase;
   normalized = normalized.replace(/^(?:this|next)\s+/, "");
   const words = normalized.split(" ");
+  let weekday: number | null = null;
 
-  if (words.length === 3 && weekdayNumberFor(words[0]!) !== null) words.shift();
+  if (words.length === 3) {
+    weekday = weekdayNumberFor(words[0]!);
+    if (weekday !== null) words.shift();
+  }
   if (words.length === 2) {
     if (/^\d{1,2}$/.test(words[0]!)) {
       const month = monthNumberFor(words[1]!);
-      return month === null ? null : { month, day: Number(words[0]!) };
+      return month === null ? null : { month, day: Number(words[0]!), weekday };
     }
     if (/^\d{1,2}$/.test(words[1]!)) {
       const month = monthNumberFor(words[0]!);
-      return month === null ? null : { month, day: Number(words[1]!) };
+      return month === null ? null : { month, day: Number(words[1]!), weekday };
     }
     return null;
   }
@@ -433,17 +443,29 @@ const monthDayExpressionParts = (
   let match = /^(\d{1,2})([a-z]+)$/.exec(compact);
   if (match) {
     const month = monthNumberFor(match[2]!);
-    return month === null ? null : { month, day: Number(match[1]!) };
+    return month === null
+      ? null
+      : { month, day: Number(match[1]!), weekday: null };
   }
   match = /^([a-z]+)(\d{1,2})$/.exec(compact);
   if (match) {
     const month = monthNumberFor(match[1]!);
-    return month === null ? null : { month, day: Number(match[2]!) };
+    return month === null
+      ? null
+      : { month, day: Number(match[2]!), weekday: null };
   }
   match = /^([a-z]+)(\d{1,2})([a-z]+)$/.exec(compact);
-  if (match && weekdayNumberFor(match[1]!) !== null) {
+  if (match) {
+    const compactWeekday = weekdayNumberFor(match[1]!);
+    if (compactWeekday === null) return null;
     const month = monthNumberFor(match[3]!);
-    return month === null ? null : { month, day: Number(match[2]!) };
+    return month === null
+      ? null
+      : {
+          month,
+          day: Number(match[2]!),
+          weekday: compactWeekday
+        };
   }
   return null;
 };
