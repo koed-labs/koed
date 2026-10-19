@@ -27,6 +27,17 @@ const PACKAGING_FILES = new Set([
 ]);
 
 const SAFE_NON_PACKAGING_ROOTS = [".changeset/", "docs/"];
+
+// Backend workspace source is covered by Tests and the Linux standalone package
+// inspection in Build. Only `src/` is exempt: package metadata, build config,
+// migrations, and other files in these packages still select packaged smoke.
+const BACKEND_SOURCE_ROOTS = [
+  "apps/api/src/",
+  "apps/worker/src/",
+  "packages/core/src/",
+  "packages/db/src/",
+  "packages/mcp-server/src/"
+];
 const SAFE_NON_PACKAGING_FILES = new Set([
   ".editorconfig",
   ".gitattributes",
@@ -42,6 +53,9 @@ const SAFE_NON_PACKAGING_FILES = new Set([
 export const fileAffectsPackaging = (file) => {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
   if (PACKAGING_FILES.has(normalized)) return true;
+  if (BACKEND_SOURCE_ROOTS.some((root) => normalized.startsWith(root))) {
+    return false;
+  }
   if (PACKAGING_ROOTS.some((root) => normalized.startsWith(root))) return true;
   if (SAFE_NON_PACKAGING_FILES.has(normalized)) return false;
   if (SAFE_NON_PACKAGING_ROOTS.some((root) => normalized.startsWith(root))) {

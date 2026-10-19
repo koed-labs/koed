@@ -231,10 +231,8 @@ jobs:
 
   relevant-packaged-smoke:
     name: Relevant packaged Desktop app smoke
-    needs:
-      - changes
-      - build
-    if: needs.changes.outputs.run_app_smoke == 'true' && needs.build.result == 'success'
+    needs: changes
+    if: needs.changes.outputs.run_app_smoke == 'true'
     runs-on: macos-14
     timeout-minutes: 60
 
