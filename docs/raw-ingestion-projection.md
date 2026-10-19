@@ -520,6 +520,20 @@ Embedding Service or reconstructs Worker policy itself. A denied decision
 pauses only new historical production; it does not make `/ready` fail or stop
 live capture.
 
+The authenticated, local-only `GET /v1/embedding-state` contract reports the
+same signals as content-free Diagnostic Status. It returns Embedding Service
+health, pending embedding counts and estimated tokens, the 15-minute
+throughput, the calibrated capacity, a drain estimate, embedding queue counts,
+the live and historical Projection backlog, and the current historical
+admission decision. Live rows waiting for an open agent turn are reported as
+`waitingForAgentTurnRows`. The counts are deployment-wide, so the route
+returns 403 when the deployment has more than one User. `activity` is
+`unknown` when backlog telemetry is missing and no queue shows work.
+`koed status` includes this snapshot as `embeddingState`, `null` when the API
+cannot report it, or leaves it out when the deployment does not offer it. Koed
+Desktop shows it under **Preferences → Services** only when it is offered. It
+is not a health gate, so it never changes the service health count.
+
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.
 A batch admits segments in chronological order while their cumulative rows and

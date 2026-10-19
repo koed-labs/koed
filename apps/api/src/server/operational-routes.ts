@@ -11,6 +11,8 @@ import {
   inspectDatabaseReadiness,
   type DbPool,
   type EmbeddingCapacityRepository,
+  type EmbeddingSemanticBacklog,
+  type EmbeddingTelemetryWindow,
   type MemorySourceRepository
 } from "@koed/db";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -18,10 +20,14 @@ import { readFile, statfs } from "node:fs/promises";
 import {
   createHealth,
   createEncryptedJsonPackage,
+  deriveEmbeddingActivity,
   redactEnvelopeEncryptionProviderStatus,
   resolveSupportedEmbeddingModelConfig,
+  type EmbeddingQueueCounts,
+  type EmbeddingStateSnapshot,
   type EnvelopeEncryptionProvider,
   type EnvelopeEncryptionProviderStatus,
+  type HistoricalAdmissionDecision,
   type KoedJobQueue,
   type RealtimeTransportOffer
 } from "@koed/shared";
@@ -469,6 +475,133 @@ const collectEmbeddingCapacityStatus = async (
       details: { reason: "embedding_capacity_unavailable" }
     };
   }
+};
+
+const localEmbeddingStateProfiles = new Set(["developer", "local_personal"]);
+
+const queueCountsOrNull = async (
+  queue: KoedJobQueue<unknown> | null
+): Promise<EmbeddingQueueCounts | null> => {
+  if (!queue) return null;
+  try {
+    const counts = await queue.getJobCounts(
+      "waiting",
+      "active",
+      "delayed",
+      "failed"
+    );
+    return {
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      delayed: counts.delayed ?? 0,
+      failed: counts.failed ?? 0
+    };
+  } catch {
+    return null;
+  }
+};
+
+type EmbeddingCapacityDetails = {
+  profile?: {
+    mode: string;
+    measuredTokensPerSecond: number;
+    calibratedAt?: string;
+  } | null;
+  backlog?: EmbeddingSemanticBacklog;
+  rolling?: EmbeddingTelemetryWindow[];
+  drainEstimate?: {
+    lowerSeconds: number;
+    upperSeconds: number;
+    confidence: string;
+  };
+};
+
+const collectEmbeddingState = async (input: {
+  repository: MemorySourceRepository;
+  embeddingCapacityRepository: EmbeddingCapacityRepository | null;
+  embeddingQueue: KoedJobQueue<unknown> | null;
+  lcmEmbeddingQueue: KoedJobQueue<unknown> | null;
+  embeddingModel: string | undefined;
+  admission: () => Promise<HistoricalAdmissionDecision>;
+}): Promise<EmbeddingStateSnapshot> => {
+  const [embedding, capacity, memoryQueue, lcmQueue, projection, admission] =
+    await Promise.all([
+      input.repository.getLocalEmbeddingStatus().catch(() => null),
+      collectEmbeddingCapacityStatus(
+        input.embeddingCapacityRepository,
+        input.embeddingModel
+      ),
+      queueCountsOrNull(input.embeddingQueue),
+      queueCountsOrNull(input.lcmEmbeddingQueue),
+      input.repository.getConversationProjectionBacklog().catch(() => null),
+      input.admission().catch(() => null)
+    ]);
+  const expected = resolveSupportedEmbeddingModelConfig(
+    input.embeddingModel ?? embedding?.model ?? undefined
+  );
+  const healthy = embedding?.healthy ?? false;
+  const details = capacity.details as EmbeddingCapacityDetails | undefined;
+  const observed = details?.rolling?.find(
+    (window) => window.windowMinutes === 15
+  );
+  const snapshot = {
+    service: {
+      healthy,
+      compatible:
+        healthy &&
+        embedding?.dimensions === expected.dimensions &&
+        (!embedding.model || embedding.model === expected.key),
+      model: embedding?.model ?? null,
+      dimensions: embedding?.dimensions ?? null,
+      expectedModel: expected.key,
+      expectedDimensions: expected.dimensions
+    },
+    calibration: details?.profile
+      ? {
+          mode: details.profile.mode,
+          measuredTokensPerSecond: details.profile.measuredTokensPerSecond,
+          calibratedAt: details.profile.calibratedAt ?? null
+        }
+      : null,
+    backlog: details?.backlog
+      ? {
+          pendingMemoryEvents: details.backlog.pendingMemoryEvents,
+          pendingMemoryNodes: details.backlog.pendingMemoryNodes,
+          pendingEstimatedTokens: details.backlog.pendingEstimatedTokens
+        }
+      : null,
+    throughput: observed
+      ? {
+          windowMinutes: observed.windowMinutes,
+          measuredTokensPerSecond: observed.measuredTokensPerSecond,
+          eventsPerMinute: observed.eventsPerMinute,
+          retries: observed.retries,
+          failures: observed.failures
+        }
+      : null,
+    drainEstimate: details?.drainEstimate
+      ? {
+          lowerSeconds: details.drainEstimate.lowerSeconds,
+          upperSeconds: details.drainEstimate.upperSeconds,
+          confidence: details.drainEstimate.confidence
+        }
+      : null,
+    queues: { memory: memoryQueue, lcm: lcmQueue },
+    projection: projection
+      ? {
+          liveRows: projection.liveProjectionRows,
+          waitingForAgentTurnRows: projection.parkedLiveProjectionRows,
+          historicalRows: projection.historicalImportRows,
+          historicalBytes: projection.historicalImportBytes
+        }
+      : null,
+    historicalAdmission: admission
+  } satisfies Omit<EmbeddingStateSnapshot, "activity" | "generatedAt">;
+  return {
+    generatedAt: new Date().toISOString(),
+    activity: deriveEmbeddingActivity(snapshot),
+    ...snapshot
+  };
 };
 
 const tokenMatches = (configured: string, supplied: string): boolean => {
@@ -1277,6 +1410,33 @@ export const registerOperationalRoutes = (
       alerts: opsAlerts(components, config.ops.runbookBaseUrl)
     };
   });
+
+  app.get(
+    "/v1/embedding-state",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!localEmbeddingStateProfiles.has(config.deploymentProfile)) {
+        throw Object.assign(new Error("Embedding state is local-only"), {
+          statusCode: 404
+        });
+      }
+      await auth.authenticate(request);
+      const repository = requireRepository();
+      // Counts are deployment-wide, so only a single-User deployment may read
+      // them without exposing activity derived from another User's memory.
+      if ((await repository.countUsers()) > 1) {
+        throw forbidden("Embedding state requires a single-User deployment");
+      }
+      return collectEmbeddingState({
+        repository,
+        embeddingCapacityRepository,
+        embeddingQueue,
+        lcmEmbeddingQueue,
+        embeddingModel: config.embeddingModel,
+        admission: context.historicalImport.admission
+      });
+    }
+  );
 
   app.get("/internal/metrics", async (request, reply) => {
     const configuredToken = config.ops.metricsToken;

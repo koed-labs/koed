@@ -757,6 +757,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/embedding-state",
+    "session_or_api_token",
+    "operations",
+    "Read content-free local Embedding Service and Projection backlog Diagnostic Status.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/historical-imports",
     "session_or_api_token",
     "capture",

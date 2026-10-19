@@ -10892,6 +10892,121 @@ describe("account and access flows", () => {
     });
   });
 
+  it("reports content-free local embedding state to API Token callers", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.WORK_QUEUE_BACKEND = "local";
+    const repository = createFakeRepository();
+    repository.getConversationProjectionBacklog = async () => ({
+      liveProjectionRows: 3,
+      parkedLiveProjectionRows: 7,
+      historicalImportRows: 120,
+      historicalImportBytes: 4_096
+    });
+    repository.getLocalEmbeddingStatus = async () => ({
+      enabled: true,
+      healthy: true,
+      model: "qwen3-0.6b",
+      dimensions: 1024
+    });
+    const app = await buildServer({
+      repository,
+      embeddingCapacityRepository: createFakeEmbeddingCapacityRepository(),
+      historicalImportAdmission: async () => ({
+        admitted: false,
+        reason: "live_projection_pressure"
+      })
+    });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "embedding-state@example.com", password: "password123" }
+    });
+    const token = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(owner)),
+      payload: { name: "Embedding State" }
+    });
+    const [state, unauthenticated] = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: "/v1/embedding-state",
+        headers: {
+          authorization: `Bearer ${jsonBody<TokenResponse>(token).token}`
+        }
+      }),
+      app.inject({ method: "GET", url: "/v1/embedding-state" })
+    ]);
+    await app.close();
+
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(state.statusCode, state.body).toBe(200);
+    expect(state.json()).toMatchObject({
+      activity: "working",
+      service: { healthy: true, model: "qwen3-0.6b", dimensions: 1024 },
+      backlog: {
+        pendingMemoryEvents: 4,
+        pendingMemoryNodes: 2,
+        pendingEstimatedTokens: 8_000
+      },
+      throughput: { windowMinutes: 15, failures: 0 },
+      calibration: { mode: "refined" },
+      projection: {
+        liveRows: 3,
+        waitingForAgentTurnRows: 7,
+        historicalRows: 120,
+        historicalBytes: 4_096
+      },
+      historicalAdmission: {
+        admitted: false,
+        reason: "live_projection_pressure"
+      }
+    });
+  });
+
+  it("denies embedding state when the deployment has more than one User", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "embedding-owner@example.com", password: "password123" }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "embedding-other@example.com", password: "password123" }
+    });
+    const token = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(owner)),
+      payload: { name: "Embedding State" }
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/embedding-state",
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(token).token}`
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("keeps embedding state off hosted deployment profiles", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "private-vps";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/embedding-state"
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(404);
+  });
+
   it("reports managed KMS status failures as redacted operations alerts", async () => {
     const secretSentinel = "kms-status-secret-must-not-leak";
     process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
