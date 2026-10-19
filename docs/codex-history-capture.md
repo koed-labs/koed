@@ -79,6 +79,16 @@ migration is disabled for the helper connection.
 An unavailable helper, wrong home/identity or missing current file leaves
 capture pending with a diagnostic. Metadata failures are bounded per Codex home
 per scan, so one unavailable home does not suppress capture from another.
+
+A metadata response line may be at most 1 MiB. Summary pages can still carry
+inline image data. If a successful response is larger, only that thread fails
+with `codex_history_response_oversized`. Koed discards the rest of the line
+without buffering it, up to 64 MiB, and keeps the connection open for other
+threads in the same home. The thread stays pending and retries with backoff,
+because its first native page does not shrink as the thread grows. An oversized
+line that Koed cannot match to a pending request, such as a notification or an
+error response, still closes the connection and fails the home for that scan.
+
 Koed does not read Codex's private SQLite schema directly. Configured roots in
 the standard `sessions` or `archived_sessions` layout resolve to their own Codex
 home and use a separate native metadata connection. At most eight owned

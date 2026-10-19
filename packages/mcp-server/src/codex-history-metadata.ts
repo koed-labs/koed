@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   CodexAppServerClient,
+  CodexAppServerOversizedResponseError,
   CodexAppServerResponseError,
   type CodexAppServerThreadInfo
 } from "./codex-app-server-runner.js";
@@ -10,7 +11,8 @@ const THREAD_FAILURES = new Set([
   "codex_history_path_invalid",
   "codex_history_identity_mismatch",
   "codex_history_unexpected_hydration",
-  "codex_history_page_invalid"
+  "codex_history_page_invalid",
+  "codex_history_response_oversized"
 ]);
 
 // Failures about one thread's metadata. Any other failure means the home's
@@ -59,7 +61,11 @@ export const createCodexHistoryMetadataReader = (input: {
             "features.background_paginated_rollout_migration=false"
           ],
           requestTimeoutMs: input.requestTimeoutMs ?? 5_000,
-          maxLineBytes: 256 * 1024,
+          // Summary pages can still carry inline image data. A larger response
+          // fails only its own thread and is discarded without buffering.
+          maxLineBytes: 1024 * 1024,
+          oversizedResponsePolicy: "reject_request",
+          maxDiscardedLineBytes: 64 * 1024 * 1024,
           maxRawEvents: 128,
           maxRawEventBytes: 1024 * 1024
         }
@@ -93,6 +99,9 @@ export const createCodexHistoryMetadataReader = (input: {
           await current.readThreadTurnsPage(threadId, { limit: 1 });
           return thread;
         } catch (error) {
+          if (error instanceof CodexAppServerOversizedResponseError)
+            // eslint-disable-next-line preserve-caught-error
+            throw new Error("codex_history_response_oversized");
           // The server answered for this thread; the connection stays usable.
           if (error instanceof CodexAppServerResponseError)
             // eslint-disable-next-line preserve-caught-error

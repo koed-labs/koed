@@ -4,6 +4,11 @@ import { performance } from "node:perf_hooks";
 import type { HistoricalAdmissionDecision } from "@koed/shared";
 
 import {
+  completeAutomaticHistoricalRun,
+  completeAutomaticHistoricalSource,
+  type HistoricalCompletionResult
+} from "./automatic-historical-provider.js";
+import {
   countTranscriptLines,
   ingestCodexTranscriptJournal,
   type ConversationSourceArtifact,
@@ -585,21 +590,11 @@ const skipUnrepresentableSource = async (
   }
 };
 
-const tryComplete = async (
+const tryComplete = (
   client: MemoryApiClient,
   source: HistoricalSource
-): Promise<boolean> => {
-  try {
-    await client.transitionHistoricalImportSource(source.id, {
-      expectedState: "importing",
-      state: "completed"
-    });
-    return true;
-  } catch (error) {
-    if (error instanceof MemoryApiError && error.status === 409) return false;
-    throw error;
-  }
-};
+): Promise<HistoricalCompletionResult> =>
+  completeAutomaticHistoricalSource(client, source.id);
 
 export const createCodexHistoricalProviderAdapter = (input: {
   client: MemoryApiClient;
@@ -825,31 +820,20 @@ export const createCodexHistoricalProviderAdapter = (input: {
             runId: activeRunId
           };
         }
-        const completed = await tryComplete(input.client, source);
+        const completion = await tryComplete(input.client, source);
         return {
-          state: completed ? "completed" : "source_exhausted",
+          state: completion.completed ? "completed" : "source_exhausted",
           selection: currentSelection,
-          runId: activeRunId
+          runId: activeRunId,
+          ...(!completion.completed && completion.diagnosticCode
+            ? { diagnosticCode: completion.diagnosticCode }
+            : {})
         };
       };
       return candidate?.withTranscript
         ? candidate.withTranscript(process)
         : process();
     },
-    async completeRun(runId) {
-      try {
-        await input.client.transitionHistoricalImportRun(runId, {
-          expectedState: "importing",
-          state: "completed"
-        });
-      } catch (error) {
-        // Every selected source was just observed as completed or skipped. A
-        // conflict therefore means a previous attempt already completed the
-        // run, which is safe after a Local AI Runtime restart.
-        if (!(error instanceof MemoryApiError) || error.status !== 409) {
-          throw error;
-        }
-      }
-    }
+    completeRun: (runId) => completeAutomaticHistoricalRun(input.client, runId)
   };
 };

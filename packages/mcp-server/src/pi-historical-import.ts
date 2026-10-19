@@ -764,14 +764,17 @@ export const createPiHistoricalProviderAdapter = (input: {
           runId: activeRunId
         };
       }
-      const completed = await completeAutomaticHistoricalSource(
+      const completion = await completeAutomaticHistoricalSource(
         input.client,
         source.id
       );
       return {
-        state: completed ? "completed" : "source_exhausted",
+        state: completion.completed ? "completed" : "source_exhausted",
         selection: currentSelection,
-        runId: activeRunId
+        runId: activeRunId,
+        ...(!completion.completed && completion.diagnosticCode
+          ? { diagnosticCode: completion.diagnosticCode }
+          : {})
       };
     },
     completeRun: (runId) => completeAutomaticHistoricalRun(input.client, runId)
