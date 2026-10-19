@@ -1,21 +1,29 @@
 # CI and release validation
 
-Koed uses a tiered GitHub Actions workflow so inexpensive failures stop more
-expensive validation before a macOS runner is allocated.
+Koed selects validation from a tested change policy. Once the policy job
+finishes, independent checks can run at the same time.
 
 ## Pull requests
 
-Every pull-request update runs these gates in order:
+Every pull-request update schedules these jobs:
 
-1. `Static checks` verifies environment examples, formatting, lint, production
-   types, and test-source types without starting Postgres or Redis.
-2. `Tests` and `Build` run in parallel after static checks pass. Tests owns the
+1. `Select CI validation tier` determines the required jobs from the tested
+   policy.
+2. `Static checks`, `Tests`, and `Build` start after policy selection without
+   waiting for each other. Static checks verifies environment examples,
+   formatting, lint, production types, and test-source types. Tests owns the
    Postgres and Redis services and migration acceptance checks.
-3. `Relevant packaged Desktop app smoke` starts after a successful `Build`,
-   without waiting for `Tests`, and runs only when the tested change policy
-   identifies a Desktop, packaged-runtime, shared dependency, native script,
-   package metadata, lockfile, CI, or release workflow change. `CI required`
-   still waits for both `Tests` and the policy-selected packaged validation.
+3. `Relevant packaged Desktop app smoke` also starts after policy selection
+   when the policy identifies a Desktop, packaged-runtime, shared dependency,
+   native script, package metadata, lockfile, CI, or release workflow change.
+   It does not wait for the Linux `Build` or `Tests` job.
+
+Parallel scheduling may consume more runners when an early check fails, but
+reduces the critical path for successful pull requests. `CI required` still
+waits for all existing jobs and rejects any required failure or cancellation,
+including `Static checks`, `Tests`, `Build`, and selected packaged validation.
+Full release-candidate and Linux native validation retain their existing
+dependencies and selection gates.
 
 The exact path policy is implemented in `.github/scripts/ci-policy.mjs` and
 covered by `scripts/ci-policy.test.mjs`. Documentation-only changes skip macOS.
@@ -66,7 +74,17 @@ runs from trusted `push`, scheduled, or manual events on `main`, validates every
 restored payload, and saves a cold-built payload only after independent
 validation succeeds. Its immutable key has no partial restore fallback.
 
-This tier builds and ad-hoc-signs the Electron `dir` target, verifies the
+On its fresh macOS runner, this tier checks out the current revision, installs
+dependencies, and completes `pnpm build` before packaging. It then calls the
+Desktop assembly-only command, which stages the current runtime, cleans the
+previous macOS output, ad-hoc-signs the Electron `dir` target, and normalizes
+the app path. The normal `package:mac` command still builds the Desktop
+workspace before the same assembly sequence. Assembly-only is for the CI job
+that has just built the workspace on that same runner. CI uses only outputs
+built earlier in that same job and checkout; do not reuse outputs from another
+job or revision.
+
+The tier verifies the
 unpacked `.app` once, and runs the complete healthy packaged smoke. The pinned
 embedding model is restored by SHA-256 and copied into the smoke's
 otherwise-empty `KOED_HOME`; model status verifies the checksum before the
