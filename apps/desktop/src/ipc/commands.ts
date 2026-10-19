@@ -454,6 +454,7 @@ export const registerDesktopCommandHandlers = (
         if (error instanceof LocalApiRateLimitError) throw error;
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
+            list: "Koed could not list managed Conversations.",
             launch_options:
               "Koed could not load managed Conversation launch options.",
             start: "Koed could not start the managed AI Client Conversation.",

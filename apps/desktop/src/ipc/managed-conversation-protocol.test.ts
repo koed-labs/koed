@@ -5,6 +5,62 @@ import {
 } from "./managed-conversation-protocol.js";
 
 describe("managed conversation command discovery protocol", () => {
+  it("allows an owner-scoped list without a caller-selected owner and rejects malformed rows", () => {
+    expect(parseManagedConversationRequest({ operation: "list" })).toEqual({
+      operation: "list"
+    });
+    expect(() =>
+      parseManagedConversationRequest({ operation: "list", ownerId: "other" })
+    ).toThrow();
+    const row = {
+      executionId: "e",
+      projectId: "p",
+      sessionId: null,
+      threadId: null,
+      state: "running"
+    };
+    expect(
+      parseManagedConversationResult({
+        operation: "list",
+        executions: [row],
+        complete: false
+      })
+    ).toMatchObject({ executions: [row] });
+    expect(() =>
+      parseManagedConversationResult({
+        operation: "list",
+        executions: [{ ...row, ownerId: "other" }],
+        complete: true
+      })
+    ).toThrow();
+    expect(() =>
+      parseManagedConversationResult({
+        operation: "list",
+        executions: [{ ...row, executionId: null }],
+        complete: true
+      })
+    ).toThrow();
+    for (const malformed of [
+      { ...row, sessionId: "" },
+      { ...row, threadId: " x" },
+      { ...row, state: "" }
+    ]) {
+      expect(() =>
+        parseManagedConversationResult({
+          operation: "list",
+          executions: [malformed],
+          complete: true
+        })
+      ).toThrow();
+    }
+    expect(() =>
+      parseManagedConversationResult({
+        operation: "list",
+        executions: [row, row],
+        complete: false
+      })
+    ).toThrow("duplicate executions");
+  });
   it("parses control action requests and results", () => {
     expect(
       parseManagedConversationRequest({

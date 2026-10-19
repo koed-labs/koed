@@ -26,6 +26,14 @@ export const createManagedConversationPreloadApi = (
   invoke: ManagedConversationIpcInvoke
 ): ManagedConversationDesktopApi => {
   const api: ManagedConversationDesktopApi = {
+    list: async () =>
+      correlated(
+        "list",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({ operation: "list" })
+        )
+      ),
     launchOptions: async () =>
       correlated(
         "launch_options",

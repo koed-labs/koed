@@ -622,6 +622,7 @@ function Composer({
 }
 
 export function HqBlankConversation({
+  variant = "blank",
   api,
   localAiClients,
   projects,
@@ -632,6 +633,7 @@ export function HqBlankConversation({
   onStarted,
   onLaunchAttempt
 }: {
+  variant?: "blank" | "now";
   api: ManagedConversationDesktopApi | null;
   projects: readonly DesktopProject[];
   project: DesktopProject | null;
@@ -909,7 +911,9 @@ export function HqBlankConversation({
     }
   };
   return (
-    <div className="hq-conversation hq-conversation--blank">
+    <div
+      className={`hq-conversation hq-conversation--blank${variant === "now" ? " hq-conversation--now" : ""}`}
+    >
       <div className="hq-conversation__hero">
         <h1>
           {options?.instances.find(
@@ -997,7 +1001,8 @@ export function HqActiveConversation({
   visibilityOwnerId,
   visibilityRevision,
   visibilityConnected = false,
-  openFilePickerOnReady = false
+  openFilePickerOnReady = false,
+  inventoryOnly = false
 }: {
   api: ManagedConversationDesktopApi | null;
   managedProject: ManagedProjectDesktopApi | null;
@@ -1014,13 +1019,15 @@ export function HqActiveConversation({
   visibilityRevision?: string | null;
   visibilityConnected?: boolean;
   openFilePickerOnReady?: boolean;
+  inventoryOnly?: boolean;
 }) {
   const detailThread = draft?.thread ?? thread;
   const { detail, loadOlder, retry } = usePersonalMemoryDetail(
     store,
     detailThread,
-    !draft ||
-      draft.conversation.capturedSessionId !== draft.conversation.executionId
+    !inventoryOnly &&
+      (!draft ||
+        draft.conversation.capturedSessionId !== draft.conversation.executionId)
   );
   const identityKey = [
     project.id,

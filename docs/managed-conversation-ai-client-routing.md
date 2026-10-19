@@ -56,6 +56,12 @@ Project directory. A User-controlled Project name does not establish this identi
 Recents reads additional graph pages until it collects the requested number of
 Conversations or reaches the end. Subagent rows consume raw offsets but do not
 consume Conversation slots. An owner change clears and reloads both recent lists.
+The HQ Now view reads a bounded, owner-authenticated Managed Conversation
+execution list through Desktop IPC and inspects runtime items for pending
+questions and approvals. The list carries no caller-selected owner. At the
+current 500-execution API limit, Now marks a full page as incomplete rather
+than claiming there are no older pending items. Opening Now does not resume an
+execution.
 Launch selections resolve model defaults through the canonical ID, qualified ID,
 or model alias from the capability snapshot. Model labels preserve the AI Client's
 `displayName`, including available version qualifiers; model values remain unchanged.

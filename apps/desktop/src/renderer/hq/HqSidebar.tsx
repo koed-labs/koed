@@ -51,6 +51,7 @@ export function HqBrand() {
 
 export function HqIconAction({
   disabled,
+  current,
   label,
   onClick,
   title,
@@ -58,6 +59,7 @@ export function HqIconAction({
   className = ""
 }: {
   disabled?: boolean;
+  current?: boolean;
   label: string;
   onClick?: () => void;
   title: string;
@@ -70,6 +72,7 @@ export function HqIconAction({
         render={
           <button
             aria-label={label}
+            aria-current={current ? "page" : undefined}
             className={`hq-icon-button ${className}`}
             disabled={disabled}
             onClick={onClick}
@@ -117,6 +120,7 @@ export type HqSidebarProps = {
   onCreateProject?: () => void;
   onNewConversation?: () => void;
   onOpenNow?: () => void;
+  nowActive?: boolean;
   onOpenSearchAndCommands: () => void;
   onRetryProjects?: () => void;
   onOpenSettings?: () => void;
@@ -136,6 +140,7 @@ export function HqSidebar({
   onCreateProject,
   onNewConversation,
   onOpenNow,
+  nowActive = false,
   onOpenSearchAndCommands,
   onRetryProjects,
   onSelectConversation,
@@ -397,8 +402,9 @@ export function HqSidebar({
               <Plus aria-hidden="true" />
             </HqIconAction>
             <HqIconAction
-              className="hq-sidebar__action"
+              className="hq-sidebar__action hq-sidebar__action--now"
               disabled={!onOpenNow}
+              current={nowActive}
               label="Now"
               onClick={onOpenNow}
               title={onOpenNow ? "Open Now" : "Now is not available yet"}
