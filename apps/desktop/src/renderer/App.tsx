@@ -1171,6 +1171,10 @@ export function App({
       <HqApplication
         personalMemoryStore={personalMemoryStore}
         personalMemoryReady={personalMemoryReady}
+        visibilityClient={client}
+        visibilityOwnerId={snapshot?.navigation.personalOwner.id ?? null}
+        visibilityRevision={snapshot?.snapshotRevision ?? null}
+        visibilityConnected={snapshot?.connection.state === "live"}
         managedConversations={managedConversations}
         localAiClients={window.koedDesktop?.localAiClients}
         managedProject={managedProject}

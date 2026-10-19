@@ -63,6 +63,12 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { DesktopApi } from "../../../types.js";
 import { assignmentFrom } from "../../views/preferences/local-ai-client-settings-helpers.js";
 import { HqRuntimeItem } from "./HqRuntimeItem.js";
+import { HqVisibilityLine } from "./HqVisibilityLine.js";
+import {
+  hqVisibilityIdentity,
+  useHqConversationVisibility,
+  type HqVisibility
+} from "./hq-visibility.js";
 import {
   hqPermissionLabel,
   hqReasoningHeat,
@@ -412,7 +418,8 @@ function Composer({
   error,
   slashCommands,
   lockDraft,
-  settingsDisabled
+  settingsDisabled,
+  visibility
 }: {
   value: string;
   setValue: (value: string) => void;
@@ -435,6 +442,7 @@ function Composer({
   slashCommands?: ManagedConversationSlashCommand[];
   lockDraft?: boolean;
   settingsDisabled?: boolean;
+  visibility: HqVisibility;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(value.length);
@@ -447,6 +455,7 @@ function Composer({
   }, [locked]);
   return (
     <div className="hq-composer-wrap">
+      <HqVisibilityLine visibility={visibility} />
       <form
         className="hq-composer"
         aria-label="Conversation composer"
@@ -908,6 +917,7 @@ export function HqBlankConversation({
           )?.displayName ?? "New Conversation"}
         </h1>
         <Composer
+          visibility="personal-private"
           value={prompt}
           setValue={setPrompt}
           onSubmit={() => void start()}
@@ -983,6 +993,10 @@ export function HqActiveConversation({
   onRetryStart,
   markdownAdapters,
   authorizeTransfer,
+  visibilityClient,
+  visibilityOwnerId,
+  visibilityRevision,
+  visibilityConnected = false,
   openFilePickerOnReady = false
 }: {
   api: ManagedConversationDesktopApi | null;
@@ -995,6 +1009,10 @@ export function HqActiveConversation({
   onRetryStart: () => void;
   markdownAdapters: MarkdownPlatformAdapters;
   authorizeTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
+  visibilityClient?: CollaborationRendererClient;
+  visibilityOwnerId?: string | null;
+  visibilityRevision?: string | null;
+  visibilityConnected?: boolean;
   openFilePickerOnReady?: boolean;
 }) {
   const detailThread = draft?.thread ?? thread;
@@ -1022,6 +1040,19 @@ export function HqActiveConversation({
     resumed?.key === identityKey
       ? resumed.conversation
       : (draft?.conversation ?? null);
+  const visibilityIdentity = hqVisibilityIdentity(
+    thread,
+    detailThread,
+    conversation?.capturedSessionId
+  );
+  const visibility = useHqConversationVisibility({
+    client: visibilityClient,
+    logicalMemoryId: visibilityIdentity?.logicalMemoryId,
+    sessionId: visibilityIdentity?.sessionId,
+    ownerId: visibilityOwnerId,
+    revision: visibilityRevision,
+    connected: visibilityConnected
+  });
   const [runtimeState, setRuntimeState] = useState<{
     key: string;
     value: Awaited<ReturnType<ManagedConversationDesktopApi["runtime"]>>;
@@ -2209,6 +2240,7 @@ export function HqActiveConversation({
           </p>
         ) : null}
         <Composer
+          visibility={visibility}
           value={prompt}
           setValue={(value) => {
             if (sendLocked || resumeStatus === "read_only" || !recoveryReady)

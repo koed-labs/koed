@@ -2303,8 +2303,98 @@ const runValidation = async () => {
       }
     );
 
+    await runAssertion(
+      "HQ105 private visibility line (ticket-owned proof; S20.1 remains SKIP)",
+      async () => {
+        await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+          width: 1280,
+          height: 800,
+          deviceScaleFactor: 1,
+          mobile: false
+        });
+        let desktopReady = false;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          desktopReady = await window.webContents.executeJavaScript(`(() => {
+            const form = document.querySelector('.hq-conversation__dock form.hq-composer');
+            return window.innerWidth === 1280 &&
+              document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route') === 'conversation' &&
+              Math.round(form?.getBoundingClientRect().width ?? 0) === 780;
+          })()`);
+          if (desktopReady) break;
+          await delay(25);
+        }
+        assert.equal(desktopReady, true);
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('.hq-composer__visibility'))`
+          ),
+          false,
+          "A Conversation without sharing provenance must not claim Just me"
+        );
+        await window.webContents.executeJavaScript(
+          `document.querySelector('button[title="Conversation 91"]')?.click()`
+        );
+        let active = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          active = await window.webContents.executeJavaScript(`(() => {
+            const line = document.querySelector('.hq-conversation .hq-composer__visibility');
+            const form = document.querySelector('.hq-conversation form.hq-composer');
+            return {
+              route: document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route'),
+              sessionId: document.querySelector('[data-hq-session-id]')?.getAttribute('data-hq-session-id'),
+              label: line?.textContent?.trim() ?? null,
+              beforeForm: line?.nextElementSibling === form,
+              lineHeight: Math.round(line?.getBoundingClientRect().height ?? 0),
+              docked: Boolean(document.querySelector('.hq-conversation__dock .hq-composer__visibility')),
+              reads: { ...window.__koedHqVisibilityReads }
+            };
+          })()`);
+          if (active?.label === "Just me") break;
+          await delay(50);
+        }
+        assert.equal(active?.route, "conversation");
+        assert.equal(active?.sessionId, "00000000-0000-4000-8000-000000000091");
+        assert.equal(active?.label, "Just me", JSON.stringify(active));
+        assert.equal(active?.docked, true, JSON.stringify(active));
+        assert.equal(active?.beforeForm, true);
+        assert.equal(active?.lineHeight, 26);
+        assert.ok(active?.reads.grants > 0 && active?.reads.shares > 0);
+        await captureScreenshot("hq105-conversation-desktop.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('dark', 'light')`
+        );
+        await captureScreenshot("hq105-conversation-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.querySelector('button[aria-label="New chat"]')?.click()`
+        );
+        let blank = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          blank = await window.webContents.executeJavaScript(`(() => {
+            const line = document.querySelector('.hq-conversation--blank .hq-composer__visibility');
+            return {
+              label: line?.textContent?.trim() ?? null,
+              beforeForm: line?.nextElementSibling === document.querySelector('.hq-conversation--blank form.hq-composer'),
+              lineHeight: Math.round(line?.getBoundingClientRect().height ?? 0)
+            };
+          })()`);
+          if (blank?.label === "Just me" && blank.beforeForm) break;
+          await delay(25);
+        }
+        assert.deepEqual(blank, {
+          label: "Just me",
+          beforeForm: true,
+          lineHeight: 26
+        });
+        await captureScreenshot("hq105-blank-desktop-light.png");
+        await window.webContents.executeJavaScript(
+          `document.documentElement.classList.replace('light', 'dark')`
+        );
+        await captureScreenshot("hq105-blank-desktop.png");
+      }
+    );
+
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

@@ -93,6 +93,27 @@
   position: relative;
   width: 100%;
 }
+.hq-composer__visibility {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px 7px;
+  color: var(--hq-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.hq-composer__visibility svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+.hq-composer__visibility span {
+  color: var(--hq-muted);
+  font-weight: 500;
+}
+.hq-conversation--blank .hq-composer__visibility {
+  padding-left: 16px;
+}
 .hq-composer {
   background: var(--hq-field, #272927);
   border-radius: 26px;
