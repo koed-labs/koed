@@ -4,12 +4,18 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DeviceCredentialRecord } from "@koed/db";
 import {
+  COLLABORATION_CONTRACT_VERSION,
+  teamCollaborationV2CapabilitiesSchema
+} from "@koed/shared";
+import {
   assertUpstreamOperationPathAllowed,
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
   upstreamAdvertisesCapability,
+  upstreamSupportsCollaborationCommands,
   upstreamSupportsCollaborationRealtime,
+  upstreamSupportsTeamCollaborationV2,
   type LocalEdgeUpstreamBackend
 } from "./upstream-routing.js";
 import { collaborationRealtimeProtocolVersion } from "../server/capabilities.js";
@@ -74,6 +80,137 @@ const credential = (
 });
 
 describe("local edge upstream routing", () => {
+  it("requires fresh explicit v2 capability evidence while preserving v1 support", () => {
+    const v1 = backend({
+      capabilities: {
+        state: "validated",
+        expiresAt: "2099-01-01T00:15:00.000Z",
+        schemaVersion: 9,
+        payload: {
+          capabilitySchemaVersion: 9,
+          capabilities: {
+            "memory.collaboration": { availability: "available" }
+          },
+          protocols: {
+            collaborationRealtime: {
+              version: collaborationRealtimeProtocolVersion,
+              transport: "sse"
+            }
+          }
+        }
+      }
+    });
+
+    expect(upstreamSupportsCollaborationCommands(v1)).toBe(true);
+    expect(upstreamSupportsCollaborationRealtime(v1)).toBe(true);
+    expect(upstreamSupportsCollaborationCommands(v1, 2)).toBe(false);
+    expect(upstreamSupportsCollaborationRealtime(v1, 2)).toBe(false);
+
+    const v2 = teamCollaborationV2CapabilitiesSchema.parse({
+      product: "koed",
+      apiVersion: "v2",
+      capabilitySchemaVersion: 1,
+      teamCollaboration: {
+        availability: "available",
+        messageContractVersion: 2,
+        messageEndpointTemplate:
+          "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        realtime: {
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
+          messageContractVersion: 2,
+          snapshotEndpoint: "/v2/collaboration/realtime/snapshot",
+          streamEndpoint: "/v2/collaboration/realtime/stream",
+          acknowledgementEndpoint: "/v2/collaboration/realtime/ack"
+        }
+      }
+    });
+    const withV2 = backend({
+      capabilities: {
+        ...v1.capabilities,
+        teamCollaborationV2: {
+          state: "validated",
+          checkedAt: "2099-01-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:15:00.000Z",
+          schemaVersion: 1,
+          payload: v2
+        }
+      }
+    });
+    expect(upstreamSupportsTeamCollaborationV2(withV2, 0)).toBe(true);
+    expect(upstreamSupportsCollaborationCommands(withV2, 2)).toBe(true);
+    expect(upstreamSupportsCollaborationRealtime(withV2, 2)).toBe(true);
+    const unavailableV2 = teamCollaborationV2CapabilitiesSchema.parse({
+      ...v2,
+      teamCollaboration: {
+        ...v2.teamCollaboration,
+        availability: "unavailable"
+      }
+    });
+    expect(
+      upstreamSupportsTeamCollaborationV2(
+        backend({
+          capabilities: {
+            ...v1.capabilities,
+            teamCollaborationV2: {
+              state: "validated",
+              checkedAt: "2099-01-01T00:00:00.000Z",
+              expiresAt: "2099-01-01T00:15:00.000Z",
+              schemaVersion: 1,
+              payload: unavailableV2
+            }
+          }
+        }),
+        0
+      )
+    ).toBe(false);
+
+    expect(
+      upstreamSupportsTeamCollaborationV2(
+        {
+          ...withV2,
+          capabilities: {
+            ...withV2.capabilities,
+            teamCollaborationV2: {
+              ...withV2.capabilities?.teamCollaborationV2,
+              expiresAt: "2000-01-01T00:00:00.000Z"
+            }
+          }
+        },
+        Date.parse("2026-01-01T00:00:00.000Z")
+      )
+    ).toBe(false);
+    expect(
+      upstreamSupportsTeamCollaborationV2({
+        ...withV2,
+        capabilities: {
+          ...withV2.capabilities,
+          teamCollaborationV2: {
+            ...withV2.capabilities?.teamCollaborationV2,
+            state: "unsupported"
+          }
+        }
+      })
+    ).toBe(false);
+    expect(
+      upstreamSupportsTeamCollaborationV2({
+        ...withV2,
+        capabilities: {
+          ...withV2.capabilities,
+          teamCollaborationV2: {
+            ...withV2.capabilities?.teamCollaborationV2,
+            payload: {
+              ...v2,
+              teamCollaboration: {
+                ...v2.teamCollaboration,
+                messageContractVersion: 1
+              }
+            } as unknown as typeof v2
+          }
+        }
+      })
+    ).toBe(false);
+  });
+
   it("accepts scoped Team Memory evidence operations for credentialed routing", () => {
     const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
     const nodeId = "22222222-2222-4222-8222-222222222222";
@@ -487,6 +624,89 @@ describe("local edge upstream routing", () => {
         "/v1/memory/answer"
       )
     ).not.toThrow();
+  });
+
+  it("allows only the explicit Team v2 message and realtime routes", () => {
+    const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const threadId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const messagePath = `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages`;
+    expect(
+      String(safeUpstreamProxyUrl(backend(), `${messagePath}?beforeSequence=4`))
+    ).toBe(`https://team.example.test/koed${messagePath}?beforeSequence=4`);
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}/messages/../messages`
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        messagePath.replace("/teams/", "/personal/")
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend(),
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}%2fmessages`
+      )
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(backend(), "/v2/collaboration/teams")
+    ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_read", "GET", messagePath)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_write", "POST", messagePath)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "GET",
+        `/v2/collaboration/teams/${teamId}/threads/${threadId}/../${threadId}/messages`
+      )
+    ).toThrow("Upstream path is not allowed for operation family");
+
+    for (const action of ["snapshot", "ack"]) {
+      const path = `/v2/collaboration/realtime/${action}`;
+      expect(String(safeUpstreamProxyUrl(backend(), path))).toBe(
+        `https://team.example.test/koed${path}`
+      );
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_read", "POST", path)
+      ).not.toThrow();
+    }
+    expect(
+      String(
+        safeUpstreamProxyUrl(
+          backend(),
+          "/v2/collaboration/realtime/stream?scope=team"
+        )
+      )
+    ).toBe(
+      "https://team.example.test/koed/v2/collaboration/realtime/stream?scope=team"
+    );
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_read",
+        "GET",
+        "/v2/collaboration/realtime/stream"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_read", "POST", messagePath)
+    ).toThrow("Upstream path is not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed("team_chat_write", "GET", messagePath)
+    ).toThrow("Upstream path is not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_read",
+        "GET",
+        "/v2/collaboration/realtime/teams"
+      )
+    ).toThrow("Upstream path is not allowed for operation family");
   });
 
   it("drops insecure remote HTTP entries from a hand-edited registry", () => {

@@ -116,6 +116,9 @@ const commandRequiresTeamBackend = (
     case "collaboration.mark_read":
     case "collaboration.load_message_page":
       return command.input.thread.scope === "team";
+    case "collaboration.send_team_message_v2":
+    case "collaboration.load_team_message_page_v2":
+      return true;
     case "collaboration.subscribe":
       return command.input.scope.scope === "team";
     case "collaboration.unsubscribe":

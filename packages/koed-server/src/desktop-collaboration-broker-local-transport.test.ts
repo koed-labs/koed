@@ -500,12 +500,39 @@ describe("Desktop collaboration local transport", () => {
         topic: null
       }
     });
+    const teamV2Send = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "477a56d0-f173-447c-8ff7-6bc130cf8ad0",
+      command: "collaboration.send_team_message_v2",
+      input: {
+        thread: { scope: "team", teamId, threadId: channelId },
+        clientMessageId: "e5feb66b-4805-4c79-a18b-22735c1a4ea1",
+        body: "Team reply",
+        replyToMessageId: null,
+        mentionsUserIds: []
+      }
+    });
+    const teamV2Page = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "837d89ed-5a7b-45b4-b83a-4d12e049ca40",
+      command: "collaboration.load_team_message_page_v2",
+      input: {
+        thread: { scope: "team", teamId, threadId: channelId },
+        direction: "newer",
+        cursor: null,
+        limit: 10
+      }
+    });
 
     await transport.request(personal, context());
     await transport.request(team, context());
+    await transport.request(teamV2Send, context());
+    await transport.request(teamV2Page, context());
 
     expect(resolveConnection).toHaveBeenNthCalledWith(1, false, undefined);
     expect(resolveConnection).toHaveBeenNthCalledWith(2, true, undefined);
+    expect(resolveConnection).toHaveBeenNthCalledWith(3, true, undefined);
+    expect(resolveConnection).toHaveBeenNthCalledWith(4, true, undefined);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       command: personal
     });
@@ -513,10 +540,24 @@ describe("Desktop collaboration local transport", () => {
       upstream_backend_id: connection.backendId,
       command: team
     });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      upstream_backend_id: connection.backendId,
+      command: teamV2Send
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      upstream_backend_id: connection.backendId,
+      command: teamV2Page
+    });
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: personalConnection.authorization
     });
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({
+      authorization: connection.authorization
+    });
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toMatchObject({
+      authorization: connection.authorization
+    });
+    expect(fetchMock.mock.calls[3]?.[1]?.headers).toMatchObject({
       authorization: connection.authorization
     });
   });

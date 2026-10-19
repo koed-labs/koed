@@ -1585,6 +1585,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     const collaborationRealtimeMaterializationRepository = {
       isEventAuthorized: collaborationRepository.isEventAuthorized,
       getMessageForRealtime: collaborationRepository.getMessageForRealtime,
+      getTeamMessageV2ForRealtime:
+        collaborationRepository.getTeamMessageV2ForRealtime,
       getReceiptStateForRealtime:
         collaborationRepository.getReceiptStateForRealtime,
       listMessageReceiptsForRealtime:

@@ -23,6 +23,8 @@ export {
 const disabledPathPrefixes = [
   "/ops/support/teams",
   "/v1/collaboration/teams",
+  "/v2/collaboration/teams",
+  "/v2/collaboration/realtime",
   "/v1/cross-identity-sync",
   "/v1/high-risk",
   "/v1/local-edge/device-enrollments",
@@ -30,6 +32,7 @@ const disabledPathPrefixes = [
   "/v1/local-edge/team-memory",
   "/v1/local-edge/memory-answer-tasks",
   "/v1/local-edge/collaboration/realtime/backends",
+  "/v2/local-edge/collaboration",
   "/v1/retention",
   "/v1/shared-memory",
   "/v1/team-context",

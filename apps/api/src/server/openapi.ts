@@ -3,6 +3,7 @@ import {
   releaseConversationProjectionHoldSchema,
   resetConversationProjectionSchema
 } from "../memory/raw-conversation-schemas.js";
+import { teamCollaborationV2CapabilitiesSchema } from "@koed/shared";
 import {
   implementedRouteIdentityContracts,
   type RouteIdentity,
@@ -73,6 +74,18 @@ const capabilitiesResponseSchema = {
 };
 
 const responsesForContract = (contract: RouteIdentityContract) => {
+  if (contract.path === "/v2/capabilities") {
+    return {
+      "200": {
+        description: "Explicit Team message contract v2 capability discovery.",
+        content: {
+          "application/json": {
+            schema: jsonSchemaFor(teamCollaborationV2CapabilitiesSchema)
+          }
+        }
+      }
+    };
+  }
   if (
     contract.path === "/v1/capabilities" ||
     contract.path === "/v1/capabilities/authenticated"

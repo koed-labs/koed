@@ -12,7 +12,8 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
-  collaborationSafeErrorMessages
+  collaborationSafeErrorMessages,
+  type CollaborationCommandResult
 } from "@koed/shared";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
@@ -114,6 +115,29 @@ const teamMessage = {
   delivery: "sent" as const,
   recipientStatus: "sent" as const,
   failure: null
+};
+
+const teamMessageV2Record = {
+  id: ids.messageThree,
+  threadId: ids.thread,
+  threadSequence: 2,
+  audienceVersion: 1,
+  scope: "team" as const,
+  personalOwnerUserId: null,
+  teamId: ids.team,
+  teamWorkspaceId: ids.workspace,
+  senderKind: "user" as const,
+  senderPrincipalId: ids.participant,
+  senderUserId: ids.participant,
+  senderDisplayName: "Alice",
+  recipientStatus: "sent" as const,
+  bodyText: "hello v2",
+  metadata: {},
+  provenance: { kind: "user_message", id: ids.clientMessage },
+  createdAt: iso,
+  updatedAt: iso,
+  replyToMessageId: ids.message,
+  mentionsUserIds: [ids.participantTwo]
 };
 
 const teamMessageAt = (sequence: number) => ({
@@ -305,6 +329,30 @@ const backend = (
       capabilitySchemaVersion: 9,
       capabilities: {
         "memory.collaboration": { availability: "partial" }
+      }
+    },
+    teamCollaborationV2: {
+      state: "validated",
+      checkedAt: "2099-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:15:00.000Z",
+      schemaVersion: 1,
+      payload: {
+        product: "koed",
+        apiVersion: "v2",
+        capabilitySchemaVersion: 1,
+        teamCollaboration: {
+          availability: "available",
+          messageContractVersion: 2,
+          messageEndpointTemplate:
+            "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+          realtime: {
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
+            messageContractVersion: 2,
+            snapshotEndpoint: "/v2/collaboration/realtime/snapshot",
+            streamEndpoint: "/v2/collaboration/realtime/stream",
+            acknowledgementEndpoint: "/v2/collaboration/realtime/ack"
+          }
+        }
       }
     }
   },
@@ -757,6 +805,9 @@ const createPersonalRepository = (): CommandRepository => {
             bodyText: input.bodyText
           })
         : null,
+    sendTeamMessageV2: async () => {
+      throw new Error("Unexpected Team message send");
+    },
     listMessages: async (actor, input) => {
       const thread = ownedThread(actor, input.threadId);
       if (!thread) return null;
@@ -777,6 +828,9 @@ const createPersonalRepository = (): CommandRepository => {
         nextBeforeSequence: selected[0]?.threadSequence ?? null,
         nextAfterSequence: selected.at(-1)?.threadSequence ?? null
       };
+    },
+    listTeamMessagesV2: async () => {
+      throw new Error("Unexpected Team message page");
     },
     advanceReadState: async (actor, input) =>
       ownedThread(actor, input.threadId)
@@ -909,6 +963,16 @@ interface HarnessOptions {
 const resultPayloadFor = (
   command: CollaborationRendererCommand
 ): Record<string, unknown> => {
+  if (command.command === "collaboration.send_team_message_v2") {
+    return {
+      message: {
+        ...teamMessageV2Record,
+        bodyText: command.input.body,
+        replyToMessageId: command.input.replyToMessageId,
+        mentionsUserIds: command.input.mentionsUserIds
+      }
+    };
+  }
   if (
     command.command === "collaboration.send_message" ||
     command.command === "collaboration.retry_message"
@@ -1488,6 +1552,28 @@ const supportedMappings: Array<{
     method: "POST",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
     body: { bodyText: "hello" },
+    idempotencyKey: ids.clientMessage
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.send_team_message_v2",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        clientMessageId: ids.clientMessage,
+        body: "hello v2",
+        replyToMessageId: ids.message,
+        mentionsUserIds: [ids.participantTwo]
+      }
+    },
+    method: "POST",
+    path: `/koed/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
+    body: {
+      bodyText: "hello v2",
+      replyToMessageId: ids.message,
+      mentionsUserIds: [ids.participantTwo]
+    },
     idempotencyKey: ids.clientMessage
   },
   {
@@ -3542,6 +3628,152 @@ describe("local-edge collaboration command route", () => {
     ).toBe(true);
   });
 
+  it("keeps v2 Team history cursors separate from the unchanged v1 cursor contract", async () => {
+    const response = (call: FetchCall) => {
+      const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+      if (
+        path ===
+        `/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
+      ) {
+        return Response.json({
+          messages: [
+            {
+              ...teamMessageV2Record,
+              id: teamMessageV2Record.id.toUpperCase(),
+              threadId: teamMessageV2Record.threadId.toUpperCase(),
+              teamId: teamMessageV2Record.teamId.toUpperCase(),
+              teamWorkspaceId:
+                teamMessageV2Record.teamWorkspaceId.toUpperCase(),
+              senderUserId: teamMessageV2Record.senderUserId.toUpperCase(),
+              replyToMessageId:
+                teamMessageV2Record.replyToMessageId.toUpperCase(),
+              mentionsUserIds: teamMessageV2Record.mentionsUserIds.map((id) =>
+                id.toUpperCase()
+              ),
+              threadSequence: 3
+            }
+          ],
+          hasMore: true,
+          nextBeforeSequence: 3,
+          nextAfterSequence: 3
+        });
+      }
+      return remoteCompositionResponse(call);
+    };
+    const harness = createHarness({ response });
+    const v2Command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load_team_message_page_v2",
+      input: {
+        thread: {
+          scope: "team",
+          teamId: ids.team.toUpperCase(),
+          threadId: ids.thread.toUpperCase()
+        },
+        direction: "older",
+        cursor: null,
+        limit: 1
+      }
+    } as CollaborationRendererCommand;
+    const v2 = parseResultAs<CollaborationCommandResult>(
+      (await injectCommand(harness.app, v2Command)).body
+    );
+    expect(v2).toMatchObject({
+      ok: true,
+      data: {
+        page: {
+          threadId: ids.thread,
+          items: [
+            {
+              id: ids.messageThree,
+              sequence: 3,
+              replyToMessageId: ids.message,
+              mentionsUserIds: [ids.participantTwo]
+            }
+          ],
+          hasOlder: true
+        }
+      }
+    });
+    if (!v2.ok || v2.command !== "collaboration.load_team_message_page_v2") {
+      throw new Error("Expected Team message v2 page");
+    }
+    const v2Cursor = v2.data.page.olderCursor;
+    expect(v2Cursor).toMatch(/^ctm2\./);
+
+    const newerV2Command = {
+      ...v2Command,
+      requestId: randomUUID(),
+      input: { ...v2Command.input, direction: "newer" as const }
+    };
+    const newerV2 = parseResultAs<CollaborationCommandResult>(
+      (await injectCommand(harness.app, newerV2Command)).body
+    );
+    if (
+      !newerV2.ok ||
+      newerV2.command !== "collaboration.load_team_message_page_v2"
+    ) {
+      throw new Error("Expected Team message v2 page");
+    }
+    const newerRequest = [...harness.calls].reverse().find((call) => {
+      const url = new URL(call.url);
+      return (
+        url.pathname.endsWith(
+          `/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
+        ) && url.searchParams.get("afterSequence") === "0"
+      );
+    });
+    expect(newerRequest).toBeDefined();
+    expect(new URL(newerRequest!.url).searchParams.get("beforeSequence")).toBe(
+      "4"
+    );
+
+    const v1Command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load_message_page",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        direction: "older",
+        cursor: v2Cursor,
+        limit: 1
+      }
+    } as CollaborationRendererCommand;
+    expect(
+      parseResult((await injectCommand(harness.app, v1Command)).body)
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" }
+    });
+
+    const v1First = parseResultAs<MessagePageTestResult>(
+      (
+        await injectCommand(harness.app, {
+          ...v1Command,
+          requestId: randomUUID(),
+          input: { ...v1Command.input, cursor: null }
+        })
+      ).body
+    );
+    if (!v1First.ok || v1First.command !== "collaboration.load_message_page") {
+      throw new Error("Expected legacy Team message page");
+    }
+    const v1Cursor = v1First.data.page.olderCursor;
+    expect(v1Cursor).toMatch(/^ctmc1\./);
+    expect(
+      parseResult(
+        (
+          await injectCommand(harness.app, {
+            ...v2Command,
+            requestId: randomUUID(),
+            input: { ...v2Command.input, cursor: v1Cursor }
+          })
+        ).body
+      )
+    ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+  });
+
   it.each(["", localAuthorization, `${desktopAuthorization.slice(0, -1)}c`])(
     "rejects missing, LEC, or tampered DLC for Personal commands",
     async (authorization) => {
@@ -4169,7 +4401,9 @@ describe("local-edge collaboration command route", () => {
         }
       },
       {
-        command: supportedMappings[8]!.command,
+        command: supportedMappings.find(
+          ({ command }) => command.command === "collaboration.mark_read"
+        )!.command,
         payload: { readState: canonicalReadState },
         expected: { data: { readState } }
       }

@@ -20,8 +20,10 @@ import {
   createCollaborationDmSchema,
   createCollaborationGroupDmSchema,
   createCollaborationMessageSchema,
+  createTeamCollaborationMessageV2Schema,
   createSharedSessionDiscussionSchema,
   listCollaborationMessagesQuerySchema,
+  listTeamCollaborationMessagesV2QuerySchema,
   listCollaborationThreadsQuerySchema,
   listPersonalNotesQuerySchema,
   personalNoteParamsSchema,
@@ -31,6 +33,8 @@ import {
   teamCollaborationParamsSchema,
   teamCollaborationThreadParamsSchema,
   transitionCollaborationThreadSchema,
+  teamCollaborationMessageV2ApiPageSchema,
+  teamCollaborationMessageV2ApiSchema,
   updatePersonalNoteBodySchema,
   updateCollaborationTopicSchema,
   workspaceCollaborationParamsSchema
@@ -934,6 +938,66 @@ export const registerCollaborationRoutes = (
   registerThreadMessageRoutes(
     "/v1/collaboration/teams/:teamId/threads/:threadId",
     "team"
+  );
+
+  app.get(
+    "/v2/collaboration/teams/:teamId/threads/:threadId/messages",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const { teamId, threadId } = teamCollaborationThreadParamsSchema.parse(
+        request.params
+      );
+      const query = listTeamCollaborationMessagesV2QuerySchema.parse(
+        request.query
+      );
+      const repository = context.requireCollaborationRepository();
+      await requireTeamThread(repository, user.id, teamId, threadId, true);
+      const page = await repository.listTeamMessagesV2(
+        { userId: user.id },
+        { threadId, ...query }
+      );
+      if (!page) throw forbidden();
+      return teamCollaborationMessageV2ApiPageSchema.parse(page);
+    }
+  );
+
+  app.post(
+    "/v2/collaboration/teams/:teamId/threads/:threadId/messages",
+    { preHandler: writeRateLimit, bodyLimit: MESSAGE_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_write"
+      );
+      const { teamId, threadId } = teamCollaborationThreadParamsSchema.parse(
+        request.params
+      );
+      const input = createTeamCollaborationMessageV2Schema.parse(request.body);
+      const repository = context.requireCollaborationRepository();
+      await requireTeamThread(repository, user.id, teamId, threadId);
+      await enforceCollaborationAdmission(
+        reply,
+        context.admission.admitMessage({ userId: user.id, teamId })
+      );
+      const message = await repository.sendTeamMessageV2(
+        { userId: user.id },
+        {
+          threadId,
+          idempotencyKey: parseIdempotencyKey(request),
+          ...input
+        }
+      );
+      if (!message) throw forbidden();
+      return reply
+        .status(201)
+        .send({ message: teamCollaborationMessageV2ApiSchema.parse(message) });
+    }
   );
 
   app.get(

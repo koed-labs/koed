@@ -4,6 +4,7 @@ import { COLLABORATION_HISTORY_PAGE_MAX_ITEMS } from "@koed/shared";
 import {
   createCollaborationChannelSchema,
   createCollaborationMessageSchema,
+  createTeamCollaborationMessageV2Schema,
   listCollaborationMessagesQuerySchema,
   listCollaborationThreadsQuerySchema,
   renameCollaborationThreadSchema,
@@ -50,6 +51,25 @@ describe("collaboration text limits", () => {
     expect(() =>
       createCollaborationMessageSchema.parse({
         bodyText: "😀".repeat(8_193)
+      })
+    ).toThrow();
+  });
+
+  it("canonicalizes Team message v2 mentions before uniqueness checks", () => {
+    const lower = "ab000000-0000-4000-8000-000000000001";
+    const upper = lower.toUpperCase();
+    expect(
+      createTeamCollaborationMessageV2Schema.parse({
+        bodyText: "Mention one User",
+        replyToMessageId: null,
+        mentionsUserIds: [upper]
+      }).mentionsUserIds
+    ).toEqual([lower]);
+    expect(() =>
+      createTeamCollaborationMessageV2Schema.parse({
+        bodyText: "Duplicate canonical User",
+        replyToMessageId: null,
+        mentionsUserIds: [lower, upper]
       })
     ).toThrow();
   });
