@@ -832,6 +832,32 @@ export const waitForHealthyStatus = async (
   );
 };
 
+export const verifyPackagedSetupAfterReadiness = async (
+  { layout, koedHome, timeoutMs, pollIntervalMs, supervisorPid },
+  { now, isRunning, runCommand = runPackagedCommand, delay } = {}
+) => {
+  const reconnectStatus = await waitForHealthyStatus(
+    {
+      layout,
+      koedHome,
+      timeoutMs,
+      pollIntervalMs,
+      supervisorPid,
+      requireClientIntegration: true
+    },
+    { now, isRunning, runCommand, delay }
+  );
+  const doctor = runCommand(layout, koedHome, ["doctor", "--json"]);
+  const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
+  assertNoSourceCheckoutResolution("doctor --json", doctorJson);
+  if (doctor.status !== 0 || doctorJson.ok !== true) {
+    throw new Error(
+      `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
+    );
+  }
+  return { reconnectStatus, doctor: doctorJson };
+};
+
 const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const timings = options.timings ?? {};
   let phaseStarted = beginPhase("runtime install and verification");
@@ -1061,22 +1087,15 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `setup codex --without-memory-guidance --json failed with ${codexSetup.status}: ${codexSetup.stderr || codexSetup.stdout}`
     );
   }
-  const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
-  const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
-  assertNoSourceCheckoutResolution("doctor --json", doctorJson);
-  if (doctor.status !== 0 || doctorJson.ok !== true) {
-    throw new Error(
-      `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
-    );
-  }
-  const reconnectJson = await waitForHealthyStatus({
+  const verifiedSetup = await verifyPackagedSetupAfterReadiness({
     layout,
     koedHome,
     timeoutMs: options.timeoutMs,
     pollIntervalMs: options.pollIntervalMs,
-    supervisorPid: startJson.startedPid,
-    requireClientIntegration: true
+    supervisorPid: startJson.startedPid
   });
+  const doctorJson = verifiedSetup.doctor;
+  const reconnectJson = verifiedSetup.reconnectStatus;
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
   phaseStarted = beginPhase("daemon stop, restart, and health");
