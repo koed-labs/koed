@@ -15,6 +15,45 @@ opens the selected AI Client's model catalog. The menu has no AI Client selector
 The AI Client selector uses the selected provider's mark. The model selector has
 no leading icon.
 
+## HQ Conversation surface
+
+The HQ-enabled Desktop has its own centered blank composer and a docked
+composer after the first queued message. Its Project, Ask first, AI Client,
+model, and reasoning controls use the same managed runtime capabilities as the
+existing Desktop. One compact model/reasoning control uses the saved
+Conversations assignment for AI Client, model, and effort.
+That control shows the selected model and a colored effort indicator. Its
+popover offers only the model's supported effort levels as stacked heat bars,
+resets to Medium when supported, and opens a model list grouped by available
+AI Client. An active Conversation keeps its AI Client locked. The selected
+model and effort are applied to the next turn, with the expected prior settings
+included in the same prompt request.
+
+New HQ Conversations use the saved Conversations assignment
+for AI Client, model, and effort, but start in **Ask first** (`supervised`) when
+that mode is supported. The picker offers **Full access** as an explicit
+choice; `auto_edit` and `auto` are in More permissions. Unsupported modes are
+disabled. The existing Desktop retains its current launch default.
+
+The HQ attachment control browses Project files through the current managed
+execution. If used before the first message, it starts an empty Conversation,
+keeps the draft, and opens the file picker after an execution exists. The
+selected file is represented by the runtime's mention command ID when the
+prompt is sent. This control does not upload arbitrary local files.
+
+HQ replies use the captured timeline and show live runtime approval and
+question items. Approval decisions and answer payloads go through the existing
+runtime response API. A per-turn model, effort, or permission edit is sent only
+with the next prompt as `settingsChange`, bound to the last reported settings.
+An uncertain launch or send keeps its exact request identity and draft; HQ
+does not resend it automatically. A captured-only Conversation is read-only.
+Before dispatch, HQ saves the exact pending request, identity, settings, and
+attachments through the existing encrypted, owner-scoped recovery store. On
+reload, it checks that saved identity against the runtime; an unknown outcome
+requires manual recovery and never triggers an automatic resend. If secure
+recovery is unavailable, sending pauses. Once a prompt is accepted as queued,
+the next draft can be written while the reply is running.
+
 ## New Conversations
 
 Ask and **New** use the saved **Conversations** assignment from Agent Configuration.

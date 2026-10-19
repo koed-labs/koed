@@ -13,6 +13,7 @@ import {
 } from "@koed/shared/collaboration";
 import type { CollaborationRendererClient } from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
+import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
@@ -118,6 +119,15 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    invoke: async (channel: string) => {
+      if (channel === "ensure_independent_project")
+        return {
+          project: sidebarProjectMetadata.find(
+            (item) => item.localProjectId === "hq103-loose"
+          )
+        };
+      throw new Error(`Unsupported HQ fixture command: ${channel}`);
+    },
     launchAtStartup: {
       get: async () => ({
         enabled: startupEnabled,
@@ -156,6 +166,125 @@ const installSettingsDesktop = () => {
       .__koedHqSettingsOperations;
   };
 };
+
+let hq104SentPrompt = "";
+let hq104SentMessageId = "";
+const hq104Recovery = new Map<string, string>();
+const hq104Identity = {
+  executionId: "hq104-execution",
+  projectId: "hq103-loose",
+  capturedSessionId: "hq104-session",
+  threadId: "hq104-thread",
+  executionOwner: { driverId: "codex" as const, instanceId: "codex.fixture" }
+};
+const hq104ManagedConversations = {
+  launchOptions: async () => ({
+    operation: "launch_options",
+    options: {
+      runners: [],
+      instances: [
+        {
+          instanceId: "codex.fixture",
+          driverId: "codex",
+          displayName: "Codex",
+          ready: true,
+          readiness: "ready",
+          models: [
+            {
+              id: "gpt-fixture",
+              displayName: "GPT-5.5",
+              isDefault: true,
+              supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+              defaultReasoningEffort: "medium"
+            }
+          ],
+          capabilities: {
+            defaultPermissionMode: "full_access",
+            permissionModes: [
+              { mode: "supervised", support: "supported" },
+              { mode: "full_access", support: "supported" },
+              { mode: "auto_edit", support: "supported" },
+              { mode: "auto", support: "unsupported" }
+            ]
+          }
+        }
+      ]
+    }
+  }),
+  start: async () => ({
+    operation: "start",
+    status: "ready",
+    executionId: hq104Identity.executionId,
+    conversation: hq104Identity
+  }),
+  resume: async () => ({
+    operation: "resume",
+    status: "ready",
+    conversation: hq104Identity
+  }),
+  send: async (input: {
+    prompt: string;
+    idempotencyKey: string;
+    clientUserMessageId: string;
+  }) => {
+    hq104SentPrompt = input.prompt;
+    hq104SentMessageId = input.clientUserMessageId;
+    return {
+      operation: "send",
+      status: "queued",
+      conversation: hq104Identity,
+      idempotencyKey: input.idempotencyKey,
+      clientUserMessageId: input.clientUserMessageId
+    };
+  },
+  runtime: async () => ({
+    operation: "runtime",
+    executionId: hq104Identity.executionId,
+    executionGeneration: 1,
+    executionStateVersion: 1,
+    executionState: "running",
+    executionLastErrorCode: null,
+    latestCommand: hq104SentMessageId
+      ? {
+          id: "hq104-prompt-command",
+          sequence: 1,
+          executionGeneration: 1,
+          commandKind: "prompt",
+          clientUserMessageId: hq104SentMessageId,
+          state: "completed",
+          lastErrorCode: null,
+          updatedAt: FIXTURE_TIME
+        }
+      : null,
+    items: []
+  }),
+  usage: async () => ({
+    operation: "usage",
+    executionId: hq104Identity.executionId,
+    provider: "codex",
+    model: "gpt-fixture",
+    reasoningEffort: "medium",
+    permissionMode: "supervised",
+    usage: null
+  }),
+  readDraft: async () => ({ operation: "draft_read", value: "" }),
+  writeDraft: async () => ({ operation: "draft_write", ok: true }),
+  deleteDraft: async () => ({ operation: "draft_delete", ok: true }),
+  readRecovery: async (ownerId: string) => ({
+    operation: "recovery_read",
+    value: hq104Recovery.get(ownerId) ?? ""
+  }),
+  writeRecovery: async (ownerId: string, value: string) => {
+    hq104Recovery.set(ownerId, value);
+    return { operation: "recovery_write", ok: true };
+  },
+  discoverCommands: async () => ({
+    operation: "command_discovery",
+    status: "ok",
+    commands: []
+  }),
+  targets: async () => ({ operation: "targets", devices: [] })
+} as unknown as ManagedConversationDesktopApi;
 
 const seededData = {
   fixedAt: FIXTURE_TIME,
@@ -431,7 +560,35 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
     return structuredClone(sidebarProjectGroups);
   },
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
-  loadEventPage: async () => [],
+  loadEventPage: async ({ threadId }) =>
+    threadId === hq104Identity.threadId && hq104SentPrompt
+      ? [
+          {
+            id: "hq104-user",
+            actor: "user",
+            eventType: "message",
+            timestamp: FIXTURE_TIME,
+            sourceEventTime: FIXTURE_TIME,
+            sourceSequence: 1,
+            content: hq104SentPrompt,
+            contentPreview: hq104SentPrompt,
+            invalidatedAt: null,
+            metadata: { clientUserMessageId: hq104SentMessageId }
+          },
+          {
+            id: "hq104-assistant",
+            actor: "assistant",
+            eventType: "message",
+            timestamp: FIXTURE_TIME,
+            sourceEventTime: FIXTURE_TIME,
+            sourceSequence: 2,
+            content: "I can help with that. Here is the first step.",
+            contentPreview: "I can help with that.",
+            invalidatedAt: null,
+            metadata: {}
+          }
+        ]
+      : [],
   assignSessionProject: async () => ({ projectId: null }),
   updateSessionTitle: async ({ title }) => ({ title }),
   updateSessionPresentation: async () => ({
@@ -587,6 +744,9 @@ export function HqValidationApp() {
       throw new Error("The real HQ shell scaffold did not mount.");
     }
     fixture.reset();
+    hq104SentPrompt = "";
+    hq104SentMessageId = "";
+    hq104Recovery.clear();
     window.__koedHqFixture = fixture;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
@@ -605,6 +765,7 @@ export function HqValidationApp() {
       statusStoreOverride={settingsStatusStore}
       onboardingComplete
       personalMemoryApi={sidebarPersonalMemoryApi}
+      managedConversations={hq104ManagedConversations}
       statusReadyOverride
       teamCollaborationEnabled
     />

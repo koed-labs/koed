@@ -1307,7 +1307,12 @@ describe("CollaborationApp", () => {
     ).not.toBeNull();
     expect(
       document.body.querySelector('[data-hq-context][role="complementary"]')
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(
+      document.body.querySelector(
+        'button[aria-label="Show project context"], button[aria-label="Hide project context"]'
+      )
+    ).toBeNull();
 
     await render(client, api, false);
     expect(document.body.querySelector("[data-hq-shell]")).toBeNull();

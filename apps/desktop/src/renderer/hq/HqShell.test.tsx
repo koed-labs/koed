@@ -75,6 +75,20 @@ describe("HQ shell layout", () => {
     await act(async () => root.render(<HqShell {...props} />));
   };
 
+  it("omits context controls on routes without Project context without changing layout preferences", async () => {
+    const actions = createRef<HqShellActions>();
+    await render({ contextAvailable: false, actionsRef: actions });
+    expect(container.querySelector("[data-hq-context]")).toBeNull();
+    expect(container.querySelector("[data-hq-context-handle]")).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Show project context"]')
+    ).toBeNull();
+    await act(async () => actions.current?.toggleContext());
+    expect(container.querySelector("[data-hq-context]")).toBeNull();
+    await render({ contextAvailable: true, actionsRef: actions });
+    expect(container.querySelector("[data-hq-context]")).not.toBeNull();
+  });
+
   it("mounts the shell landmarks and supports keyboard and reset resizing", async () => {
     await render();
 

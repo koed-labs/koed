@@ -12,6 +12,20 @@ import {
   type DesktopProject
 } from "../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../state/personal-memory.js";
+import type { ManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
+import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
+import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
+import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
+import type { DesktopApi } from "../../types.js";
+import {
+  HqActiveConversation,
+  HqBlankConversation
+} from "./conversation/HqConversation.js";
+import {
+  findHqConversationDraft,
+  withPendingHqConversations
+} from "./conversation/hq-conversation-threads.js";
 import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
 import { HqSearch } from "./HqSearch.js";
@@ -27,12 +41,26 @@ export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
   renderSettings,
-  accountIdentity
+  accountIdentity,
+  managedConversations,
+  managedProject,
+  managedConversationLifecycle,
+  markdownAdapters,
+  onResolveIndependent,
+  authorizeManagedConversationTransfer,
+  localAiClients
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
   renderSettings?: (onClose: () => void) => ReactNode;
   accountIdentity?: HqAccountIdentity;
+  managedConversations?: ManagedConversationDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
+  managedConversationLifecycle?: ManagedConversationLifecycle;
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onResolveIndependent?: () => Promise<DesktopProject | null>;
+  authorizeManagedConversationTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
+  localAiClients?: DesktopApi["localAiClients"];
 }) {
   const [selection, setSelection] = useState<{
     route: HqRoute;
@@ -40,6 +68,12 @@ export function HqApplication({
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [blankOpen, setBlankOpen] = useState(false);
+  const [blankProjectId, setBlankProjectId] = useState<string | null>(null);
+  const [blankProjectError, setBlankProjectError] = useState("");
+  const [blankIntent, setBlankIntent] = useState(0);
+  const [blankLaunchPending, setBlankLaunchPending] = useState(false);
+  const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const shellActions = useRef<HqShellActions>(null);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
   usePersonalProjectsLoader({
@@ -51,16 +85,44 @@ export function HqApplication({
     personalMemoryStore?.current ?? emptySnapshot,
     personalMemoryStore?.current ?? emptySnapshot
   );
-  const projects = useMemo(
-    () =>
+  const projects = useMemo(() => {
+    const loaded =
       snapshot?.projectOrder.flatMap((id) => {
         const project = snapshot.projectsById.get(id);
         return project ? [project] : [];
-      }) ?? [],
-    [snapshot]
-  );
+      }) ?? [];
+    return withPendingHqConversations(
+      loaded,
+      managedConversationLifecycle?.drafts
+    );
+  }, [snapshot, managedConversationLifecycle?.drafts]);
   const route = reconcileHqRoute(selection.route, selection.project, projects);
-  const selectRoute = (next: HqRoute) =>
+  const contextAvailable =
+    route.kind === "project" &&
+    projects.some(
+      (item) => item.id === route.projectId && item.contextKind === "project"
+    );
+  const resolveBlankProject = useCallback(() => {
+    if (!onResolveIndependent) return;
+    setBlankProjectError("");
+    void onResolveIndependent()
+      .then((resolved) => {
+        if (!resolved) throw new Error("Chats project is unavailable.");
+        setBlankProjectId(resolved.id);
+        void personalMemoryStore?.loadProjects({ silent: true });
+      })
+      .catch((cause: unknown) =>
+        setBlankProjectError(
+          cause instanceof Error
+            ? cause.message
+            : "Chats project is unavailable."
+        )
+      );
+  }, [onResolveIndependent, personalMemoryStore]);
+  const selectRoute = (next: HqRoute) => {
+    setBlankOpen(false);
+    setBlankLaunchPending(false);
+    setAttachAfterStart(null);
     setSelection({
       route: next,
       project:
@@ -68,6 +130,7 @@ export function HqApplication({
           ? undefined
           : projects.find(({ id }) => id === next.projectId)
     });
+  };
   const project =
     route.kind === "project" || route.kind === "conversation"
       ? projects.find(({ id }) => id === route.projectId)
@@ -82,9 +145,19 @@ export function HqApplication({
           (thread) => sessionSelectionId(thread) === route.sessionId
         )
       : undefined;
+  const draftEntry =
+    route.kind === "conversation"
+      ? findHqConversationDraft(
+          managedConversationLifecycle?.drafts,
+          route.projectId,
+          route.sessionId
+        )
+      : null;
+  const draft = draftEntry?.[1] ?? null;
+  const conversationThread = conversation ?? draft?.thread;
   const title =
     route.kind === "conversation"
-      ? conversation?.name || "Conversation"
+      ? conversationThread?.name || "Conversation"
       : route.kind === "project"
         ? project?.name || "Project"
         : "HQ";
@@ -128,7 +201,9 @@ export function HqApplication({
         })
       )
   ]);
-  destinations.push(...hqLayoutCommands(Boolean(renderSettings)));
+  destinations.push(
+    ...hqLayoutCommands(Boolean(renderSettings), contextAvailable)
+  );
   const openSettings = useCallback(() => {
     if (!renderSettings || settingsOpen) return;
     const active = document.activeElement;
@@ -192,7 +267,7 @@ export function HqApplication({
         shellActions.current?.toggleSidebar();
         break;
       case "toggle-context":
-        shellActions.current?.toggleContext();
+        if (contextAvailable) shellActions.current?.toggleContext();
         break;
       case "settings":
         if (renderSettings) openSettings();
@@ -203,6 +278,7 @@ export function HqApplication({
     <>
       <HqShell
         actionsRef={shellActions}
+        contextAvailable={contextAvailable}
         title={title}
         route={route}
         sidebar={({ compact }) => (
@@ -233,6 +309,25 @@ export function HqApplication({
             onSelectConversation={(projectId, sessionId) =>
               selectRoute({ kind: "conversation", projectId, sessionId })
             }
+            onNewConversation={
+              managedConversations &&
+              managedConversationLifecycle &&
+              onResolveIndependent
+                ? () => {
+                    if (blankOpen && blankLaunchPending) {
+                      setBlankProjectError(
+                        "Resolve the current Conversation launch before starting another."
+                      );
+                      return;
+                    }
+                    setBlankOpen(true);
+                    setBlankIntent((value) => value + 1);
+                    setBlankProjectId(null);
+                    setSelection({ route: { kind: "home" } });
+                    resolveBlankProject();
+                  }
+                : undefined
+            }
           />
         )}
       >
@@ -245,24 +340,80 @@ export function HqApplication({
           aria-label={title}
           className="hq-destination"
         >
-          <p
-            className="hq-destination__empty"
-            role={
-              route.kind !== "home" &&
+          {blankOpen && managedConversationLifecycle ? (
+            <>
+              {blankProjectError ? (
+                <div role="alert">
+                  {blankProjectError}{" "}
+                  <button type="button" onClick={resolveBlankProject}>
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+              <HqBlankConversation
+                key={blankIntent}
+                api={managedConversations ?? null}
+                localAiClients={localAiClients}
+                projects={projects}
+                project={
+                  projects.find(({ id }) => id === blankProjectId) ?? null
+                }
+                onProjectChange={setBlankProjectId}
+                lifecycle={managedConversationLifecycle}
+                managedProject={managedProject ?? null}
+                onLaunchAttempt={() => setBlankLaunchPending(true)}
+                onStarted={(projectId, sessionId, attachRequested) => {
+                  selectRoute({ kind: "conversation", projectId, sessionId });
+                  if (attachRequested) setAttachAfterStart(sessionId);
+                }}
+              />
+            </>
+          ) : route.kind === "conversation" &&
+            project &&
+            conversationThread &&
+            personalMemoryStore ? (
+            <HqActiveConversation
+              key={route.sessionId}
+              api={managedConversations ?? null}
+              managedProject={managedProject ?? null}
+              store={personalMemoryStore}
+              project={project}
+              thread={conversationThread}
+              draft={draft}
+              lifecycle={managedConversationLifecycle}
+              openFilePickerOnReady={attachAfterStart === route.sessionId}
+              onRetryStart={() =>
+                draftEntry && managedConversationLifecycle?.retry(draftEntry[0])
+              }
+              markdownAdapters={
+                markdownAdapters ?? {
+                  openExternal: () => undefined,
+                  writeClipboard: (value) =>
+                    navigator.clipboard.writeText(value)
+                }
+              }
+              authorizeTransfer={authorizeManagedConversationTransfer}
+            />
+          ) : (
+            <p
+              className="hq-destination__empty"
+              role={
+                route.kind !== "home" &&
+                (!project || (route.kind === "conversation" && !conversation))
+                  ? "status"
+                  : undefined
+              }
+            >
+              {route.kind !== "home" &&
               (!project || (route.kind === "conversation" && !conversation))
-                ? "status"
-                : undefined
-            }
-          >
-            {route.kind !== "home" &&
-            (!project || (route.kind === "conversation" && !conversation))
-              ? `This ${route.kind === "project" ? "Project" : "Conversation"} is no longer available.`
-              : route.kind === "home"
-                ? "Choose a Project or Conversation from the sidebar."
-                : route.kind === "project"
-                  ? "Your Project workspace will appear here."
-                  : "Your Conversation will appear here."}
-          </p>
+                ? `This ${route.kind === "project" ? "Project" : "Conversation"} is no longer available.`
+                : route.kind === "home"
+                  ? "Choose a Project or Conversation from the sidebar."
+                  : route.kind === "project"
+                    ? "Your Project workspace will appear here."
+                    : "Your Conversation will appear here."}
+            </p>
+          )}
         </section>
       </HqShell>
       <HqSearch
