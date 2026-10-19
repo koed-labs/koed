@@ -46,13 +46,13 @@ test("packaging path policy excludes documentation and includes runtime consumer
   assert.equal(packagingRelevant(["docs/running-koed.md", "PLAN.md"]), false);
   for (const file of [
     "apps/desktop/src/main.ts",
-    "apps/api/src/index.ts",
-    "apps/worker/src/index.ts",
+    "apps/api/package.json",
+    "apps/worker/tsup.config.ts",
     "apps/embedding-service/src/index.ts",
     "packages/koed-server/src/cli.ts",
-    "packages/mcp-server/src/cli.ts",
-    "packages/core/src/index.ts",
-    "packages/db/src/index.ts",
+    "packages/mcp-server/package.json",
+    "packages/core/package.json",
+    "packages/db/migrations/0001_init.sql",
     "packages/shared/src/index.ts",
     "packages/ui/src/index.ts",
     "scripts/native-runtime/procure-runtime.mjs",
@@ -61,6 +61,51 @@ test("packaging path policy excludes documentation and includes runtime consumer
   ]) {
     assert.equal(fileAffectsPackaging(file), true, file);
   }
+});
+
+test("backend workspace source alone does not select packaged smoke", () => {
+  for (const file of [
+    "apps/api/src/index.ts",
+    "apps/worker/src/index.test.ts",
+    "packages/core/src/index.ts",
+    "packages/db/src/index.ts",
+    "packages/mcp-server/src/cli.ts"
+  ]) {
+    assert.equal(fileAffectsPackaging(file), false, file);
+  }
+  assert.equal(
+    packagingRelevant([
+      "packages/core/src/index.ts",
+      "apps/desktop/src/main.ts"
+    ]),
+    true
+  );
+});
+
+test("release workflow dispatches full CI for the generated version branch", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  const step = release
+    .split("- name: Dispatch release-candidate CI for the version branch")[1]
+    .split("- name: Read product version")[0];
+
+  assert.ok(release.includes("permissions:\n  actions: write"));
+  assert.match(step, /if: steps\.changesets\.outputs\.pullRequestNumber != ''/);
+  assert.doesNotMatch(step, /hasChangesets/);
+  assert.match(
+    step,
+    /gh workflow run ci\.yml --ref changeset-release\/main -f validation_level=full/
+  );
+  assert.deepEqual(
+    evaluateCiPolicy({
+      eventName: "workflow_dispatch",
+      event: { inputs: { validation_level: "full" } },
+      changedFiles: []
+    }).run_full_validation,
+    "true"
+  );
 });
 
 test("unknown paths fail closed into packaged validation", () => {
@@ -258,17 +303,16 @@ test("app-only smoke stages once-validated runtime without a PR archive", () => 
   assert.doesNotMatch(fullValidation, /--no-archive/);
 });
 
-test("app-only smoke starts after Build without waiting for Tests", () => {
+test("app-only smoke starts immediately without waiting for other jobs", () => {
   const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
   const relevantSmoke = workflow
     .split("  relevant-packaged-smoke:")[1]
     .split("  release-candidate-validation:")[0];
   const needs = relevantSmoke.split("    if:")[0];
 
-  assert.match(needs, /- changes/);
-  assert.match(needs, /- build/);
-  assert.doesNotMatch(needs, /- tests/);
-  assert.match(relevantSmoke, /needs\.build\.result == 'success'/);
+  assert.match(needs, /needs: changes\n/);
+  assert.doesNotMatch(needs, /build|tests|static-checks/);
+  assert.doesNotMatch(relevantSmoke, /needs\.build\.result/);
 });
 
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {
