@@ -32,6 +32,7 @@ import type {
   ManagedConversationIdentity
 } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
+import { HqValidationApp } from "./hq-browser-validation.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -3010,6 +3011,8 @@ const browserValidationView = new URLSearchParams(window.location.search).get(
 createRoot(document.querySelector("#root")!).render(
   browserValidationView === "chat" ? (
     <ChatValidationApp />
+  ) : browserValidationView === "hq" ? (
+    <HqValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (
     <CollaborationInteractionsValidationApp />
   ) : browserValidationView === "timeline" ? (
