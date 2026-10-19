@@ -1,3 +1,7 @@
+import {
+  repositoryAssignmentSchema,
+  repositoryIdentitySchema
+} from "@koed/shared";
 import { z } from "zod";
 import { personalConversationPresentationSchema } from "@koed/shared/personal-desktop";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
@@ -32,6 +36,7 @@ export const graphThreadIndexResponseSchema = z.object({
             .enum(["detected", "user_override"])
             .nullable(),
           capturedProjectProvenance: z.record(z.string(), z.unknown()),
+          repositoryAssignment: repositoryAssignmentSchema.optional(),
           eventCount: z.number(),
           invalidatedCount: z.number(),
           latestAt: z.string().datetime({ offset: true }),
@@ -196,6 +201,7 @@ export const graphSessionPresentationPatchSchema = z
 
 const personalProjectReferenceSchema = z
   .object({
+    repositoryIdentity: repositoryIdentitySchema,
     id: z.string().trim().min(1).max(512),
     name: z.string().trim().min(1).max(160),
     path: z.string().trim().min(1).max(4096).nullable().optional()
@@ -207,11 +213,28 @@ export const graphSessionProjectPatchSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("move"),
+      expectedVersion: z.number().int().positive(),
       project: personalProjectReferenceSchema
     })
     .strict(),
-  z.object({ action: z.literal("reset") }).strict()
+  z
+    .object({
+      action: z.literal("reset"),
+      expectedVersion: z.number().int().positive()
+    })
+    .strict()
 ]);
+
+export const graphProjectMoveSchema = z
+  .object({
+    sourceProjectId: z.string().trim().min(1).max(512),
+    project: personalProjectReferenceSchema
+  })
+  .strict();
+
+export const graphProjectResolveSchema = z
+  .object({ projectId: z.string().trim().min(1).max(512) })
+  .strict();
 
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 

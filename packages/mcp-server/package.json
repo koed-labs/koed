@@ -76,7 +76,8 @@
     "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "pino": "^10.3.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@koed-labs/server": "workspace:*"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",

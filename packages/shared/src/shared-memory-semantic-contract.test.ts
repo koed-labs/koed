@@ -56,6 +56,70 @@ const semanticFixture = (): SharedMemoryCanonicalSourceItemDto[] => {
 };
 
 describe("Shared Memory canonical semantic contract", () => {
+  it("classifies Project labels and branches while preserving the exact repository fingerprint", () => {
+    const authoritative = semanticFixture();
+    authoritative[0]!.repositorySnapshot = {
+      version: 1,
+      classification: "portable_repository",
+      fingerprint: "gr_immutable_source",
+      label: "Alice's Project",
+      branchObservation: "Alice/release"
+    };
+    const fields =
+      extractSharedMemorySemanticClassificationFields(authoritative);
+    expect(
+      fields
+        .filter((field) => field.path.includes("repositorySnapshot"))
+        .map((field) => field.path)
+    ).toEqual([
+      "items.0.repositorySnapshot.label",
+      "items.0.repositorySnapshot.branchObservation"
+    ]);
+    const sanitized = reconstructSharedMemorySemanticSanitizedItems(
+      authoritative,
+      fields.map((field) => ({
+        path: field.path,
+        inputSha256: field.inputSha256,
+        inputByteLength: field.inputByteLength,
+        sanitizedText: field.text.replaceAll("Alice", "[PERSON_1]")
+      }))
+    );
+    expect(sanitized[0]!.repositorySnapshot).toEqual({
+      ...authoritative[0]!.repositorySnapshot,
+      label: "[PERSON_1]'s Project",
+      branchObservation: "[PERSON_1]/release"
+    });
+    sanitized[0]!.repositorySnapshot!.fingerprint = "gr_other_repository";
+    expect(() =>
+      validateSharedMemorySemanticSanitizedReconstruction(
+        authoritative,
+        sanitized
+      )
+    ).toThrow(SharedMemoryConflictError);
+  });
+
+  it("rejects checkout and device metadata in Project provenance", () => {
+    const item = semanticFixture()[0]!;
+    expect(() =>
+      validateSharedMemoryCanonicalSourceItem({
+        representation: "lcm_leaves",
+        logicalMemoryId: item.sourceLogicalMemoryId,
+        sourceRevision: item.sourceRevision,
+        item: {
+          ...item,
+          repositorySnapshot: {
+            version: 1,
+            classification: "unresolved",
+            fingerprint: null,
+            label: null,
+            branchObservation: null,
+            root: "/private/source-checkout"
+          }
+        } as never
+      })
+    ).toThrow(SharedMemorySourceItemRejectedError);
+  });
+
   it("validates eligible items and reports stable rejection reasons", () => {
     const logicalMemoryId = randomUUID();
     const item = {

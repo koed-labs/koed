@@ -1,3 +1,4 @@
+import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -99,9 +100,10 @@ export interface CodexManagedConversationStartResult {
 }
 
 export const managedConversationKoedMcpConfigOverrides = (
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  cwd?: string
 ): string[] => {
-  const server = managedKoedMcpServer(env);
+  const server = managedKoedMcpServer(env, cwd);
   if (!server) return [];
   const environment = Object.entries(server.env)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
@@ -516,8 +518,10 @@ export class CodexManagedConversationSession {
           maxTurnStates: this.config.maxTurnStates,
           maxTurnBytes: this.config.maxTurnBytes,
           maxLineBytes: this.config.maxLineBytes,
-          configOverrides:
-            managedConversationKoedMcpConfigOverrides(appServerEnv),
+          configOverrides: managedConversationKoedMcpConfigOverrides(
+            appServerEnv,
+            this.config.appServer.cwd
+          ),
           transientEventHandler: (event) => this.handleTransientEvent(event),
           onExit: (exit) => this.handleClientExit(createdClient, exit)
         }
@@ -606,6 +610,10 @@ export class CodexManagedConversationSession {
         captureMethod: "api",
         model: this.config.appServer.model,
         cwd: thread.cwd ?? this.config.appServer.cwd,
+        repositoryIdentity: await resolveCaptureRepositoryIdentity({
+          cwd: thread.cwd ?? this.config.appServer.cwd,
+          env: this.config.appServer.env
+        }),
         idempotencyKey: `managed-codex-session:${thread.id}`,
         sourceHash: sha256({
           adapter: "codex-app-server-conversation-v1",
@@ -1550,6 +1558,10 @@ export class CodexManagedConversationSession {
       captureMethod: "api",
       model: this.config.appServer.model,
       cwd: thread.cwd ?? this.config.appServer.cwd,
+      repositoryIdentity: await resolveCaptureRepositoryIdentity({
+        cwd: thread.cwd ?? this.config.appServer.cwd,
+        env: this.config.appServer.env
+      }),
       idempotencyKey: `managed-codex-session:${thread.id}`,
       sourceHash: sha256({
         adapter: "codex-app-server-conversation-v1",

@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import path from "node:path";
+import type { RepositoryIdentity } from "./repository-identity.js";
 
 export interface NormalizedGitRemote {
   name: string;
@@ -38,6 +39,7 @@ export interface ProjectMetadataV1 {
     isWorktree: boolean;
     worktreeHash: string | null;
   };
+  repository?: RepositoryIdentity;
   packages: ProjectPackageMetadata[];
   aiClient?: {
     cwdHash: string;
@@ -64,6 +66,28 @@ const sha256 = (value: string): string =>
 
 export const hmacProjectValue = (salt: string, value: string): string =>
   `hmac_sha256:${createHmac("sha256", salt).update(value).digest("hex")}`;
+
+/** Normalize recorded paths without resolving them against this host or its cwd. */
+export const normalizeRecordedProjectDirectory = (
+  value: unknown
+): string | null => {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 8192 ||
+    value.includes("\0")
+  )
+    return null;
+  if (path.posix.isAbsolute(value))
+    return path.posix.normalize(value).replace(/\/$/, "") || "/";
+  if (/^[a-z]:[\\/]/i.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value)) {
+    const normalized = path.win32.normalize(value);
+    return normalized === path.win32.parse(normalized).root
+      ? normalized
+      : normalized.replace(/\\$/, "");
+  }
+  return null;
+};
 
 const stripGitSuffix = (value: string): string => value.replace(/\.git$/i, "");
 
@@ -125,7 +149,7 @@ export const normalizeGitRemoteUrl = (
   name = "origin"
 ): NormalizedGitRemote => {
   const trimmed = value.trim();
-  const scpLike = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
+  const scpLike = trimmed.match(/^([^@:/\s]+)@([^:/\s]+):(.+)$/);
   if (scpLike) {
     return remoteFromPathParts(
       name,
@@ -140,12 +164,16 @@ export const normalizeGitRemoteUrl = (
     parsed.password = "";
     parsed.search = "";
     parsed.hash = "";
-    if (parsed.protocol === "file:") {
+    if (!["https:", "http:", "ssh:", "git:"].includes(parsed.protocol)) {
       return opaqueRemote(name, parsed.toString());
     }
     return remoteFromPathParts(
       name,
-      parsed.host,
+      parsed.protocol === "ssh:" && parsed.port === "22"
+        ? parsed.hostname
+        : parsed.protocol === "git:" && parsed.port === "9418"
+          ? parsed.hostname
+          : parsed.host,
       parsed.pathname,
       parsed.toString()
     );

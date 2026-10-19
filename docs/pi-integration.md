@@ -6,6 +6,12 @@ Pi uses the [durable Personal Memory Answer path](durable-memory-answer.md) and
 waits for its terminal tool body. Detached message injection remains disabled
 until Pi ordering, provenance, and restart recovery can be proven.
 
+Default Project recall uses the current Conversation's `ctx.cwd` on each call,
+for both blocking and non-blocking delivery. It does not use the Local AI
+Runtime's working directory. Concurrent Conversations carry separate context;
+an explicit Project target overrides the folder-derived default. See
+[Project recall context](repository-recall.md#resolve-before-accepting-work).
+
 ## Requirements
 
 - Pi `0.84.2` or newer
@@ -270,6 +276,38 @@ pnpm pi:remove
 ```
 
 Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active profile no longer references the package before deleting the Koed-owned directory. A failed or unverifiable removal preserves the package and reports an error. Unrelated Pi configuration is preserved. Captured Personal Memory remains in Koed until removed through normal Memory controls.
+
+### Repository assignments
+
+The Pi Transcript Watcher reads the Session header's checkout and applies the
+shared selected-anchor resolver when registering a new Captured Session. A
+repository root, its subdirectories, and worktrees with the same selected remote
+share a portable Project fingerprint. Non-Git checkouts retain device-local
+Project identity; unavailable metadata records an unresolved observation. The
+watcher's own cwd does not supply the Project.
+
+Registration and Projection use the existing shared assignment contract.
+Duplicate, delayed, and conflicting observations cannot replace an assignment or
+User override. Continued capture and re-ingestion preserve the logical Session;
+a pre-cutover unresolved Session stays unresolved until explicit reassignment.
+Historical import identity requires trustworthy source-time context and cannot
+be inferred from the checkout's current contents. Desktop inspection reads the
+same effective assignment used by recall.
+
+### Historical Project assignment
+
+Pi historical Session headers currently provide no supported source-time Git
+anchor. Fresh historical capture uses a valid absolute cwd from the verified
+Session header to discover its current Git Project. The normal anchor selection
+rules apply, and subdirectories resolve to the Git root. Missing or invalid
+recorded context stays unresolved. The importing process's cwd never supplies
+this identity, and a current branch is not attributed to historical activity.
+
+Missing folders and folders without usable Git metadata fall back to a local
+folder Project. Git selection conflicts remain unresolved. A local folder group
+claims no current checkout incarnation. Re-import,
+resumed capture, and later checkpoints preserve existing assignments, overrides,
+and the migration's unresolved history.
 
 ### Memory Answer worker tools and validation
 

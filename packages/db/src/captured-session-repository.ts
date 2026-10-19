@@ -1,7 +1,29 @@
+import { projectFromRepositoryIdentity } from "./session-project.js";
+import {
+  effectiveProjectPathSql,
+  effectiveProjectNameSql
+} from "./project-scope-sql.js";
+import {
+  lockProjectRouting,
+  moveProjectConversations
+} from "./project-routing-repository.js";
+import {
+  repositoryAssignmentSchema,
+  type RepositoryAssignment
+} from "@koed/shared";
 import { basename } from "node:path";
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
-import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  type RepositoryIdentity,
+  crossIdentitySyncDeterministicUuid
+} from "@koed/shared";
+import {
+  mapRepositoryAssignment,
+  recordRepositoryObservation,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
 import type {
   ActorContext,
   CaptureMethod,
@@ -35,6 +57,9 @@ export interface CapturedSessionRepository {
       importObservedAt?: string;
       metadata?: Record<string, unknown>;
       detectedProjects?: PersonalProjectReference[];
+      repositoryIdentity?: RepositoryIdentity;
+      // Internal verified PDS import, never accepted from a capture API request.
+      replicatedRepositoryAssignment?: RepositoryAssignment;
     }
   ): Promise<CapturedSessionRecord>;
   getCapturedSession(
@@ -63,9 +88,14 @@ export interface CapturedSessionRepository {
     sessionId: string,
     project: PersonalProjectReference
   ): Promise<CapturedSessionRecord | null>;
+  moveProjectConversations(
+    actor: ActorContext,
+    input: { sourceProjectId: string; project: PersonalProjectReference }
+  ): Promise<{ movedCount: number; projectId: string }>;
   resetCapturedSessionProject(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    expectedAssignmentVersion?: number
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionsNeedingTitles(
     actor: ActorContext,
@@ -105,7 +135,9 @@ export interface CapturedSessionSummaryRecord {
     | "revoked";
 }
 
-type CapturedSessionRow = {
+type CapturedSessionRow = RepositoryAssignmentRow & {
+  capture_inserted?: boolean;
+  repository_assignment_inherited?: boolean;
   id: string;
   logical_session_id: string;
   owner_user_id: string | null;
@@ -140,6 +172,12 @@ const ensureCapturedSessionLogicalMemory = async (
   ownerUserId: string,
   sessionId: string
 ): Promise<string | null> => {
+  const binding = await client.query<{ logical_memory_id: string }>(
+    `select logical_memory_id from local_captured_session_logical_memories
+      where owner_user_id = $1 and local_session_id = $2`,
+    [ownerUserId, sessionId]
+  );
+  if (binding.rows[0]) return binding.rows[0].logical_memory_id;
   const deployment = await client.query<{
     id: string;
     protocol_deployment_id: string;
@@ -154,7 +192,7 @@ const ensureCapturedSessionLogicalMemory = async (
     return null;
   }
   const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-    protocol: "koed.captured-session-sync/v1",
+    protocol: "koed.captured-session-sync/v2",
     sourceDeploymentId: localDeployment.protocol_deployment_id,
     sourceUserId: ownerUserId,
     originSessionId: sessionId,
@@ -263,7 +301,7 @@ export const getCapturedSessionSummaryWithClient = async (
         s.id as session_id,
         lm.id as logical_memory_id,
         nullif(btrim(s.metadata ->> 'threadName'), '') as title,
-        coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+        ${effectiveProjectNameSql("s")} as project_name,
         greatest(
           s.updated_at,
           coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
@@ -337,23 +375,31 @@ export const getCapturedSessionSummaryWithClient = async (
   return result.rows[0] ? mapCapturedSessionSummary(result.rows[0]) : null;
 };
 
-const projectReference = (
-  id: string | null,
-  name: string | null,
-  path: string | null
-): PersonalProjectReference | null => (id && name ? { id, name, path } : null);
-
 const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
-  const automaticProject = projectReference(
-    row.automatic_project_id,
-    row.automatic_project_name,
-    row.automatic_project_path
+  const assignment = mapRepositoryAssignment(row);
+  const captured = {
+    id: row.automatic_project_id,
+    name: row.automatic_project_name,
+    path: row.automatic_project_path
+  };
+  const override = {
+    id: row.project_override_id,
+    name: row.project_override_name,
+    path: row.project_override_path
+  };
+  const projectFor = (identity: RepositoryIdentity | null) =>
+    projectFromRepositoryIdentity(
+      identity,
+      assignment.automatic,
+      captured,
+      override
+    );
+  const automaticProject = projectFromRepositoryIdentity(
+    assignment.automatic,
+    assignment.automatic,
+    captured
   );
-  const projectOverride = projectReference(
-    row.project_override_id,
-    row.project_override_name,
-    row.project_override_path
-  );
+  const projectOverride = projectFor(assignment.override);
   return {
     id: row.id,
     logicalSessionId: row.logical_session_id,
@@ -372,12 +418,13 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
     importObservedAt: row.import_observed_at?.toISOString() ?? null,
     metadata: row.metadata ?? {},
     capturedProjectProvenance: row.captured_project_provenance ?? {},
+    repositoryAssignment: assignment,
     automaticProject,
     projectOverride,
-    project: projectOverride ?? automaticProject,
-    projectAssignmentSource: projectOverride
+    project: projectFor(assignment.effective),
+    projectAssignmentSource: assignment.override
       ? "user_override"
-      : automaticProject
+      : assignment.automatic
         ? "detected"
         : null,
     projectAssignmentUpdatedAt:
@@ -502,7 +549,8 @@ const capturedSessionColumns = `
   automatic_project_id, automatic_project_name, automatic_project_path,
   automatic_project_detected_at,
   project_override_id, project_override_name, project_override_path,
-  project_override_at, created_at
+  project_override_at, created_at, repository_assignment_state, repository_assignment_version,
+  repository_automatic_identity, repository_override_identity
 `;
 
 export const createCapturedSessionRepository = (
@@ -516,12 +564,25 @@ export const createCapturedSessionRepository = (
       if (ownsTransaction) {
         await client.query("begin");
       }
+      await lockProjectRouting(client, actor.userId, true);
       if (input.externalSessionId) {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [`captured-session:${actor.userId}:${input.externalSessionId}`]
         );
       }
+      if (input.logicalSessionId) {
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`captured-session-logical:${actor.userId}:${input.logicalSessionId}`]
+        );
+      }
+      const replicatedAssignment = input.replicatedRepositoryAssignment
+        ? repositoryAssignmentSchema.parse(input.replicatedRepositoryAssignment)
+        : undefined;
+      const repositoryIdentity = input.repositoryIdentity
+        ? repositoryIdentitySchema.parse(input.repositoryIdentity)
+        : undefined;
       const metadata = { ...(input.metadata ?? {}) };
       const forkedFromExternalThreadId =
         input.forkedFromExternalThreadId ??
@@ -663,6 +724,12 @@ export const createCapturedSessionRepository = (
               { statusCode: 409 }
             );
           }
+          await recordRepositoryObservation(
+            client,
+            convergedRow,
+            repositoryIdentity,
+            input.cwd
+          );
           await ensureCapturedSessionLogicalMemory(
             client,
             actor.userId,
@@ -706,7 +773,7 @@ export const createCapturedSessionRepository = (
           source_fingerprint,
           captured_project,
           import_observed_at,
-          logical_session_id
+          logical_session_id, repository_assignment_state, repository_automatic_identity, repository_override_identity, repository_assignment_version
         )
         values (
           $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9,
@@ -727,7 +794,7 @@ export const createCapturedSessionRepository = (
           $15, $16, $17, $18, $19,
           $20, $21, $22, $23,
           case when $21::text is null then null else now() end,
-          $24, $25, $26, coalesce($29::uuid, gen_random_uuid())
+          $24, $25, $26, coalesce($29::uuid, gen_random_uuid()), coalesce($32::text,'recorded'), $31::jsonb, $33::jsonb, coalesce($34::integer,1)
         )
         on conflict (owner_user_id, visibility, idempotency_key)
         where idempotency_key is not null
@@ -801,7 +868,7 @@ export const createCapturedSessionRepository = (
             or sessions.forked_from_external_thread_id is null
             or sessions.forked_from_external_thread_id = $13
           )
-        returning ${capturedSessionColumns}
+        returning ${capturedSessionColumns}, (xmax = 0) as capture_inserted
       `,
         [
           actor.userId,
@@ -856,7 +923,13 @@ export const createCapturedSessionRepository = (
           detectedProjectInputProvided,
           explicitProjectIdentityProvided,
           input.logicalSessionId ?? null,
-          input.externalThreadId ?? null
+          input.externalThreadId ?? null,
+          replicatedAssignment
+            ? replicatedAssignment.automatic
+            : (repositoryIdentity ?? null),
+          replicatedAssignment?.state ?? null,
+          replicatedAssignment?.override ?? null,
+          replicatedAssignment?.version ?? null
         ]
       );
 
@@ -877,6 +950,35 @@ export const createCapturedSessionRepository = (
           new Error("Captured Session native thread identity conflicts"),
           { statusCode: 409, code: "captured_session_thread_conflict" }
         );
+      }
+      await recordRepositoryObservation(
+        client,
+        row,
+        repositoryIdentity,
+        input.cwd
+      );
+      if (
+        row.capture_inserted &&
+        !row.repository_assignment_inherited &&
+        !replicatedAssignment
+      ) {
+        const routed = await client.query<CapturedSessionRow>(
+          `
+          update sessions s set repository_override_identity=r.target_identity,
+            repository_assignment_version=s.repository_assignment_version+1,
+            project_override_id=r.target_project_id,project_override_name=r.target_name,project_override_path=r.target_path,
+            project_override_at=now(),project_override_by_user_id=$2,updated_at=now()
+          from personal_project_routes r where s.id=$1 and s.owner_user_id=$2
+            and r.owner_user_id=s.owner_user_id and r.source_project_id=repository_scope_id(s.repository_automatic_identity)
+            and s.repository_assignment_state='recorded' and s.repository_override_identity is null
+          returning ${capturedSessionColumns
+            .split(",")
+            .map((column) => `s.${column.trim()}`)
+            .join(",")}
+        `,
+          [row.id, actor.userId]
+        );
+        if (routed.rows[0]) Object.assign(row, routed.rows[0]);
       }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
@@ -922,12 +1024,24 @@ export const createCapturedSessionRepository = (
   },
 
   async moveCapturedSessionToProject(actor, sessionId, input) {
+    if (
+      !input.repositoryIdentity ||
+      !Number.isSafeInteger(input.expectedAssignmentVersion) ||
+      input.expectedAssignmentVersion! < 1
+    )
+      throw Object.assign(
+        new Error("Repository assignment and expected version are required"),
+        { statusCode: 400 }
+      );
+    const identity = repositoryIdentitySchema.parse(input.repositoryIdentity);
     const project = normalizedProjectReference(input);
     if (!project) return null;
     const result = await pool.query<CapturedSessionRow>(
       `
         update sessions
         set
+          repository_override_identity = $6::jsonb,
+          repository_assignment_version = repository_assignment_version + 1,
           project_override_id = $3,
           project_override_name = $4,
           project_override_path = $5,
@@ -939,18 +1053,45 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and repository_assignment_version = $7
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId, project.id, project.name, project.path]
+      [
+        actor.userId,
+        sessionId,
+        project.id,
+        project.name,
+        project.path,
+        identity,
+        input.expectedAssignmentVersion
+      ]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async resetCapturedSessionProject(actor, sessionId) {
+  moveProjectConversations(actor, input) {
+    return moveProjectConversations(pool, actor.userId, input);
+  },
+
+  async resetCapturedSessionProject(
+    actor,
+    sessionId,
+    expectedAssignmentVersion
+  ) {
+    if (
+      !Number.isSafeInteger(expectedAssignmentVersion) ||
+      expectedAssignmentVersion! < 1
+    )
+      throw Object.assign(
+        new Error("Expected repository assignment version is required"),
+        { statusCode: 400 }
+      );
     const result = await pool.query<CapturedSessionRow>(
       `
         update sessions
         set
+          repository_override_identity = null,
+          repository_assignment_version = repository_assignment_version + 1,
           project_override_id = null,
           project_override_name = null,
           project_override_path = null,
@@ -962,9 +1103,10 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and repository_assignment_version = $3
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId]
+      [actor.userId, sessionId, expectedAssignmentVersion]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
@@ -992,7 +1134,7 @@ export const createCapturedSessionRepository = (
           s.id as session_id,
           lm.id as logical_memory_id,
           nullif(btrim(s.metadata ->> 'threadName'), '') as title,
-          coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+          ${effectiveProjectNameSql("s")} as project_name,
           greatest(
             s.updated_at,
             coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
@@ -1103,8 +1245,8 @@ export const createCapturedSessionRepository = (
           select
             s.id,
             s.external_session_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            ${effectiveProjectNameSql("s")} as project_name,
+            ${effectiveProjectPathSql("s")} as project_path,
             s.metadata ->> 'threadName' as current_title,
             count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,
             max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at
@@ -1172,13 +1314,7 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
-          and (
-            cwd = $2
-            or metadata ->> 'projectId' = $2
-            or metadata ->> 'projectPath' = $2
-            or automatic_project_id = $2
-            or project_override_id = $2
-          )
+          and repository_scope_matches(coalesce(repository_override_identity, repository_automatic_identity), $2)
         order by created_at desc, id desc
         limit 1
       `,

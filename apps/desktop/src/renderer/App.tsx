@@ -60,7 +60,10 @@ import {
   type ManagedConversationUpdateEnvelope,
   type ManagedConversationRealtimeUpdate
 } from "./state/managed-conversation-runtime.js";
-import { sessionSelectionId } from "../project-memory-ui.js";
+import {
+  projectForLocalProject,
+  sessionSelectionId
+} from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
 import { ThemeStore } from "./state/theme.js";
@@ -633,6 +636,22 @@ export function App({
     [personalMemoryApi]
   );
   const platform = useMemo(() => createRendererPlatform(), []);
+  const refreshLocalProject = async (localProjectId: string) => {
+    if (!personalMemoryStore) return null;
+    const refreshed = await personalMemoryStore.loadProjects({ silent: true });
+    if (refreshed.error) throw new Error(refreshed.error);
+    const project = projectForLocalProject(
+      refreshed.projectsById.values(),
+      localProjectId
+    );
+    if (!project)
+      throw new Error("The Project could not be loaded. Try again.");
+    return project;
+  };
+  const openPersonalProject = async () => {
+    const metadata = await platform.selectProjectDirectory();
+    return metadata ? refreshLocalProject(metadata.localProjectId) : null;
+  };
   const subscribePersonalMemory = useCallback(
     (listener: () => void) =>
       personalMemoryStore?.subscribe(listener) ?? (() => undefined),
@@ -1625,23 +1644,10 @@ export function App({
               route: { kind: "personal-memory-ask" }
             })
           }
-          onOpenProject={async () => {
-            const metadata = await platform.selectProjectDirectory();
-            if (!metadata || !personalMemoryStore) return null;
-            const refreshed = await personalMemoryStore.loadProjects({
-              silent: true
-            });
-            if (refreshed.error) throw new Error(refreshed.error);
-            return refreshed.projectsById.get(metadata.localProjectId) ?? null;
-          }}
+          onOpenProject={openPersonalProject}
           onResolveIndependent={async () => {
             const metadata = await platform.ensureIndependentProject();
-            if (!personalMemoryStore) return null;
-            const refreshed = await personalMemoryStore.loadProjects({
-              silent: true
-            });
-            if (refreshed.error) throw new Error(refreshed.error);
-            return refreshed.projectsById.get(metadata.localProjectId) ?? null;
+            return refreshLocalProject(metadata.localProjectId);
           }}
           projects={
             personalMemorySnapshot?.projectOrder.flatMap((projectId) => {
@@ -1817,6 +1823,33 @@ export function App({
           }
         >
           <PersonalMemoryWorkspace
+            onCreateProject={
+              personalMemoryApi.createProject
+                ? async (name) => {
+                    const { projectId } =
+                      await personalMemoryApi.createProject!({ name });
+                    const refreshed = await personalMemoryStore.loadProjects({
+                      silent: true
+                    });
+                    if (refreshed.error) throw new Error(refreshed.error);
+                    const project = refreshed.projectsById.get(projectId);
+                    if (!project)
+                      throw new Error(
+                        "The Project could not be loaded. Try again."
+                      );
+                    return project;
+                  }
+                : undefined
+            }
+            moveProject={
+              personalMemoryApi.moveProject
+                ? async (input) => {
+                    const result = await personalMemoryApi.moveProject!(input);
+                    scheduleConversationRecentsRefresh();
+                    return result;
+                  }
+                : undefined
+            }
             localAiClients={window.koedDesktop?.localAiClients}
             assignSessionProject={personalMemoryApi.assignSessionProject}
             updateSessionPresentation={async (input) => {
@@ -1839,6 +1872,9 @@ export function App({
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}
             revealLocalProject={platform.revealLocalProject}
+            setRepositoryAnchor={platform.setRepositoryAnchor}
+            reviewRepository={platform.reviewRepository}
+            projectAssociation={platform.projectAssociation}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);
@@ -1866,9 +1902,18 @@ export function App({
                 route: nextRoute
               });
             }}
-            onSessionProjectAssigned={() =>
-              scheduleConversationRecentsRefresh()
-            }
+            onSessionProjectAssigned={({ projectId, sessionId }) => {
+              scheduleConversationRecentsRefresh();
+              navigate({
+                authority: currentNavigationEntry(navigationRef.current)
+                  .authority,
+                route: {
+                  kind: "personal-memory-session",
+                  projectId: projectId ?? "unassigned",
+                  sessionId
+                }
+              });
+            }}
             onShareToWorkspace={({ source }) => {
               collaboration.setModal({
                 kind: "share_personal_memory",

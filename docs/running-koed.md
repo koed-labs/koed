@@ -608,6 +608,17 @@ matching signals. Remote signals never select or authorize a Team Workspace;
 explicit Project linking is authoritative. The Team Workspace id remains the
 stable Team memory boundary.
 
+Discovery and inspection use the shared `koed-server` Git Project probe. The
+caller supplies its local profile configuration and persisted device salt;
+the probe never creates capture-producer identities. Each Git command has a
+five-second timeout and a one-MiB output limit. Successful observations are
+cached for two seconds per profile, checkout, salt, and configuration revision.
+Git marker, configuration, HEAD, and branch-ref changes invalidate the cache.
+Probe results distinguish a non-Git directory from failed execution and
+ambiguous output. Partial observations preserve the existing discovery metadata;
+failed or ambiguous probes are not cached. Raw Git errors and remote credentials
+are not included in the diagnostic result. These observations grant no access.
+
 Discovery inspects the supplied directory and its enclosing Git repository only;
 it does not recursively discover child repositories, submodules, or monorepo
 packages. Worktrees retain separate local Project ids while a salted Git
@@ -760,6 +771,31 @@ to plaintext queue state, logs, or capability metadata. Live filesystem reads,
 writes, Team repository access, and non-Git file authority are not part of this
 capability. See
 [ADR 0035](./adr/0035-runner-owned-rooted-file-authority.md).
+
+### Inspect and select a repository anchor
+
+On the Project integration branch, `project discover` and `project show` expose
+`repository`: identity kind and key, resolution reason, selected remote, root,
+branch observation, stable checkout id, and originating device provenance.
+Desktop shows the same information in a Project's **Repository anchor** panel.
+Select a remote there or choose **Use automatic selection** to remove the local
+selection. Invalid selections remain visibly unresolved.
+
+For headless editing, copy the local Project id and checkout id from discovery:
+
+```bash
+node packages/koed-server/dist/cli.js project anchor --local-project-id <id> --checkout-id <checkout-id> --remote upstream --json
+node packages/koed-server/dist/cli.js project anchor --local-project-id <id> --checkout-id <checkout-id> --reset --json
+```
+
+The local selection wins over an associated replicated selection, portable
+`upstream`, portable `origin`, and device-local fallback, in that order. Extra
+remotes and historical aliases are inspection metadata. They do not contribute
+additional repository identities. A reused checkout path receives new checkout
+provenance and cannot inherit the old selection. Local editing does not reassign
+recorded sessions, establish a Project association, or change Workspace access.
+The complete capture and recall behavior is released at the Project cutover;
+see [ADR 0057](adr/0057-selected-repository-identity.md).
 
 ## Managed terminals
 

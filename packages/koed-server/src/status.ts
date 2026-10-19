@@ -1213,6 +1213,7 @@ const inspectCaptureHook = (
   const content = String(deps.readFileSync(codexConfigPath, "utf8"));
   const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const requiredEvents = [
+    "PreToolUse",
     "SessionStart",
     "UserPromptSubmit",
     "PostToolUse",

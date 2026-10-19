@@ -1,3 +1,4 @@
+import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import type {
   PersonalDesktopApi,
   PersonalDesktopChange,
@@ -73,13 +74,26 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
 
 describe("PersonalMemoryStore", () => {
   it("merges local Project metadata into the rendered Project index", async () => {
-    const source = project([thread(1)]);
+    // Only a shared repository identity links local metadata to a graph Project.
+    const repository: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_koed",
+      root: "/tmp/project",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_koed",
+      originatingDeviceId: "fixture_device",
+      selectedRemote: "origin",
+      anchorDisplay: "github.com/koed-labs/koed"
+    };
+    const source = { ...project([thread(1)]), repository };
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-22T00:00:00.000Z",
       lastSeenAt: "2026-07-23T00:00:00.000Z",
       localProjectId: "local-project",
       displayName: "Koed",
+      repository,
       path: { cwd: "/tmp/project", projectRoot: "/tmp/project" },
       git: {
         branch: "main",
@@ -106,7 +120,9 @@ describe("PersonalMemoryStore", () => {
 
     const snapshot = await store.loadProjects();
 
-    expect(snapshot.projectsById.get(source.id)).toMatchObject({
+    expect(
+      snapshot.projectsById.get(repositoryScopeId(repository))
+    ).toMatchObject({
       name: "Koed",
       remoteDisplay: "github.com/koed-labs/koed",
       branch: "main"

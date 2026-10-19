@@ -26,6 +26,42 @@ describe("Personal Memory preload bridge", () => {
     removeListener: vi.fn()
   });
 
+  it("validates named creation and whole-Project moves before IPC", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        success("personal.projects.create", { projectId: "project_new" })
+      )
+      .mockResolvedValueOnce(
+        success("personal.projects.move", {
+          projectId: "project_new",
+          movedCount: 503
+        })
+      );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+    await expect(api.createProject!({ name: "  Planning  " })).resolves.toEqual(
+      { projectId: "project_new" }
+    );
+    expect(invoke.mock.calls[0]?.[1]).toMatchObject({
+      operation: "personal.projects.create",
+      input: { name: "Planning" }
+    });
+    await expect(
+      api.moveProject!({
+        sourceProjectId: "source",
+        targetProjectId: "project_new"
+      })
+    ).resolves.toEqual({ projectId: "project_new", movedCount: 503 });
+    await expect(api.createProject!({ name: "" })).rejects.toThrow();
+    await expect(
+      api.createProject!({ name: "Planning", path: "/unexpected" } as never)
+    ).rejects.toThrow();
+    await expect(
+      api.moveProject!({ sourceProjectId: "same", targetProjectId: "same" })
+    ).rejects.toThrow();
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
   it("exposes exact methods and constructs the IPC request internally", async () => {
     const invoke = vi
       .fn()
@@ -36,6 +72,7 @@ describe("Personal Memory preload bridge", () => {
     expect(Object.keys(api).sort()).toEqual([
       "assignSessionProject",
       "createNote",
+      "createProject",
       "listAskThreads",
       "listNotes",
       "listProjectMetadata",
@@ -44,6 +81,7 @@ describe("Personal Memory preload bridge", () => {
       "loadAskThread",
       "loadEventPage",
       "loadNote",
+      "moveProject",
       "renameNote",
       "submitAsk",
       "subscribe",

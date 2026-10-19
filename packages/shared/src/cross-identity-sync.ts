@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJsonStringify } from "./canonical-json.js";
+import {
+  teamRepositorySnapshotSchema,
+  type TeamRepositorySnapshot
+} from "./team-repository-snapshot.js";
 
 export const CAPTURED_SESSION_SYNC_FORMAT =
-  "koed.captured-session-sync/v1" as const;
-export const CAPTURED_SESSION_SYNC_FORMAT_VERSION = 1;
+  "koed.captured-session-sync/v2" as const;
+export const CAPTURED_SESSION_SYNC_FORMAT_VERSION = 2;
 export const CAPTURED_SESSION_SYNC_POLICY_VERSION = 1;
 export const CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES = 1024 * 1024;
 export const CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
@@ -24,6 +28,7 @@ export const capturedSessionSyncUploadPackageManifestSchema = z
     format: z.literal(CAPTURED_SESSION_SYNC_FORMAT),
     formatVersion: z.literal(CAPTURED_SESSION_SYNC_FORMAT_VERSION),
     packageDigest: z.string().regex(/^[a-f0-9]{64}$/i),
+    repositorySnapshotHash: z.string().regex(/^[a-f0-9]{64}$/i),
     summaryRevisionHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/i)
@@ -123,7 +128,7 @@ export interface CapturedSessionSyncSummaryNodeV1 {
   revisionHash: string;
 }
 
-export interface CapturedSessionSyncPackageV1 {
+export interface CapturedSessionSyncPackageV2 {
   format: typeof CAPTURED_SESSION_SYNC_FORMAT;
   formatVersion: typeof CAPTURED_SESSION_SYNC_FORMAT_VERSION;
   policyVersion: typeof CAPTURED_SESSION_SYNC_POLICY_VERSION;
@@ -144,6 +149,7 @@ export interface CapturedSessionSyncPackageV1 {
   policyDigest: string;
   summaryRevisionHash: string;
   session: {
+    repositorySnapshot: TeamRepositorySnapshot;
     originSessionId: string;
     externalSessionId: string | null;
     sourceRuntime: string;
@@ -167,7 +173,7 @@ export interface CapturedSessionSyncChunkV1 {
   chunkIndex: number;
   chunkCount: number;
   packageDigest: string;
-  package: CapturedSessionSyncPackageV1;
+  package: CapturedSessionSyncPackageV2;
 }
 
 export const crossIdentitySyncDigest = (value: unknown): string =>
@@ -193,7 +199,7 @@ export const crossIdentitySyncDeterministicUuid = (value: unknown): string => {
 
 export const crossIdentitySyncPackageRequestHash = (
   value: Pick<
-    CapturedSessionSyncPackageV1,
+    CapturedSessionSyncPackageV2,
     | "packageId"
     | "relationshipId"
     | "logicalMemoryId"
@@ -307,14 +313,14 @@ const digestMatches = (value: unknown, digest: string): boolean => {
   }
 };
 
-const validateCapturedSessionSyncPackageV1 = (
+const validateCapturedSessionSyncPackageV2 = (
   value: unknown,
   requireFinalCursor: boolean
-): value is CapturedSessionSyncPackageV1 => {
+): value is CapturedSessionSyncPackageV2 => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
-  const input = value as Partial<CapturedSessionSyncPackageV1>;
+  const input = value as Partial<CapturedSessionSyncPackageV2>;
   const uuid = (candidate: unknown): candidate is string =>
     typeof candidate === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -423,17 +429,22 @@ const validateCapturedSessionSyncPackageV1 = (
       "captureMethod",
       "capturedAt",
       "title",
-      "sourceAdapterVersion"
+      "sourceAdapterVersion",
+      "repositorySnapshot"
     ]) &&
     uuid(session?.originSessionId) &&
     nullableString(session?.externalSessionId, 500) &&
-    ["codex", "codex-cli"].includes(session?.sourceRuntime ?? "") &&
+    ["codex", "codex-cli", "claude-code", "pi"].includes(
+      session?.sourceRuntime ?? ""
+    ) &&
     ["transcript", "mcp", "web", "api"].includes(
       session?.captureMethod ?? ""
     ) &&
     timestamp(session.capturedAt) &&
     nullableString(session.title, 500) &&
     nullableString(session.sourceAdapterVersion, 120) &&
+    teamRepositorySnapshotSchema.safeParse(session.repositorySnapshot)
+      .success &&
     Array.isArray(changes) &&
     Array.isArray(summaryNodes) &&
     changes.length <= CAPTURED_SESSION_SYNC_MAX_CHANGES &&
@@ -676,11 +687,11 @@ const validateCapturedSessionSyncPackageV1 = (
   );
 };
 
-export const isCapturedSessionSyncPackageV1 = (
+export const isCapturedSessionSyncPackageV2 = (
   value: unknown
-): value is CapturedSessionSyncPackageV1 => {
+): value is CapturedSessionSyncPackageV2 => {
   try {
-    return validateCapturedSessionSyncPackageV1(value, true);
+    return validateCapturedSessionSyncPackageV2(value, true);
   } catch {
     return false;
   }
@@ -723,7 +734,7 @@ export const isCapturedSessionSyncChunkV1 = (
       input.chunkIndex! < input.chunkCount! &&
       typeof input.packageDigest === "string" &&
       input.packageDigest.length === 64 &&
-      validateCapturedSessionSyncPackageV1(input.package, false) &&
+      validateCapturedSessionSyncPackageV2(input.package, false) &&
       input.package.packageId === input.packageId &&
       input.package.relationshipId === input.relationshipId &&
       input.package.packageSequence === input.packageSequence &&

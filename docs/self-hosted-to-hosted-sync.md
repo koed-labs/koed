@@ -484,3 +484,43 @@ available; a fresh cache timestamp alone is insufficient.
   uploads, but clients should not depend on a specific storage provider.
 - Failed sync diagnostics are redacted operational metadata unless a separate
   scoped support/break-glass workflow is approved.
+
+## Project cutover upload reconciliation
+
+The current body reader accepts only Captured Session Sync V2. Retained V1 upload
+metadata can be reconciled through
+`POST /v1/cross-identity-sync/relationships/:relationshipId/profile-transition`.
+The strict `koed.captured-session-sync/profile-transition/v1` control request
+contains the relationship and package IDs, source sequence, cursor range, request
+hash, manifest digest, and encrypted package checksum. Memory bodies and unknown
+fields are rejected. The route requires a scoped Device Credential; browser
+Sessions and API Tokens do not authorize it.
+
+Migration 0061 stores immutable receipts. An applied receipt binds the completed
+package and cursor; a superseded receipt consumes only the next sequence and
+keeps the processing cursor unchanged. The target retains uploaded ciphertext,
+keeps old-profile inbox work out of the current body reader, cancels old inbox
+claims, and rejects further mutation of a retired upload or
+reuse of the consumed sequence. Receipt replay rechecks current authorization.
+
+The worker discovers retained source V1 uploads without opening old chunks. It
+validates the authenticated receipt against the exact local request, then adopts
+it under the current source claim and relationship lock. Superseded work keeps
+its data cursor; applied work advances only to the proven cursor. Adoption stores
+the receipt, completes old work, cancels stale claims and heartbeats, and schedules
+a fresh V2 repository snapshot atomically. Failed, paused, and revoked relationship
+fences remain in force. Expired old source work does not fail the relationship
+before metadata reconciliation can run.
+
+Routine housekeeping retains unreconciled V1 uploads and queue history for active
+or resumable relationships. Normal retention resumes after reconciliation;
+explicit Owner deletion and revocation keep their existing authority. Native
+metadata and worker tests cover these transitions. Genuine pre-cutover V1 fixtures
+also pass source/target worker rehearsals through the authenticated API. The cases
+cover queued uploads, partial uploads, and applied uploads with a lost
+acknowledgement. They preserve old ciphertext and raw memory, then complete V2
+synchronization with unresolved historical assignments. The upload API requires V2
+chunk metadata and rejects V1 bodies. These rehearsals exercise transport and
+storage. They use a stub embedding workflow and do not prove semantic retrieval.
+See
+[ADR 0059](adr/0059-authenticated-directed-sync-profile-transitions.md).

@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { describe, expect, it } from "vitest";
 
 import { highRiskActionDefinitions } from "./action-definitions.js";
@@ -234,6 +235,28 @@ const matrixCases: Array<{
       shareGrantId: uuid(7),
       expectedGrantVersion: 1,
       reasonCode: "owner_revoked"
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
+      action: "shared_memory.update_repository_snapshot",
+      mutationId: uuid(6),
+      teamId: uuid(1),
+      teamWorkspaceId: uuid(2),
+      shareGrantId: uuid(7),
+      expected: {
+        shareGrantId: uuid(7),
+        teamId: uuid(1),
+        teamWorkspaceId: uuid(2),
+        grantVersion: 1,
+        sourceRevision: 0,
+        representationId: uuid(10),
+        representationVersion: 1,
+        assignmentVersion: 1,
+        sourceContextHash: "d".repeat(64),
+        currentSnapshot: unresolvedTeamRepositorySnapshot()
+      }
     },
     expected: "native_review"
   },

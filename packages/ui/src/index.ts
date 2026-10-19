@@ -10,6 +10,7 @@ export * from "./primitives/command.js";
 export * from "./primitives/dialog.js";
 export * from "./primitives/dropdown-menu.js";
 export * from "./primitives/input.js";
+export { Popover } from "@base-ui/react/popover";
 export * from "./primitives/kbd.js";
 export * from "./primitives/resizable.js";
 export * from "./primitives/scroll-area.js";

@@ -1,4 +1,5 @@
 import type { KeyObject } from "node:crypto";
+import { registerPersonalProjectSelectionRoutes } from "./project-selection-routes.js";
 import { pdsSessionPackageDigest } from "@koed/shared";
 import { pdsConversationItemsForClosure } from "./local-source.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -770,6 +771,8 @@ export const registerPersonalDeviceSyncRoutes = (
     return context.auth.authenticateSession(request);
   };
   const repo = context.requireRepository;
+
+  registerPersonalProjectSelectionRoutes(app, context, sessionUser);
 
   app.post(
     "/v1/personal-device-sync/local-group-reconciliation",

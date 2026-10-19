@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
+  syncProfileTransitionRequestSchema,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest
 } from "@koed/shared";
@@ -201,7 +202,7 @@ export const registerCrossIdentitySyncRoutes = (
       const repository = repo();
       const localDeployment = target.localDeployment;
       const localReplicaId = crossIdentitySyncDeterministicUuid({
-        protocol: "koed.captured-session-sync/v1",
+        protocol: "koed.captured-session-sync/v2",
         relationshipId: input.relationship_id,
         targetDeploymentId: localDeployment.protocolDeploymentId,
         targetUserId: auth.user.id,
@@ -378,6 +379,31 @@ export const registerCrossIdentitySyncRoutes = (
         });
       }
       return { relationship: publicRelationship(relationship) };
+    }
+  );
+
+  app.post(
+    "/v1/cross-identity-sync/relationships/:relationshipId/profile-transition",
+    { preHandler: memoryWrite },
+    async (request) => {
+      assertTargetDeployment();
+      const auth = await assertSyncDeviceCredential(request, context);
+      const { relationshipId } = relationshipParamsSchema.parse(request.params);
+      const input = syncProfileTransitionRequestSchema.parse(request.body);
+      if (input.relationshipId !== relationshipId)
+        throw Object.assign(
+          new Error("Transition relationship does not match its route"),
+          { statusCode: 400 }
+        );
+      const receipt = await repo().reconcileTargetSyncProfile(
+        { userId: auth.user.id, deviceCredentialId: auth.credential.id },
+        input
+      );
+      if (!receipt)
+        throw Object.assign(new Error("Sync relationship not found"), {
+          statusCode: 404
+        });
+      return { receipt };
     }
   );
 

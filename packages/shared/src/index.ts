@@ -488,6 +488,10 @@ export {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
+  personalDesktopProjectMoveDataSchema,
+  personalDesktopProjectMoveInputSchema,
+  personalDesktopProjectCreateDataSchema,
+  personalDesktopProjectCreateInputSchema,
   personalDesktopSessionProjectInputSchema,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionTitleInputSchema,
@@ -803,6 +807,7 @@ export {
   mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
   normalizeProjectDisplayName,
+  normalizeRecordedProjectDirectory,
   safeProjectMetadataForRemote
 } from "./project-metadata.js";
 export {
@@ -858,6 +863,7 @@ export {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
@@ -1002,6 +1008,7 @@ export type {
 } from "./personal-device-sync-relay-client.js";
 export {
   PDS_SESSION_PACKAGE_VERSION,
+  PDS_SESSION_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_PROFILE,
   PDS_SESSION_PACKAGE_MAX_BYTES,
@@ -1031,11 +1038,14 @@ export {
   validatePdsRelayTransport,
   validatePdsSessionCheckpointAppend,
   validatePdsSessionCheckpointManifest,
+  validatePdsCheckpointProfileTransition,
+  validatePdsClosedProfileTransition,
   validatePdsSessionSourceManifest,
   validatePdsSessionPackageChunk,
   verifyAndDecryptPdsSessionPackage,
   verifyAndDecryptPdsSessionSourcePackage,
   verifyPdsSessionCheckpointManifest,
+  verifyPdsSessionManifest,
   verifyPdsSessionSourceManifest
 } from "./personal-device-session-package.js";
 export type {
@@ -1054,6 +1064,8 @@ export type {
   PdsSessionManifest,
   PdsSessionCheckpointManifest,
   PdsSessionCheckpointMetadata,
+  PdsCheckpointProfileTransition,
+  PdsClosedProfileTransition,
   PdsSessionSourceManifest,
   PdsSessionPackage,
   PdsSessionPackageChunk,
@@ -1120,7 +1132,7 @@ export {
   crossIdentitySyncPackageRequestHash,
   crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
-  isCapturedSessionSyncPackageV1
+  isCapturedSessionSyncPackageV2
 } from "./cross-identity-sync.js";
 export {
   koedLocalWorkSignalPath,
@@ -1158,7 +1170,7 @@ export type {
   CapturedSessionSyncChunkV1,
   CapturedSessionSyncContributorV1,
   CapturedSessionSyncEventV1,
-  CapturedSessionSyncPackageV1,
+  CapturedSessionSyncPackageV2,
   CapturedSessionSyncSummaryNodeV1,
   CapturedSessionSyncUploadPackageManifest
 } from "./cross-identity-sync.js";
@@ -1819,3 +1831,47 @@ export {
   type TeamMemoryAnswerTaskCapability,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
+
+export { repositoryIdentitySchema } from "./repository-identity.js";
+export type {
+  RepositoryIdentity,
+  AssociatedRepositorySelection
+} from "./repository-identity.js";
+
+export {
+  repositoryAssignmentSchema,
+  effectiveRepositoryIdentity,
+  createRepositoryAssignment
+} from "./repository-assignment.js";
+export type { RepositoryAssignment } from "./repository-assignment.js";
+
+export {
+  repositoryRecallContextSchema,
+  repositoryScopeId,
+  planRepositorySearch,
+  repositoryIdentityMatches
+} from "./repository-recall.js";
+
+export * from "./repository-review.js";
+
+export {
+  createPdsRepositoryAssignment,
+  verifyPdsRepositoryAssignment,
+  verifyPdsRepositoryAssignmentWithKeyHistory,
+  pdsRepositoryAssignmentSchema,
+  pdsRepositoryKeyHistorySchema,
+  pdsSelectedRepositoryToken
+} from "./personal-repository-assignment.js";
+export type { PdsRepositoryAssignment } from "./personal-repository-assignment.js";
+
+export * from "./personal-project-selection.js";
+export * from "./team-repository-snapshot.js";
+
+export {
+  syncProfileTransitionRequestSchema,
+  syncProfileTransitionReceiptSchema
+} from "./cross-identity-sync-profile-transition.js";
+export type {
+  SyncProfileTransitionRequest,
+  SyncProfileTransitionReceipt
+} from "./cross-identity-sync-profile-transition.js";

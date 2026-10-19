@@ -7,6 +7,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./project-selection": {
+      "types": "./dist/project-selection-desktop.d.ts",
+      "import": "./dist/project-selection-desktop.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -66,6 +70,14 @@
     "./source-control": {
       "types": "./dist/source-control.d.ts",
       "import": "./dist/source-control.js"
+    },
+    "./repository-recall": {
+      "types": "./dist/repository-recall.d.ts",
+      "import": "./dist/repository-recall.js"
+    },
+    "./repository-review": {
+      "types": "./dist/repository-review.d.ts",
+      "import": "./dist/repository-review.js"
     }
   },
   "files": [

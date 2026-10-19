@@ -1,4 +1,8 @@
-import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import { isConversationDirectory } from "./conversation-directory.js";
+import {
+  repositoryIdentitySchema,
+  CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+} from "@koed/shared";
 import { z } from "zod";
 import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../integrations/pi/memory-answer-delivery-policy.mjs";
@@ -28,6 +32,7 @@ export const memoryAnswerInputSchema = z
     response_detail: memoryAnswerResponseDetailSchema.default("answer_only"),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
     team_workspace_id: uuidSchema.optional(),
     team_backend_id: z
@@ -48,6 +53,14 @@ export const memoryAnswerInputSchema = z
   .strict()
   .refine(
     (input) =>
+      input.search_domain !== "project" ||
+      input.repository_context === undefined ||
+      (input.repository_context !== null &&
+        input.repository_context.kind !== "unresolved"),
+    "Project recall requires a resolved repository context"
+  )
+  .refine(
+    (input) =>
       input.team_backend_id === undefined ||
       input.team_workspace_id !== undefined,
     "team_workspace_id is required with team_backend_id"
@@ -66,6 +79,17 @@ export const memoryAnswerInputSchema = z
 // The runtime and durable worker retain the strict execution schema above.
 export const memoryAnswerAdapterInputSchema =
   memoryAnswerInputSchema.safeExtend({
+    conversation_cwd: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine(isConversationDirectory, {
+        message: "conversation_cwd must be an absolute conversation directory"
+      })
+      .optional()
+      .describe(
+        "Current conversation directory, supplied automatically by the client integration. Overrides the MCP process directory, without changing an explicit Project target."
+      ),
     delivery_mode: z
       .enum(MEMORY_ANSWER_DELIVERY_MODES)
       .optional()
@@ -114,6 +138,7 @@ export const memorySearchInputSchema = z
     query: z.string().trim().min(1).max(32_000),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
     recent_days: z.number().int().positive().max(36500).optional(),
     source_after: z.string().datetime().optional(),
@@ -123,7 +148,16 @@ export const memorySearchInputSchema = z
   .strict();
 
 export const memoryExpandInputSchema = z
-  .object({ nodeId: uuidSchema })
+  .object({
+    nodeId: uuidSchema,
+    search_domain: searchDomainSchema.default("project"),
+    project_id: z.string().trim().min(1).max(4096).optional(),
+    repository_context: repositoryIdentitySchema.nullable().optional(),
+    session_id: uuidSchema.optional(),
+    recent_days: z.number().int().positive().max(36500).optional(),
+    source_after: z.string().datetime().optional(),
+    source_before: z.string().datetime().optional()
+  })
   .strict();
 
 export type MemoryAnswerToolInput = z.infer<typeof memoryAnswerInputSchema>;

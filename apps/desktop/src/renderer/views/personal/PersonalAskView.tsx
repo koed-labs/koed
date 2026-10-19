@@ -12,6 +12,8 @@ import {
   projectLatestAt,
   type DesktopProject
 } from "../../../project-memory-ui.js";
+import { projectRowPresentation } from "../../../project-row-presentation.js";
+import { ProjectGroupIcon } from "./ProjectGroupIcon.js";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationIdentity,
@@ -80,7 +82,9 @@ export function PersonalAskView({
       [...projects]
         .filter(
           (project) =>
-            Boolean(project.path) && project.contextKind !== "independent"
+            (Boolean(project.path) ||
+              project.repository?.kind === "local_project") &&
+            project.contextKind !== "independent"
         )
         .sort(
           (left, right) =>
@@ -288,25 +292,41 @@ export function PersonalAskView({
               <strong>Chat</strong>
               <small>Start without a Project</small>
             </button>
-            {projectChoices.map((project) => (
-              <button
-                disabled={launchPending}
-                aria-pressed={selectedProjectId === project.id}
-                className={selectedProjectId === project.id ? "selected" : ""}
-                key={project.id}
-                onClick={() => setSelectedProjectId(project.id)}
-                type="button"
-              >
-                <Folder aria-hidden="true" />
-                <strong>{project.name}</strong>
-                <small>
-                  {project.threads.length}{" "}
-                  {project.threads.length === 1
-                    ? "recent Conversation"
-                    : "recent Conversations"}
-                </small>
-              </button>
-            ))}
+            {projectChoices.map((project) => {
+              const presentation = projectRowPresentation(project);
+              return (
+                <button
+                  disabled={launchPending}
+                  aria-label={`${project.name}, ${presentation.sourceLabel}${presentation.context ? `, ${presentation.context}` : ""}`}
+                  aria-pressed={selectedProjectId === project.id}
+                  className={selectedProjectId === project.id ? "selected" : ""}
+                  data-group-kind={presentation.kind}
+                  data-project-id={project.id}
+                  key={project.id}
+                  onClick={() => setSelectedProjectId(project.id)}
+                  title={`${project.name} · ${presentation.sourceLabel}${presentation.context ? ` · ${presentation.context}` : ""}`}
+                  type="button"
+                >
+                  <span className="personal-agent-project-heading">
+                    <span
+                      className="personal-project-source-icon"
+                      title={presentation.sourceLabel}
+                    >
+                      <ProjectGroupIcon kind={presentation.kind} />
+                    </span>
+                  </span>
+                  <strong>{project.name}</strong>
+                  {presentation.context ? (
+                    <small
+                      className="personal-agent-project-context"
+                      title={presentation.context}
+                    >
+                      {presentation.context}
+                    </small>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
           <button
             className="personal-agent-open-project"

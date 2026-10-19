@@ -2,8 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { storeLocalEdgeClientCredential } from "@koed/shared";
+import {
+  storeLocalEdgeClientCredential,
+  repositoryScopeId,
+  requirePortableTeamRepositoryContext
+} from "@koed/shared";
 import { MemoryApiError, MemoryApiClient } from "../src/index.js";
 import { createMemoryAnswerTaskCoordinator } from "../src/memory-answer-task-coordinator.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
@@ -271,10 +276,28 @@ describe("authorized Team Workspace discovery", () => {
     expect(JSON.stringify(result)).not.toContain("upstream-secret");
   });
 
-  it.each([false, true])(
-    "accepts global Team recall through fresh discovery with explicit backend=%s",
-    async (explicitBackend) => {
+  it.each([
+    { explicitBackend: false, searchDomain: "global" },
+    { explicitBackend: true, searchDomain: "global" },
+    { explicitBackend: false, searchDomain: "project" },
+    { explicitBackend: true, searchDomain: "project" }
+  ] as const)(
+    "accepts $searchDomain Team recall through fresh discovery with explicit backend=$explicitBackend",
+    async ({ explicitBackend, searchDomain }) => {
       const env = enrollment(["team-backend"], true);
+      const cwd = path.join(env.KOED_HOME!, "checkout");
+      fs.mkdirSync(cwd);
+      if (searchDomain === "project") {
+        execFileSync("git", ["-C", cwd, "init"], { stdio: "pipe" });
+        execFileSync("git", [
+          "-C",
+          cwd,
+          "remote",
+          "add",
+          "origin",
+          "https://example.test/team/task-project.git"
+        ]);
+      }
       if (explicitBackend) env.KOED_TEAM_UPSTREAM_BACKEND_ID = "other-backend";
       const client = new MemoryApiClient({
         apiUrl: "http://127.0.0.1:3001",
@@ -320,11 +343,17 @@ describe("authorized Team Workspace discovery", () => {
           request: {
             input: {
               query: "Dinner?",
-              search_domain: "global",
+              search_domain: searchDomain,
+              ...(searchDomain === "project" ? { project_id: cwd } : {}),
               team_workspace_id: workspaceId,
               ...(explicitBackend ? { team_backend_id: "team-backend" } : {})
             },
-            caller: { cwd: "/repo" }
+            caller: {
+              cwd:
+                searchDomain === "project"
+                  ? path.join(env.KOED_HOME!, "runtime")
+                  : "/repo"
+            }
           }
         })
       ).toMatchObject({ task: { id: task.id, teamWorkspaceId: workspaceId } });
@@ -350,21 +379,59 @@ describe("authorized Team Workspace discovery", () => {
           request: {
             input: {
               query: "Dinner?",
-              search_domain: "global",
+              search_domain: searchDomain,
               team_workspace_id: workspaceId
             }
           }
         }
       });
+      const pinned = payload.input.request.input.repository_context;
+      const project =
+        searchDomain === "project"
+          ? requirePortableTeamRepositoryContext(pinned)
+          : null;
+      if (project) expect(project.root).toBe(fs.realpathSync(cwd));
       expect(payload.input.request.input).toEqual(
         memoryAnswerInputSchema.parse({
           query: "Dinner?",
-          search_domain: "global",
-          team_workspace_id: workspaceId
+          search_domain: searchDomain,
+          team_workspace_id: workspaceId,
+          repository_context: project ?? null,
+          ...(project ? { project_id: repositoryScopeId(project) } : {})
         })
       );
     }
   );
+
+  it("rejects a nonportable Team Project before sending it to the task queue", async () => {
+    const env = enrollment(["team-backend"], true);
+    const cwd = path.join(env.KOED_HOME!, "local-folder");
+    fs.mkdirSync(cwd);
+    const client = new MemoryApiClient({ apiUrl: "http://127.0.0.1:3001" });
+    vi.spyOn(client, "teamWorkspaceContexts").mockResolvedValue({
+      workspaces: [context]
+    });
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const coordinator = createMemoryAnswerTaskCoordinator(client, env);
+    await expect(
+      coordinator.acceptMemoryAnswerTask({
+        origin: "mcp",
+        max_queued: 16,
+        request: {
+          input: {
+            query: "Local decision",
+            search_domain: "project",
+            team_workspace_id: workspaceId
+          },
+          caller: { cwd }
+        }
+      })
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("keeps Personal Memory as the default and rejects backend-only selection", async () => {
     const env = enrollment();

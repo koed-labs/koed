@@ -1,3 +1,7 @@
+import {
+  syncProfileTransitionReceiptSchema,
+  capturedSessionSyncUploadPackageManifestSchema
+} from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MemorySourceRepository } from "@koed/db";
@@ -20,13 +24,13 @@ import {
   decryptEncryptedJsonPackage,
   fetchBoundedJsonObject,
   isCapturedSessionSyncChunkV1,
-  isCapturedSessionSyncPackageV1,
+  isCapturedSessionSyncPackageV2,
   inspectDeviceIdentityAtKoedHome,
   readUpstreamCredentialAuthorization,
   upstreamApiUrl,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncChunkV1,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
@@ -77,13 +81,13 @@ export interface CrossIdentitySyncService {
 }
 
 const packagePartitions = (
-  base: CapturedSessionSyncPackageV1,
+  base: CapturedSessionSyncPackageV2,
   changes: CapturedSessionSyncChangeV1[],
-  summaryNodes: CapturedSessionSyncPackageV1["summaryNodes"],
+  summaryNodes: CapturedSessionSyncPackageV2["summaryNodes"],
   summarySnapshotIncluded: boolean,
-  partitionByteCount: (partition: CapturedSessionSyncPackageV1) => number
-): CapturedSessionSyncPackageV1[] => {
-  const partitions: CapturedSessionSyncPackageV1[] = [];
+  partitionByteCount: (partition: CapturedSessionSyncPackageV2) => number
+): CapturedSessionSyncPackageV2[] => {
+  const partitions: CapturedSessionSyncPackageV2[] = [];
   const records = [
     ...changes.map((change) => ({ kind: "change" as const, change })),
     ...summaryNodes.map((summaryNode) => ({
@@ -92,11 +96,11 @@ const packagePartitions = (
     }))
   ];
   let currentChanges: CapturedSessionSyncChangeV1[] = [];
-  let currentSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"] = [];
+  let currentSummaryNodes: CapturedSessionSyncPackageV2["summaryNodes"] = [];
   const partition = (
     partitionChanges: CapturedSessionSyncChangeV1[],
-    partitionSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"]
-  ): CapturedSessionSyncPackageV1 => ({
+    partitionSummaryNodes: CapturedSessionSyncPackageV2["summaryNodes"]
+  ): CapturedSessionSyncPackageV2 => ({
     ...base,
     changes: partitionChanges,
     summaryNodes: partitionSummaryNodes,
@@ -319,12 +323,22 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const prepareSourcePackage = async (relationshipId: string) => {
+    const transition = await options.repository.getSourceSyncProfileTransition({
+      relationshipId
+    });
+    if (transition) {
+      const transport =
+        await options.repository.getSyncTransportContext(relationshipId);
+      if (!transport?.remoteBaseUrl)
+        throw new Error("Sync target transport is unavailable");
+      return { transport, transition };
+    }
     const deltaResult = await options.repository.readCapturedSessionSyncDelta({
       relationshipId
     });
     const delta = deltaResult as
       | (NonNullable<typeof deltaResult> & {
-          summaryNodes?: CapturedSessionSyncPackageV1["summaryNodes"];
+          summaryNodes?: CapturedSessionSyncPackageV2["summaryNodes"];
         })
       | null;
     const summaryNodes = delta?.summaryNodes ?? [];
@@ -332,10 +346,10 @@ export const createCrossIdentitySyncService = (options: {
       !delta ||
       (delta.changes.length === 0 &&
         summaryNodes.length === 0 &&
-        !delta.summarySnapshotIncluded)
-    ) {
+        !delta.summarySnapshotIncluded &&
+        !delta.repositorySnapshotChanged)
+    )
       return null;
-    }
     const transport =
       await options.repository.getSyncTransportContext(relationshipId);
     if (!transport || !transport.remoteBaseUrl) {
@@ -373,7 +387,7 @@ export const createCrossIdentitySyncService = (options: {
       createRecipientPublicKeyEnvelopeEncryptionProvider(recipient);
     const packageId = randomUUID();
     const packageBase: Omit<
-      CapturedSessionSyncPackageV1,
+      CapturedSessionSyncPackageV2,
       "changes" | "summaryNodes" | "summaryRevisionHash" | "toCursor"
     > = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
@@ -455,26 +469,27 @@ export const createCrossIdentitySyncService = (options: {
     }
     if (
       selectedChanges.length + selectedSummaryNodes.length === 0 &&
-      !delta.summarySnapshotIncluded
+      !delta.summarySnapshotIncluded &&
+      !delta.repositorySnapshotChanged
     ) {
       throw new InvalidSyncPackageError(
         "A synchronized record exceeds the package limit"
       );
     }
     const toCursor = selectedChanges.at(-1)?.cursor ?? delta.fromCursor;
-    const base: CapturedSessionSyncPackageV1 = {
+    const base: CapturedSessionSyncPackageV2 = {
       ...packageBase,
       toCursor,
       changes: selectedChanges,
       summaryNodes: selectedSummaryNodes,
       summaryRevisionHash: crossIdentitySyncDigest(selectedSummaryNodes)
     };
-    if (!isCapturedSessionSyncPackageV1(base)) {
+    if (!isCapturedSessionSyncPackageV2(base)) {
       throw new InvalidSyncPackageError("Source sync package is invalid");
     }
     const packageDigest = crossIdentitySyncDigest(base);
     const chunkPayload = (
-      partition: CapturedSessionSyncPackageV1,
+      partition: CapturedSessionSyncPackageV2,
       chunkIndex: number,
       chunkCount: number
     ): CapturedSessionSyncChunkV1 => ({
@@ -494,7 +509,7 @@ export const createCrossIdentitySyncService = (options: {
       base,
       selectedChanges,
       selectedSummaryNodes,
-      delta.summarySnapshotIncluded,
+      delta.summarySnapshotIncluded || Boolean(delta.repositorySnapshotChanged),
       (partition) =>
         Buffer.byteLength(
           JSON.stringify(
@@ -573,6 +588,9 @@ export const createCrossIdentitySyncService = (options: {
           format: CAPTURED_SESSION_SYNC_FORMAT,
           formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
           packageDigest,
+          repositorySnapshotHash: crossIdentitySyncDigest(
+            base.session.repositorySnapshot
+          ),
           summaryRevisionHash: delta.summarySnapshotIncluded
             ? base.summaryRevisionHash
             : null,
@@ -607,6 +625,7 @@ export const createCrossIdentitySyncService = (options: {
 
   const processOutbox = async (): Promise<boolean> => {
     if (!isSourceIdentityHealthy()) return false;
+    await options.repository.enqueueSourceSyncProfileTransitions();
     const leaseMs = 120_000;
     const entry = await options.repository.claimSyncQueueEntry({
       queue: "outbox",
@@ -734,13 +753,57 @@ export const createCrossIdentitySyncService = (options: {
         }
         return true;
       }
-      const { transport, upload, chunks } = prepared;
+      const { transport } = prepared;
       await requireActiveTransport();
       const authorization = sourceAuthorization({
         backendId: transport.remoteUpstreamBackendId,
         reference: transport.remoteCredentialReference
       });
       const baseUrl = transport.remoteBaseUrl!;
+      if ("transition" in prepared) {
+        const request = prepared.transition;
+        if (!request)
+          throw new InvalidSyncPackageError(
+            "Retained sync transition metadata is unavailable"
+          );
+        const response = await withLeaseHeartbeat({
+          leaseMs,
+          renew: renewClaim,
+          operation: () =>
+            sourceJsonRequest(
+              fetchFn,
+              upstreamApiUrl(
+                baseUrl,
+                `/v1/cross-identity-sync/relationships/${request.relationshipId}/profile-transition`
+              ),
+              authorization,
+              "POST",
+              request
+            )
+        });
+        const parsed = syncProfileTransitionReceiptSchema.safeParse(
+          response.receipt
+        );
+        if (
+          !parsed.success ||
+          crossIdentitySyncDigest(parsed.data.request) !==
+            crossIdentitySyncDigest(request)
+        )
+          throw new InvalidSyncPackageError(
+            "Target profile receipt does not bind the retained upload"
+          );
+        await requireActiveTransport();
+        if (
+          !(await options.repository.adoptSourceSyncProfileReceipt({
+            receipt: parsed.data,
+            outboxId: entry.id,
+            claimToken: entry.claimToken
+          }))
+        )
+          throw new SyncQueueClaimLostError();
+        return true;
+      }
+      const { upload, chunks } = prepared;
       const uploadCommitted = ["uploaded", "verified", "completed"].includes(
         upload.state
       );
@@ -925,6 +988,10 @@ export const createCrossIdentitySyncService = (options: {
         targetProcessingCursor: remoteProcessingCursor,
         packageSequence: upload.sourceSequence,
         summaryRevisionHash,
+        repositorySnapshotHash:
+          capturedSessionSyncUploadPackageManifestSchema.parse(
+            upload.packageManifest
+          ).repositorySnapshotHash,
         staleAfterSeconds: options.staleAfterSeconds
       };
       await options.repository.acknowledgeSourceSyncPackage(acknowledgement);
@@ -1068,7 +1135,7 @@ export const createCrossIdentitySyncService = (options: {
           "Sync chunk set is incomplete or inconsistent"
         );
       }
-      const merged: CapturedSessionSyncPackageV1 = {
+      const merged: CapturedSessionSyncPackageV2 = {
         ...first.package,
         changes: decrypted.flatMap((chunk) => chunk.package.changes),
         summaryNodes: decrypted.flatMap((chunk) => chunk.package.summaryNodes),
@@ -1078,17 +1145,21 @@ export const createCrossIdentitySyncService = (options: {
       };
       const mergedBytes = Buffer.byteLength(JSON.stringify(merged), "utf8");
       const manifestRecordCount = persisted.upload.packageManifest.recordCount;
+      const manifestRepositorySnapshotHash =
+        persisted.upload.packageManifest.repositorySnapshotHash;
       if (
         merged.changes.length > CAPTURED_SESSION_SYNC_MAX_CHANGES ||
         merged.summaryNodes.length >
           CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES_PER_PACKAGE ||
         mergedBytes > CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES ||
-        !isCapturedSessionSyncPackageV1(merged) ||
+        !isCapturedSessionSyncPackageV2(merged) ||
         merged.packageId !== persisted.upload.protocolPackageId ||
         merged.relationshipId !== entry.syncRelationshipId ||
         merged.packageSequence !== persisted.upload.sourceSequence ||
         merged.fromCursor !== persisted.upload.fromCursor ||
         merged.toCursor !== persisted.upload.toCursor ||
+        manifestRepositorySnapshotHash !==
+          crossIdentitySyncDigest(merged.session.repositorySnapshot) ||
         !Number.isSafeInteger(manifestRecordCount) ||
         manifestRecordCount !==
           merged.changes.length + merged.summaryNodes.length ||

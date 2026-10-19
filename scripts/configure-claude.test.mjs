@@ -90,7 +90,12 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
     }
 
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.equal(
+      settings.hooks.PreToolUse[0].matcher,
+      "mcp__koed__memory_answer"
+    );
     for (const eventName of [
+      "PreToolUse",
       "SessionStart",
       "UserPromptSubmit",
       "PostToolUse",

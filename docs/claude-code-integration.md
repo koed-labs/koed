@@ -10,6 +10,13 @@ use the same [durable Personal Memory Answer path](durable-memory-answer.md).
 Both AI Clients may connect to the same local Koed deployment, but neither
 installation is used as a fallback for the other.
 
+The installed `PreToolUse` hook passes the native Conversation cwd on every
+`memory_answer` call. Koed uses this folder for default Project recall instead
+of the MCP process's startup folder. Explicit Project targets still take
+precedence. Repair the integration and restart Claude Code after upgrading to
+load the added hook. Managed Conversations also bind their adapter to the
+configured Conversation folder. See [Project recall context](repository-recall.md#resolve-before-accepting-work).
+
 The MCP tools expose explicit task collection. Omitted, `auto`, and `blocking`
 `delivery_mode` values return the completed Memory Answer through the ordinary
 MCP result path. Explicit `non_blocking` returns a pending task receipt promptly.
@@ -405,3 +412,35 @@ disabled backgrounding, final statuses, dependency ordering, and waiter
 interruption were checked. This adds no interactive TUI or reopened-session
 guarantee. See [validation](async-memory-answer.md#validation) for what the
 protocol tests and evaluation suite establish.
+
+### Repository assignments
+
+For new live captures, the Transcript Watcher resolves the transcript's checkout
+through the same selected-anchor resolver as Codex. It passes the portable,
+device-local, non-Git, or unresolved observation with the Captured Session
+registration. The Supported Capture Hook supplies lifecycle signals to this
+same path. Repository roots, subdirectories, and worktrees with the same selected
+remote therefore use the same portable Project fingerprint while retaining their
+checkout paths. Unavailable Git metadata produces an unresolved observation.
+
+Duplicate signals, reordered observations, resumed Conversations, and new
+subagent artifacts use the shared recorded-assignment boundary. They cannot
+replace a User override or resolve a pre-cutover logical Session. A historical
+import can use current Git in its recorded folder for initial grouping, but this
+does not establish source-time Git provenance. Desktop inspection shows the effective assignment
+recorded by the API rather than another caller-side identity policy.
+
+### Historical Project assignment
+
+Claude Code historical transcripts currently provide no supported source-time
+Git anchor. Fresh historical registration uses a valid absolute cwd recorded in
+the main transcript to discover its current Git Project. The normal anchor
+selection rules apply, and subdirectories resolve to the Git root. Auxiliary
+components use that same assignment. Missing or invalid recorded context stays
+unresolved. A current branch is not attributed to the historical Conversation.
+
+If the folder is missing or has no usable Git metadata, the recorded path supplies
+a local folder Project. Git selection conflicts remain unresolved. Koed never
+uses the importing process's cwd. Re-import and later live capture preserve
+existing assignments, User overrides, and the migration's historical-unresolved
+state. These imports do not repair previously captured Sessions.

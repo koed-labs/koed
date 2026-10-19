@@ -1,3 +1,4 @@
+import { repositoryScopeId } from "@koed/shared/repository-recall";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
@@ -32,6 +33,7 @@ import type {
   ManagedConversationIdentity
 } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
+import { ProjectFolderValidation } from "./project-folder-validation.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -145,6 +147,28 @@ const independentProjectMetadata: PersonalDesktopProjectMetadata = {
     projectRoot: null
   }
 };
+
+const namedProjectIdentity = {
+  kind: "local_project" as const,
+  key: "project_added",
+  root: null,
+  branch: null,
+  checkoutId: null,
+  originatingDeviceId: "browser_device",
+  reason: "manual" as const,
+  selectedRemote: null,
+  anchorDisplay: null
+};
+const addedPersonalProject: PersonalDesktopProject = {
+  id: repositoryScopeId(namedProjectIdentity),
+  name: "Added Project",
+  repository: namedProjectIdentity,
+  path: null,
+  eventCount: 0,
+  threads: []
+};
+let addedProject = false;
+let projectMoved = false;
 
 const richMarkdownFixture = `# Formatting parity
 
@@ -361,6 +385,18 @@ const personalEvents: PersonalDesktopConversationEvent[] = [
 ];
 
 const personalMemoryApi: PersonalDesktopApi = {
+  createProject: async ({ name }) => {
+    addedPersonalProject.name = name;
+    addedProject = true;
+    return { projectId: addedPersonalProject.id };
+  },
+  moveProject: async () => {
+    projectMoved = true;
+    return {
+      projectId: addedPersonalProject.id,
+      movedCount: personalProject.threads.length
+    };
+  },
   assignSessionProject: async () => ({ projectId: personalProject.id }),
   updateSessionPresentation: async () => ({
     presentation: {
@@ -372,8 +408,44 @@ const personalMemoryApi: PersonalDesktopApi = {
       updatedAt: timestamp
     }
   }),
-  listProjects: async () => [personalProject],
-  listProjectMetadata: async () => [independentProjectMetadata],
+  listProjects: async () =>
+    projectMoved
+      ? [
+          {
+            ...addedPersonalProject,
+            eventCount: personalProject.eventCount,
+            threads: personalProject.threads.map((thread) => ({
+              ...thread,
+              projectId: addedPersonalProject.id,
+              projectName: addedPersonalProject.name,
+              projectPath: null,
+              repositoryAssignment: {
+                state: "historical_unresolved" as const,
+                version: 2,
+                automatic: null,
+                override: namedProjectIdentity,
+                effective: namedProjectIdentity
+              }
+            }))
+          }
+        ]
+      : [personalProject, ...(addedProject ? [addedPersonalProject] : [])],
+  listProjectMetadata: async () => [
+    independentProjectMetadata,
+    {
+      schemaVersion: 1,
+      discoveredAt: timestamp,
+      lastSeenAt: timestamp,
+      localProjectId: personalProject.id,
+      displayName: personalProject.name,
+      path: { cwd: personalProject.path!, projectRoot: personalProject.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ name: "origin", display: "github.com/koed-labs/koed" }]
+      }
+    }
+  ],
   loadEventPage: async () => personalEvents,
   updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
@@ -589,10 +661,11 @@ const managedConversations: ManagedConversationDesktopApi = {
 
 const ValidationApp = () => {
   window.koedDesktop = {
-    invoke: async (command: string) =>
-      command === "ensure_independent_project"
-        ? { project: independentProjectMetadata }
-        : undefined
+    invoke: async (command: string) => {
+      if (command === "ensure_independent_project")
+        return { project: independentProjectMetadata };
+      return undefined;
+    }
   } as typeof window.koedDesktop;
   (
     window as typeof window & {
@@ -3008,7 +3081,9 @@ const browserValidationView = new URLSearchParams(window.location.search).get(
   "view"
 );
 createRoot(document.querySelector("#root")!).render(
-  browserValidationView === "chat" ? (
+  browserValidationView === "project-folders" ? (
+    <ProjectFolderValidation />
+  ) : browserValidationView === "chat" ? (
     <ChatValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (
     <CollaborationInteractionsValidationApp />

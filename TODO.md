@@ -103,3 +103,20 @@ children share lineage and must not count as independent corroboration.
   to distinguish an incomplete or corrupted transfer from an artifact identity
   change. Keep checksum enforcement; do not accept a mismatched artifact or
   change the pinned model merely to make installation succeed.
+
+## Project release follow-ups
+
+- Add explicit controls for larger historical catch-up. Automatic selection
+  remains limited to 50 Conversations per supported AI Client from the last
+  30 days. Keep selection controls separate from fresh-import Project assignment
+  and preserve the migration cutoff for previously captured history.
+
+- Release the locally validated Project cutover as one coordinated change.
+  The approved minor changeset and acceptance evidence are recorded in
+  `docs/project-cutover-validation.md`. Push, PR creation, and main merge remain
+  separate release actions.
+
+- Tickets 17 and 18 are now integrated and locally validated after the ticket 16
+  checkpoint. Preserve their release order after the Project cutover when
+  preparing the release. The PDS branch preference uses the verified captured
+  observation and checks the local effective assignment.

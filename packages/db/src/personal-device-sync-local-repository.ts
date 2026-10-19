@@ -1,3 +1,18 @@
+import {
+  validatePdsClosedProfileTransition,
+  validatePdsCheckpointProfileTransition
+} from "@koed/shared";
+import { applyPdsRepositoryAssignmentSnapshot } from "./pds-repository-assignment.js";
+import {
+  mapRepositoryAssignment,
+  type RepositoryAssignmentRow
+} from "./repository-assignment.js";
+import type {
+  RepositoryAssignment,
+  PdsRepositoryAssignment,
+  PdsCheckpointProfileTransition,
+  PdsClosedProfileTransition
+} from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import {
@@ -23,6 +38,9 @@ export type PdsMaterializationState =
   | "revoked";
 
 export interface PdsClosureSource {
+  repositoryAssignment?: RepositoryAssignment;
+  capturedCwd?: string | null;
+  branchObservation?: string | null;
   groupDbId: string;
   groupId: string;
   sessionId: string;
@@ -84,6 +102,9 @@ export interface PdsClaimedInboxEntry {
 }
 
 export interface PdsCheckpointSessionInput {
+  cwd?: string;
+  replicatedRepositoryAssignment?: RepositoryAssignment;
+  pdsRepositoryAssignment?: PdsRepositoryAssignment;
   logicalSessionId: string;
   externalSessionId: string;
   forkedFromExternalThreadId?: string;
@@ -180,12 +201,20 @@ export interface PersonalDeviceSyncLocalRepository {
   closePdsSourceSession(
     input: PdsCheckpointPublicationInput
   ): Promise<PdsLocalClosureRecord>;
+  republishPdsClosedSourceSession(
+    input: PdsCheckpointPublicationInput
+  ): Promise<PdsLocalClosureRecord | null>;
   checkpointPdsSourceSession(
     input: PdsCheckpointPublicationInput
   ): Promise<PdsLocalClosureRecord | null>;
-  listPdsCheckpointCandidates(input?: {
-    afterSessionId?: string;
-  }): Promise<Array<{ userId: string; groupId: string; sessionId: string }>>;
+  listPdsCheckpointCandidates(input?: { afterSessionId?: string }): Promise<
+    Array<{
+      userId: string;
+      groupId: string;
+      sessionId: string;
+      closedProfileUpgrade?: true;
+    }>
+  >;
   reservePdsSourceSequence(input: {
     userId: string;
     groupId: string;
@@ -293,7 +322,17 @@ export interface PersonalDeviceSyncLocalRepository {
     checkpoint?: PdsReplicaCheckpointInput;
     encryptedEnvelope: unknown;
   }): Promise<{ retainedPackageId: string; state: PdsMaterializationState }>;
+  getPdsClosedReplicaSource(input: {
+    logicalSessionId: string;
+    externalSessionId: string;
+    userId: string;
+    groupId: string;
+    sourceFingerprint: string;
+    closureHash: string;
+  }): Promise<{ id: string; itemIds: string[] } | null>;
   materializePdsReplica(input: {
+    closedProfileTransition?: PdsClosedProfileTransition | null;
+    pdsRepositoryAssignment?: PdsRepositoryAssignment;
     workerId: string;
     inboxId: string;
     userId: string;
@@ -331,6 +370,7 @@ export interface PersonalDeviceSyncLocalRepository {
     sourceCheckpointAt: Date;
     observedAt: Date;
     checkpoint: PdsReplicaCheckpointInput;
+    profileTransition?: PdsCheckpointProfileTransition | null;
     sourceSession: PdsCheckpointSessionInput;
     sourceItems: PdsCheckpointConversationItem[];
   }): Promise<{
@@ -400,7 +440,15 @@ export const createPersonalDeviceSyncLocalRepository = (
          from pds_outbox_entries o
          join pds_session_closures c on c.id=o.closure_id
          join personal_sync_policies p on p.group_id=c.group_id
-         where o.state in ('pending','uploading')
+         where o.state in ('pending','uploading') and c.source_profile_epoch=1
+           and p.enabled=true and p.publication_paused=false
+         union all
+         select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
+         from pds_project_selection_outbox o
+         join pds_project_selection_revisions r on r.id=o.revision_row_id
+         join personal_sync_policies p on p.group_id=r.group_id
+         join personal_device_groups g on g.id=r.group_id
+         where o.state in ('pending','committed') and g.state='active'
            and p.enabled=true and p.publication_paused=false
          union all
          select greatest(i.retry_at,coalesce(i.lease_until,i.retry_at)) as wake_at
@@ -426,19 +474,27 @@ export const createPersonalDeviceSyncLocalRepository = (
     );
     const groupRow = group.rows[0];
     if (!groupRow) return null;
-    const session = await pool.query<{
-      id: string;
-      external_session_id: string | null;
-      logical_session_id: string;
-      forked_from_external_thread_id: string | null;
-      source_kind: string;
-      source_runtime: string | null;
-      metadata: unknown;
-      source_adapter_version: string;
-      created_at: Date;
-    }>(
+    const session = await pool.query<
+      RepositoryAssignmentRow & {
+        id: string;
+        external_session_id: string | null;
+        logical_session_id: string;
+        forked_from_external_thread_id: string | null;
+        source_kind: string;
+        source_runtime: string | null;
+        metadata: unknown;
+        source_adapter_version: string;
+        created_at: Date;
+        cwd: string | null;
+        repository_branch: string | null;
+      }
+    >(
       `select id,external_session_id,logical_session_id,forked_from_external_thread_id,
-              source_kind,source_runtime,source_adapter_version,created_at,metadata
+              source_kind,source_runtime,source_adapter_version,created_at,metadata,
+              repository_assignment_state,repository_assignment_version,repository_automatic_identity,repository_override_identity,cwd,
+              case when repository_automatic_identity is not null
+                and not exists(select 1 from session_repository_observations o where o.session_id=sessions.id and o.owner_user_id=sessions.owner_user_id and (not repository_scope_matches(o.identity,repository_scope_id(repository_automatic_identity)) or o.identity->>'branch' is distinct from repository_automatic_identity->>'branch'))
+                then repository_automatic_identity->>'branch' else null end as repository_branch
        from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
        and invalidated_at is null and personal_deleted_at is null`,
       [input.sessionId, input.userId]
@@ -486,6 +542,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         : {}),
       sourceAdapter: sourceSession.source_kind,
       sourceAdapterVersion: sourceSession.source_adapter_version,
+      repositoryAssignment: mapRepositoryAssignment(sourceSession),
+      capturedCwd: sourceSession.cwd,
+      branchObservation: sourceSession.repository_branch,
       sourceCreatedAt: iso(sourceSession.created_at),
       items: items.rows.map((item, index) => ({
         id: item.id,
@@ -506,6 +565,9 @@ export const createPersonalDeviceSyncLocalRepository = (
   async closePdsSourceSession(input) {
     return (await publishPdsSource(pool, input, false))!;
   },
+  async republishPdsClosedSourceSession(input) {
+    return publishPdsSource(pool, input, false, true);
+  },
   async checkpointPdsSourceSession(input) {
     return publishPdsSource(pool, input, true);
   },
@@ -514,30 +576,43 @@ export const createPersonalDeviceSyncLocalRepository = (
       user_id: string;
       group_id: string;
       session_id: string;
+      closed_profile_upgrade: boolean;
     }>(
       `
-      select i.owner_user_id as user_id,g.group_id,s.id as session_id
+      select i.owner_user_id as user_id,g.group_id,s.id as session_id,
+        exists(select 1 from pds_session_closures old where old.group_id=g.id and old.source_session_id=s.id and old.publication_kind='closed' and old.source_profile_epoch=0 and old.state='ready') as closed_profile_upgrade
       from personal_device_groups g
       join local_personal_identities i on i.id=g.local_personal_identity_id
       join personal_sync_policies p on p.group_id=g.id
       join sessions s on s.owner_user_id=i.owner_user_id
       where g.state='active' and p.enabled and not p.publication_paused
         and ($1::uuid is null or s.id>$1::uuid) and p.enabled_at<=now()
-        and p.enabled_at is not null and s.created_at>=p.enabled_at
+        and p.enabled_at is not null and (s.created_at>=p.enabled_at or exists(select 1 from pds_session_closures old where old.group_id=g.id and old.source_session_id=s.id and old.publication_kind='closed' and old.source_profile_epoch=0 and old.state='ready'))
         and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
         and s.external_session_id is not null
         and not exists (select 1 from pds_logical_replicas r where r.local_session_id=s.id)
-        and not exists (select 1 from pds_session_closures c where c.source_session_id=s.id and c.publication_kind='closed')
-        and exists (select 1 from conversation_items ci where ci.session_id=s.id
-          and ci.personal_deleted_at is null and (${pdsCompletionSql})
-          and not exists (select 1 from pds_source_item_mappings m where m.conversation_item_id=ci.id))
+        and not exists (select 1 from pds_session_closures c where c.source_session_id=s.id and c.publication_kind='closed' and (c.group_id<>g.id or c.source_profile_epoch=1 or c.state<>'ready'))
+        and (
+          exists (select 1 from conversation_items ci where ci.session_id=s.id
+            and ci.personal_deleted_at is null and (${pdsCompletionSql})
+            and not exists (select 1 from pds_source_item_mappings m where m.conversation_item_id=ci.id))
+          or exists (select 1 from pds_session_closures c where c.group_id=g.id
+            and c.source_session_id=s.id and c.state='ready'
+            and c.source_profile_epoch=0
+            and not exists (select 1 from pds_session_closures current_profile
+              where current_profile.group_id=c.group_id and current_profile.source_session_id=c.source_session_id
+                and current_profile.source_profile_epoch=1))
+        )
       order by s.id limit 50`,
       [input.afterSessionId ?? null]
     );
     return result.rows.map((row) => ({
       userId: row.user_id,
       groupId: row.group_id,
-      sessionId: row.session_id
+      sessionId: row.session_id,
+      ...(row.closed_profile_upgrade
+        ? { closedProfileUpgrade: true as const }
+        : {})
     }));
   },
 
@@ -602,8 +677,8 @@ export const createPersonalDeviceSyncLocalRepository = (
       mustDecimal(input.sourceSequence, "source sequence");
       const closure = await client.query<Record<string, unknown>>(
         `insert into pds_session_closures
-         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at)
-         select $1,$2,s.id,$3,$4,$5,$6,$7,$8,$9 from sessions s
+         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,source_profile_epoch)
+         select $1,$2,s.id,$3,$4,$5,$6,$7,$8,$9,1 from sessions s
          where s.id=$10 and s.owner_user_id=$2 and s.visibility='personal'
            and s.invalidated_at is null and s.personal_deleted_at is null
          returning *`,
@@ -625,8 +700,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         throw new Error("PDS source Session is unavailable or already closed");
       await client.query(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,1)`,
         [
           groupId,
           input.userId,
@@ -671,7 +746,7 @@ export const createPersonalDeviceSyncLocalRepository = (
          select o.id from pds_outbox_entries o
          join pds_session_closures s on s.id=o.closure_id
          join personal_sync_policies p on p.group_id=s.group_id
-         where o.state in ('pending','uploading') and o.retry_at<=now()
+         where o.state in ('pending','uploading') and o.retry_at<=now() and s.source_profile_epoch=1
            and (o.lease_until is null or o.lease_until<now()) and p.enabled=true
            and p.publication_paused=false
          order by o.retry_at,o.id for update of o,p skip locked limit $1
@@ -711,7 +786,7 @@ export const createPersonalDeviceSyncLocalRepository = (
       `update pds_outbox_entries o set updated_at=now()
        from pds_session_closures c join personal_sync_policies p on p.group_id=c.group_id
        where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now()
-         and o.closure_id=c.id and p.enabled=true and p.publication_paused=false`,
+         and o.closure_id=c.id and o.state='uploading' and c.source_profile_epoch=1 and p.enabled=true and p.publication_paused=false`,
       [input.outboxId, input.workerId]
     );
     return result.rowCount === 1;
@@ -754,7 +829,7 @@ export const createPersonalDeviceSyncLocalRepository = (
        join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id
        where o.id=$1 and o.closure_id=c.id and o.state='committed'
          and o.transport_id=$3 and o.lease_owner=$2 and o.lease_until>=now()
-         and c.publication_kind='checkpoint' and c.state='ready' and r.state='ready'`,
+         and c.publication_kind='checkpoint' and c.source_profile_epoch=1 and c.state='ready' and r.state='ready'`,
       [input.outboxId, input.workerId, input.transportId]
     );
     if (result.rowCount)
@@ -788,7 +863,7 @@ export const createPersonalDeviceSyncLocalRepository = (
        from pds_outbox_entries o join pds_session_closures c on c.id=o.closure_id
        join personal_device_groups g on g.id=c.group_id
        join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id
-       where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now()`,
+       where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now() and o.state='uploading' and c.source_profile_epoch=1`,
       [input.outboxId, input.workerId]
     );
     const row = result.rows[0];
@@ -958,8 +1033,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         state: PdsMaterializationState;
       }>(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,source_profile,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,encrypted_envelope,state)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
+         (group_id,owner_user_id,package_id,source_manifest_hash,source_profile,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,encrypted_envelope,source_profile_epoch,state)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,1,
            case when exists (select 1 from pds_deletion_floors f where f.group_id=$1 and f.logical_memory_id=$9 and f.deletion_floor_token=$10) then 'revoked' else 'ready' end)
          on conflict (group_id,package_id) do update set updated_at=now()
          returning id,state`,
@@ -998,6 +1073,35 @@ export const createPersonalDeviceSyncLocalRepository = (
     }
   },
 
+  async getPdsClosedReplicaSource(input) {
+    const result = await pool.query<{
+      id: string;
+      item_ids: string[];
+      logical_session_id: string;
+      external_session_id: string | null;
+    }>(
+      `select s.logical_session_id,s.external_session_id,r.local_session_id as id,coalesce(array_agg(m.conversation_item_id order by m.source_ordinal::numeric) filter(where m.conversation_item_id is not null),'{}') as item_ids
+       from pds_logical_replicas r
+       join personal_device_groups g on g.id=r.group_id
+       join local_personal_identities i on i.id=g.local_personal_identity_id
+       join sessions s on s.id=r.local_session_id and s.owner_user_id=i.owner_user_id
+       left join pds_source_item_mappings m on m.replica_id=r.id
+       where i.owner_user_id=$1 and g.group_id=$2 and r.source_fingerprint=$3 and r.closure_hash=$4
+         and r.materialization_profile='closed_v1' and r.materialization_state='ready'
+         and s.personal_deleted_at is null and s.invalidated_at is null
+       group by r.id,s.id`,
+      [input.userId, input.groupId, input.sourceFingerprint, input.closureHash]
+    );
+    const row = result.rows[0];
+    if (
+      row &&
+      (row.logical_session_id !== input.logicalSessionId ||
+        row.external_session_id !== input.externalSessionId)
+    )
+      throw new Error("PdsClosedProfileNativeIdentityConflict");
+    return row ? { id: row.id, itemIds: row.item_ids } : null;
+  },
+
   async materializePdsReplica(input) {
     mustDecimal(input.sourceSequence, "source sequence");
     const client = await pool.connect();
@@ -1016,8 +1120,17 @@ export const createPersonalDeviceSyncLocalRepository = (
       );
       const groupId = group.rows[0]?.id;
       if (!groupId) throw new Error("PDS group is unavailable");
-      const retained = await client.query<{ state: PdsMaterializationState }>(
-        `select p.state from pds_retained_packages p
+      const retained = await client.query<{
+        state: PdsMaterializationState;
+        source_profile_epoch: number;
+        source_profile: string;
+        source_fingerprint: string | null;
+        source_closure_hash: string | null;
+        source_sequence: string;
+        origin_device_id: string;
+        origin_deployment_id: string;
+      }>(
+        `select p.state,p.source_profile,p.source_profile_epoch,p.source_fingerprint,p.source_closure_hash,p.source_sequence,p.origin_device_id,p.origin_deployment_id from pds_retained_packages p
          left join pds_deletion_floors f on f.group_id=p.group_id
            and f.logical_memory_id=p.logical_memory_id
            and f.deletion_floor_token=p.deletion_floor_token
@@ -1026,6 +1139,77 @@ export const createPersonalDeviceSyncLocalRepository = (
       );
       if (!retained.rowCount || retained.rows[0]!.state === "revoked")
         throw new Error("PdsCryptoFloorError");
+      const currentPackage = retained.rows[0]!;
+      if (
+        currentPackage.source_profile !== "closed_v1" ||
+        currentPackage.source_profile_epoch !== 1 ||
+        currentPackage.source_fingerprint !== input.sourceFingerprint ||
+        currentPackage.source_closure_hash !== input.closureHash ||
+        currentPackage.source_sequence !== input.sourceSequence ||
+        currentPackage.origin_device_id !== input.originDeviceId ||
+        currentPackage.origin_deployment_id !== input.originDeploymentId
+      )
+        throw new Error("PdsClosedProfileRetainedBindingError");
+      const transition = validatePdsClosedProfileTransition(
+        input.closedProfileTransition ?? null,
+        input.closureHash,
+        input.sourceSequence
+      );
+      const known = await client.query<{
+        id: string;
+        source_profile_epoch: number;
+        local_session_id: string | null;
+      }>(
+        "select id,source_profile_epoch,local_session_id from pds_logical_replicas where group_id=$1 and source_fingerprint=$2 and closure_hash=$3 and materialization_profile='closed_v1' for update",
+        [groupId, input.sourceFingerprint, input.closureHash]
+      );
+      const prior = known.rows[0];
+      if (prior && prior.local_session_id !== input.localSessionId)
+        throw new Error("PdsClosedProfileSessionConflict");
+      if (prior) {
+        const mapped = await client.query<{ conversation_item_id: string }>(
+          "select conversation_item_id from pds_source_item_mappings where replica_id=$1 order by source_ordinal::numeric",
+          [prior.id]
+        );
+        if (
+          mapped.rows.length !== input.sourceItemIds.length ||
+          mapped.rows.some(
+            (row, index) =>
+              row.conversation_item_id !== input.sourceItemIds[index]
+          )
+        )
+          throw new Error("PdsClosedProfileSourceConflict");
+      }
+      if (prior?.source_profile_epoch === 0) {
+        if (!transition) throw new Error("PdsClosedProfileTransitionRequired");
+        const boundary = await client.query<{
+          source_closed_at: Date;
+          source_manifest_hash: string;
+          source_sequence: string;
+          origin_device_id: string;
+          origin_deployment_id: string;
+        }>(
+          `select o.source_closed_at,p.source_manifest_hash,p.source_sequence,p.origin_device_id,p.origin_deployment_id from pds_replica_observations o join pds_retained_packages p on p.id=o.retained_package_id where o.replica_id=$1 order by p.source_sequence::numeric desc limit 1`,
+          [prior.id]
+        );
+        const head = boundary.rows[0];
+        if (
+          !head ||
+          head.source_manifest_hash !== transition.previousManifestHash ||
+          head.source_sequence !== transition.previousSourceSequence ||
+          head.source_closed_at.getTime() !== input.sourceClosedAt.getTime() ||
+          head.origin_device_id !== input.originDeviceId ||
+          head.origin_deployment_id !== input.originDeploymentId
+        )
+          throw new Error("PdsClosedProfileBoundaryConflict");
+      } else if (prior) {
+        const replay = await client.query(
+          "select 1 from pds_replica_observations where replica_id=$1 and retained_package_id=$2",
+          [prior.id, input.retainedPackageId]
+        );
+        if (!replay.rowCount)
+          throw new Error("PdsClosedProfilePublicationAlreadyApplied");
+      }
       const floored = await client.query(
         `select 1 from pds_retained_packages p join pds_deletion_floors f
            on f.group_id=p.group_id and f.logical_memory_id=p.logical_memory_id
@@ -1089,9 +1273,9 @@ export const createPersonalDeviceSyncLocalRepository = (
       }
       const state: PdsMaterializationState = conflict ? "quarantined" : "ready";
       const replica = await client.query<{ id: string }>(
-        `insert into pds_logical_replicas (group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,local_session_id,materialization_state)
-         values ($1,$2,'closed_v1',$3,$4,$5,$6)
-         on conflict (group_id,source_fingerprint,closure_hash) where materialization_profile='closed_v1' do update set local_session_id=coalesce(pds_logical_replicas.local_session_id,excluded.local_session_id),updated_at=now()
+        `insert into pds_logical_replicas (group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,local_session_id,materialization_state,source_profile_epoch)
+         values ($1,$2,'closed_v1',$3,$4,$5,$6,1)
+         on conflict (group_id,source_fingerprint,closure_hash) where materialization_profile='closed_v1' do update set local_session_id=coalesce(pds_logical_replicas.local_session_id,excluded.local_session_id),source_profile_epoch=1,updated_at=now()
          returning id`,
         [
           groupId,
@@ -1103,6 +1287,18 @@ export const createPersonalDeviceSyncLocalRepository = (
         ]
       );
       const replicaId = replica.rows[0]!.id;
+      if (input.pdsRepositoryAssignment && prior) {
+        await client.query(
+          "select set_config('koed.pds_replica_append_id',$1,true)",
+          [replicaId]
+        );
+        await applyPdsRepositoryAssignmentSnapshot(
+          client,
+          input.userId,
+          input.localSessionId,
+          input.pdsRepositoryAssignment
+        );
+      }
       await client.query(
         `insert into pds_replica_observations (replica_id,retained_package_id,origin_deployment_id,origin_device_id,source_sequence,source_closed_at,observed_at)
          values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing`,
@@ -1154,6 +1350,11 @@ export const createPersonalDeviceSyncLocalRepository = (
 
   async materializePdsSessionCheckpoint(input) {
     const { checkpoint } = input;
+    const transition = validatePdsCheckpointProfileTransition(
+      input.profileTransition ?? null,
+      checkpoint,
+      input.sourceSequence
+    );
     mustDecimal(input.sourceSequence, "source sequence");
     mustDecimal(checkpoint.ordinal, "checkpoint ordinal");
     mustDecimal(checkpoint.itemCount, "checkpoint item count");
@@ -1206,6 +1407,7 @@ export const createPersonalDeviceSyncLocalRepository = (
       const retained = await client.query<{
         state: PdsMaterializationState;
         source_profile: string;
+        source_profile_epoch: number;
         source_fingerprint: string | null;
         source_closure_hash: string | null;
         checkpoint_ordinal: string | null;
@@ -1217,7 +1419,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         logical_memory_id: string | null;
         deletion_floor_token: string | null;
       }>(
-        `select p.state,p.source_profile,p.source_fingerprint,p.source_closure_hash,
+        `select p.state,p.source_profile,p.source_profile_epoch,p.source_fingerprint,p.source_closure_hash,
                 p.checkpoint_ordinal,p.checkpoint_previous_closure_hash,p.checkpoint_item_count,
                 p.origin_deployment_id,p.origin_device_id,p.source_sequence,
                 p.logical_memory_id,p.deletion_floor_token
@@ -1230,6 +1432,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         !retainedPackage ||
         retainedPackage.state === "revoked" ||
         retainedPackage.source_profile !== "cumulative_checkpoint" ||
+        retainedPackage.source_profile_epoch !== 1 ||
         retainedPackage.source_fingerprint !== input.sourceFingerprint ||
         retainedPackage.source_closure_hash !== input.closureHash ||
         retainedPackage.checkpoint_ordinal !== checkpoint.ordinal ||
@@ -1260,6 +1463,7 @@ export const createPersonalDeviceSyncLocalRepository = (
 
       const variants = await client.query<{
         id: string;
+        source_profile_epoch: number;
         materialization_profile: string;
         closure_hash: string;
         checkpoint_ordinal: string | null;
@@ -1267,7 +1471,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         local_session_id: string | null;
         materialization_state: PdsMaterializationState;
       }>(
-        `select id,materialization_profile,closure_hash,checkpoint_ordinal,
+        `select id,source_profile_epoch,materialization_profile,closure_hash,checkpoint_ordinal,
                 checkpoint_item_count,local_session_id,materialization_state
          from pds_logical_replicas where group_id=$1 and source_fingerprint=$2
          for update`,
@@ -1340,7 +1544,50 @@ export const createPersonalDeviceSyncLocalRepository = (
       const headOrdinal = replica?.checkpoint_ordinal;
       const headCount = replica?.checkpoint_item_count;
       const requestedOrdinal = BigInt(checkpoint.ordinal);
-      const expectedOrdinal = headOrdinal ? BigInt(headOrdinal) + 1n : 0n;
+      const transitioning =
+        transition !== null && (!replica || replica.source_profile_epoch === 0);
+      if (replica?.source_profile_epoch === 0 && !transition)
+        throw new Error("PdsSourceProfileBaselineRequired");
+      if (
+        transitioning &&
+        headOrdinal &&
+        BigInt(transition.previousOrdinal) < BigInt(headOrdinal)
+      )
+        throw new Error("PdsSourceProfileBaselineRollback");
+      if (transitioning && replica && headOrdinal) {
+        const boundary = await client.query<{
+          source_manifest_hash: string;
+          source_closure_hash: string;
+          source_sequence: string;
+        }>(
+          `select c.source_manifest_hash,c.source_closure_hash,p.source_sequence
+           from pds_replica_checkpoints c join pds_retained_packages p on p.id=c.retained_package_id
+           where c.replica_id=$1 and c.checkpoint_ordinal=$2`,
+          [replica.id, headOrdinal]
+        );
+        const known = boundary.rows[0];
+        if (
+          !known ||
+          (transition.previousOrdinal === headOrdinal
+            ? transition.previousManifestHash !== known.source_manifest_hash ||
+              transition.previousClosureHash !== known.source_closure_hash ||
+              transition.previousSourceSequence !== known.source_sequence
+            : BigInt(transition.previousSourceSequence) <=
+              BigInt(known.source_sequence))
+        )
+          throw new Error("PdsSourceProfileBoundaryConflict");
+      }
+      const expectedOrdinal = transitioning
+        ? requestedOrdinal
+        : headOrdinal
+          ? BigInt(headOrdinal) + 1n
+          : 0n;
+      if (
+        transition &&
+        replica?.source_profile_epoch === 1 &&
+        requestedOrdinal > BigInt(headOrdinal!)
+      )
+        throw new Error("PdsSourceProfileAlreadyCurrent");
       if (requestedOrdinal > expectedOrdinal) {
         const deferred = await client.query(
           `update pds_inbox_entries set state='awaiting_predecessor',
@@ -1361,6 +1608,11 @@ export const createPersonalDeviceSyncLocalRepository = (
         };
       }
 
+      if (transitioning)
+        await client.query(
+          "select set_config('koed.pds_profile_baseline_ordinal',$1,true)",
+          [checkpoint.ordinal]
+        );
       let localSessionId = replica?.local_session_id ?? "";
       let previousCount = 0n;
       if (replica) {
@@ -1403,7 +1655,7 @@ export const createPersonalDeviceSyncLocalRepository = (
            join pds_replica_observations o on o.replica_id=c.replica_id and o.retained_package_id=c.retained_package_id
            join pds_retained_packages p on p.id=c.retained_package_id
            join sessions s on s.id=$2
-           where c.replica_id=$1 and c.checkpoint_ordinal='0'`,
+           where c.replica_id=$1 order by c.checkpoint_ordinal::numeric asc limit 1`,
           [replica.id, localSessionId]
         );
         const original = predecessor.rows[0];
@@ -1573,8 +1825,11 @@ export const createPersonalDeviceSyncLocalRepository = (
 
         if (
           requestedOrdinal !== expectedOrdinal ||
-          checkpoint.previousClosureHash !== replica.closure_hash ||
-          itemCount <= previousCount
+          (!transitioning &&
+            checkpoint.previousClosureHash !== replica.closure_hash) ||
+          (transitioning
+            ? itemCount < previousCount
+            : itemCount <= previousCount)
         ) {
           await quarantine(replica.id);
           const processing = await client.query(
@@ -1595,8 +1850,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         }
       } else {
         if (
-          checkpoint.ordinal !== "0" ||
-          checkpoint.previousClosureHash !== null
+          !transitioning &&
+          (checkpoint.ordinal !== "0" ||
+            checkpoint.previousClosureHash !== null)
         ) {
           const deferred = await client.query(
             `update pds_inbox_entries set state='awaiting_predecessor',
@@ -1629,8 +1885,13 @@ export const createPersonalDeviceSyncLocalRepository = (
       }
 
       if (!replica) {
-        const { sourceTitle, sourceCreatedAt, sourceKind, ...sessionSource } =
-          input.sourceSession;
+        const {
+          sourceTitle,
+          sourceCreatedAt,
+          sourceKind,
+          pdsRepositoryAssignment,
+          ...sessionSource
+        } = input.sourceSession;
         const preexistingSession = await client.query<{ id: string }>(
           `select id from sessions where owner_user_id=$1 and external_session_id=$2
            for update`,
@@ -1667,6 +1928,7 @@ export const createPersonalDeviceSyncLocalRepository = (
             originDeviceId: input.originDeviceId,
             sourceFingerprint: input.sourceFingerprint,
             sourceProfile: "cumulative_checkpoint",
+            repositoryAssignment: pdsRepositoryAssignment ?? null,
             sourceCreatedAt
           }
         };
@@ -1688,8 +1950,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         replica = {
           id: randomUUID(),
           materialization_profile: "cumulative_checkpoint",
+          source_profile_epoch: 1,
           closure_hash: input.closureHash,
-          checkpoint_ordinal: "0",
+          checkpoint_ordinal: checkpoint.ordinal,
           checkpoint_item_count: checkpoint.itemCount,
           local_session_id: localSessionId,
           materialization_state: "ready"
@@ -1703,8 +1966,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         await client.query(
           `insert into pds_logical_replicas
            (id,group_id,owner_user_id,materialization_profile,source_fingerprint,closure_hash,
-            checkpoint_ordinal,checkpoint_item_count,local_session_id,materialization_state)
-           values ($1,$2,$3,'cumulative_checkpoint',$4,$5,$6,$7,$8,'ready')`,
+            checkpoint_ordinal,checkpoint_item_count,local_session_id,materialization_state,source_profile_epoch)
+           values ($1,$2,$3,'cumulative_checkpoint',$4,$5,$6,$7,$8,'ready',1)`,
           [
             replica.id,
             groupId,
@@ -1725,7 +1988,7 @@ export const createPersonalDeviceSyncLocalRepository = (
         );
         await client.query(
           `update pds_logical_replicas set closure_hash=$2,checkpoint_ordinal=$3,
-             checkpoint_item_count=$4,materialization_state='ready',updated_at=now()
+             checkpoint_item_count=$4,materialization_state='ready',source_profile_epoch=1,updated_at=now()
            where id=$1`,
           [
             replica.id,
@@ -1750,6 +2013,22 @@ export const createPersonalDeviceSyncLocalRepository = (
         );
       }
 
+      if (replica && input.sourceSession.pdsRepositoryAssignment)
+        await applyPdsRepositoryAssignmentSnapshot(
+          client,
+          input.userId,
+          localSessionId,
+          input.sourceSession.pdsRepositoryAssignment
+        );
+      if (input.sourceSession.pdsRepositoryAssignment)
+        await client.query(
+          "update sessions set metadata=jsonb_set(metadata,'{pds,repositoryAssignment}',$3::jsonb,true),updated_at=now() where id=$1 and owner_user_id=$2",
+          [
+            localSessionId,
+            input.userId,
+            JSON.stringify(input.sourceSession.pdsRepositoryAssignment)
+          ]
+        );
       const sourceSessionId = localSessionId;
       const suffix = input.sourceItems
         .slice(Number(previousCount))
@@ -1973,7 +2252,7 @@ export const createPersonalDeviceSyncLocalRepository = (
          join personal_device_group_members origin on origin.group_id=c.group_id
            and origin.device_id=source_package.origin_device_id and origin.status='active'
          where o.closure_id=c.id and c.group_id=$1
-           and c.publication_kind='checkpoint' and c.state='ready'
+           and c.publication_kind='checkpoint' and c.source_profile_epoch=1 and c.state='ready' and o.state<>'superseded'
            and source_package.state='ready'
            and o.dispatch_epoch is distinct from $2
            and (o.lease_until is null or o.lease_until<=now())`,
@@ -2184,6 +2463,8 @@ export interface PdsCheckpointPublicationInput {
     source: PdsClosureSource;
     sourceSequence: string;
     closedAt: Date;
+    closedProfileTransition?: PdsClosedProfileTransition | null;
+    profileTransition?: PdsCheckpointProfileTransition | null;
     checkpoint?: {
       version: "1";
       ordinal: string;
@@ -2229,7 +2510,8 @@ const pdsItemCompletesTurn = (item: {
 async function publishPdsSource(
   pool: pg.Pool,
   input: PdsCheckpointPublicationInput,
-  checkpointMode: boolean
+  checkpointMode: boolean,
+  upgradeClosed = false
 ): Promise<PdsLocalClosureRecord | null> {
   const client = await pool.connect();
   try {
@@ -2266,19 +2548,27 @@ async function publishPdsSource(
       [groupRow.id, input.originDeviceId]
     );
     if (!member.rowCount) throw new Error("PdsPublicationMembershipError");
-    const session = await client.query<{
-      id: string;
-      external_session_id: string | null;
-      logical_session_id: string;
-      forked_from_external_thread_id: string | null;
-      source_kind: string;
-      source_runtime: string | null;
-      metadata: unknown;
-      source_adapter_version: string;
-      created_at: Date;
-    }>(
+    const session = await client.query<
+      RepositoryAssignmentRow & {
+        id: string;
+        external_session_id: string | null;
+        logical_session_id: string;
+        forked_from_external_thread_id: string | null;
+        source_kind: string;
+        source_runtime: string | null;
+        metadata: unknown;
+        source_adapter_version: string;
+        created_at: Date;
+        cwd: string | null;
+        repository_branch: string | null;
+      }
+    >(
       `select id,external_session_id,logical_session_id,forked_from_external_thread_id,
-                source_kind,source_runtime,source_adapter_version,created_at,metadata
+                source_kind,source_runtime,source_adapter_version,created_at,metadata,
+              repository_assignment_state,repository_assignment_version,repository_automatic_identity,repository_override_identity,cwd,
+              case when repository_automatic_identity is not null
+                and not exists(select 1 from session_repository_observations o where o.session_id=sessions.id and o.owner_user_id=sessions.owner_user_id and (not repository_scope_matches(o.identity,repository_scope_id(repository_automatic_identity)) or o.identity->>'branch' is distinct from repository_automatic_identity->>'branch'))
+                then repository_automatic_identity->>'branch' else null end as repository_branch
          from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
            and invalidated_at is null and personal_deleted_at is null for update`,
       [input.sessionId, input.userId]
@@ -2301,24 +2591,43 @@ async function publishPdsSource(
         "PDS received Sessions cannot be published as local sources"
       );
     const existing = await client.query<{
+      state: string;
+      source_fingerprint: string | null;
+      logical_memory_id: string | null;
+      deletion_floor_token: string | null;
+      closed_at: Date;
       publication_kind: string;
+      source_profile_epoch: number;
+      source_sequence: string;
+      source_manifest_hash: string;
       checkpoint_ordinal: string | null;
       source_closure_hash: string;
       terminal_item_count: string;
       origin_device_id: string | null;
       origin_deployment_id: string | null;
     }>(
-      "select c.publication_kind,c.checkpoint_ordinal,c.source_closure_hash,c.terminal_item_count,r.origin_device_id,r.origin_deployment_id from pds_session_closures c left join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id where c.group_id=$1 and c.source_session_id=$2 order by c.source_sequence::numeric desc for update of c",
+      "select c.state,r.source_fingerprint,r.logical_memory_id,r.deletion_floor_token,c.closed_at,c.source_profile_epoch,c.source_sequence,c.source_manifest_hash,c.publication_kind,c.checkpoint_ordinal,c.source_closure_hash,c.terminal_item_count,r.origin_device_id,r.origin_deployment_id from pds_session_closures c left join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id where c.group_id=$1 and c.source_session_id=$2 order by c.source_sequence::numeric desc for update of c",
       [groupRow.id, input.sessionId]
     );
+    const closedUpgrade =
+      upgradeClosed &&
+      existing.rows.length === 1 &&
+      existing.rows[0]!.publication_kind === "closed" &&
+      existing.rows[0]!.source_profile_epoch === 0 &&
+      existing.rows[0]!.state === "ready";
+    if (upgradeClosed && !closedUpgrade) {
+      await client.query("commit");
+      return null;
+    }
     if (
       existing.rowCount &&
+      !closedUpgrade &&
       (!checkpointMode ||
         existing.rows.some((row) => row.publication_kind !== "checkpoint"))
     )
       throw new Error("PDS source Session is unavailable or already closed");
     if (
-      checkpointMode &&
+      (checkpointMode || closedUpgrade) &&
       existing.rows[0] &&
       (existing.rows[0].origin_device_id !== input.originDeviceId ||
         existing.rows[0].origin_deployment_id !== input.originDeploymentId)
@@ -2354,7 +2663,11 @@ async function publishPdsSource(
       const previousCount = Number(
         existing.rows[0]?.terminal_item_count ?? "0"
       );
-      if (terminalIndex < 0 || terminalIndex + 1 <= previousCount) {
+      if (
+        terminalIndex < 0 ||
+        (terminalIndex + 1 <= previousCount &&
+          existing.rows[0]?.source_profile_epoch !== 0)
+      ) {
         await client.query("commit");
         return null;
       }
@@ -2390,6 +2703,9 @@ async function publishPdsSource(
         : {}),
       sourceAdapter: sourceSession.source_kind,
       sourceAdapterVersion: sourceSession.source_adapter_version,
+      repositoryAssignment: mapRepositoryAssignment(sourceSession),
+      capturedCwd: sourceSession.cwd,
+      branchObservation: sourceSession.repository_branch,
       sourceCreatedAt: iso(sourceSession.created_at),
       items: items.rows.map((item, index) => ({
         id: item.id,
@@ -2416,7 +2732,16 @@ async function publishPdsSource(
     const sourceSequence = (
       BigInt(allocated.rows[0]!.next_sequence) - 1n
     ).toString();
-    const closedAt = new Date();
+    const closedAt = closedUpgrade ? existing.rows[0]!.closed_at : new Date();
+    const closedProfileTransition: PdsClosedProfileTransition | null =
+      closedUpgrade
+        ? {
+            previousProfile: "pre_repository_cutover",
+            previousManifestHash: existing.rows[0]!.source_manifest_hash,
+            previousSourceSequence: existing.rows[0]!.source_sequence,
+            previousClosureHash: existing.rows[0]!.source_closure_hash
+          }
+        : null;
     const checkpoint = checkpointMode
       ? {
           version: "1" as const,
@@ -2426,16 +2751,38 @@ async function publishPdsSource(
           previousClosureHash: existing.rows[0]?.source_closure_hash ?? null
         }
       : undefined;
+    const previous = existing.rows[0];
+    const profileTransition: PdsCheckpointProfileTransition | null =
+      checkpointMode && previous?.source_profile_epoch === 0
+        ? {
+            previousProfile: "pre_repository_cutover",
+            previousManifestHash: previous.source_manifest_hash,
+            previousSourceSequence: previous.source_sequence,
+            previousOrdinal: previous.checkpoint_ordinal!,
+            previousClosureHash: previous.source_closure_hash
+          }
+        : null;
     const built = await input.build({
       source,
       sourceSequence,
+      profileTransition,
+      closedProfileTransition,
       closedAt,
       ...(checkpoint ? { checkpoint } : {})
     });
+    if (
+      closedUpgrade &&
+      (built.sourceFingerprint !== existing.rows[0]!.source_fingerprint ||
+        built.logicalMemoryId !== existing.rows[0]!.logical_memory_id ||
+        built.deletionFloorToken !== existing.rows[0]!.deletion_floor_token ||
+        built.sourceClosureHash !== existing.rows[0]!.source_closure_hash ||
+        String(source.items.length) !== existing.rows[0]!.terminal_item_count)
+    )
+      throw new Error("PdsClosedProfileClosureConflict");
     const closure = await client.query<Record<string, unknown>>(
       `insert into pds_session_closures
-         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,publication_kind,checkpoint_ordinal)
-         values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11) returning *`,
+         (group_id,owner_user_id,source_session_id,source_sequence,terminal_cursor,terminal_item_count,source_closure_hash,package_id,source_manifest_hash,closed_at,publication_kind,checkpoint_ordinal,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,1) returning *`,
       [
         groupRow.id,
         input.userId,
@@ -2453,8 +2800,8 @@ async function publishPdsSource(
     const closureRow = closure.rows[0]!;
     await client.query(
       `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope,source_profile,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope,source_profile,checkpoint_ordinal,checkpoint_previous_closure_hash,checkpoint_item_count,source_profile_epoch)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,1)`,
       [
         groupRow.id,
         input.userId,
@@ -2490,6 +2837,17 @@ async function publishPdsSource(
         checkpointMode ? groupRow.current_epoch : null
       ]
     );
+    if (previous?.source_profile_epoch === 0) {
+      await client.query(
+        `update pds_outbox_entries o
+        set state='superseded',superseded_from_state=o.state,superseded_at=now(),superseded_by_closure_id=$1,
+            lease_owner=null,lease_until=null,updated_at=now()
+        from pds_session_closures c
+        where o.closure_id=c.id and c.group_id=$2 and c.source_session_id=$3
+          and c.source_profile_epoch=0 and o.state not in ('acked','superseded')`,
+        [closureRow.id, groupRow.id, input.sessionId]
+      );
+    }
     await client.query(
       "select pg_notify('koed_pds_local_sync', 'source_closed')"
     );

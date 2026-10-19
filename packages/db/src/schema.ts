@@ -25,7 +25,11 @@ import type {
   CollaborationApprovalReview,
   EncryptedPayloadEnvelope,
   ManagedConversationTargetReadinessEvidence,
-  PrivacyLabelPolicy
+  PrivacyLabelPolicy,
+  PdsProjectSelectionRecord,
+  TeamRepositorySnapshot,
+  RepositoryIdentity,
+  SyncProfileTransitionReceipt
 } from "@koed/shared";
 
 const id = () =>
@@ -439,7 +443,8 @@ export const syncPackageState = pgEnum("sync_package_state", [
   "verified",
   "processing",
   "completed",
-  "failed"
+  "failed",
+  "superseded"
 ]);
 export const syncQueueEntryState = pgEnum("sync_queue_entry_state", [
   "pending",
@@ -946,6 +951,18 @@ export const sessions = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    repositoryAssignmentState: text("repository_assignment_state")
+      .notNull()
+      .default("historical_unresolved"),
+    repositoryAssignmentVersion: integer("repository_assignment_version")
+      .notNull()
+      .default(1),
+    repositoryAutomaticIdentity: jsonb(
+      "repository_automatic_identity"
+    ).$type<RepositoryIdentity>(),
+    repositoryOverrideIdentity: jsonb(
+      "repository_override_identity"
+    ).$type<RepositoryIdentity>(),
     automaticProjectId: text("automatic_project_id"),
     automaticProjectName: text("automatic_project_name"),
     automaticProjectPath: text("automatic_project_path"),
@@ -1029,6 +1046,14 @@ export const sessions = pgTable(
       "sessions_project_override_shape_check",
       sql`(${table.projectOverrideId} is null and ${table.projectOverrideName} is null and ${table.projectOverridePath} is null and ${table.projectOverrideAt} is null and ${table.projectOverrideByUserId} is null)
         or (${table.projectOverrideId} is not null and ${table.projectOverrideName} is not null and ${table.projectOverrideAt} is not null and ${table.projectOverrideByUserId} is not null)`
+    ),
+    check(
+      "sessions_repository_assignment_shape_check",
+      sql`${table.repositoryAssignmentState} in ('recorded', 'historical_unresolved') and ${table.repositoryAssignmentVersion} > 0 and (${table.repositoryAssignmentState} <> 'historical_unresolved' or ${table.repositoryAutomaticIdentity} is null)`
+    ),
+    index("sessions_owner_repository_identity_idx").on(
+      table.ownerUserId,
+      sql`(coalesce(${table.repositoryOverrideIdentity}, ${table.repositoryAutomaticIdentity}) ->> 'key')`
     ),
     index("sessions_owner_effective_project_idx").on(
       table.ownerUserId,
@@ -7649,6 +7674,16 @@ export const teamMemoryShareGrants = pgTable(
   "team_memory_share_grants",
   {
     id: id(),
+    repositorySnapshotSourceRevision: bigint(
+      "repository_snapshot_source_revision",
+      { mode: "number" }
+    ),
+    repositorySnapshot: jsonb("repository_snapshot")
+      .$type<TeamRepositorySnapshot>()
+      .notNull()
+      .default(
+        sql`'{"version":1,"classification":"unresolved","fingerprint":null,"label":null,"branchObservation":null}'::jsonb`
+      ),
     logicalGrantId: uuid("logical_grant_id").notNull().defaultRandom(),
     logicalMemoryId: uuid("logical_memory_id").references(
       (): AnyPgColumn => logicalMemories.id,
@@ -7990,6 +8025,24 @@ export const teamConversationSourceGrants = pgTable(
       sql`${table.version} > 0 and length(trim(${table.creatorAuthority})) > 0`
     )
   ]
+);
+
+export const teamRepositorySnapshotMutations = pgTable(
+  "team_repository_snapshot_mutations",
+  {
+    mutationId: uuid("mutation_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references(() => teamMemoryShareGrants.id, { onDelete: "cascade" }),
+    requestHash: text("request_hash").notNull(),
+    resultGrantVersion: integer("result_grant_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  }
 );
 
 export const teamMemoryRepresentations = pgTable(
@@ -10838,6 +10891,7 @@ export const crossIdentitySyncRelationships = pgTable(
       .notNull()
       .default(0),
     sourceSummaryRevisionHash: text("source_summary_revision_hash"),
+    sourceRepositorySnapshotHash: text("source_repository_snapshot_hash"),
     targetSummaryRevisionHash: text("target_summary_revision_hash"),
     staleAfter: timestamp("stale_after", { withTimezone: true }),
     createdAt: now(),
@@ -10974,6 +11028,41 @@ export const syncRecipientKeys = pgTable(
       .on(table.deploymentIdentityId)
       .where(sql`${table.retiredAt} is null`),
     check("sync_recipient_keys_version_check", sql`${table.keyVersion} > 0`)
+  ]
+);
+
+export const syncProfileTransitionReceipts = pgTable(
+  "sync_profile_transition_receipts",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    protocolPackageId: uuid("protocol_package_id").notNull(),
+    sourceSequence: bigint("source_sequence", { mode: "number" }).notNull(),
+    requestDigest: text("request_digest").notNull(),
+    receipt: jsonb("receipt").$type<SyncProfileTransitionReceipt>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("sync_profile_transition_package_unique").on(
+      table.syncRelationshipId,
+      table.protocolPackageId
+    ),
+    unique("sync_profile_transition_sequence_unique").on(
+      table.syncRelationshipId,
+      table.sourceSequence
+    ),
+    check(
+      "sync_profile_transition_sequence_check",
+      sql`${table.sourceSequence}>0`
+    ),
+    check(
+      "sync_profile_transition_digest_check",
+      sql`${table.requestDigest} ~ '^[a-f0-9]{64}$'`
+    )
   ]
 );
 
@@ -12557,6 +12646,112 @@ export const personalDeviceGroups = pgTable(
   ]
 );
 
+/** Synced configuration has its own journal, independent of Captured Sessions. */
+export const pdsProjectAssociations = pgTable(
+  "pds_project_associations",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    associationId: text("association_id").notNull(),
+    selectionId: text("selection_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_project_association_group_unique").on(
+      table.groupId,
+      table.associationId
+    ),
+    unique("pds_project_selection_group_unique").on(
+      table.groupId,
+      table.selectionId
+    )
+  ]
+);
+
+export const pdsProjectSelectionRevisions = pgTable(
+  "pds_project_selection_revisions",
+  {
+    id: id(),
+    associationRowId: uuid("association_row_id")
+      .notNull()
+      .references(() => pdsProjectAssociations.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
+    signedRecord: jsonb("signed_record")
+      .$type<PdsProjectSelectionRecord>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_project_selection_revision_group_unique").on(
+      table.groupId,
+      table.revisionId
+    ),
+    index("pds_project_selection_association_idx").on(table.associationRowId)
+  ]
+);
+
+export const pdsProjectSelectionOutbox = pgTable(
+  "pds_project_selection_outbox",
+  {
+    id: id(),
+    revisionRowId: uuid("revision_row_id")
+      .notNull()
+      .unique()
+      .references(() => pdsProjectSelectionRevisions.id, {
+        onDelete: "cascade"
+      }),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    transportId: text("transport_id"),
+    dispatchEpoch: text("dispatch_epoch"),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "pds_project_selection_outbox_state_check",
+      sql`${table.state} in ('pending','committed','acked') and ${table.attemptCount} >= 0`
+    ),
+    index("pds_project_selection_outbox_due_idx").on(table.state, table.retryAt)
+  ]
+);
+
+/** Device-local acceptance is deliberately absent from encrypted selection records. */
+export const pdsProjectAssociationAcceptances = pgTable(
+  "pds_project_association_acceptances",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    associationRowId: uuid("association_row_id")
+      .notNull()
+      .references(() => pdsProjectAssociations.id, { onDelete: "cascade" }),
+    originatingDeviceId: text("originating_device_id").notNull(),
+    checkoutId: text("checkout_id").notNull(),
+    localProjectId: text("local_project_id").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("pds_project_association_checkout_unique").on(
+      table.ownerUserId,
+      table.originatingDeviceId,
+      table.checkoutId
+    )
+  ]
+);
+
 export const personalDeviceGroupUserSubjects = pgTable(
   "personal_device_group_user_subjects",
   {
@@ -12890,6 +13085,7 @@ export const pdsSessionClosures = pgTable(
   "pds_session_closures",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
@@ -12913,7 +13109,7 @@ export const pdsSessionClosures = pgTable(
   },
   (table) => [
     uniqueIndex("pds_session_closure_session_unique")
-      .on(table.groupId, table.sourceSessionId)
+      .on(table.groupId, table.sourceSessionId, table.sourceProfileEpoch)
       .where(sql`${table.publicationKind} = 'closed'`),
     uniqueIndex("pds_session_checkpoint_ordinal_unique")
       .on(table.groupId, table.sourceSessionId, table.checkpointOrdinal)
@@ -12970,6 +13166,7 @@ export const pdsRetainedPackages = pgTable(
   "pds_retained_packages",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
@@ -13033,6 +13230,7 @@ export const pdsLogicalReplicas = pgTable(
   "pds_logical_replicas",
   {
     id: id(),
+    sourceProfileEpoch: integer("source_profile_epoch").notNull().default(0),
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
@@ -13166,6 +13364,12 @@ export const pdsOutboxEntries = pgTable(
       .notNull()
       .references(() => pdsSessionClosures.id, { onDelete: "cascade" }),
     dispatchEpoch: text("dispatch_epoch"),
+    supersededByClosureId: uuid("superseded_by_closure_id").references(
+      () => pdsSessionClosures.id,
+      { onDelete: "no action" }
+    ),
+    supersededFromState: text("superseded_from_state"),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
     state: text("state").notNull().default("pending"),
     idempotencyKey: text("idempotency_key").notNull(),
     leaseOwner: text("lease_owner"),
@@ -13185,7 +13389,11 @@ export const pdsOutboxEntries = pgTable(
     index("pds_outbox_claim_idx").on(table.state, table.retryAt),
     check(
       "pds_outbox_state_check",
-      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined')`
+      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined','superseded')`
+    ),
+    check(
+      "pds_outbox_supersession_check",
+      sql`(${table.state} = 'superseded' and ${table.supersededByClosureId} is not null and ${table.supersededFromState} is not null and ${table.supersededFromState} in ('pending','uploading','committed','paused','failed','quarantined') and ${table.supersededAt} is not null) or (${table.state} <> 'superseded' and ${table.supersededByClosureId} is null and ${table.supersededFromState} is null and ${table.supersededAt} is null)`
     ),
     check("pds_outbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
   ]
@@ -14018,6 +14226,119 @@ export const remoteMcpOAuthCredentials = pgTable(
     check(
       "remote_mcp_oauth_credentials_kind_check",
       sql`${table.kind} in ('code', 'access', 'refresh')`
+    )
+  ]
+);
+
+export const sessionRepositoryObservations = pgTable(
+  "session_repository_observations",
+  {
+    id: id(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    observationHash: text("observation_hash").notNull(),
+    identity: jsonb("identity").$type<RepositoryIdentity>().notNull(),
+    capturedCwd: text("captured_cwd"),
+    isConflict: boolean("is_conflict").notNull(),
+    assignmentVersion: integer("assignment_version").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("session_repository_observations_dedupe_idx").on(
+      table.sessionId,
+      table.observationHash
+    ),
+    index("session_repository_observations_owner_idx").on(
+      table.ownerUserId,
+      table.sessionId
+    )
+  ]
+);
+
+export const repositoryChangeEvents = pgTable(
+  "repository_change_events",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    originatingDeviceId: text("originating_device_id").notNull(),
+    checkoutId: text("checkout_id").notNull(),
+    revision: integer("revision").notNull(),
+    originatingRevision: integer("originating_revision"),
+    kind: text("kind").notNull(),
+    previousIdentity: jsonb("previous_identity").$type<RepositoryIdentity>(),
+    targetIdentity: jsonb("target_identity")
+      .$type<RepositoryIdentity>()
+      .notNull(),
+    status: text("status").notNull().default("pending"),
+    createdAt: now(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    uniqueIndex("repository_change_revision_idx").on(
+      table.ownerUserId,
+      table.originatingDeviceId,
+      table.checkoutId,
+      table.revision
+    ),
+    index("repository_change_owner_status_idx").on(
+      table.ownerUserId,
+      table.status
+    )
+  ]
+);
+export const repositoryAssignmentReviews = pgTable(
+  "repository_assignment_reviews",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => repositoryChangeEvents.id),
+    eventRevision: integer("event_revision").notNull(),
+    options: jsonb("options").notNull(),
+    sessions: jsonb("sessions").notNull(),
+    status: text("status").notNull().default("reviewed"),
+    selectedSessionIds: jsonb("selected_session_ids"),
+    createdAt: now(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    index("repository_review_owner_event_idx").on(
+      table.ownerUserId,
+      table.eventId
+    )
+  ]
+);
+
+export const personalProjectRoutes = pgTable(
+  "personal_project_routes",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceProjectId: text("source_project_id").notNull(),
+    targetProjectId: text("target_project_id").notNull(),
+    targetName: text("target_name").notNull(),
+    targetPath: text("target_path"),
+    targetIdentity: jsonb("target_identity")
+      .$type<RepositoryIdentity>()
+      .notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.sourceProjectId] }),
+    check(
+      "personal_project_routes_distinct_check",
+      sql`${table.sourceProjectId} <> ${table.targetProjectId} and ${table.sourceProjectId} <> 'unassigned'`
     )
   ]
 );

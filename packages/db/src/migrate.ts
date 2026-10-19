@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { createDb, waitForDbMigrations } from "./connection.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -57,9 +58,42 @@ export const runDbMigrations = async (
   pool: pg.Pool,
   options: RunDbMigrationsOptions = {}
 ): Promise<void> => {
-  await migrate(createDb(pool), {
+  const config = {
     migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder
-  });
+  };
+  const migrations = readMigrationFiles(config);
+  const client = await pool.connect();
+  try {
+    // Keep concurrent startup attempts on one migration history.
+    await client.query(
+      "select pg_advisory_lock(hashtext('koed:db:migrations'))"
+    );
+    const ledger = await client.query<{ present: boolean }>(
+      "select to_regclass('drizzle.__drizzle_migrations') is not null as present"
+    );
+    if (ledger.rows[0]?.present) {
+      const applied = await client.query<{ hash: string }>(
+        "select hash from drizzle.__drizzle_migrations"
+      );
+      const knownHashes = new Set(
+        migrations.map((migration) => migration.hash)
+      );
+      if (applied.rows.some((row) => !knownHashes.has(row.hash))) {
+        throw new Error(
+          "Database migration history does not match this build. Reset disposable databases that used the unreleased Project recall migrations before retrying."
+        );
+      }
+    }
+    await migrate(createDb(client), config);
+  } finally {
+    try {
+      await client.query(
+        "select pg_advisory_unlock(hashtext('koed:db:migrations'))"
+      );
+    } finally {
+      client.release();
+    }
+  }
 };
 
 export const waitForCurrentDbMigrations = async (
@@ -69,6 +103,13 @@ export const waitForCurrentDbMigrations = async (
   await waitForDbMigrations(pool, {
     expectedLatestMigrationTimestamp: await getLatestMigrationTimestamp(
       options.migrationsFolder
-    )
+    ),
+    expectedMigrationHashes: [
+      ...new Set(
+        readMigrationFiles({
+          migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder
+        }).map((migration) => migration.hash)
+      )
+    ]
   });
 };

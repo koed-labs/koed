@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -376,6 +377,7 @@ const sourceRelationshipRecord = (
   packageSequence: 0,
   lastPackageId: null,
   sourceSummaryRevisionHash: null,
+  sourceRepositorySnapshotHash: null,
   targetSummaryRevisionHash: null,
   lastSyncedAt: state === "ready" ? iso : null,
   staleAfter: null,
@@ -421,6 +423,7 @@ const createSourceRepository = (
       return actor.userId === ownerUserId && sessionId === ids.session
         ? {
             originSessionId: ids.session,
+            repositorySnapshot: unresolvedTeamRepositorySnapshot(),
             externalSessionId: "codex-session",
             sourceRuntime: "codex",
             captureMethod: "transcript",

@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { repositoryAssignmentSchema } from "./repository-assignment.js";
+import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 8;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 10;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -227,7 +229,9 @@ export const personalDesktopProjectThreadSchema = z
     projectId: identifierSchema,
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
+    capturedCwd: localProjectPathSchema.nullable().optional(),
     projectAssignmentSource: z.enum(["detected", "user_override"]).nullable(),
+    repositoryAssignment: repositoryAssignmentSchema.optional(),
     eventCount: z.number().int().safe().nonnegative(),
     invalidatedCount: z.number().int().safe().nonnegative(),
     latestAt: timestampSchema,
@@ -243,6 +247,7 @@ export const personalDesktopProjectSchema = z
   .object({
     id: identifierSchema,
     name: projectNameSchema,
+    repository: repositoryIdentitySchema.optional(),
     path: localProjectPathSchema.nullable(),
     eventCount: z.number().int().safe().nonnegative(),
     threads: z.array(personalDesktopProjectThreadSchema).max(5_000)
@@ -269,6 +274,7 @@ export const personalDesktopConversationRecentListInputSchema = z
 
 const personalDesktopProjectMetadataRemoteSchema = z
   .object({
+    name: z.string().min(1).max(512).optional(),
     display: z.string().trim().min(1).max(512).nullable()
   })
   .strict();
@@ -281,6 +287,7 @@ export const personalDesktopProjectMetadataSchema = z
     localProjectId: identifierSchema,
     displayName: projectNameSchema,
     contextKind: z.enum(["project", "independent"]).optional(),
+    repository: repositoryIdentitySchema.optional(),
     path: z
       .object({
         cwd: localProjectPathSchema,
@@ -449,13 +456,15 @@ export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
       .object({
         action: z.literal("move"),
         sessionId: z.uuid(),
-        targetProjectId: identifierSchema
+        targetProjectId: identifierSchema,
+        expectedVersion: z.number().int().positive()
       })
       .strict(),
     z
       .object({
         action: z.literal("reset"),
-        sessionId: z.uuid()
+        sessionId: z.uuid(),
+        expectedVersion: z.number().int().positive()
       })
       .strict()
   ]
@@ -467,6 +476,20 @@ export const personalDesktopSessionTitleInputSchema = z
     title: z.string().trim().min(1).max(120)
   })
   .strict();
+
+export const personalDesktopProjectCreateInputSchema = z
+  .object({ name: z.string().trim().min(1).max(160) })
+  .strict();
+export const personalDesktopProjectMoveInputSchema = z
+  .object({
+    sourceProjectId: identifierSchema,
+    targetProjectId: identifierSchema
+  })
+  .strict()
+  .refine(
+    (input) => input.sourceProjectId !== input.targetProjectId,
+    "Choose a different Project"
+  );
 
 export const personalDesktopAskTurnSchema = z
   .object({
@@ -592,6 +615,20 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.create"),
+      input: personalDesktopProjectCreateInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.move"),
+      input: personalDesktopProjectMoveInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.list"),
       input: z.object({}).strict()
     })
@@ -698,7 +735,9 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
 
 export const personalDesktopProjectsDataSchema = z
   .object({
-    projects: z.array(personalDesktopProjectSchema).max(500)
+    // The API graph contains at most 500 groups; the local named catalog adds
+    // up to 500 empty destinations without adding any Conversation payloads.
+    projects: z.array(personalDesktopProjectSchema).max(1000)
   })
   .strict();
 
@@ -725,6 +764,16 @@ export const personalDesktopSessionProjectDataSchema = z
   .object({
     projectId: identifierSchema.nullable()
   })
+  .strict();
+
+export const personalDesktopProjectMoveDataSchema = z
+  .object({
+    projectId: identifierSchema,
+    movedCount: z.number().int().safe().positive()
+  })
+  .strict();
+export const personalDesktopProjectCreateDataSchema = z
+  .object({ projectId: identifierSchema })
   .strict();
 
 export const personalDesktopSessionTitleDataSchema = z
@@ -798,6 +847,24 @@ const failedResult = <Operation extends string>(operation: Operation) =>
     .strict();
 
 export const personalDesktopResultSchema = z.union([
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.create"),
+      ok: z.literal(true),
+      data: personalDesktopProjectCreateDataSchema
+    })
+    .strict(),
+  failedResult("personal.projects.create"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.move"),
+      ok: z.literal(true),
+      data: personalDesktopProjectMoveDataSchema
+    })
+    .strict(),
+  failedResult("personal.projects.move"),
   z
     .object({
       ...resultBase,
@@ -1086,6 +1153,12 @@ export const conversationToolKindAndLabel = (
 };
 
 export interface PersonalDesktopApi {
+  createProject?: (
+    input: z.infer<typeof personalDesktopProjectCreateInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopProjectCreateDataSchema>>;
+  moveProject?: (
+    input: z.infer<typeof personalDesktopProjectMoveInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopProjectMoveDataSchema>>;
   listProjects: () => Promise<PersonalDesktopProject[]>;
   listRecentConversations?: (
     input: PersonalDesktopConversationRecentListInput

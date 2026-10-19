@@ -3,6 +3,7 @@ import {
   collaborationApprovalReviewSchema,
   collaborationApprovalTierSchema,
   highRiskActionGrantCanonicalHash,
+  teamRepositorySnapshotReviewSchema,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   type CollaborationActionGrantIntent
 } from "@koed/shared";
@@ -52,7 +53,8 @@ import {
   bindSharedMemoryCandidatePreviewOperation,
   bindSharedMemoryPendingShareOperation,
   bindSharedMemoryPreviewOperation,
-  bindSharedMemoryRevokeOperation
+  bindSharedMemoryRevokeOperation,
+  bindSharedMemoryRepositorySnapshotOperation
 } from "./shared-memory-action-definitions.js";
 import {
   bindConversationSourceDiscoveryOperation,
@@ -286,6 +288,16 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       shareGrantId: uuidSchema,
       expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion,
       reasonCode: revokeShareGrantSchema.shape.reasonCode
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.update_repository_snapshot"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      teamWorkspaceId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expected: teamRepositorySnapshotReviewSchema
     })
     .strict(),
   z
@@ -725,6 +737,15 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         expectedGrantVersion: intent.expectedGrantVersion,
         reasonCode: intent.reasonCode
       };
+    case "collaboration.update_shared_project_snapshot":
+      return {
+        action: "shared_memory.update_repository_snapshot",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        teamWorkspaceId: intent.workspaceId,
+        shareGrantId: intent.shareGrantId,
+        expected: intent.expected
+      };
     case "collaboration.share_conversation_source":
       return {
         action: "shared_memory.conversation_source_grant",
@@ -879,6 +900,11 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryPendingShareOperation(intent, clientRequestId);
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
+    case "shared_memory.update_repository_snapshot":
+      return bindSharedMemoryRepositorySnapshotOperation(
+        intent,
+        clientRequestId
+      );
     case "shared_memory.conversation_source_grant":
       return bindConversationSourceGrantOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_revoke":

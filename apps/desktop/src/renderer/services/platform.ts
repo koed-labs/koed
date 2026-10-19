@@ -1,6 +1,18 @@
+import {
+  repositoryReviewCommandSchema,
+  repositoryReviewCommandResultSchema,
+  type RepositoryReviewCommand,
+  type RepositoryReviewCommandResult
+} from "@koed/shared/repository-review";
 import { safeExternalUrl } from "../../window/external-url.js";
 import { personalDesktopProjectMetadataSchema } from "@koed/shared/personal-desktop";
 import type { DesktopProjectMetadata } from "../../project-memory-ui.js";
+import {
+  projectSelectionCommandSchema,
+  projectSelectionCommandResultSchema,
+  type ProjectSelectionCommand,
+  type ProjectSelectionCommandResult
+} from "@koed/shared/project-selection";
 
 // Discovery includes local indexing details that are not part of the desktop
 // metadata contract. Normalize those responses while validating every UI field.
@@ -20,6 +32,17 @@ const discoveredProjectSchema = personalDesktopProjectMetadataSchema
   .strip();
 
 export type RendererPlatform = {
+  projectAssociation: (
+    input: ProjectSelectionCommand
+  ) => Promise<ProjectSelectionCommandResult>;
+  reviewRepository: (
+    input: RepositoryReviewCommand
+  ) => Promise<RepositoryReviewCommandResult>;
+  setRepositoryAnchor: (input: {
+    localProjectId: string;
+    expectedCheckoutId: string;
+    remoteName: string | null;
+  }) => Promise<void>;
   copyText: (value: string) => Promise<void>;
   openExternal: (value: string) => Promise<void>;
   ensureIndependentProject: () => Promise<DesktopProjectMetadata>;
@@ -28,6 +51,28 @@ export type RendererPlatform = {
 };
 
 export const createRendererPlatform = (): RendererPlatform => ({
+  projectAssociation: async (input) =>
+    projectSelectionCommandResultSchema.parse(
+      await window.koedDesktop?.invoke(
+        "project_association",
+        projectSelectionCommandSchema.parse(input)
+      )
+    ),
+  reviewRepository: async (input) =>
+    repositoryReviewCommandResultSchema.parse(
+      await window.koedDesktop?.invoke(
+        "repository_review",
+        repositoryReviewCommandSchema.parse(input)
+      )
+    ),
+  setRepositoryAnchor: async (input) => {
+    const result = await window.koedDesktop?.invoke<{
+      ok?: boolean;
+      project?: unknown;
+    }>("project_anchor_set", input);
+    if (!result?.ok) throw new Error("Repository anchor could not be saved.");
+    discoveredProjectSchema.parse(result.project);
+  },
   copyText: async (value) => {
     const clipboard = window.koedDesktop?.clipboard;
     if (!clipboard) throw new Error("Clipboard unavailable.");

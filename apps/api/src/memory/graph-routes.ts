@@ -1,8 +1,6 @@
+import { registerRepositoryReviewRoutes } from "./repository-review-routes.js";
 import type { FastifyInstance } from "fastify";
-import {
-  createEncryptedJsonPackage,
-  crossIdentitySyncDeterministicUuid
-} from "@koed/shared";
+import { createEncryptedJsonPackage } from "@koed/shared";
 import { ConversationPresentationVersionConflictError } from "@koed/db";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -22,6 +20,8 @@ import {
   graphSessionParamsSchema,
   graphSessionPresentationPatchSchema,
   graphSessionProjectPatchSchema,
+  graphProjectMoveSchema,
+  graphProjectResolveSchema,
   graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
   graphQuerySchema,
@@ -68,6 +68,7 @@ export const registerGraphRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
+  registerRepositoryReviewRoutes(app, context);
   const {
     requireRepository,
     config,
@@ -238,7 +239,7 @@ export const registerGraphRoutes = (
       rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
       const personalQuery = { ...query };
       delete personalQuery.teamWorkspaceId;
-      const cacheKey = `koed:graph:threads:${user.id}:${hashCacheKey(
+      const cacheKey = `koed:graph:threads:${user.id}:persisted-memory-v1:${hashCacheKey(
         JSON.stringify(personalQuery)
       )}`;
       const cached = await cacheProvider.getJson<{ projects: unknown }>(
@@ -247,10 +248,10 @@ export const registerGraphRoutes = (
       if (cached) {
         return cached;
       }
-      const [projects, localDeployment] = await Promise.all([
-        repo.listLcmGraphThreads({ userId: user.id }, personalQuery),
-        repo.getLocalSyncDeployment()
-      ]);
+      const projects = await repo.listLcmGraphThreads(
+        { userId: user.id },
+        personalQuery
+      );
       const sessionIds = projects.flatMap((project) =>
         project.threads.flatMap((thread) =>
           thread.sessionId ? [thread.sessionId] : []
@@ -269,16 +270,7 @@ export const registerGraphRoutes = (
           ...project,
           threads: project.threads.map((thread) => ({
             ...thread,
-            logicalMemoryId:
-              thread.sessionId && localDeployment
-                ? crossIdentitySyncDeterministicUuid({
-                    protocol: "koed.captured-session-sync/v1",
-                    sourceDeploymentId: localDeployment.protocolDeploymentId,
-                    sourceUserId: user.id,
-                    originSessionId: thread.sessionId,
-                    identity: "logical-memory"
-                  })
-                : null,
+            logicalMemoryId: thread.logicalMemoryId ?? null,
             presentation: thread.sessionId
               ? presentations.has(thread.sessionId)
                 ? publicConversationPresentation(
@@ -363,6 +355,40 @@ export const registerGraphRoutes = (
     }
   );
 
+  app.get(
+    "/v1/memory/graph/projects/resolve",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const user = await authenticate(request);
+      const input = graphProjectResolveSchema.parse(request.query);
+      return {
+        project: await requireRepository().resolveProjectRouting(
+          { userId: user.id },
+          input.projectId
+        )
+      };
+    }
+  );
+
+  app.post(
+    "/v1/memory/graph/projects/move",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const user = await authenticate(request);
+      const input = graphProjectMoveSchema.parse(request.body);
+      const result = await requireRepository().moveProjectConversations(
+        { userId: user.id },
+        input
+      );
+      if (!result.movedCount)
+        return reply
+          .status(404)
+          .send({ error: "Project has no Conversations available to move" });
+      await cacheProvider.deleteByPrefix("koed:graph:");
+      return result;
+    }
+  );
+
   app.patch(
     "/v1/memory/graph/sessions/:sessionId/project",
     { preHandler: memoryWriteRateLimit },
@@ -376,16 +402,29 @@ export const registerGraphRoutes = (
           ? await repo.moveCapturedSessionToProject(
               { userId: user.id },
               params.sessionId,
-              input.project
+              {
+                ...input.project,
+                expectedAssignmentVersion: input.expectedVersion
+              }
             )
           : await repo.resetCapturedSessionProject(
               { userId: user.id },
-              params.sessionId
+              params.sessionId,
+              input.expectedVersion
             );
       if (!session) {
-        return reply
-          .status(404)
-          .send({ error: "Captured session not found or not visible" });
+        const current = await repo.getCapturedSession(
+          { userId: user.id },
+          params.sessionId
+        );
+        return current
+          ? reply.status(409).send({
+              error:
+                "Repository assignment changed. Reload the session before moving it."
+            })
+          : reply
+              .status(404)
+              .send({ error: "Captured session not found or not visible" });
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };

@@ -88,7 +88,7 @@ export const claudeHome = (env: NodeJS.ProcessEnv): string =>
 export const claudeProjectsHome = (env: NodeJS.ProcessEnv): string =>
   path.join(claudeHome(env), "projects");
 
-const transcriptIdentity = async (
+export const readClaudeTranscriptIdentity = async (
   transcriptPath: string
 ): Promise<{ sessionId: string; cwd: string } | null> => {
   const sessionId = path.basename(transcriptPath, ".jsonl");
@@ -160,7 +160,7 @@ export const discoverClaudeTranscriptSignals = async (
       if (details.mtimeMs < activation && !cursor) {
         continue;
       }
-      const identity = await transcriptIdentity(transcriptPath);
+      const identity = await readClaudeTranscriptIdentity(transcriptPath);
       if (!identity) continue;
       signals.push({
         sourceSessionId: identity.sessionId,
@@ -222,7 +222,7 @@ export const discoverClaudeHistoricalTranscriptSignals = async (
       .slice(0, 10_000);
     for (const file of files) {
       const transcriptPath = path.join(projectPath, file.name);
-      const identity = await transcriptIdentity(transcriptPath);
+      const identity = await readClaudeTranscriptIdentity(transcriptPath);
       if (!identity || !requested.has(identity.sessionId)) continue;
       const details = await stat(transcriptPath);
       signals.push({
@@ -265,7 +265,7 @@ export const discoverAllClaudeHistoricalTranscriptSignals = async (
       .slice(0, 10_000);
     for (const file of files) {
       const transcriptPath = path.join(projectPath, file.name);
-      const identity = await transcriptIdentity(transcriptPath);
+      const identity = await readClaudeTranscriptIdentity(transcriptPath);
       if (!identity) continue;
       const details = await stat(transcriptPath);
       signals.push({

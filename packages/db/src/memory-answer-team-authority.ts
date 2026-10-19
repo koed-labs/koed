@@ -90,6 +90,7 @@ const grantFingerprint = async (
     const { row, grant, representation: record } = authorized;
     bindings.push({
       representation,
+      repositorySnapshot: row.repository_snapshot,
       grantVersion: grant.grantVersion,
       consentId: grant.consentId,
       sourceRevisionHash: record.sourceRevisionHash,

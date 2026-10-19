@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveMcpConversationDirectory } from "./conversation-directory.js";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
 import { splitMemoryAnswerDeliveryInput } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import {
@@ -109,7 +110,8 @@ const backendToolCapabilities = async (
   }));
 
 const defaultCallerContext = (
-  context: Parameters<NonNullable<Parameters<McpServer["registerTool"]>[2]>>[1]
+  context: Parameters<NonNullable<Parameters<McpServer["registerTool"]>[2]>>[1],
+  cwd: string
 ): LocalRuntimeCallerContext => {
   const envelope = (context.mcpReq.envelope ?? {}) as Record<string, unknown>;
   const asRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -117,7 +119,7 @@ const defaultCallerContext = (
       ? (value as Record<string, unknown>)
       : undefined;
   return {
-    cwd: process.cwd(),
+    cwd,
     ...(typeof envelope[PROTOCOL_VERSION_META_KEY] === "string"
       ? { protocolVersion: envelope[PROTOCOL_VERSION_META_KEY] as string }
       : {}),
@@ -232,7 +234,7 @@ export const createKoedMcpServer = async (
   {
     runtimeClient = new LocalAiRuntimeClient(),
     environment = process.env,
-    callerContextResolver = ({ defaultContext }) => defaultContext
+    callerContextResolver
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
@@ -294,10 +296,42 @@ export const createKoedMcpServer = async (
       },
       async (input, context) => {
         try {
-          const caller = callerContextResolver({
-            defaultContext: defaultCallerContext(context),
-            requestContext: _requestContext
-          });
+          // This is per-invocation transport context, never durable tool input.
+          // A shared adapter must not retain the last Conversation's directory.
+          const { conversation_cwd, ...executionInput } = input as Record<
+            string,
+            unknown
+          >;
+          const fallback = defaultCallerContext(context, process.cwd());
+          const directory = callerContextResolver
+            ? fallback.cwd
+            : resolveMcpConversationDirectory({
+                conversationCwd: conversation_cwd,
+                managedCwd: environment.KOED_MCP_CWD,
+                metadata: context.mcpReq._meta,
+                clientName: fallback.clientInfo?.name,
+                startupCwd: fallback.cwd
+              });
+          const caller = callerContextResolver
+            ? callerContextResolver({
+                defaultContext: fallback,
+                requestContext: _requestContext
+              })
+            : { ...fallback, cwd: directory ?? fallback.cwd };
+          if (
+            toolName === "memory_answer" &&
+            directory === undefined &&
+            !callerContextResolver &&
+            executionInput.project_id === undefined &&
+            executionInput.repository_context === undefined
+          ) {
+            if ((executionInput.search_domain ?? "project") === "project")
+              throw new Error(
+                "Koed cannot identify this Conversation's Project. Review and trust Koed's PreToolUse hook, or pass an explicit project_id. Multiple workspace folders are not an implicit Project selection."
+              );
+            if (executionInput.search_domain === "global")
+              executionInput.repository_context = null;
+          }
           // Runtime processes can outlive adapter upgrades or be replaced while
           // this MCP connection remains open. Recheck new contract features.
           if (
@@ -317,7 +351,7 @@ export const createKoedMcpServer = async (
             }
           }
           const invocationKey = `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`;
-          const answerInput = input as Record<string, unknown>;
+          const answerInput = executionInput;
           const delivery = splitMemoryAnswerDeliveryInput(answerInput);
           if (
             toolName === "memory_answer" &&

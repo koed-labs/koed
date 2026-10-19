@@ -102,6 +102,33 @@ const reloadableRuntimeSecret = () => {
 };
 
 describe("PDS secure runtime", () => {
+  it("accepts validated private Project epoch history after a key refresh", async () => {
+    const secret = reloadableRuntimeSecret();
+    const runtime = await createPdsSecureRuntimeFromEnvironment(
+      { PDS_SECRET_PROVIDER: "headless", PDS_RUNTIME_SECRET_REF: "runtime" },
+      {
+        resolveHeadlessSecret: async () =>
+          JSON.stringify({
+            ...secret,
+            historicalProjectKeys: {
+              "0": randomBytes(32).toString("base64url")
+            }
+          })
+      }
+    );
+    expect(runtime.secureKeyProvider).not.toBeNull();
+    const invalid = await createPdsSecureRuntimeFromEnvironment(
+      { PDS_SECRET_PROVIDER: "headless", PDS_RUNTIME_SECRET_REF: "runtime" },
+      {
+        resolveHeadlessSecret: async () =>
+          JSON.stringify({
+            ...secret,
+            historicalProjectKeys: { "0": "invalid" }
+          })
+      }
+    );
+    expect(invalid.secureKeyProvider).toBeNull();
+  });
   it("stores retained packages in the strict canonical relay wire form", () => {
     const serialized = serializePdsPackageForEncryptedStorage({
       z: "last",
@@ -466,7 +493,8 @@ describe("PDS secure runtime", () => {
       built.sourceManifestHash
     );
     expect(built.manifest).toMatchObject({
-      version: "2",
+      version: "4",
+      profileTransition: null,
       profile: "cumulative_checkpoint",
       packageId: built.package.header.packageId,
       sourceClosureHash: built.sourceClosureHash

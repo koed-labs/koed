@@ -624,6 +624,14 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.review_shared_project_snapshot": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.update_shared_project_snapshot": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.change_shared_memory_fidelity": {
     scope: "team",
     desktopOperationFamily: write

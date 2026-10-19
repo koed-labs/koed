@@ -1,7 +1,12 @@
+import {
+  pinRepositoryRecallContext,
+  resolveRequestedProjectRoot
+} from "./repository-recall-context.js";
 import os from "node:os";
 import path from "node:path";
 import {
   isTeamMemoryAnswerTaskCapability,
+  requirePortableTeamRepositoryContext,
   readLocalEdgeClientCredentialAuthorization,
   readLocalEdgeUpstreamRegistry,
   type ClaimedMemoryAnswerTask,
@@ -426,11 +431,11 @@ export const createMemoryAnswerTaskCoordinator = (
       const caller = request.request.caller as { cwd?: string } | undefined;
       const projectRoot =
         input.search_domain === "project"
-          ? input.project_id &&
-            (path.isAbsolute(input.project_id) ||
-              path.win32.isAbsolute(input.project_id))
-            ? input.project_id
-            : path.resolve(caller?.cwd ?? "")
+          ? resolveRequestedProjectRoot(
+              input,
+              { cwd: caller?.cwd ?? "" },
+              environment
+            )
           : undefined;
       const route = resolveProjectTeamWorkspaceRoute({
         projectRoot,
@@ -443,7 +448,16 @@ export const createMemoryAnswerTaskCoordinator = (
             "A Team Workspace is required for Team recall",
             400
           );
-        return { backendId: "personal", input: request };
+        const pinned = await pinRepositoryRecallContext(
+          input,
+          { cwd: caller?.cwd ?? "" },
+          environment,
+          client.resolveProjectRouting?.bind(client)
+        );
+        return {
+          backendId: "personal",
+          input: { ...request, request: { ...request.request, input: pinned } }
+        };
       }
       let backendId = "remote-team";
       if (!allowTeamRuntime) {
@@ -485,10 +499,19 @@ export const createMemoryAnswerTaskCoordinator = (
         )
           throw unavailable("Team Workspace route is not currently authorized");
         backendId = `upstream:${selected}`;
-      } else if (input.team_backend_id && input.team_backend_id !== "remote") {
-        throw unavailable("Requested Team backend is not available");
+      } else {
+        if (!supportsTeamMemoryAnswerTasks(await client.capabilities()))
+          throw unavailable("Team Memory Answer tasks are not available");
+        if (input.team_backend_id && input.team_backend_id !== "remote")
+          throw unavailable("Requested Team backend is not available");
       }
-      const normalized = { ...input };
+      const normalized = await pinRepositoryRecallContext(
+        input,
+        { cwd: caller?.cwd ?? "" },
+        environment
+      );
+      if (normalized.search_domain === "project")
+        requirePortableTeamRepositoryContext(normalized.repository_context);
       delete normalized.team_backend_id;
       return {
         backendId,
@@ -498,8 +521,7 @@ export const createMemoryAnswerTaskCoordinator = (
             ...request.request,
             input: {
               ...normalized,
-              team_workspace_id: route.teamWorkspaceId,
-              ...(projectRoot ? { project_id: projectRoot } : {})
+              team_workspace_id: route.teamWorkspaceId
             }
           }
         }

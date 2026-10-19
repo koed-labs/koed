@@ -1,3 +1,4 @@
+import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import {
   createHash,
   createCipheriv,
@@ -59,13 +60,15 @@ import {
   pdsPortableMemoryEventContentHash,
   pdsPortableMemoryEventId,
   rawConversationTransportChunkGroupId,
+  repositoryScopeId,
   resolveSupportedEmbeddingModelConfig,
-  type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncPackageV2,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ManagedKmsKeyring,
-  type PdsPortableMemoryEmbeddingV1
+  type PdsPortableMemoryEmbeddingV1,
+  type RepositoryIdentity
 } from "@koed/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -181,6 +184,9 @@ const testSyncPackageUploadManifest = (input?: {
   format: CAPTURED_SESSION_SYNC_FORMAT,
   formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   packageDigest: input?.packageDigest ?? "0".repeat(64),
+  repositorySnapshotHash: crossIdentitySyncDigest(
+    unresolvedTeamRepositorySnapshot()
+  ),
   summaryRevisionHash: input?.summaryRevisionHash ?? null,
   recipientKeyId: "test-recipient-key",
   recipientKeyVersion: 1,
@@ -312,6 +318,48 @@ describeDb("memory repository visibility", () => {
       content: input.content,
       visibility: input.visibility,
       metadata: input.metadata
+    });
+
+  // Only repository assignment selects a Project, so Project-scoped fixtures
+  // capture into a Session that carries a selected repository identity.
+  const fixtureRepositoryIdentity = (name: string): RepositoryIdentity => ({
+    kind: "portable_repository",
+    key: `gr_${name}`,
+    root: `/checkout/${name}`,
+    branch: "main",
+    reason: "origin",
+    checkoutId: `checkout_${name}`,
+    originatingDeviceId: "fixture_device",
+    selectedRemote: "origin",
+    anchorDisplay: `example.test/${name}`
+  });
+  const projectScope = (name: string) =>
+    repositoryScopeId(fixtureRepositoryIdentity(name));
+  const projectSessionIds = new Map<string, string>();
+  const projectSessionId = async (userId: string, projectId: string) => {
+    const cacheKey = `${userId}:${projectId}`;
+    const cached = projectSessionIds.get(cacheKey);
+    if (cached) return cached;
+    const session = await repo.createCapturedSession(
+      { userId },
+      {
+        projectId,
+        externalSessionId: `project-fixture-${randomUUID()}`,
+        repositoryIdentity: fixtureRepositoryIdentity(projectId)
+      }
+    );
+    projectSessionIds.set(cacheKey, session.id);
+    return session.id;
+  };
+  const captureProjectEvent = async (
+    engine: ReturnType<typeof createMemoryEngine>,
+    userId: string,
+    input: Parameters<typeof captureUserEvent>[2]
+  ) =>
+    captureUserEvent(engine, userId, {
+      ...input,
+      sessionId:
+        input.sessionId ?? (await projectSessionId(userId, input.projectId))
     });
 
   const embedPendingSources = async () => {
@@ -9247,6 +9295,335 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("adopts directed profile receipts atomically without replacing retained source bytes", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-disconnect-${randomUUID()}@example.com`
+    });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const createSource = async (backendId: string) => {
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          projectId: `sync-${backendId}`,
+          externalSessionId: `sync-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript"
+        }
+      );
+      const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+        protocolDeploymentId: randomUUID(),
+        profile: "team_self_hosted",
+        baseUrl: `https://${backendId}.example.test`,
+        upstreamBackendId: backendId
+      });
+      const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+        deploymentIdentityId: remoteDeployment.id,
+        externalSubjectId: `remote-${backendId}`
+      });
+      await encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: remoteUser.id,
+          proofKind: "device_enrollment",
+          proofReference: `credential-${backendId}-${randomUUID()}`
+        }
+      );
+      const relationshipId = randomUUID();
+      await encryptedRepo.createSourceSyncRelationship(
+        { userId: owner.id },
+        {
+          relationshipId,
+          logicalMemoryId: (await encryptedRepo.getCapturedSessionSummary(
+            { userId: owner.id },
+            session.id
+          ))!.logicalMemoryId!,
+          localReplicaId: randomUUID(),
+          sessionId: session.id,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: remoteDeployment.id,
+          remoteUserIdentityId: remoteUser.id,
+          remoteReplicaId: randomUUID(),
+          idempotencyKey: `sync-${backendId}`,
+          creationRequestHash: crossIdentitySyncDigest({ backendId }),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true }
+        }
+      );
+      await encryptedRepo.activateSourceSyncRelationship({
+        relationshipId,
+        localUserId: owner.id
+      });
+      const uploadId = randomUUID();
+      await pool.query(
+        "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,1,0,1,2,2,1,$7)",
+        [
+          uploadId,
+          relationshipId,
+          randomUUID(),
+          "b".repeat(64),
+          JSON.stringify({
+            objectClass: "sync_package",
+            format: "koed.captured-session-sync/v1",
+            formatVersion: 1,
+            packageDigest: "c".repeat(64),
+            summaryRevisionHash: null,
+            recipientKeyId: "old-key",
+            recipientKeyVersion: 1,
+            recordCount: 1
+          }),
+          "d".repeat(64),
+          `upload-${backendId}`
+        ]
+      );
+      return { relationshipId, uploadId, sessionId: session.id };
+    };
+
+    for (const outcome of ["superseded", "applied"] as const) {
+      const f = await createSource(`profile-${outcome}`);
+      const request = (await encryptedRepo.getSourceSyncProfileTransition({
+        relationshipId: f.relationshipId
+      }))!;
+      expect(request).toMatchObject({
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 1
+      });
+      const raw = {
+        ciphertext: randomBytes(48).toString("base64"),
+        fixture: "retained source V1 chunk"
+      };
+      await pool.query(
+        "insert into sync_package_chunks (upload_session_id,chunk_index,chunk_checksum,byte_count,encrypted_payload) values ($1,0,$2,1,$3::jsonb)",
+        [f.uploadId, "a".repeat(64), JSON.stringify(raw)]
+      );
+      await pool.query(
+        "update sync_package_upload_sessions set updated_at=now()-interval '1 year' where id=$1",
+        [f.uploadId]
+      );
+      await pool.query(
+        "update sync_outbox_entries set state='failed',updated_at=now()-interval '1 year' where sync_relationship_id=$1",
+        [f.relationshipId]
+      );
+      await encryptedRepo.cleanupCrossIdentitySyncState({
+        abandonedUploadHours: 1,
+        terminalQueueRetentionHours: 1,
+        terminalUploadRetentionHours: 1
+      });
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from sync_package_upload_sessions where id=$1",
+            [f.uploadId]
+          )
+        ).rows[0]!.state
+      ).toBe("uploading");
+      expect(
+        (
+          await pool.query(
+            "select id from sync_package_chunks where upload_session_id=$1",
+            [f.uploadId]
+          )
+        ).rowCount
+      ).toBe(1);
+      await expect(
+        encryptedRepo.getSyncPackageBySequence({
+          relationshipId: f.relationshipId,
+          sourceSequence: 1
+        })
+      ).rejects.toThrow();
+      const legacyQueue = (
+        await pool.query<{ id: string }>(
+          "select id from sync_outbox_entries where sync_relationship_id=$1 and idempotency_key='changes'",
+          [f.relationshipId]
+        )
+      ).rows[0]!;
+      await pool.query(
+        "update sync_outbox_entries set state='processing',attempt_count=max_attempts,claim_token=$2,lease_expires_at=now()-interval '1 second' where id=$1",
+        [legacyQueue.id, randomUUID()]
+      );
+      expect(await encryptedRepo.enqueueSourceSyncProfileTransitions()).toBe(1);
+      expect(await encryptedRepo.enqueueSourceSyncProfileTransitions()).toBe(0);
+      const queue = (await encryptedRepo.claimSyncQueueEntry({
+        queue: "outbox",
+        leaseMs: 60_000
+      }))!;
+      expect(queue.idempotencyKey).toBe(
+        `profile-transition-reconcile:${request.packageId}`
+      );
+      const claimToken = queue.claimToken!;
+      const before = await encryptedRepo.getCapturedSession(
+        { userId: owner.id },
+        f.sessionId
+      );
+      const cursor = outcome === "applied" ? 1 : 0;
+      const receipt = {
+        request,
+        outcome,
+        sourceCursor: cursor,
+        targetProcessingCursor: cursor,
+        packageSequence: 1,
+        issuedAt: new Date().toISOString()
+      };
+      await expect(
+        encryptedRepo.adoptSourceSyncProfileReceipt({
+          receipt,
+          outboxId: queue.id,
+          claimToken: randomUUID()
+        })
+      ).resolves.toBe(false);
+      await expect(
+        encryptedRepo.adoptSourceSyncProfileReceipt({
+          receipt: {
+            ...receipt,
+            request: { ...request, packageChecksum: "f".repeat(64) }
+          },
+          outboxId: queue.id,
+          claimToken
+        })
+      ).rejects.toThrow(/conflicts/);
+      const input = { receipt, outboxId: queue.id, claimToken };
+      await pool.query(
+        "update sync_outbox_entries set lease_expires_at=now()-interval '1 second' where id=$1",
+        [queue.id]
+      );
+      expect(await encryptedRepo.adoptSourceSyncProfileReceipt(input)).toBe(
+        false
+      );
+      await pool.query(
+        "update sync_outbox_entries set lease_expires_at=now()+interval '1 hour' where id=$1",
+        [queue.id]
+      );
+
+      expect(await encryptedRepo.adoptSourceSyncProfileReceipt(input)).toBe(
+        true
+      );
+      expect(await encryptedRepo.adoptSourceSyncProfileReceipt(input)).toBe(
+        true
+      );
+      expect(
+        (
+          await pool.query(
+            "select source_cursor,target_processing_cursor,package_sequence,source_repository_snapshot_hash,state from cross_identity_sync_relationships where id=$1",
+            [f.relationshipId]
+          )
+        ).rows
+      ).toEqual([
+        {
+          source_cursor: String(cursor),
+          target_processing_cursor: String(cursor),
+          package_sequence: "1",
+          source_repository_snapshot_hash: null,
+          state: "stale"
+        }
+      ]);
+      expect(
+        (
+          await pool.query<{ encrypted_payload: unknown }>(
+            "select encrypted_payload from sync_package_chunks where upload_session_id=$1",
+            [f.uploadId]
+          )
+        ).rows[0]!.encrypted_payload
+      ).toEqual(raw);
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from sync_package_upload_sessions where id=$1",
+            [f.uploadId]
+          )
+        ).rows[0]!.state
+      ).toBe(outcome === "applied" ? "completed" : "superseded");
+      expect(
+        (
+          await pool.query(
+            "select state,claim_token,lease_expires_at from sync_outbox_entries where id=$1",
+            [queue.id]
+          )
+        ).rows
+      ).toEqual([
+        { state: "completed", claim_token: null, lease_expires_at: null }
+      ]);
+      expect(
+        (
+          await pool.query(
+            "select state,payload_manifest from sync_outbox_entries where sync_relationship_id=$1 and idempotency_key=$2",
+            [f.relationshipId, `profile-transition:${request.packageId}`]
+          )
+        ).rows
+      ).toEqual([
+        {
+          state: "pending",
+          payload_manifest: {
+            kind: "repository_snapshot",
+            previousPackageId: request.packageId
+          }
+        }
+      ]);
+      expect(
+        (
+          await pool.query(
+            "select state,claim_token,lease_expires_at,attempt_count from sync_outbox_entries where id=$1",
+            [legacyQueue.id]
+          )
+        ).rows
+      ).toEqual([
+        {
+          state: "cancelled",
+          claim_token: null,
+          lease_expires_at: null,
+          attempt_count: 8
+        }
+      ]);
+      const delta = await encryptedRepo.readCapturedSessionSyncDelta({
+        relationshipId: f.relationshipId
+      });
+      expect(delta?.repositorySnapshotChanged).toBe(true);
+      expect(
+        (
+          await encryptedRepo.getCapturedSession(
+            { userId: owner.id },
+            f.sessionId
+          )
+        )?.repositoryAssignment
+      ).toEqual(before?.repositoryAssignment);
+      expect(
+        await encryptedRepo.getSourceSyncProfileTransition({
+          relationshipId: f.relationshipId
+        })
+      ).toBeNull();
+      await encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        f.relationshipId
+      );
+      expect(await encryptedRepo.adoptSourceSyncProfileReceipt(input)).toBe(
+        false
+      );
+    }
+    const current = await createSource("profile-v2-cleanup");
+    await pool.query(
+      "update sync_package_upload_sessions set package_manifest=$2::jsonb,updated_at=now()-interval '1 year' where id=$1",
+      [current.uploadId, JSON.stringify(testSyncPackageUploadManifest())]
+    );
+    await encryptedRepo.cleanupCrossIdentitySyncState({
+      abandonedUploadHours: 1
+    });
+    expect(
+      (
+        await pool.query<{ state: string }>(
+          "select state from sync_package_upload_sessions where id=$1",
+          [current.uploadId]
+        )
+      ).rows[0]!.state
+    ).toBe("failed");
+  });
+
   it("quarantines only the disconnected backend's source sync work", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
@@ -9827,6 +10204,9 @@ describeDb("memory repository visibility", () => {
       packageId: acknowledgedPackageId
     });
     const acknowledgement = {
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId: ids.relationshipId,
       packageId: acknowledgedPackageId,
       sourceCursor: delta!.changes[0]!.cursor,
@@ -10096,6 +10476,9 @@ describeDb("memory repository visibility", () => {
         ids.relationshipId
       ),
       encryptedRepo.acknowledgeSourceSyncPackage({
+        repositorySnapshotHash: crossIdentitySyncDigest(
+          unresolvedTeamRepositorySnapshot()
+        ),
         relationshipId: ids.relationshipId,
         packageId: inFlightPackageId,
         sourceCursor: delta!.changes[1]!.cursor,
@@ -10178,6 +10561,9 @@ describeDb("memory repository visibility", () => {
     });
     await expect(
       encryptedRepo.acknowledgeSourceSyncPackage({
+        repositorySnapshotHash: crossIdentitySyncDigest(
+          unresolvedTeamRepositorySnapshot()
+        ),
         relationshipId: ids.relationshipId,
         packageId: randomUUID(),
         sourceCursor: delta!.changes[1]!.cursor,
@@ -10458,6 +10844,9 @@ describeDb("memory repository visibility", () => {
     expect(Array.isArray(leafSummaryNode?.sourceOriginEventIds)).toBe(true);
     expect(leafSummaryNode?.childOriginNodeIds).toEqual([]);
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: leafDelta!.toCursor,
@@ -10507,6 +10896,9 @@ describeDb("memory repository visibility", () => {
       "rollup"
     ]);
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: rollupDelta!.toCursor,
@@ -10597,6 +10989,9 @@ describeDb("memory repository visibility", () => {
       summaryRevisionHash: crossIdentitySyncDigest([])
     });
     await encryptedRepo.acknowledgeSourceSyncPackage({
+      repositorySnapshotHash: crossIdentitySyncDigest(
+        unresolvedTeamRepositorySnapshot()
+      ),
       relationshipId,
       packageId: randomUUID(),
       sourceCursor: emptySummaryDelta!.toCursor,
@@ -10613,6 +11008,307 @@ describeDb("memory repository visibility", () => {
         representation: "lcm_rollups"
       })
     ).resolves.toBe("pending");
+  });
+
+  it("reconciles retained V1 delivery metadata without reading package bodies", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      ),
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        createLocalTestKeyEnvelopeEncryptionProvider(
+          randomBytes(32).toString("base64")
+        )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-intake-owner-${randomUUID()}@example.com`
+    });
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceUserId = randomUUID();
+    const challengeHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: `sync-source-${randomUUID()}`,
+      deviceInstanceId: `sync-source-device-${randomUUID()}`,
+      requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const credential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash,
+        credentialKeyId: `sync-intake-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: randomBytes(32).toString("hex"),
+        operationFamilies: ["sync"]
+      }
+    );
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "team_self_hosted",
+      protocolDeploymentId: randomUUID()
+    });
+    const relationshipInput = (overrides: Record<string, unknown> = {}) => {
+      const originSessionId = randomUUID();
+      return {
+        relationshipId: randomUUID(),
+        logicalMemoryId: randomUUID(),
+        originSessionId,
+        localDeploymentIdentityId: localDeployment.id,
+        sourceDeploymentProtocolId,
+        sourceUserId,
+        remoteReplicaId: randomUUID(),
+        localReplicaId: randomUUID(),
+        idempotencyKey: `sync-intake-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true },
+        session: {
+          repositorySnapshot: unresolvedTeamRepositorySnapshot(),
+          originSessionId,
+          externalSessionId: `source-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript" as const,
+          capturedAt: "2026-07-12T00:00:00.000Z",
+          title: "Atomic sync intake",
+          sourceAdapterVersion: "1"
+        },
+        ...overrides
+      };
+    };
+
+    const actor = { userId: owner.id, deviceCredentialId: credential!.id };
+    for (const scenario of ["queued", "partial", "applied"] as const) {
+      const target = await encryptedRepo.createTargetSyncRelationship(
+        actor,
+        relationshipInput()
+      );
+      const relationshipId = target!.relationship.id;
+      const packageId = randomUUID();
+      const manifest = {
+        objectClass: "sync_package",
+        format: "koed.captured-session-sync/v1",
+        formatVersion: 1,
+        packageDigest: "a".repeat(64),
+        summaryRevisionHash: null,
+        recipientKeyId: "old-fixture-key",
+        recipientKeyVersion: 1,
+        recordCount: 1
+      };
+      const request = {
+        protocol: "koed.captured-session-sync/profile-transition/v1" as const,
+        relationshipId,
+        packageId,
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 4,
+        requestHash: "b".repeat(64),
+        manifestHash: crossIdentitySyncDigest(manifest),
+        packageChecksum: "c".repeat(64)
+      };
+      const opaque = {
+        ciphertext: randomBytes(48).toString("base64"),
+        fixture: "retained pre-cutover ciphertext"
+      };
+      let uploadId: string | undefined;
+      if (scenario !== "queued") {
+        uploadId = (
+          await pool.query<{ id: string }>(
+            `insert into sync_package_upload_sessions (sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key)
+          values ($1,$2,$3,$4,$5::jsonb,$6,1,0,4,500,2,'package:1') returning id`,
+            [
+              relationshipId,
+              packageId,
+              scenario === "applied" ? "completed" : "uploading",
+              request.requestHash,
+              JSON.stringify(manifest),
+              request.packageChecksum
+            ]
+          )
+        ).rows[0]!.id;
+        await pool.query(
+          "insert into sync_package_chunks (upload_session_id,chunk_index,chunk_checksum,byte_count,encrypted_payload) values ($1,0,$2,100,$3::jsonb)",
+          [uploadId, "d".repeat(64), JSON.stringify(opaque)]
+        );
+        if (scenario === "applied")
+          await pool.query(
+            "update cross_identity_sync_relationships set source_cursor=4,target_processing_cursor=4,package_sequence=1,last_package_id=$2 where id=$1",
+            [relationshipId, packageId]
+          );
+        await pool.query(
+          "insert into sync_inbox_entries (sync_relationship_id,upload_session_id,idempotency_key,request_hash,state,claim_token,lease_expires_at) values ($1,$2,'old-inbox',$3,'processing',$4,now()+interval '1 hour')",
+          [relationshipId, uploadId, request.requestHash, randomUUID()]
+        );
+        await pool.query(
+          "update sync_inbox_entries set state='pending',claim_token=null,lease_expires_at=null where upload_session_id=$1",
+          [uploadId]
+        );
+        expect(
+          await encryptedRepo.claimSyncQueueEntry({
+            queue: "inbox",
+            leaseMs: 30_000
+          })
+        ).toBeNull();
+        await pool.query(
+          "update sync_inbox_entries set state='processing',claim_token=$2,lease_expires_at=now()+interval '1 hour' where upload_session_id=$1",
+          [uploadId, randomUUID()]
+        );
+        await pool.query(
+          "update sync_package_upload_sessions set updated_at=now()-interval '1 year',completed_at=case when state='completed' then now()-interval '1 year' else completed_at end where id=$1",
+          [uploadId]
+        );
+        await encryptedRepo.cleanupCrossIdentitySyncState({
+          completedRetentionHours: 1,
+          abandonedUploadHours: 1,
+          terminalUploadRetentionHours: 1
+        });
+        expect(
+          (
+            await pool.query(
+              "select id from sync_package_chunks where upload_session_id=$1",
+              [uploadId]
+            )
+          ).rowCount
+        ).toBe(1);
+        expect(
+          (
+            await pool.query<{ state: string }>(
+              "select state from sync_package_upload_sessions where id=$1",
+              [uploadId]
+            )
+          ).rows[0]!.state
+        ).toBe(scenario === "applied" ? "completed" : "uploading");
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, {
+            ...request,
+            packageChecksum: "e".repeat(64)
+          })
+        ).rejects.toThrow(/conflicts/);
+      } else
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, {
+            ...request,
+            sourceSequence: 3
+          })
+        ).rejects.toThrow(/conflicts/);
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile({ userId: owner.id }, request)
+      ).resolves.toBeNull();
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(
+          { userId: randomUUID(), deviceCredentialId: credential!.id },
+          request
+        )
+      ).resolves.toBeNull();
+      const receipt = await encryptedRepo.reconcileTargetSyncProfile(
+        actor,
+        request
+      );
+      expect(receipt).toMatchObject({
+        request,
+        outcome: scenario === "applied" ? "applied" : "superseded",
+        packageSequence: 1,
+        targetProcessingCursor: scenario === "applied" ? 4 : 0
+      });
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(actor, request)
+      ).resolves.toEqual(receipt);
+      await expect(
+        encryptedRepo.reconcileTargetSyncProfile(actor, {
+          ...request,
+          packageId: randomUUID()
+        })
+      ).rejects.toThrow(/conflicts/);
+      expect(
+        (
+          await pool.query<{
+            package_sequence: string;
+            target_processing_cursor: string;
+          }>(
+            "select package_sequence,target_processing_cursor from cross_identity_sync_relationships where id=$1",
+            [relationshipId]
+          )
+        ).rows[0]
+      ).toEqual({
+        package_sequence: "1",
+        target_processing_cursor: scenario === "applied" ? "4" : "0"
+      });
+      await expect(
+        pool.query(
+          "update sync_profile_transition_receipts set request_digest=$2 where sync_relationship_id=$1",
+          [relationshipId, "f".repeat(64)]
+        )
+      ).rejects.toThrow(/immutable/);
+      if (uploadId) {
+        expect(
+          (
+            await pool.query<{ encrypted_payload: unknown }>(
+              "select encrypted_payload from sync_package_chunks where upload_session_id=$1",
+              [uploadId]
+            )
+          ).rows[0]!.encrypted_payload
+        ).toEqual(opaque);
+        expect(
+          (
+            await pool.query<{ state: string }>(
+              "select state from sync_package_upload_sessions where id=$1",
+              [uploadId]
+            )
+          ).rows[0]!.state
+        ).toBe(scenario === "applied" ? "completed" : "superseded");
+        {
+          expect(
+            (
+              await pool.query(
+                "select state,claim_token,lease_expires_at from sync_inbox_entries where upload_session_id=$1",
+                [uploadId]
+              )
+            ).rows
+          ).toEqual([
+            { state: "cancelled", claim_token: null, lease_expires_at: null }
+          ]);
+          if (scenario === "partial")
+            await expect(
+              encryptedRepo.verifySyncPackageUpload(actor, uploadId, "target")
+            ).rejects.toThrow();
+        }
+      }
+      const next = {
+        syncRelationshipId: relationshipId,
+        protocolPackageId: randomUUID(),
+        idempotencyKey: "package:2",
+        requestHash: "1".repeat(64),
+        packageManifest: testSyncPackageUploadManifest(),
+        packageChecksum: "2".repeat(64),
+        totalBytes: 1,
+        expectedChunkCount: 1,
+        sourceSequence: 1,
+        fromCursor: scenario === "applied" ? 4 : 0,
+        toCursor: 4,
+        relationshipSide: "target" as const
+      };
+      await expect(
+        encryptedRepo.createSyncPackageUploadSession(actor, next)
+      ).rejects.toThrow();
+      await expect(
+        encryptedRepo.createSyncPackageUploadSession(actor, {
+          ...next,
+          sourceSequence: 2
+        })
+      ).resolves.toMatchObject({ sourceSequence: 2 });
+      if (scenario === "applied") {
+        await pool.query(
+          "update device_credentials set revoked_at=now() where id=$1",
+          [credential!.id]
+        );
+        await expect(
+          encryptedRepo.reconcileTargetSyncProfile(actor, request)
+        ).resolves.toBeNull();
+      }
+    }
   });
 
   it("uses the enrolled source identity for fail-closed target sync intake", async () => {
@@ -10672,6 +11368,7 @@ describeDb("memory repository visibility", () => {
         policyManifest: { sourceBoundary: "captured_session" },
         consentManifest: { consented: true },
         session: {
+          repositorySnapshot: unresolvedTeamRepositorySnapshot(),
           originSessionId,
           externalSessionId: `source-session-${randomUUID()}`,
           sourceRuntime: "codex",
@@ -10861,6 +11558,7 @@ describeDb("memory repository visibility", () => {
       policyManifest: { sourceBoundary: "captured_session" as const },
       consentManifest: { consented: true },
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId,
         externalSessionId: "plaintext-source-session-label",
         sourceRuntime: "codex",
@@ -10913,7 +11611,8 @@ describeDb("memory repository visibility", () => {
         external_session_id: null,
         metadata: {
           syncReplica: true,
-          contentEncrypted: true
+          contentEncrypted: true,
+          repositorySnapshot: unresolvedTeamRepositorySnapshot()
         }
       }
     ]);
@@ -11094,6 +11793,7 @@ describeDb("memory repository visibility", () => {
           policyManifest: { sourceBoundary: "captured_session" },
           consentManifest: { consented: true },
           session: {
+            repositorySnapshot: unresolvedTeamRepositorySnapshot(),
             originSessionId: switchedOriginSessionId,
             externalSessionId: "switched-source-thread",
             sourceRuntime: "codex",
@@ -11183,6 +11883,7 @@ describeDb("memory repository visibility", () => {
           policyManifest: { sourceBoundary: "captured_session" },
           consentManifest: { consented: true },
           session: {
+            repositorySnapshot: unresolvedTeamRepositorySnapshot(),
             originSessionId: spoofedOriginSessionId,
             externalSessionId: "spoofed-source-thread",
             sourceRuntime: "codex",
@@ -11340,7 +12041,7 @@ describeDb("memory repository visibility", () => {
       ...summaryNodeBase,
       revisionHash: crossIdentitySyncDigest(summaryNodeBase)
     };
-    const syncPackage: CapturedSessionSyncPackageV1 = {
+    const syncPackage: CapturedSessionSyncPackageV2 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
       policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
@@ -11363,6 +12064,7 @@ describeDb("memory repository visibility", () => {
       }),
       summaryRevisionHash: crossIdentitySyncDigest([summaryNode]),
       session: {
+        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
         originSessionId,
         externalSessionId: "source-thread",
         sourceRuntime: "codex",
@@ -12014,7 +12716,7 @@ describeDb("memory repository visibility", () => {
       ...replacementEventBase,
       revisionHash: crossIdentitySyncDigest(replacementEventBase)
     };
-    const replacementSummaryPackage: CapturedSessionSyncPackageV1 = {
+    const replacementSummaryPackage: CapturedSessionSyncPackageV2 = {
       ...syncPackage,
       packageId: randomUUID(),
       packageSequence: 2,
@@ -12107,7 +12809,7 @@ describeDb("memory repository visibility", () => {
     });
 
     const emptySummaryHash = crossIdentitySyncDigest([]);
-    const emptySummaryPackage: CapturedSessionSyncPackageV1 = {
+    const emptySummaryPackage: CapturedSessionSyncPackageV2 = {
       ...syncPackage,
       packageId: randomUUID(),
       packageSequence: 3,
@@ -16565,7 +17267,7 @@ describeDb("memory repository visibility", () => {
       targetId: event.id,
       metadata: {
         eventType: "user_prompt",
-        projectId: "audit-workspace"
+        projectId: "unassigned"
       }
     });
     expect(
@@ -16645,7 +17347,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content: "Aurora retrieval target for query instruction testing."
     });
@@ -16687,7 +17389,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -16716,7 +17418,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-disabled-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content: "Plain query embedding target for disabled instruction testing."
     });
@@ -16758,7 +17460,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -17710,17 +18412,17 @@ describeDb("memory repository visibility", () => {
     const projectA = `workspace-project-a-${randomUUID()}`;
     const projectB = `workspace-project-b-${randomUUID()}`;
 
-    const oldProjectA = await captureUserEvent(engine, alice.id, {
+    const oldProjectA = await captureProjectEvent(engine, alice.id, {
       projectId: projectA,
       content: "Boundary correlation project A old only.",
       metadata: { project: "a", age: "old" }
     });
-    const recentProjectB = await captureUserEvent(engine, alice.id, {
+    const recentProjectB = await captureProjectEvent(engine, alice.id, {
       projectId: projectB,
       content: "Boundary correlation project B recent only.",
       metadata: { project: "b", age: "recent" }
     });
-    const recentProjectA = await captureUserEvent(engine, alice.id, {
+    const recentProjectA = await captureProjectEvent(engine, alice.id, {
       projectId: projectA,
       content: "Boundary correlation project A recent valid.",
       metadata: { project: "a", age: "recent" }
@@ -17777,7 +18479,7 @@ describeDb("memory repository visibility", () => {
       query: "boundary correlation project",
       scope: "personal",
       searchDomain: "project",
-      projectId: projectA,
+      projectId: projectScope(projectA),
       recentDays: 30,
       limit: 10
     });
@@ -17792,7 +18494,11 @@ describeDb("memory repository visibility", () => {
     const expanded = await engine.expandMemoryNode(
       mixedNode.id,
       { userId: alice.id },
-      { searchDomain: "project", projectId: projectA, recentDays: 30 }
+      {
+        searchDomain: "project",
+        projectId: projectScope(projectA),
+        recentDays: 30
+      }
     );
     expect(expanded.sources).toHaveLength(0);
     expect(
@@ -17955,7 +18661,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-fresh-event-${randomUUID()}`;
-    const event = await captureUserEvent(engine, alice.id, {
+    const event = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
@@ -17969,7 +18675,7 @@ describeDb("memory repository visibility", () => {
       query: "lamp keeper Seraphina",
       scope: "personal",
       searchDomain: "project",
-      projectId: workspaceId,
+      projectId: projectScope(workspaceId),
       retrievalStage: "fresh_pending_search",
       strictLimit: true,
       limit: 1
@@ -17990,14 +18696,14 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-non-tool-fallback-${randomUUID()}`;
-    const agentEvent = await captureUserEvent(engine, alice.id, {
+    const agentEvent = await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       actor: "agent",
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
       metadata: { kind: "story-source" }
     });
-    await captureUserEvent(engine, alice.id, {
+    await captureProjectEvent(engine, alice.id, {
       projectId: workspaceId,
       actor: "tool",
       content:
@@ -18016,7 +18722,7 @@ describeDb("memory repository visibility", () => {
         query: "lamp keeper Seraphina",
         scope: "personal",
         searchDomain: "project",
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         retrievalStage: stage,
         strictLimit: true,
         limit: 1
@@ -19309,13 +20015,13 @@ describeDb("memory repository visibility", () => {
     );
     const projects = await repo.listLcmGraphThreads(
       { userId: alice.id },
-      { projectId: "workspace-standalone-thread", limit: 10 }
+      { projectId: "unassigned", limit: 10 }
     );
     const thread = projects[0]?.threads[0];
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: "workspace-standalone-thread",
+        projectId: "unassigned",
         threadId: thread?.id,
         limit: 10
       }
@@ -20686,6 +21392,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `live-prompt-dedupe-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "api",
@@ -20763,7 +21470,7 @@ describeDb("memory repository visibility", () => {
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -20771,7 +21478,7 @@ describeDb("memory repository visibility", () => {
     const canonicalEvents = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         canonicalCapturedSessionEventsOnly: true,
         limit: 10
@@ -20846,12 +21553,14 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-approval-activity-${randomUUID()}@example.com`
     });
-    const projectId = randomUUID();
+    const projectName = randomUUID();
+    const projectId = projectScope(projectName);
     const parentThreadId = `approval-parent-${randomUUID()}`;
     const parent = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        projectId,
+        projectId: projectName,
+        repositoryIdentity: fixtureRepositoryIdentity(projectName),
         externalSessionId: parentThreadId,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -20861,7 +21570,8 @@ describeDb("memory repository visibility", () => {
     const helper = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        projectId,
+        projectId: projectName,
+        repositoryIdentity: fixtureRepositoryIdentity(projectName),
         externalSessionId: `approval-helper-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -21761,6 +22471,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `source-chronology-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "transcript",
@@ -21841,7 +22552,7 @@ describeDb("memory repository visibility", () => {
     const firstPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1
       }
@@ -21849,7 +22560,7 @@ describeDb("memory repository visibility", () => {
     const secondPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1,
         cursorTimestamp: firstPage[0]!.timestamp,
@@ -21860,7 +22571,7 @@ describeDb("memory repository visibility", () => {
     const legacyCursorPage = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 1,
         cursorTimestamp: firstPage[0]!.timestamp,
@@ -21870,7 +22581,7 @@ describeDb("memory repository visibility", () => {
     const threadIndex = await repo.listLcmGraphThreads(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -21904,6 +22615,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `display-source-${randomUUID()}`,
         sourceRuntime: "codex",
         captureMethod: "transcript",
@@ -22046,7 +22758,7 @@ describeDb("memory repository visibility", () => {
     const displayEvents = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         includeContent: true,
         limit: 10
@@ -22069,7 +22781,7 @@ describeDb("memory repository visibility", () => {
     const threads = await repo.listLcmGraphThreads(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -22569,6 +23281,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         projectId: workspaceId,
+        repositoryIdentity: fixtureRepositoryIdentity(workspaceId),
         externalSessionId: `complete-turn-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `complete-turn-session-${randomUUID()}`
@@ -22671,7 +23384,7 @@ describeDb("memory repository visibility", () => {
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId: projectScope(workspaceId),
         threadId: session.externalSessionId ?? undefined,
         limit: 10
       }
@@ -30429,161 +31142,6 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("keeps Personal Project overrides authoritative and preserves capture provenance", async () => {
-    const alice = await repo.createUser({
-      email: `alice-project-assignment-${randomUUID()}@example.com`
-    });
-    const bob = await repo.createUser({
-      email: `bob-project-assignment-${randomUUID()}@example.com`
-    });
-    const idempotencyKey = `project-assignment-${randomUUID()}`;
-    const capturedProjectId = randomUUID();
-    const session = await repo.createCapturedSession(
-      { userId: alice.id },
-      {
-        projectId: capturedProjectId,
-        externalSessionId: `project-assignment-thread-${randomUUID()}`,
-        sourceRuntime: "codex-cli",
-        idempotencyKey,
-        detectedProjects: [
-          {
-            id: "project-detected-a",
-            name: "Detected A",
-            path: "/work/detected-a"
-          }
-        ]
-      }
-    );
-    const capturedProvenance = session.capturedProjectProvenance;
-
-    const bobSession = await repo.createCapturedSession(
-      { userId: bob.id },
-      {
-        externalSessionId: `other-owner-${randomUUID()}`,
-        idempotencyKey,
-        detectedProjects: [
-          {
-            id: "project-other-owner",
-            name: "Other Owner Project",
-            path: "/work/other-owner"
-          }
-        ]
-      }
-    );
-
-    const moved = await repo.moveCapturedSessionToProject(
-      { userId: alice.id },
-      session.id,
-      {
-        id: "project-manual",
-        name: "Manual Project",
-        path: "/work/manual"
-      }
-    );
-    const forbiddenMove = await repo.moveCapturedSessionToProject(
-      { userId: bob.id },
-      session.id,
-      { id: "project-bob", name: "Bob Project", path: "/work/bob" }
-    );
-    const redetected = await repo.createCapturedSession(
-      { userId: alice.id },
-      {
-        projectId: capturedProjectId,
-        externalSessionId: session.externalSessionId ?? undefined,
-        sourceRuntime: "codex-cli",
-        idempotencyKey,
-        detectedProjects: [
-          {
-            id: "project-detected-b",
-            name: "Detected B",
-            path: "/work/detected-b"
-          }
-        ]
-      }
-    );
-    const latestCapturedSession = await repo.getLatestCapturedSessionForProject(
-      { userId: alice.id },
-      { projectId: "project-detected-b" }
-    );
-    const organizationalLookup = await repo.getLatestCapturedSessionForProject(
-      { userId: alice.id },
-      { projectId: "project-manual" }
-    );
-    await repo.createMemoryEvent(
-      { userId: alice.id },
-      {
-        projectId: capturedProjectId,
-        sessionId: session.id,
-        actor: "user",
-        eventType: "captured",
-        rawEventType: "user_prompt",
-        visibility: "personal",
-        content: "Project assignment should drive grouping and filtering.",
-        idempotencyKey: `project-assignment-event-${randomUUID()}`,
-        sourceHash: `project-assignment-event-${randomUUID()}`
-      }
-    );
-    const manualGraph = await repo.listLcmGraphThreads(
-      { userId: alice.id },
-      { projectId: "project-manual", limit: 10 }
-    );
-    const reset = await repo.resetCapturedSessionProject(
-      { userId: alice.id },
-      session.id
-    );
-    const automaticGraph = await repo.listLcmGraphThreads(
-      { userId: alice.id },
-      { projectId: "project-detected-b", limit: 10 }
-    );
-
-    expect(session).toMatchObject({
-      automaticProject: { id: "project-detected-a" },
-      project: { id: "project-detected-a" },
-      projectAssignmentSource: "detected"
-    });
-    expect(bobSession).toMatchObject({
-      ownerUserId: bob.id,
-      automaticProject: { id: "project-other-owner" },
-      project: { id: "project-other-owner" },
-      projectAssignmentSource: "detected"
-    });
-    expect(bobSession.id).not.toBe(session.id);
-    expect(moved).toMatchObject({
-      projectOverride: { id: "project-manual" },
-      project: { id: "project-manual" },
-      projectAssignmentSource: "user_override",
-      capturedProjectProvenance: capturedProvenance
-    });
-    expect(forbiddenMove).toBeNull();
-    expect(redetected).toMatchObject({
-      automaticProject: { id: "project-detected-b" },
-      projectOverride: { id: "project-manual" },
-      project: { id: "project-manual" },
-      projectAssignmentSource: "user_override",
-      capturedProjectProvenance: capturedProvenance
-    });
-    expect(latestCapturedSession?.id).toBe(session.id);
-    expect(organizationalLookup?.id).toBe(session.id);
-    expect(manualGraph[0]).toMatchObject({
-      id: "project-manual",
-      eventCount: 1,
-      threads: [
-        { sessionId: session.id, projectAssignmentSource: "user_override" }
-      ]
-    });
-    expect(reset).toMatchObject({
-      projectOverride: null,
-      project: { id: "project-detected-b" },
-      projectAssignmentSource: "detected",
-      capturedProjectProvenance: capturedProvenance
-    });
-    expect(automaticGraph[0]).toMatchObject({
-      id: "project-detected-b",
-      eventCount: 1,
-      threads: [{ sessionId: session.id, projectAssignmentSource: "detected" }]
-    });
-  });
-
   it("leaves ambiguous detected Personal Projects unassigned", async () => {
     const alice = await repo.createUser({
       email: `alice-ambiguous-project-${randomUUID()}@example.com`
@@ -30626,119 +31184,9 @@ describeDb("memory repository visibility", () => {
       projectAssignmentSource: null,
       capturedProjectProvenance: { outcome: "ambiguous" }
     });
-    expect(graph[0]).toMatchObject({ id: "unassigned", name: "Unassigned" });
-  });
-
-  it("preserves automatic Project assignment on incomplete idempotent replays", async () => {
-    const owner = await repo.createUser({
-      email: `project-replay-owner-${randomUUID()}@example.com`
-    });
-    const idempotencyKey = `project-replay-${randomUUID()}`;
-    const created = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: `project-replay-thread-${randomUUID()}`,
-        idempotencyKey,
-        detectedProjects: [
-          { id: "project-a", name: "Project A", path: "/work/project-a" }
-        ]
-      }
-    );
-    const incompleteReplay = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: created.externalSessionId ?? undefined,
-        idempotencyKey
-      }
-    );
-    const cwdOnlyReplay = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: created.externalSessionId ?? undefined,
-        idempotencyKey,
-        cwd: "/work/project-a"
-      }
-    );
-    const explicitNoSignalReplay = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: created.externalSessionId ?? undefined,
-        idempotencyKey,
-        detectedProjects: []
-      }
-    );
-
-    expect(incompleteReplay).toMatchObject({
-      id: created.id,
-      automaticProject: { id: "project-a" },
-      project: { id: "project-a" },
-      projectAssignmentSource: "detected",
-      capturedProjectProvenance: created.capturedProjectProvenance
-    });
-    expect(cwdOnlyReplay).toMatchObject({
-      id: created.id,
-      automaticProject: {
-        id: "project-a",
-        name: "Project A",
-        path: "/work/project-a"
-      },
-      project: { id: "project-a" },
-      projectAssignmentSource: "detected",
-      capturedProjectProvenance: created.capturedProjectProvenance
-    });
-    expect(explicitNoSignalReplay).toMatchObject({
-      id: created.id,
-      automaticProject: null,
-      project: null,
-      projectAssignmentSource: null,
-      capturedProjectProvenance: created.capturedProjectProvenance
-    });
-  });
-
-  it("upgrades a cwd fallback when an explicit Personal Project identity arrives", async () => {
-    const owner = await repo.createUser({
-      email: `project-upgrade-owner-${randomUUID()}@example.com`
-    });
-    const idempotencyKey = `project-upgrade-${randomUUID()}`;
-    const externalSessionId = `project-upgrade-thread-${randomUUID()}`;
-    const fallback = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId,
-        idempotencyKey,
-        cwd: "/work/project-upgrade"
-      }
-    );
-    const upgraded = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId,
-        idempotencyKey,
-        cwd: "/work/project-upgrade",
-        detectedProjects: [
-          {
-            id: "lp_0123456789abcdef0123456789abcdef",
-            name: "Project Upgrade",
-            path: "/work/project-upgrade"
-          }
-        ]
-      }
-    );
-
-    expect(fallback).toMatchObject({
-      automaticProject: {
-        id: "/work/project-upgrade",
-        path: "/work/project-upgrade"
-      }
-    });
-    expect(upgraded).toMatchObject({
-      id: fallback.id,
-      automaticProject: {
-        id: "lp_0123456789abcdef0123456789abcdef",
-        name: "Project Upgrade",
-        path: "/work/project-upgrade"
-      },
-      projectAssignmentSource: "detected"
+    expect(graph[0]).toMatchObject({
+      id: "unassigned",
+      name: "Unresolved history"
     });
   });
 
@@ -30783,13 +31231,7 @@ describeDb("memory repository visibility", () => {
           projectName: "Source Project A",
           projectPath: "/work/source-a"
         },
-        detectedProjects: [
-          {
-            id: "project-a",
-            name: "Project A",
-            path: "/work/source-a"
-          }
-        ]
+        repositoryIdentity: fixtureRepositoryIdentity("project-a")
       }
     );
     const event = await repo.createMemoryEvent(
@@ -30849,7 +31291,13 @@ describeDb("memory repository visibility", () => {
     const moved = await repo.moveCapturedSessionToProject(
       { userId: owner.id },
       captured.id,
-      { id: "project-b", name: "Project B", path: "/work/manual-b" }
+      {
+        id: projectScope("project-b"),
+        name: "Project B",
+        path: "/checkout/project-b",
+        repositoryIdentity: fixtureRepositoryIdentity("project-b"),
+        expectedAssignmentVersion: 1
+      }
     );
     const redetected = await repo.createCapturedSession(
       { userId: owner.id },
@@ -30861,23 +31309,23 @@ describeDb("memory repository visibility", () => {
           projectName: "Source Project C",
           projectPath: "/work/source-c"
         },
-        detectedProjects: [
-          {
-            id: "project-c",
-            name: "Project C",
-            path: "/work/source-c"
-          }
-        ]
+        repositoryIdentity: fixtureRepositoryIdentity("project-c")
       }
     );
     const rejectedOtherOwner = await repo.moveCapturedSessionToProject(
       { userId: member.id },
       captured.id,
-      { id: "project-c", name: "Project C", path: null }
+      {
+        id: projectScope("project-c"),
+        name: "Project C",
+        path: null,
+        repositoryIdentity: fixtureRepositoryIdentity("project-c"),
+        expectedAssignmentVersion: 2
+      }
     );
     const personalProjects = await repo.listLcmGraphThreads(
       { userId: owner.id },
-      { projectId: "project-b", limit: 20 }
+      { projectId: projectScope("project-b"), limit: 20 }
     );
     const teamProjects = await repo.listLcmGraphThreads(
       { userId: member.id },
@@ -30889,7 +31337,7 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      projectId: "project-b",
+      projectId: projectScope("project-b"),
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -30899,14 +31347,15 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      projectId: "project-a",
+      projectId: projectScope("project-a"),
       retrievalStage: "raw_fallback_search",
       strictLimit: false,
       limit: 1
     });
     const reset = await repo.resetCapturedSessionProject(
       { userId: owner.id },
-      captured.id
+      captured.id,
+      2
     );
     const ambiguous = await repo.createCapturedSession(
       { userId: owner.id },
@@ -30920,31 +31369,28 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(captured).toMatchObject({
-      project: { id: "project-a" },
+      project: { id: projectScope("project-a") },
       projectAssignmentSource: "detected",
-      capturedProjectProvenance: {
-        outcome: "unambiguous",
-        candidates: [{ id: "project-a" }]
+      repositoryAssignment: {
+        effective: fixtureRepositoryIdentity("project-a")
       }
     });
     expect(moved).toMatchObject({
-      project: { id: "project-b" },
-      projectOverride: { id: "project-b" },
+      project: { id: projectScope("project-b") },
+      projectOverride: { id: projectScope("project-b") },
       projectAssignmentSource: "user_override"
     });
     expect(redetected).toMatchObject({
       id: captured.id,
-      automaticProject: { id: "project-c" },
-      project: { id: "project-b" },
+      automaticProject: { id: projectScope("project-a") },
+      project: { id: projectScope("project-b") },
       projectAssignmentSource: "user_override",
-      capturedProjectProvenance: {
-        candidates: [{ id: "project-a" }]
-      }
+      capturedProjectProvenance: captured.capturedProjectProvenance
     });
     expect(rejectedOtherOwner).toBeNull();
     expect(personalProjects).toEqual([
       expect.objectContaining({
-        id: "project-b",
+        id: projectScope("project-b"),
         eventCount: 1,
         threads: [
           expect.objectContaining({
@@ -30960,9 +31406,9 @@ describeDb("memory repository visibility", () => {
     expect(oldProjectRecall.results).toHaveLength(0);
     expect(teamProjects).toEqual([]);
     expect(reset).toMatchObject({
-      automaticProject: { id: "project-c" },
+      automaticProject: { id: projectScope("project-a") },
       projectOverride: null,
-      project: { id: "project-c" },
+      project: { id: projectScope("project-a") },
       projectAssignmentSource: "detected"
     });
     expect(ambiguous).toMatchObject({
@@ -30983,6 +31429,7 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         cwd,
+        repositoryIdentity: fixtureRepositoryIdentity("canonical-project"),
         externalSessionId: `canonical-project-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `canonical-project-session-${randomUUID()}`
@@ -31053,7 +31500,7 @@ describeDb("memory repository visibility", () => {
 
     expect(projection.memoryEventsCreated).toBe(1);
     expect(projects).toHaveLength(1);
-    expect(projects[0]?.id).toBe(cwd);
+    expect(projects[0]?.id).toBe(projectScope("canonical-project"));
     expect(projects[0]?.threads).toHaveLength(1);
   });
 
@@ -35271,6 +35718,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted",
+          sessionId: await projectSessionId(owner.id, "curated-encrypted"),
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -35283,6 +35731,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted",
+          sessionId: await projectSessionId(owner.id, "curated-encrypted"),
           actor: "agent",
           eventType: "captured",
           rawEventType: "agent_message",
@@ -35295,6 +35744,10 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           projectId: "curated-encrypted-other-workspace",
+          sessionId: await projectSessionId(
+            owner.id,
+            "curated-encrypted-other-workspace"
+          ),
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -35317,7 +35770,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            projectId: "curated-encrypted",
+            projectId: projectScope("curated-encrypted"),
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -35329,7 +35782,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            projectId: "curated-encrypted-missing",
+            projectId: projectScope("curated-encrypted-missing"),
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -35416,7 +35869,7 @@ describeDb("memory repository visibility", () => {
           {
             query: sentinel,
             searchDomain: "project",
-            projectId: "curated-encrypted"
+            projectId: projectScope("curated-encrypted")
           }
         )
       ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -35739,6 +36192,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         projectId: "curated-project-active",
+        sessionId: await projectSessionId(owner.id, "curated-project-active"),
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -35751,6 +36205,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         projectId: "curated-project-deleted",
+        sessionId: await projectSessionId(owner.id, "curated-project-deleted"),
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -35799,7 +36254,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          projectId: "curated-project-deleted"
+          projectId: projectScope("curated-project-deleted")
         }
       )
     ).resolves.toEqual([]);
@@ -35809,7 +36264,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          projectId: "curated-project-active"
+          projectId: projectScope("curated-project-active")
         }
       )
     ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -35978,7 +36433,8 @@ describeDb("memory repository visibility", () => {
             externalSessionId: `curated-ambiguous-${suffix}-${randomUUID()}`,
             sourceRuntime: "codex",
             captureMethod: "api",
-            cwd: "/same/project"
+            cwd: "/same/project",
+            repositoryIdentity: fixtureRepositoryIdentity("same-project")
           }
         )
       )
@@ -36012,7 +36468,7 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.resolveCuratedMemoryProposalEvidence(
         { userId: owner.id },
-        { projectId: "/same/project", exactQuote }
+        { projectId: projectScope("same-project"), exactQuote }
       )
     ).rejects.toMatchObject({ statusCode: 409 });
     await expect(

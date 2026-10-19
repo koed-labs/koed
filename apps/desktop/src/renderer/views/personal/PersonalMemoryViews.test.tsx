@@ -14,6 +14,7 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+import { repositoryScopeId } from "@koed/shared";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -368,6 +369,608 @@ describe("PersonalMemoryWorkspace", () => {
     vi.restoreAllMocks();
   });
 
+  const namedIdentity = {
+    kind: "local_project" as const,
+    key: "project_created",
+    originatingDeviceId: "device",
+    reason: "manual" as const,
+    root: null,
+    branch: null,
+    checkoutId: null,
+    selectedRemote: null,
+    anchorDisplay: null
+  };
+  const createdProject: PersonalDesktopProject = {
+    id: repositoryScopeId(namedIdentity),
+    name: "Manual Project",
+    repository: namedIdentity,
+    path: null,
+    eventCount: 0,
+    threads: []
+  };
+  const submitCreation = async (name = "Manual Project") => {
+    await act(async () =>
+      changeInput(
+        document.querySelector<HTMLInputElement>(
+          ".personal-project-create-dialog input"
+        )!,
+        name
+      )
+    );
+    await act(async () =>
+      document
+        .querySelector(".personal-project-create-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+  };
+
+  it("filters folders without navigating, keeps unmatched history accessible, and restores saved filters", async () => {
+    const one = thread(1, {
+      projectPath: "/work/one",
+      capturedCwd: "/work/one"
+    });
+    const two = thread(2, {
+      projectPath: "/work/two",
+      capturedCwd: "/work/two"
+    });
+    const unknown = thread(3, {
+      projectAssignmentSource: "user_override",
+      projectPath: null
+    });
+    const source = { ...project([one, two, unknown]), path: null };
+    const store = new PersonalMemoryStore(
+      api({ listProjects: async () => [source] })
+    );
+    const saved = new Map<string, string[]>();
+    const previous = window.koedDesktop;
+    const invoke = vi.fn(
+      async (command: string, args: Record<string, unknown> = {}) => {
+        const projectId = String(args.projectId);
+        if (command === "project_folder_filter_set")
+          saved.set(projectId, args.hiddenFolderIds as string[]);
+        return { projectId, hiddenFolderIds: saved.get(projectId) ?? [] };
+      }
+    );
+    window.koedDesktop = { invoke } as unknown as DesktopApi;
+    const onNavigate = vi.fn();
+    const render = () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          store={store}
+          route={{ kind: "project", projectId: source.id }}
+          onNavigate={onNavigate}
+        />
+      );
+    const rows = () =>
+      container.querySelectorAll(".personal-session-row").length;
+    try {
+      await act(async () => render());
+      expect(rows()).toBe(3);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            ".personal-project-details-trigger"
+          )!
+          .click()
+      );
+      const checkbox = document.querySelector<HTMLInputElement>(
+        ".personal-project-folder-filter-row input"
+      )!;
+      const selectAll = document.querySelector<HTMLInputElement>(
+        '[aria-label="Select all folders"]'
+      )!;
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      await act(async () => checkbox.click());
+      expect(rows()).toBe(2);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(true);
+      expect(
+        document.querySelector(".personal-project-details-card")
+      ).not.toBeNull();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(saved.get(source.id)).toHaveLength(1);
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(3);
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(0);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(container.textContent).toContain(
+        "No Conversations match the folder filter"
+      );
+      await act(async () => selectAll.click());
+      expect(rows()).toBe(3);
+      await act(async () =>
+        document
+          .querySelectorAll<HTMLInputElement>(
+            ".personal-project-folder-filter-row input"
+          )[2]!
+          .click()
+      );
+      expect(rows()).toBe(2);
+      await act(async () => root.render(<div />));
+      await act(async () => render());
+      expect(rows()).toBe(2);
+      expect(
+        container.querySelector(".personal-project-filter-status")?.textContent
+      ).toContain("Showing 2 of 3");
+    } finally {
+      window.koedDesktop = previous;
+    }
+  });
+
+  it("creates a named empty Project without a folder and opens it despite an active search", async () => {
+    const registered: PersonalDesktopProject[] = [];
+    const store = new PersonalMemoryStore(
+      api({ listProjects: async () => registered })
+    );
+    const onNavigate = vi.fn();
+    const onCreateProject = vi.fn(async () => {
+      registered.push(createdProject);
+      return (await store.loadProjects()).projectsById.get(createdProject.id)!;
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onCreateProject={onCreateProject}
+          onNavigate={onNavigate}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const search = container.querySelector<HTMLInputElement>(
+      'input[type="search"]'
+    )!;
+    await act(async () => changeInput(search, "missing"));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Create Project"]')!
+        .click()
+    );
+    expect(onCreateProject).not.toHaveBeenCalled();
+    await submitCreation("  Manual Project  ");
+    expect(onCreateProject).toHaveBeenCalledWith("Manual Project");
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: "project",
+      projectId: createdProject.id
+    });
+    expect(search.value).toBe("");
+    expect(
+      [...container.querySelectorAll("[data-project-id]")].some(
+        (element) =>
+          element.getAttribute("data-project-id") === createdProject.id
+      )
+    ).toBe(true);
+    await act(async () => {
+      await store.loadProjects();
+    });
+    expect(store.current().projectsById.get(createdProject.id)).toMatchObject({
+      path: null,
+      threads: []
+    });
+  });
+
+  it("hides empty discovered Projects without a toggle while retaining named Projects and captured Conversations", async () => {
+    const empty = { ...project([]), id: "empty", name: "Empty checkout" };
+    const captured = {
+      ...project([thread(2, { eventCount: 0 })]),
+      id: "captured",
+      name: "Awaiting Memory"
+    };
+    const eventOnly = {
+      ...project([]),
+      id: "events",
+      name: "Retained Memory",
+      eventCount: 1
+    };
+    const chatsMetadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      path: { cwd: "/tmp/independent", projectRoot: null },
+      localProjectId: "empty-chats",
+      displayName: "Chats",
+      contextKind: "independent"
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => [empty, captured, eventOnly, createdProject],
+        listProjectMetadata: async () => [chatsMetadata]
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const pane = container.querySelector(".personal-projects-pane")!;
+    const row = (id: string) =>
+      [...pane.querySelectorAll("[data-project-id]")].find(
+        (element) => element.getAttribute("data-project-id") === id
+      ) ?? null;
+    expect(pane.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(
+      pane.querySelector('[aria-labelledby="personal-empty-projects"]')
+    ).toBeNull();
+    expect(pane.querySelector('[aria-label="3 Projects"]')).not.toBeNull();
+    expect(row(empty.id)).toBeNull();
+    expect(row("empty-chats")).toBeNull();
+    expect(row(createdProject.id)).not.toBeNull();
+    expect(row(captured.id)).not.toBeNull();
+    await act(async () =>
+      pane
+        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")!
+        .click()
+    );
+    expect(row(eventOnly.id)).not.toBeNull();
+    const search = pane.querySelector<HTMLInputElement>(
+      'input[type="search"]'
+    )!;
+    await act(async () => changeInput(search, "Empty checkout"));
+    expect(row(empty.id)).toBeNull();
+    expect(pane.textContent).toContain("No Projects match “Empty checkout”.");
+    expect(store.current().projectsById.has(empty.id)).toBe(true);
+  });
+
+  it.each(["capture", "historical ingestion"])(
+    "reveals an empty discovered Project when %s adds a Conversation",
+    async (source) => {
+      let current = project([]);
+      const store = new PersonalMemoryStore(
+        api({ listProjects: async () => [current] })
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryWorkspace
+            onNavigate={vi.fn()}
+            route={{ kind: "projects" }}
+            store={store}
+          />
+        )
+      );
+      const pane = container.querySelector(".personal-projects-pane")!;
+      expect(pane.querySelector("[data-project-id]")).toBeNull();
+      expect(pane.querySelector('[aria-label="0 Projects"]')).not.toBeNull();
+      expect(container.textContent).toContain("No Projects yet");
+      current = project([
+        thread(2, {
+          eventCount: 0,
+          latestAt: new Date(
+            Date.now() -
+              (source === "historical ingestion" ? 30 : 0) * 86_400_000
+          ).toISOString()
+        })
+      ]);
+      await act(async () => {
+        await store.loadProjects();
+      });
+      if (source === "historical ingestion") {
+        await act(async () =>
+          pane
+            .querySelector<HTMLButtonElement>(".personal-inactive-toggle")!
+            .click()
+        );
+      }
+      expect(
+        pane.querySelector(`[data-project-id="${current.id}"]`)
+      ).not.toBeNull();
+      expect(pane.querySelector('[aria-label="1 Projects"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("No Projects yet");
+    }
+  );
+
+  it("cancels creation without a write and retains a failed name for retry", async () => {
+    const store = new PersonalMemoryStore(api());
+    const onNavigate = vi.fn();
+    const onCreateProject = vi.fn(async (): Promise<null> => {
+      throw new Error("Project could not be saved.");
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          onCreateProject={onCreateProject}
+          onNavigate={onNavigate}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      )
+    );
+    const create = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Create Project"]'
+    )!;
+    await act(async () => create.click());
+    await act(async () =>
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          ".personal-project-create-dialog button"
+        )
+      ]
+        .find((button) => button.textContent === "Cancel")!
+        .click()
+    );
+    expect(onCreateProject).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+    await act(async () => create.click());
+    await submitCreation();
+    expect(
+      document.querySelector('.personal-project-create-dialog [role="alert"]')
+        ?.textContent
+    ).toContain("Project could not be saved.");
+    expect(
+      document.querySelector<HTMLInputElement>(
+        ".personal-project-create-dialog input"
+      )?.value
+    ).toBe("Manual Project");
+  });
+
+  it("creates a destination for unresolved history, moves explicitly, then resets to unresolved", async () => {
+    const id = createdProject.id;
+    const registered: PersonalDesktopProject[] = [];
+    const historical = thread(1, {
+      projectId: "unassigned",
+      projectName: "Unresolved history",
+      capturedCwd: "/recorded/alpha-one",
+      repositoryAssignment: {
+        state: "historical_unresolved",
+        version: 1,
+        automatic: null,
+        override: null,
+        effective: null
+      }
+    });
+    let current = historical;
+    const assignSessionProject = vi.fn<
+      PersonalDesktopApi["assignSessionProject"]
+    >(async (input) => {
+      current =
+        input.action === "move"
+          ? {
+              ...historical,
+              projectId: id,
+              projectName: createdProject.name,
+              projectAssignmentSource: "user_override",
+              repositoryAssignment: {
+                state: "historical_unresolved",
+                version: 2,
+                automatic: null,
+                override: namedIdentity,
+                effective: namedIdentity
+              }
+            }
+          : {
+              ...historical,
+              repositoryAssignment: {
+                ...historical.repositoryAssignment!,
+                version: 3
+              }
+            };
+      return { projectId: current.projectId };
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => [
+          {
+            ...project([current]),
+            id: current.projectId,
+            name: current.projectName
+          },
+          ...registered.filter((entry) => entry.id !== current.projectId)
+        ]
+      })
+    );
+    const onCreateProject = vi.fn(async () => {
+      registered.push(createdProject);
+      return (await store.loadProjects()).projectsById.get(id)!;
+    });
+    await act(async () =>
+      root.render(
+        <Harness
+          initialRoute={{ kind: "session", projectId: "unassigned", sessionId }}
+        >
+          {({ route, onNavigate }) => (
+            <PersonalMemoryWorkspace
+              assignSessionProject={assignSessionProject}
+              onCreateProject={onCreateProject}
+              onNavigate={onNavigate}
+              onSessionProjectAssigned={({ projectId }) =>
+                onNavigate({
+                  kind: "session",
+                  projectId: projectId!,
+                  sessionId
+                })
+              }
+              route={route}
+              store={store}
+            />
+          )}
+        </Harness>
+      )
+    );
+    expect(
+      container.querySelector(
+        '.personal-session-header-actions [aria-label="Move Conversation"]'
+      )
+    ).not.toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
+        .click()
+    );
+    const captureDetails = document.querySelector<HTMLDetailsElement>(
+      ".personal-assignment-capture-details"
+    )!;
+    expect(captureDetails.open).toBe(false);
+    expect(captureDetails.textContent).toContain("/recorded/alpha-one");
+    expect(
+      document
+        .querySelector(
+          '.personal-session-assignment-dialog button[type="submit"]'
+        )
+        ?.hasAttribute("disabled")
+    ).toBe(true);
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '.personal-session-assignment-dialog .personal-project-destination-row [aria-label="Create Project"]'
+        )!
+        .click()
+    );
+    await submitCreation();
+    expect(assignSessionProject).not.toHaveBeenCalled();
+    expect(current.repositoryAssignment?.effective).toBeNull();
+    expect(
+      document.querySelector<HTMLSelectElement>(
+        'select[name="targetProjectId"]'
+      )?.value
+    ).toBe(id);
+    await act(async () =>
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    expect(assignSessionProject).toHaveBeenLastCalledWith({
+      action: "move",
+      sessionId,
+      targetProjectId: id,
+      expectedVersion: 1
+    });
+    expect(store.current().projectsById.get(id)?.threads).toHaveLength(1);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Restore")!
+        .click()
+    );
+    expect(assignSessionProject).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector(".personal-assignment-restore-target")?.textContent
+    ).toContain("Unresolved history");
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Back to Move Conversation"]'
+        )!
+        .click()
+    );
+    expect(
+      document.querySelector<HTMLDetailsElement>(
+        ".personal-assignment-capture-details"
+      )?.open
+    ).toBe(false);
+    expect(
+      document.querySelector(".personal-assignment-capture-details")
+        ?.textContent
+    ).toContain("/recorded/alpha-one");
+    expect(
+      document.querySelector(".personal-session-assignment-dialog")?.textContent
+    ).not.toContain(namedIdentity.key!);
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Restore")!
+        .click()
+    );
+    await act(async () =>
+      [
+        ...document.querySelectorAll(
+          ".personal-session-assignment-dialog button"
+        )
+      ]
+        .find((button) => button.textContent === "Restore")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    );
+    expect(assignSessionProject).toHaveBeenLastCalledWith({
+      action: "reset",
+      sessionId,
+      expectedVersion: 2
+    });
+    expect(
+      store.current().projectsById.get("unassigned")?.threads
+    ).toHaveLength(1);
+    expect(store.current().projectsById.get(id)?.threads).toEqual([]);
+  });
+
+  it("moves a whole Project from its right header action after creating a destination", async () => {
+    const source = project([thread(1)]);
+    const registered: PersonalDesktopProject[] = [];
+    let moved = false;
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => (moved ? registered : [source, ...registered])
+      })
+    );
+    const onCreateProject = vi.fn(async () => {
+      registered.push(createdProject);
+      return (await store.loadProjects()).projectsById.get(createdProject.id)!;
+    });
+    const moveProject = vi.fn<NonNullable<PersonalDesktopApi["moveProject"]>>(
+      async () => {
+        moved = true;
+        return { projectId: createdProject.id, movedCount: 501 };
+      }
+    );
+    const onNavigate = vi.fn();
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          moveProject={moveProject}
+          onCreateProject={onCreateProject}
+          onNavigate={onNavigate}
+          route={{ kind: "project", projectId: source.id }}
+          store={store}
+        />
+      )
+    );
+    expect(
+      container.querySelector(
+        '.personal-project-detail-actions [aria-label="Move Project"]'
+      )
+    ).not.toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Move Project"]')!
+        .click()
+    );
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '.personal-project-move-dialog [aria-label="Create Project"]'
+        )!
+        .click()
+    );
+    await submitCreation();
+    expect(moveProject).not.toHaveBeenCalled();
+    expect(
+      document.querySelector<HTMLSelectElement>(
+        ".personal-project-move-dialog select"
+      )?.value
+    ).toBe(createdProject.id);
+    await act(async () =>
+      document
+        .querySelector(".personal-project-move-dialog form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    expect(moveProject).toHaveBeenCalledWith({
+      sourceProjectId: source.id,
+      targetProjectId: createdProject.id
+    });
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: "project",
+      projectId: createdProject.id
+    });
+  });
+
   it("clears execution context attachments when navigating to another Conversation", async () => {
     const otherSession = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const store = new PersonalMemoryStore(
@@ -426,8 +1029,25 @@ describe("PersonalMemoryWorkspace", () => {
         branch: "main",
         isWorktree: false,
         remotes: [{ display: "github.com/koed-labs/koed" }]
+      },
+      repository: {
+        kind: "portable_repository",
+        key: "koed_index_fixture",
+        root: source.path,
+        branch: "main",
+        checkoutId: "checkout_index_fixture",
+        originatingDeviceId: "studio-id",
+        reason: "origin",
+        selectedRemote: "origin",
+        anchorDisplay: "github.com/koed-labs/koed"
       }
     };
+    source.repository = metadata.repository;
+    source.id = repositoryScopeId(metadata.repository!);
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),
@@ -460,19 +1080,25 @@ describe("PersonalMemoryWorkspace", () => {
         ?.textContent
     ).toBe("Active1");
     expect(container.textContent).toContain("koed-labs/koed");
-    const overview = container.querySelector(
-      '[data-project-id="project-1"] .personal-project-overview'
-    );
-    expect(overview?.getAttribute("aria-label")).toBe(
-      "1 Captured Session · 1000 Memory Events"
-    );
-    expect(overview?.querySelector(".lucide-brain")).not.toBeNull();
-    expect(overview?.querySelector(".lucide-book-text")).not.toBeNull();
+    const row = [
+      ...container.querySelectorAll<HTMLElement>("[data-project-id]")
+    ].find((entry) => entry.dataset.projectId === source.id)!;
+    expect(row.dataset.groupKind).toBe("git");
+    expect(
+      row.querySelector(".personal-project-source-icon .lucide-git-fork")
+    ).not.toBeNull();
+    expect(
+      row
+        .querySelector(
+          ".personal-project-row-heading .personal-project-conversation-count"
+        )
+        ?.getAttribute("aria-label")
+    ).toBe("1 Conversation");
+    expect(row.querySelector(".lucide-brain")).toBeNull();
+    expect(row.textContent).not.toContain("1000");
 
     await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
-        ?.click();
+      row.click();
     });
     const heading = container.querySelector<HTMLElement>(
       '[data-personal-route-focus="project"]'
@@ -673,6 +1299,11 @@ describe("PersonalMemoryWorkspace", () => {
     ).toHaveLength(2);
     expect(container.textContent?.match(/Research Agent/g)).toHaveLength(1);
     expect(container.textContent?.match(/Verification Agent/g)).toHaveLength(1);
+    expect(
+      container
+        .querySelector(".personal-project-conversation-count")
+        ?.getAttribute("aria-label")
+    ).toBe("1 Conversation");
   });
 
   it("provides initial Project loading states for wide and narrow layouts", async () => {
@@ -772,7 +1403,7 @@ describe("PersonalMemoryWorkspace", () => {
     const detail = container.querySelector(".personal-memory-detail-pane");
     const list = container.querySelector(".personal-project-list");
     expect(detail?.textContent).toContain(
-      "Projects appear after the Supported Capture Hook records a Captured Session."
+      "Use + to create a Project, or capture a Conversation to get started."
     );
     expect(list?.textContent).not.toContain("No Projects yet");
     expect(
@@ -1009,6 +1640,116 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toBeNull();
   });
 
+  it("opens Move from the Conversation menu, restores focus on cancel, and moves without opening the Conversation", async () => {
+    const selected = thread(1);
+    const source = project([selected]);
+    const target = { ...createdProject, name: "Destination" };
+    let moved = false;
+    const assignSessionProject = vi.fn(async () => {
+      moved = true;
+      return { projectId: target.id };
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () =>
+          moved
+            ? [
+                { ...source, threads: [] },
+                {
+                  ...target,
+                  threads: [
+                    {
+                      ...selected,
+                      projectId: target.id,
+                      projectName: target.name
+                    }
+                  ]
+                }
+              ]
+            : [source, target]
+      })
+    );
+    const onAssigned = vi.fn();
+    const onNavigate = vi.fn();
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          assignSessionProject={assignSessionProject}
+          onSessionProjectAssigned={onAssigned}
+          onNavigate={onNavigate}
+          route={{ kind: "project", projectId: source.id }}
+          store={store}
+        />
+      );
+    });
+    const menu = container.querySelector<HTMLDetailsElement>(
+      ".personal-session-actions"
+    )!;
+    const trigger = menu.querySelector<HTMLElement>("summary")!;
+    const openMove = async () => {
+      await act(async () => trigger.click());
+      await vi.waitFor(() => expect(menu.open).toBe(true));
+      const move = menu.querySelector<HTMLButtonElement>(
+        '[role="menuitem"][aria-label="Move Conversation"]'
+      )!;
+      expect(move.textContent).toBe("Move");
+      await act(async () => move.click());
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(".personal-session-assignment-dialog")
+        ).not.toBeNull()
+      );
+      expect(menu.open).toBe(false);
+    };
+    await openMove();
+    expect(assignSessionProject).not.toHaveBeenCalled();
+    await act(async () => {
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          ".personal-session-assignment-dialog button"
+        )
+      ]
+        .find((button) => button.textContent === "Cancel")!
+        .click();
+    });
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+    await openMove();
+    const select = document.querySelector<HTMLSelectElement>(
+      '.personal-session-assignment-dialog select[name="targetProjectId"]'
+    )!;
+    await act(async () => {
+      select.value = target.id;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(select.value).toBe(target.id);
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '.personal-session-assignment-dialog button[type="submit"]'
+      )?.disabled
+    ).toBe(false);
+    await act(async () => {
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true })
+        );
+    });
+    expect(assignSessionProject).toHaveBeenCalledWith({
+      action: "move",
+      sessionId,
+      targetProjectId: target.id,
+      expectedVersion: 1
+    });
+    expect(onAssigned).toHaveBeenCalledWith({
+      projectId: target.id,
+      sessionId
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(store.current().projectsById.get(target.id)?.threads).toHaveLength(
+      1
+    );
+  });
+
   it("fences a stale Project move response after the selected session changes", async () => {
     let resolveMove:
       | ((value: { projectId: string | null }) => void)
@@ -1023,7 +1764,8 @@ describe("PersonalMemoryWorkspace", () => {
     const target = {
       ...project([]),
       id: "project-2",
-      name: "Destination Project"
+      name: "Destination Project",
+      eventCount: 1
     };
     const store = new PersonalMemoryStore(
       api({
@@ -1055,7 +1797,7 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     const manage = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Manage Captured Session"]'
+      'button[aria-label="Move Conversation"]'
     );
     expect(manage?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
     expect(container.textContent).not.toContain("Move to Project:");
@@ -1063,24 +1805,24 @@ describe("PersonalMemoryWorkspace", () => {
 
     await act(async () => manage?.click());
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Move to Project:")
+      expect(document.body.textContent).toContain("Move to Project")
     );
-    expect(
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Move")
-        ?.classList.contains("personal-move-button")
-    ).toBe(true);
-
     const form = document.querySelector(
       ".personal-session-assignment-dialog form"
     );
     await act(async () => {
       const select = form?.querySelector<HTMLSelectElement>("select");
-      if (select) select.value = target.id;
+      if (select) {
+        select.value = target.id;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await act(async () => {
       form?.dispatchEvent(
         new Event("submit", { bubbles: true, cancelable: true })
       );
     });
+    expect(assignSessionProject).toHaveBeenCalledTimes(1);
     await act(async () => {
       root.render(
         <PersonalMemoryWorkspace
@@ -3049,6 +3791,11 @@ describe("PersonalMemoryWorkspace", () => {
         remotes: [{ display: "github.com/koed-labs/koed" }]
       }
     };
+    source.id = metadata.localProjectId;
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),
@@ -3077,26 +3824,36 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain(source.name)
     );
 
-    const rowRepo = container.querySelector(
-      '[data-project-id="project-1"] .personal-project-repo'
+    const rowContext = container.querySelector(
+      `[data-project-id="${source.id}"] .personal-project-context-label`
     );
-    expect(rowRepo?.classList.contains("personal-project-repo-static")).toBe(
-      true
-    );
-    expect(rowRepo?.getAttribute("role")).toBeNull();
+    expect(rowContext?.tagName).toBe("SPAN");
+    expect(rowContext?.getAttribute("role")).toBeNull();
     await act(async () => {
-      (rowRepo as HTMLElement)?.click();
+      (rowContext as HTMLElement)?.click();
     });
     expect(openExternal).not.toHaveBeenCalled();
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
+        .querySelector<HTMLButtonElement>(`[data-project-id="${source.id}"]`)
         ?.click();
     });
 
-    const headerRepo = container.querySelector(
-      ".personal-project-detail-heading .personal-project-repo"
+    expect(
+      container.querySelector(".personal-project-header")?.textContent
+    ).not.toContain(source.path);
+    expect(document.querySelector(".personal-project-details-card")).toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          ".personal-project-repository-trigger"
+        )!
+        .click()
+    );
+    expect(openExternal).not.toHaveBeenCalled();
+    const headerRepo = document.querySelector(
+      ".personal-project-details-card .personal-project-repo"
     );
     expect(headerRepo?.tagName).toBe("BUTTON");
     await act(async () => {
@@ -3106,13 +3863,21 @@ describe("PersonalMemoryWorkspace", () => {
       "https://github.com/koed-labs/koed"
     );
 
-    const headerFolder = container.querySelector<HTMLButtonElement>(
-      ".personal-project-detail-heading .personal-project-folder"
+    const headerFolder = document.querySelector<HTMLButtonElement>(
+      ".personal-project-details-folder"
     );
     expect(headerFolder?.getAttribute("aria-label")).toBe(
-      `Reveal ${source.name} in file browser`
+      `Open ${source.path} details`
     );
     await act(async () => headerFolder?.click());
+    expect(revealLocalProject).not.toHaveBeenCalled();
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="Reveal ${source.path} in file browser"]`
+        )!
+        .click()
+    );
     expect(revealLocalProject).toHaveBeenCalledWith(metadata.localProjectId);
 
     const sessionRow = container.querySelector(".personal-session-row");
@@ -3164,6 +3929,11 @@ describe("PersonalMemoryWorkspace", () => {
         remotes: [{ display: "gitlab.example/koed-labs/koed" }]
       }
     };
+    source.id = metadata.localProjectId;
+    source.threads = source.threads.map((item) => ({
+      ...item,
+      projectId: source.id
+    }));
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => [source]),
@@ -3184,14 +3954,19 @@ describe("PersonalMemoryWorkspace", () => {
     });
     await vi.waitFor(() =>
       expect(
-        container.querySelector(
-          ".personal-project-detail-heading .personal-project-repo"
-        )
+        container.querySelector(".personal-project-repository-trigger")
       ).not.toBeNull()
     );
 
-    const repository = container.querySelector<HTMLButtonElement>(
-      ".personal-project-detail-heading .personal-project-repo"
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          ".personal-project-repository-trigger"
+        )!
+        .click()
+    );
+    const repository = document.querySelector<HTMLButtonElement>(
+      ".personal-project-details-card .personal-project-repo"
     );
     expect(repository?.dataset.repositoryProvider).toBe("git");
     expect(repository?.getAttribute("aria-label")).toBe(
@@ -3205,7 +3980,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
   });
 
-  it("shows no activity for a Project without Conversations", async () => {
+  it("keeps a recently refreshed catalogue Project hidden until it has Conversations", async () => {
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-23T00:00:00.000Z",
@@ -3230,29 +4005,11 @@ describe("PersonalMemoryWorkspace", () => {
         />
       );
     });
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(".personal-inactive-toggle")
-      ).not.toBeNull()
+    expect(container.querySelector("[data-project-id]")).toBeNull();
+    expect(container.querySelector(".personal-inactive-toggle")).toBeNull();
+    expect(container.querySelector(".personal-empty-toggle")).toBeNull();
+    expect(store.current().projectsById.has(metadata.localProjectId)).toBe(
+      true
     );
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")
-        ?.click()
-    );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(
-          `[data-project-id="${metadata.localProjectId}"]`
-        )
-      ).not.toBeNull()
-    );
-
-    const projectRow = container.querySelector(
-      `[data-project-id="${metadata.localProjectId}"]`
-    );
-    const activity = projectRow?.querySelector("time");
-    expect(activity?.dateTime).not.toBe(metadata.lastSeenAt);
-    expect(projectRow?.textContent).toContain("No activity");
   });
 });

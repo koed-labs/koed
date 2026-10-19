@@ -41,6 +41,7 @@ import {
   type SharedMemorySourcePage,
   type SharedMemorySourceRef
 } from "@koed/shared/collaboration";
+import type { TeamRepositorySnapshotReview } from "@koed/shared";
 import {
   CollaborationClientRuntime,
   negotiateDurableRealtimeTransport
@@ -380,6 +381,18 @@ export interface CollaborationRendererClient {
     shareGrantId: string;
     expectedGrantVersion: number;
     reasonCode: string;
+  }): Promise<OwnedSharedMemoryGrant>;
+  reviewSharedProjectSnapshot(input: {
+    teamId: string;
+    workspaceId: string;
+    shareGrantId: string;
+  }): Promise<TeamRepositorySnapshotReview>;
+  updateSharedProjectSnapshot(input: {
+    mutationId: string;
+    teamId: string;
+    workspaceId: string;
+    shareGrantId: string;
+    expected: TeamRepositorySnapshotReview;
   }): Promise<OwnedSharedMemoryGrant>;
   changeSharedMemoryFidelity(input: {
     source: SharedMemorySourceRef;
@@ -1554,6 +1567,7 @@ export const createCollaborationRendererClient = (
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
       "collaboration.change_shared_memory_fidelity":
         "Change Shared Memory fidelity",
+      "collaboration.update_shared_project_snapshot": "Update shared Project",
       "collaboration.share_conversation_source": "Share Conversation source",
       "collaboration.revoke_conversation_source":
         "Revoke Conversation source access",
@@ -4162,6 +4176,40 @@ export const createCollaborationRendererClient = (
       ) {
         throw new Error("Unexpected collaboration result.");
       }
+      return result.data.grant;
+    },
+    async reviewSharedProjectSnapshot(input) {
+      const result = await command(
+        "collaboration.review_shared_project_snapshot",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_shared_project_snapshot"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
+    async updateSharedProjectSnapshot(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.update_shared_project_snapshot",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.update_shared_project_snapshot",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.update_shared_project_snapshot"
+      )
+        throw new Error("Unexpected collaboration result.");
       return result.data.grant;
     },
     async changeSharedMemoryFidelity(input) {

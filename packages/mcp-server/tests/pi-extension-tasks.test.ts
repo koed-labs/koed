@@ -92,16 +92,56 @@ const setup = async () => {
     name: string,
     params: Record<string, unknown>,
     session = "session-a",
-    signal = new AbortController().signal
+    signal = new AbortController().signal,
+    cwd = "/work/project"
   ) =>
     tools.get(name)!.execute("call-1", params, signal, undefined, {
-      cwd: "/work/project",
+      cwd,
       sessionManager: { getSessionId: () => session }
     });
   return { invoke, tools };
 };
 
 describe("Pi explicit Memory Answer tasks", () => {
+  it.each(["blocking", "non_blocking"])(
+    "uses each Pi Conversation directory for %s recall, including concurrent sessions",
+    async (delivery_mode) => {
+      const requests: Array<{
+        caller: { cwd: string };
+        input: Record<string, unknown>;
+      }> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: unknown, init: RequestInit) => {
+          requests.push(
+            JSON.parse(String(init.body)) as (typeof requests)[number]
+          );
+          return new Response(
+            JSON.stringify(
+              delivery_mode === "non_blocking"
+                ? { task: task("accepted") }
+                : { markdown: "Answer" }
+            )
+          );
+        })
+      );
+      const { invoke } = await setup();
+      await Promise.all(
+        ["/work/alpha", "/work/beta/subdirectory"].map((cwd, index) =>
+          invoke(
+            "memory_answer",
+            { query: cwd, delivery_mode },
+            `session-${index}`,
+            new AbortController().signal,
+            cwd
+          )
+        )
+      );
+      expect(requests).toHaveLength(2);
+      for (const request of requests)
+        expect(request.caller.cwd).toBe(request.input.query);
+    }
+  );
   it("submits promptly, collects pending, and freshly collects compact completion across sessions", async () => {
     const fetchMock = vi.fn(async (url: unknown) => {
       void url;

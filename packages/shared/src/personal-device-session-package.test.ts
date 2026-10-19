@@ -1,3 +1,4 @@
+import type { PdsCheckpointProfileTransition } from "./personal-device-session-package.js";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -36,6 +37,7 @@ import {
   verifyPdsSessionCheckpointManifest,
   verifyPdsSessionManifest,
   type PdsSessionPackage,
+  type PdsConversationSourceItem,
   type PdsSessionPackageRuntimeContext
 } from "./personal-device-session-package.js";
 
@@ -58,7 +60,7 @@ const sessionPackageVector = (
 const productionFixture = JSON.parse(
   readFileSync(
     new URL(
-      "../test-fixtures/personal-device-session-package-v1.json",
+      "../test-fixtures/personal-device-session-package-v3.json",
       import.meta.url
     ),
     "utf8"
@@ -408,7 +410,8 @@ const checkpointFixture = () => {
     prefix: typeof items,
     sourceSequence: string,
     sourceTitle = sourceSession.sourceTitle,
-    sourceAdapterVersion = sourceSession.sourceAdapterVersion
+    sourceAdapterVersion = sourceSession.sourceAdapterVersion,
+    profileTransition: PdsCheckpointProfileTransition | null = null
   ) =>
     createPdsSessionCheckpointManifest({
       runtime: base.input.runtime,
@@ -418,6 +421,7 @@ const checkpointFixture = () => {
       contentEpoch: base.manifest.contentEpoch,
       sourceSession: { ...sourceSession, sourceTitle, sourceAdapterVersion },
       checkpoint: { version: "1", ordinal, previousClosureHash },
+      profileTransition,
       terminalCursor: String(prefix.length),
       items: prefix,
       sourceFingerprintKey: base.sourceKey,
@@ -501,6 +505,78 @@ describe("PDS origin-signed session package", () => {
     expect(pkg.envelopes).toHaveLength(2);
   });
 
+  it("signs a closed-source upgrade while preserving its closure and timestamps", () => {
+    const f = fixture();
+    const previous = f.manifest;
+    const transition = {
+      previousProfile: "pre_repository_cutover" as const,
+      previousManifestHash: Buffer.alloc(32, 24).toString("base64url"),
+      previousSourceSequence: previous.sourceSequence,
+      previousClosureHash: previous.sourceClosureHash
+    };
+    const input = {
+      runtime: f.input.runtime,
+      originDeploymentId: previous.originDeploymentId,
+      sourceSequence: "8",
+      sourceNativeSessionId: previous.sourceNativeSessionId,
+      contentEpoch: previous.contentEpoch,
+      closedSession: previous.closedSession,
+      terminalCursor: previous.terminal.cursor,
+      items: previous.rawClosure.records.map(
+        (record) =>
+          JSON.parse(
+            Buffer.from(record.payload, "base64url").toString("utf8")
+          ) as PdsConversationSourceItem
+      ),
+      sourceFingerprintKey: f.sourceKey,
+      tombstoneFloorKey: f.tombstoneKey,
+      originSigningPrivateKey: f.origin.privateKey,
+      profileTransition: transition
+    };
+    const upgraded = createPdsSessionManifest(input);
+    expect(
+      verifyPdsSessionManifest(
+        upgraded,
+        f.origin.publicKey,
+        upgraded.originSignature.signerKeyId
+      )
+    ).toEqual(upgraded);
+    expect(upgraded.rawClosure).toEqual(previous.rawClosure);
+    expect(upgraded.closedSession).toEqual(previous.closedSession);
+    expect(upgraded.logicalMemoryId).toBe(previous.logicalMemoryId);
+    expect(upgraded.profileTransition).toEqual(transition);
+    const altered = structuredClone(upgraded);
+    altered.profileTransition!.previousManifestHash = Buffer.alloc(
+      32,
+      25
+    ).toString("base64url");
+    expect(() =>
+      verifyPdsSessionManifest(
+        altered,
+        f.origin.publicKey,
+        altered.originSignature.signerKeyId
+      )
+    ).toThrow();
+    expect(() =>
+      createPdsSessionManifest({ ...input, sourceSequence: "7" })
+    ).toThrow(/retained boundary/);
+    expect(() =>
+      createPdsSessionManifest({
+        ...input,
+        profileTransition: {
+          ...transition,
+          previousClosureHash: Buffer.alloc(32, 26).toString("base64url")
+        }
+      })
+    ).toThrow(/retained boundary/);
+    const missing = structuredClone(upgraded) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete missing.profileTransition;
+    expect(() => validatePdsSessionManifest(missing)).toThrow();
+  });
+
   it("binds native fork lineage into the signed source manifest", () => {
     const forkedFromExternalThreadId = "codex-parent-thread-41";
     const { input, verify, manifest, serving } = fixture(
@@ -548,6 +624,54 @@ describe("PDS origin-signed session package", () => {
         .digest("base64url")
     ).toBe(sessionPackageVector.sourceClosureHash);
   });
+
+  it("retains a genuine old closed-source publication without admitting it to the current reader", () => {
+    const old = JSON.parse(
+      readFileSync(
+        new URL(
+          "../test-fixtures/pds-pre-cutover-closed-source-v2.json",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    ) as {
+      manifest: { version: string; closedSession: { closed: boolean } };
+      encryptedPackage: PdsSessionPackage;
+    };
+    expect(old.manifest.version).toBe("2");
+    expect(old.manifest.closedSession.closed).toBe(true);
+    expect(old.encryptedPackage.header.sourceManifestHash).toBeTruthy();
+    expect(() => validatePdsSessionManifest(old.manifest)).toThrow(/profile/);
+  });
+
+  it.each(["v1", "v2"])(
+    "rejects the unchanged pre-cutover signed source fixture %s",
+    (version) => {
+      const previous = JSON.parse(
+        readFileSync(
+          new URL(
+            `../test-fixtures/personal-device-session-package-${version}.json`,
+            import.meta.url
+          ),
+          "utf8"
+        )
+      ) as typeof productionFixture;
+      expect(() =>
+        parsePdsSessionManifestJson(previous.originManifest)
+      ).toThrow();
+      const runtime = createPdsSessionPackageRuntimeContext({
+        ...previous.runtime,
+        now: new Date(previous.runtime.now)
+      });
+      expect(() =>
+        verifyAndDecryptPdsSessionPackage(previous.package, {
+          runtime,
+          recipientKemPrivateKey: previous.recipientKemPrivateKey,
+          now: new Date(previous.runtime.now)
+        })
+      ).toThrow();
+    }
+  );
 
   it("verifies committed production wire fixture and rejects cryptographic drift", () => {
     const runtime = createPdsSessionPackageRuntimeContext({
@@ -869,6 +993,67 @@ describe("PDS origin-signed session package", () => {
         validatePdsSessionManifest({ ...manifest, [field]: "injected" })
       ).toThrow();
     }
+  });
+
+  it("signs a forward-only profile baseline without resetting ordinals or identity", () => {
+    const { first, pkg, create, items, origin } = checkpointFixture();
+    const transition: PdsCheckpointProfileTransition = {
+      previousProfile: "pre_repository_cutover",
+      previousManifestHash: pkg.header.sourceManifestHash,
+      previousSourceSequence: "11",
+      previousOrdinal: "3",
+      previousClosureHash: first.sourceClosureHash
+    };
+    const current = create(
+      "4",
+      first.sourceClosureHash,
+      items,
+      "12",
+      undefined,
+      undefined,
+      transition
+    );
+    expect(current.profileTransition).toEqual(transition);
+    expect(current.logicalMemoryId).toBe(first.logicalMemoryId);
+    expect(current.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(current.checkpoint.ordinal).toBe("4");
+    expect(
+      verifyPdsSessionCheckpointManifest(
+        current,
+        origin.publicKey,
+        current.originSignature.signerKeyId
+      )
+    ).toEqual(current);
+    expect(() =>
+      verifyPdsSessionCheckpointManifest(
+        {
+          ...current,
+          profileTransition: {
+            ...transition,
+            previousManifestHash: first.packageId
+          }
+        },
+        origin.publicKey,
+        current.originSignature.signerKeyId
+      )
+    ).toThrow();
+    expect(() =>
+      create("0", null, items, "12", undefined, undefined, transition)
+    ).toThrow();
+    expect(() =>
+      create(
+        "4",
+        first.sourceClosureHash,
+        items,
+        "11",
+        undefined,
+        undefined,
+        transition
+      )
+    ).toThrow();
+    expect(() => validatePdsSessionCheckpointAppend(first, current)).toThrow(
+      "already current profile"
+    );
   });
 
   it("round-trips an explicitly versioned cumulative checkpoint profile", () => {

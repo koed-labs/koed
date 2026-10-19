@@ -3773,6 +3773,158 @@ process.stdin.once("data", () => {
     }
   );
 
+  it.each(["personal", "team"])(
+    "charges both %s Global pools to the search budget and forwards pinned provenance",
+    async (retrievalScope) => {
+      const context = {
+        kind: "portable_repository" as const,
+        key: "gr_current",
+        root: "/current",
+        branch: "main",
+        reason: "origin" as const,
+        checkoutId: "checkout_current",
+        originatingDeviceId: "fixture_device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/team/current"
+      };
+      const requests: Record<string, unknown>[] = [];
+      const result = await runScriptedMemoryAnswerFirstPass({
+        client: {
+          async search(input) {
+            requests.push(input);
+            return {
+              hits: [
+                {
+                  sourceType: "memory_event",
+                  sourceId: "global-source",
+                  sourceChunkIndex: 0,
+                  sourceChunkCount: 2,
+                  summaryText: "Release checklist decision",
+                  provenance: {
+                    project: {
+                      classification: "other",
+                      label: "Other Project"
+                    },
+                    lineageSessionIds: ["shared-history"]
+                  },
+                  observedReferences: [
+                    {
+                      nodeId: "global-source",
+                      sourceType: "memory_event",
+                      sourceId: "global-source",
+                      sourceChunkIndex: 0,
+                      sourceChunkCount: 2,
+                      visibility: retrievalScope,
+                      sourceGeneration: 7,
+                      retrievalStage: "raw_fallback_search",
+                      parentNodeIds: ["parent-summary"]
+                    }
+                  ]
+                }
+              ],
+              retrieval: { searchPasses: 2 }
+            };
+          },
+          async expand() {
+            throw new Error("unused");
+          }
+        },
+        query: "release decisions",
+        retrievalScope,
+        searchDomain: "global",
+        repositoryContext: context,
+        limit: 10,
+        maxSearches: 3
+      });
+      expect(result.evidence[0]).toMatchObject({
+        observedReferences: [
+          expect.objectContaining({
+            sourceChunkIndex: 0,
+            sourceChunkCount: 2,
+            sourceGeneration: 7,
+            retrievalStage: "raw_fallback_search",
+            parentNodeIds: ["parent-summary"]
+          })
+        ]
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        repository_context: context,
+        max_search_passes: 2
+      });
+      expect(result.searches[0]).toMatchObject({ searchPasses: 2 });
+      expect(result.evidence[0]).toMatchObject({
+        sourceChunkCount: 2,
+        provenance: {
+          project: { classification: "other", label: "Other Project" }
+        }
+      });
+    }
+  );
+
+  it.each(["personal", "team"])(
+    "budgets one-pass scans separately from contextual %s retrieval",
+    async (retrievalScope) => {
+      const requests: Record<string, unknown>[] = [];
+      const result = await runScriptedMemoryAnswerFirstPass({
+        query: "release guidance",
+        retrievalHints: {
+          semantic: ["shipping decision"],
+          lexical: ["rollout"]
+        },
+        retrievalScope,
+        searchDomain: "global",
+        limit: 10,
+        maxSearches: 6,
+        repositoryContext: {
+          kind: "portable_repository",
+          key: "gr_current",
+          root: "/current",
+          branch: "main",
+          reason: "origin",
+          checkoutId: "checkout_current",
+          originatingDeviceId: "device_current",
+          selectedRemote: "origin",
+          anchorDisplay: null
+        },
+        client: {
+          async search(input) {
+            requests.push(input);
+            return {
+              hits: [],
+              retrieval: {
+                searchPasses: input.retrieval_stage === "score_scan" ? 1 : 2,
+                stages: [
+                  {
+                    name: "rollup_search",
+                    countAboveThreshold: 3,
+                    maxAllowed: 10
+                  }
+                ]
+              }
+            };
+          },
+          async expand() {
+            throw new Error("unused");
+          }
+        }
+      });
+      expect(
+        requests.filter((request) => request.retrieval_stage === "score_scan")
+      ).toHaveLength(2);
+      expect(
+        requests.some((request) => request.query === "shipping decision")
+      ).toBe(true);
+      expect(
+        result.searches.reduce(
+          (sum, search) => sum + (search.searchPasses ?? 1),
+          0
+        )
+      ).toBe(4);
+      expect(result.skippedQueries).toHaveLength(1);
+    }
+  );
+
   it("runs independent first-pass semantic searches concurrently and checks exact anchors", async () => {
     let active = 0;
     let maximumActive = 0;

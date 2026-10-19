@@ -1,3 +1,19 @@
+import {
+  effectiveProjectPathSql,
+  effectiveProjectNameSql
+} from "./project-scope-sql.js";
+import { createProjectRoutingRepository } from "./project-routing-repository.js";
+import {
+  repositoryIdentitySchema,
+  repositoryScopeId,
+  planRepositorySearch
+} from "@koed/shared";
+import { globalRepositoryContextJoinSql } from "./global-repository-context-sql.js";
+import {
+  canonicalGlobalCandidateKey,
+  classifyRepositoryEvidence
+} from "./global-repository-context.js";
+import { createRepositoryReviewRepository } from "./repository-review-repository.js";
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
@@ -63,6 +79,7 @@ import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repositor
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
+import { createPersonalProjectSelectionRepository } from "./personal-project-selection-repository.js";
 import { createPersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
@@ -384,11 +401,13 @@ const mapLcmGraphThreadRow = (row: {
   project_path: string | null;
   project_assignment_source: "detected" | "user_override" | null;
   captured_project_provenance: Record<string, unknown> | null;
+  repository_assignment?: import("@koed/shared").RepositoryAssignment;
   thread_id: string;
   thread_name: string;
   session_id: string | null;
   source_ai_client: SourceAiClient | null;
   origin_device_id?: string | null;
+  logical_memory_id?: string | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -418,6 +437,7 @@ const mapLcmGraphThreadRow = (row: {
     id: row.thread_id,
     name,
     sessionId: row.session_id,
+    logicalMemoryId: row.logical_memory_id ?? null,
     sourceAiClient: row.source_ai_client,
     originDeviceId: row.origin_device_id ?? null,
     projectId: row.project_id,
@@ -425,6 +445,7 @@ const mapLcmGraphThreadRow = (row: {
     projectPath: row.project_path,
     projectAssignmentSource: row.project_assignment_source,
     capturedProjectProvenance: row.captured_project_provenance ?? {},
+    repositoryAssignment: row.repository_assignment,
     eventCount: Number(row.event_count),
     invalidatedCount: Number(row.invalidated_count),
     latestAt: row.latest_at.toISOString(),
@@ -4025,6 +4046,7 @@ export const createMemorySourceRepository = (
     Promise.all(rows.map((row) => hydrateRepositoryMemoryNodeRow(client, row)));
 
   const repository: MemorySourceRepository = {
+    ...createRepositoryReviewRepository(pool),
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
     // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
     ...createUserApiTokenRepository(db),
@@ -4052,6 +4074,7 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createCapturedSessionRepository(pool),
+    ...createProjectRoutingRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: (actor, input, client) =>
@@ -4080,6 +4103,7 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
+    personalProjectSelections: createPersonalProjectSelectionRepository(pool),
     ...createPersonalDeviceArtifactRepository(pool, {
       getEmbeddableSource: (sourceType, sourceId) =>
         repository.getEmbeddableSource(sourceType, sourceId)
@@ -6786,21 +6810,9 @@ export const createMemorySourceRepository = (
           mn.summary_structured_json, mn.summary_structured_schema_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
-          coalesce(
-            s.project_override_id,
-            s.automatic_project_id,
-            case when s.id is null then ev.payload ->> 'projectId' end,
-            'unassigned'
-          ) as project_id,
-          coalesce(
-            s.project_override_name,
-            s.automatic_project_name,
-            case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
-            'Unassigned'
-          ) as project_name,
-          coalesce(
-            s.project_override_path,
-            s.automatic_project_path,
+          coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+          ${effectiveProjectNameSql("s")} as project_name,
+          coalesce(${effectiveProjectPathSql("s")},
             case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
           ) as project_path,
           s.id::text as session_id,
@@ -6823,13 +6835,8 @@ export const createMemorySourceRepository = (
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and (
             $4::text is null
-            or coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then ev.payload ->> 'projectId' end,
-              'unassigned'
-            ) = $4
-            or coalesce(s.project_override_path, s.automatic_project_path) = $4
+            or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
           )
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
@@ -7106,21 +7113,9 @@ export const createMemorySourceRepository = (
             me.source_runtime,
             me.capture_method,
             s.model,
-            coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then me.payload ->> 'projectId' end,
-              'unassigned'
-            ) as project_id,
-            coalesce(
-              s.project_override_name,
-              s.automatic_project_name,
-              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-              'Unassigned'
-            ) as project_name,
-            coalesce(
-              s.project_override_path,
-              s.automatic_project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            coalesce(${effectiveProjectPathSql("s")},
               case when s.id is null then me.payload #>> '{metadata,projectPath}' end
             ) as project_path,
             s.id::text as session_id,
@@ -7150,13 +7145,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'projectId' end,
-                'unassigned'
-              ) = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and ($6::uuid is null or me.id = $6)
@@ -7213,9 +7203,9 @@ export const createMemorySourceRepository = (
             msg.source_runtime,
             msg.capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7290,8 +7280,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or msg.id = $6)
@@ -7370,9 +7360,9 @@ export const createMemorySourceRepository = (
             te.source_runtime,
             te.capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7431,8 +7421,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or te.id = $6)
@@ -7521,9 +7511,9 @@ export const createMemorySourceRepository = (
               else 'api'::capture_method
             end as capture_method,
             s.model,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            ${effectiveProjectPathSql("s")} as project_path,
             s.id::text as session_id,
             coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7580,8 +7570,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid = $6)
@@ -7792,29 +7782,18 @@ export const createMemorySourceRepository = (
           select
             me.id::text as id,
             'event' as row_kind,
-            coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then me.payload ->> 'projectId' end,
-              'unassigned'
-            ) as project_id,
-            coalesce(
-              s.project_override_name,
-              s.automatic_project_name,
-              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-              'Unassigned'
-            ) as project_name,
-            coalesce(
-              s.project_override_path,
-              s.automatic_project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            coalesce(${effectiveProjectPathSql("s")},
               case when s.id is null then me.payload #>> '{metadata,projectPath}' end
             ) as project_path,
             case
-              when s.project_override_id is not null then 'user_override'
-              when s.automatic_project_id is not null then 'detected'
+              when s.repository_override_identity is not null then 'user_override'
+              when s.repository_automatic_identity is not null then 'detected'
               else null
             end as project_assignment_source,
             coalesce(s.captured_project_provenance, '{}'::jsonb) as captured_project_provenance,
+            jsonb_build_object('state', coalesce(s.repository_assignment_state, 'historical_unresolved'), 'version', coalesce(s.repository_assignment_version, 1), 'automatic', s.repository_automatic_identity, 'override', s.repository_override_identity, 'effective', coalesce(s.repository_override_identity, s.repository_automatic_identity)) as repository_assignment,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
@@ -7862,13 +7841,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'projectId' end,
-                'unassigned'
-              ) = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and (
@@ -7876,7 +7850,7 @@ export const createMemorySourceRepository = (
               or me.payload ->> 'content' ilike '%' || $6 || '%'
               or me.id::text = $6
               or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
@@ -7885,15 +7859,16 @@ export const createMemorySourceRepository = (
           select
             s.id::text as id,
             'session' as row_kind,
-            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
-            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
-            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            coalesce(repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)), 'unassigned') as project_id,
+            ${effectiveProjectNameSql("s")} as project_name,
+            ${effectiveProjectPathSql("s")} as project_path,
             case
-              when s.project_override_id is not null then 'user_override'
-              when s.automatic_project_id is not null then 'detected'
+              when s.repository_override_identity is not null then 'user_override'
+              when s.repository_automatic_identity is not null then 'detected'
               else null
             end as project_assignment_source,
             s.captured_project_provenance as captured_project_provenance,
+            jsonb_build_object('state', coalesce(s.repository_assignment_state, 'historical_unresolved'), 'version', coalesce(s.repository_assignment_version, 1), 'automatic', s.repository_automatic_identity, 'override', s.repository_override_identity, 'effective', coalesce(s.repository_override_identity, s.repository_automatic_identity)) as repository_assignment,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
@@ -7931,15 +7906,15 @@ export const createMemorySourceRepository = (
             and s.metadata ->> 'threadName' <> s.id::text
             and (
               $4::text is null
-              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
+              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and (
               $6::text is null
               or s.id::text = $6
               or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
             )
             and s.visibility = 'personal'
             and s.owner_user_id = $1
@@ -7951,6 +7926,7 @@ export const createMemorySourceRepository = (
             (array_agg(project_path order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_path,
             (array_agg(project_assignment_source order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_assignment_source,
             (array_agg(captured_project_provenance order by order_at desc, source_sequence desc nulls last, id desc))[1] as captured_project_provenance,
+            (array_agg(repository_assignment order by order_at desc, source_sequence desc nulls last, id desc))[1] as repository_assignment,
             thread_id,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
@@ -7987,9 +7963,13 @@ export const createMemorySourceRepository = (
             )
           order by replica.local_session_id, observation.observed_at, observation.id
         )
-        select ranked_threads.*, replica_origins.origin_device_id
+        select ranked_threads.*, replica_origins.origin_device_id,
+          local_memory.logical_memory_id
         from ranked_threads
         left join replica_origins on replica_origins.local_session_id=ranked_threads.session_id
+        left join local_captured_session_logical_memories local_memory
+          on local_memory.local_session_id=ranked_threads.session_id
+          and local_memory.owner_user_id=$1
         order by latest_at desc, thread_id desc
       `,
         [
@@ -8024,6 +8004,7 @@ export const createMemorySourceRepository = (
           id: thread.id,
           name: thread.name,
           sessionId: thread.sessionId,
+          logicalMemoryId: thread.logicalMemoryId,
           sourceAiClient: thread.sourceAiClient,
           originDeviceId: thread.originDeviceId,
           projectId: thread.projectId,
@@ -8031,6 +8012,7 @@ export const createMemorySourceRepository = (
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
           capturedProjectProvenance: thread.capturedProjectProvenance,
+          repositoryAssignment: thread.repositoryAssignment,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
           latestAt: thread.latestAt,
@@ -11045,6 +11027,22 @@ export const createMemorySourceRepository = (
       if (searchDomain === "project" && !input.projectId) {
         throw new Error("Project-scoped memory search requires projectId");
       }
+      const parsedRepositoryContext = repositoryIdentitySchema
+        .nullable()
+        .safeParse(input.repositoryContext ?? null);
+      const repositoryContext =
+        searchDomain === "global" &&
+        parsedRepositoryContext.success &&
+        parsedRepositoryContext.data?.kind !== "unresolved"
+          ? parsedRepositoryContext.data
+          : null;
+      const currentRepositoryScope =
+        repositoryContext && input.maxSearchPasses !== 1
+          ? repositoryScopeId(repositoryContext)
+          : null;
+      let searchPasses = 1,
+        globalCandidateCount = 0,
+        currentRepositoryCandidateCount = 0;
       const requestedParentNodeIds = input.parentNodeIds?.filter(Boolean) ?? [];
       const visibleParentNodeIds = requestedParentNodeIds.length
         ? (
@@ -11133,6 +11131,9 @@ export const createMemorySourceRepository = (
         embedding_dimensions: number | null;
         source_chunk_index: number;
         source_chunk_count: number;
+        repository_contexts?: unknown[];
+        candidate_pool?: "global" | "current";
+        observed_references?: MemorySearchResult["citation"][];
       };
       type StageResult = {
         name: RetrievalStageName;
@@ -11259,7 +11260,24 @@ export const createMemorySourceRepository = (
         rows: VectorRow[]
       ): VectorRow[] => {
         if (stage === "rollup_search" && !requestedStage) {
-          return rows.slice(0, rollupResultLimit);
+          return searchDomain === "global"
+            ? [...rows]
+                .sort((a, b) => {
+                  const preference = (row: VectorRow) => {
+                    const affinity = classifyRepositoryEvidence(
+                      row.repository_contexts,
+                      repositoryContext
+                    );
+                    return (
+                      Number(row.score) * stageWeight[stage] +
+                      affinity.repositoryBonus +
+                      affinity.branchBonus
+                    );
+                  };
+                  return preference(b) - preference(a);
+                })
+                .slice(0, rollupResultLimit)
+            : rows.slice(0, rollupResultLimit);
         }
         return rows;
       };
@@ -11397,6 +11415,15 @@ export const createMemorySourceRepository = (
               parentNodeIds: string[] = []
             ): Promise<StageResult> => {
               const started = Date.now();
+              const pools = planRepositorySearch({
+                retrievalScope: "personal",
+                searchDomain,
+                repositoryContext,
+                retrievalStage: stage,
+                limit,
+                maxSearchPasses: input.maxSearchPasses
+              });
+              if (pools.current > 0) searchPasses = 2;
               databaseReads += 1;
               const vectorResult = await pool.query<VectorRow>(
                 `
@@ -11451,13 +11478,7 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                coalesce(
-                                  boundary_session.project_override_id,
-                                  boundary_session.automatic_project_id,
-                                  case when boundary_session.id is null then boundary_ev.payload ->> 'projectId' end,
-                                  'unassigned'
-                                ) = $10
-                                or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(boundary_session.repository_override_identity, boundary_session.repository_automatic_identity), $10)
                               )
                             )
                           )
@@ -11495,8 +11516,8 @@ export const createMemorySourceRepository = (
                           coalesce(time_ev.id, time_msg.id) as source_id,
                           coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
                           coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
-                          coalesce(time_session.project_override_name, time_session.automatic_project_name, 'Unassigned') as project_name,
-                          coalesce(time_session.project_override_path, time_session.automatic_project_path) as project_path
+                          ${effectiveProjectNameSql("time_session")} as project_name,
+                          ${effectiveProjectPathSql("time_session")} as project_path
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
@@ -11511,13 +11532,7 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                coalesce(
-                                  time_session.project_override_id,
-                                  time_session.automatic_project_id,
-                                  case when time_session.id is null then time_ev.payload ->> 'projectId' end,
-                                  'unassigned'
-                                ) = $10
-                                or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(time_session.repository_override_identity, time_session.repository_automatic_identity), $10)
                               )
                             )
                           )
@@ -11579,7 +11594,8 @@ export const createMemorySourceRepository = (
                   me.embedding_model,
                   me.embedding_dimensions,
                   me.source_chunk_index,
-                  me.source_chunk_count
+                  me.source_chunk_count,
+                  repo_context.contexts as repository_contexts
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
@@ -11590,6 +11606,7 @@ export const createMemorySourceRepository = (
                  and cma.status = 'current'
                  and cma.suppressed_at is null
                  and (cma.expires_at is null or cma.expires_at > now())
+                ${searchDomain === "global" ? globalRepositoryContextJoinSql() : "left join lateral (select null::jsonb as contexts) repo_context on true"}
                 left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
@@ -11697,20 +11714,13 @@ export const createMemorySourceRepository = (
                         (
                           ev.id is not null
                           and (
-                            coalesce(
-                              ev_session.project_override_id,
-                              ev_session.automatic_project_id,
-                              case when ev_session.id is null then ev.payload ->> 'projectId' end,
-                              'unassigned'
-                            ) = $10
-                            or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
+                            repository_scope_matches(coalesce(ev_session.repository_override_identity, ev_session.repository_automatic_identity), $10)
                           )
                         )
                         or (
                           msg.id is not null
                           and (
-                            coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
-                            or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
+                            repository_scope_matches(coalesce(msg_session.repository_override_identity, msg_session.repository_automatic_identity), $10)
                           )
                         )
                         or exists (
@@ -11721,13 +11731,7 @@ export const createMemorySourceRepository = (
                           left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (
-                              coalesce(
-                                filter_session.project_override_id,
-                                filter_session.automatic_project_id,
-                                case when filter_session.id is null then filter_ev.payload ->> 'projectId' end,
-                                'unassigned'
-                              ) = $10
-                              or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
+                              repository_scope_matches(coalesce(filter_session.repository_override_identity, filter_session.repository_automatic_identity), $10)
                             )
                         )
                         or (
@@ -11741,8 +11745,7 @@ export const createMemorySourceRepository = (
                             left join sessions project_cs on project_cs.id = coalesce(project_cme.session_id, project_cmn.session_id, project_cci.session_id)
                             where project_cms.assertion_id = cma.id
                               and (
-                                coalesce(project_cs.project_override_id, project_cs.automatic_project_id, 'unassigned') = $10
-                                or coalesce(project_cs.project_override_path, project_cs.automatic_project_path) = $10
+                                repository_scope_matches(coalesce(project_cs.repository_override_identity, project_cs.repository_automatic_identity), $10)
                               )
                           )
                         )
@@ -11797,13 +11800,7 @@ export const createMemorySourceRepository = (
                           or (
                             $8::text = 'project'
                             and (
-                              coalesce(
-                                source_session.project_override_id,
-                                source_session.automatic_project_id,
-                                case when source_session.id is null then source_ev.payload ->> 'projectId' end,
-                                'unassigned'
-                              ) = $10
-                              or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
+                              repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $10)
                             )
                           )
                         )
@@ -11878,16 +11875,22 @@ export const createMemorySourceRepository = (
                     )
                   )
               )
-              select *
-              from candidates
-              order by score desc, created_at desc, source_id
-              limit $4
+              select * from (
+                (select candidates.*, 'global'::text as candidate_pool from candidates
+                  order by score desc, created_at desc, source_id limit $4)
+                union all
+                (select candidates.*, 'current'::text as candidate_pool from candidates
+                  where $16::integer>0 and jsonb_array_length(repository_contexts)>0
+                    and not exists(select 1 from jsonb_array_elements(repository_contexts) context
+                      where not coalesce(repository_scope_matches(context->'identity',$15::text),false))
+                  order by score desc, created_at desc, source_id limit $16)
+              ) pooled order by score desc, created_at desc, source_id
             `,
                 [
                   actor.userId,
                   visibility,
                   vectorLiteral(queryVector),
-                  limit,
+                  pools.global,
                   embedded.model,
                   embedded.dimensions,
                   localEmbeddingVersion(),
@@ -11897,11 +11900,61 @@ export const createMemorySourceRepository = (
                   stage,
                   sourceAfter,
                   sourceBefore,
-                  parentNodeIds
+                  parentNodeIds,
+                  currentRepositoryScope,
+                  pools.current
                 ]
               );
+              globalCandidateCount += vectorResult.rows.filter(
+                (row) => row.candidate_pool === "global"
+              ).length;
+              currentRepositoryCandidateCount += vectorResult.rows.filter(
+                (row) => row.candidate_pool === "current"
+              ).length;
+              const uniqueRows = new Map<string, VectorRow>();
+              for (const row of vectorResult.rows) {
+                const key = canonicalGlobalCandidateKey(row);
+                const previous = uniqueRows.get(key);
+                const reference: MemorySearchResult["citation"] = {
+                  nodeId: row.id,
+                  sourceType: row.source_type,
+                  sourceId: row.source_id,
+                  sourceChunkIndex: row.source_chunk_index,
+                  sourceChunkCount: row.source_chunk_count,
+                  retrievalStage: row.retrieval_stage,
+                  parentNodeIds: row.parent_node_ids ?? [],
+                  sourceGeneration: row.source_generation ?? undefined,
+                  occurredAt: row.occurred_at?.toISOString(),
+                  visibility: row.visibility,
+                  provenance: {
+                    candidatePool: row.candidate_pool,
+                    project: classifyRepositoryEvidence(
+                      row.repository_contexts,
+                      repositoryContext
+                    )
+                  }
+                };
+                if (previous && searchDomain === "global") {
+                  previous.observed_references = [
+                    ...(previous.observed_references ?? []),
+                    reference
+                  ];
+                  previous.parent_node_ids = [
+                    ...new Set([
+                      ...(previous.parent_node_ids ?? []),
+                      ...(row.parent_node_ids ?? [])
+                    ])
+                  ];
+                } else
+                  uniqueRows.set(
+                    searchDomain === "global"
+                      ? key
+                      : JSON.stringify([key, row.id, uniqueRows.size]),
+                    { ...row, observed_references: [reference] }
+                  );
+              }
               const rows = await hydrateSearchRows(
-                vectorResult.rows.map((row) => {
+                [...uniqueRows.values()].map((row) => {
                   const filteredSummary = row.has_out_of_window_sources
                     ? filteredNodeSourceText(row.filtered_source_items)
                     : null;
@@ -12115,6 +12168,8 @@ export const createMemorySourceRepository = (
         MemorySearchResult & {
           createdAt: Date;
           stagePriority: number;
+          baseScore: number;
+          repositoryContexts: unknown[];
         }
       >();
       const addRow = (
@@ -12139,6 +12194,8 @@ export const createMemorySourceRepository = (
           source_chunk_count?: number | null;
           score: number;
           created_at: Date;
+          repository_contexts?: unknown[];
+          observed_references?: MemorySearchResult["citation"][];
         },
         weight: number
       ) => {
@@ -12149,18 +12206,109 @@ export const createMemorySourceRepository = (
           )
         );
         const normalizedText = summaryText.toLowerCase();
-        const key = normalizedText
-          ? `${row.visibility}:${normalizedText}`
-          : `${row.source_type}:${row.source_id}`;
-        const score =
+        const key =
+          searchDomain === "global"
+            ? canonicalGlobalCandidateKey(row)
+            : normalizedText
+              ? `${row.visibility}:${normalizedText}`
+              : `${row.source_type}:${row.source_id}`;
+        const baseScore =
           Number(row.score) * weight +
           Math.min(exactAnchorMatches.length, 4) * 0.25;
         const priority = stagePriority[row.retrieval_stage];
         const existing = merged.get(key);
+        const repositoryContexts = [
+          ...(existing?.repositoryContexts ?? []),
+          ...(row.repository_contexts ?? [])
+        ];
+        const affinity = classifyRepositoryEvidence(
+          repositoryContexts,
+          repositoryContext
+        );
+        const provenance =
+          searchDomain === "global"
+            ? {
+                project: {
+                  classification: affinity.classification,
+                  label: affinity.label,
+                  branch: affinity.branch
+                },
+                repositoryPreference: {
+                  repository: affinity.repositoryBonus,
+                  branch: affinity.branchBonus
+                },
+                sourceAssignments: repositoryContexts.flatMap((context) => {
+                  const row =
+                    context && typeof context === "object"
+                      ? (context as Record<string, unknown>)
+                      : {};
+                  if (typeof row.sessionId !== "string") return [];
+                  return [
+                    {
+                      sessionId: row.sessionId,
+                      assignmentSource:
+                        row.assignmentSource === "manual_override"
+                          ? "manual_override"
+                          : "automatic",
+                      capturedProjectLabel:
+                        typeof row.capturedProjectLabel === "string"
+                          ? row.capturedProjectLabel
+                          : null,
+                      effectiveProjectLabel: classifyRepositoryEvidence(
+                        [context],
+                        repositoryContext
+                      ).label
+                    }
+                  ];
+                }),
+                projectSources: [
+                  ...new Map(
+                    repositoryContexts.map((context) => {
+                      const source = classifyRepositoryEvidence(
+                        [context],
+                        repositoryContext
+                      );
+                      return [
+                        JSON.stringify(source),
+                        {
+                          classification: source.classification,
+                          label: source.label,
+                          branch: source.branch
+                        }
+                      ];
+                    })
+                  ).values()
+                ],
+                lineageSessionIds: [
+                  ...new Set(
+                    repositoryContexts.flatMap((context) =>
+                      typeof (context as { sessionId?: unknown })?.sessionId ===
+                      "string"
+                        ? [(context as { sessionId: string }).sessionId]
+                        : []
+                    )
+                  )
+                ]
+              }
+            : undefined;
+        const observedReferences =
+          searchDomain === "global"
+            ? [
+                ...new Map(
+                  [
+                    ...(existing?.observedReferences ?? []),
+                    ...(row.observed_references ?? [])
+                  ].map((reference) => [JSON.stringify(reference), reference])
+                ).values()
+              ]
+            : undefined;
+        const score =
+          baseScore + affinity.repositoryBonus + affinity.branchBonus;
         if (
           !existing ||
-          score > existing.score ||
-          (score === existing.score && priority > existing.stagePriority)
+          baseScore > existing.baseScore ||
+          (baseScore === existing.baseScore &&
+            priority > existing.stagePriority)
         ) {
           merged.set(key, {
             nodeId: row.id,
@@ -12169,7 +12317,12 @@ export const createMemorySourceRepository = (
             sourceChunkIndex: row.source_chunk_index ?? undefined,
             sourceChunkCount: row.source_chunk_count ?? undefined,
             retrievalStage: row.retrieval_stage,
-            parentNodeIds: row.parent_node_ids ?? undefined,
+            parentNodeIds: [
+              ...new Set([
+                ...(existing?.parentNodeIds ?? []),
+                ...(row.parent_node_ids ?? [])
+              ])
+            ],
             sourceGeneration: row.source_generation ?? undefined,
             occurredAt: row.occurred_at?.toISOString(),
             visibility: row.visibility,
@@ -12184,6 +12337,10 @@ export const createMemorySourceRepository = (
                 : undefined,
             lcmNodeSummaryModel: row.lcm_summary_model ?? undefined,
             score,
+            baseScore,
+            repositoryContexts,
+            observedReferences,
+            provenance,
             citation: {
               nodeId: row.id,
               sourceType: row.source_type,
@@ -12191,14 +12348,36 @@ export const createMemorySourceRepository = (
               sourceChunkIndex: row.source_chunk_index ?? undefined,
               sourceChunkCount: row.source_chunk_count ?? undefined,
               retrievalStage: row.retrieval_stage,
-              parentNodeIds: row.parent_node_ids ?? undefined,
+              parentNodeIds: [
+                ...new Set([
+                  ...(existing?.parentNodeIds ?? []),
+                  ...(row.parent_node_ids ?? [])
+                ])
+              ],
               sourceGeneration: row.source_generation ?? undefined,
               occurredAt: row.occurred_at?.toISOString(),
-              visibility: row.visibility
+              visibility: row.visibility,
+              provenance
             },
             createdAt: row.occurred_at ?? row.created_at,
             stagePriority: priority
           });
+        } else if (existing && searchDomain === "global") {
+          existing.repositoryContexts = repositoryContexts;
+          existing.score =
+            existing.baseScore +
+            affinity.repositoryBonus +
+            affinity.branchBonus;
+          existing.provenance = provenance;
+          existing.citation.provenance = provenance;
+          existing.observedReferences = observedReferences;
+          existing.parentNodeIds = [
+            ...new Set([
+              ...(existing.parentNodeIds ?? []),
+              ...(row.parent_node_ids ?? [])
+            ])
+          ];
+          existing.citation.parentNodeIds = existing.parentNodeIds;
         }
       };
 
@@ -12253,6 +12432,9 @@ export const createMemorySourceRepository = (
           results: [],
           metadata: {
             ...embeddingMetadata,
+            searchPasses,
+            globalCandidateCount,
+            currentRepositoryCandidateCount,
             vectorHitsCount: 0,
             textHitsCount: 0,
             vectorCandidateCount: vectorRows.length,
@@ -12317,7 +12499,9 @@ export const createMemorySourceRepository = (
           lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
           lcmNodeSummaryModel: result.lcmNodeSummaryModel,
           score: result.score,
-          citation: result.citation
+          citation: result.citation,
+          provenance: result.provenance,
+          observedReferences: result.observedReferences
         }));
 
       for (const stage of stageDiagnostics) {
@@ -12329,6 +12513,9 @@ export const createMemorySourceRepository = (
       }
       embeddingMetadata = {
         ...embeddingMetadata,
+        searchPasses,
+        globalCandidateCount,
+        currentRepositoryCandidateCount,
         vectorHitsCount: vectorRows.length,
         vectorCandidateCount: vectorRows.length,
         stages: stageDiagnostics
@@ -12968,7 +13155,14 @@ export const createMemorySourceRepository = (
         const curated =
           await curatedMemoryRepository.expandCuratedMemoryRetrieval(
             actor,
-            nodeId
+            nodeId,
+            {
+              searchDomain,
+              projectId: input.projectId,
+              sessionId: input.sessionId,
+              sourceAfter: sourceAfter?.toISOString(),
+              sourceBefore: sourceBefore?.toISOString()
+            }
           );
         if (curated) {
           return curated;
@@ -13015,13 +13209,7 @@ export const createMemorySourceRepository = (
             or (
               $5::text = 'project'
               and (
-                coalesce(
-                  source_session.project_override_id,
-                  source_session.automatic_project_id,
-                  case when source_session.id is null then me.payload ->> 'projectId' end,
-                  'unassigned'
-                ) = $7
-                or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
+                repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $7)
               )
             )
           )
@@ -13230,10 +13418,8 @@ export const createMemorySourceRepository = (
             payload.sessionId === input.sessionId
           );
         }
-        return (
-          typeof input.projectId === "string" &&
-          payload.projectId === input.projectId
-        );
+        // Capture-time JSON cannot authorize current Project expansion.
+        return false;
       };
       const filteredNodeSourceItems = nodeSourceItems.filter(
         (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)

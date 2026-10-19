@@ -1,5 +1,19 @@
+import { planRepositorySearch } from "@koed/shared";
+import {
+  classifyTeamRepositoryEvidence,
+  type ClassifiedRepositoryEvidence
+} from "./global-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
+import { snapshotOwnedTeamRepository } from "./team-repository-snapshot.js";
+import {
+  portableTeamFingerprintForScope,
+  teamRepositorySnapshotSchema,
+  unresolvedTeamRepositorySnapshot,
+  type TeamRepositorySnapshot,
+  type RepositoryIdentity
+} from "@koed/shared";
 import pg from "pg";
+import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   structuredLcmSummarySchema
@@ -591,6 +605,7 @@ export interface SharedMemoryConsentRecord {
 }
 
 export interface SharedMemoryGrantRecord {
+  repositorySnapshot?: TeamRepositorySnapshot;
   source: SharedMemorySourceRef;
   sourceRevisionId: string;
   sourceCapabilities: SharedMemoryRepresentation[];
@@ -700,6 +715,13 @@ export interface PendingSharedMemorySemanticItem {
 }
 
 export interface SharedMemorySemanticCandidate {
+  repositorySnapshot?: TeamRepositorySnapshot;
+  disclosedRepositorySnapshot?: TeamRepositorySnapshot;
+  project?: Pick<
+    ClassifiedRepositoryEvidence,
+    "classification" | "label" | "branch"
+  >;
+  repositoryPreference?: { repository: number; branch: number };
   source: SharedMemorySourceRef;
   candidateId: string;
   shareGrantId: string;
@@ -898,6 +920,26 @@ export interface SharedMemoryCreateGrantInput {
   consentId: string;
   authority: SharedMemoryAuthorityContext;
   internalPendingShareId?: string;
+}
+
+export interface SharedMemoryRepositorySnapshotReview {
+  shareGrantId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  grantVersion: number;
+  sourceRevision: number;
+  representationId: string;
+  representationVersion: number;
+  assignmentVersion: number;
+  sourceContextHash: string;
+  currentSnapshot: TeamRepositorySnapshot;
+}
+
+export interface SharedMemoryUpdateRepositorySnapshotInput {
+  mutationId: string;
+  shareGrantId: string;
+  authority: SharedMemoryAuthorityContext;
+  expected: SharedMemoryRepositorySnapshotReview;
 }
 
 export interface SharedMemorySelectFidelityInput {
@@ -1227,6 +1269,14 @@ export interface SharedMemoryRepository {
     actor: ActorContext,
     input: SharedMemoryCreateGrantInput
   ): Promise<SharedMemoryGrantRecord>;
+  reviewGrantRepositorySnapshot(
+    actor: ActorContext,
+    input: { shareGrantId: string; authority?: SharedMemoryAuthorityContext }
+  ): Promise<SharedMemoryRepositorySnapshotReview>;
+  updateGrantRepositorySnapshot(
+    actor: ActorContext,
+    input: SharedMemoryUpdateRepositorySnapshotInput
+  ): Promise<SharedMemoryGrantRecord>;
   selectGrantFidelity(
     actor: ActorContext,
     input: SharedMemorySelectFidelityInput
@@ -1538,6 +1588,8 @@ export interface SharedMemoryRepository {
       representations?: SharedMemoryRepresentation[];
       parentCandidateIds?: string[];
       strictLimit?: boolean;
+      repositoryContext?: RepositoryIdentity | null;
+      maxSearchPasses?: 1 | 2;
       authorizationBoundary?: SharedMemorySemanticAuthorizationBoundary;
     }
   ): Promise<SharedMemorySemanticCandidate[]>;
@@ -1931,7 +1983,7 @@ const ensureCandidateSourceIdentity = async (
           identity: "logical-memory"
         }
       : {
-          protocol: "koed.captured-session-sync/v1",
+          protocol: "koed.captured-session-sync/v2",
           sourceDeploymentId: input.sourceDeploymentProtocolId,
           sourceUserId: input.sourceOwnerPrincipalId,
           originSessionId: input.source.sessionId,
@@ -2768,6 +2820,9 @@ const companionScope = (grant: {
 
 const mapGrant = (row: Row): SharedMemoryGrantRecord => {
   const grant = {
+    repositorySnapshot: row.repository_snapshot
+      ? teamRepositorySnapshotSchema.parse(row.repository_snapshot)
+      : unresolvedTeamRepositorySnapshot(),
     source: requiredSourceRefFromRow(row),
     sourceCapabilities: representationArrayValue(row.source_capabilities),
     activationRepresentation: representationValue(
@@ -6645,6 +6700,17 @@ export const createSharedMemoryRepository = (
         "Authoritative Shared Memory source material is empty or invalid"
       );
     }
+    // Provenance belongs to the encrypted source artifact, not conversation text.
+    // Privacy classifies its label/branch before either can be disclosed to Team readers.
+    const repositorySnapshot = await snapshotOwnedTeamRepository(
+      client,
+      input.ownerUserId,
+      input.logicalMemoryId,
+      { forPrivacyClassification: true, ownerPrivateProvider: provider }
+    );
+    if (repositorySnapshot.classification === "portable_repository") {
+      items[0] = { ...items[0]!, repositorySnapshot };
+    }
     // Admission and Privacy use the same complete semantic-preview bounds.
     extractSharedMemorySemanticClassificationFields(items);
     const hashes = sourceMaterialHashes({
@@ -8810,6 +8876,8 @@ export const createSharedMemoryRepository = (
           );
           return [
             {
+              repositorySnapshot: authorized.grant.repositorySnapshot,
+              disclosedRepositorySnapshot: item.repositorySnapshot,
               source: authorized.grant.source,
               candidateId: input.candidateId,
               shareGrantId: input.shareGrantId,
@@ -10533,7 +10601,196 @@ export const createSharedMemoryRepository = (
     return totals;
   };
 
+  const reviewRepositorySnapshot = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    input: { shareGrantId: string; authority?: SharedMemoryAuthorityContext },
+    consume: boolean | null
+  ): Promise<SharedMemoryRepositorySnapshotReview> => {
+    const authorized = await readSharedMemoryGrantAuthorityWithClient(
+      client,
+      actor,
+      { shareGrantId: input.shareGrantId },
+      true
+    );
+    if (!authorized || authorized.grant.ownerUserId !== actor.userId)
+      throw new SharedMemoryAuthorizationError(
+        "Only the source owner may update a Team Project snapshot"
+      );
+    const { grant, representation } = authorized;
+    if (consume === null) {
+      await requireWorkspaceSharePermission(
+        client,
+        actor,
+        grant.teamId,
+        grant.teamWorkspaceId
+      );
+    } else {
+      if (!input.authority)
+        throw new SharedMemoryAuthorizationError(
+          "Explicit snapshot update authority is required"
+        );
+      await requireShareAuthority(client, actor, {
+        teamId: grant.teamId,
+        teamWorkspaceId: grant.teamWorkspaceId,
+        authority: input.authority,
+        consume,
+        delegatedDeviceActionGrant
+      });
+    }
+    const assignment = await client.query<{
+      repository_assignment_version: number;
+    }>(
+      `select s.repository_assignment_version from local_captured_session_logical_memories m
+       join sessions s on s.id=m.local_session_id and s.owner_user_id=$1
+       where m.logical_memory_id=$2 and m.owner_user_id=$1
+         and s.visibility='personal' and s.personal_deleted_at is null
+         and s.invalidated_at is null for share of s`,
+      [actor.userId, grant.logicalMemoryId]
+    );
+    if (!assignment.rows[0])
+      throw new SharedMemoryConflictError(
+        "The current Captured Session assignment is unavailable"
+      );
+    const provider = await resolveOwnerPrivateReplicaEncryptionProvider({
+      ownerUserId: actor.userId,
+      ownerPrincipalId: grant.ownerPrincipalId,
+      logicalMemoryId: grant.logicalMemoryId,
+      remoteReplicaId: grant.remoteReplicaId,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.teamWorkspaceId,
+      purpose: "decrypt"
+    });
+    const source = await snapshotOwnedTeamRepository(
+      client,
+      actor.userId,
+      grant.logicalMemoryId,
+      { forPrivacyClassification: true, ownerPrivateProvider: provider }
+    );
+    return {
+      shareGrantId: grant.id,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.teamWorkspaceId,
+      grantVersion: grant.grantVersion,
+      sourceRevision: grant.sourceRevision,
+      representationId: representation.id,
+      representationVersion: representation.recordVersion,
+      assignmentVersion: assignment.rows[0].repository_assignment_version,
+      sourceContextHash: crossIdentitySyncDigest(source),
+      currentSnapshot: { ...source, label: null, branchObservation: null }
+    };
+  };
+
   const repository: SharedMemoryClientScopedRepository = {
+    async reviewGrantRepositorySnapshot(actor, input) {
+      assertUuid(input.shareGrantId, "shareGrantId");
+      return withTransaction(pool, (client) =>
+        reviewRepositorySnapshot(client, actor, input, null)
+      );
+    },
+    async updateGrantRepositorySnapshot(actor, input) {
+      assertUuid(input.mutationId, "mutationId");
+      assertUuid(input.shareGrantId, "shareGrantId");
+      return withTransaction(pool, async (client) => {
+        // Serialize competing snapshot writers before any shared authority locks.
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+          `team-project-snapshot:${input.shareGrantId}`
+        ]);
+        const requestHash = crossIdentitySyncDigest({
+          shareGrantId: input.shareGrantId,
+          expected: input.expected
+        });
+        const receipt = await client.query<Row>(
+          "select * from team_repository_snapshot_mutations where mutation_id=$1",
+          [input.mutationId]
+        );
+        if (receipt.rows[0]) {
+          await reviewRepositorySnapshot(client, actor, input, false);
+          if (
+            receipt.rows[0].owner_user_id !== actor.userId ||
+            receipt.rows[0].share_grant_id !== input.shareGrantId ||
+            receipt.rows[0].request_hash !== requestHash
+          )
+            throw new SharedMemoryConflictError(
+              "Snapshot update mutation identity was reused"
+            );
+          const existing = await client.query<Row>(
+            "select * from team_memory_share_grant_records where id=$1",
+            [input.shareGrantId]
+          );
+          return mapGrant(existing.rows[0]!);
+        }
+        const current = await reviewRepositorySnapshot(
+          client,
+          actor,
+          input,
+          true
+        );
+        if (
+          crossIdentitySyncDigest(current) !==
+          crossIdentitySyncDigest(input.expected)
+        )
+          throw new SharedMemoryConflictError(
+            "The reviewed Team Project snapshot changed; review it again"
+          );
+        const updated = await client.query<Row>(
+          `update team_memory_share_grants set
+             repository_snapshot=case
+               when repository_snapshot->>'fingerprint'=$3 and $3::text is not null
+                 then $2::jsonb || jsonb_build_object('label',repository_snapshot->'label','branchObservation',repository_snapshot->'branchObservation')
+               else $2::jsonb end,
+             repository_snapshot_source_revision=null,
+             grant_version=grant_version+1,updated_at=now()
+           where id=$1 and grant_version=$4 and lifecycle='active' and revoked_at is null
+           returning *`,
+          [
+            input.shareGrantId,
+            JSON.stringify(current.currentSnapshot),
+            current.currentSnapshot.fingerprint,
+            current.grantVersion
+          ]
+        );
+        if (!updated.rows[0]) throw new SharedMemoryConflictError();
+        await client.query(
+          "insert into team_repository_snapshot_mutations(mutation_id,owner_user_id,share_grant_id,request_hash,result_grant_version) values($1,$2,$3,$4,$5)",
+          [
+            input.mutationId,
+            actor.userId,
+            input.shareGrantId,
+            requestHash,
+            updated.rows[0].grant_version
+          ]
+        );
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "shared_memory.project_snapshot.updated",
+          targetTable: "team_memory_share_grants",
+          targetId: input.shareGrantId,
+          metadata: {
+            mutationId: input.mutationId,
+            previousGrantVersion: current.grantVersion
+          }
+        });
+        await appendOutbox(client, {
+          mutationId: input.mutationId,
+          family: "share_grant_lifecycle",
+          teamId: stringValue(updated.rows[0].team_id),
+          teamWorkspaceId: stringValue(updated.rows[0].team_workspace_id),
+          shareGrantId: input.shareGrantId,
+          logicalMemoryId: stringValue(updated.rows[0].logical_memory_id),
+          resourceType: "team_memory_share_grant",
+          resourceId: input.shareGrantId,
+          actorPrincipalId: actor.userId
+        });
+        const binding = await client.query<Row>(
+          "select * from team_memory_share_grant_records where id=$1",
+          [input.shareGrantId]
+        );
+        return mapGrant(binding.rows[0]!);
+      });
+    },
     async createSharedMemoryCandidatePreview(actor, input) {
       assertUuid(input.logicalMemoryId, "logicalMemoryId");
       assertUuid(input.teamId, "teamId");
@@ -13133,13 +13390,18 @@ export const createSharedMemoryRepository = (
             "A Team or Workspace retention policy is required before sharing"
           );
         }
+        const repositorySnapshot = await snapshotOwnedTeamRepository(
+          client,
+          actor.userId,
+          stringValue(consent.logical_memory_id)
+        );
         let inserted: pg.QueryResult<Row>;
         try {
           inserted = await client.query<Row>(
             `insert into team_memory_share_grants (
            logical_grant_id,logical_memory_id,source_revision_id,remote_replica_id,
            owner_user_id,owner_principal_id,team_id,team_workspace_id,consent_id,
-           display_title,
+           display_title,repository_snapshot,repository_snapshot_source_revision,
            source_owner_policy_id,source_owner_policy_version,team_policy_id,
            team_policy_version,workspace_policy_id,workspace_policy_version,
            maximum_fidelity,include_curated_memory,
@@ -13147,7 +13409,7 @@ export const createSharedMemoryRepository = (
            source_revision,grant_version,lifecycle,creator_authority,granted_by_user_id,
            source_capabilities,activation_representation,mode
          ) values (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$28,$22::bigint,$11,$12,$13,$14,$15,$16,
            $17,$18,$19,$20,$21,$22,1,$23,$24,$5,$25,$26,$27
            ) returning *`,
             [
@@ -13177,7 +13439,8 @@ export const createSharedMemoryRepository = (
               authority,
               consent.source_capabilities,
               consent.activation_representation,
-              consent.mode
+              consent.mode,
+              repositorySnapshot
             ]
           );
         } catch (error) {
@@ -14599,6 +14862,7 @@ export const createSharedMemoryRepository = (
           )
         );
         const displayTitle = sharedMemorySanitizedDisplayTitle(items);
+        const permittedRepositorySnapshot = items[0]?.repositorySnapshot;
         const payload: SharedMemorySanitizedSemanticPreviewPayload = {
           schemaVersion: SHARED_MEMORY_SEMANTIC_PREVIEW_FORMAT_VERSION,
           semanticPreviewId: target.id,
@@ -14755,7 +15019,14 @@ export const createSharedMemoryRepository = (
         }
         const titledGrant = await client.query(
           `update team_memory_share_grants
-              set display_title=$2,display_title_source_revision=$7,updated_at=now()
+              set display_title=$2,display_title_source_revision=$7,updated_at=now(),
+                  repository_snapshot=case
+                    when repository_snapshot->>'classification'='portable_repository'
+                      and repository_snapshot->>'fingerprint'=$8
+                      and repository_snapshot->>'label' is null
+                      and repository_snapshot_source_revision=$7
+                    then repository_snapshot || jsonb_build_object('label',$9::text,'branchObservation',$10::text)
+                    else repository_snapshot end
             where id=$1 and owner_user_id=$3 and team_id=$4
               and team_workspace_id=$5 and logical_memory_id=$6
               and lifecycle in ('unavailable','active') and revoked_at is null
@@ -14768,7 +15039,13 @@ export const createSharedMemoryRepository = (
             target.teamId,
             target.teamWorkspaceId,
             target.logicalMemoryId,
-            target.sourceRevision
+            target.sourceRevision,
+            permittedRepositorySnapshot?.classification ===
+            "portable_repository"
+              ? permittedRepositorySnapshot.fingerprint
+              : null,
+            permittedRepositorySnapshot?.label ?? null,
+            permittedRepositorySnapshot?.branchObservation ?? null
           ]
         );
         if ((titledGrant.rowCount ?? 0) !== 1) {
@@ -18093,10 +18370,8 @@ export const createSharedMemoryRepository = (
             and (
               $12::text='global'
               or ($12::text='session' and local_memory.local_session_id=$13::uuid)
-              or ($12::text='project' and coalesce(
-                source_session.project_override_id,
-                source_session.automatic_project_id
-              )=$14)
+              or ($12::text='project' and g.repository_snapshot->>'classification'='portable_repository'
+                and g.repository_snapshot->>'fingerprint'=$14)
             )
             and ($15::integer is null or smi.occurred_at >=
               now() - make_interval(days => $15))
@@ -18140,7 +18415,9 @@ export const createSharedMemoryRepository = (
           perRepresentationLimit,
           input.searchDomain,
           input.sessionId ?? null,
-          input.projectId ?? null,
+          input.searchDomain === "project"
+            ? portableTeamFingerprintForScope(input.projectId)
+            : null,
           input.recentDays ?? null,
           input.authorizationBoundary?.shareGrantIds ?? null,
           input.authorizationBoundary?.teamId ?? null,
@@ -18170,8 +18447,21 @@ export const createSharedMemoryRepository = (
       );
       const candidateLimit =
         Math.min(Math.max(input.limit, 1), 50) * (input.strictLimit ? 1 : 4);
-      const rows = await pool.query<Row>(
-        `select smi.id,smi.share_grant_id,smi.representation_id,
+      const limits = planRepositorySearch({
+        retrievalScope: "team",
+        searchDomain: input.searchDomain,
+        repositoryContext: input.repositoryContext,
+        limit: input.limit,
+        candidateLimit,
+        maxSearchPasses: input.maxSearchPasses ?? 1
+      });
+      const queryRows = async (
+        domain: string,
+        fingerprint: string | null,
+        limit: number
+      ) =>
+        pool.query<Row>(
+          `select smi.id,smi.share_grant_id,smi.representation_id,
                 smi.pseudonymous_source_id,smi.source_item_index,
                 smi.source_revision,smi.item_type,smi.occurred_at,
                 smi.representation_policy_revision,smi.content_policy_version,
@@ -18242,10 +18532,8 @@ export const createSharedMemoryRepository = (
             and (
               $12::text='global'
               or ($12::text='session' and local_memory.local_session_id=$13::uuid)
-              or ($12::text='project' and coalesce(
-                source_session.project_override_id,
-                source_session.automatic_project_id
-              )=$14)
+              or ($12::text='project' and g.repository_snapshot->>'classification'='portable_repository'
+                and g.repository_snapshot->>'fingerprint'=$14)
             )
             and ($15::integer is null or smi.occurred_at >=
               now() - make_interval(days => $15))
@@ -18275,34 +18563,63 @@ export const createSharedMemoryRepository = (
             )
           order by v.embedding <=> $6::${semanticVectorCast(input.dimensions)},smi.id
           limit $11`,
-        [
-          actor.userId,
-          input.teamWorkspaceId,
-          input.model,
-          input.dimensions,
-          input.version,
-          JSON.stringify(input.queryVector),
-          input.sourceAfter ?? null,
-          input.sourceBefore ?? null,
-          input.representations === undefined ? null : input.representations,
-          input.parentCandidateIds?.length ? input.parentCandidateIds : null,
-          candidateLimit,
-          input.searchDomain,
-          input.sessionId ?? null,
-          input.projectId ?? null,
-          input.recentDays ?? null,
-          input.authorizationBoundary?.shareGrantIds ?? null,
-          input.authorizationBoundary?.teamId ?? null,
-          input.authorizationBoundary?.teamVersion ?? null,
-          input.authorizationBoundary?.workspaceVersion ?? null,
-          input.authorizationBoundary?.membershipVersion ?? null,
-          input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
-        ]
+          [
+            actor.userId,
+            input.teamWorkspaceId,
+            input.model,
+            input.dimensions,
+            input.version,
+            JSON.stringify(input.queryVector),
+            input.sourceAfter ?? null,
+            input.sourceBefore ?? null,
+            input.representations === undefined ? null : input.representations,
+            input.parentCandidateIds?.length ? input.parentCandidateIds : null,
+            limit,
+            domain,
+            input.sessionId ?? null,
+            fingerprint,
+            input.recentDays ?? null,
+            input.authorizationBoundary?.shareGrantIds ?? null,
+            input.authorizationBoundary?.teamId ?? null,
+            input.authorizationBoundary?.teamVersion ?? null,
+            input.authorizationBoundary?.workspaceVersion ?? null,
+            input.authorizationBoundary?.membershipVersion ?? null,
+            input.authorizationBoundary?.workspaceAccessVersion ?? null,
+            input.authorizationBoundary?.userRowVersion ?? null
+          ]
+        );
+      const globalRows = await queryRows(
+        input.searchDomain,
+        input.searchDomain === "project"
+          ? portableTeamFingerprintForScope(input.projectId)
+          : null,
+        limits.global
       );
+      const currentRows =
+        limits.current > 0
+          ? await queryRows(
+              "project",
+              input.repositoryContext!.key,
+              limits.current
+            )
+          : { rows: [] as Row[] };
+      // Merge before disclosure so pool overlap consumes neither another decrypt
+      // nor another evidence slot. Grant-scoped source IDs retain visibility.
+      const merged = new Map<string, Row>();
+      for (const row of [...globalRows.rows, ...currentRows.rows]) {
+        const key = JSON.stringify([
+          row.representation,
+          row.pseudonymous_source_id,
+          row.source_item_index,
+          row.source_revision
+        ]);
+        const previous = merged.get(key);
+        if (!previous || Number(row.score) > Number(previous.score))
+          merged.set(key, row);
+      }
       const hydrated = await hydrateAuthorizedSemanticCandidates(
         actor,
-        rows.rows.map((row) => ({
+        [...merged.values()].map((row) => ({
           candidateId: stringValue(row.id),
           shareGrantId: stringValue(row.share_grant_id),
           teamWorkspaceId: input.teamWorkspaceId,
@@ -18328,6 +18645,30 @@ export const createSharedMemoryRepository = (
           exactHints: input.exactHints
         }))
       );
+      if (input.searchDomain === "global") {
+        for (const candidate of hydrated) {
+          const context = classifyTeamRepositoryEvidence(
+            candidate.repositorySnapshot ?? unresolvedTeamRepositorySnapshot(),
+            candidate.disclosedRepositorySnapshot,
+            input.repositoryContext ?? null
+          );
+          candidate.project = {
+            classification: context.classification,
+            label: context.label,
+            branch: context.branch
+          };
+          candidate.repositoryPreference = {
+            repository: context.repositoryBonus,
+            branch: context.branchBonus
+          };
+          candidate.score += context.repositoryBonus + context.branchBonus;
+        }
+        hydrated.sort(
+          (left, right) =>
+            right.score - left.score ||
+            left.candidateId.localeCompare(right.candidateId)
+        );
+      }
       return hydrated.slice(0, input.limit);
     },
 
@@ -18404,10 +18745,8 @@ export const createSharedMemoryRepository = (
             and (
               $3::text='global'
               or ($3::text='session' and local_memory.local_session_id=$4::uuid)
-              or ($3::text='project' and coalesce(
-                source_session.project_override_id,
-                source_session.automatic_project_id
-              )=$5)
+              or ($3::text='project' and g.repository_snapshot->>'classification'='portable_repository'
+                and g.repository_snapshot->>'fingerprint'=$5)
             )
             and ($6::integer is null or smi.occurred_at >=
               now() - make_interval(days => $6))
@@ -18424,7 +18763,9 @@ export const createSharedMemoryRepository = (
           input.teamWorkspaceId,
           input.searchDomain,
           input.sessionId ?? null,
-          input.projectId ?? null,
+          input.searchDomain === "project"
+            ? portableTeamFingerprintForScope(input.projectId)
+            : null,
           input.recentDays ?? null,
           input.sourceAfter ?? null,
           input.sourceBefore ?? null,

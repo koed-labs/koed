@@ -362,6 +362,19 @@ retrieval hints can seed exact checks, semantic reformulations, entities, and
 temporal intent. The Local AI Runtime treats them as untrusted suggestions and
 cannot use them to broaden authorization or the selected Search Domain.
 
+Koed's `PreToolUse` hook binds each `memory_answer` call to the native
+Conversation cwd through the adapter-only `conversation_cwd` argument. This
+avoids selecting the MCP process's startup folder when the CLI, desktop, or
+VS Code extension uses a different Conversation folder. Explicit Project targets
+remain authoritative. Repair the integration after upgrading, then restart
+Codex and review updated hooks if prompted. See [Project recall context](repository-recall.md#resolve-before-accepting-work).
+
+If an app-server client skips an untrusted hook, a single native per-request
+workspace root still selects the correct Project. With multiple or missing
+roots, default Project recall asks for a trusted hook or an explicit Project
+target. It never guesses from the MCP startup directory. Global recall can
+continue with unknown current-Project provenance.
+
 Koed's generated Codex configuration pre-approves `memory_answer`, `memory_answer_result`,
 `memory_answer_cancel`, and `memory_workspaces`, so read-only
 recall does not require a separate tool approval. This rule does not pre-approve
@@ -387,3 +400,46 @@ through the provider selected for each flow. If that local service is
 delayed or fails, Koed still returns pending placeholders as degraded evidence
 and reports the backlog through diagnostics instead of marking the backend
 unhealthy.
+
+## Repository assignment inspection
+
+On the Project integration branch, new live Codex capture records the selected
+repository identity from the transcript's actual cwd. A subdirectory resolves
+to its Git root; another worktree retains its own checkout provenance while
+matching the same selected anchor. Inspect the local selection in Desktop's
+Project **Repository anchor** panel or with `project discover`.
+
+Owner `GET /v1/sessions/:sessionId` responses expose `repositoryAssignment`.
+The original cwd, root, checkout/device provenance, and automatic assignment
+remain inspectable. Continued capture records observations without replacing
+assignments. Existing unresolved Conversations stay unresolved through later
+turns and re-ingestion. Changing an anchor alone does not move recorded memory.
+The Supported Capture Hook still only signals the Transcript Watcher.
+See [recorded assignments](raw-ingestion-projection.md#recorded-repository-assignments)
+for persistence and the prepared release cutover.
+
+For an explicitly associated checkout, live repository discovery reads the
+current accepted selection from the local Personal API before capturing or
+pinning recall context. The lookup uses the requesting User's local API
+credential and the checkout incarnation. It exposes no configuration journal.
+Failed lookup defers discovery instead of choosing a different repository.
+Local explicit anchor choices retain precedence. Shared selections and conflicts
+can be managed in Desktop's **Shared Project selection** controls without
+Conversation capture; see [Project associations](personal-project-selection.md).
+
+### Historical repository identity
+
+For eligible new imports, native source-time `session_meta.git.repository_url`
+can establish a portable origin fingerprint. Koed requires a recorded absolute
+cwd and timestamp and rejects conflicting observations. The recorded Git identity
+does not depend on today's checkout. Without a reliable Git anchor, consistent
+native Session metadata supplies the absolute cwd for current Git discovery.
+Subdirectories resolve to the current Git root using the normal anchor selection
+rules. Without usable Git metadata, the recorded path supplies a local folder
+Project. Missing or conflicting context stays unresolved. Koed never substitutes
+the importing process's cwd. A discovered current branch is not attributed to
+the historical Conversation.
+
+Folder groups have no current checkout incarnation. Re-imports and continued
+pre-cutover Sessions preserve existing assignments, User overrides, or unresolved
+state. No automatic historical repair runs at startup.

@@ -1,0 +1,26 @@
+{
+  "notice": "Synthetic non-production signing key. Fixed Project selection interoperability vector.",
+  "privateSeed": "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio",
+  "publicKey": "GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+  "record": {
+    "revision": {
+      "protocol": "koed/pds-project-selection/v1",
+      "groupId": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "associationId": "fixture_association",
+      "selectionId": "fixture_selection",
+      "revisionId": "fixture_revision",
+      "authorDeviceId": "AgICAgICAgICAgICAgICAg",
+      "authorSigningKeyId": "AwMDAwMDAwMDAwMDAwMDAw",
+      "replaces": [],
+      "operation": {
+        "kind": "set",
+        "anchorFingerprint": "gr_cFlQ0s0xUp4mYFMp2xO2eN7oubZvuDWygJWO97Qu4Zo"
+      }
+    },
+    "signature": "BpbREddyc60MTTJNTbkXyON1qbipxf_LF6qxC8J_b298F3JUT28MDays8H6syw_Kct9Gumn_Bw4VJqxap7W9Bw"
+  },
+  "canonicalRecord": "{\"revision\":{\"associationId\":\"fixture_association\",\"authorDeviceId\":\"AgICAgICAgICAgICAgICAg\",\"authorSigningKeyId\":\"AwMDAwMDAwMDAwMDAwMDAw\",\"groupId\":\"AQEBAQEBAQEBAQEBAQEBAQ\",\"operation\":{\"anchorFingerprint\":\"gr_cFlQ0s0xUp4mYFMp2xO2eN7oubZvuDWygJWO97Qu4Zo\",\"kind\":\"set\"},\"protocol\":\"koed/pds-project-selection/v1\",\"replaces\":[],\"revisionId\":\"fixture_revision\",\"selectionId\":\"fixture_selection\"},\"signature\":\"BpbREddyc60MTTJNTbkXyON1qbipxf_LF6qxC8J_b298F3JUT28MDays8H6syw_Kct9Gumn_Bw4VJqxap7W9Bw\"}",
+  "recordHash": "tfUCQss7StS1L-QWn1GjlxP_j8TeaNpXPQAcsHxKvjI",
+  "transportId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+  "packageId": "d_n4ywjwKXYdhj9OcZTzoA-7oEgTQqZx-lEvkUQEUcM"
+}

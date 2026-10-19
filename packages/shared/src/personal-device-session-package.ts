@@ -1,4 +1,8 @@
 import {
+  pdsRepositoryAssignmentSchema,
+  type PdsRepositoryAssignment
+} from "./personal-repository-assignment.js";
+import {
   createCipheriv,
   createDecipheriv,
   createHash,
@@ -32,7 +36,8 @@ import {
 } from "./personal-device-sync-jcs.js";
 
 export const PDS_SESSION_PACKAGE_VERSION = "1" as const;
-export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "2" as const;
+export const PDS_SESSION_MANIFEST_VERSION = "3" as const;
+export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "4" as const;
 export const PDS_SESSION_CHECKPOINT_PROFILE = "cumulative_checkpoint" as const;
 export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES = 512 * 1024;
@@ -99,7 +104,17 @@ export interface PdsProjectAliasManifest {
   tokens: string[];
 }
 
+export interface PdsClosedProfileTransition {
+  previousProfile: "pre_repository_cutover";
+  previousManifestHash: string;
+  previousSourceSequence: string;
+  previousClosureHash: string;
+}
+
 export interface PdsSessionManifest {
+  profileTransition: PdsClosedProfileTransition | null;
+  version: typeof PDS_SESSION_MANIFEST_VERSION;
+  repositoryAssignment: PdsRepositoryAssignment;
   protocol: typeof PDS_PROTOCOL;
   packageId: string;
   originDeploymentId: string;
@@ -125,8 +140,19 @@ export interface PdsSessionManifest {
   originSignature: Signature;
 }
 
-/** Explicit V2 profile for signed, cumulative prefixes of a live source Session. */
+/** Signed boundary from a retained pre-cutover checkpoint chain to V4. */
+export interface PdsCheckpointProfileTransition {
+  previousProfile: "pre_repository_cutover";
+  previousManifestHash: string;
+  previousSourceSequence: string;
+  previousOrdinal: string;
+  previousClosureHash: string;
+}
+
+/** V4 profile for signed cumulative prefixes and explicit cutover baselines. */
 export interface PdsSessionCheckpointManifest {
+  repositoryAssignment: PdsRepositoryAssignment;
+  profileTransition: PdsCheckpointProfileTransition | null;
   protocol: typeof PDS_PROTOCOL;
   version: typeof PDS_SESSION_CHECKPOINT_MANIFEST_VERSION;
   profile: typeof PDS_SESSION_CHECKPOINT_PROFILE;
@@ -264,6 +290,7 @@ export interface PdsRetainedSessionPackage {
 }
 
 export interface CreatePdsSessionManifestInput {
+  profileTransition?: PdsClosedProfileTransition | null;
   /** Validated runtime state supplies all relay-visible identity and authority fields. */
   runtime: PdsSessionPackageRuntimeContext;
   originDeploymentId: string;
@@ -277,9 +304,11 @@ export interface CreatePdsSessionManifestInput {
   tombstoneFloorKey: string | Buffer;
   originSigningPrivateKey: KeyObject;
   projectAliasManifest?: PdsProjectAliasManifest;
+  repositoryAssignment?: PdsRepositoryAssignment;
 }
 
 export interface CreatePdsSessionCheckpointManifestInput {
+  profileTransition?: PdsCheckpointProfileTransition | null;
   runtime: PdsSessionPackageRuntimeContext;
   originDeploymentId: string;
   sourceSequence: string;
@@ -296,6 +325,7 @@ export interface CreatePdsSessionCheckpointManifestInput {
   tombstoneFloorKey: string | Buffer;
   originSigningPrivateKey: KeyObject;
   projectAliasManifest?: PdsProjectAliasManifest;
+  repositoryAssignment?: PdsRepositoryAssignment;
 }
 
 export interface CreatePdsSessionPackageInput {
@@ -313,6 +343,8 @@ export interface CreatePdsSessionCheckpointPackageInput extends Omit<
 }
 
 export interface CreatePdsEncryptedPayloadPackageInput {
+  /** Optional preallocated random ID for transport-bound auxiliary package identities. */
+  transportId?: string;
   runtime: PdsSessionPackageRuntimeContext;
   expiresAt: string;
   servingSigningPrivateKey: KeyObject;
@@ -1108,6 +1140,12 @@ const unsignedSourceManifest = (
     input.sourceNativeSessionId
   );
   const manifest = {
+    profileTransition: validatePdsClosedProfileTransition(
+      input.profileTransition ?? null,
+      sourceClosureHash(closure.records),
+      input.sourceSequence
+    ),
+    version: PDS_SESSION_MANIFEST_VERSION,
     protocol: PDS_PROTOCOL,
     packageId: "",
     originDeploymentId: input.originDeploymentId,
@@ -1125,6 +1163,18 @@ const unsignedSourceManifest = (
     ),
     sourceClosureHash: sourceClosureHash(closure.records),
     contentEpoch: input.contentEpoch,
+    repositoryAssignment: pdsRepositoryAssignmentSchema.parse(
+      input.repositoryAssignment ?? {
+        version: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      }
+    ),
     ...(input.projectAliasManifest
       ? { projectAliasManifest: input.projectAliasManifest }
       : {}),
@@ -1193,6 +1243,88 @@ export const createPdsSessionManifest = (
   return validatePdsSessionManifest(manifest);
 };
 
+/** A closed source upgrade republishes exactly the sealed source closure. */
+export const validatePdsClosedProfileTransition = (
+  value: unknown,
+  closureHash: string,
+  sourceSequence: string
+): PdsClosedProfileTransition | null => {
+  if (value === null) return null;
+  const transition = own(value, "closed profile transition");
+  exact(
+    transition,
+    [
+      "previousProfile",
+      "previousManifestHash",
+      "previousSourceSequence",
+      "previousClosureHash"
+    ],
+    "closed profile transition"
+  );
+  if (transition.previousProfile !== "pre_repository_cutover")
+    throw new TypeError(
+      "PDS closed transition requires the pre-cutover profile"
+    );
+  requireHash(transition.previousManifestHash, "previous manifest hash");
+  requireHash(transition.previousClosureHash, "previous closure hash");
+  const previousSequence = requireUint64(
+    transition.previousSourceSequence,
+    "previous profile source sequence"
+  );
+  requireUint64(sourceSequence, "source sequence");
+  if (
+    transition.previousClosureHash !== closureHash ||
+    BigInt(sourceSequence) <= BigInt(previousSequence)
+  )
+    throw new TypeError(
+      "PDS closed profile transition does not preserve its retained boundary"
+    );
+  return transition as unknown as PdsClosedProfileTransition;
+};
+
+export const validatePdsCheckpointProfileTransition = (
+  value: unknown,
+  checkpoint: { ordinal: string; previousClosureHash: string | null },
+  sourceSequence: string
+): PdsCheckpointProfileTransition | null => {
+  if (value === null) return null;
+  const transition = own(value, "checkpoint profile transition");
+  exact(
+    transition,
+    [
+      "previousProfile",
+      "previousManifestHash",
+      "previousSourceSequence",
+      "previousOrdinal",
+      "previousClosureHash"
+    ],
+    "checkpoint profile transition"
+  );
+  if (transition.previousProfile !== "pre_repository_cutover")
+    throw new TypeError(
+      "PDS checkpoint transition requires the pre-cutover profile"
+    );
+  requireHash(transition.previousManifestHash, "previous manifest hash");
+  requireHash(transition.previousClosureHash, "previous closure hash");
+  const previousOrdinal = requireUint64(
+    transition.previousOrdinal,
+    "previous profile ordinal"
+  );
+  const previousSequence = requireUint64(
+    transition.previousSourceSequence,
+    "previous profile source sequence"
+  );
+  if (
+    BigInt(checkpoint.ordinal) !== BigInt(previousOrdinal) + 1n ||
+    checkpoint.previousClosureHash !== transition.previousClosureHash ||
+    BigInt(sourceSequence) <= BigInt(previousSequence)
+  )
+    throw new TypeError(
+      "PDS checkpoint profile transition does not extend its retained boundary"
+    );
+  return transition as unknown as PdsCheckpointProfileTransition;
+};
+
 export const createPdsSessionCheckpointManifest = (
   input: CreatePdsSessionCheckpointManifestInput
 ): PdsSessionCheckpointManifest => {
@@ -1246,6 +1378,11 @@ export const createPdsSessionCheckpointManifest = (
     input.sourceNativeSessionId
   );
   const unsigned: Omit<PdsSessionCheckpointManifest, "originSignature"> = {
+    profileTransition: validatePdsCheckpointProfileTransition(
+      input.profileTransition ?? null,
+      { ordinal, previousClosureHash: previousClosureHash as string | null },
+      input.sourceSequence
+    ),
     protocol: PDS_PROTOCOL,
     version: PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
     profile: PDS_SESSION_CHECKPOINT_PROFILE,
@@ -1265,6 +1402,18 @@ export const createPdsSessionCheckpointManifest = (
     ),
     sourceClosureHash: sourceClosureHash(closure.records),
     contentEpoch: input.contentEpoch,
+    repositoryAssignment: pdsRepositoryAssignmentSchema.parse(
+      input.repositoryAssignment ?? {
+        version: "1",
+        capturedCwd: null,
+        branchObservation: null,
+        state: "historical_unresolved",
+        assignmentVersion: "1",
+        automatic: null,
+        override: null,
+        selectedAnchor: null
+      }
+    ),
     ...(input.projectAliasManifest
       ? { projectAliasManifest: input.projectAliasManifest }
       : {}),
@@ -1355,6 +1504,9 @@ const validateRawRecord = (
 };
 
 const sourceManifestFields = [
+  "version",
+  "profileTransition",
+  "repositoryAssignment",
   "protocol",
   "packageId",
   "originDeploymentId",
@@ -1385,10 +1537,19 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
   );
   if (
     manifest.protocol !== PDS_PROTOCOL ||
+    manifest.version !== PDS_SESSION_MANIFEST_VERSION ||
     manifest.sourceType !== "captured_session"
   ) {
     throw new TypeError("PDS source manifest protocol is invalid");
   }
+  const repositoryAssignment = pdsRepositoryAssignmentSchema.parse(
+    manifest.repositoryAssignment
+  );
+  if (
+    repositoryAssignment.selectedAnchor &&
+    repositoryAssignment.selectedAnchor.epoch !== manifest.contentEpoch
+  )
+    throw new TypeError("PDS repository epoch does not bind source manifest");
   for (const field of ["originDeploymentId", "originDeviceId"])
     requireRelayId(manifest[field], field);
   requireHash(manifest.originAuthorityHead, "origin authority head");
@@ -1404,6 +1565,11 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
     "sourceClosureHash"
   ])
     requireHash(manifest[field], field);
+  validatePdsClosedProfileTransition(
+    manifest.profileTransition,
+    String(manifest.sourceClosureHash),
+    String(manifest.sourceSequence)
+  );
   validateClosedSession(manifest.closedSession);
   if ("projectAliasManifest" in manifest) {
     validateProjectAliases(
@@ -1477,10 +1643,10 @@ export const validatePdsSessionManifest = (
   const manifest = own(value, "source manifest");
   if (
     Object.hasOwn(manifest, "profile") ||
-    Object.hasOwn(manifest, "version")
+    manifest.version !== PDS_SESSION_MANIFEST_VERSION
   ) {
     throw new TypeError(
-      "PDS V1 session manifest does not support this profile"
+      "PDS closed session manifest does not support this profile"
     );
   }
   validateManifestIdentity(manifest);
@@ -1490,6 +1656,8 @@ export const validatePdsSessionManifest = (
 };
 
 const checkpointManifestFields = [
+  "repositoryAssignment",
+  "profileTransition",
   "protocol",
   "version",
   "profile",
@@ -1543,6 +1711,14 @@ export const validatePdsSessionCheckpointManifest = (
   ) {
     throw new TypeError("PDS checkpoint source profile is invalid");
   }
+  const repositoryAssignment = pdsRepositoryAssignmentSchema.parse(
+    manifest.repositoryAssignment
+  );
+  if (
+    repositoryAssignment.selectedAnchor &&
+    repositoryAssignment.selectedAnchor.epoch !== manifest.contentEpoch
+  )
+    throw new TypeError("PDS repository epoch does not bind source manifest");
   for (const field of ["originDeploymentId", "originDeviceId"])
     requireRelayId(manifest[field], field);
   requireHash(manifest.originAuthorityHead, "origin authority head");
@@ -1581,6 +1757,14 @@ export const validatePdsSessionCheckpointManifest = (
       "previous checkpoint closure hash"
     );
   }
+  validatePdsCheckpointProfileTransition(
+    manifest.profileTransition,
+    {
+      ordinal,
+      previousClosureHash: checkpoint.previousClosureHash as string | null
+    },
+    manifest.sourceSequence as string
+  );
   if ("projectAliasManifest" in manifest) {
     validateProjectAliases(
       manifest.projectAliasManifest,
@@ -1614,6 +1798,10 @@ export const validatePdsSessionCheckpointAppend = (
 ): PdsSessionCheckpointManifest => {
   const previous = validatePdsSessionCheckpointManifest(previousValue);
   const current = validatePdsSessionCheckpointManifest(currentValue);
+  if (current.profileTransition !== null)
+    throw new TypeError(
+      "PDS checkpoint cannot transition from an already current profile"
+    );
   const stableSourceSession = (
     sourceSession: PdsCheckpointSourceSessionMetadata
   ): JsonRecord => {
@@ -1668,7 +1856,10 @@ export const validatePdsSessionSourceManifest = (
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as JsonRecord;
-    if (Object.hasOwn(record, "profile") || Object.hasOwn(record, "version")) {
+    if (
+      Object.hasOwn(record, "profile") ||
+      record.version !== PDS_SESSION_MANIFEST_VERSION
+    ) {
       throw new TypeError("PDS source manifest profile is unsupported");
     }
   }
@@ -2266,6 +2457,7 @@ const packageRecipients = (
 
 const unsignedTransportHeader = (
   input: {
+    transportId?: string;
     groupId: string;
     authorityHead: string;
     currentEpoch: string;
@@ -2284,7 +2476,7 @@ const unsignedTransportHeader = (
   return headerUnsigned({
     protocol: PDS_PROTOCOL,
     version: PDS_SESSION_PACKAGE_VERSION,
-    transportId: randomBytes(32).toString("base64url"),
+    transportId: input.transportId ?? randomBytes(32).toString("base64url"),
     groupId: input.groupId,
     packageId: input.packageId,
     sourceManifestHash: input.manifestHash,
@@ -2389,6 +2581,8 @@ export const createPdsEncryptedPayloadPackage = (
   input: CreatePdsEncryptedPayloadPackageInput
 ): PdsSessionPackage => {
   const runtime = assertRuntimeContext(input.runtime);
+  if (input.transportId !== undefined)
+    requireHash(input.transportId, "transport ID");
   requireIso(input.expiresAt, "transport expiry");
   requireHash(input.packageId, "transport package ID");
   requireHash(input.manifestHash, "transport manifest hash");

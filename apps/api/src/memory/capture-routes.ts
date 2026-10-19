@@ -1,4 +1,5 @@
 import { capturePersonalEvent } from "@koed/core";
+import { repositoryScopeId } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import { publicUser } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";
@@ -162,7 +163,13 @@ export const registerCaptureRoutes = (
           statusCode: 404
         });
       }
-      if (query.project_id && session.project?.id !== query.project_id) {
+      const effective = session.repositoryAssignment?.effective;
+      if (
+        query.project_id &&
+        (!effective ||
+          effective.kind === "unresolved" ||
+          repositoryScopeId(effective) !== query.project_id)
+      ) {
         throw Object.assign(
           new Error("Captured Session does not belong to Project"),
           { statusCode: 404 }

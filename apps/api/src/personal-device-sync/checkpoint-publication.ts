@@ -2,14 +2,13 @@ import {
   pdsSessionPackageDigest,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
-import type {
-  MemorySourceRepository,
-  PdsClosureSource,
-  PdsLocalClosureRecord
-} from "@koed/db";
+import type { MemorySourceRepository, PdsLocalClosureRecord } from "@koed/db";
 import type { PdsSecureKeyProvider } from "./local-source.js";
 import { pdsConversationItemsForClosure } from "./local-source.js";
-import { serializePdsCheckpointSourceForEncryptedStorage } from "./secure-runtime.js";
+import {
+  serializePdsPackageForEncryptedStorage,
+  serializePdsCheckpointSourceForEncryptedStorage
+} from "./secure-runtime.js";
 
 const CANDIDATE_BATCH_SIZE = 50;
 const MAX_CANDIDATES_PER_DRAIN = 200;
@@ -19,22 +18,18 @@ type Candidate = {
   userId: string;
   groupId: string;
   sessionId: string;
+  closedProfileUpgrade?: true;
 };
 
-type CheckpointBuildInput = {
-  source: PdsClosureSource;
-  sourceSequence: string;
-  closedAt: Date;
-  checkpoint?: {
-    version: "1";
-    ordinal: string;
-    previousClosureHash: string | null;
-  };
-};
+type CheckpointBuildInput = Parameters<
+  Parameters<MemorySourceRepository["checkpointPdsSourceSession"]>[0]["build"]
+>[0];
 
 type CheckpointRepository = Pick<
   MemorySourceRepository,
-  "listPdsCheckpointCandidates" | "checkpointPdsSourceSession"
+  | "listPdsCheckpointCandidates"
+  | "checkpointPdsSourceSession"
+  | "republishPdsClosedSourceSession"
 >;
 
 export interface PdsCheckpointPublicationService {
@@ -59,15 +54,44 @@ export const publishPdsCheckpointCandidate = async (input: {
     ...input.candidate,
     originDeploymentId: keyContext.originDeploymentId,
     originDeviceId: keyContext.originDeviceId,
-    async build({ source, sourceSequence, checkpoint }: CheckpointBuildInput) {
-      if (!checkpoint) throw new Error("PdsCheckpointMetadataUnavailableError");
+    async build({
+      source,
+      sourceSequence,
+      checkpoint,
+      profileTransition,
+      closedProfileTransition,
+      closedAt
+    }: CheckpointBuildInput) {
+      if (!checkpoint && !closedProfileTransition)
+        throw new Error("PdsCheckpointMetadataUnavailableError");
       const items = pdsConversationItemsForClosure(source);
-      const built = await keyContext.buildCompletedTurnCheckpointPackage({
-        source,
-        sourceSequence,
-        items,
-        checkpoint
-      });
+      let built: Awaited<
+        ReturnType<typeof keyContext.buildClosedSessionPackage>
+      >;
+      let plaintext: string;
+      if (checkpoint) {
+        const completed = await keyContext.buildCompletedTurnCheckpointPackage({
+          source,
+          sourceSequence,
+          items,
+          checkpoint,
+          profileTransition
+        });
+        built = completed;
+        plaintext = serializePdsCheckpointSourceForEncryptedStorage({
+          manifest: completed.manifest,
+          package: completed.package
+        });
+      } else {
+        built = await keyContext.buildClosedSessionPackage({
+          source,
+          sourceSequence,
+          items,
+          closedAt,
+          closedProfileTransition
+        });
+        plaintext = serializePdsPackageForEncryptedStorage(built.package);
+      }
       const pkg = built.package;
       const sourceManifestHash = pkg.header.sourceManifestHash;
       if (
@@ -90,10 +114,7 @@ export const publishPdsCheckpointCandidate = async (input: {
         logicalMemoryId: built.logicalMemoryId,
         deletionFloorToken: built.deletionFloorToken,
         encryptedEnvelope: await input.envelopeEncryptionProvider.encrypt({
-          plaintext: serializePdsCheckpointSourceForEncryptedStorage({
-            manifest: built.manifest,
-            package: pkg
-          }),
+          plaintext,
           scope: {
             tenantId: input.candidate.userId,
             objectClass: "pds_source_package"
@@ -114,7 +135,9 @@ export const publishPdsCheckpointCandidate = async (input: {
     }
   };
 
-  return input.repository.checkpointPdsSourceSession(publication);
+  return input.candidate.closedProfileUpgrade
+    ? input.repository.republishPdsClosedSourceSession(publication)
+    : input.repository.checkpointPdsSourceSession(publication);
 };
 
 /**

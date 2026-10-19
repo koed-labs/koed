@@ -9,6 +9,20 @@ for Answer Synthesis. The MCP Server and the Pi extension own presentation only.
 session-history receipts and the Codex Stop adapter's one-use receipts hold
 delivery identity, never task results or a second execution queue.
 
+Project-scoped Personal tasks resolve and pin repository context before acceptance.
+The encrypted request retains the target root, selected identity, branch, and
+resolution/provenance fields. Workers use that stored context across retries;
+collection remains User-owned. Current assignment and source-access checks still
+apply during recall. See [Personal repository recall](repository-recall.md).
+
+Team Project tasks also pin resolved portable repository context before
+acceptance. Unresolved and device-local targets fail with a Project-resolution
+error. The stored context cannot change the selected Team Workspace or backend.
+Team search and expansion match the Share Grant's repository snapshot, and
+collection rechecks the original Workspace and Share Grant authority before
+decrypting a completed answer. A revoked source therefore cannot remain
+collectable merely because its answer finished earlier.
+
 ## Request Flow
 
 1. An adapter forwards one validated `memory_answer` call and, when available,

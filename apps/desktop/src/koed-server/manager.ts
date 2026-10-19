@@ -1,9 +1,24 @@
+import {
+  PersonalMemoryBoundaryError,
+  type PersonalMemoryErrorCode
+} from "./personal-memory-boundary.js";
+import { createProjectCommands } from "./project-commands.js";
+import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
 import { hostname } from "node:os";
+import {
+  readProjectFolderFilter,
+  writeProjectFolderFilter
+} from "../project-folder-filters.js";
+import {
+  projectFolderFilterGetSchema,
+  projectFolderFilterSchema
+} from "../ipc/project-folder-filter.js";
 import {
   readPersonalDeviceNames,
   writePersonalDeviceName
 } from "../personal-device-names.js";
 import {
+  refreshProjectAssociations,
   deviceRequestCommand,
   exchangeDeviceRequest,
   parseDeviceRequestLink
@@ -45,7 +60,7 @@ import {
   personalDesktopProjectsDataSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
-  personalDesktopSessionProjectDataSchema,
+  repositoryScopeId,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionPresentationDataSchema,
   type CollaborationRendererEvent,
@@ -57,6 +72,7 @@ import {
 import {
   discoverProjectMetadata,
   listProjectMetadata,
+  listNamedProjects,
   loadRepoEnv,
   resolveKoedHome,
   resolveKoedServerConfig,
@@ -464,23 +480,6 @@ const readLocalAppCredential = (
   }
 };
 
-type PersonalMemoryErrorCode =
-  | "not_ready"
-  | "not_found"
-  | "conflict"
-  | "request_failed"
-  | "invalid_response";
-
-class PersonalMemoryBoundaryError extends Error {
-  constructor(
-    readonly code: PersonalMemoryErrorCode,
-    readonly retryable: boolean
-  ) {
-    super(code);
-    this.name = "PersonalMemoryBoundaryError";
-  }
-}
-
 const personalMemoryErrorMessage = (code: PersonalMemoryErrorCode): string => {
   if (code === "not_ready") return "Local Personal Memory is not ready.";
   if (code === "not_found") return "The Personal Memory item was not found.";
@@ -759,6 +758,9 @@ const personalProjectsData = (
         : [];
       const threads = threadValues.map((threadValue) => {
         const thread = objectValue(threadValue) ?? {};
+        const capturedCwd = objectValue(
+          thread.capturedProjectProvenance
+        )?.capturedCwd;
         return {
           id: thread.id,
           name: thread.name,
@@ -777,7 +779,16 @@ const personalProjectsData = (
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
+          capturedCwd:
+            typeof capturedCwd === "string" &&
+            capturedCwd.trim().length > 0 &&
+            capturedCwd.length <= 4096
+              ? capturedCwd
+              : null,
           projectAssignmentSource: thread.projectAssignmentSource,
+          ...(thread.repositoryAssignment
+            ? { repositoryAssignment: thread.repositoryAssignment }
+            : {}),
           presentation: thread.presentation,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
@@ -833,6 +844,7 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
       lastSeenAt: project.lastSeenAt,
       localProjectId: project.localProjectId,
       displayName: project.displayName,
+      ...(project.repository ? { repository: project.repository } : {}),
       contextKind:
         resolve(project.path.projectRoot ?? project.path.cwd) ===
         resolve(resolveKoedHome(environment), "projects", "Independent")
@@ -847,7 +859,10 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
             git: {
               branch: project.git.branch,
               isWorktree: project.git.isWorktree,
-              remotes: project.git.remotes.map(({ display }) => ({ display }))
+              remotes: project.git.remotes.map(({ name, display }) => ({
+                name,
+                display
+              }))
             }
           }
         : {})
@@ -2825,6 +2840,58 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
+  const repositoryReviewJson = (
+    path: string,
+    init: RequestInit = { method: "GET" }
+  ) =>
+    authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
+      2 * 1024 * 1024
+    );
+  const projectSelectionRequest = async (
+    path: string,
+    init: RequestInit = { method: "GET" }
+  ): Promise<Record<string, unknown>> => {
+    const access = await personalSyncEnvironment();
+    const origin = access.environment.PDS_CONTROL_URL;
+    if (!origin) throw new Error("Local Personal API is unavailable");
+    const { response, payload } = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL(path, origin),
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          ...Object.fromEntries(new Headers(init.headers)),
+          authorization: access.desktopAuthorization
+        }
+      },
+      { timeoutMs: 30_000, maxBytes: 2 * 1024 * 1024, readErrorBody: true }
+    );
+    if (!response.ok)
+      throw new Error(
+        response.status === 409
+          ? "Project selection changed; inspect its current revisions again."
+          : "Project association request failed."
+      );
+    return payload;
+  };
+  const projectCommands = createProjectCommands({
+    paths: resolveKoedServerPaths(environment),
+    personalRequest: repositoryReviewJson,
+    governanceRequest: projectSelectionRequest,
+    lookup: async (checkout) =>
+      projectSelectionLookupResponseSchema.parse(
+        await repositoryReviewJson(
+          `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`
+        )
+      ),
+    status: personalSyncStatusWithLanRelay,
+    listProjects: () => listPersonalProjects(),
+    localProjects: () => localProjectMetadataData(environment).projects,
+    requireAccess: () => personalMemoryAccess()
+  });
+
   const listPersonalProjects = async () => {
     const projects = personalProjectsData(
       await authenticatedPersonalMemoryRequest(
@@ -2843,7 +2910,31 @@ export const createKoedServerManager = ({
       readPersonalDeviceNames(resolveKoedHome(environment))
     );
     await reconcileLocalProjectMetadata(projects.projects);
-    return projects;
+    const byId = new Map(
+      projects.projects.map((project) => [project.id, project])
+    );
+    for (const named of listNamedProjects(
+      resolveKoedServerPaths(environment)
+    )) {
+      const id = repositoryScopeId(named.repository);
+      const existing = byId.get(id);
+      byId.set(id, {
+        id,
+        name: named.name,
+        repository: named.repository,
+        path: null,
+        eventCount: existing?.eventCount ?? 0,
+        threads:
+          existing?.threads.map((thread) => ({
+            ...thread,
+            projectName: named.name,
+            projectPath: null
+          })) ?? []
+      });
+    }
+    return personalDesktopProjectsDataSchema.parse({
+      projects: [...byId.values()]
+    });
   };
 
   const listRecentPersonalConversations = async (input: {
@@ -2978,7 +3069,14 @@ export const createKoedServerManager = ({
           for (const cwd of projectPaths) {
             if (!projectMetadataIsStale(metadataByPath.get(cwd))) continue;
             try {
-              await discoverProjectMetadata(paths, { cwd });
+              await discoverProjectMetadata(
+                paths,
+                { cwd },
+                {
+                  lookupAssociatedSelection:
+                    projectCommands.lookupAssociatedSelection
+                }
+              );
             } catch {
               // One unavailable Project must not block Personal Memory.
             }
@@ -4227,60 +4325,6 @@ export const createKoedServerManager = ({
     );
   };
 
-  const assignPersonalSessionProject = async (
-    input: Extract<
-      PersonalDesktopRequest,
-      { operation: "personal.sessions.assign_project" }
-    >["input"]
-  ) => {
-    const target =
-      input.action === "move"
-        ? (await listPersonalProjects()).projects.find(
-            (project) => project.id === input.targetProjectId
-          )
-        : null;
-    if (input.action === "move" && (!target || target.id === "unassigned")) {
-      throw new PersonalMemoryBoundaryError("not_found", false);
-    }
-    const payload = await authenticatedPersonalMemoryRequest(
-      ({ apiOrigin }) => ({
-        url: new URL(
-          `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/project`,
-          apiOrigin
-        ),
-        init: {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(
-            input.action === "reset"
-              ? { action: "reset" }
-              : {
-                  action: "move",
-                  project: {
-                    id: target!.id,
-                    name: target!.name,
-                    path: target!.path
-                  }
-                }
-          )
-        }
-      }),
-      1 * 1_024 * 1_024
-    );
-    const session = objectValue(payload.session);
-    if (!session || !("project" in session)) {
-      throw new PersonalMemoryBoundaryError("invalid_response", false);
-    }
-    const project =
-      session.project === null ? null : objectValue(session.project);
-    if (session.project !== null && !project) {
-      throw new PersonalMemoryBoundaryError("invalid_response", false);
-    }
-    return personalDesktopSessionProjectDataSchema.parse({
-      projectId: project?.id ?? null
-    });
-  };
-
   const updatePersonalSessionTitle = async (
     input: Extract<
       PersonalDesktopRequest,
@@ -4658,52 +4702,53 @@ export const createKoedServerManager = ({
     });
   };
 
+  const dispatchPersonalMemory = (request: PersonalDesktopRequest) => {
+    switch (request.operation) {
+      case "personal.projects.create":
+        return projectCommands.create(request.input);
+      case "personal.projects.move":
+        return projectCommands.move(request.input);
+      case "personal.ask.threads.list":
+        return listPersonalAskThreads(request.input);
+      case "personal.ask.thread.load":
+        return loadPersonalAskThread(request.input);
+      case "personal.ask.submit":
+        return submitPersonalAsk(request.input);
+      case "personal.notes.list":
+        return listPersonalNotes(request.input);
+      case "personal.notes.load":
+        return loadPersonalNote(request.input);
+      case "personal.notes.create":
+        return createPersonalNote(request.input);
+      case "personal.notes.rename":
+        return renamePersonalNote(request.input);
+      case "personal.notes.update":
+        return updatePersonalNote(request.input);
+      case "personal.projects.list":
+        return listPersonalProjects();
+      case "personal.conversations.recent.list":
+        return listRecentPersonalConversations(request.input);
+      case "personal.projects.metadata.list":
+        return localProjectMetadataData(environment);
+      case "personal.events.load_page":
+        return loadPersonalEventPage(request.input);
+      case "personal.sessions.assign_project":
+        return projectCommands.assign(request.input);
+      case "personal.sessions.update_presentation":
+        return updatePersonalSessionPresentation(request.input);
+      case "personal.sessions.update_title":
+        return updatePersonalSessionTitle(request.input);
+      default: {
+        const unreachable: never = request;
+        throw new Error(`Unknown Personal operation: ${unreachable}`);
+      }
+    }
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
-      const data =
-        request.operation === "personal.ask.threads.list"
-          ? await listPersonalAskThreads(request.input)
-          : request.operation === "personal.ask.thread.load"
-            ? await loadPersonalAskThread(request.input)
-            : request.operation === "personal.ask.submit"
-              ? await submitPersonalAsk(request.input)
-              : request.operation === "personal.notes.list"
-                ? await listPersonalNotes(request.input)
-                : request.operation === "personal.notes.load"
-                  ? await loadPersonalNote(request.input)
-                  : request.operation === "personal.notes.create"
-                    ? await createPersonalNote(request.input)
-                    : request.operation === "personal.notes.rename"
-                      ? await renamePersonalNote(request.input)
-                      : request.operation === "personal.notes.update"
-                        ? await updatePersonalNote(request.input)
-                        : request.operation === "personal.projects.list"
-                          ? await listPersonalProjects()
-                          : request.operation ===
-                              "personal.conversations.recent.list"
-                            ? await listRecentPersonalConversations(
-                                request.input
-                              )
-                            : request.operation ===
-                                "personal.projects.metadata.list"
-                              ? localProjectMetadataData(environment)
-                              : request.operation ===
-                                  "personal.events.load_page"
-                                ? await loadPersonalEventPage(request.input)
-                                : request.operation ===
-                                    "personal.sessions.assign_project"
-                                  ? await assignPersonalSessionProject(
-                                      request.input
-                                    )
-                                  : request.operation ===
-                                      "personal.sessions.update_presentation"
-                                    ? await updatePersonalSessionPresentation(
-                                        request.input
-                                      )
-                                    : await updatePersonalSessionTitle(
-                                        request.input
-                                      );
+      const data = await dispatchPersonalMemory(request);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -5569,7 +5614,26 @@ export const createKoedServerManager = ({
       models_install: () => runModelInstallJson(),
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
-      project_list: () => runJson(["project", "list"], 10_000),
+      repository_review: (args) => projectCommands.review(args),
+      project_folder_filter_get: async (args) =>
+        readProjectFolderFilter(
+          resolveKoedHome(environment),
+          projectFolderFilterGetSchema.parse(args).projectId
+        ),
+      project_folder_filter_set: async (args) =>
+        writeProjectFolderFilter(
+          resolveKoedHome(environment),
+          projectFolderFilterSchema.parse(args)
+        ),
+      project_list: async () => {
+        await refreshProjectAssociations(resolveKoedServerPaths(environment), {
+          lookupAssociatedSelection: projectCommands.lookupAssociatedSelection
+        });
+        return runJson(["project", "list"], 10_000);
+      },
+      project_association: projectCommands.selection,
+      project_anchor_set: projectCommands.setAnchor,
+
       ensure_independent_project: async () => {
         const independentRoot = resolve(
           resolveKoedHome(environment),
