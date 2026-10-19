@@ -2,7 +2,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
+import type {
+  CollaborationClientUpdate,
+  CollaborationRendererClient
+} from "../../../collaboration/renderer-client.js";
+import type { CollaborationSnapshot } from "@koed/shared/collaboration";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
 import {
   hqVisibilityIdentity,
@@ -37,11 +41,52 @@ const reader = (
   return {
     client: {
       listOwnedSharedMemoryGrants,
-      listOwnedShares
+      listOwnedShares,
+      subscribe: () => () => undefined
     } as unknown as CollaborationRendererClient,
     listOwnedSharedMemoryGrants,
     listOwnedShares
   };
+};
+
+const eventReader = () => {
+  const pending: Array<(grants: unknown[]) => void> = [];
+  type Listener = Parameters<CollaborationRendererClient["subscribe"]>[0];
+  const listeners = new Set<Listener>();
+  const listOwnedSharedMemoryGrants = vi.fn(
+    () => new Promise<unknown[]>((resolve) => pending.push(resolve))
+  );
+  const listOwnedShares = vi.fn(async () => ({
+    shares: [],
+    nextCursor: null
+  }));
+  const client = {
+    listOwnedSharedMemoryGrants,
+    listOwnedShares,
+    subscribe: vi.fn((listener: Listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    })
+  } as unknown as CollaborationRendererClient;
+  const emit = (update: CollaborationClientUpdate) => {
+    for (const listener of listeners)
+      void listener({} as CollaborationSnapshot, update);
+  };
+  return { client, pending, listeners, listOwnedSharedMemoryGrants, emit };
+};
+
+const shareChanged: CollaborationClientUpdate = {
+  kind: "realtime",
+  realtimeUpdate: {
+    type: "owned_share_status_changed",
+    pendingShareId: "00000000-0000-4000-8000-000000000109",
+    sourceTitle: "Conversation",
+    state: "activated",
+    stage: "complete",
+    workspaceAccessState: "active",
+    sourceUpdateState: "active",
+    redactedFailureCode: null
+  }
 };
 
 describe("HQ Conversation visibility", () => {
@@ -324,7 +369,8 @@ describe("HQ Conversation visibility", () => {
       listOwnedSharedMemoryGrants: vi.fn(
         () => new Promise<unknown[]>((resolve) => pending.push(resolve))
       ),
-      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null }))
+      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null })),
+      subscribe: () => () => undefined
     } as unknown as CollaborationRendererClient;
     function Host({
       ownerId,
@@ -413,7 +459,8 @@ describe("HQ Conversation visibility", () => {
       listOwnedSharedMemoryGrants: vi.fn(
         () => new Promise<[]>((resolve) => pending.push(resolve))
       ),
-      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null }))
+      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null })),
+      subscribe: () => () => undefined
     } as unknown as CollaborationRendererClient;
     function Host({
       currentSessionId,
@@ -460,6 +507,76 @@ describe("HQ Conversation visibility", () => {
     expect(host.textContent).toBe("");
     await release(3);
     expect(host.textContent).toBe("Just me");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("withholds verified privacy on share updates and recovery without a snapshot revision change", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const { client, pending, listeners, listOwnedSharedMemoryGrants, emit } =
+      eventReader();
+    function Host() {
+      const visibility = useHqConversationVisibility({
+        client,
+        logicalMemoryId,
+        sessionId,
+        ownerId: "owner-1",
+        revision: "unchanged",
+        connected: true
+      });
+      return <HqVisibilityLine visibility={visibility} />;
+    }
+    await act(async () => root.render(<Host />));
+    await act(async () => pending[0]?.([]));
+    expect(host.textContent).toBe("Just me");
+
+    await act(async () => emit(shareChanged));
+    expect(host.textContent).toBe("");
+    expect(listOwnedSharedMemoryGrants).toHaveBeenCalledTimes(2);
+    await act(async () => pending[1]?.([{ source, lifecycle: "active" }]));
+    expect(host.textContent).toBe("");
+
+    await act(async () =>
+      emit({ kind: "realtime", authoritativeRecovery: true })
+    );
+    expect(host.textContent).toBe("");
+    expect(listOwnedSharedMemoryGrants).toHaveBeenCalledTimes(3);
+    await act(async () => pending[2]?.([]));
+    expect(host.textContent).toBe("Just me");
+
+    await act(async () => root.unmount());
+    expect(listeners.size).toBe(0);
+    emit(shareChanged);
+    expect(listOwnedSharedMemoryGrants).toHaveBeenCalledTimes(3);
+    host.remove();
+  });
+
+  it("ignores an in-flight private read superseded by a share update", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const { client, pending, listOwnedSharedMemoryGrants, emit } =
+      eventReader();
+    function Host() {
+      const visibility = useHqConversationVisibility({
+        client,
+        logicalMemoryId,
+        sessionId,
+        ownerId: "owner-1",
+        revision: "unchanged",
+        connected: true
+      });
+      return <HqVisibilityLine visibility={visibility} />;
+    }
+    await act(async () => root.render(<Host />));
+    await act(async () => emit(shareChanged));
+    expect(listOwnedSharedMemoryGrants).toHaveBeenCalledTimes(2);
+    await act(async () => pending[0]?.([]));
+    expect(host.textContent).toBe("");
+    await act(async () => pending[1]?.([{ source, lifecycle: "active" }]));
+    expect(host.textContent).toBe("");
     await act(async () => root.unmount());
     host.remove();
   });

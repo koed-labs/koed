@@ -323,7 +323,8 @@ describe("HQ active Conversation", () => {
     );
     const visibilityClient = {
       listOwnedSharedMemoryGrants: vi.fn(() => visibilityRead),
-      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null }))
+      listOwnedShares: vi.fn(async () => ({ shares: [], nextCursor: null })),
+      subscribe: () => () => undefined
     } as unknown as CollaborationRendererClient;
     const f = fixture(
       "ready",

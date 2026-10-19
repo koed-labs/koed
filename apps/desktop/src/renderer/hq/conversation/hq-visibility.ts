@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 
 export type HqVisibility = "personal-private" | "unverified";
 
 type VisibilityReader = Pick<
   CollaborationRendererClient,
-  "listOwnedSharedMemoryGrants" | "listOwnedShares"
+  "listOwnedSharedMemoryGrants" | "listOwnedShares" | "subscribe"
 >;
 
 type ConversationSourceIdentity = {
@@ -118,23 +118,43 @@ export function useHqConversationVisibility({
   revision: string | null | undefined;
   connected: boolean;
 }): HqVisibility {
+  const [eventRevision, setEventRevision] = useState(0);
+  const eventGeneration = useRef(0);
   const key = [ownerId, logicalMemoryId, sessionId, revision, connected].join(
     "\u0000"
   );
   // A new token is created even when navigation or reconnection returns to an
-  // earlier key. A prior private read can never be rendered during recheck.
-  const request = useMemo(() => ({ key, client }), [key, client]);
+  // earlier key, or when a share update leaves snapshotRevision unchanged.
+  const request = useMemo(
+    () => ({ key, client, eventRevision }),
+    [key, client, eventRevision]
+  );
   const [result, setResult] = useState<{
     request: typeof request;
     value: HqVisibility;
   } | null>(null);
   useEffect(() => {
+    if (!client) return;
+    return client.subscribe((_snapshot, update) => {
+      if (
+        (update.kind === "realtime" &&
+          update.realtimeUpdate?.type === "owned_share_status_changed") ||
+        update.authoritativeRecovery === true
+      ) {
+        eventGeneration.current += 1;
+        setEventRevision((value) => value + 1);
+      }
+    });
+  }, [client]);
+  useEffect(() => {
     if (!client || !logicalMemoryId || !sessionId || !ownerId || !connected)
       return;
     let current = true;
+    const readGeneration = eventGeneration.current;
     void readHqConversationVisibility(client, logicalMemoryId, sessionId).then(
       (value) => {
-        if (current) setResult({ request, value });
+        if (current && readGeneration === eventGeneration.current)
+          setResult({ request, value });
       }
     );
     return () => {

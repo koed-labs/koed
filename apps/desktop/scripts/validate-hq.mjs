@@ -2359,6 +2359,42 @@ const runValidation = async () => {
         assert.equal(active?.beforeForm, true);
         assert.equal(active?.lineHeight, 26);
         assert.ok(active?.reads.grants > 0 && active?.reads.shares > 0);
+        await window.webContents.executeJavaScript(
+          `window.__koedHqVisibilityFixture.setShared(true)`
+        );
+        let shared = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          shared = await window.webContents.executeJavaScript(`(() => ({
+            label: document.querySelector('.hq-conversation__dock .hq-composer__visibility')?.textContent?.trim() ?? null,
+            grants: window.__koedHqVisibilityReads.grants
+          }))()`);
+          if (shared?.label === null && shared.grants > active.reads.grants)
+            break;
+          await delay(25);
+        }
+        assert.equal(shared?.label, null, JSON.stringify(shared));
+        assert.ok(shared?.grants > active.reads.grants);
+        await window.webContents.executeJavaScript(
+          `window.__koedHqVisibilityFixture.setShared(false)`
+        );
+        let restored = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          restored = await window.webContents.executeJavaScript(`(() => ({
+            label: document.querySelector('.hq-conversation__dock .hq-composer__visibility')?.textContent?.trim() ?? null,
+            grants: window.__koedHqVisibilityReads.grants,
+            shares: window.__koedHqVisibilityReads.shares
+          }))()`);
+          if (
+            restored?.label === "Just me" &&
+            restored.grants > shared.grants &&
+            restored.shares > active.reads.shares
+          )
+            break;
+          await delay(25);
+        }
+        assert.equal(restored?.label, "Just me", JSON.stringify(restored));
+        assert.ok(restored.grants > shared.grants);
+        assert.ok(restored.shares > active.reads.shares);
         await captureScreenshot("hq105-conversation-desktop.png");
         await window.webContents.executeJavaScript(
           `document.documentElement.classList.replace('dark', 'light')`

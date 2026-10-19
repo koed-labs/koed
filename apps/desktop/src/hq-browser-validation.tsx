@@ -11,7 +11,11 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationSnapshotSchema
 } from "@koed/shared/collaboration";
-import type { CollaborationRendererClient } from "./collaboration/renderer-client.js";
+import type {
+  CollaborationClientListener,
+  CollaborationClientUpdate,
+  CollaborationRendererClient
+} from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
@@ -97,11 +101,19 @@ const settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
   selection: { kind: "personal_memory" },
   view: { kind: "empty" }
 });
+const hq105VisibilityListeners = new Set<CollaborationClientListener>();
+const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
+  for (const listener of hq105VisibilityListeners)
+    void listener(settingsCollaborationSnapshot, update);
+};
 const settingsCollaborationClient = {
   current: () => settingsCollaborationSnapshot,
   load: async () => settingsCollaborationSnapshot,
   currentSelection: () => settingsCollaborationSnapshot.selection,
-  subscribe: () => () => undefined,
+  subscribe: (listener: CollaborationClientListener) => {
+    hq105VisibilityListeners.add(listener);
+    return () => hq105VisibilityListeners.delete(listener);
+  },
   currentRemoteUrl: () => "https://fixture.example.test",
   listOwnedSharedMemoryGrants: async ({
     logicalMemoryId
@@ -111,7 +123,18 @@ const settingsCollaborationClient = {
     hq105VisibilityReads.grants += 1;
     if (logicalMemoryId !== hq105LogicalMemoryId)
       throw new Error("Unknown HQ visibility fixture identity");
-    return [];
+    return hq105ShareActive
+      ? [
+          {
+            lifecycle: "active",
+            source: {
+              kind: "captured_session",
+              logicalMemoryId: hq105LogicalMemoryId,
+              sessionId: hq105CapturedSessionId
+            }
+          }
+        ]
+      : [];
   },
   listOwnedShares: async ({ cursor }: { cursor: string | null }) => {
     hq105VisibilityReads.shares += 1;
@@ -184,7 +207,27 @@ const installSettingsDesktop = () => {
 
 let hq104SentPrompt = "";
 const hq105LogicalMemoryId = "00000000-0000-4000-8000-000000000105";
+const hq105CapturedSessionId = "00000000-0000-4000-8000-000000000091";
 const hq105VisibilityReads = { grants: 0, shares: 0 };
+let hq105ShareActive = false;
+const hq105VisibilityFixture = {
+  setShared(active: boolean) {
+    hq105ShareActive = active;
+    publishHq105VisibilityUpdate({
+      kind: "realtime",
+      realtimeUpdate: {
+        type: "owned_share_status_changed",
+        pendingShareId: "00000000-0000-4000-8000-000000000109",
+        sourceTitle: "Conversation 91",
+        state: active ? "activated" : "revoked",
+        stage: "complete",
+        workspaceAccessState: active ? "active" : "revoked",
+        sourceUpdateState: active ? "active" : "stopped",
+        redactedFailureCode: null
+      }
+    });
+  }
+};
 let hq104SentMessageId = "";
 const hq104Recovery = new Map<string, string>();
 const hq104Identity = {
@@ -804,11 +847,17 @@ export function HqValidationApp() {
     resumedFixtureIdentities.clear();
     hq105VisibilityReads.grants = 0;
     hq105VisibilityReads.shares = 0;
+    hq105ShareActive = false;
     (
       window as Window & {
         __koedHqVisibilityReads?: typeof hq105VisibilityReads;
       }
     ).__koedHqVisibilityReads = hq105VisibilityReads;
+    (
+      window as Window & {
+        __koedHqVisibilityFixture?: typeof hq105VisibilityFixture;
+      }
+    ).__koedHqVisibilityFixture = hq105VisibilityFixture;
     window.__koedHqFixture = fixture;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
@@ -820,6 +869,11 @@ export function HqValidationApp() {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;
         }
       ).__koedHqVisibilityReads;
+      delete (
+        window as Window & {
+          __koedHqVisibilityFixture?: typeof hq105VisibilityFixture;
+        }
+      ).__koedHqVisibilityFixture;
       delete document.documentElement.dataset.hqFixtureReady;
       delete document.documentElement.dataset.browserValidationReady;
     };
