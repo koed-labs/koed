@@ -17,6 +17,7 @@ import type { ManagedConversationLifecycle } from "../../state/use-managed-conve
 import {
   nowNeedsFromApprovals,
   nowNeedsFromRuntime,
+  nowInspectableExecutions,
   nowProjectStatus,
   nowNeedsFromExecutionInventory,
   nowProjects,
@@ -57,6 +58,7 @@ export function NowView({
     readonly ManagedConversationListEntry[]
   >([]);
   const [complete, setComplete] = useState(false);
+  const [inventoryTruncated, setInventoryTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [runtimeError, setRuntimeError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -87,6 +89,7 @@ export function NowView({
       setExecutions([]);
       setRuntimeItems(new Map());
       setComplete(false);
+      setInventoryTruncated(false);
       setSourceApi(null);
       setLoading(false);
       setRuntimeError("Managed Conversations are unavailable.");
@@ -99,12 +102,10 @@ export function NowView({
       try {
         const listed = await list();
         if (!active) return;
-        const ids = [
-          ...new Set([
-            ...listed.executions.map(({ executionId }) => executionId),
-            ...[...(drafts?.keys() ?? [])]
-          ])
-        ];
+        const inspectable = nowInspectableExecutions(listed.executions);
+        const ids = inspectable.executions.map(
+          ({ executionId }) => executionId
+        );
         const next = new Map<
           string,
           readonly ManagedConversationRuntimeItem[]
@@ -124,18 +125,24 @@ export function NowView({
           });
         }
         if (!active) return;
-        setExecutions(listed.executions);
+        setExecutions(inspectable.executions);
         setSourceApi(api);
-        setComplete(listed.complete && !failed);
+        setComplete(listed.complete && !failed && !inspectable.unknownState);
+        setInventoryTruncated(!listed.complete);
         setRuntimeItems(next);
         setRuntimeError(
-          failed ? "Some Conversation requests could not be loaded." : ""
+          failed
+            ? "Some Conversation requests could not be loaded."
+            : inspectable.unknownState
+              ? "Some Conversation states could not be inspected."
+              : ""
         );
       } catch {
         if (!active) return;
         setExecutions([]);
         setSourceApi(api);
         setComplete(false);
+        setInventoryTruncated(false);
         setRuntimeItems(new Map());
         setRuntimeError("Needs you could not load. Try refreshing.");
       } finally {
@@ -205,6 +212,7 @@ export function NowView({
               type="button"
               className="hq-now__refresh"
               aria-label="Refresh Needs you"
+              disabled={loading}
               onClick={() => setRefreshKey((value) => value + 1)}
             >
               <RotateCw aria-hidden="true" />
@@ -218,7 +226,7 @@ export function NowView({
               {loading || !sourceCurrent ? (
                 <p role="status">Checking Conversations…</p>
               ) : null}
-              {!loading && sourceCurrent && !complete && !runtimeError ? (
+              {!loading && sourceCurrent && inventoryTruncated ? (
                 <p role="status">
                   Showing recent Conversations. Older activity may be missing.
                 </p>

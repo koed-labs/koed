@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
+import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
 import { NowView } from "./NowView.js";
 
 const projects = Array.from({ length: 7 }, (_, index) => ({
@@ -141,13 +142,136 @@ describe("Now view", () => {
             projectId: "old-project",
             sessionId: null,
             threadId: null,
-            state: "ready"
+            state: "running"
           }
         ],
         complete: true
       })
     );
     expect(api.runtime).not.toHaveBeenCalled();
+  });
+
+  it("inspects only actionable executions in a truncated large history, even when a stopped draft remains", async () => {
+    const executions = Array.from({ length: 500 }, (_, index) => ({
+      executionId: `execution-${index}`,
+      projectId: "project-0",
+      sessionId: `session-${index}`,
+      threadId: `thread-${index}`,
+      state:
+        index === 498
+          ? "running"
+          : index === 499
+            ? "quiesced"
+            : ["stopping", "stopped", "failed", "fenced"][index % 4]!
+    }));
+    const runtime = vi.fn(async (executionId: string) => {
+      expect(executionId).toMatch(/^execution-/);
+      return { items: [] };
+    });
+    const api = {
+      list: async () => ({ operation: "list", executions, complete: false }),
+      runtime
+    } as unknown as ManagedConversationDesktopApi;
+    const lifecycle = {
+      drafts: new Map([["execution-0", {}]])
+    } as unknown as ManagedConversationLifecycle;
+    await act(async () =>
+      root.render(
+        <NowView
+          projects={projects}
+          api={api}
+          lifecycle={lifecycle}
+          projectsReady
+          approvals={[]}
+          onSelectProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+        />
+      )
+    );
+    expect(runtime).toHaveBeenCalledTimes(2);
+    expect(runtime.mock.calls.map(([id]) => id)).toEqual([
+      "execution-498",
+      "execution-499"
+    ]);
+    expect(container.textContent).toContain("Older activity may be missing");
+    expect(container.textContent).not.toContain("Nothing needs you right now");
+  });
+
+  it("disables manual Refresh while a runtime scan is in flight", async () => {
+    let resolveRuntime!: (value: { items: [] }) => void;
+    const pendingRuntime = new Promise<{ items: [] }>((resolve) => {
+      resolveRuntime = resolve;
+    });
+    const runtime = vi.fn(() => pendingRuntime);
+    const list = vi.fn(async () => ({
+      operation: "list",
+      executions: [
+        {
+          executionId: "active",
+          projectId: "project-0",
+          sessionId: "session",
+          threadId: "thread",
+          state: "running"
+        }
+      ],
+      complete: true
+    }));
+    const api = { list, runtime } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(
+        <NowView
+          projects={projects}
+          api={api}
+          approvals={[]}
+          onSelectProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+        />
+      )
+    );
+    const refresh = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh Needs you"]'
+    );
+    expect(refresh?.disabled).toBe(true);
+    await act(async () => refresh?.click());
+    expect(list).toHaveBeenCalledOnce();
+    await act(async () => resolveRuntime({ items: [] }));
+    expect(refresh?.disabled).toBe(false);
+  });
+
+  it("does not claim all clear for an unfamiliar execution state", async () => {
+    const runtime = vi.fn();
+    const api = {
+      list: async () => ({
+        operation: "list",
+        executions: [
+          {
+            executionId: "future",
+            projectId: "project-0",
+            sessionId: "session",
+            threadId: "thread",
+            state: "future_state"
+          }
+        ],
+        complete: true
+      }),
+      runtime
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(
+        <NowView
+          projects={projects}
+          api={api}
+          approvals={[]}
+          onSelectProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+        />
+      )
+    );
+    expect(runtime).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "states could not be inspected"
+    );
+    expect(container.textContent).not.toContain("Nothing needs you right now");
   });
 
   it("hides old source rows immediately and never claims all clear after a truncated or failed read", async () => {
@@ -164,7 +288,7 @@ describe("Now view", () => {
       projectId: "project-0",
       sessionId: "session-a",
       threadId: "thread-a",
-      state: "ready"
+      state: "running"
     };
     const first = {
       list: async () => ({
@@ -206,7 +330,7 @@ describe("Now view", () => {
             projectId: "project-0",
             sessionId: "s",
             threadId: "t",
-            state: "ready"
+            state: "running"
           }
         ],
         complete: true

@@ -32,7 +32,7 @@ const hq108Executions = Array.from(
     projectId: index % 2 === 0 ? "hq103-koed" : "hq103-notes",
     sessionId: `hq108-session-${index}`,
     threadId: `hq108-thread-${index}`,
-    state: "ready"
+    state: "running"
   })
 );
 

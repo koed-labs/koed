@@ -7,12 +7,38 @@ import {
   nowNeedsFromRuntime,
   nowConversationDestination,
   nowNeedsFromApprovals,
+  nowInspectableExecutions,
   nowProjectStatus,
   nowProjects,
   nowVisible
 } from "./now-model.js";
 
 describe("Now aggregation", () => {
+  it("keeps all actionable execution states and marks unfamiliar states incomplete", () => {
+    const states = [
+      "starting",
+      "running",
+      "reconciling",
+      "quiesce_requested",
+      "quiesced",
+      "stopping",
+      "stopped",
+      "failed",
+      "fenced",
+      "new_future_state"
+    ];
+    const inventory = states.map((state, index) => ({
+      executionId: `e-${index}`,
+      projectId: "p",
+      sessionId: null,
+      threadId: null,
+      state
+    }));
+    expect(nowInspectableExecutions(inventory)).toEqual({
+      executions: inventory.slice(0, 5),
+      unknownState: true
+    });
+  });
   it("collects pending questions and approvals from separate executions without including answered items", () => {
     const draft = (id: string) =>
       ({
@@ -80,7 +106,7 @@ describe("Now aggregation", () => {
         projectId: "p",
         sessionId: "session",
         threadId: "thread",
-        state: "ready"
+        state: "running"
       }
     ];
     expect(
@@ -113,7 +139,7 @@ describe("Now aggregation", () => {
         projectId: "p",
         sessionId: "s",
         threadId: "t",
-        state: "ready"
+        state: "running"
       }
     ];
     const project = {

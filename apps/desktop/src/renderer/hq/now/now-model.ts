@@ -20,6 +20,37 @@ export type NowNeed = {
   createdAt: string;
 };
 
+// Mirrors the execution states in managed-conversation-repository. Terminal
+// and stopping executions cannot have actionable runtime prompts.
+const inspectableExecutionStates = new Set([
+  "starting",
+  "running",
+  "reconciling",
+  "quiesce_requested",
+  "quiesced"
+]);
+const inactiveExecutionStates = new Set([
+  "stopping",
+  "stopped",
+  "failed",
+  "fenced"
+]);
+
+export function nowInspectableExecutions(
+  executions: readonly ManagedConversationListEntry[]
+): { executions: ManagedConversationListEntry[]; unknownState: boolean } {
+  return {
+    executions: executions.filter(({ state }) =>
+      inspectableExecutionStates.has(state)
+    ),
+    unknownState: executions.some(
+      ({ state }) =>
+        !inspectableExecutionStates.has(state) &&
+        !inactiveExecutionStates.has(state)
+    )
+  };
+}
+
 export function nowNeedsFromRuntime(
   drafts: ReadonlyMap<string, ManagedConversationDraft>,
   items: ReadonlyMap<string, readonly ManagedConversationRuntimeItem[]>
