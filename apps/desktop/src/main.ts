@@ -51,7 +51,17 @@ import {
   writeDesktopThemePreference,
   type DesktopThemePreference
 } from "./window/theme-preference.js";
+import {
+  hqLayoutPreferencesPath,
+  readHqLayoutPreferences,
+  writeHqLayoutPreferences
+} from "./window/hq-layout-preferences.js";
+import {
+  defaultHqLayoutPreferences,
+  type HqLayoutPreferences
+} from "./ipc/hq-layout-preferences-protocol.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
+import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
@@ -101,6 +111,9 @@ const allowedRendererOrigins = new Set([
 app.setName(appName);
 
 let themePreference: DesktopThemePreference = "system";
+let hqLayoutPreferences: HqLayoutPreferences = {
+  ...defaultHqLayoutPreferences
+};
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
@@ -275,7 +288,8 @@ const createWindow = async () => {
     createMainWindowOptions(
       appDir,
       existsSync(desktopIconPath) ? desktopIconPath : undefined,
-      desktopThemeChromeColor(nativeTheme.shouldUseDarkColors)
+      desktopThemeChromeColor(nativeTheme.shouldUseDarkColors),
+      desktopFeatureFlagsFromEnvironment(process.env).hqEnabled
     )
   );
   mainWindow = window;
@@ -358,6 +372,10 @@ const bootstrap = async () => {
   );
   themePreference = readDesktopThemePreference(themePreferenceFile);
   nativeTheme.themeSource = themePreference;
+  const hqLayoutPreferencesFile = hqLayoutPreferencesPath(
+    app.getPath("userData")
+  );
+  hqLayoutPreferences = readHqLayoutPreferences(hqLayoutPreferencesFile);
   const managedConversationDraftStore = createManagedConversationDraftStore({
     userDataPath: app.getPath("userData")
   });
@@ -400,6 +418,15 @@ const bootstrap = async () => {
         preference,
         resolvedDark: nativeTheme.shouldUseDarkColors
       };
+    },
+    getHqLayoutPreferences: () => ({ ...hqLayoutPreferences }),
+    setHqLayoutPreferences: (preferences) => {
+      const persisted = writeHqLayoutPreferences(
+        hqLayoutPreferencesFile,
+        preferences
+      );
+      hqLayoutPreferences = persisted;
+      return { ...persisted };
     },
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>

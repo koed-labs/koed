@@ -1297,14 +1297,17 @@ describe("CollaborationApp", () => {
     return client;
   };
 
-  it("routes to the empty HQ shell only when the flag is enabled", async () => {
+  it("routes to the HQ shell only when the flag is enabled", async () => {
     const client = createClient();
     const api = createPersonalMemoryApi();
 
     await render(client, api, true);
-    expect(document.body.querySelector("[data-hq-shell]")?.textContent).toBe(
-      ""
-    );
+    expect(
+      document.body.querySelector('main[aria-label="HQ workspace"]')
+    ).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-hq-context][role="complementary"]')
+    ).not.toBeNull();
 
     await render(client, api, false);
     expect(document.body.querySelector("[data-hq-shell]")).toBeNull();
