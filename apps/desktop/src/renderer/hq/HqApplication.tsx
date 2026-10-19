@@ -22,7 +22,10 @@ import {
   HqActiveConversation,
   HqBlankConversation
 } from "./conversation/HqConversation.js";
-import { withPendingHqConversations } from "./conversation/hq-conversation-threads.js";
+import {
+  findHqConversationDraft,
+  withPendingHqConversations
+} from "./conversation/hq-conversation-threads.js";
 import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
 import { HqSearch } from "./HqSearch.js";
@@ -142,10 +145,15 @@ export function HqApplication({
           (thread) => sessionSelectionId(thread) === route.sessionId
         )
       : undefined;
-  const draft =
+  const draftEntry =
     route.kind === "conversation"
-      ? (managedConversationLifecycle?.drafts.get(route.sessionId) ?? null)
+      ? findHqConversationDraft(
+          managedConversationLifecycle?.drafts,
+          route.projectId,
+          route.sessionId
+        )
       : null;
+  const draft = draftEntry?.[1] ?? null;
   const conversationThread = conversation ?? draft?.thread;
   const title =
     route.kind === "conversation"
@@ -372,9 +380,10 @@ export function HqApplication({
               project={project}
               thread={conversationThread}
               draft={draft}
+              lifecycle={managedConversationLifecycle}
               openFilePickerOnReady={attachAfterStart === route.sessionId}
               onRetryStart={() =>
-                managedConversationLifecycle?.retry(route.sessionId)
+                draftEntry && managedConversationLifecycle?.retry(draftEntry[0])
               }
               markdownAdapters={
                 markdownAdapters ?? {

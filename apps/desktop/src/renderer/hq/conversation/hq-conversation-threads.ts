@@ -4,6 +4,29 @@ import {
 } from "../../../project-memory-ui.js";
 import type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
 
+export function findHqConversationDraft(
+  drafts: ReadonlyMap<string, ManagedConversationDraft> | undefined,
+  projectId: string,
+  selectionId: string
+): [string, ManagedConversationDraft] | null {
+  if (!drafts) return null;
+  for (const [routeId, draft] of drafts) {
+    if (
+      draft.thread.projectId === projectId &&
+      [
+        routeId,
+        draft.conversation.executionId,
+        draft.conversation.capturedSessionId,
+        draft.conversation.threadId,
+        draft.thread.sessionId,
+        draft.thread.id
+      ].includes(selectionId)
+    )
+      return [routeId, draft];
+  }
+  return null;
+}
+
 export function withPendingHqConversations(
   projects: readonly DesktopProject[],
   drafts: ReadonlyMap<string, ManagedConversationDraft> | undefined

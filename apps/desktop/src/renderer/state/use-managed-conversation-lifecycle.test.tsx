@@ -3,8 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  managedConversationRecoveryValue,
   useManagedConversationLifecycle,
-  type ManagedConversationLifecycle
+  type ManagedConversationLifecycle,
+  type ManagedConversationPendingSend
 } from "./use-managed-conversation-lifecycle.js";
 import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
@@ -81,6 +83,260 @@ describe("managed Conversation lifecycle", () => {
   }
   const started = () =>
     lifecycle.started(project, conversation, "starting", launch, prompt);
+
+  it("durably stores exact pending send before dispatch and restores it after remount", async () => {
+    let saved = "";
+    const api = {
+      readRecovery: vi.fn(async () => ({
+        operation: "recovery_read",
+        value: saved
+      })),
+      writeRecovery: vi.fn(async (_owner: string, value: string) => {
+        saved = value;
+        return { operation: "recovery_write", ok: true };
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    await act(async () => {
+      lifecycle.started(project, conversation, "starting", launch, {
+        ...prompt,
+        status: "reconciling"
+      });
+    });
+    const pending: ManagedConversationPendingSend = {
+      request: {
+        executionId,
+        capturedSessionId: executionId,
+        threadId: executionId,
+        idempotencyKey: "desktop-prompt:exact",
+        clientUserMessageId: prompt.clientUserMessageId,
+        prompt: prompt.prompt,
+        fileMentionCommandIds: [],
+        terminalContextReferences: [],
+        settingsChange: {
+          expected: {
+            model: "model",
+            reasoningEffort: null,
+            permissionMode: "supervised"
+          },
+          next: {
+            model: "model-b",
+            reasoningEffort: "high",
+            permissionMode: "supervised"
+          }
+        }
+      },
+      attachments: []
+    };
+    await act(async () => lifecycle.persistPendingSend!(executionId, pending));
+    expect(saved).toContain("desktop-prompt:exact");
+    expect(saved).toContain("Explain\\nthis Project");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    expect(lifecycle.recoveryStatus).toBe("ready");
+    expect(lifecycle.pendingSends?.get(executionId)).toEqual(pending);
+    expect(lifecycle.drafts.get(executionId)?.initialPrompt?.status).toBe(
+      "reconciling"
+    );
+    await act(async () =>
+      lifecycle.persistPendingSend!(
+        executionId,
+        null,
+        {
+          clientUserMessageId: prompt.clientUserMessageId,
+          status: "rejected",
+          message: "Definitively failed"
+        },
+        pending.request
+      )
+    );
+    expect(lifecycle.pendingSends?.size).toBe(0);
+    expect(lifecycle.drafts.get(executionId)?.initialPrompt).toMatchObject({
+      status: "rejected",
+      message: "Definitively failed"
+    });
+    expect(saved).not.toContain("desktop-prompt:exact");
+  });
+
+  it("rejects conflicting pending intent and preserves a newer intent against an older settlement", async () => {
+    let saved = "";
+    const secondWrite = deferred<void>();
+    let delaySecond = false;
+    const api = {
+      readRecovery: vi.fn(async () => ({
+        operation: "recovery_read",
+        value: saved
+      })),
+      writeRecovery: vi.fn(async (_owner: string, value: string) => {
+        if (delaySecond && value.includes('"idempotencyKey":"second"'))
+          await secondWrite.promise;
+        saved = value;
+        return { operation: "recovery_write", ok: true };
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    const first: ManagedConversationPendingSend = {
+      request: {
+        executionId,
+        capturedSessionId: executionId,
+        threadId: executionId,
+        idempotencyKey: "first",
+        clientUserMessageId: prompt.clientUserMessageId,
+        prompt: "first",
+        fileMentionCommandIds: [],
+        terminalContextReferences: []
+      },
+      attachments: []
+    };
+    const second: ManagedConversationPendingSend = {
+      ...first,
+      request: {
+        ...first.request,
+        idempotencyKey: "second",
+        clientUserMessageId: sessionId
+      }
+    };
+    await act(async () => lifecycle.persistPendingSend!(executionId, first));
+    await expect(
+      lifecycle.persistPendingSend!(executionId, second)
+    ).rejects.toThrow("Another unresolved prompt");
+    await act(async () =>
+      lifecycle.persistPendingSend!(executionId, null, undefined, first.request)
+    );
+    delaySecond = true;
+    const newIntent = lifecycle.persistPendingSend!(executionId, second);
+    const delayedOldSettlement = lifecycle.persistPendingSend!(
+      executionId,
+      null,
+      undefined,
+      first.request
+    ).then(
+      () => null,
+      (error: unknown) => error
+    );
+    secondWrite.resolve();
+    await act(async () => newIntent);
+    expect(((await delayedOldSettlement) as Error).message).toContain(
+      "older result"
+    );
+    expect(lifecycle.pendingSends?.get(executionId)).toEqual(second);
+    expect(saved).toContain('"idempotencyKey":"second"');
+  });
+
+  it("never serializes unreloadable pending count or evicts a pending first-send draft", () => {
+    const pending: ManagedConversationPendingSend = {
+      request: {
+        executionId,
+        capturedSessionId: executionId,
+        threadId: executionId,
+        idempotencyKey: "first",
+        clientUserMessageId: prompt.clientUserMessageId,
+        prompt: "first",
+        fileMentionCommandIds: [],
+        terminalContextReferences: []
+      },
+      attachments: []
+    };
+    const tooMany = new Map(
+      Array.from(
+        { length: 101 },
+        (_, index) => [`execution-${index}`, pending] as const
+      )
+    );
+    expect(() => managedConversationRecoveryValue(new Map(), tooMany)).toThrow(
+      "Too many unresolved"
+    );
+    const protectedDraft = {
+      project,
+      conversation,
+      thread: {
+        sessionId: executionId,
+        projectId: project.id,
+        title: "x".repeat(1_000_000),
+        latestAt: "2026-01-01T00:00:00Z"
+      },
+      launch,
+      initialPrompt: prompt
+    } as unknown as ManagedConversationLifecycle["drafts"] extends ReadonlyMap<
+      string,
+      infer T
+    >
+      ? T
+      : never;
+    expect(() =>
+      managedConversationRecoveryValue(
+        new Map([[executionId, protectedDraft]]),
+        new Map([[executionId, pending]])
+      )
+    ).toThrow("recovery is full");
+  });
+
+  it("blocks pending writes on failed recovery read or failed durable write", async () => {
+    const api = {
+      readRecovery: vi.fn(async () => {
+        throw new Error("locked");
+      }),
+      writeRecovery: vi.fn(async () => {
+        throw new Error("disk failed");
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    expect(lifecycle.recoveryStatus).toBe("unavailable");
+    await expect(
+      lifecycle.persistPendingSend!(executionId, null)
+    ).rejects.toThrow();
+    expect(api.writeRecovery).not.toHaveBeenCalled();
+  });
+
+  it("does not carry a pending send across Personal owners", async () => {
+    const values = new Map<string, string>();
+    const api = {
+      readRecovery: vi.fn(async (owner: string) => ({
+        operation: "recovery_read",
+        value: values.get(owner) ?? ""
+      })),
+      writeRecovery: vi.fn(async (owner: string, value: string) => {
+        values.set(owner, value);
+        return { operation: "recovery_write", ok: true };
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    const previousPersist = lifecycle.persistPendingSend!;
+    await act(async () =>
+      previousPersist(executionId, {
+        request: {
+          executionId,
+          capturedSessionId: executionId,
+          threadId: executionId,
+          idempotencyKey: "desktop-prompt:owner-one",
+          clientUserMessageId: prompt.clientUserMessageId,
+          prompt: prompt.prompt,
+          fileMentionCommandIds: [],
+          terminalContextReferences: []
+        },
+        attachments: []
+      })
+    );
+    expect(lifecycle.pendingSends?.size).toBe(1);
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-2" />)
+    );
+    expect(lifecycle.pendingSends?.size).toBe(0);
+    expect(lifecycle.recoveryStatus).toBe("ready");
+    await expect(previousPersist(executionId, null)).rejects.toThrow();
+    expect(values.get("owner-2") ?? "").not.toContain("owner-one");
+  });
 
   it("persists and restores the same launch, message, and provisional title", async () => {
     vi.useFakeTimers();

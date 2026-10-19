@@ -169,6 +169,7 @@ const installSettingsDesktop = () => {
 
 let hq104SentPrompt = "";
 let hq104SentMessageId = "";
+const hq104Recovery = new Map<string, string>();
 const hq104Identity = {
   executionId: "hq104-execution",
   projectId: "hq103-loose",
@@ -243,7 +244,18 @@ const hq104ManagedConversations = {
     executionStateVersion: 1,
     executionState: "running",
     executionLastErrorCode: null,
-    latestCommand: null,
+    latestCommand: hq104SentMessageId
+      ? {
+          id: "hq104-prompt-command",
+          sequence: 1,
+          executionGeneration: 1,
+          commandKind: "prompt",
+          clientUserMessageId: hq104SentMessageId,
+          state: "completed",
+          lastErrorCode: null,
+          updatedAt: FIXTURE_TIME
+        }
+      : null,
     items: []
   }),
   usage: async () => ({
@@ -258,6 +270,14 @@ const hq104ManagedConversations = {
   readDraft: async () => ({ operation: "draft_read", value: "" }),
   writeDraft: async () => ({ operation: "draft_write", ok: true }),
   deleteDraft: async () => ({ operation: "draft_delete", ok: true }),
+  readRecovery: async (ownerId: string) => ({
+    operation: "recovery_read",
+    value: hq104Recovery.get(ownerId) ?? ""
+  }),
+  writeRecovery: async (ownerId: string, value: string) => {
+    hq104Recovery.set(ownerId, value);
+    return { operation: "recovery_write", ok: true };
+  },
   discoverCommands: async () => ({
     operation: "command_discovery",
     status: "ok",
@@ -726,6 +746,7 @@ export function HqValidationApp() {
     fixture.reset();
     hq104SentPrompt = "";
     hq104SentMessageId = "";
+    hq104Recovery.clear();
     window.__koedHqFixture = fixture;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";

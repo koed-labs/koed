@@ -104,7 +104,13 @@ describe("HQ blank Conversation", () => {
     const started = vi.fn<ManagedConversationLifecycle["started"]>(
       () => "execution-1"
     );
-    const lifecycle = { started } as unknown as ManagedConversationLifecycle;
+    const persistPendingSend = vi.fn(async () => undefined);
+    const lifecycle = {
+      started,
+      recoveryStatus: "ready",
+      persistPendingSend,
+      pendingSends: new Map()
+    } as unknown as ManagedConversationLifecycle;
     const onStarted = vi.fn();
     const render = async () =>
       act(async () =>
@@ -130,7 +136,16 @@ describe("HQ blank Conversation", () => {
         )!.set!.call(textarea, message);
         textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
       });
-    return { api, send, writeDraft, started, onStarted, render, enter };
+    return {
+      api,
+      send,
+      writeDraft,
+      started,
+      persistPendingSend,
+      onStarted,
+      render,
+      enter
+    };
   }
 
   it("queues a first prompt on an accepted starting execution with supervised permission", async () => {
@@ -150,12 +165,61 @@ describe("HQ blank Conversation", () => {
     expect(start).toHaveBeenCalledOnce();
     expect(start.mock.calls[0]![0].permissionMode).toBe("supervised");
     expect(fixture.send).toHaveBeenCalledOnce();
+    expect(fixture.persistPendingSend).toHaveBeenCalledWith(
+      "execution-1",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          prompt: "Ship the fix",
+          idempotencyKey: expect.stringMatching(/^desktop-prompt:/)
+        })
+      })
+    );
+    expect(fixture.persistPendingSend.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.send.mock.invocationCallOrder[0]!
+    );
+    expect(fixture.persistPendingSend).toHaveBeenCalledWith(
+      "execution-1",
+      null,
+      expect.objectContaining({
+        status: "queued",
+        clientUserMessageId: fixture.send.mock.calls[0]![0].clientUserMessageId
+      }),
+      expect.objectContaining({
+        clientUserMessageId: fixture.send.mock.calls[0]![0].clientUserMessageId
+      })
+    );
     expect(fixture.started.mock.calls[0]![1]).toEqual(identity);
     expect(fixture.onStarted).toHaveBeenCalledWith(
       "project-1",
       "execution-1",
       false
     );
+  });
+
+  it("does not send the first prompt when secure intent persistence fails", async () => {
+    const start = vi.fn<ManagedConversationDesktopApi["start"]>(async () => ({
+      operation: "start",
+      status: "ready",
+      executionId: "execution-1",
+      conversation: identity
+    }));
+    const fixture = setup(start);
+    fixture.persistPendingSend.mockRejectedValueOnce(
+      new Error("secure store failed")
+    );
+    await fixture.render();
+    await fixture.enter("Keep the first draft");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(fixture.send).not.toHaveBeenCalled();
+    expect(fixture.started.mock.calls.at(-1)![4]).toMatchObject({
+      prompt: "Keep the first draft",
+      status: "rejected",
+      message: expect.stringContaining("Nothing was sent")
+    });
   });
 
   it("keeps the exact launch key and draft locked after an uncertain start", async () => {

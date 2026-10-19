@@ -12,6 +12,7 @@ import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-prot
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { PersonalDesktopConversationEvent } from "@koed/shared/personal-desktop";
 import type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
+import type { ManagedConversationPendingSend } from "../../state/use-managed-conversation-lifecycle.js";
 import { HqActiveConversation } from "./HqConversation.js";
 
 (
@@ -117,7 +118,9 @@ describe("HQ active Conversation", () => {
     initialDraft = draft,
     events: PersonalDesktopConversationEvent[] = [],
     runtimeItems: ManagedConversationRuntimeItem[] = [],
-    managedProject: ManagedProjectDesktopApi | null = null
+    managedProject: ManagedProjectDesktopApi | null = null,
+    recovered: ManagedConversationPendingSend | null = null,
+    recoveryStatus: "ready" | "unavailable" = "ready"
   ) {
     let latestCommand: {
       id: string;
@@ -188,6 +191,10 @@ describe("HQ active Conversation", () => {
       interrupt: vi.fn(),
       send
     } as unknown as ManagedConversationDesktopApi;
+    const persistPendingSend = vi.fn(async () => undefined);
+    const recoveredSends = recovered
+      ? new Map([[recovered.request.executionId, recovered]])
+      : new Map();
     const render = async (
       currentDraft = initialDraft,
       currentThread = currentDraft.thread
@@ -216,6 +223,13 @@ describe("HQ active Conversation", () => {
             project={project}
             thread={currentThread}
             draft={currentDraft}
+            lifecycle={
+              {
+                recoveryStatus,
+                pendingSends: recoveredSends,
+                persistPendingSend
+              } as never
+            }
             onRetryStart={vi.fn()}
             markdownAdapters={{
               openExternal: vi.fn(),
@@ -235,6 +249,7 @@ describe("HQ active Conversation", () => {
       });
     return {
       api,
+      persistPendingSend,
       send,
       render,
       enter,
@@ -254,6 +269,18 @@ describe("HQ active Conversation", () => {
     ).toBe(true);
     expect(container.textContent).toContain("read-only");
     expect(f.send).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label^="Model and reasoning"]'
+      )?.disabled
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Attach a Project file"]'
+      )?.disabled
+    ).toBe(true);
+    expect(f.api.writeDraft).not.toHaveBeenCalled();
   });
 
   it("does not revive a draft execution after an authoritative read-only resume", async () => {
@@ -473,16 +500,202 @@ describe("HQ active Conversation", () => {
     expect(f.send.mock.calls[1]![0]).toEqual(f.send.mock.calls[0]![0]);
   });
 
+  it("restores a durable uncertain second turn and never sends it automatically", async () => {
+    const pending: ManagedConversationPendingSend = {
+      request: {
+        executionId: "execution-1",
+        capturedSessionId: "execution-1",
+        threadId: "execution-1",
+        idempotencyKey: "desktop-prompt:stable",
+        clientUserMessageId: "message-stable",
+        prompt: "Saved uncertain second turn",
+        fileMentionCommandIds: ["file-command"],
+        terminalContextReferences: [],
+        settingsChange: {
+          expected: {
+            model: "model-a",
+            reasoningEffort: "low",
+            permissionMode: "supervised"
+          },
+          next: {
+            model: "model-b",
+            reasoningEffort: "low",
+            permissionMode: "supervised"
+          }
+        }
+      },
+      attachments: [{ commandId: "file-command", label: "plan.md" }]
+    };
+    const f = fixture("ready", "queued", draft, [], [], null, pending);
+    await f.render();
+    expect(container.querySelector("textarea")?.value).toBe(
+      pending.request.prompt
+    );
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(f.send).not.toHaveBeenCalled();
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Retry the same prompt")!
+        .click()
+    );
+    expect(f.send).toHaveBeenCalledWith(pending.request);
+  });
+
+  it("never retries an old saved request after the stable route adopts another execution", async () => {
+    const pending: ManagedConversationPendingSend = {
+      request: {
+        executionId: "execution-1",
+        capturedSessionId: "execution-1",
+        threadId: "execution-1",
+        idempotencyKey: "desktop-prompt:old-execution",
+        clientUserMessageId: "message-old-execution",
+        prompt: "Uncertain old turn",
+        fileMentionCommandIds: [],
+        terminalContextReferences: []
+      },
+      attachments: []
+    };
+    const f = fixture("ready", "queued", draft, [], [], null, pending);
+    const replacementIdentity = {
+      ...identity,
+      executionId: "execution-2",
+      capturedSessionId: "session-2",
+      threadId: "thread-2"
+    };
+    vi.mocked(f.api.resume).mockImplementation(async (input) => ({
+      operation: "resume",
+      status: "ready",
+      conversation:
+        input.threadId === "thread-2" ? replacementIdentity : identity
+    }));
+    await f.render();
+    const replacementDraft = {
+      ...draft,
+      conversation: replacementIdentity,
+      thread: { ...thread, id: "thread-2", sessionId: "session-2" }
+    } as ManagedConversationDraft;
+    await f.render(replacementDraft);
+    expect(container.querySelector("textarea")?.value).toBe(
+      pending.request.prompt
+    );
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Retry the same prompt")!
+        .click()
+    );
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.api.writeDraft).not.toHaveBeenCalled();
+    expect(f.persistPendingSend).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("different Conversation execution");
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+  });
+
+  it("keeps an unreadable runtime unresolved and permits only exact manual retry", async () => {
+    const pending: ManagedConversationPendingSend = {
+      request: {
+        executionId: "execution-1",
+        capturedSessionId: "execution-1",
+        threadId: "execution-1",
+        idempotencyKey: "desktop-prompt:stable",
+        clientUserMessageId: "message-stable",
+        prompt: "Still uncertain",
+        fileMentionCommandIds: [],
+        terminalContextReferences: []
+      },
+      attachments: []
+    };
+    const f = fixture("ready", "queued", draft, [], [], null, pending);
+    vi.mocked(f.api.runtime).mockRejectedValue(
+      new Error("runtime unavailable")
+    );
+    await f.render();
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(f.send).not.toHaveBeenCalled();
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Retry the same prompt")!
+        .click()
+    );
+    expect(f.send).toHaveBeenCalledWith(pending.request);
+  });
+
+  it("keeps the composer locked when owner recovery cannot be read", async () => {
+    const f = fixture(
+      "ready",
+      "queued",
+      draft,
+      [],
+      [],
+      null,
+      null,
+      "unavailable"
+    );
+    await f.render();
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')
+        ?.disabled
+    ).toBe(true);
+    expect(f.api.writeDraft).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch when the durable send-intent write fails", async () => {
+    const f = fixture();
+    f.persistPendingSend.mockRejectedValueOnce(
+      new Error("secure store failed")
+    );
+    await f.render();
+    await f.enter("Keep this local");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(f.send).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")?.value).toBe("Keep this local");
+    expect(container.textContent).toContain("Nothing was sent");
+  });
+
+  it("removes a failed optimistic send before a new manual send", async () => {
+    vi.useFakeTimers();
+    const f = fixture("ready", "uncertain");
+    await f.render();
+    await f.enter("Try this once");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(container.textContent).toContain("Sending…");
+    f.setLatestCommand({
+      id: "failed-command",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: f.send.mock.calls[0]![0].clientUserMessageId,
+      state: "failed",
+      lastErrorCode: null,
+      updatedAt: "2026-10-19T01:00:00Z"
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    expect(container.textContent).not.toContain("Sending…");
+    expect(container.querySelector("textarea")?.value).toBe("Try this once");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(container.querySelectorAll("small")).toHaveLength(1);
+  });
+
   it("serializes draft autosaves, dispatch save, and delete in typing order", async () => {
+    vi.useFakeTimers();
     const f = fixture();
     const writes: string[] = [];
-    let releaseFirst: (() => void) | undefined;
-    const blocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
     vi.mocked(f.api.writeDraft).mockImplementation(async (input) => {
       writes.push(`write:${input.value}`);
-      if (writes.length === 1) await blocked;
       return { operation: "draft_write", ok: true };
     });
     vi.mocked(f.api.deleteDraft).mockImplementation(async () => {
@@ -492,16 +705,114 @@ describe("HQ active Conversation", () => {
     await f.render();
     await f.enter("A");
     await f.enter("AB");
-    expect(writes).toEqual(["write:A"]);
+    expect(writes).toEqual([]);
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(writes).toEqual(["write:AB"]);
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
         .click();
-      releaseFirst?.();
-      await blocked;
     });
     expect(f.send).toHaveBeenCalledOnce();
-    expect(writes).toEqual(["write:A", "write:AB", "write:AB", "delete"]);
+    expect(writes).toEqual(["write:AB", "write:AB", "delete"]);
+    f.setLatestCommand({
+      id: "command-1",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: f.send.mock.calls[0]![0].clientUserMessageId,
+      state: "completed",
+      lastErrorCode: null,
+      updatedAt: "2026-10-19T01:00:00Z"
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    expect(writes).toEqual(["write:AB", "write:AB", "delete"]);
+  });
+
+  it("treats queued acceptance as settled while allowing the next draft during the reply", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.render();
+    await f.enter("First turn");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("Check delivery");
+    expect(container.textContent).not.toContain("Retry same prompt");
+    expect(container.querySelector("textarea")?.disabled).toBe(false);
+    expect(f.persistPendingSend).toHaveBeenCalledWith(
+      "execution-1",
+      null,
+      expect.objectContaining({ status: "queued" }),
+      expect.objectContaining({
+        clientUserMessageId: f.send.mock.calls[0]![0].clientUserMessageId
+      })
+    );
+    await f.enter("Next unsent draft");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(f.api.writeDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ value: "Next unsent draft" })
+    );
+  });
+
+  it("flushes the latest draft immediately when navigating away before debounce", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.render();
+    await f.enter("Draft before navigation");
+    expect(f.api.writeDraft).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    expect(f.api.writeDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ value: "Draft before navigation" })
+    );
+    root = createRoot(container);
+  });
+
+  it("drains an in-flight autosave before final save and does not revive a sent draft", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operations: string[] = [];
+    vi.mocked(f.api.writeDraft).mockImplementation(async (input) => {
+      operations.push(`write:${input.value}`);
+      if (operations.length === 1) await delayed;
+      return { operation: "draft_write", ok: true };
+    });
+    vi.mocked(f.api.deleteDraft).mockImplementation(async () => {
+      operations.push("delete");
+      return { operation: "draft_delete", ok: true };
+    });
+    await f.render();
+    await f.enter("A");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    await f.enter("AB");
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click();
+      release();
+      await delayed;
+    });
+    expect(operations).toEqual(["write:A", "write:AB", "delete"]);
+    const messageId = f.send.mock.calls[0]![0].clientUserMessageId;
+    f.setLatestCommand({
+      id: "done",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: messageId,
+      state: "completed",
+      lastErrorCode: null,
+      updatedAt: "2026-10-19T01:00:00Z"
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    expect(operations).toEqual(["write:A", "write:AB", "delete"]);
   });
 
   it("reloads a saved second-turn draft after a queued initial prompt", async () => {
@@ -721,5 +1032,166 @@ describe("HQ active Conversation", () => {
     expect(container.textContent).toContain("Verified reply");
     expect(container.textContent).not.toContain("RAW ENVELOPE");
     expect(container.textContent).not.toContain("HIDDEN APPROVAL STATUS");
+  });
+
+  it("retries the user turn preceding the selected older reply", async () => {
+    const events = [
+      ["user-1", "user", "First question"],
+      ["reply-1", "assistant", "First answer"],
+      ["user-2", "user", "Second question"],
+      ["reply-2", "assistant", "Second answer"]
+    ].map(([id, actor, content], index) => ({
+      id,
+      actor,
+      content,
+      eventType: "message",
+      timestamp: `2026-10-19T00:00:0${index}Z`,
+      sourceEventTime: null,
+      sourceSequence: index + 1,
+      invalidatedAt: null,
+      metadata: {}
+    })) as unknown as PersonalDesktopConversationEvent[];
+    const capturedDraft = {
+      ...draft,
+      conversation: { ...identity, capturedSessionId: "captured-1" }
+    } as ManagedConversationDraft;
+    const f = fixture("ready", "queued", capturedDraft, events);
+    await f.render();
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLButtonElement>(
+          '[aria-label="Retry last prompt"]'
+        )[0]!
+        .click()
+    );
+    expect(container.querySelector("textarea")?.value).toBe("First question");
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLButtonElement>(
+          '[aria-label="Retry last prompt"]'
+        )[1]!
+        .click()
+    );
+    expect(container.querySelector("textarea")?.value).toBe("Second question");
+  });
+
+  it("follows streamed content updates but respects manual scroll position", async () => {
+    vi.useFakeTimers();
+    const events = [
+      {
+        id: "reply-1",
+        actor: "assistant",
+        eventType: "message",
+        content: "Part one",
+        timestamp: "2026-10-19T00:00:00Z",
+        sourceEventTime: null,
+        sourceSequence: 1,
+        invalidatedAt: null,
+        metadata: {}
+      }
+    ] as unknown as PersonalDesktopConversationEvent[];
+    const capturedDraft = {
+      ...draft,
+      conversation: { ...identity, capturedSessionId: "captured-1" }
+    } as ManagedConversationDraft;
+    const f = fixture("ready", "queued", capturedDraft, events);
+    await f.render();
+    const scroll = container.querySelector<HTMLElement>(
+      ".hq-conversation__scroll"
+    )!;
+    let height = 500;
+    Object.defineProperty(scroll, "scrollHeight", { get: () => height });
+    Object.defineProperty(scroll, "clientHeight", { get: () => 100 });
+    events[0]!.content = "Part one streamed part two";
+    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    expect(scroll.scrollTop).toBe(500);
+    scroll.scrollTop = 100;
+    scroll.dispatchEvent(new Event("scroll", { bubbles: true }));
+    height = 800;
+    events[0]!.content = "Part one streamed part two and three";
+    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    expect(scroll.scrollTop).toBe(100);
+  });
+
+  it("loads the next Project-file page with the returned offset and revision", async () => {
+    let page = 0;
+    const command = vi.fn(
+      async (request: {
+        operation: string;
+        requestId: string;
+        executionId: string;
+        fileOperation?: { offset: number; revision: unknown };
+      }) => {
+        const commandRecord = {
+          id: `file-command-${++page}`,
+          state: "completed",
+          commandKind: "file_browse",
+          executionId: "execution-1",
+          executionGeneration: 1,
+          createdAt: "2026-10-19T00:00:00Z"
+        };
+        if (request.operation === "file_start")
+          return {
+            ...request,
+            operation: "file_start",
+            command: commandRecord
+          };
+        const offset = page > 2 ? 200 : 0;
+        return {
+          requestId: request.requestId,
+          executionId: request.executionId,
+          operation: "file_result",
+          command: commandRecord,
+          result: {
+            protocolVersion: 1,
+            checkpointId: "33333333-3333-4333-8333-333333333333",
+            checkpointSequence: 1,
+            revision: {
+              checkpointId: "33333333-3333-4333-8333-333333333333",
+              revisionDigest: "b".repeat(64)
+            },
+            kind: "browse",
+            path: "",
+            entries: [
+              {
+                path: offset ? "later.txt" : "first.txt",
+                name: offset ? "later.txt" : "first.txt",
+                entryKind: "file",
+                size: 1,
+                executable: false
+              }
+            ],
+            totalEntries: 201,
+            nextOffset: offset ? null : 200
+          }
+        };
+      }
+    );
+    const f = fixture("ready", "queued", draft, [], [], {
+      command
+    } as unknown as ManagedProjectDesktopApi);
+    await f.render();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Attach a Project file"]'
+        )!
+        .click()
+    );
+    expect(container.textContent).toContain("Load more (1 of 201)");
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent?.includes("Load more"))!
+        .click()
+    );
+    const starts = command.mock.calls.filter(
+      ([request]) => request.operation === "file_start"
+    );
+    expect(starts[1]![0].fileOperation).toMatchObject({
+      offset: 200,
+      revision: { revisionDigest: "b".repeat(64) }
+    });
+    expect(container.textContent).toContain("first.txt");
+    expect(container.textContent).toContain("later.txt");
   });
 });

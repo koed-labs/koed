@@ -10,6 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PersonalMemoryStore } from "../state/personal-memory.js";
+import type { ManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
+import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import { HqApplication } from "./HqApplication.js";
 
 const actEnvironment = globalThis as {
@@ -33,6 +35,140 @@ describe("HQ Personal Projects loading", () => {
       await act(async () => root.unmount());
     }
     for (const container of containers.splice(0)) container.remove();
+  });
+
+  it("keeps uncertain first-prompt recovery when opening a canonical sidebar Conversation", async () => {
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+    const canonical = {
+      id: "canonical-thread",
+      name: "Canonical Conversation",
+      sessionId: "canonical-session",
+      sourceAiClient: "codex",
+      projectId: "ready-project",
+      projectName: "Loaded after startup",
+      projectPath: "/workspace/ready-project",
+      projectAssignmentSource: "user_override",
+      eventCount: 0,
+      invalidatedCount: 0,
+      latestAt: "2026-10-19T10:00:00.000Z",
+      sample: "",
+      presentation: null
+    } as const;
+    const personal: PersonalDesktopApi = {
+      listProjects: async () => [{ ...loadedProject, threads: [canonical] }],
+      loadEventPage: async () => [],
+      assignSessionProject: async () => ({ projectId: null }),
+      updateSessionTitle: async ({ title }) => ({ title }),
+      updateSessionPresentation: async () => {
+        throw new Error("unused");
+      },
+      subscribe: () => () => undefined
+    };
+    const store = new PersonalMemoryStore(personal);
+    const conversation = {
+      executionId: "execution-1",
+      projectId: "ready-project",
+      capturedSessionId: "canonical-session",
+      threadId: "canonical-thread",
+      executionOwner: {
+        driverId: "codex" as const,
+        instanceId: "codex.default"
+      }
+    };
+    const draft = {
+      conversation,
+      thread: canonical,
+      status: "ready",
+      message: "",
+      launchInput: {
+        projectId: "ready-project",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "model-a",
+        reasoningEffort: null,
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        idempotencyKey: "desktop-conversation:one"
+      },
+      initialPrompt: {
+        clientUserMessageId: "message-1",
+        prompt: "Uncertain first prompt",
+        status: "reconciling",
+        message: "Outcome unknown"
+      }
+    };
+    const retry = vi.fn();
+    const lifecycle = {
+      drafts: new Map([["execution-1", draft]]),
+      retry,
+      pendingSends: new Map(),
+      recoveryStatus: "ready",
+      persistPendingSend: vi.fn(async () => undefined),
+      started: vi.fn()
+    } as unknown as ManagedConversationLifecycle;
+    const managed = {
+      resume: async () => ({
+        operation: "resume",
+        status: "ready",
+        conversation
+      }),
+      runtime: async () => ({
+        operation: "runtime",
+        executionId: "execution-1",
+        executionGeneration: 1,
+        executionStateVersion: 1,
+        executionState: "running",
+        executionLastErrorCode: null,
+        latestCommand: null,
+        items: []
+      }),
+      usage: async () => ({
+        operation: "usage",
+        executionId: "execution-1",
+        provider: "codex",
+        model: "model-a",
+        reasoningEffort: null,
+        permissionMode: "supervised",
+        usage: null
+      }),
+      launchOptions: async () => ({
+        operation: "launch_options",
+        options: { runners: [], instances: [] }
+      }),
+      readDraft: async () => ({
+        operation: "draft_read",
+        value: "Uncertain first prompt"
+      }),
+      discoverCommands: async () => ({
+        operation: "command_discovery",
+        status: "ok",
+        commands: []
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    const container = document.createElement("div");
+    containers.push(container);
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () =>
+      root.render(
+        <HqApplication
+          personalMemoryReady
+          personalMemoryStore={store}
+          managedConversations={managed}
+          managedConversationLifecycle={lifecycle}
+        />
+      )
+    );
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-hq-chat-row]")!.click()
+    );
+    expect(container.querySelector("textarea")?.value).toBe(
+      "Uncertain first prompt"
+    );
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Retry the same prompt");
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it("owns one readiness-gated HQ load across destination selection", async () => {

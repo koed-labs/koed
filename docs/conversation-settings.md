@@ -47,6 +47,12 @@ runtime response API. A per-turn model, effort, or permission edit is sent only
 with the next prompt as `settingsChange`, bound to the last reported settings.
 An uncertain launch or send keeps its exact request identity and draft; HQ
 does not resend it automatically. A captured-only Conversation is read-only.
+Before dispatch, HQ saves the exact pending request, identity, settings, and
+attachments through the existing encrypted, owner-scoped recovery store. On
+reload, it checks that saved identity against the runtime; an unknown outcome
+requires manual recovery and never triggers an automatic resend. If secure
+recovery is unavailable, sending pauses. Once a prompt is accepted as queued,
+the next draft can be written while the reply is running.
 
 ## New Conversations
 

@@ -2051,13 +2051,24 @@ const runValidation = async () => {
           desktopSidebarWidth !== null,
           "HQ104 desktop sidebar handle did not become ready"
         );
-        const restoredSidebarWidth =
-          desktopSidebarWidth === 268
-            ? desktopSidebarWidth
-            : await pointerResize(
-                "[data-hq-sidebar-handle]",
-                268 - desktopSidebarWidth
-              );
+        if (desktopSidebarWidth !== 268)
+          await window.webContents.executeJavaScript(
+            `document.querySelector('[data-hq-sidebar-handle]')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`
+          );
+        let restoredSidebarWidth = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          restoredSidebarWidth = await window.webContents
+            .executeJavaScript(`(() => {
+            const handle = document.querySelector('[data-hq-sidebar-handle]');
+            const rect = handle?.getBoundingClientRect();
+            const width = Number(handle?.getAttribute('aria-valuenow'));
+            const sidebarWidth = Math.round(document.querySelector('.hq-sidebar')?.getBoundingClientRect().width ?? 0);
+            return rect?.width > 0 && rect?.height > 100 && width === 268 && sidebarWidth === 268
+              ? width : null;
+          })()`);
+          if (restoredSidebarWidth !== null) break;
+          await delay(25);
+        }
         assert.equal(Number(restoredSidebarWidth), 268);
         await window.webContents.executeJavaScript(
           `document.querySelector('button[aria-label="New chat"]')?.click()`

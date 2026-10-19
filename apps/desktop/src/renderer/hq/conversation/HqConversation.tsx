@@ -1,5 +1,6 @@
 import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type { ManagedConversationSettings } from "@koed/shared/ai-client-contract";
+import type { ManagedConversationFileRevision } from "@koed/shared/managed-conversation-files";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import {
   DropdownMenu,
@@ -46,7 +47,8 @@ import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-prot
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type {
   ManagedConversationLifecycle,
-  ManagedConversationDraft
+  ManagedConversationDraft,
+  ManagedConversationPendingSend
 } from "../../state/use-managed-conversation-lifecycle.js";
 import { usePersonalMemoryDetail } from "../../views/personal/use-personal-memory-detail.js";
 import { useSlashCommandDiscovery } from "../../views/personal/use-slash-command-discovery.js";
@@ -409,7 +411,8 @@ function Composer({
   onStop,
   error,
   slashCommands,
-  lockDraft
+  lockDraft,
+  settingsDisabled
 }: {
   value: string;
   setValue: (value: string) => void;
@@ -431,6 +434,7 @@ function Composer({
   error?: string;
   slashCommands?: ManagedConversationSlashCommand[];
   lockDraft?: boolean;
+  settingsDisabled?: boolean;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(value.length);
@@ -459,6 +463,7 @@ function Composer({
                 <button
                   aria-label={`Remove ${item.label}`}
                   type="button"
+                  disabled={lockDraft}
                   onClick={() => onRemoveAttachment(item.commandId)}
                 >
                   <X size={13} />
@@ -574,7 +579,7 @@ function Composer({
             selection={selection}
             onChange={onSelectionChange}
             locked={locked}
-            disabled={busy || active}
+            disabled={busy || active || settingsDisabled}
           />
           {active ? (
             <button
@@ -719,6 +724,8 @@ export function HqBlankConversation({
     if (
       !api ||
       !project ||
+      lifecycle.recoveryStatus !== "ready" ||
+      !lifecycle.persistPendingSend ||
       busy ||
       !hqSelectionIsSupported(options, selection) ||
       (!attach && !prompt.trim())
@@ -807,27 +814,72 @@ export function HqBlankConversation({
           !attach &&
           firstPrompt.message !==
             "Koed could not save this draft securely. The text remains in this Conversation; copy it before leaving."
-        )
+        ) {
+          if (
+            !lifecycle.started(project, conversation, result.status, launch, {
+              ...firstPrompt,
+              status: "reconciling",
+              message: "Checking first-prompt delivery."
+            })
+          )
+            throw new Error(
+              "Conversation recovery is unavailable. Nothing was sent."
+            );
+          const request: ManagedConversationPendingSend["request"] = {
+            executionId: result.executionId,
+            capturedSessionId: conversation.capturedSessionId,
+            threadId: conversation.threadId,
+            idempotencyKey: `desktop-prompt:${firstPrompt.clientUserMessageId}`,
+            clientUserMessageId: firstPrompt.clientUserMessageId,
+            prompt: firstPrompt.prompt,
+            fileMentionCommandIds: [],
+            terminalContextReferences: []
+          };
+          let intentSaved = false;
           try {
-            const sent = await api.send({
-              executionId: result.executionId,
-              capturedSessionId: conversation.capturedSessionId,
-              threadId: conversation.threadId,
-              idempotencyKey: `desktop-prompt:${firstPrompt.clientUserMessageId}`,
-              clientUserMessageId: firstPrompt.clientUserMessageId,
-              prompt: firstPrompt.prompt
+            await lifecycle.persistPendingSend(result.executionId, {
+              request,
+              attachments: []
             });
-            firstPrompt.status = sent.status;
-            firstPrompt.message = sent.message ?? "";
-            if (sent.status === "queued")
-              await api
-                .deleteDraft(draftScope(conversation))
-                .catch(() => undefined);
+            intentSaved = true;
           } catch {
-            firstPrompt.status = "reconciling";
             firstPrompt.message =
-              "Koed cannot confirm whether this prompt reached the AI Client. It will not resend automatically.";
+              "Koed could not save delivery recovery securely. Nothing was sent; retry this saved draft.";
           }
+          if (intentSaved)
+            try {
+              const sent = await api.send(request);
+              firstPrompt.status = sent.status;
+              firstPrompt.message = sent.message ?? "";
+              if (sent.status === "queued") {
+                await api.deleteDraft(draftScope(sent.conversation));
+                await lifecycle.persistPendingSend(
+                  result.executionId,
+                  null,
+                  {
+                    clientUserMessageId: firstPrompt.clientUserMessageId,
+                    status: "queued",
+                    message: ""
+                  },
+                  request
+                );
+              } else if (sent.status === "rejected")
+                await lifecycle.persistPendingSend(
+                  result.executionId,
+                  null,
+                  {
+                    clientUserMessageId: firstPrompt.clientUserMessageId,
+                    status: "rejected",
+                    message: firstPrompt.message
+                  },
+                  request
+                );
+            } catch {
+              firstPrompt.status = "reconciling";
+              firstPrompt.message =
+                "Koed cannot confirm whether this prompt was dispatched. It will not resend automatically.";
+            }
+        }
       }
       const routeId = lifecycle.started(
         project,
@@ -860,7 +912,9 @@ export function HqBlankConversation({
           setValue={setPrompt}
           onSubmit={() => void start()}
           onAttach={
-            managedProject && !launchAttempted
+            managedProject &&
+            !launchAttempted &&
+            lifecycle.recoveryStatus === "ready"
               ? () => void start(true)
               : undefined
           }
@@ -885,6 +939,8 @@ export function HqBlankConversation({
           canSend={Boolean(
             api &&
             project &&
+            lifecycle.recoveryStatus === "ready" &&
+            lifecycle.persistPendingSend &&
             prompt.trim() &&
             hqSelectionIsSupported(options, selection)
           )}
@@ -892,6 +948,9 @@ export function HqBlankConversation({
             error ||
             savedAssignmentUnavailable ||
             slash.error ||
+            (lifecycle.recoveryStatus === "unavailable"
+              ? "Secure Conversation recovery is unavailable. Sending is paused."
+              : "") ||
             (options && !selection.permissionMode
               ? "Ask first is unavailable for this AI Client. Choose a supported mode explicitly to continue."
               : "")
@@ -920,6 +979,7 @@ export function HqActiveConversation({
   project,
   thread,
   draft,
+  lifecycle,
   onRetryStart,
   markdownAdapters,
   authorizeTransfer,
@@ -931,6 +991,7 @@ export function HqActiveConversation({
   project: DesktopProject;
   thread: PersonalDesktopProjectThread;
   draft: ManagedConversationDraft | null;
+  lifecycle?: ManagedConversationLifecycle;
   onRetryStart: () => void;
   markdownAdapters: MarkdownPlatformAdapters;
   authorizeTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
@@ -1014,10 +1075,16 @@ export function HqActiveConversation({
     Array<{ path: string; name: string; entryKind: string }>
   >([]);
   const [filePath, setFilePath] = useState("");
+  const [filePage, setFilePage] = useState<{
+    totalEntries: number;
+    nextOffset: number | null;
+    revision: ManagedConversationFileRevision;
+  } | null>(null);
   const [pendingFile, setPendingFile] = useState<{
     commandId: string;
     kind: "browse" | "mention";
     path: string;
+    offset?: number;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1025,7 +1092,7 @@ export function HqActiveConversation({
     draft?.initialPrompt?.status === "reconciling"
   );
   const [optimistic, setOptimistic] = useState<
-    Array<{ id: string; prompt: string }>
+    Array<{ id: string; prompt: string; status?: "sending" | "queued" }>
   >([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -1041,6 +1108,7 @@ export function HqActiveConversation({
     prompt: string;
     attachments: Attachment[];
     settingsChange: ReturnType<typeof hqSettingsChange>;
+    request?: ManagedConversationPendingSend["request"];
   } | null>(
     draft?.initialPrompt?.status === "reconciling"
       ? {
@@ -1053,8 +1121,26 @@ export function HqActiveConversation({
       : null
   );
   const lastSubmitted = useRef<typeof pending.current>(null);
+  const recoveredPending = conversation?.executionId
+    ? lifecycle?.pendingSends?.get(conversation.executionId)
+    : undefined;
+  const sendLocked = uncertainSend || Boolean(recoveredPending);
   const refreshedTerminalCommand = useRef<string | null>(null);
   const draftWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveValue = useRef<{
+    value: string;
+    identity: ManagedConversationIdentity;
+    api: ManagedConversationDesktopApi;
+  } | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      flushAutosave();
+    };
+  }, []);
   const queueDraftOperation = useCallback(
     <T,>(operation: () => Promise<T>): Promise<T> => {
       const result = draftWriteChainRef.current.then(operation);
@@ -1066,12 +1152,59 @@ export function HqActiveConversation({
     },
     []
   );
+  const cancelAutosave = () => {
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = null;
+    autosaveValue.current = null;
+  };
+  const flushAutosave = () => {
+    const pendingWrite = autosaveValue.current;
+    cancelAutosave();
+    if (!pendingWrite) return;
+    void queueDraftOperation(() =>
+      pendingWrite.api.writeDraft({
+        ...draftScope(pendingWrite.identity),
+        value: pendingWrite.value
+      })
+    ).catch(() => {
+      if (mounted.current) setError("Koed could not save this draft securely.");
+    });
+  };
+  const scheduleAutosave = (
+    value: string,
+    identity: ManagedConversationIdentity
+  ) => {
+    if (!api) return;
+    autosaveValue.current = { value, identity, api };
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => {
+      flushAutosave();
+    }, 250);
+  };
+  useEffect(() => () => flushAutosave(), [identityKey]);
   const executionId =
     resumeStatus === "ready" ? (conversation?.executionId ?? null) : null;
+  const recoveryReady = lifecycle?.recoveryStatus === "ready";
+  useEffect(() => {
+    if (!recoveredPending || !recoveryReady) return;
+    const request = recoveredPending.request;
+    pending.current = {
+      key: request.idempotencyKey,
+      messageId: request.clientUserMessageId,
+      prompt: request.prompt,
+      attachments: recoveredPending.attachments,
+      settingsChange: request.settingsChange ?? null,
+      request
+    };
+    setPrompt(request.prompt);
+    setAttachments(recoveredPending.attachments);
+    setUncertainSend(true);
+  }, [recoveredPending, recoveryReady]);
   useEffect(() => {
     setBusy(false);
     setFileOpen(false);
     setPendingFile(null);
+    setFilePage(null);
     setTransferBusy(false);
     setTransferMessage("");
     setDevices([]);
@@ -1095,6 +1228,10 @@ export function HqActiveConversation({
     );
   const active =
     runtimeBusy && runtime?.latestCommand?.state !== "indeterminate";
+  const matchingTerminal =
+    runtime?.latestCommand?.commandKind === "prompt" &&
+    runtime.latestCommand.clientUserMessageId === pending.current?.messageId &&
+    ["completed", "failed"].includes(runtime.latestCommand.state);
   const refresh = useCallback(async () => {
     if (!api || !executionId) return;
     const [run, nextUsage, launch] = await Promise.allSettled([
@@ -1170,20 +1307,109 @@ export function HqActiveConversation({
       }
       if (
         pending.current &&
+        latest?.commandKind === "prompt" &&
         latest?.clientUserMessageId === pending.current.messageId
       ) {
-        if (latest.state === "completed") {
+        const settling = pending.current;
+        if (
+          ["queued", "blocked", "dispatching", "completed"].includes(
+            latest.state
+          )
+        ) {
+          try {
+            if (!conversation?.executionId || !lifecycle?.persistPendingSend)
+              return;
+            cancelAutosave();
+            await queueDraftOperation(() =>
+              api.deleteDraft(draftScope(conversation))
+            );
+            await lifecycle.persistPendingSend(
+              conversation.executionId,
+              null,
+              {
+                clientUserMessageId: settling.messageId,
+                status: "queued",
+                message: ""
+              },
+              settling.request
+            );
+          } catch {
+            if (
+              mounted.current &&
+              identityKeyRef.current === identityKey &&
+              pending.current === settling
+            )
+              setError(
+                "Koed could not finish securing this prompt. Check delivery again."
+              );
+            return;
+          }
+          if (
+            !mounted.current ||
+            identityKeyRef.current !== identityKey ||
+            pending.current !== settling
+          )
+            return;
           pending.current = null;
+          lastSubmitted.current = settling;
           setUncertainSend(false);
           setPrompt("");
           setAttachments([]);
+          setOptimistic((current) =>
+            current.map((item) =>
+              item.id === settling.messageId
+                ? { ...item, status: "queued" }
+                : item
+            )
+          );
           setError("");
           store.refreshFromDurableEvent();
         } else if (latest.state === "failed") {
+          try {
+            if (!conversation?.executionId || !lifecycle?.persistPendingSend)
+              return;
+            await lifecycle.persistPendingSend(
+              conversation.executionId,
+              null,
+              {
+                clientUserMessageId: settling.messageId,
+                status: "rejected",
+                message:
+                  "The AI Client rejected this prompt. Review the saved draft before retrying."
+              },
+              settling.request
+            );
+          } catch {
+            if (
+              mounted.current &&
+              identityKeyRef.current === identityKey &&
+              pending.current === settling
+            )
+              setError(
+                "Koed could not secure the failed prompt state. Check delivery again."
+              );
+            return;
+          }
+          if (
+            !mounted.current ||
+            identityKeyRef.current !== identityKey ||
+            pending.current !== settling
+          )
+            return;
+          setPrompt(settling.prompt);
+          setAttachments(settling.attachments);
+          setOptimistic((current) =>
+            current.filter((item) => item.id !== latest.clientUserMessageId)
+          );
           pending.current = null;
           setUncertainSend(false);
           setError(
-            "The AI Client rejected this prompt. Review the saved draft before retrying."
+            latest.lastErrorCode === "ManagedConversationAuthenticationError"
+              ? "The AI Client rejected authentication. Sign in, then retry this saved draft."
+              : latest.lastErrorCode ===
+                  "ManagedConversationSettingsUnavailableError"
+                ? "The selected settings became unavailable. Review them and send the restored draft manually."
+                : "The AI Client rejected this prompt. Review the saved draft before retrying."
           );
         }
       }
@@ -1224,7 +1450,8 @@ export function HqActiveConversation({
     settingsDirty,
     store,
     detailThread,
-    queueDraftOperation
+    queueDraftOperation,
+    lifecycle
   ]);
   useEffect(() => {
     void refresh();
@@ -1292,42 +1519,82 @@ export function HqActiveConversation({
     draft?.initialPrompt?.prompt
   ]);
   const send = async (manualRetry = false) => {
+    const exactRetry =
+      manualRetry &&
+      pending.current?.request &&
+      pending.current.request.executionId === conversation?.executionId &&
+      pending.current.request.capturedSessionId ===
+        conversation?.capturedSessionId &&
+      pending.current.request.threadId === conversation?.threadId;
+    if (manualRetry && pending.current?.request && !exactRetry) {
+      setError(
+        "This saved prompt belongs to a different Conversation execution. Check its delivery from the original Conversation; Koed will not resend it here."
+      );
+      return;
+    }
     const unverified = findUnverifiedSlashCommand(prompt, slash.commands);
-    if (unverified) {
+    if (unverified && !exactRetry) {
       setError(`/${unverified} is not verified and cannot be dispatched.`);
       return;
     }
     if (
       !api ||
+      !recoveryReady ||
+      !lifecycle?.persistPendingSend ||
       !conversation?.executionId ||
+      (!runtime && !exactRetry) ||
       resumeStatus !== "ready" ||
-      expectedForExecution !== conversation.executionId ||
+      (expectedForExecution !== conversation.executionId && !exactRetry) ||
       !prompt.trim() ||
       busy ||
-      runtimeBusy ||
+      (manualRetry && matchingTerminal) ||
+      (runtimeBusy &&
+        !(manualRetry && runtime?.latestCommand?.state === "indeterminate")) ||
       runtime?.executionState === "failed" ||
-      (uncertainSend && !manualRetry) ||
-      !expected ||
-      !hqSelectionIsSupported(options, selection)
+      (sendLocked && !manualRetry) ||
+      (!expected && !exactRetry) ||
+      (!manualRetry && !hqSelectionIsSupported(options, selection))
     )
       return;
-    const settingsChange = hqSettingsChange(expected, selection);
+    const settingsChange = expected
+      ? hqSettingsChange(expected, selection)
+      : null;
     const submission =
-      pending.current &&
-      pending.current.prompt === prompt &&
-      JSON.stringify(pending.current.attachments) ===
-        JSON.stringify(attachments) &&
-      JSON.stringify(pending.current.settingsChange) ===
-        JSON.stringify(settingsChange)
+      manualRetry && pending.current
         ? pending.current
-        : {
-            key: `desktop-prompt:${crypto.randomUUID()}`,
-            messageId: crypto.randomUUID(),
-            prompt,
-            attachments,
-            settingsChange
-          };
+        : pending.current &&
+            pending.current.prompt === prompt &&
+            JSON.stringify(pending.current.attachments) ===
+              JSON.stringify(attachments) &&
+            JSON.stringify(pending.current.settingsChange) ===
+              JSON.stringify(settingsChange)
+          ? pending.current
+          : {
+              key: `desktop-prompt:${crypto.randomUUID()}`,
+              messageId: crypto.randomUUID(),
+              prompt,
+              attachments,
+              settingsChange
+            };
+    const request: ManagedConversationPendingSend["request"] =
+      submission.request ?? {
+        executionId: conversation.executionId,
+        capturedSessionId: conversation.capturedSessionId,
+        threadId: conversation.threadId,
+        idempotencyKey: submission.key,
+        clientUserMessageId: submission.messageId,
+        prompt: submission.prompt,
+        fileMentionCommandIds: submission.attachments.map(
+          (item) => item.commandId
+        ),
+        terminalContextReferences: [],
+        ...(submission.settingsChange
+          ? { settingsChange: submission.settingsChange }
+          : {})
+      };
+    submission.request = request;
     pending.current = submission;
+    cancelAutosave();
     setBusy(true);
     setError("");
     setOptimistic((current) =>
@@ -1342,38 +1609,37 @@ export function HqActiveConversation({
           value: submission.prompt
         })
       );
-      if (identityKeyRef.current !== identityKey) return;
+      if (!mounted.current || identityKeyRef.current !== identityKey) return;
+      await lifecycle.persistPendingSend(conversation.executionId, {
+        request,
+        attachments: submission.attachments
+      });
+      if (!mounted.current || identityKeyRef.current !== identityKey) return;
     } catch {
-      if (identityKeyRef.current !== identityKey) return;
+      if (!mounted.current || identityKeyRef.current !== identityKey) return;
       setOptimistic((current) =>
         current.filter((item) => item.id !== submission.messageId)
       );
       setBusy(false);
-      setError("Koed could not save this draft securely. Nothing was sent.");
+      if (!manualRetry) pending.current = null;
+      setError("Koed could not save this prompt securely. Nothing was sent.");
       return;
     }
     try {
-      const result = await api.send({
-        executionId: conversation.executionId,
-        capturedSessionId: conversation.capturedSessionId,
-        threadId: conversation.threadId,
-        idempotencyKey: submission.key,
-        clientUserMessageId: submission.messageId,
-        prompt: submission.prompt,
-        fileMentionCommandIds: submission.attachments.map(
-          (item) => item.commandId
-        ),
-        ...(submission.settingsChange
-          ? { settingsChange: submission.settingsChange }
-          : {})
-      });
-      if (identityKeyRef.current !== identityKey) return;
+      const result = await api.send(request);
+      if (!mounted.current || identityKeyRef.current !== identityKey) return;
       setResumed((current) =>
         current?.key === identityKey
           ? { ...current, conversation: result.conversation }
           : current
       );
       if (result.status === "rejected") {
+        await lifecycle.persistPendingSend(
+          conversation.executionId,
+          null,
+          undefined,
+          request
+        );
         setOptimistic((current) =>
           current.filter((item) => item.id !== submission.messageId)
         );
@@ -1393,14 +1659,51 @@ export function HqActiveConversation({
         );
       } else {
         lastSubmitted.current = submission;
-        pending.current = null;
-        setUncertainSend(false);
         setSettingsDirty(false);
-        setPrompt("");
-        setAttachments([]);
-        await queueDraftOperation(() =>
-          api.deleteDraft(draftScope(result.conversation))
-        ).catch(() => undefined);
+        try {
+          await queueDraftOperation(() =>
+            api.deleteDraft(draftScope(result.conversation))
+          );
+          await lifecycle.persistPendingSend(
+            conversation.executionId,
+            null,
+            {
+              clientUserMessageId: submission.messageId,
+              status: "queued",
+              message: ""
+            },
+            request
+          );
+          if (
+            !mounted.current ||
+            identityKeyRef.current !== identityKey ||
+            pending.current !== submission
+          )
+            return;
+          pending.current = null;
+          setUncertainSend(false);
+          setPrompt("");
+          setAttachments([]);
+          setOptimistic((current) =>
+            current.map((item) =>
+              item.id === submission.messageId
+                ? { ...item, status: "queued" }
+                : item
+            )
+          );
+          setError("");
+        } catch {
+          if (
+            !mounted.current ||
+            identityKeyRef.current !== identityKey ||
+            pending.current !== submission
+          )
+            return;
+          setUncertainSend(true);
+          setError(
+            "The prompt was accepted, but secure recovery cleanup is incomplete. Check delivery before sending another."
+          );
+        }
         store.refreshFromDurableEvent();
         void refresh();
       }
@@ -1546,6 +1849,7 @@ export function HqActiveConversation({
     commandId: string;
     kind: "browse" | "mention";
     path: string;
+    offset?: number;
   }) => {
     if (!managedProject || !executionId) return;
     const result = await managedProject.command({
@@ -1574,7 +1878,23 @@ export function HqActiveConversation({
     }
     setPendingFile(null);
     if (pending.kind === "browse" && result.result.kind === "browse") {
-      setFiles(result.result.entries);
+      const browseResult = result.result;
+      setFiles((current) =>
+        pending.offset && pending.offset > 0
+          ? [
+              ...current,
+              ...browseResult.entries.filter(
+                (entry) =>
+                  !current.some((existing) => existing.path === entry.path)
+              )
+            ]
+          : browseResult.entries
+      );
+      setFilePage({
+        totalEntries: browseResult.totalEntries,
+        nextOffset: browseResult.nextOffset,
+        revision: browseResult.revision
+      });
       setFilePath(pending.path);
       setFileOpen(true);
       return;
@@ -1590,7 +1910,11 @@ export function HqActiveConversation({
     }
     throw new Error("File result did not match the requested operation.");
   };
-  const browse = async (path = "") => {
+  const browse = async (
+    path = "",
+    offset = 0,
+    revision: ManagedConversationFileRevision | null = null
+  ) => {
     if (!managedProject || !executionId || !runtime) return;
     if (pendingFile) {
       setError("Check the current file operation before starting another.");
@@ -1608,15 +1932,20 @@ export function HqActiveConversation({
         fileOperation: {
           kind: "browse",
           path,
-          offset: 0,
+          offset,
           limit: 200,
-          revision: null
+          revision
         }
       });
       if (identityKeyRef.current !== identityKey) return;
       if (started.operation !== "file_start")
         throw new Error("File browser unavailable");
-      await settleFile({ commandId: started.command.id, kind: "browse", path });
+      await settleFile({
+        commandId: started.command.id,
+        kind: "browse",
+        path,
+        offset
+      });
     } catch (cause) {
       if (identityKeyRef.current !== identityKey) return;
       setError(
@@ -1682,9 +2011,10 @@ export function HqActiveConversation({
           event.metadata.clientUserMessageId === item.id
       )
   );
-  const lastUserPrompt = [...visibleEvents]
-    .reverse()
-    .find((event) => event.actor === "user");
+  const timelineRevision = JSON.stringify([
+    visibleEvents.map((event) => [event.id, conversationEventText(event)]),
+    runtime?.items
+  ]);
   const isBlank =
     visibleEvents.length === 0 &&
     visibleOptimistic.length === 0 &&
@@ -1694,7 +2024,7 @@ export function HqActiveConversation({
     const scroll = scrollRef.current;
     if (scroll && stickToBottom.current) scroll.scrollTop = scroll.scrollHeight;
   }, [
-    visibleEvents.length,
+    timelineRevision,
     visibleOptimistic.length,
     runtime?.items.length,
     active
@@ -1724,10 +2054,14 @@ export function HqActiveConversation({
                 Retry loading messages
               </button>
             ) : null}
-            {visibleEvents.map((event) => {
+            {visibleEvents.map((event, index) => {
               const message = conversationEventText(event);
               if (!message) return null;
               const user = event.actor === "user";
+              const precedingUser = visibleEvents
+                .slice(0, index)
+                .reverse()
+                .find((candidate) => candidate.actor === "user");
               return (
                 <article
                   className={`hq-conversation__message ${user ? "hq-conversation__message--user" : "hq-conversation__message--assistant"}`}
@@ -1752,12 +2086,16 @@ export function HqActiveConversation({
                     >
                       <Copy size={14} />
                     </button>
-                    {!user && lastUserPrompt && !active ? (
+                    {!user &&
+                    precedingUser &&
+                    !active &&
+                    !uncertainSend &&
+                    resumeStatus === "ready" ? (
                       <button
                         aria-label="Retry last prompt"
                         type="button"
                         onClick={() =>
-                          setPrompt(conversationEventText(lastUserPrompt))
+                          setPrompt(conversationEventText(precedingUser))
                         }
                       >
                         <RotateCcw size={14} />
@@ -1773,7 +2111,9 @@ export function HqActiveConversation({
                 key={item.id}
               >
                 <p className="hq-conversation__bubble">{item.prompt}</p>
-                <small>Sending…</small>
+                <small>
+                  {item.status === "queued" ? "Queued" : "Sending…"}
+                </small>
               </article>
             ))}
             {draft?.initialPrompt &&
@@ -1871,29 +2211,25 @@ export function HqActiveConversation({
         <Composer
           value={prompt}
           setValue={(value) => {
-            if (uncertainSend) return;
+            if (sendLocked || resumeStatus === "read_only" || !recoveryReady)
+              return;
             promptEdited.current = true;
             pending.current = null;
             setPrompt(value);
-            if (api && conversation)
-              void queueDraftOperation(() =>
-                api.writeDraft({ ...draftScope(conversation), value })
-              ).catch(() =>
-                setError("Koed could not save this draft securely.")
-              );
+            if (api && conversation) scheduleAutosave(value, conversation);
           }}
           onSubmit={() => void send()}
           onAttach={
             managedProject &&
             runtime &&
             resumeStatus !== "read_only" &&
-            !uncertainSend
+            !sendLocked
               ? () => void browse()
               : undefined
           }
           attachments={attachments}
           onRemoveAttachment={(id) => {
-            if (!uncertainSend)
+            if (!sendLocked && resumeStatus === "ready" && recoveryReady)
               setAttachments((current) =>
                 current.filter((item) => item.commandId !== id)
               );
@@ -1903,21 +2239,31 @@ export function HqActiveConversation({
           options={options}
           selection={selection}
           onSelectionChange={(value) => {
-            if (!uncertainSend) {
+            if (!sendLocked && resumeStatus === "ready" && recoveryReady) {
               setSelection(value);
               setSettingsDirty(true);
             }
           }}
           locked
-          lockDraft={uncertainSend || runtime?.executionState === "failed"}
+          lockDraft={
+            sendLocked ||
+            resumeStatus === "read_only" ||
+            !recoveryReady ||
+            runtime?.executionState === "failed"
+          }
+          settingsDisabled={
+            sendLocked || resumeStatus !== "ready" || !recoveryReady
+          }
           busy={busy}
           canSend={Boolean(
             api &&
             conversation?.executionId &&
+            recoveryReady &&
+            runtime &&
             expectedForExecution === conversation.executionId &&
             resumeStatus !== "read_only" &&
             resumeStatus !== "reconciling" &&
-            !uncertainSend &&
+            !sendLocked &&
             prompt.trim() &&
             expected &&
             !runtimeBusy &&
@@ -1936,7 +2282,7 @@ export function HqActiveConversation({
           }
           slashCommands={slash.commands}
         />
-        {uncertainSend ? (
+        {sendLocked ? (
           <div className="hq-conversation__uncertain">
             <button
               type="button"
@@ -1947,7 +2293,12 @@ export function HqActiveConversation({
             </button>
             <button
               type="button"
-              disabled={busy || Boolean(runtimeBusy)}
+              disabled={
+                busy ||
+                Boolean(active) ||
+                Boolean(matchingTerminal) ||
+                !recoveryReady
+              }
               onClick={() => void send(true)}
             >
               Retry the same prompt
@@ -1969,6 +2320,11 @@ export function HqActiveConversation({
         ) : null}
         {resumeStatus === "read_only" ? (
           <p role="status">This Captured Conversation is read-only.</p>
+        ) : null}
+        {lifecycle?.recoveryStatus === "unavailable" ? (
+          <p role="status">
+            Secure Conversation recovery is unavailable. Sending is paused.
+          </p>
         ) : null}
         {authorizeTransfer && executionId && resumeStatus === "ready" ? (
           <details
@@ -2073,6 +2429,18 @@ export function HqActiveConversation({
                 {item.entryKind === "directory" ? "/" : ""}
               </button>
             ))}
+            {filePage?.nextOffset !== null &&
+            filePage?.nextOffset !== undefined ? (
+              <button
+                type="button"
+                disabled={busy || Boolean(pendingFile)}
+                onClick={() =>
+                  void browse(filePath, filePage.nextOffset!, filePage.revision)
+                }
+              >
+                Load more ({files.length} of {filePage.totalEntries})
+              </button>
+            ) : null}
           </div>
         ) : null}
         {pendingFile ? (
