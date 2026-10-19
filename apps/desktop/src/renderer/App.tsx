@@ -84,6 +84,7 @@ import {
 } from "./views/onboarding/index.js";
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
+import { HqShell } from "./hq/HqShell.js";
 import "./app.css";
 
 const CollaborationRoutes = lazy(async () => {
@@ -552,6 +553,7 @@ export type AppProps = {
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
+  hqEnabled?: boolean;
   teamCollaborationEnabled?: boolean;
 };
 
@@ -565,6 +567,7 @@ export function App({
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
   statusStoreOverride,
+  hqEnabled = false,
   teamCollaborationEnabled = true
 }: AppProps = {}) {
   const askAvailable = Boolean(personalMemoryApi && managedConversations);
@@ -1161,6 +1164,8 @@ export function App({
       />
     );
   }
+
+  if (hqEnabled) return <HqShell />;
 
   const activeScope =
     route.kind === "inbox"

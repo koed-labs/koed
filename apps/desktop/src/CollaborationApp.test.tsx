@@ -1273,22 +1273,43 @@ describe("CollaborationApp", () => {
 
   const render = async (
     client = createClient(),
-    personalMemoryApi = createPersonalMemoryApi()
+    personalMemoryApi = createPersonalMemoryApi(),
+    hqEnabled = false
   ) => {
     await act(async () =>
       root.render(
         <App
           collaborationClient={client}
           initialCollaborationSelection={client.current()?.selection}
+          hqEnabled={hqEnabled}
           onboardingComplete
           personalMemoryApi={personalMemoryApi}
           statusReadyOverride
         />
       )
     );
-    expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
+    if (hqEnabled) {
+      expect(document.body.querySelector("[data-hq-shell]")).not.toBeNull();
+      expect(document.body.querySelector(".desktop-app-shell")).toBeNull();
+    } else {
+      expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
+    }
     return client;
   };
+
+  it("routes to the empty HQ shell only when the flag is enabled", async () => {
+    const client = createClient();
+    const api = createPersonalMemoryApi();
+
+    await render(client, api, true);
+    expect(document.body.querySelector("[data-hq-shell]")?.textContent).toBe(
+      ""
+    );
+
+    await render(client, api, false);
+    expect(document.body.querySelector("[data-hq-shell]")).toBeNull();
+    expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
+  });
 
   it("reloads both recent lists when the Personal owner changes with the same API", async () => {
     const api = createPersonalMemoryApi();
