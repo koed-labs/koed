@@ -150,6 +150,7 @@ describe("Pi transcript watcher", () => {
       confirm: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined)
     };
+    fs.writeFileSync(transcriptPath, source);
     const watcher = startPiTranscriptWatcher(
       client,
       {
@@ -159,7 +160,6 @@ describe("Pi transcript watcher", () => {
       bridge
     );
     try {
-      fs.writeFileSync(transcriptPath, source);
       await watcher.scanNow();
       expect(bridge.replay).toHaveBeenCalled();
       expect(bridge.prepare).toHaveBeenCalledWith(
