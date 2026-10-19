@@ -37,9 +37,16 @@ index. It nests Conversations under their Project, shows three Conversations
 per Project and five loose Conversations before a **Show more** control, and
 keeps subagent threads out of the list. Group folds are stored separately in
 `userData/hq-sidebar-preferences.json`; the open scroll position is preserved
-while navigating. **Search and commands** opens the existing command palette.
-New chat, New Project, and Now stay disabled until their owning flows are
-available.
+while navigating. On narrow windows, an accessible navigation drawer keeps the
+sidebar mounted, closes after navigation or Escape, and restores focus to its
+opener. A Project load error offers Retry while retaining any rows already
+loaded. HQ owns its entrypoint, destination state, and **Search and commands**
+presentation. Search selects HQ Projects and Conversations and provides working
+**Toggle sidebar** and **Toggle context panel** commands. It cannot open legacy
+Desktop screens. Project and Conversation selection currently updates
+the HQ title and selected identity, with empty content until their dedicated
+surfaces are implemented. The context pane remains an empty HQ scaffold. New
+chat, New Project, and Now stay disabled until their owning flows are available.
 
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
@@ -367,3 +374,21 @@ Markdown, every tool category, grouped activity, multi-file and malformed
 patches, keyboard focus, light and dark themes, 200% zoom, reduced motion,
 forced colors, and the 10,000-event performance budgets. Desktop owns this
 rendering path and has no dependency on the retired browser app.
+
+The opt-in HQ navigation follows the v50 tonal layout with the approved DM Sans
+and Lucide overrides. Its 56px header and resize handles stay borderless at
+rest. Project rows use folder state: first activation selects and opens the
+Project, while activating the selected Project again folds its Conversations.
+Only the selected destination has a neutral row highlight. The desktop toggle
+switches between a 64px rail and the saved expanded width; compact mode is
+stored separately and does not change the 200–440px expanded width. Existing
+layout files without the compact field retain their widths and visibility.
+Phones use a 280px drawer with a left-side opener.
+
+Search and commands includes HQ navigation plus working sidebar and context
+panel toggles. The legacy Preferences command is adapted to Settings only when
+the HQ Settings action is connected. Unsupported legacy destinations and future
+creation flows are not advertised as working commands. An optional account
+footer accepts the current user's display name, initials, and status; it opens
+Settings only when its callback is connected. Settings overlays the current HQ
+selection rather than replacing it.

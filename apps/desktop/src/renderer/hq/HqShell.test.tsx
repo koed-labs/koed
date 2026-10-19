@@ -71,8 +71,8 @@ describe("HQ shell layout", () => {
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   });
 
-  const render = async () => {
-    await act(async () => root.render(<HqShell />));
+  const render = async (props: Parameters<typeof HqShell>[0] = {}) => {
+    await act(async () => root.render(<HqShell {...props} />));
   };
 
   it("mounts the shell landmarks and supports keyboard and reset resizing", async () => {
@@ -180,6 +180,108 @@ describe("HQ shell layout", () => {
     expect(document.activeElement).toBe(opener);
     expect(opener?.title).toBe("Show context");
     expect(opener?.hasAttribute("aria-controls")).toBe(false);
+  });
+
+  it("opens one persistent project-navigation instance in a trapped narrow drawer", async () => {
+    isNarrow = true;
+    const sidebar = (
+      <aside aria-label="Project navigation" id="hq-project-navigation">
+        <button data-hq-project-link="project-a" type="button">
+          Project A
+        </button>
+        <button data-hq-sidebar-group="just-me" type="button">
+          Just me
+        </button>
+        <ul hidden>
+          <li>
+            <button data-hq-chat-row="folded-chat" type="button">
+              Folded Conversation
+            </button>
+          </li>
+        </ul>
+        <div data-hq-sidebar-scroll="">
+          <span>Scrollable navigation</span>
+        </div>
+      </aside>
+    );
+    await render({ sidebar });
+
+    const opener = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show project navigation"]'
+    );
+    const aside = container.querySelector("#hq-project-navigation");
+    expect(opener).not.toBeNull();
+    expect(aside).not.toBeNull();
+    expect(container.querySelectorAll("#hq-project-navigation")).toHaveLength(
+      1
+    );
+    expect(
+      container.querySelector("[data-hq-sidebar-dialog]")?.getAttribute("role")
+    ).toBeFalsy();
+
+    await act(async () => opener?.click());
+    const dialog = container.querySelector<HTMLElement>(
+      '[data-hq-sidebar-dialog][role="dialog"][aria-modal="true"]'
+    );
+    const close = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close project navigation"]'
+    );
+    expect(dialog).not.toBeNull();
+    expect(document.activeElement).toBe(close);
+    expect(opener?.getAttribute("aria-controls")).toBe("hq-sidebar-dialog");
+    expect(
+      container.querySelector(".hq-shell__workspace")?.hasAttribute("inert")
+    ).toBe(true);
+    expect(container.querySelector("#hq-project-navigation")).toBe(aside);
+    expect(container.querySelectorAll("#hq-project-navigation")).toHaveLength(
+      1
+    );
+
+    await act(async () => {
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          key: "Tab",
+          shiftKey: true
+        })
+      );
+    });
+    expect(document.activeElement).toBe(
+      container.querySelector('button[data-hq-sidebar-group="just-me"]')
+    );
+    await act(async () => {
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Tab" })
+      );
+    });
+    expect(document.activeElement).toBe(close);
+    expect(
+      container.querySelector('button[data-hq-chat-row="folded-chat"]')
+    ).not.toBe(document.activeElement);
+
+    await act(async () => {
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })
+      );
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(opener?.hasAttribute("aria-controls")).toBe(false);
+    expect(
+      container.querySelector(".hq-shell__workspace")?.hasAttribute("inert")
+    ).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    expect(container.querySelector("#hq-project-navigation")).toBe(aside);
+
+    await act(async () => opener?.click());
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[data-hq-project-link="project-a"]'
+        )
+        ?.click();
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector("#hq-project-navigation")).toBe(aside);
   });
 
   it("does not reopen stale mobile context after hiding it on desktop", async () => {
@@ -298,6 +400,7 @@ describe("HQ shell layout", () => {
     const hqLayout = {
       get: vi.fn(async () => ({
         ...defaultHqLayoutPreferences,
+        sidebarCollapsed: false,
         sidebarWidth: 440,
         rightColumnWidth: 16_384
       })),
@@ -359,6 +462,7 @@ describe("HQ shell layout", () => {
     ).toBe("300");
     expect(hqLayout.set).toHaveBeenCalled();
     expect(hqLayout.set.mock.calls.at(-1)?.[0]).toMatchObject({
+      sidebarCollapsed: false,
       sidebarWidth: 440,
       rightColumnWidth: 16_384,
       rightColumnHidden: false
@@ -413,7 +517,7 @@ describe("HQ shell layout", () => {
     ).toBe(false);
   });
 
-  it("flushes the sidebar quick action without waiting for the resize debounce", async () => {
+  it("persists compact mode immediately and restores the saved expanded width", async () => {
     const set = vi.fn(async (preferences) => preferences);
     Object.defineProperty(window, "koedDesktop", {
       configurable: true,
@@ -430,7 +534,7 @@ describe("HQ shell layout", () => {
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>(
-          'button[aria-label="Narrow project navigation"]'
+          'button[aria-label="Collapse sidebar"]'
         )
         ?.click();
     });
@@ -438,8 +542,29 @@ describe("HQ shell layout", () => {
     expect(set).toHaveBeenCalledOnce();
     expect(set).toHaveBeenCalledWith({
       ...defaultHqLayoutPreferences,
-      sidebarWidth: 200
+      sidebarCollapsed: true
     });
+    expect(
+      container
+        .querySelector("[data-hq-shell]")
+        ?.hasAttribute("data-hq-compact")
+    ).toBe(true);
+    expect(
+      container
+        .querySelector("[data-hq-sidebar-handle]")
+        ?.hasAttribute("hidden")
+    ).toBe(true);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]')
+        ?.click()
+    );
+    expect(
+      container
+        .querySelector("[data-hq-sidebar-handle]")
+        ?.getAttribute("aria-valuenow")
+    ).toBe("268");
+    expect(set).toHaveBeenLastCalledWith(defaultHqLayoutPreferences);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -51,11 +51,30 @@ describe("HQ layout preferences", () => {
     }
   });
 
+  it("retains old file widths and visibility when compact preference is absent", () => {
+    const path = file();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        sidebarWidth: 380,
+        rightColumnWidth: 520,
+        rightColumnHidden: true
+      })
+    );
+    expect(readHqLayoutPreferences(path)).toEqual({
+      sidebarCollapsed: false,
+      sidebarWidth: 380,
+      rightColumnWidth: 520,
+      rightColumnHidden: true
+    });
+  });
+
   it("writes bounded pixel preferences atomically with private file mode", () => {
     const path = file();
     const staleTemporary = `${path}.tmp`;
     writeFileSync(staleTemporary, "stale", { mode: 0o644 });
     const value: HqLayoutPreferences = {
+      sidebarCollapsed: false,
       sidebarWidth: 440,
       rightColumnWidth: 620,
       rightColumnHidden: true

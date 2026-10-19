@@ -273,8 +273,17 @@ const sidebarProjectMetadata: PersonalDesktopProjectMetadata[] =
     schemaVersion: 1
   }));
 
+let failInitialProjectsLoad =
+  new URLSearchParams(window.location.search).get("projectsFailure") === "once";
+
 const sidebarPersonalMemoryApi: PersonalDesktopApi = {
-  listProjects: async () => structuredClone(sidebarProjectGroups),
+  listProjects: async () => {
+    if (failInitialProjectsLoad) {
+      failInitialProjectsLoad = false;
+      throw new Error("Fixture project list failure");
+    }
+    return structuredClone(sidebarProjectGroups);
+  },
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async () => [],
   assignSessionProject: async () => ({ projectId: null }),

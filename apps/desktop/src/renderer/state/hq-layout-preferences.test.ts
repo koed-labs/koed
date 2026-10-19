@@ -32,6 +32,7 @@ describe("HQ layout preference renderer state", () => {
 
     store.setSidebarWidth(320);
     pending.resolve({
+      sidebarCollapsed: false,
       sidebarWidth: 420,
       rightColumnWidth: 612,
       rightColumnHidden: true
@@ -40,6 +41,7 @@ describe("HQ layout preference renderer state", () => {
     await expect(loading).resolves.toMatchObject({
       loading: false,
       preferences: {
+        sidebarCollapsed: false,
         sidebarWidth: 320,
         rightColumnWidth: 612,
         rightColumnHidden: true
@@ -47,8 +49,43 @@ describe("HQ layout preference renderer state", () => {
     });
     await vi.waitFor(() => expect(api.set).toHaveBeenCalledOnce());
     expect(api.set).toHaveBeenCalledWith({
+      sidebarCollapsed: false,
       sidebarWidth: 320,
       rightColumnWidth: 612,
+      rightColumnHidden: true
+    });
+    store.dispose();
+  });
+
+  it("keeps a compact toggle during late native load without changing expanded geometry", async () => {
+    const pending = deferred<typeof defaultHqLayoutPreferences>();
+    const api: HqLayoutPreferencesApi = {
+      get: () => pending.promise,
+      set: vi.fn(async (value) => value)
+    };
+    const store = new HqLayoutPreferencesStore(api, 0);
+    const loading = store.load();
+    store.setSidebarCollapsed(true);
+    pending.resolve({
+      ...defaultHqLayoutPreferences,
+      sidebarWidth: 410,
+      rightColumnWidth: 580,
+      rightColumnHidden: true
+    });
+    await loading;
+    await store.flush();
+    expect(store.current().preferences).toEqual({
+      sidebarCollapsed: true,
+      sidebarWidth: 410,
+      rightColumnWidth: 580,
+      rightColumnHidden: true
+    });
+    store.setSidebarCollapsed(false);
+    await store.flush();
+    expect(api.set).toHaveBeenLastCalledWith({
+      sidebarCollapsed: false,
+      sidebarWidth: 410,
+      rightColumnWidth: 580,
       rightColumnHidden: true
     });
     store.dispose();
@@ -69,6 +106,7 @@ describe("HQ layout preference renderer state", () => {
     expect(set).not.toHaveBeenCalled();
 
     pending.resolve({
+      sidebarCollapsed: false,
       sidebarWidth: 268,
       rightColumnWidth: 612,
       rightColumnHidden: true
@@ -76,12 +114,14 @@ describe("HQ layout preference renderer state", () => {
     await flushing;
 
     expect(store.current().preferences).toEqual({
+      sidebarCollapsed: false,
       sidebarWidth: 350,
       rightColumnWidth: 612,
       rightColumnHidden: true
     });
     expect(set).toHaveBeenCalledOnce();
     expect(set).toHaveBeenCalledWith({
+      sidebarCollapsed: false,
       sidebarWidth: 350,
       rightColumnWidth: 612,
       rightColumnHidden: true
@@ -141,6 +181,7 @@ describe("HQ layout preference renderer state", () => {
     expect(set).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenNthCalledWith(1, {
       ...defaultHqLayoutPreferences,
+      sidebarCollapsed: false,
       sidebarWidth: 310
     });
 
@@ -151,6 +192,7 @@ describe("HQ layout preference renderer state", () => {
     await vi.waitFor(() => expect(set).toHaveBeenCalledTimes(2));
     expect(set).toHaveBeenNthCalledWith(2, {
       ...defaultHqLayoutPreferences,
+      sidebarCollapsed: false,
       sidebarWidth: 330
     });
     expect(store.current().preferences.sidebarWidth).toBe(330);
@@ -180,6 +222,7 @@ describe("HQ layout preference renderer state", () => {
     expect(set).toHaveBeenCalledOnce();
     expect(set).toHaveBeenCalledWith({
       ...defaultHqLayoutPreferences,
+      sidebarCollapsed: false,
       sidebarWidth: 336
     });
     expect(vi.getTimerCount()).toBe(0);
@@ -216,6 +259,7 @@ describe("HQ layout preference renderer state", () => {
     await vi.waitFor(() => expect(set).toHaveBeenCalledTimes(2));
     expect(set).toHaveBeenNthCalledWith(2, {
       ...defaultHqLayoutPreferences,
+      sidebarCollapsed: false,
       sidebarWidth: 302
     });
     expect(flushBSettled).toBe(false);
@@ -248,6 +292,7 @@ describe("HQ layout preference renderer state", () => {
     expect(flushSettled).toBe(false);
 
     pending.resolve({
+      sidebarCollapsed: false,
       sidebarWidth: 420,
       rightColumnWidth: 612,
       rightColumnHidden: true
@@ -257,6 +302,7 @@ describe("HQ layout preference renderer state", () => {
 
     expect(set).toHaveBeenCalledOnce();
     expect(set).toHaveBeenCalledWith({
+      sidebarCollapsed: false,
       sidebarWidth: 340,
       rightColumnWidth: 612,
       rightColumnHidden: true

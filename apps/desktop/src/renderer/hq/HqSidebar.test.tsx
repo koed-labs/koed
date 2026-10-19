@@ -10,7 +10,7 @@ import type {
   HqSidebarPreferencesApi
 } from "../../ipc/hq-sidebar-preferences-protocol.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
-import type { DesktopRoute } from "../navigation.js";
+import type { HqRoute } from "./hq-navigation.js";
 import { HqSidebar } from "./HqSidebar.js";
 
 const actEnvironment = globalThis as {
@@ -79,7 +79,7 @@ const project = (
   )
 });
 
-const initialRoute: DesktopRoute = { kind: "personal-memory-projects" };
+const initialRoute: HqRoute = { kind: "home" };
 
 describe("HQ sidebar", () => {
   let container: HTMLDivElement;
@@ -96,10 +96,15 @@ describe("HQ sidebar", () => {
   const onSelectProject = vi.fn();
   const onSelectConversation = vi.fn();
   const onOpenSearchAndCommands = vi.fn();
+  const onRetryProjects = vi.fn();
 
   const render = async (
-    route: DesktopRoute = initialRoute,
-    options: { groupsReady?: boolean; loading?: boolean } = {},
+    route: HqRoute = initialRoute,
+    options: {
+      groupsReady?: boolean;
+      loading?: boolean;
+      projectsError?: boolean;
+    } = {},
     renderedProjects: readonly DesktopProject[] = projects
   ) => {
     await act(async () => {
@@ -108,8 +113,10 @@ describe("HQ sidebar", () => {
           groupsReady={options.groupsReady}
           loading={options.loading}
           onOpenSearchAndCommands={onOpenSearchAndCommands}
+          onRetryProjects={onRetryProjects}
           onSelectConversation={onSelectConversation}
           onSelectProject={onSelectProject}
+          projectsError={options.projectsError}
           projects={renderedProjects}
           route={route}
         />
@@ -141,6 +148,7 @@ describe("HQ sidebar", () => {
     onSelectProject.mockClear();
     onSelectConversation.mockClear();
     onOpenSearchAndCommands.mockClear();
+    onRetryProjects.mockClear();
   });
 
   afterEach(async () => {
@@ -188,6 +196,24 @@ describe("HQ sidebar", () => {
     expect(container.querySelectorAll("[data-hq-chat-title]")).toHaveLength(12);
   });
 
+  it("shows a retry state on project-load errors while retaining loaded rows", async () => {
+    await render(initialRoute, { groupsReady: false, projectsError: true });
+
+    expect(container.textContent).toContain("Projects could not be loaded.");
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).not.toContain("No Projects or Chats yet");
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>("[data-hq-project-retry]")
+        ?.click();
+    });
+    expect(onRetryProjects).toHaveBeenCalledOnce();
+
+    await render(initialRoute, { groupsReady: false, projectsError: true }, []);
+    expect(container.textContent).toContain("Projects could not be loaded.");
+    expect(container.textContent).not.toContain("No Projects or Chats yet");
+  });
+
   it("keeps primary fork/resume Conversations and caps after filtering subagents", async () => {
     const forkProject = project("forked-project", "Forked", 4);
     const primaryConversation = forkProject.threads[0];
@@ -228,8 +254,8 @@ describe("HQ sidebar", () => {
   });
 
   it("keeps project and conversation selection scoped and preserves scroll", async () => {
-    const selectedRoute: DesktopRoute = {
-      kind: "personal-memory-session",
+    const selectedRoute: HqRoute = {
+      kind: "conversation",
       projectId: "project-b",
       sessionId: "00000000-0000-4000-8000-000000000001"
     };
@@ -248,7 +274,7 @@ describe("HQ sidebar", () => {
       container.querySelector(
         '[data-hq-project-link="project-b"][data-selected="true"]'
       )
-    ).not.toBeNull();
+    ).toBeNull();
     expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(
       container
@@ -275,7 +301,7 @@ describe("HQ sidebar", () => {
         ?.click();
     });
     expect(onSelectProject).toHaveBeenCalledWith("project-a");
-    await render({ kind: "personal-memory-project", projectId: "project-a" });
+    await render({ kind: "project", projectId: "project-a" });
     expect(scroll.scrollTop).toBe(86);
     expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(
@@ -404,12 +430,13 @@ describe("HQ sidebar", () => {
     );
     persisted = { foldedGroups: staleGroups };
 
-    await render(initialRoute, { groupsReady: false, loading: true });
+    await render(
+      { kind: "project", projectId: "project-a" },
+      { groupsReady: false, loading: true }
+    );
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>('[data-hq-project-link="project-a"]')
-        ?.closest("li")
-        ?.querySelector<HTMLButtonElement>("[data-hq-project-chevron]")
         ?.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -429,5 +456,47 @@ describe("HQ sidebar", () => {
     expect(Object.keys(saved?.foldedGroups ?? {}).length).toBeLessThanOrEqual(
       1001
     );
+  });
+  it("selects a Project before repeated row activation folds its Conversations", async () => {
+    await render();
+    const row = container.querySelector<HTMLButtonElement>(
+      '[data-hq-project-link="project-a"]'
+    );
+    await act(async () => row?.click());
+    expect(onSelectProject).toHaveBeenCalledWith("project-a");
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    await render({ kind: "project", projectId: "project-a" });
+    await act(async () => row?.click());
+    expect(row?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => row?.click());
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      container.querySelector("[data-hq-project-chevron], [data-hq-chat-icon]")
+    ).toBeNull();
+  });
+
+  it("renders the supplied real account identity and enables only its connected Settings action", async () => {
+    const onOpenSettings = vi.fn();
+    await act(async () =>
+      root.render(
+        <HqSidebar
+          projects={[]}
+          route={initialRoute}
+          accountIdentity={{ displayName: "Test User", status: "Connected" }}
+          onOpenSettings={onOpenSettings}
+          onOpenSearchAndCommands={onOpenSearchAndCommands}
+          onSelectConversation={onSelectConversation}
+          onSelectProject={onSelectProject}
+        />
+      )
+    );
+    const account = container.querySelector<HTMLButtonElement>(".hq-account");
+    expect(account?.textContent).toContain("Test User");
+    expect(account?.textContent).toContain("Connected");
+    expect(container.querySelector(".hq-account__avatar")?.textContent).toBe(
+      "TU"
+    );
+    await act(async () => account?.click());
+    expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 });

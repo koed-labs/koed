@@ -1,9 +1,10 @@
 import { Button, Resizable, ResizableHandle, ResizablePanel } from "@koed/ui";
-import { ArrowLeft, PanelRight, X } from "lucide-react";
+import { Menu, PanelLeft, PanelRight, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useImperativeHandle,
   useRef,
   useState,
   useSyncExternalStore,
@@ -12,9 +13,18 @@ import {
   type ReactNode
 } from "react";
 
-import type { DesktopRoute } from "../navigation.js";
+import type { HqRoute } from "./hq-navigation.js";
 import { HqLayoutPreferencesStore } from "../state/hq-layout-preferences.js";
+import { HqControlTooltip } from "./HqControlTooltip.js";
+import { HqBrand } from "./HqSidebar.js";
 import "./hq-shell.css";
+
+export type HqShellActions = {
+  dismissOverlays: () => void;
+  toggleSidebar: () => void;
+  toggleContext: () => void;
+};
+export type HqSidebarLayout = { compact: boolean };
 
 const NARROW_VIEWPORT_QUERY = "(max-width: 760px)";
 const MIN_MAIN_WIDTH = 240;
@@ -67,7 +77,25 @@ const focusableElements = (container: HTMLElement): HTMLElement[] =>
     container.querySelectorAll<HTMLElement>(
       'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
     )
-  ).filter((element) => element.getAttribute("aria-hidden") !== "true");
+  ).filter((element) => {
+    for (
+      let ancestor: HTMLElement | null = element;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      if (
+        ancestor.hidden ||
+        ancestor.hasAttribute("inert") ||
+        ancestor.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
+      const { display, visibility } = window.getComputedStyle(ancestor);
+      if (display === "none" || visibility === "hidden") return false;
+      if (ancestor === container) break;
+    }
+    return true;
+  });
 
 function ContextPanel({
   dialog = false,
@@ -104,20 +132,13 @@ function ContextPanel({
           >
             <X aria-hidden="true" />
           </Button>
-        ) : (
-          <span aria-hidden="true" className="hq-context__eyebrow">
-            CONTEXT
-          </span>
-        )}
+        ) : null}
         <h2
-          className="hq-context__title"
+          className="hq-visually-hidden"
           id={dialog ? "hq-context-dialog-title" : undefined}
         >
           Project context
         </h2>
-        {!dialog ? (
-          <PanelRight aria-hidden="true" className="hq-context__icon" />
-        ) : null}
       </div>
       <div className="hq-context__body"></div>
     </section>
@@ -126,12 +147,16 @@ function ContextPanel({
 
 export function HqShell({
   children,
-  sidebar
+  title = "HQ",
+  sidebar,
+  actionsRef,
+  route
 }: {
   children?: ReactNode;
-  onBack?: () => void;
-  route?: DesktopRoute;
-  sidebar?: ReactNode;
+  title?: string;
+  route?: HqRoute;
+  sidebar?: ReactNode | ((layout: HqSidebarLayout) => ReactNode);
+  actionsRef?: Ref<HqShellActions>;
 } = {}) {
   const storeRef = useRef<HqLayoutPreferencesStore | null>(null);
   if (!storeRef.current) storeRef.current = new HqLayoutPreferencesStore();
@@ -144,10 +169,16 @@ export function HqShell({
   const viewport = useViewport();
   const { narrow } = viewport;
   const [mobileContextOpen, setMobileContextOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const contextOpenerRef = useRef<HTMLButtonElement>(null);
   const contextCloseRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const sidebarOpenerRef = useRef<HTMLButtonElement>(null);
+  const sidebarCloseRef = useRef<HTMLButtonElement>(null);
+  const sidebarDialogRef = useRef<HTMLDivElement>(null);
   const previousMobileContextOpen = useRef(false);
+  const previousMobileSidebarOpen = useRef(false);
+  const previousRoute = useRef(route ? JSON.stringify(route) : "");
   const rightIsVisible = !snapshot.preferences.rightColumnHidden;
 
   useEffect(() => {
@@ -156,6 +187,7 @@ export function HqShell({
   }, [store]);
 
   const modalOpen = narrow && mobileContextOpen && rightIsVisible;
+  const sidebarDialogOpen = narrow && mobileSidebarOpen;
 
   useLayoutEffect(() => {
     if (modalOpen) {
@@ -165,6 +197,27 @@ export function HqShell({
     }
     previousMobileContextOpen.current = modalOpen;
   }, [modalOpen]);
+
+  useLayoutEffect(() => {
+    if (sidebarDialogOpen) {
+      sidebarCloseRef.current?.focus();
+    } else if (previousMobileSidebarOpen.current) {
+      sidebarOpenerRef.current?.focus();
+    }
+    previousMobileSidebarOpen.current = sidebarDialogOpen;
+  }, [sidebarDialogOpen]);
+
+  useEffect(() => {
+    const routeKey = route ? JSON.stringify(route) : "";
+    if (previousRoute.current !== routeKey) {
+      setMobileSidebarOpen(false);
+      previousRoute.current = routeKey;
+    }
+  }, [route]);
+
+  useEffect(() => {
+    if (!narrow) setMobileSidebarOpen(false);
+  }, [narrow]);
 
   const desktopRightIsVisible = rightIsVisible && !narrow;
   const sidebarMax = Math.max(
@@ -177,7 +230,10 @@ export function HqShell({
         (desktopRightIsVisible ? MIN_RIGHT_WIDTH + RESIZE_HANDLE_WIDTH : 0)
     )
   );
-  const sidebarWidth = Math.min(snapshot.preferences.sidebarWidth, sidebarMax);
+  const compact = snapshot.preferences.sidebarCollapsed && !narrow;
+  const sidebarWidth = compact
+    ? 64
+    : Math.min(snapshot.preferences.sidebarWidth, sidebarMax);
   const rightWidth = Math.min(
     maxRightWidth(viewport.width, sidebarWidth),
     snapshot.preferences.rightColumnWidth ?? defaultRightWidth(viewport.width)
@@ -185,10 +241,20 @@ export function HqShell({
   const rightMax = maxRightWidth(viewport.width, sidebarWidth);
 
   const showContext = useCallback(() => {
+    setMobileSidebarOpen(false);
     store.setRightColumnHidden(false);
     if (narrow) setMobileContextOpen(true);
     void store.flush();
   }, [narrow, store]);
+
+  const closeMobileSidebar = useCallback(() => {
+    setMobileSidebarOpen(false);
+  }, []);
+
+  const openMobileSidebar = useCallback(() => {
+    setMobileContextOpen(false);
+    setMobileSidebarOpen(true);
+  }, []);
 
   const closeMobileContext = useCallback(() => {
     setMobileContextOpen(false);
@@ -221,64 +287,155 @@ export function HqShell({
     }
   };
 
+  const handleSidebarDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMobileSidebar();
+      return;
+    }
+    if (event.key !== "Tab" || !sidebarDialogRef.current) return;
+
+    const focusable = focusableElements(sidebarDialogRef.current);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      sidebarDialogRef.current.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  };
+
+  const toggleSidebar = () => {
+    if (narrow) {
+      if (sidebarDialogOpen) closeMobileSidebar();
+      else openMobileSidebar();
+      return;
+    }
+    store.setSidebarCollapsed(!snapshot.preferences.sidebarCollapsed);
+    void store.flush();
+  };
+  const toggleContext = () => {
+    if (narrow) {
+      if (modalOpen) closeMobileContext();
+      else showContext();
+    } else {
+      store.setRightColumnHidden(rightIsVisible);
+      void store.flush();
+    }
+  };
+  useImperativeHandle(actionsRef, () => ({
+    toggleSidebar,
+    toggleContext,
+    dismissOverlays: () => {
+      setMobileSidebarOpen(false);
+      setMobileContextOpen(false);
+    }
+  }));
+
   return (
-    <div className="hq-shell" data-hq-shell="">
-      <div className="hq-shell__layout" inert={modalOpen}>
+    <div
+      className="hq-shell"
+      data-hq-shell=""
+      data-hq-compact={compact || undefined}
+    >
+      <div
+        className="hq-shell__layout"
+        data-hq-mobile-sidebar-open={sidebarDialogOpen || undefined}
+        inert={modalOpen}
+      >
         <Resizable
           aria-label="HQ layout"
           className="hq-shell__columns"
           data-hq-layout=""
-          max={sidebarMax}
-          min={200}
+          max={compact ? 64 : sidebarMax}
+          min={compact ? 64 : 200}
           onDoubleClick={() => void store.flush()}
           onKeyUpCapture={() => void store.flush()}
-          onSizeChange={(size) => store.setSidebarWidth(Math.round(size))}
+          onSizeChange={(size) => {
+            if (!compact) store.setSidebarWidth(Math.round(size));
+          }}
           onPointerUpCapture={() => void store.flush()}
           onPointerCancelCapture={() => void store.flush()}
           role="group"
           size={sidebarWidth}
         >
-          <ResizablePanel className="hq-sidebar" primary>
-            {sidebar ?? (
-              <aside
-                aria-label="Project navigation"
-                className="hq-sidebar__inner"
-                id="hq-project-navigation"
-              >
-                <header className="hq-sidebar__brand">
-                  <span className="hq-brand-name">Koed</span>
-                  <span className="hq-brand-section">HQ</span>
-                </header>
-                <nav
-                  aria-label="Project navigation"
-                  className="hq-sidebar__nav"
+          <ResizablePanel
+            aria-hidden={narrow && !sidebarDialogOpen ? true : undefined}
+            className="hq-sidebar"
+            data-hq-mobile-open={sidebarDialogOpen || undefined}
+            inert={narrow && !sidebarDialogOpen}
+            primary
+          >
+            <div
+              aria-label="Project navigation"
+              aria-modal={sidebarDialogOpen ? true : undefined}
+              className="hq-sidebar__drawer"
+              data-hq-sidebar-dialog=""
+              id="hq-sidebar-dialog"
+              onClickCapture={(event) => {
+                const target = event.target;
+                if (
+                  target instanceof Element &&
+                  (target.closest(
+                    ".hq-sidebar__action, [data-hq-chat-row], .hq-account"
+                  ) ||
+                    target.closest(
+                      '[data-hq-project-link]:not([aria-current="page"])'
+                    ))
+                ) {
+                  closeMobileSidebar();
+                }
+              }}
+              onKeyDown={handleSidebarDialogKeyDown}
+              ref={sidebarDialogRef}
+              role={sidebarDialogOpen ? "dialog" : undefined}
+              tabIndex={-1}
+            >
+              {sidebarDialogOpen ? (
+                <Button
+                  aria-label="Close project navigation"
+                  className="hq-icon-button hq-sidebar__drawer-close"
+                  onClick={closeMobileSidebar}
+                  ref={sidebarCloseRef}
+                  size="icon"
+                  variant="ghost"
                 >
-                  <div className="hq-sidebar__section-heading">
-                    <span>PROJECTS</span>
-                    <button
-                      aria-label="Narrow project navigation"
-                      className="hq-icon-button hq-sidebar__collapse"
-                      onClick={() => {
-                        store.setSidebarWidth(200);
-                        void store.flush();
-                      }}
-                      title="Narrow project navigation"
-                      type="button"
+                  <X aria-hidden="true" />
+                </Button>
+              ) : null}
+              {typeof sidebar === "function"
+                ? sidebar({ compact })
+                : (sidebar ?? (
+                    <aside
+                      aria-label="Project navigation"
+                      className="hq-sidebar__inner"
+                      id="hq-project-navigation"
                     >
-                      <ArrowLeft aria-hidden="true" />
-                    </button>
-                  </div>
-                </nav>
-              </aside>
-            )}
+                      <header className="hq-sidebar__brand">
+                        <HqBrand />
+                      </header>
+                    </aside>
+                  ))}
+            </div>
           </ResizablePanel>
           <ResizableHandle
             aria-label="Resize project navigation"
             className="hq-resize-handle"
             data-hq-sidebar-handle=""
+            hidden={compact}
             onDoubleClick={() => store.setSidebarWidth(268)}
           />
-          <ResizablePanel className="hq-shell__workspace">
+          <ResizablePanel
+            className="hq-shell__workspace"
+            inert={sidebarDialogOpen}
+          >
             <Resizable
               className="hq-shell__workspace-columns"
               data-hq-workspace-layout=""
@@ -293,48 +450,87 @@ export function HqShell({
               <ResizablePanel className="hq-main-panel">
                 <main aria-label="HQ workspace" className="hq-main">
                   <header className="hq-main__header">
+                    <HqControlTooltip label="Show or hide the sidebar">
+                      <Button
+                        aria-label={
+                          compact ? "Expand sidebar" : "Collapse sidebar"
+                        }
+                        aria-expanded={!compact}
+                        className="hq-icon-button hq-desktop-navigation-trigger"
+                        onClick={toggleSidebar}
+                        size="icon"
+                        variant="ghost"
+                      >
+                        <PanelLeft aria-hidden="true" />
+                      </Button>
+                    </HqControlTooltip>
+                    <Button
+                      aria-controls={
+                        sidebarDialogOpen ? "hq-sidebar-dialog" : undefined
+                      }
+                      aria-expanded={sidebarDialogOpen}
+                      aria-haspopup="dialog"
+                      aria-label={
+                        sidebarDialogOpen
+                          ? "Hide project navigation"
+                          : "Show project navigation"
+                      }
+                      className="hq-icon-button hq-mobile-navigation-trigger"
+                      onClick={() =>
+                        sidebarDialogOpen
+                          ? closeMobileSidebar()
+                          : openMobileSidebar()
+                      }
+                      ref={sidebarOpenerRef}
+                      type="button"
+                      title="Project navigation"
+                    >
+                      <Menu aria-hidden="true" />
+                    </Button>
                     <div className="hq-main__heading">
-                      <h1>HQ</h1>
+                      <h1>{title}</h1>
                     </div>
                     <div className="hq-main__actions">
-                      <Button
-                        aria-controls={
-                          narrow
-                            ? modalOpen
-                              ? "hq-context-dialog"
-                              : undefined
-                            : rightIsVisible
-                              ? "hq-context-panel"
-                              : undefined
-                        }
-                        aria-expanded={narrow ? modalOpen : rightIsVisible}
-                        aria-label={
-                          (narrow ? modalOpen : rightIsVisible)
-                            ? "Hide project context"
-                            : "Show project context"
-                        }
-                        className="hq-icon-button"
-                        onClick={() => {
-                          if (narrow) {
-                            if (modalOpen) closeMobileContext();
-                            else showContext();
-                          } else if (rightIsVisible) {
-                            store.setRightColumnHidden(true);
-                            void store.flush();
-                          } else {
-                            showContext();
+                      <HqControlTooltip label="Show or hide context panel">
+                        <Button
+                          aria-controls={
+                            narrow
+                              ? modalOpen
+                                ? "hq-context-dialog"
+                                : undefined
+                              : rightIsVisible
+                                ? "hq-context-panel"
+                                : undefined
                           }
-                        }}
-                        ref={contextOpenerRef}
-                        title={
-                          (narrow ? modalOpen : rightIsVisible)
-                            ? "Hide context"
-                            : "Show context"
-                        }
-                        type="button"
-                      >
-                        <PanelRight aria-hidden="true" />
-                      </Button>
+                          aria-expanded={narrow ? modalOpen : rightIsVisible}
+                          aria-label={
+                            (narrow ? modalOpen : rightIsVisible)
+                              ? "Hide project context"
+                              : "Show project context"
+                          }
+                          className="hq-icon-button"
+                          onClick={() => {
+                            if (narrow) {
+                              if (modalOpen) closeMobileContext();
+                              else showContext();
+                            } else if (rightIsVisible) {
+                              store.setRightColumnHidden(true);
+                              void store.flush();
+                            } else {
+                              showContext();
+                            }
+                          }}
+                          ref={contextOpenerRef}
+                          title={
+                            (narrow ? modalOpen : rightIsVisible)
+                              ? "Hide context"
+                              : "Show context"
+                          }
+                          type="button"
+                        >
+                          <PanelRight aria-hidden="true" />
+                        </Button>
+                      </HqControlTooltip>
                     </div>
                   </header>
                   <div className="hq-main__content">
@@ -365,6 +561,16 @@ export function HqShell({
           </ResizablePanel>
         </Resizable>
       </div>
+      {sidebarDialogOpen ? (
+        <div
+          aria-hidden="true"
+          className="hq-mobile-sidebar-backdrop"
+          data-hq-mobile-sidebar-backdrop=""
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeMobileSidebar();
+          }}
+        />
+      ) : null}
       {modalOpen ? (
         <div
           className="hq-mobile-context-backdrop"

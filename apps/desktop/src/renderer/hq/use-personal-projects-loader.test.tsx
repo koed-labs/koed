@@ -4,14 +4,12 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopProject
 } from "@koed/shared/personal-desktop";
-import { act, useSyncExternalStore } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopProject } from "../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../state/personal-memory.js";
-import { HqSidebar } from "./HqSidebar.js";
-import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
+import { HqApplication } from "./HqApplication.js";
 
 const actEnvironment = globalThis as {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -25,18 +23,6 @@ const loadedProject: PersonalDesktopProject = {
   threads: []
 };
 
-const initialRoute = {
-  kind: "workspace-channel",
-  teamId: "team",
-  workspaceId: "workspace",
-  threadId: "thread"
-} as const;
-const nextRoute = {
-  kind: "workspace-shared-memory",
-  teamId: "team",
-  workspaceId: "workspace"
-} as const;
-
 describe("HQ Personal Projects loading", () => {
   const containers: HTMLElement[] = [];
   const roots: Root[] = [];
@@ -48,7 +34,7 @@ describe("HQ Personal Projects loading", () => {
     for (const container of containers.splice(0)) container.remove();
   });
 
-  it("waits for startup readiness on an initial non-Personal route", async () => {
+  it("owns one readiness-gated HQ load across destination selection", async () => {
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
     const api: PersonalDesktopApi = {
       listProjects: vi.fn(async () => [loadedProject]),
@@ -67,58 +53,24 @@ describe("HQ Personal Projects loading", () => {
     const root = createRoot(container);
     roots.push(root);
 
-    const Probe = ({
-      ready,
-      route
-    }: {
-      ready: boolean;
-      route: typeof initialRoute | typeof nextRoute;
-    }) => {
-      usePersonalProjectsLoader({
-        hqEnabled: true,
-        personalMemoryReady: ready,
-        routeKind: route.kind,
-        store
-      });
-      const snapshot = useSyncExternalStore(
-        store.subscribe,
-        store.current,
-        store.current
-      );
-      const projects = snapshot.projectOrder
-        .map((id) => snapshot.projectsById.get(id))
-        .filter((project): project is DesktopProject => Boolean(project));
-
-      return (
-        <>
-          <output data-testid="projects-loaded">
-            {String(snapshot.projectsLoaded)}
-          </output>
-          <HqSidebar
-            groupsReady={snapshot.projectsLoaded}
-            loading={!snapshot.projectsLoaded}
-            onOpenSearchAndCommands={() => undefined}
-            onSelectConversation={() => undefined}
-            onSelectProject={() => undefined}
-            projects={projects}
-            route={route}
-          />
-        </>
-      );
-    };
-
     await act(async () =>
-      root.render(<Probe ready={false} route={initialRoute} />)
+      root.render(
+        <HqApplication
+          personalMemoryReady={false}
+          personalMemoryStore={store}
+        />
+      )
     );
     expect(api.listProjects).not.toHaveBeenCalled();
-    expect(
-      container.querySelector('[data-testid="projects-loaded"]')?.textContent
-    ).toBe("false");
     expect(
       container.querySelector('[data-hq-project-link="ready-project"]')
     ).toBeNull();
 
-    await act(async () => root.render(<Probe ready route={initialRoute} />));
+    await act(async () =>
+      root.render(
+        <HqApplication personalMemoryReady personalMemoryStore={store} />
+      )
+    );
     expect(api.listProjects).toHaveBeenCalledOnce();
     expect(store.current().projectsLoaded).toBe(true);
     expect(
@@ -126,7 +78,144 @@ describe("HQ Personal Projects loading", () => {
         ?.textContent
     ).toBe("Loaded after startup");
 
-    await act(async () => root.render(<Probe ready route={nextRoute} />));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-hq-project-link="ready-project"]'
+        )
+        ?.click()
+    );
+    expect(
+      container
+        .querySelector('[data-hq-route="project"]')
+        ?.getAttribute("data-hq-project-id")
+    ).toBe("ready-project");
+    expect(container.querySelector("[data-personal-route-focus]")).toBeNull();
+    expect(api.loadEventPage).not.toHaveBeenCalled();
+    expect(api.listProjects).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Search and commands"]'
+        )
+        ?.click()
+    );
+    const search = document.querySelector<HTMLInputElement>(".hq-search input");
+    expect(search).not.toBeNull();
+    expect(document.querySelector(".hq-search")?.textContent).not.toContain(
+      "Preferences"
+    );
+    expect(document.querySelector(".hq-search")?.textContent).not.toContain(
+      "Devices"
+    );
+    expect(document.querySelector(".hq-search")?.textContent).not.toContain(
+      "Settings"
+    );
+    await act(async () =>
+      search?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      )
+    );
+    expect(
+      container
+        .querySelector('[data-hq-route="project"]')
+        ?.getAttribute("data-hq-project-id")
+    ).toBe("ready-project");
+    expect(document.querySelector(".hq-search")).toBeNull();
+    expect(api.loadEventPage).not.toHaveBeenCalled();
+    const command = async (label: string) => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Search and commands"]'
+          )
+          ?.click()
+      );
+      const option = [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          '.hq-search [role="option"]'
+        )
+      ].find((item) => item.querySelector("span")?.textContent === label);
+      expect(option).toBeDefined();
+      await act(async () => option?.click());
+    };
+    await command("Toggle context panel");
+    expect(container.querySelector("[data-hq-context]")).toBeNull();
+    await command("Toggle sidebar");
+    expect(
+      container
+        .querySelector("[data-hq-shell]")
+        ?.hasAttribute("data-hq-compact")
+    ).toBe(true);
+    await command("Toggle sidebar");
+    expect(
+      container
+        .querySelector("[data-hq-shell]")
+        ?.hasAttribute("data-hq-compact")
+    ).toBe(false);
+    expect(
+      container
+        .querySelector('[data-hq-route="project"]')
+        ?.getAttribute("data-hq-project-id")
+    ).toBe("ready-project");
     expect(api.listProjects).toHaveBeenCalledOnce();
   });
+  it.each([true, false])(
+    "offers Retry after metadata failure with graph rows=%s",
+    async (hasRows) => {
+      actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+      let failMetadata = true;
+      const api: PersonalDesktopApi = {
+        listProjects: vi.fn(async () => (hasRows ? [loadedProject] : [])),
+        listProjectMetadata: vi.fn(async () => {
+          if (failMetadata) throw new Error("metadata unavailable");
+          return [];
+        }),
+        loadEventPage: vi.fn(async () => []),
+        assignSessionProject: vi.fn(async () => ({ projectId: null })),
+        updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
+        updateSessionPresentation: vi.fn(async () => {
+          throw new Error("unused");
+        }),
+        subscribe: () => () => undefined
+      };
+      const store = new PersonalMemoryStore(api);
+      const container = document.createElement("div");
+      containers.push(container);
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <HqApplication personalMemoryReady personalMemoryStore={store} />
+        )
+      );
+      expect(
+        container.querySelector("[data-hq-project-load-error]")
+      ).not.toBeNull();
+      expect(container.textContent).not.toContain("Loading Projects");
+      expect(container.textContent).not.toContain("No Projects or Chats yet");
+      expect(
+        Boolean(
+          container.querySelector('[data-hq-project-link="ready-project"]')
+        )
+      ).toBe(hasRows);
+      expect(store.current().projectsLoaded).toBe(false);
+      failMetadata = false;
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>("[data-hq-project-retry]")
+          ?.click()
+      );
+      expect(store.current().projectsLoaded).toBe(true);
+      expect(
+        container.querySelector("[data-hq-project-load-error]")
+      ).toBeNull();
+      expect(container.textContent?.includes("No Projects or Chats yet")).toBe(
+        !hasRows
+      );
+      expect(api.listProjects).toHaveBeenCalledTimes(2);
+    }
+  );
 });

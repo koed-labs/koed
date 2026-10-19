@@ -622,6 +622,7 @@ describe("desktop IPC command registry", () => {
     const get = registered.get(hqLayoutPreferencesGetChannel)!;
     const set = registered.get(hqLayoutPreferencesSetChannel)!;
     const value: HqLayoutPreferences = {
+      sidebarCollapsed: false,
       sidebarWidth: 360,
       rightColumnWidth: 512,
       rightColumnHidden: true

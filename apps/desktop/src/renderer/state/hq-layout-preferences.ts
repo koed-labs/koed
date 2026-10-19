@@ -19,6 +19,7 @@ type PendingWrite = {
 };
 
 const preferenceKeys: PreferenceKey[] = [
+  "sidebarCollapsed",
   "sidebarWidth",
   "rightColumnWidth",
   "rightColumnHidden"
@@ -35,6 +36,7 @@ export class HqLayoutPreferencesStore {
   #loadPromise: Promise<HqLayoutPreferencesSnapshot> | null = null;
   #pendingWrite: PendingWrite | null = null;
   #revisions: PreferenceRevisions = {
+    sidebarCollapsed: 0,
     sidebarWidth: 0,
     rightColumnWidth: 0,
     rightColumnHidden: 0
@@ -67,6 +69,10 @@ export class HqLayoutPreferencesStore {
     if (this.#loadPromise) return this.#loadPromise;
     this.#loadPromise = this.#load();
     return this.#loadPromise;
+  };
+
+  setSidebarCollapsed = (sidebarCollapsed: boolean): void => {
+    this.#update({ sidebarCollapsed });
   };
 
   setSidebarWidth = (sidebarWidth: number): void => {
@@ -105,6 +111,10 @@ export class HqLayoutPreferencesStore {
         : { ...defaultHqLayoutPreferences };
       const hasUserChanges = Object.values(this.#revisions).some(Boolean);
       const preferences: HqLayoutPreferences = {
+        sidebarCollapsed:
+          this.#revisions.sidebarCollapsed > 0
+            ? this.#snapshot.preferences.sidebarCollapsed
+            : loaded.sidebarCollapsed,
         sidebarWidth:
           this.#revisions.sidebarWidth > 0
             ? this.#snapshot.preferences.sidebarWidth
