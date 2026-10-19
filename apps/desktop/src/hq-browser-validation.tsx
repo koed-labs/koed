@@ -6,10 +6,156 @@ import type {
 } from "@koed/shared/personal-desktop";
 
 import { App } from "./renderer/App.js";
+import {
+  COLLABORATION_DEFAULT_LIMITS,
+  COLLABORATION_CONTRACT_VERSION,
+  collaborationSnapshotSchema
+} from "@koed/shared/collaboration";
+import type { CollaborationRendererClient } from "./collaboration/renderer-client.js";
+import type { DesktopApi, KoedServerStatus } from "./types.js";
+import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
 const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
+
+// Deterministic renderer-only Settings fixture. No native/profile command is dispatched.
+const settingsOperations: string[] = [];
+const fixtureHealthy = { state: "healthy" as const };
+const settingsStatus: KoedServerStatus = {
+  ok: true,
+  state: "healthy",
+  koedHome: "/hq-renderer-fixture",
+  generatedAt: FIXTURE_TIME,
+  runtimeMode: "developer",
+  dependencyMode: "external",
+  api: { ...fixtureHealthy, url: "http://127.0.0.1:43300" },
+  database: fixtureHealthy,
+  redis: fixtureHealthy,
+  workerQueues: fixtureHealthy,
+  embeddingService: fixtureHealthy,
+  apiToken: { ...fixtureHealthy, configured: true },
+  mcpServer: fixtureHealthy,
+  captureHook: fixtureHealthy,
+  codex: {
+    configured: false,
+    state: "not_configured",
+    message: "Codex is not set up"
+  },
+  lcmSummaryService: fixtureHealthy,
+  upstreamBackends: {
+    ...fixtureHealthy,
+    registered: 0,
+    validated: 0,
+    stale: 0,
+    failed: 0,
+    notChecked: 0
+  },
+  lastVerification: { ...fixtureHealthy, checkedAt: null }
+};
+const settingsStatusSnapshot = {
+  status: settingsStatus,
+  error: null,
+  revision: 1,
+  busyCommand: null
+};
+const settingsStatusStore = {
+  current: () => settingsStatusSnapshot,
+  subscribe: () => () => undefined,
+  refresh: async () => settingsStatus,
+  run: async () => {
+    throw new Error(
+      "HQ browser fixture never dispatches trusted profile/service mutations."
+    );
+  }
+} as unknown as DesktopStatusStore;
+const settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
+  contractVersion: COLLABORATION_CONTRACT_VERSION,
+  snapshotRevision: "hq-settings-fixture-v1",
+  generatedAt: FIXTURE_TIME,
+  connection: {
+    state: "live",
+    backendId: "hq-renderer-fixture",
+    connectedAt: FIXTURE_TIME,
+    retryAt: null,
+    reconnectAttempt: 0,
+    protocolVersion: COLLABORATION_CONTRACT_VERSION
+  },
+  limits: COLLABORATION_DEFAULT_LIMITS,
+  navigation: {
+    personalOwner: {
+      id: "00000000-0000-4000-8000-000000000109",
+      displayName: "HQ Settings User",
+      presence: "available",
+      membershipState: "enabled"
+    },
+    teamPrincipal: null,
+    personal: { memory: [], channels: [] },
+    teams: []
+  },
+  selection: { kind: "personal_memory" },
+  view: { kind: "empty" }
+});
+const settingsCollaborationClient = {
+  current: () => settingsCollaborationSnapshot,
+  load: async () => settingsCollaborationSnapshot,
+  currentSelection: () => settingsCollaborationSnapshot.selection,
+  subscribe: () => () => undefined,
+  currentRemoteUrl: () => "https://fixture.example.test",
+  connectRemote: async () => {
+    settingsOperations.push("connect");
+  },
+  reconnect: async () => {
+    settingsOperations.push("reconnect");
+  },
+  disconnect: async () => {
+    settingsOperations.push("disconnect");
+  }
+} as unknown as CollaborationRendererClient;
+let startupEnabled = false;
+let accelerationEnabled = true;
+const installSettingsDesktop = () => {
+  const originalDesktop = window.koedDesktop;
+  window.koedDesktop = {
+    ...originalDesktop,
+    launchAtStartup: {
+      get: async () => ({
+        enabled: startupEnabled,
+        supported: true,
+        status: startupEnabled ? "enabled" : "disabled"
+      }),
+      set: async (enabled: boolean) => {
+        startupEnabled = enabled;
+        settingsOperations.push(`startup:${enabled}`);
+        return {
+          enabled,
+          supported: true,
+          status: enabled ? "enabled" : "disabled"
+        };
+      }
+    },
+    hardwareAcceleration: {
+      get: async () => ({
+        enabled: accelerationEnabled,
+        managedByEnvironment: false
+      }),
+      set: async (enabled: boolean) => {
+        accelerationEnabled = enabled;
+        settingsOperations.push(`acceleration:${enabled}`);
+        return { enabled, managedByEnvironment: false };
+      }
+    }
+  } as DesktopApi;
+  (
+    window as Window & { __koedHqSettingsOperations?: string[] }
+  ).__koedHqSettingsOperations = settingsOperations;
+  return () => {
+    if (originalDesktop) window.koedDesktop = originalDesktop;
+    else delete window.koedDesktop;
+    delete (window as Window & { __koedHqSettingsOperations?: string[] })
+      .__koedHqSettingsOperations;
+  };
+};
 
 const seededData = {
   fixedAt: FIXTURE_TIME,
@@ -431,6 +577,7 @@ declare global {
 
 export function HqValidationApp() {
   const fixture = useMemo(createHqBrowserFixture, []);
+  const restoreDesktop = useMemo(installSettingsDesktop, []);
 
   useLayoutEffect(() => {
     document.documentElement.dataset.browserValidationReady = "false";
@@ -444,15 +591,18 @@ export function HqValidationApp() {
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
+      restoreDesktop();
       delete window.__koedHqFixture;
       delete document.documentElement.dataset.hqFixtureReady;
       delete document.documentElement.dataset.browserValidationReady;
     };
-  }, [fixture]);
+  }, [fixture, restoreDesktop]);
 
   return (
     <App
       hqEnabled
+      collaborationClient={settingsCollaborationClient}
+      statusStoreOverride={settingsStatusStore}
       onboardingComplete
       personalMemoryApi={sidebarPersonalMemoryApi}
       statusReadyOverride

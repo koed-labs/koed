@@ -1,3 +1,4 @@
+import { validateHqSettings } from "./validate-hq-settings.mjs";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -1056,16 +1057,29 @@ const runValidation = async () => {
     debuggerClient = window.webContents.debugger;
     debuggerClient.on("message", (_event, method, params) => {
       if (method === "Runtime.exceptionThrown") {
-        rendererExceptions.push(params.exceptionDetails?.text ?? method);
+        rendererExceptions.push(
+          params.exceptionDetails?.exception?.description ??
+            params.exceptionDetails?.text ??
+            method
+        );
       }
     });
 
+    await window.loadURL("about:blank");
+    debuggerClient.attach("1.3");
+    await debuggerClient.sendCommand("Runtime.enable");
     await window.loadFile(pagePath, {
       query: { projectsFailure: "once", view: "hq" }
     });
-    const mounted = await waitForHqFixture(window);
-    debuggerClient.attach("1.3");
-    await debuggerClient.sendCommand("Runtime.enable");
+    let mounted;
+    try {
+      mounted = await waitForHqFixture(window);
+    } catch (cause) {
+      throw new Error(
+        `${cause instanceof Error ? cause.message : String(cause)}\nRenderer errors: ${JSON.stringify(rendererErrors)}\nRenderer exceptions: ${JSON.stringify(rendererExceptions)}`,
+        { cause }
+      );
+    }
     await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: 1280,
       height: 800,
@@ -1619,7 +1633,7 @@ const runValidation = async () => {
           .executeJavaScript(`(() => {
           const dialog = document.querySelector('[data-hq-sidebar-dialog]');
           dialog.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Tab', shiftKey: true }));
-          const shiftTabTarget = document.activeElement?.getAttribute('data-hq-sidebar-group') ?? null;
+          const shiftTabTarget = document.activeElement?.matches('button.hq-account') ? 'account' : document.activeElement?.getAttribute('data-hq-sidebar-group') ?? null;
           dialog.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Tab' }));
           return {
             shiftTabTarget,
@@ -1628,7 +1642,7 @@ const runValidation = async () => {
           };
         })()`);
         assert.deepEqual(foldedFocusWrap, {
-          shiftTabTarget: "just-me",
+          shiftTabTarget: "account",
           tabTarget: "Close project navigation",
           hiddenChildFocused: false
         });
@@ -1845,6 +1859,13 @@ const runValidation = async () => {
       focusRestored: true
     });
 
+    await runAssertion(
+      "HQ109 Settings integration (approved compound IDs remain SKIP)",
+      async () => {
+        await validateHqSettings({ window, debuggerClient, repoRoot, delay });
+      }
+    );
+
     const fixture = await window.webContents.executeJavaScript(`(() => {
       const handle = window.__koedHqFixture;
       const snapshot = handle.snapshot();
@@ -1972,7 +1993,7 @@ const runValidation = async () => {
     });
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();
