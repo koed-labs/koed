@@ -227,10 +227,12 @@ cannot be requested alone or used as a generic way to change a Personal
 record. The only Bundled parent actions are
 `workspace_project.delete`, `workspace_project.member_remove`,
 `workspace_project.leave`, `project_source.team_metadata.delete`,
-`team.leave`, `team.member.disable`, and manager-only
-`team.workspace.access_update`; the last retains its existing manager-only
-scope and is not a member self-leave path. Standalone freeze remains Native
-review for the exact source owner, and restore is never a Bundled parent. Both
+`team.leave`, and `team.member.disable`. `team.workspace.access_update` is an
+eligible parent only for its existing manager-authorized Step-up disablement
+path; access expansion and Native-review `write`-to-`read` reduction are not
+eligible. The action remains manager-only and is not a member self-leave path.
+Standalone freeze remains Native review for the exact source owner, and restore
+is never a Bundled parent. Both
 freeze actions are target behavior; current runtime routes are not implemented.
 
 For an attached continuous Conversation Source Access capability, the same
@@ -261,7 +263,9 @@ frontier, archives the Project Thread, and stops accepting Project progress.
 It soft-deletes Team Work Items, Project Source metadata, and Decks. It does
 not archive the Workspace or revoke grants. D9 requires already-published
 Team Memory to remain at Team level for members who retain current
-authorization; later revisions are excluded.
+authorization; later revisions are excluded. Tombstoning invalidates
+Project-specific links and access; it does not disable remaining members'
+existing Workspace Access to retained Team Memory.
 
 The Team operation can finish while member Desktops are offline. It does not
 read or write their Personal databases. It tombstones the Team-authoritative
@@ -317,13 +321,15 @@ invalidates only that member's Project link, freezes only their affected
 grants/frontiers, stops accepting their progress, and denies their Project-job
 dispatch. If an owned Workspace Project is removed, complete the Team-authoritative
 D9 effects for every member before deleting Team Project records: tombstone
-the Workspace Project; invalidate every member's Team Project link and
-access; freeze affected grants and attached continuous source frontiers;
-archive the Project Thread; and stop accepting Project progress and job
-dispatch. The Team Backend can finish this cleanup while member Desktops are
+the Workspace Project; invalidate every member's Team Project link and Project-specific
+access; freeze affected grants and attached continuous source frontiers; and
+archive the Project Thread. Stop accepting Project progress and job dispatch.
+The Team Backend can finish this cleanup while member Desktops are
 offline and does not read or write Personal databases. After Team cleanup,
-disable affected Workspace Access before disabling Team Membership, and disable
-Membership last; do not wait for Personal reconciliation. On later reconciliation, each member's own Desktop
+disable only the departing member's affected Workspace Access before disabling
+that member's Team Membership last; do not wait for Personal reconciliation.
+Remaining members retain their existing Workspace Access to retained Team
+Memory. On later reconciliation, each member's own Desktop
 clears that member's private Personal Project mapping, detaches only that
 member's Conversations to **Just me**, and pauses that member's Project
 Scheduled Jobs. Interruption leaves records and membership recoverable for
