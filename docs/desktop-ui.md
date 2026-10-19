@@ -12,6 +12,11 @@ commands, sharing, connection settings, and cached Team routes from navigation
 history. Retained Team data remains stored behind its existing authority and
 lifecycle boundaries; disabling the UI does not delete it.
 
+The experimental HQ shell is an empty renderer scaffold. It is off by default
+and appears only when `KOED_DESKTOP_HQ_ENABLED` is exactly `true`, after
+onboarding and local setup. This flag selects the Desktop shell; it does not
+change Team authorization or collaboration settings.
+
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).

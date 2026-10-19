@@ -44,6 +44,7 @@ function DesktopRoot() {
         setOnboardingComplete(true);
       }}
       onboardingComplete={onboardingComplete}
+      hqEnabled={window.koedDesktop?.featureFlags?.hqEnabled ?? false}
       teamCollaborationEnabled={
         window.koedDesktop?.featureFlags?.teamCollaborationEnabled ?? false
       }
