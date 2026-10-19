@@ -39,6 +39,10 @@ import {
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
 import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
+import {
+  createLocalProjectAssociationService,
+  type LocalProjectAssociationService
+} from "./local-project-association.js";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
 import { resolveCodexAppServerBinary } from "./codex-app-server-runner.js";
@@ -717,6 +721,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     }
   >();
   private readonly metrics: WatcherSnapshot;
+  private readonly localProjectAssociation: LocalProjectAssociationService | null;
+  private readonly associationRecoveries = new Set<Promise<void>>();
   private failureCount = 0;
   private scanPromise: Promise<void> | null = null;
   private scanRequested = false;
@@ -733,12 +739,22 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     client: CodexTranscriptWatcherClient,
     config: CodexTranscriptWatcherConfig,
     historicalObserver?: CodexHistoricalCandidateObserver,
-    historyMetadataReader?: CodexHistoryMetadataReader
+    historyMetadataReader?: CodexHistoryMetadataReader,
+    localProjectAssociation?: LocalProjectAssociationService
   ) {
     this.client = client;
     this.config = config;
     this.historicalObserver = historicalObserver;
     this.historyMetadataReader = historyMetadataReader;
+    this.localProjectAssociation =
+      localProjectAssociation ??
+      createLocalProjectAssociationService({
+        koedHome: config.koedHome,
+        captureClient:
+          client instanceof MemoryApiClient
+            ? { apiUrl: client.config.apiUrl, apiToken: client.config.apiToken }
+            : null
+      });
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
     this.baselineFileFrontiers = activationState.baselineFileFrontiers;
@@ -827,11 +843,13 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.openTurnPolls.clear();
     for (const watcher of this.watchers) watcher.close();
     await this.scanPromise;
+    await Promise.allSettled(this.associationRecoveries);
     await this.historyMetadataReader?.close();
     for (const reader of this.historyMetadataReaders.values())
       await reader.close();
     this.historyMetadataReaders.clear();
     await this.compressedReader.close();
+    await this.localProjectAssociation?.close();
     this.discovery.close();
     this.metrics.state = "stopped";
     this.writeStatus();
@@ -875,6 +893,9 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   }
 
   private async runScan(): Promise<void> {
+    void this.localProjectAssociation?.replay().catch((error: unknown) => {
+      this.recordFailure(error);
+    });
     this.historyMetadataReads.clear();
     this.historyMetadataFailures.clear();
     this.metrics.scans += 1;
@@ -1149,6 +1170,49 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
               KOED_HOME: this.config.koedHome
             })
           : null;
+        const recoverQuiescentAssociation = (): void => {
+          if (!sourceProject || !this.localProjectAssociation) return;
+          const recovery = (async () => {
+            const artifact = await lookupArtifact(
+              this.client,
+              identity.sessionId
+            );
+            if (
+              !artifact ||
+              artifact.externalSessionId !== identity.sessionId ||
+              artifact.providerCursorOffset < boundary
+            )
+              return;
+            if (
+              this.localProjectAssociation?.isCompleted({
+                sourceKind: "codex",
+                externalSessionId: identity.sessionId,
+                localProjectId: sourceProject.localProjectId,
+                artifactId: artifact.id,
+                providerCursorOffset: artifact.providerCursorOffset
+              })
+            )
+              return;
+            await this.localProjectAssociation?.prepare({
+              sourceKind: "codex",
+              externalSessionId: identity.sessionId,
+              sourceProjectPath,
+              localProjectId: sourceProject.localProjectId,
+              requiredSourceOffset: boundary
+            });
+            await this.localProjectAssociation?.complete(
+              "codex",
+              identity.sessionId,
+              artifact
+            );
+          })();
+          this.associationRecoveries.add(recovery);
+          void recovery
+            .catch((error: unknown) => this.recordFailure(error))
+            .finally(() => {
+              this.associationRecoveries.delete(recovery);
+            });
+        };
         if (observeHistorical) {
           const sourceStartedAt = identity.context.transcriptMetadata.timestamp;
           const sourceStartedBeforeActivation =
@@ -1219,6 +1283,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           baselineFrontier !== undefined &&
           boundary <= (baselineFrontier ?? 0)
         ) {
+          recoverQuiescentAssociation();
           return;
         }
         const turnBoundary = transcriptPath.endsWith(".jsonl.zst")
@@ -1238,6 +1303,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           this.scheduleTurnBoundarySettle();
         }
         if (sourceUnchanged && confirmedTurnBoundary === undefined) {
+          recoverQuiescentAssociation();
           return;
         }
         if (this.activatedAt === null) {
@@ -1288,6 +1354,20 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           !this.config.futureCaptureOnly &&
           !existingArtifact &&
           historicalSelection?.frontierOffset === liveStartOffset;
+        let associationPreparationError: unknown;
+        if (sourceProject) {
+          try {
+            await this.localProjectAssociation?.prepare({
+              sourceKind: "codex",
+              externalSessionId: identity.sessionId,
+              sourceProjectPath,
+              localProjectId: sourceProject.localProjectId,
+              requiredSourceOffset: boundary
+            });
+          } catch (error) {
+            associationPreparationError = error;
+          }
+        }
         const result = await ingestCodexTranscriptJournal({
           client: this.client,
           sourceSession: this.sourceSessionRegistration(
@@ -1311,7 +1391,27 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
                 turnBoundarySourceOffset: confirmedTurnBoundary.sourceOffset
               }
             : {})
+        }).catch(async (error: unknown) => {
+          if (
+            error instanceof MemoryApiError &&
+            error.status === 409 &&
+            /policy/i.test(error.message)
+          ) {
+            await this.localProjectAssociation
+              ?.discardBlocked("codex", identity.sessionId)
+              .catch((associationError: unknown) =>
+                this.recordFailure(associationError)
+              );
+          }
+          throw error;
         });
+        if (associationPreparationError)
+          this.recordFailure(associationPreparationError);
+        await this.localProjectAssociation
+          ?.complete("codex", identity.sessionId, result.artifact)
+          .catch((associationError: unknown) =>
+            this.recordFailure(associationError)
+          );
         if (confirmedTurnBoundary !== undefined && result.turnBoundaryHandled) {
           acknowledgeCodexTranscriptTurnBoundary(
             { KOED_HOME: this.config.koedHome },
@@ -1734,13 +1834,15 @@ export const startCodexTranscriptWatcher = (
   client: CodexTranscriptWatcherClient = new MemoryApiClient(defaultConfig()),
   config = resolveCodexTranscriptWatcherConfig(),
   historicalObserver?: CodexHistoricalCandidateObserver,
-  historyMetadataReader?: CodexHistoryMetadataReader
+  historyMetadataReader?: CodexHistoryMetadataReader,
+  localProjectAssociation?: LocalProjectAssociationService
 ): CodexTranscriptWatcherHandle => {
   const watcher = new CodexTranscriptWatcher(
     client,
     config,
     historicalObserver,
-    historyMetadataReader
+    historyMetadataReader,
+    localProjectAssociation
   );
   watcher.start();
   return watcher;

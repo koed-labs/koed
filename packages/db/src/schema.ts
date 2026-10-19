@@ -476,6 +476,93 @@ export const users = pgTable("users", {
   deletionReason: text("deletion_reason")
 });
 
+export const personalProjectLifecycle = pgEnum("personal_project_lifecycle", [
+  "active",
+  "deleted"
+]);
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    folderPath: text("folder_path"),
+    key: text("key").notNull(),
+    lifecycle: personalProjectLifecycle("lifecycle")
+      .notNull()
+      .default("active"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deleteBatchId: uuid("delete_batch_id"),
+    teamBackendId: text("team_backend_id"),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    workspaceProjectId: uuid("workspace_project_id"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    version: integer("version").notNull().default(1)
+  },
+  (table) => [
+    unique("projects_owner_id_unique").on(table.ownerUserId, table.id),
+    unique("projects_owner_key_unique").on(table.ownerUserId, table.key),
+    check("projects_name_not_blank", sql`length(trim(${table.name})) > 0`),
+    check("projects_key_not_blank", sql`length(trim(${table.key})) > 0`),
+    check("projects_version_positive", sql`${table.version} > 0`),
+    check(
+      "projects_deleted_shape_check",
+      sql`(${table.lifecycle} = 'active' and ${table.deletedAt} is null) or (${table.lifecycle} = 'deleted' and ${table.deletedAt} is not null)`
+    )
+  ]
+);
+
+export const projectLocalContexts = pgTable(
+  "project_local_contexts",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    projectId: uuid("project_id"),
+    deviceId: uuid("device_id").notNull(),
+    localProjectId: text("local_project_id").notNull(),
+    commonDirHash: text("common_dir_hash"),
+    gitDirHash: text("git_dir_hash"),
+    folderHash: text("folder_hash"),
+    associationState: text("association_state").notNull().default("resolved"),
+    lastConfirmationVersion: integer("last_confirmation_version")
+      .notNull()
+      .default(0),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_local_contexts_owner_project_fk"
+    }),
+    unique("project_local_contexts_owner_device_local_unique").on(
+      table.ownerUserId,
+      table.deviceId,
+      table.localProjectId
+    ),
+    index("project_local_contexts_owner_group_idx").on(
+      table.ownerUserId,
+      table.deviceId,
+      table.commonDirHash
+    ),
+    check(
+      "project_local_contexts_association_shape_check",
+      sql`(${table.associationState} = 'resolved' and ${table.projectId} is not null) or (${table.associationState} = 'unresolved' and ${table.projectId} is null)`
+    )
+  ]
+);
+
 export const externalAuthIdentities = pgTable(
   "external_auth_identities",
   {
@@ -961,6 +1048,10 @@ export const sessions = pgTable(
     projectOverrideByUserId: uuid("project_override_by_user_id").references(
       () => users.id
     ),
+    automaticPersonalProjectId: uuid("automatic_personal_project_id"),
+    projectOverridePersonalProjectId: uuid(
+      "project_override_personal_project_id"
+    ),
     sourceKind: text("source_kind"),
     sourceAdapterVersion: text("source_adapter_version"),
     sourceFingerprint: text("source_fingerprint"),
@@ -1010,6 +1101,16 @@ export const sessions = pgTable(
       table.ownerUserId,
       table.logicalSessionId
     ),
+    foreignKey({
+      columns: [table.ownerUserId, table.automaticPersonalProjectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "sessions_owner_automatic_personal_project_fk"
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectOverridePersonalProjectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "sessions_owner_override_personal_project_fk"
+    }),
     uniqueIndex("sessions_idempotency_key_unique")
       .on(table.ownerUserId, table.visibility, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),

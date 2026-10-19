@@ -15,6 +15,12 @@ create or authorize Shared Memory.
 - Project metadata config stores no secrets. It stores local discovery facts
   under `KOED_HOME/config/projects.json`, including raw paths for local-only
   display and salted path hashes for matching.
+- The first-class Personal Project association and its retained checkout
+  history are separate from this recall-routing mapping. The first-party
+  Codex, Claude Code, and Pi transcript watchers keep raw Git-directory and prior-folder evidence, confirmation
+  choices, and retry records in `KOED_HOME/config/project-associations.json`.
+  The Personal database stores owner/device-scoped opaque context identities.
+  Neither this file nor paired-device alias grouping grants Team access.
 - Project mapping config stores no secrets. It stores Project root, optional
   device-local Project id, Team Workspace id, optional backend id, and timestamps
   under `KOED_HOME/config/project-team-workspaces.json`.

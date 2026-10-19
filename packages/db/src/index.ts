@@ -1,4 +1,10 @@
 export { createAuditRepository } from "./audit-repository.js";
+export {
+  createProjectRepository,
+  type ProjectRepository,
+  type ProjectAssociationResult,
+  type VerifiedLocalProjectContext
+} from "./project-repository.js";
 export { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
 export type {
   RemoteMcpOAuthStore,

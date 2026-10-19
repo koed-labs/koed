@@ -29,6 +29,7 @@ import {
   type CodexTranscriptWatcherClient,
   type CodexTranscriptWatcherConfig
 } from "../src/codex-transcript-watcher.js";
+import type { LocalProjectAssociationService } from "../src/local-project-association.js";
 import { signalCodexTranscriptWatcher } from "../src/codex-transcript-watcher-signal.js";
 import type { CodexHistoryMetadataReader } from "../src/codex-history-metadata.js";
 import * as sharedRewritePolicy from "@koed/shared";
@@ -60,13 +61,15 @@ const trackedWatcher = (
   client: CodexTranscriptWatcherClient,
   config: CodexTranscriptWatcherConfig,
   historicalObserver?: CodexHistoricalCandidateObserver,
-  historyMetadataReader?: CodexHistoryMetadataReader
+  historyMetadataReader?: CodexHistoryMetadataReader,
+  localProjectAssociation?: LocalProjectAssociationService
 ) => {
   const watcher = startCodexTranscriptWatcher(
     client,
     config,
     historicalObserver,
-    historyMetadataReader
+    historyMetadataReader,
+    localProjectAssociation
   );
   watcherHandles.push(watcher);
   return watcher;
@@ -189,7 +192,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
       this.policyPaused ||
       this.policyVisibility !== "personal"
     ) {
-      throw new Error("capture_policy_blocked");
+      throw new MemoryApiError("capture_policy_blocked", { status: 409 });
     }
     const existing = this.artifacts.get(externalSessionId);
     if (existing) {
@@ -308,7 +311,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
     )!;
     expect(parent.closureHash).toBe(input.expectedParentClosureHash);
     if (this.captureState !== "enabled" || this.policyPaused)
-      throw new Error("capture_policy_blocked");
+      throw new MemoryApiError("capture_policy_blocked", { status: 409 });
     const frontier = input.sourceRewrite!;
     const artifact: Artifact = {
       ...parent,
@@ -435,6 +438,100 @@ const transcriptPath = (root: string, name = "rollout-test.jsonl"): string => {
 };
 
 describe("Codex Transcript Watcher source journal", () => {
+  it("associates accepted capture, recovers unchanged source, and discards policy-blocked capture", async () => {
+    const root = temporaryDirectory();
+    const projectRoot = path.join(root, "local-project");
+    mkdirSync(projectRoot, { recursive: true });
+    const config = watcherConfig(root);
+    mkdirSync(path.join(config.koedHome, "config"), { recursive: true });
+    writeFileSync(
+      path.join(config.koedHome, "config", "projects.json"),
+      JSON.stringify({
+        projects: [
+          {
+            localProjectId: "lp_verified_local",
+            displayName: "Local Project",
+            path: { cwd: projectRoot, projectRoot: null }
+          }
+        ]
+      })
+    );
+    const bridge: LocalProjectAssociationService = {
+      prepare: vi.fn(async () => true),
+      complete: vi.fn(async () => undefined),
+      discardBlocked: vi.fn(async () => undefined),
+      replay: vi.fn(async () => undefined),
+      isCompleted: vi.fn(() => false),
+      confirm: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined)
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      config,
+      undefined,
+      undefined,
+      bridge
+    );
+    await watcher.scanNow();
+    const accepted = transcriptPath(root, "rollout-accepted.jsonl");
+    writeFileSync(
+      accepted,
+      [
+        sessionRecord("accepted-local", projectRoot),
+        userRecord("accepted prompt")
+      ]
+        .map(line)
+        .join("")
+    );
+    await watcher.scanNow();
+    expect(bridge.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalSessionId: "accepted-local",
+        localProjectId: "lp_verified_local"
+      })
+    );
+    expect(bridge.complete).toHaveBeenCalledWith(
+      "codex",
+      "accepted-local",
+      expect.objectContaining({ externalSessionId: "accepted-local" })
+    );
+    const completedBefore = vi.mocked(bridge.complete).mock.calls.length;
+    await watcher.scanNow();
+    await waitFor(
+      () => vi.mocked(bridge.complete).mock.calls.length > completedBefore
+    );
+    vi.mocked(bridge.isCompleted).mockReturnValue(true);
+    const exactCompleted = vi.mocked(bridge.complete).mock.calls.length;
+    const exactPrepared = vi.mocked(bridge.prepare).mock.calls.length;
+    await watcher.scanNow();
+    expect(bridge.prepare).toHaveBeenCalledTimes(exactPrepared);
+    expect(bridge.complete).toHaveBeenCalledTimes(exactCompleted);
+    vi.mocked(bridge.isCompleted).mockReturnValue(false);
+
+    client.policyPaused = true;
+    const blocked = transcriptPath(root, "rollout-blocked.jsonl");
+    writeFileSync(
+      blocked,
+      [
+        sessionRecord("blocked-local", projectRoot),
+        userRecord("blocked prompt")
+      ]
+        .map(line)
+        .join("")
+    );
+    await watcher.scanNow();
+    expect(bridge.discardBlocked).toHaveBeenCalledWith(
+      "codex",
+      "blocked-local"
+    );
+    expect(
+      vi
+        .mocked(bridge.complete)
+        .mock.calls.some(([, id]) => id === "blocked-local")
+    ).toBe(false);
+  });
+
   it("preserves captured Memory and old evidence when a verified native migration rewrites the source", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();
@@ -2137,11 +2234,20 @@ describe("Codex Transcript Watcher source journal", () => {
 
   it("prioritizes a newly created transcript from its filesystem event", async () => {
     const root = temporaryDirectory();
-    mkdirSync(path.join(root, "codex", "sessions"), { recursive: true });
+    const sessionDirectory = path.join(
+      root,
+      "codex",
+      "sessions",
+      "2026",
+      "01",
+      "01"
+    );
+    mkdirSync(sessionDirectory, { recursive: true });
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(
       client,
       watcherConfig(root, {
+        roots: [sessionDirectory],
         debounceMs: 5,
         maxEntriesPerScan: 1,
         maxFilesPerScan: 1
@@ -2168,7 +2274,14 @@ describe("Codex Transcript Watcher source journal", () => {
         line(userRecord("prioritize this live session"))
     );
 
-    await waitFor(() => client.artifacts.has("filesystem-live"), 5_000);
+    await waitFor(
+      () =>
+        client.artifacts.has("filesystem-live") &&
+        client.itemBatches
+          .flat()
+          .some((item) => item.rawText === "prioritize this live session"),
+      5_000
+    );
     expect(
       client.itemBatches
         .flat()

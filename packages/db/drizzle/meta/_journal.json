@@ -330,6 +330,13 @@
       "when": 1792378041824,
       "tag": "0046_hq706_message_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792441595936,
+      "tag": "0047_freezing_ken_ellis",
+      "breakpoints": true
     }
   ]
 }

@@ -14,10 +14,19 @@ import os from "node:os";
 import path from "node:path";
 
 import { MemoryApiClient, defaultConfig } from "./index.js";
+import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
 import {
   claudeProjectsHome,
-  discoverClaudeTranscriptSignals
+  discoverClaudeTranscriptSignals,
+  transcriptIdentity,
+  verifiedTranscriptPath
 } from "./claude-transcript-discovery.js";
+import { lookupClaudeArtifact } from "./claude-transcript-source.js";
+import {
+  createLocalProjectAssociationService,
+  type LocalProjectAssociationService
+} from "./local-project-association.js";
+import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 import { isTransientWatcherFilesystemError } from "./claude-transcript-source.js";
 import { processClaudeTranscriptSignal } from "./claude-transcript-capture.js";
 import {
@@ -87,13 +96,91 @@ const boundedInteger = (
 
 export const startClaudeTranscriptWatcher = (
   client: MemoryApiClient = new MemoryApiClient(defaultConfig()),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  associationOverride?: LocalProjectAssociationService
 ): ClaudeTranscriptWatcherHandle => {
+  const home = path.resolve(env.KOED_HOME ?? path.join(os.homedir(), ".koed"));
+  const association =
+    associationOverride ??
+    createLocalProjectAssociationService({
+      koedHome: home,
+      captureClient:
+        client instanceof MemoryApiClient
+          ? { apiUrl: client.config.apiUrl, apiToken: client.config.apiToken }
+          : null,
+      environment: env
+    });
+  const associateAccepted = async (
+    signal: ClaudeTranscriptWatcherSignal
+  ): Promise<void> => {
+    if (!association) return;
+    // The signal file can be rewritten. Only the transcript's own identity is
+    // eligible for a locally discovered Project association.
+    const target = await verifiedTranscriptPath(
+      signal.transcriptPath,
+      signal.sourceSessionId,
+      env
+    );
+    const identity = await transcriptIdentity(target);
+    if (
+      !identity ||
+      identity.sessionId !== signal.sourceSessionId ||
+      identity.cwd !== signal.cwd
+    )
+      return;
+    const project = readProjectMetadataForRoot(identity.cwd, env);
+    if (!project) return;
+    const artifact = await lookupClaudeArtifact(
+      client,
+      identity.sessionId,
+      "main"
+    );
+    const boundary = completeTranscriptBoundary(target);
+    if (!artifact?.sessionId || artifact.providerCursorOffset < boundary)
+      return;
+    if (
+      association.isCompleted({
+        sourceKind: "claude-code",
+        externalSessionId: identity.sessionId,
+        localProjectId: project.localProjectId,
+        artifactId: artifact.id,
+        providerCursorOffset: artifact.providerCursorOffset
+      })
+    )
+      return;
+    await association.prepare({
+      sourceKind: "claude-code",
+      externalSessionId: identity.sessionId,
+      sourceProjectPath: identity.cwd,
+      localProjectId: project.localProjectId,
+      requiredSourceOffset: boundary
+    });
+    await association.complete("claude-code", identity.sessionId, {
+      id: artifact.id,
+      sessionId: artifact.sessionId,
+      externalSessionId: identity.sessionId,
+      providerCursorOffset: artifact.providerCursorOffset
+    });
+  };
   const state = loadState(env);
   persistState(env, state);
   const directory = claudeWatcherSignalDirectory(env);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   let running: Promise<void> | null = null;
+  let replayTask: Promise<void> | null = null;
+  const launchReplay = (): void => {
+    if (!association || replayTask) return;
+    replayTask = Promise.resolve()
+      .then(() => association.replay())
+      .catch((error: unknown) => {
+        console.error(
+          `Claude Project association retry failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      })
+      .finally(() => {
+        replayTask = null;
+      });
+  };
   let debounceTimer: NodeJS.Timeout | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
   let retryAttempt = 0;
@@ -139,6 +226,7 @@ export const startClaudeTranscriptWatcher = (
     if (running) return running;
     let failed = false;
     running = (async () => {
+      launchReplay();
       do {
         const includeDiscovery = discoverPending;
         discoverPending = false;
@@ -172,21 +260,38 @@ export const startClaudeTranscriptWatcher = (
         if (includeDiscovery) {
           for (const signal of await discoverClaudeTranscriptSignals(
             state,
-            env
+            env,
+            Boolean(association)
           )) {
             signalled.push({ signal });
           }
         }
         for (const pending of signalled) {
           try {
-            await processClaudeTranscriptSignal(
-              client,
-              state,
-              pending.signal,
-              env
-            );
+            const unchanged =
+              !pending.target &&
+              association &&
+              state.cursors[`${pending.signal.sourceSessionId}\u0000main`] &&
+              (await lstat(pending.signal.transcriptPath)).mtimeMs <=
+                Date.parse(
+                  state.cursors[`${pending.signal.sourceSessionId}\u0000main`]!
+                    .updatedAt
+                );
+            if (!unchanged) {
+              await processClaudeTranscriptSignal(
+                client,
+                state,
+                pending.signal,
+                env
+              );
+            }
             persistState(env, state);
             if (pending.target) unlinkSync(pending.target);
+            await associateAccepted(pending.signal).catch((error: unknown) => {
+              console.error(
+                `Claude Project association will retry: ${error instanceof Error ? error.message : String(error)}`
+              );
+            });
           } catch (error) {
             failed = true;
             retryNeedsDiscovery ||= pending.target === undefined;
@@ -224,7 +329,7 @@ export const startClaudeTranscriptWatcher = (
       scheduleRetry();
     });
   };
-  const scanNow = (): Promise<void> => scan(false);
+  const scanNow = (): Promise<void> => scan(Boolean(association));
   const scheduleScan = (discover: boolean): void => {
     if (stopped) return;
     discoverPending ||= discover;
@@ -364,6 +469,8 @@ export const startClaudeTranscriptWatcher = (
       nestedWatchers.forEach((watcher) => watcher.close());
       await running;
       await refreshRunning;
+      await replayTask;
+      await association?.close();
     }
   };
 };

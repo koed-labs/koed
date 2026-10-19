@@ -1,10 +1,8 @@
 # Personal Project Identity
 
-Status: Target behavior under [ADR 0059](./adr/0059-first-class-personal-projects.md).
-This document separates existing discovery behavior from the target Personal
-Project contract; it does not claim that first-class Project storage,
-durable association, override migration, or HQ uniqueness is already
-implemented.
+Status: First-class storage and local capture association implemented under
+[ADR 0059](./adr/0059-first-class-personal-projects.md). The Projects API,
+HQ Conversation and shared Project links remain later work.
 
 ## Purpose
 
@@ -44,9 +42,39 @@ The separate `KOED_HOME/config/project-team-workspaces.json` configuration
 supplies explicit MCP recall routing; it does not create a shared Project or
 grant Team access. See [Team Workspace Project mapping](./team-workspace-project-mapping.md).
 
-Today, session metadata carries automatic Project context and explicit User
-overrides. First-class Personal Project records and their durable local-context
-association are target behavior, not part of current storage.
+Session metadata still carries automatic Project context and explicit User
+overrides for older clients. The Personal database also stores an owner-scoped
+Project identity and nullable Captured Session assignments. The first-party
+Codex, Claude Code, and Pi transcript watchers associate verified local
+contexts after their source journals accept a capture. Other capture paths
+continue to create Personal Memory without an implicit first-class Project
+assignment.
+
+The local Watcher derives Git facts from a path already present in the
+device-local discovery catalog. It verifies the catalog's salted local ID,
+checkout Git directory, common directory and Git worktree membership itself.
+The Personal API Token capture request cannot select a Project or cause Git
+inspection through its Project metadata or working directory. The Watcher
+uses the already-provisioned local database connection only when running for
+the configured local Personal owner, healthy host-bound device identity and
+loopback local backend. The Watcher's capture client must use that exact local
+backend URL and provisioned local API token. Raw checkout paths, Git directories, prior folders,
+confirmation choices and pending association work stay under `KOED_HOME`.
+The Personal database receives opaque local identity hashes and IDs.
+
+The Codex Watcher records pending association work before capture. Claude Code
+and Pi recover accepted captures from their locally verified transcript identity
+and source journal. All three retry durable pending work on watcher scans, even
+without later transcript growth. They associate only a Session whose exact
+source journal artifact reached the accepted capture frontier for that owner.
+One-time confirmation versions are bound to the local context and consumed
+after resolution, so delayed replay cannot reuse an earlier choice. Capture
+continues if identity resolution or the database is temporarily unavailable.
+Missing local provenance, remote backends and unconfirmed contexts leave the
+new Session in Personal Memory without a first-class Project assignment.
+Operators can review a deduplicated, bounded ambiguous-override count in the
+local MCP server log under `personal_project_legacy_override_ambiguous`. The
+diagnostic contains no owner, source, or path value.
 
 ## Target Identity And Association
 

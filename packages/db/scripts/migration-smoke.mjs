@@ -72,9 +72,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0046_hq706_message_contract";
+const expectedLatestMigrationTag = "0047_freezing_ken_ellis";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 46;
+const expectedLatestMigrationIndex = 47;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1370,6 +1370,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preProjectsFolder = await createMigrationSlice(journal, 46, {
+    folderPrefix: "koed-pre-personal-projects-"
+  });
+  temporaryFolders.add(preProjectsFolder);
+  const preProjectsRecords = await migrationRecords(
+    preProjectsFolder,
+    journal.entries.slice(0, 47)
+  );
   const pre0020Records = await migrationRecords(
     pre0020Folder,
     journal.entries.slice(0, pre0020LastIndex + 1)
@@ -2247,6 +2255,92 @@ try {
       await stableFixtureFingerprint(pool, oldShapeFixture);
       await assertUpgradedStableDefaults(pool, oldShapeFixture);
       await assertMigrationLedger(pool, through0020Records);
+    });
+  });
+
+  await runScenario("personal-projects-upgrade-and-rollback", async () => {
+    const target = await createDisposableDatabase("personal_projects");
+    const ownerId = randomUUID();
+    const sessionId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preProjectsFolder });
+      await assertMigrationLedger(pool, preProjectsRecords);
+      await pool.query("insert into users (id,email) values ($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into sessions
+           (id,owner_user_id,source_runtime,capture_method,external_session_id,
+            automatic_project_id,automatic_project_name,automatic_project_detected_at)
+         values ($1,$2,'codex-cli','api','hq201-old-session','lp_previous','Previous',now())`,
+        [sessionId, ownerId]
+      );
+    });
+    const interrupted = await createMigrationSlice(journal, 47, {
+      folderPrefix: "koed-personal-projects-interrupted-",
+      transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+    });
+    temporaryFolders.add(interrupted);
+    await withPool(target.url, async (pool) => {
+      let failed = false;
+      try {
+        await runDbMigrations(pool, { migrationsFolder: interrupted });
+      } catch {
+        failed = true;
+      }
+      if (!failed)
+        throw new Error(
+          "Personal Project migration rollback probe unexpectedly succeeded"
+        );
+      const rollback = await pool.query(
+        `select to_regclass('public.projects')::text as projects,
+                to_regclass('public.project_local_contexts')::text as contexts,
+                exists (select 1 from information_schema.columns
+                         where table_name='sessions' and column_name='automatic_personal_project_id') as added_column`
+      );
+      if (
+        rollback.rows[0]?.projects !== null ||
+        rollback.rows[0]?.contexts !== null ||
+        rollback.rows[0]?.added_column !== false
+      ) {
+        throw new Error(
+          "Interrupted Personal Project migration left partial schema"
+        );
+      }
+      await assertMigrationLedger(pool, preProjectsRecords);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const retained = await pool.query(
+        `select automatic_project_id, automatic_personal_project_id from sessions where id=$1`,
+        [sessionId]
+      );
+      if (
+        retained.rows[0]?.automatic_project_id !== "lp_previous" ||
+        retained.rows[0]?.automatic_personal_project_id !== null
+      ) {
+        throw new Error(
+          "Personal Project upgrade changed retained Session assignment"
+        );
+      }
+      const projectId = randomUUID();
+      await pool.query(
+        `insert into projects (id,owner_user_id,name,key) values ($1,$2,'Same name','SAME')`,
+        [projectId, ownerId]
+      );
+      await pool.query("begin");
+      await pool.query(
+        `update sessions set automatic_personal_project_id=$2 where id=$1`,
+        [sessionId, projectId]
+      );
+      await pool.query("rollback");
+      const reverted = await pool.query(
+        `select automatic_personal_project_id from sessions where id=$1`,
+        [sessionId]
+      );
+      if (reverted.rows[0]?.automatic_personal_project_id !== null) {
+        throw new Error("Personal Project assignment did not roll back");
+      }
     });
   });
 

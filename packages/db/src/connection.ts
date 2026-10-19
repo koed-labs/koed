@@ -7,6 +7,8 @@ const { Pool } = pg;
 
 export interface DbConfig {
   connectionString?: string;
+  connectionTimeoutMillis?: number;
+  queryTimeoutMillis?: number;
   onPoolError?: (error: Error) => void;
 }
 
@@ -15,7 +17,13 @@ export type KoedDb = NodePgDatabase<typeof schema>;
 
 export const createDbPool = (config: DbConfig = {}): pg.Pool => {
   const pool = new Pool({
-    connectionString: config.connectionString ?? env("DATABASE_URL")
+    connectionString: config.connectionString ?? env("DATABASE_URL"),
+    ...(config.connectionTimeoutMillis !== undefined
+      ? { connectionTimeoutMillis: config.connectionTimeoutMillis }
+      : {}),
+    ...(config.queryTimeoutMillis !== undefined
+      ? { query_timeout: config.queryTimeoutMillis }
+      : {})
   });
   const reportedErrors = new WeakSet<object>();
   const reportError = (error: Error) => {

@@ -88,7 +88,7 @@ export const claudeHome = (env: NodeJS.ProcessEnv): string =>
 export const claudeProjectsHome = (env: NodeJS.ProcessEnv): string =>
   path.join(claudeHome(env), "projects");
 
-const transcriptIdentity = async (
+export const transcriptIdentity = async (
   transcriptPath: string
 ): Promise<{ sessionId: string; cwd: string } | null> => {
   const sessionId = path.basename(transcriptPath, ".jsonl");
@@ -130,7 +130,8 @@ const transcriptIdentity = async (
 
 export const discoverClaudeTranscriptSignals = async (
   state: ClaudeWatcherState,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  includeUnchanged = false
 ): Promise<ClaudeTranscriptWatcherSignal[]> => {
   const projectsHome = claudeProjectsHome(env);
   mkdirSync(projectsHome, { recursive: true, mode: 0o700 });
@@ -154,10 +155,14 @@ export const discoverClaudeTranscriptSignals = async (
       const details = await stat(transcriptPath);
       const sourceSessionId = path.basename(file.name, ".jsonl");
       const cursor = state.cursors[componentCursorKey(sourceSessionId, "main")];
-      if (cursor && details.mtimeMs <= Date.parse(cursor.updatedAt)) {
+      if (
+        !includeUnchanged &&
+        cursor &&
+        details.mtimeMs <= Date.parse(cursor.updatedAt)
+      ) {
         continue;
       }
-      if (details.mtimeMs < activation && !cursor) {
+      if (!includeUnchanged && details.mtimeMs < activation && !cursor) {
         continue;
       }
       const identity = await transcriptIdentity(transcriptPath);
