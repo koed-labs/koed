@@ -106,6 +106,7 @@ describe("PersonalMemoryStore", () => {
 
     const snapshot = await store.loadProjects();
 
+    expect(snapshot.projectsLoaded).toBe(true);
     expect(snapshot.projectsById.get(source.id)).toMatchObject({
       name: "Koed",
       remoteDisplay: "github.com/koed-labs/koed",
@@ -127,8 +128,66 @@ describe("PersonalMemoryStore", () => {
     const snapshot = await store.loadProjects();
 
     expect(snapshot.error).toBeNull();
+    expect(snapshot.projectsLoaded).toBe(false);
     expect(snapshot.projectsById.get(source.id)).toMatchObject(source);
   });
+
+  it("does not mark a failed Projects refresh as authoritative", async () => {
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => {
+          throw new Error("Project graph unavailable");
+        })
+      })
+    );
+
+    const snapshot = await store.loadProjects({ silent: true });
+
+    expect(snapshot.projectsLoaded).toBe(false);
+    expect(snapshot.error).toBe("Project graph unavailable");
+  });
+
+  it.each(["success", "graph failure", "metadata failure"])(
+    "keeps known completeness while a silent refresh is pending: %s",
+    async (outcome) => {
+      let settle!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      let refresh = false;
+      const store = new PersonalMemoryStore(
+        api({
+          listProjects: vi.fn(async () => {
+            if (refresh) {
+              await pending;
+              if (outcome === "graph failure") throw new Error("graph failed");
+            }
+            return [project([thread(1)])];
+          }),
+          listProjectMetadata: vi.fn(async () => {
+            if (refresh && outcome === "metadata failure")
+              throw new Error("metadata failed");
+            return [];
+          })
+        })
+      );
+      await store.loadProjects();
+      refresh = true;
+      const request = store.loadProjects({ silent: true });
+      expect(store.current()).toMatchObject({
+        projectsLoaded: true,
+        loading: false,
+        error: null
+      });
+      settle();
+      const completed = await request;
+      expect(completed.projectsLoaded).toBe(outcome === "success");
+      expect(completed.error).toBe(
+        outcome === "graph failure" ? "graph failed" : null
+      );
+      expect(completed.projectsById.has("project")).toBe(true);
+    }
+  );
 
   it("normalizes project shells and preserves unchanged project references", async () => {
     const threads = [thread(1), thread(2)];

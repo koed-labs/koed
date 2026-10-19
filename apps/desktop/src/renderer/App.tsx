@@ -84,7 +84,7 @@ import {
 } from "./views/onboarding/index.js";
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
-import { HqShell } from "./hq/HqShell.js";
+import { HqApplication } from "./hq/HqApplication.js";
 import "./app.css";
 
 const CollaborationRoutes = lazy(async () => {
@@ -675,10 +675,10 @@ export function App({
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;
   useEffect(() => {
-    if (route.kind === "personal-memory-ask") {
+    if (!hqEnabled && route.kind === "personal-memory-ask") {
       void personalMemoryStore?.loadProjects({ silent: true });
     }
-  }, [personalMemoryStore, route.kind]);
+  }, [personalMemoryStore, route.kind, hqEnabled]);
   const snapshot = useMemo(
     () =>
       teamCollaborationEnabled
@@ -1165,7 +1165,14 @@ export function App({
     );
   }
 
-  if (hqEnabled) return <HqShell />;
+  if (hqEnabled) {
+    return (
+      <HqApplication
+        personalMemoryStore={personalMemoryStore}
+        personalMemoryReady={personalMemoryReady}
+      />
+    );
+  }
 
   const activeScope =
     route.kind === "inbox"

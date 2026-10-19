@@ -33,6 +33,7 @@ export type PersonalMemoryDetail = {
 export type PersonalMemorySnapshot = {
   error: string | null;
   loading: boolean;
+  projectsLoaded: boolean;
   projectOrder: string[];
   projectsById: ReadonlyMap<string, DesktopProject>;
   revision: number;
@@ -48,6 +49,7 @@ export const personalMemoryThreadKey = (
 const emptySnapshot = (): PersonalMemorySnapshot => ({
   error: null,
   loading: false,
+  projectsLoaded: false,
   projectOrder: [],
   projectsById: new Map(),
   revision: 0,
@@ -166,15 +168,21 @@ export class PersonalMemoryStore {
     silent?: boolean;
   } = {}): Promise<PersonalMemorySnapshot> {
     const request = ++this.#projectRequest;
-    if (!silent) {
-      this.#replace({ ...this.#snapshot, loading: true, error: null });
-    }
+    this.#replace({
+      ...this.#snapshot,
+      ...(silent ? {} : { loading: true, error: null, projectsLoaded: false })
+    });
     try {
       const graphProjects = await this.#api.listProjects();
-      const metadataProjects = await (
-        this.#api.listProjectMetadata?.() ??
-        Promise.resolve<DesktopProjectMetadata[]>([])
-      ).catch(() => []);
+      let metadataProjects: DesktopProjectMetadata[] = [];
+      let metadataLoaded = true;
+      if (this.#api.listProjectMetadata) {
+        try {
+          metadataProjects = await this.#api.listProjectMetadata();
+        } catch {
+          metadataLoaded = false;
+        }
+      }
       const projects = mergeProjectSources(graphProjects, metadataProjects);
       if (request !== this.#projectRequest) return this.#snapshot;
       const projectsById = new Map<string, DesktopProject>();
@@ -193,6 +201,7 @@ export class PersonalMemoryStore {
       this.#replace({
         error: null,
         loading: false,
+        projectsLoaded: metadataLoaded,
         projectOrder: projects.map(({ id }) => id),
         projectsById,
         revision: this.#snapshot.revision + 1,
@@ -204,6 +213,7 @@ export class PersonalMemoryStore {
       if (request !== this.#projectRequest) return this.#snapshot;
       this.#replace({
         ...this.#snapshot,
+        projectsLoaded: false,
         loading: false,
         error: cause instanceof Error ? cause.message : String(cause)
       });

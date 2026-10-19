@@ -56,6 +56,14 @@ import {
   hqLayoutPreferencesSetArgsSchema,
   hqLayoutPreferencesSetChannel
 } from "./hq-layout-preferences-protocol.js";
+import type { HqSidebarPreferences } from "./hq-sidebar-preferences-protocol.js";
+import {
+  hqSidebarPreferencesGetArgsSchema,
+  hqSidebarPreferencesGetChannel,
+  hqSidebarPreferencesResultSchema,
+  hqSidebarPreferencesSetArgsSchema,
+  hqSidebarPreferencesSetChannel
+} from "./hq-sidebar-preferences-protocol.js";
 import type { ManagedPreviewController } from "../window/managed-preview-controller.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 import {
@@ -170,6 +178,10 @@ export const registerDesktopCommandHandlers = (
     setHqLayoutPreferences: (
       preferences: HqLayoutPreferences
     ) => HqLayoutPreferences;
+    getHqSidebarPreferences: () => HqSidebarPreferences;
+    setHqSidebarPreferences: (
+      preferences: HqSidebarPreferences
+    ) => HqSidebarPreferences;
     getHardwareAcceleration?: () => Promise<{
       enabled: boolean;
       managedByEnvironment: boolean;
@@ -305,6 +317,32 @@ export const registerDesktopCommandHandlers = (
       const [preferences] = hqLayoutPreferencesSetArgsSchema.parse(args);
       return hqLayoutPreferencesResultSchema.parse(
         options.setHqLayoutPreferences(preferences)
+      );
+    }
+  );
+
+  ipcMain.handle(
+    hqSidebarPreferencesGetChannel,
+    async (event, ...args: unknown[]) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      hqSidebarPreferencesGetArgsSchema.parse(args);
+      return hqSidebarPreferencesResultSchema.parse(
+        options.getHqSidebarPreferences()
+      );
+    }
+  );
+
+  ipcMain.handle(
+    hqSidebarPreferencesSetChannel,
+    async (event, ...args: unknown[]) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      const [preferences] = hqSidebarPreferencesSetArgsSchema.parse(args);
+      return hqSidebarPreferencesResultSchema.parse(
+        options.setHqSidebarPreferences(preferences)
       );
     }
   );

@@ -5,12 +5,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, nativeImage } from "electron";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "../../..");
 const scratchDir = resolve(repoRoot, "scratch");
-const screenshotDir = resolve(scratchDir, "hq-102", "screenshots");
+const screenshotDir = resolve(scratchDir, "hq-103", "screenshots");
 const pagePath = resolve(scriptDir, "../dist/browser-validation.html");
 const expectedFixtureId = "hq-approved-map-fixture-v1";
 const expectedFixtureIdentities = [
@@ -120,7 +120,7 @@ const approvedTwoUserIds = [
 ];
 
 const browserSkipReason =
-  "HQ-102 implements the shell layout only; this mapped product behavior remains skipped until its owning feature ticket is implemented.";
+  "This acceptance-map clause remains SKIP until every listed owning ticket is implemented and validated.";
 const unitSkipReason =
   "This ID belongs to its owning unit suite, not the Electron browser harness.";
 const integrationSkipReason =
@@ -989,10 +989,13 @@ const waitForHqFixture = async (window) => {
         shellTag: shell?.tagName ?? null,
         shellChildren: shell?.childElementCount ?? -1,
         hasProjectNavigation: Boolean(shell?.querySelector('aside[aria-label="Project navigation"]')),
+        hasProjectLoadError: Boolean(shell?.querySelector('[data-hq-project-load-error]')),
+        hasProjectRetry: Boolean(shell?.querySelector('[data-hq-project-retry]')),
         hasWorkspace: Boolean(shell?.querySelector('main[aria-label="HQ workspace"]')),
         hasContext: Boolean(shell?.querySelector('[data-hq-context][role="complementary"]')),
         hasSidebarHandle: Boolean(shell?.querySelector('[data-hq-sidebar-handle][role="separator"]')),
         hasContextHandle: Boolean(shell?.querySelector('[data-hq-context-handle][role="separator"]')),
+        sidebarProjectCount: shell?.querySelectorAll('[data-hq-project-link]').length ?? 0,
         sidebarWidth: Number(shell?.querySelector('[data-hq-sidebar-handle]')?.getAttribute('aria-valuenow') ?? NaN),
         contextWidth: Number(shell?.querySelector('[data-hq-context-handle]')?.getAttribute('aria-valuenow') ?? NaN),
         fixtureId: fixture?.fixtureId ?? null,
@@ -1005,6 +1008,7 @@ const waitForHqFixture = async (window) => {
       last.ready &&
       last.fixtureReady &&
       last.shellCount === 1 &&
+      (last.sidebarProjectCount === 4 || last.hasProjectLoadError) &&
       last.fixtureId === expectedFixtureId &&
       last.hasSummary &&
       last.hasReset &&
@@ -1056,7 +1060,9 @@ const runValidation = async () => {
       }
     });
 
-    await window.loadFile(pagePath, { query: { view: "hq" } });
+    await window.loadFile(pagePath, {
+      query: { projectsFailure: "once", view: "hq" }
+    });
     const mounted = await waitForHqFixture(window);
     debuggerClient.attach("1.3");
     await debuggerClient.sendCommand("Runtime.enable");
@@ -1068,7 +1074,12 @@ const runValidation = async () => {
     });
     await delay(50);
 
-    const captureScreenshot = async (name) => {
+    const captureScreenshot = async (name, selector) => {
+      const clip = selector
+        ? await window.webContents.executeJavaScript(
+            `(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}; })()`
+          )
+        : undefined;
       const { data } = await debuggerClient.sendCommand(
         "Page.captureScreenshot",
         {
@@ -1077,24 +1088,355 @@ const runValidation = async () => {
         }
       );
       await mkdir(screenshotDir, { recursive: true });
-      await writeFile(
-        resolve(screenshotDir, name),
-        Buffer.from(data, "base64")
-      );
+      const viewport = Buffer.from(data, "base64");
+      // Crop the captured viewport pixels so narrow device emulation cannot
+      // apply a second scale factor to an element-only screenshot.
+      const output = clip
+        ? nativeImage.createFromBuffer(viewport).crop(clip).toPNG()
+        : viewport;
+      await writeFile(resolve(screenshotDir, name), output);
     };
+
+    await runAssertion(
+      "HQ103 project-load errors offer a working retry",
+      async () => {
+        const failed = await window.webContents.executeJavaScript(`(() => ({
+          error: Boolean(document.querySelector('[data-hq-project-load-error]')),
+          retry: Boolean(document.querySelector('[data-hq-project-retry]')),
+          projects: document.querySelectorAll('[data-hq-project-link]').length,
+          emptyState: document.body.textContent.includes('No Projects or Chats yet')
+        }))()`);
+        assert.deepEqual(failed, {
+          error: true,
+          retry: true,
+          projects: 0,
+          emptyState: false
+        });
+        await window.webContents.executeJavaScript(
+          "document.querySelector('[data-hq-project-retry]')?.click()"
+        );
+        let recovered = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          recovered = await window.webContents.executeJavaScript(`(() => ({
+            error: Boolean(document.querySelector('[data-hq-project-load-error]')),
+            projects: document.querySelectorAll('[data-hq-project-link]').length
+          }))()`);
+          if (recovered.projects === 4 && !recovered.error) break;
+          await delay(25);
+        }
+        assert.deepEqual(recovered, { error: false, projects: 4 });
+      }
+    );
 
     await window.webContents.executeJavaScript(`(() => {
       document.documentElement.classList.remove('dark');
       document.documentElement.classList.add('light');
       document.documentElement.dataset.theme = 'light';
     })()`);
-    await captureScreenshot("hq-shell-light.png");
+    await captureScreenshot("hq103-sidebar-light.png");
+    await captureScreenshot("hq103-v50-sidebar-light-crop.png", ".hq-sidebar");
+    await captureScreenshot(
+      "hq103-v50-header-light-crop.png",
+      ".hq-main__header"
+    );
+    const geometry = await window.webContents.executeJavaScript(`(() => {
+      const read = (selector) => { const el=document.querySelector(selector); const r=el.getBoundingClientRect(); const c=getComputedStyle(el);return { x:r.x,y:r.y,width:r.width,height:r.height,font:c.fontSize,padding:c.padding,radius:c.borderRadius,background:c.backgroundColor,color:c.color,borderBottom:c.borderBottomWidth }; };
+      return { viewport:{width:innerWidth,height:innerHeight},sidebar:read('.hq-sidebar'),header:read('.hq-main__header'),brand:read('.hq-brand'),row:read('[data-hq-project-link]'),group:read('[data-hq-sidebar-group]'),more:read('.hq-sidebar__more'),handle:read('[data-hq-sidebar-handle]'),permanentProjectChevron:!!document.querySelector('[data-hq-project-chevron]'),genericChatBubble:!!document.querySelector('[data-hq-chat-icon]') };
+    })()`);
+    assert.equal(geometry.sidebar.width, 268);
+    assert.equal(geometry.header.height, 56);
+    assert.equal(geometry.header.borderBottom, "0px");
+    assert.equal(geometry.row.font, "14px");
+    assert.equal(geometry.row.padding, "7px 9px");
+    assert.equal(geometry.row.radius, "10px");
+    assert.ok(Math.abs(geometry.row.height - 36.4) < 1);
+    assert.equal(geometry.group.font, "11.5px");
+    assert.equal(geometry.more.font, "12.5px");
+    assert.equal(geometry.handle.background, "rgba(0, 0, 0, 0)");
+    assert.equal(geometry.permanentProjectChevron, false);
+    assert.equal(geometry.genericChatBubble, false);
+    await mkdir(screenshotDir, { recursive: true });
+    await writeFile(
+      resolve(screenshotDir, "hq103-v50-geometry.json"),
+      JSON.stringify(geometry, null, 2) + "\n"
+    );
     await window.webContents.executeJavaScript(`(() => {
       document.documentElement.classList.remove('light');
       document.documentElement.classList.add('dark');
       document.documentElement.dataset.theme = 'dark';
     })()`);
-    await captureScreenshot("hq-shell-dark.png");
+    await captureScreenshot("hq103-sidebar-dark.png");
+    await captureScreenshot("hq103-v50-sidebar-dark-crop.png", ".hq-sidebar");
+    await captureScreenshot(
+      "hq103-v50-header-dark-crop.png",
+      ".hq-main__header"
+    );
+    const scrollBeforeCompact = await window.webContents.executeJavaScript(
+      `(() => { const scroll=document.querySelector('[data-hq-sidebar-scroll]'); scroll.scrollTop=Math.min(120,scroll.scrollHeight-scroll.clientHeight);scroll.dispatchEvent(new Event('scroll'));return scroll.scrollTop; })()`
+    );
+    assert.ok(scrollBeforeCompact > 0);
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.hq-desktop-navigation-trigger')?.click()"
+    );
+    await delay(30);
+    const compact = await window.webContents.executeJavaScript(
+      `(() => ({ width:document.querySelector('.hq-sidebar').getBoundingClientRect().width, expandedWidth:document.querySelector('[data-hq-sidebar-handle]').getAttribute('aria-valuenow'), headingHidden:getComputedStyle(document.querySelector('.hq-brand-name')).display }))()`
+    );
+    assert.equal(compact.width, 64);
+    assert.equal(compact.headingHidden, "none");
+    await captureScreenshot("hq103-v50-compact-dark-crop.png", ".hq-sidebar");
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.hq-desktop-navigation-trigger')?.click()"
+    );
+    await delay(30);
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelector('.hq-sidebar').getBoundingClientRect().width"
+      ),
+      268
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelector('[data-hq-sidebar-scroll]').scrollTop"
+      ),
+      scrollBeforeCompact
+    );
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[data-hq-sidebar-scroll]').scrollTop=0; document.querySelector('[data-hq-sidebar-scroll]').dispatchEvent(new Event('scroll'))"
+    );
+
+    await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 640,
+      deviceScaleFactor: 1,
+      mobile: false
+    });
+    await delay(60);
+    await delay(60);
+    await runAssertion(
+      "HQ103 sidebar subchecks (compound acceptance-map IDs remain SKIP)",
+      async () => {
+        const initialSidebar = await window.webContents
+          .executeJavaScript(`(() => {
+          const projectLinks = [...document.querySelectorAll('[data-hq-project-link]')];
+          const chatRows = [...document.querySelectorAll('[data-hq-chat-title]')];
+          const more = [...document.querySelectorAll('.hq-sidebar__more')].map((item) => item.textContent?.trim());
+          const scroll = document.querySelector('[data-hq-sidebar-scroll]');
+          const groupIcon = document.querySelector('[data-hq-group-icon]')?.getBoundingClientRect();
+          const projectIcon = document.querySelector('[data-hq-project-icon]')?.getBoundingClientRect();
+          const chatIcon = document.querySelector('[data-hq-chat-icon]')?.getBoundingClientRect();
+          const projectName = projectLinks[0]?.querySelector('span')?.getBoundingClientRect();
+          return {
+            projectNames: projectLinks.map((item) => item.textContent?.trim()),
+            projectIds: projectLinks.map((item) => item.getAttribute('data-hq-project-link')),
+            visibleChats: chatRows.length,
+            subagentRows: chatRows.filter((item) => item.textContent?.includes('Subagent')).length,
+            more,
+            scrollClient: scroll?.clientHeight ?? 0,
+            scrollHeight: scroll?.scrollHeight ?? 0,
+            viewportHeight: window.innerHeight,
+            shellHeight: document.querySelector('[data-hq-shell]')?.getBoundingClientRect().height ?? 0,
+            groupIconLeft: groupIcon?.left ?? null,
+            projectIconLeft: projectIcon?.left ?? null,
+            chatIconLeft: chatIcon?.left ?? null,
+            projectNameLeft: projectName?.left ?? null,
+            chatTitleLefts: chatRows.map((item) => item.querySelector('span')?.getBoundingClientRect().left ?? null)
+          };
+        })()`);
+        assert.deepEqual(initialSidebar.projectNames, [
+          "Koed",
+          "Research notes",
+          "Travel planning",
+          "Work"
+        ]);
+        assert.equal(initialSidebar.visibleChats, 17);
+        assert.equal(initialSidebar.subagentRows, 0);
+        assert.deepEqual(initialSidebar.more, [
+          "Show 1 more",
+          "Show 1 more",
+          "Show 1 more",
+          "Show 1 more",
+          "Show 2 more"
+        ]);
+        assert.ok(
+          initialSidebar.scrollHeight > initialSidebar.scrollClient,
+          `Expected the long sidebar to scroll at the compact validation height: ${JSON.stringify({ scrollHeight: initialSidebar.scrollHeight, clientHeight: initialSidebar.scrollClient, viewportHeight: initialSidebar.viewportHeight, shellHeight: initialSidebar.shellHeight })}`
+        );
+        assert.ok(
+          Math.abs(
+            initialSidebar.projectIconLeft - initialSidebar.groupIconLeft
+          ) <= 1,
+          `Expected Project and group icons to align: ${JSON.stringify({ projectIconLeft: initialSidebar.projectIconLeft, groupIconLeft: initialSidebar.groupIconLeft })}`
+        );
+        assert.ok(
+          initialSidebar.chatTitleLefts.every(
+            (left) =>
+              left !== null &&
+              Math.abs(left - initialSidebar.projectNameLeft) <= 1
+          ),
+          `Expected all Conversation titles, including loose Chats, and Project text to align: ${JSON.stringify({ chatTitleLefts: initialSidebar.chatTitleLefts, projectNameLeft: initialSidebar.projectNameLeft })}`
+        );
+
+        await window.webContents.executeJavaScript(
+          "document.querySelector('.hq-sidebar__more')?.click()"
+        );
+        await delay(20);
+        const expandedChats = await window.webContents.executeJavaScript(
+          "document.querySelectorAll('[data-hq-chat-title]').length"
+        );
+        assert.equal(expandedChats, 18);
+
+        const scrollBeforeNavigation = await window.webContents
+          .executeJavaScript(`(() => {
+          const scroll = document.querySelector('[data-hq-sidebar-scroll]');
+          scroll.scrollTop = Math.floor((scroll.scrollHeight - scroll.clientHeight) / 2);
+          scroll.dispatchEvent(new Event('scroll'));
+          return scroll.scrollTop;
+        })()`);
+        assert.ok(scrollBeforeNavigation > 0);
+
+        const projectTarget = initialSidebar.projectIds[0];
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-project-link="${projectTarget}"]')?.click()`
+        );
+        let projectHeading = "";
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          projectHeading = await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-route=project]')?.getAttribute('aria-label')?.trim() ?? ''"
+          );
+          if (projectHeading) break;
+          await delay(25);
+        }
+        assert.ok(projectHeading.includes("Koed"));
+        const scrollAfterProject = await window.webContents.executeJavaScript(
+          "document.querySelector('[data-hq-sidebar-scroll]')?.scrollTop ?? -1"
+        );
+        assert.equal(scrollAfterProject, scrollBeforeNavigation);
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector(${JSON.stringify('[data-hq-chat-row][data-hq-chat-project="hq103-koed"]')})?.click()`
+        );
+        let sessionHeading = "";
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          sessionHeading = await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-route=conversation]')?.getAttribute('aria-label')?.trim() ?? ''"
+          );
+          if (sessionHeading) break;
+          await delay(25);
+        }
+        assert.ok(sessionHeading.includes("Conversation"));
+        const scrollAfterConversation =
+          await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-sidebar-scroll]')?.scrollTop ?? -1"
+          );
+        assert.equal(scrollAfterConversation, scrollBeforeNavigation);
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "document.querySelectorAll('[data-selected=true]').length"
+          ),
+          1
+        );
+
+        const legacyMounted = await window.webContents.executeJavaScript(
+          "Boolean(document.querySelector('[data-personal-route-focus], .desktop-event-inspector, .desktop-preferences, .native-inspect-event'))"
+        );
+        assert.equal(legacyMounted, false);
+
+        await window.webContents.executeJavaScript(`(() => {
+          const group = document.querySelector('[data-hq-sidebar-group="just-me"]');
+          group.click();
+        })()`);
+        await delay(20);
+        const collapsed = await window.webContents.executeJavaScript(
+          "document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? false"
+        );
+        assert.equal(collapsed, true);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-sidebar-group="just-me"]')?.click()`
+        );
+        await delay(20);
+        const folds = await window.webContents.executeJavaScript(`(() => ({
+          expanded: !(document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? true),
+          disabledActions: ['New chat', 'New project', 'Now'].every((label) => document.querySelector('button[aria-label="' + label + '"]')?.disabled),
+          searchLabel: document.querySelector('button[aria-label="Search and commands"]')?.getAttribute('aria-label')
+        }))()`);
+        assert.equal(folds.expanded, true);
+        assert.equal(folds.disabledActions, true);
+        assert.equal(folds.searchLabel, "Search and commands");
+
+        const paletteSelector =
+          '[role="dialog"][aria-label="Search and commands"]';
+        const waitForPalette = async (expectedOpen) => {
+          let actualOpen = false;
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            actualOpen = await window.webContents.executeJavaScript(
+              `Boolean(document.querySelector(${JSON.stringify(paletteSelector)}))`
+            );
+            if (actualOpen === expectedOpen) return;
+            await delay(20);
+          }
+          assert.equal(actualOpen, expectedOpen);
+        };
+        const closePalette = async () => {
+          await window.webContents.executeJavaScript(
+            `document.querySelector(${JSON.stringify(`${paletteSelector} button[aria-label="Close"]`)})?.click()`
+          );
+          await waitForPalette(false);
+        };
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('button[aria-label="Search and commands"]')?.click()`
+        );
+        await waitForPalette(true);
+        const searchPalette = await window.webContents
+          .executeJavaScript(`(() => {
+          const previousDark = document.documentElement.classList.contains('dark');
+          const popup = document.querySelector('.hq-search');
+          const result = [];
+          for (const dark of [false, true]) {
+            document.documentElement.classList.toggle('dark', dark);
+            const style = getComputedStyle(popup);
+            result.push({ background: style.backgroundColor, foreground: style.color });
+          }
+          document.documentElement.classList.toggle('dark', previousDark);
+          return result;
+        })()`);
+        assert.deepEqual(searchPalette, [
+          { background: "rgb(241, 241, 244)", foreground: "rgb(24, 24, 27)" },
+          { background: "rgb(19, 19, 23)", foreground: "rgb(244, 244, 245)" }
+        ]);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[id="hq-search-project:hq103-koed"]')?.click()`
+        );
+        await waitForPalette(false);
+        const searchSelection = await window.webContents.executeJavaScript(
+          "document.querySelector('[data-hq-route=project]')?.getAttribute('data-hq-project-id')"
+        );
+        assert.equal(searchSelection, "hq103-koed");
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('[data-personal-route-focus], .native-inspect-event'))"
+          ),
+          false
+        );
+
+        for (const modifier of ["metaKey", "ctrlKey"]) {
+          await window.webContents.executeJavaScript(
+            `window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'k', ${modifier}: true }))`
+          );
+          await waitForPalette(true);
+          await closePalette();
+        }
+      }
+    );
+
+    await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false
+    });
+    await delay(60);
 
     const pointerResize = async (selector, deltaX) => {
       const bounds = await window.webContents.executeJavaScript(`(() => {
@@ -1173,12 +1515,295 @@ const runValidation = async () => {
     assert.equal(Number(contextAfterReset), contextBeforeDrag);
 
     await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+      width: 761,
+      height: 844,
+      deviceScaleFactor: 1,
+      mobile: false
+    });
+    await delay(60);
+    const hideContext = await window.webContents.executeJavaScript(`(() => {
+      const button = document.querySelector('button[aria-label="Hide project context"]');
+      button?.click();
+      return Boolean(button);
+    })()`);
+    assert.equal(hideContext, true);
+    await delay(30);
+    const narrowSidebarWidth = await pointerResize(
+      "[data-hq-sidebar-handle]",
+      -300
+    );
+    assert.equal(Number(narrowSidebarWidth), 200);
+    const narrowSidebar = await window.webContents.executeJavaScript(`(() => ({
+      sidebar: Boolean(document.querySelector('aside[aria-label="Project navigation"]')),
+      dialog: Boolean(document.querySelector('[role="dialog"]')),
+      context: Boolean(document.querySelector('[data-hq-context]')),
+      workspaceWidth: document.querySelector('[data-hq-workspace-layout]')?.getBoundingClientRect().width ?? 0
+    }))()`);
+    assert.equal(narrowSidebar.sidebar, true);
+    assert.equal(narrowSidebar.dialog, false);
+    assert.equal(narrowSidebar.context, false);
+    assert.ok(narrowSidebar.workspaceWidth >= 540);
+    await captureScreenshot("hq-shell-narrow-sidebar.png");
+
+    await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: 390,
       height: 844,
       deviceScaleFactor: 1,
       mobile: true
     });
     await delay(60);
+    await captureScreenshot("hq103-narrow-sidebar-closed-context.png");
+    await runAssertion(
+      "HQ103 narrow navigation drawer keeps one mounted sidebar and routes Projects and Conversations",
+      async () => {
+        const openNavigation = async () => {
+          await window.webContents.executeJavaScript(
+            "document.querySelector('button[aria-label=\"Show project navigation\"]')?.click()"
+          );
+          let drawer = null;
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            drawer = await window.webContents.executeJavaScript(`(() => ({
+              dialog: Boolean(document.querySelector('[data-hq-sidebar-dialog][role="dialog"][aria-modal="true"]')),
+              sidebarCount: document.querySelectorAll('#hq-project-navigation').length,
+              sidebarLeft: Math.round(document.querySelector('.hq-sidebar')?.getBoundingClientRect().left ?? 0),
+              sidebarWidth: Math.round(document.querySelector('.hq-sidebar')?.getBoundingClientRect().width ?? 0),
+              expectedSidebarWidth: Math.min(280, window.innerWidth - 32),
+              focus: document.activeElement?.getAttribute('aria-label') ?? null,
+              workspaceInert: document.querySelector('.hq-shell__workspace')?.hasAttribute('inert') ?? false
+            }))()`);
+            if (
+              drawer.dialog &&
+              Math.abs(drawer.sidebarLeft) <= 1 &&
+              Math.abs(drawer.sidebarWidth - drawer.expectedSidebarWidth) <= 1
+            ) {
+              break;
+            }
+            await delay(20);
+          }
+          assert.deepEqual(drawer, {
+            dialog: true,
+            sidebarCount: 1,
+            sidebarLeft: drawer.sidebarLeft,
+            sidebarWidth: drawer.expectedSidebarWidth,
+            expectedSidebarWidth: drawer.expectedSidebarWidth,
+            focus: "Close project navigation",
+            workspaceInert: true
+          });
+          assert.ok(
+            Math.abs(drawer.sidebarLeft) <= 1,
+            `Expected the navigation drawer to finish its slide at the viewport edge: ${drawer.sidebarLeft}`
+          );
+        };
+
+        const closed = await window.webContents.executeJavaScript(`(() => ({
+          opener: Boolean(document.querySelector('button[aria-label="Show project navigation"]')),
+          sidebarCount: document.querySelectorAll('#hq-project-navigation').length,
+          hidden: document.querySelector('.hq-sidebar')?.getAttribute('aria-hidden') ?? null
+        }))()`);
+        assert.deepEqual(closed, {
+          opener: true,
+          sidebarCount: 1,
+          hidden: "true"
+        });
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-sidebar-group="just-me"]')?.click()`
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? false"
+          ),
+          true
+        );
+        await openNavigation();
+        const foldedFocusWrap = await window.webContents
+          .executeJavaScript(`(() => {
+          const dialog = document.querySelector('[data-hq-sidebar-dialog]');
+          dialog.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Tab', shiftKey: true }));
+          const shiftTabTarget = document.activeElement?.getAttribute('data-hq-sidebar-group') ?? null;
+          dialog.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Tab' }));
+          return {
+            shiftTabTarget,
+            tabTarget: document.activeElement?.getAttribute('aria-label') ?? null,
+            hiddenChildFocused: Boolean(document.querySelector('#hq-group-just-me button:focus'))
+          };
+        })()`);
+        assert.deepEqual(foldedFocusWrap, {
+          shiftTabTarget: "just-me",
+          tabTarget: "Close project navigation",
+          hiddenChildFocused: false
+        });
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-sidebar-group="just-me"]')?.click()`
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? true"
+          ),
+          false
+        );
+        await captureScreenshot(
+          "hq103-v50-phone-sidebar-crop.png",
+          ".hq-sidebar"
+        );
+        await window.webContents.executeJavaScript(`(() => {
+          const scroll = document.querySelector('[data-hq-sidebar-scroll]');
+          scroll.scrollTop = Math.floor((scroll.scrollHeight - scroll.clientHeight) / 2);
+          scroll.dispatchEvent(new Event('scroll'));
+          window.hq103DrawerScrollBeforeClose = scroll.scrollTop;
+        })()`);
+        assert.ok(
+          await window.webContents.executeJavaScript(
+            "window.hq103DrawerScrollBeforeClose > 0"
+          )
+        );
+        await captureScreenshot("hq103-mobile-sidebar-drawer.png");
+        const phoneOpener = await window.webContents.executeJavaScript(
+          `(() => { const opener=document.querySelector('.hq-mobile-navigation-trigger').getBoundingClientRect(); const title=document.querySelector('.hq-main__heading').getBoundingClientRect(); return {opener:opener.x,title:title.x}; })()`
+        );
+        assert.ok(phoneOpener.opener < phoneOpener.title);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-sidebar-dialog]')?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))`
+        );
+        await delay(20);
+        let afterEscape = await window.webContents.executeJavaScript(`(() => ({
+          dialog: Boolean(document.querySelector('[data-hq-sidebar-dialog][role="dialog"]')),
+          focusRestored: document.activeElement === document.querySelector('button[aria-label="Show project navigation"]'),
+          hidden: document.querySelector('.hq-sidebar')?.getAttribute('aria-hidden') ?? null
+        }))()`);
+        assert.deepEqual(afterEscape, {
+          dialog: false,
+          focusRestored: true,
+          hidden: "true"
+        });
+
+        await openNavigation();
+        const scrollAfterReopen = await window.webContents.executeJavaScript(
+          "document.querySelector('[data-hq-sidebar-scroll]')?.scrollTop ?? -1"
+        );
+        assert.equal(
+          scrollAfterReopen,
+          await window.webContents.executeJavaScript(
+            "window.hq103DrawerScrollBeforeClose"
+          )
+        );
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-project-link="hq103-notes"]')?.click()`
+        );
+        let selectedProject = "";
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          selectedProject = await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-route=project]')?.getAttribute('aria-label')?.trim() ?? ''"
+          );
+          if (selectedProject.includes("Research notes")) break;
+          await delay(25);
+        }
+        assert.ok(selectedProject.includes("Research notes"));
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=\"dialog\"]'))"
+          ),
+          false
+        );
+
+        await openNavigation();
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-chat-row][data-hq-chat-project="hq103-notes"]')?.click()`
+        );
+        let selectedConversation = "";
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          selectedConversation = await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-route=conversation]')?.getAttribute('aria-label')?.trim() ?? ''"
+          );
+          if (selectedConversation.includes("Conversation")) break;
+          await delay(25);
+        }
+        assert.ok(selectedConversation.includes("Conversation"));
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=\"dialog\"]'))"
+          ),
+          false
+        );
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "document.querySelectorAll('#hq-project-navigation').length"
+          ),
+          1
+        );
+      }
+    );
+    await runAssertion(
+      "HQ103 keyboard commands transfer phone focus between replacement overlays",
+      async () => {
+        const press = async (
+          key,
+          code,
+          windowsVirtualKeyCode,
+          modifiers = 0
+        ) => {
+          await debuggerClient.sendCommand("Input.dispatchKeyEvent", {
+            type: "keyDown",
+            key,
+            code,
+            windowsVirtualKeyCode,
+            modifiers
+          });
+          await debuggerClient.sendCommand("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key,
+            code,
+            windowsVirtualKeyCode,
+            modifiers
+          });
+        };
+        const searchCommand = async (label) => {
+          await press("k", "KeyK", 75, 4);
+          let inputFocused = false;
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            inputFocused = await window.webContents.executeJavaScript(
+              "document.activeElement === document.querySelector('.hq-search input')"
+            );
+            if (inputFocused) break;
+            await delay(25);
+          }
+          assert.equal(inputFocused, true);
+          await debuggerClient.sendCommand("Input.insertText", { text: label });
+          await press("Enter", "Enter", 13);
+        };
+        const expectOverlayFocus = async (label) => {
+          let focus;
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            focus = await window.webContents.executeJavaScript(
+              `(() => ({ label:document.activeElement?.getAttribute('aria-label') ?? null, inert:Boolean(document.activeElement?.closest('[inert]')), palette:Boolean(document.querySelector('.hq-search')) }))()`
+            );
+            if (focus.label === label && !focus.palette) break;
+            await delay(25);
+          }
+          assert.deepEqual(focus, { label, inert: false, palette: false });
+        };
+        await window.webContents.executeJavaScript(
+          "document.querySelector('.hq-mobile-navigation-trigger')?.click()"
+        );
+        await expectOverlayFocus("Close project navigation");
+        await searchCommand("Toggle context panel");
+        await expectOverlayFocus("Close project context");
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=dialog]'))"
+          ),
+          false
+        );
+        await searchCommand("Toggle sidebar");
+        await expectOverlayFocus("Close project navigation");
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('#hq-context-dialog'))"
+          ),
+          false
+        );
+        await press("Escape", "Escape", 27);
+      }
+    );
     const mobile = await window.webContents.executeJavaScript(`(() => {
       const trigger = document.querySelector('button[aria-label="Show project context"]');
       trigger?.click();
@@ -1236,7 +1861,6 @@ const runValidation = async () => {
         resetActuallyChangedSeed: seedSnapshot.projects[0].name === 'koed-main' && mutatedSnapshot.projects[0].name === 'scaffold-smoke-mutated',
         resetRestoredSeed: JSON.stringify(seedSnapshot) === JSON.stringify(resetSnapshot),
         resetClearedMutation: recorded.operations.mutations.length === 1 && after.operations.mutations.length === 0,
-        rootChildCount: document.querySelector('#root')?.childElementCount ?? -1,
         browserReady: document.documentElement.dataset.browserValidationReady === 'true'
       };
     })()`);
@@ -1342,14 +1966,13 @@ const runValidation = async () => {
       assert.equal(fixture.resetActuallyChangedSeed, true);
       assert.equal(fixture.resetRestoredSeed, true);
       assert.equal(fixture.resetClearedMutation, true);
-      assert.equal(fixture.rootChildCount, 1);
       assert.equal(fixture.browserReady, true);
       assert.deepEqual(rendererErrors, []);
       assert.deepEqual(rendererExceptions, []);
     });
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke plus real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

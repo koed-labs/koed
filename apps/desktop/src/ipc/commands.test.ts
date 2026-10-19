@@ -19,6 +19,12 @@ import {
   type HqLayoutPreferences
 } from "./hq-layout-preferences-protocol.js";
 import {
+  defaultHqSidebarPreferences,
+  hqSidebarPreferencesGetChannel,
+  hqSidebarPreferencesSetChannel,
+  type HqSidebarPreferences
+} from "./hq-sidebar-preferences-protocol.js";
+import {
   clipboardWriteChannel,
   collaborationCommandChannel,
   hardwareAccelerationGetChannel,
@@ -138,11 +144,25 @@ describe("desktop IPC command registry", () => {
     let hqLayoutPreferences: HqLayoutPreferences = {
       ...defaultHqLayoutPreferences
     };
+    let hqSidebarPreferences: HqSidebarPreferences = {
+      foldedGroups: {}
+    };
     const getHqLayoutPreferences = vi.fn(() => ({ ...hqLayoutPreferences }));
     const setHqLayoutPreferences = vi.fn((preferences: HqLayoutPreferences) => {
       hqLayoutPreferences = { ...preferences };
       return { ...hqLayoutPreferences };
     });
+    const getHqSidebarPreferences = vi.fn(() => ({
+      foldedGroups: { ...hqSidebarPreferences.foldedGroups }
+    }));
+    const setHqSidebarPreferences = vi.fn(
+      (preferences: HqSidebarPreferences) => {
+        hqSidebarPreferences = {
+          foldedGroups: { ...preferences.foldedGroups }
+        };
+        return { foldedGroups: { ...hqSidebarPreferences.foldedGroups } };
+      }
+    );
     let hardwareAccelerationEnabled = true;
     const getHardwareAcceleration = vi.fn(async () => ({
       enabled: hardwareAccelerationEnabled,
@@ -240,6 +260,8 @@ describe("desktop IPC command registry", () => {
         setThemePreference,
         getHqLayoutPreferences,
         setHqLayoutPreferences,
+        getHqSidebarPreferences,
+        setHqSidebarPreferences,
         getHardwareAcceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
@@ -261,6 +283,8 @@ describe("desktop IPC command registry", () => {
       setThemePreference,
       getHqLayoutPreferences,
       setHqLayoutPreferences,
+      getHqSidebarPreferences,
+      setHqSidebarPreferences,
       getHardwareAcceleration,
       setHardwareAcceleration,
       getLaunchAtStartup,
@@ -598,6 +622,7 @@ describe("desktop IPC command registry", () => {
     const get = registered.get(hqLayoutPreferencesGetChannel)!;
     const set = registered.get(hqLayoutPreferencesSetChannel)!;
     const value: HqLayoutPreferences = {
+      sidebarCollapsed: false,
       sidebarWidth: 360,
       rightColumnWidth: 512,
       rightColumnHidden: true
@@ -618,6 +643,36 @@ describe("desktop IPC command registry", () => {
       "Untrusted Desktop IPC sender"
     );
     expect(setHqLayoutPreferences).toHaveBeenCalledOnce();
+  });
+
+  it("gets and sets strict HQ sidebar preferences only for trusted renderers", async () => {
+    const { registered, getHqSidebarPreferences, setHqSidebarPreferences } =
+      register();
+    const get = registered.get(hqSidebarPreferencesGetChannel)!;
+    const set = registered.get(hqSidebarPreferencesSetChannel)!;
+    const value: HqSidebarPreferences = {
+      foldedGroups: { "just-me": true, "project:local-project-1": false }
+    };
+
+    await expect(get(renderer())).resolves.toEqual(defaultHqSidebarPreferences);
+    await expect(set(renderer(), value)).resolves.toEqual(value);
+    expect(getHqSidebarPreferences).toHaveBeenCalledOnce();
+    expect(setHqSidebarPreferences).toHaveBeenCalledWith(value);
+
+    await expect(get(renderer(), "unexpected")).rejects.toThrow();
+    await expect(
+      set(renderer(), { ...value, unknown: true })
+    ).rejects.toThrow();
+    await expect(
+      set(renderer(), {
+        foldedGroups: { "project:local-project-1": "folded" }
+      })
+    ).rejects.toThrow();
+    await expect(set(renderer(), value, "unexpected")).rejects.toThrow();
+    await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
+      "Untrusted Desktop IPC sender"
+    );
+    expect(setHqSidebarPreferences).toHaveBeenCalledOnce();
   });
 
   it("gets and sets hardware acceleration only for trusted renderers", async () => {

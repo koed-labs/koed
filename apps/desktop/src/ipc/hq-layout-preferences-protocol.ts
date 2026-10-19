@@ -5,6 +5,7 @@ export const hqLayoutPreferencesSetChannel = "koed:hq-layout-preferences:set";
 
 export const hqLayoutPreferencesSchema = z
   .object({
+    sidebarCollapsed: z.boolean().default(false),
     sidebarWidth: z.number().finite().int().safe().min(200).max(440),
     rightColumnWidth: z
       .number()
@@ -21,6 +22,7 @@ export const hqLayoutPreferencesSchema = z
 export type HqLayoutPreferences = z.infer<typeof hqLayoutPreferencesSchema>;
 
 export const defaultHqLayoutPreferences: HqLayoutPreferences = {
+  sidebarCollapsed: false,
   sidebarWidth: 268,
   rightColumnWidth: null,
   rightColumnHidden: false

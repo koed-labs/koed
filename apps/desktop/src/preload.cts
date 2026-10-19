@@ -15,6 +15,7 @@ import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js"
 import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import { createHqLayoutPreferencesPreloadApi } from "./ipc/hq-layout-preferences-preload.js";
+import { createHqSidebarPreferencesPreloadApi } from "./ipc/hq-sidebar-preferences-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
   clipboardWriteChannel,
@@ -77,6 +78,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
   ),
   hqLayout: createHqLayoutPreferencesPreloadApi((channel, ...args) =>
+    ipcRenderer.invoke(channel, ...args)
+  ),
+  hqSidebar: createHqSidebarPreferencesPreloadApi((channel, ...args) =>
     ipcRenderer.invoke(channel, ...args)
   ),
   theme: Object.freeze({
