@@ -1,4 +1,6 @@
 import { projectConversationFolders } from "../../../project-conversation-folders.js";
+import { projectRowPresentation } from "../../../project-row-presentation.js";
+import { ProjectGroupIcon } from "./ProjectGroupIcon.js";
 import { useProjectFolderFilter } from "./use-project-folder-filter.js";
 import { CreateProjectDialog, MoveProjectDialog } from "./ProjectActions.js";
 import { MoveConversationDialog } from "./MoveConversationDialog.js";
@@ -35,6 +37,7 @@ import {
   Ellipsis,
   GitFork,
   LoaderCircle,
+  MessagesSquare,
   MonitorSmartphone,
   Monitor,
   Paperclip,
@@ -255,64 +258,6 @@ const nextConversationPresentationDeadline = (
   return deadlines.length ? Math.min(...deadlines) : null;
 };
 
-function ProjectOverview({
-  eventCount,
-  localProjectId,
-  onOpenRepository,
-  onRevealLocalProject,
-  projectName,
-  remoteDisplay,
-  sessionCount
-}: {
-  eventCount: number;
-  localProjectId?: string | null;
-  onOpenRepository?: (url: string) => void;
-  onRevealLocalProject?: (localProjectId: string) => void;
-  projectName?: string;
-  remoteDisplay?: string | null;
-  sessionCount: number;
-}) {
-  const revealLabel = `Reveal ${projectName ?? "Project"} in file browser`;
-  return (
-    <span className="personal-project-overview-group">
-      {remoteDisplay ? (
-        <ProjectRepo
-          onOpenRepository={onOpenRepository}
-          remoteDisplay={remoteDisplay}
-        />
-      ) : null}
-      <span
-        aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
-        className="personal-project-overview"
-      >
-        {localProjectId && onRevealLocalProject ? (
-          <>
-            <button
-              aria-label={revealLabel}
-              className="personal-project-folder"
-              onClick={() => onRevealLocalProject(localProjectId)}
-              title={revealLabel}
-              type="button"
-            >
-              <Folder aria-hidden="true" />
-            </button>
-            <span aria-hidden="true">·</span>
-          </>
-        ) : null}
-        <span>
-          {sessionCount}
-          <BookText aria-hidden="true" />
-        </span>
-        <span aria-hidden="true">·</span>
-        <span>
-          {eventCount}
-          <Brain aria-hidden="true" />
-        </span>
-      </span>
-    </span>
-  );
-}
-
 const sourceAiClientIdentity = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
 ): { id: "claude" | "codex" | "pi"; label: string } | null => {
@@ -380,26 +325,53 @@ function ProjectRow({
   onSelect: () => void;
 }) {
   const latestAt = projectLatestAt(project);
+  const presentation = projectRowPresentation(project);
+  const ContextIcon = presentation.contextKind === "folder" ? Folder : GitFork;
+  const conversationLabel = countLabel(
+    presentation.conversationCount,
+    "Conversation"
+  );
   return (
     <button
       aria-current={selected ? "page" : undefined}
+      aria-label={`${project.name}, ${presentation.sourceLabel}, ${conversationLabel}${presentation.context ? `, ${presentation.context}` : ""}`}
       className="personal-project-row"
       data-project-id={project.id}
+      data-group-kind={presentation.kind}
       onClick={onSelect}
       type="button"
     >
-      <span className="personal-project-monogram" aria-hidden="true">
-        {Array.from(project.name)[0]?.toLocaleUpperCase() ?? "P"}
+      <span
+        className="personal-project-source-icon"
+        title={presentation.sourceLabel}
+      >
+        <ProjectGroupIcon kind={presentation.kind} />
       </span>
       <span className="personal-project-row-copy">
-        <strong>{project.name}</strong>
-        <ProjectOverview
-          eventCount={project.eventCount}
-          remoteDisplay={project.remoteDisplay}
-          sessionCount={project.threads.length}
-        />
+        <span className="personal-project-row-heading">
+          <strong>{project.name}</strong>
+          <span
+            aria-label={conversationLabel}
+            className="personal-project-conversation-count"
+            title={conversationLabel}
+          >
+            {presentation.conversationCount}
+            <MessagesSquare aria-hidden="true" />
+          </span>
+        </span>
+        <span className="personal-project-row-context">
+          {presentation.context ? (
+            <span
+              className="personal-project-context-label"
+              title={presentation.context}
+            >
+              <ContextIcon aria-hidden="true" />
+              <span>{presentation.context}</span>
+            </span>
+          ) : null}
+          <time dateTime={latestAt ?? undefined}>{relativeTime(latestAt)}</time>
+        </span>
       </span>
-      <time dateTime={latestAt ?? undefined}>{relativeTime(latestAt)}</time>
     </button>
   );
 }
@@ -573,6 +545,7 @@ function SessionDeviceBadge({
 function SessionRow({
   actionsOpen,
   busy,
+  moveAction,
   onActionsOpenChange,
   onChangePresentation,
   presentationStatus,
@@ -581,6 +554,7 @@ function SessionRow({
 }: {
   actionsOpen: boolean;
   busy: boolean;
+  moveAction?: ReactNode;
   onActionsOpenChange: (open: boolean) => void;
   presentationStatus: ConversationPresentationStatus;
   onChangePresentation: (
@@ -721,6 +695,7 @@ function SessionRow({
               <Clock3 aria-hidden="true" />
               {presentationStatus === "snoozed" ? "Wake now" : "Snooze 1 day"}
             </button>
+            {moveAction}
           </div>
         </details>
       ) : null}
@@ -751,6 +726,7 @@ const launchReady = (
 
 function ProjectDetail({
   moveAction,
+  renderConversationMove,
   localAiClients,
   error,
   hasProjects,
@@ -798,6 +774,7 @@ function ProjectDetail({
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
   moveAction?: ReactNode;
+  renderConversationMove?: (thread: PersonalDesktopProjectThread) => ReactNode;
 }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -979,6 +956,7 @@ function ProjectDetail({
         actionsOpen={openSessionActionsId === selectionId}
         busy={presentationBusy.has(selectionId)}
         key={selectionId}
+        moveAction={renderConversationMove?.(thread)}
         onActionsOpenChange={(open) =>
           setOpenSessionActionsId((current) =>
             open ? selectionId : current === selectionId ? null : current
@@ -3878,6 +3856,21 @@ export function PersonalMemoryWorkspace({
             />
           ) : (
             <ProjectDetail
+              renderConversationMove={
+                assignSessionProject
+                  ? (thread) => (
+                      <MoveConversationDialog
+                        assign={assignSessionProject}
+                        onCreateProject={onCreateProject}
+                        onAssigned={onSessionProjectAssigned}
+                        projects={visibleProjects}
+                        store={store}
+                        thread={thread}
+                        triggerVariant="menuitem"
+                      />
+                    )
+                  : undefined
+              }
               moveAction={
                 selectedProject && moveProject ? (
                   <MoveProjectDialog

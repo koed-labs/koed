@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
-  type PersonalDesktopApi
+  type PersonalDesktopApi,
+  type PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
+import type { RepositoryIdentity } from "@koed/shared";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,7 +53,7 @@ const enterText = async (element: HTMLTextAreaElement, value: string) => {
 };
 
 describe("Personal Ask", () => {
-  it("starts a managed Project Conversation through the approved Ask layout", async () => {
+  it.each([false, true])("starts a Project (rootless=%s)", async (rootless) => {
     const api: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
@@ -66,7 +68,20 @@ describe("Personal Ask", () => {
     const project = {
       id: "project-research",
       name: "Research",
-      path: "/tmp/research",
+      path: rootless ? null : "/tmp/research",
+      repository: rootless
+        ? {
+            kind: "local_project" as const,
+            key: "project-research",
+            root: null,
+            branch: null,
+            checkoutId: null,
+            originatingDeviceId: "local",
+            reason: "manual" as const,
+            selectedRemote: null,
+            anchorDisplay: null
+          }
+        : undefined,
       eventCount: 0,
       threads: [],
       catalogued: true,
@@ -131,7 +146,10 @@ describe("Personal Ask", () => {
               capabilities: {
                 defaultPermissionMode: "supervised" as const,
                 permissionModes: [
-                  { mode: "supervised" as const, support: "supported" as const }
+                  {
+                    mode: "supervised" as const,
+                    support: "supported" as const
+                  }
                 ]
               }
             }
@@ -311,6 +329,149 @@ describe("Personal Ask", () => {
     );
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: "Investigate the generic task" })
+    );
+  });
+
+  it("uses the same source icons and mixed context as the Projects list without Conversation counts", async () => {
+    const manual: RepositoryIdentity = {
+      kind: "local_project",
+      key: "manual",
+      root: null,
+      branch: null,
+      checkoutId: null,
+      originatingDeviceId: "local",
+      reason: "manual",
+      selectedRemote: null,
+      anchorDisplay: null
+    };
+    const git: RepositoryIdentity = {
+      ...manual,
+      kind: "portable_repository",
+      key: "git",
+      root: "/code/koed",
+      checkoutId: "checkout",
+      reason: "origin",
+      anchorDisplay: "github.com/koed-labs/koed"
+    };
+    const source = (
+      id: string,
+      automatic: RepositoryIdentity | null
+    ): PersonalDesktopProjectThread => ({
+      id,
+      sessionId: null,
+      name: id,
+      projectId: "manual",
+      projectName: "Manual",
+      projectPath: null,
+      capturedCwd: automatic?.root ?? "/notes",
+      sourceAiClient: "codex",
+      projectAssignmentSource: "user_override",
+      eventCount: 999,
+      invalidatedCount: 0,
+      latestAt: new Date().toISOString(),
+      sample: "",
+      presentation: null,
+      repositoryAssignment: {
+        state: "recorded",
+        version: 2,
+        automatic,
+        override: manual,
+        effective: manual
+      }
+    });
+    const base: DesktopProject = {
+      id: "manual",
+      name: "Manual",
+      repository: manual,
+      path: null,
+      eventCount: 2997,
+      catalogued: false,
+      discoveredAt: null,
+      lastSeenAt: null,
+      localProjectId: null,
+      branch: null,
+      remoteDisplay: null,
+      isWorktree: false,
+      threads: [
+        source("git-thread", git),
+        source("plain-thread", null),
+        {
+          ...source("agent", null),
+          capturedCwd: null,
+          threadKind: "subagent",
+          parentThreadId: "git-thread"
+        }
+      ]
+    };
+    await act(async () => {
+      root.render(
+        <PersonalAskView
+          api={
+            {
+              loadAskThread: vi.fn(async () => [])
+            } as unknown as PersonalDesktopApi
+          }
+          markdownAdapters={adapters}
+          onNew={vi.fn()}
+          projects={[
+            base,
+            {
+              ...base,
+              id: "git",
+              name: "Git",
+              path: git.root,
+              repository: git,
+              threads: []
+            },
+            {
+              ...base,
+              id: "folder",
+              name: "Folder",
+              path: "/notes",
+              repository: {
+                ...git,
+                kind: "non_git_project",
+                reason: "non_git",
+                anchorDisplay: null
+              },
+              threads: []
+            }
+          ]}
+        />
+      );
+    });
+    const manualChoice = container.querySelector<HTMLElement>(
+      '[data-project-id="manual"]'
+    )!;
+    expect(
+      manualChoice.querySelector(".personal-project-source-icon .lucide-layers")
+    ).not.toBeNull();
+    expect(
+      manualChoice.querySelector(".personal-agent-project-context")?.textContent
+    ).toBe("koed-labs/koed · 1 folder");
+    expect(
+      container.querySelector(".personal-project-conversation-count")
+    ).toBeNull();
+    expect(container.querySelector(".lucide-messages-square")).toBeNull();
+    expect(manualChoice.getAttribute("aria-label")).toBe(
+      "Manual, Manual Project, koed-labs/koed · 1 folder"
+    );
+    expect(
+      container.querySelector(
+        '[data-group-kind="git"] .personal-project-source-icon .lucide-git-fork'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-group-kind="folder"] .personal-project-source-icon .lucide-folder'
+      )
+    ).not.toBeNull();
+    expect(container.querySelector(".lucide-brain")).toBeNull();
+    expect(manualChoice.textContent).not.toContain("2997");
+    await click(manualChoice);
+    expect(manualChoice.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector("textarea")?.placeholder).toBe(
+      "Ask about Manual…"
     );
   });
 

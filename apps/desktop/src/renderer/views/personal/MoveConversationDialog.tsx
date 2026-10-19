@@ -26,7 +26,8 @@ export function MoveConversationDialog({
   onAssigned,
   projects,
   store,
-  thread
+  thread,
+  triggerVariant = "button"
 }: {
   assign?: PersonalDesktopApi["assignSessionProject"];
   onCreateProject?: CreateProject;
@@ -34,6 +35,7 @@ export function MoveConversationDialog({
   projects: readonly PersonalDesktopProject[];
   store: PersonalMemoryStore;
   thread: PersonalDesktopProjectThread;
+  triggerVariant?: "button" | "menuitem";
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +45,7 @@ export function MoveConversationDialog({
   const destinationId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const destinationRef = useRef<HTMLSelectElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const requestRef = useRef(0);
   const targets = projects.filter(
     (project) =>
@@ -138,15 +141,30 @@ export function MoveConversationDialog({
     <Dialog open={open} onOpenChange={changeOpen}>
       <button
         aria-label="Move Conversation"
-        className="personal-session-manage-button"
-        onClick={() => changeOpen(true)}
+        className={
+          triggerVariant === "button"
+            ? "personal-session-manage-button"
+            : undefined
+        }
+        onClick={(event) => {
+          if (triggerVariant === "menuitem") {
+            const menu = event.currentTarget.closest("details");
+            returnFocusRef.current = menu?.querySelector("summary") ?? null;
+            menu?.removeAttribute("open");
+          }
+          changeOpen(true);
+        }}
+        role={triggerVariant === "menuitem" ? "menuitem" : undefined}
         title="Move Conversation"
         type="button"
       >
         <FolderInput aria-hidden="true" />
         <span>Move</span>
       </button>
-      <DialogPopup className="personal-session-assignment-dialog">
+      <DialogPopup
+        className="personal-session-assignment-dialog"
+        finalFocus={triggerVariant === "menuitem" ? returnFocusRef : undefined}
+      >
         <DialogHeader>
           <div className="personal-assignment-heading">
             {page === "restore" ? (
@@ -305,7 +323,7 @@ export function MoveConversationDialog({
                   }}
                   type="button"
                 >
-                  Restore original…
+                  Restore
                 </Button>
               ) : null}
               <Button

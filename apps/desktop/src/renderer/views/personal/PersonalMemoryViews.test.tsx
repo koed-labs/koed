@@ -850,7 +850,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
     await act(async () =>
       [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore original…")!
+        .find((button) => button.textContent === "Restore")!
         .click()
     );
     expect(assignSessionProject).toHaveBeenCalledTimes(1);
@@ -878,7 +878,7 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toContain(namedIdentity.key!);
     await act(async () =>
       [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore original…")!
+        .find((button) => button.textContent === "Restore")!
         .click()
     );
     await act(async () =>
@@ -1029,9 +1029,21 @@ describe("PersonalMemoryWorkspace", () => {
         branch: "main",
         isWorktree: false,
         remotes: [{ display: "github.com/koed-labs/koed" }]
+      },
+      repository: {
+        kind: "portable_repository",
+        key: "koed_index_fixture",
+        root: source.path,
+        branch: "main",
+        checkoutId: "checkout_index_fixture",
+        originatingDeviceId: "studio-id",
+        reason: "origin",
+        selectedRemote: "origin",
+        anchorDisplay: "github.com/koed-labs/koed"
       }
     };
-    source.id = metadata.localProjectId;
+    source.repository = metadata.repository;
+    source.id = repositoryScopeId(metadata.repository!);
     source.threads = source.threads.map((item) => ({
       ...item,
       projectId: source.id
@@ -1068,19 +1080,25 @@ describe("PersonalMemoryWorkspace", () => {
         ?.textContent
     ).toBe("Active1");
     expect(container.textContent).toContain("koed-labs/koed");
-    const overview = container.querySelector(
-      `[data-project-id="${source.id}"] .personal-project-overview`
-    );
-    expect(overview?.getAttribute("aria-label")).toBe(
-      "1 Captured Session · 1000 Memory Events"
-    );
-    expect(overview?.querySelector(".lucide-brain")).not.toBeNull();
-    expect(overview?.querySelector(".lucide-book-text")).not.toBeNull();
+    const row = [
+      ...container.querySelectorAll<HTMLElement>("[data-project-id]")
+    ].find((entry) => entry.dataset.projectId === source.id)!;
+    expect(row.dataset.groupKind).toBe("git");
+    expect(
+      row.querySelector(".personal-project-source-icon .lucide-git-fork")
+    ).not.toBeNull();
+    expect(
+      row
+        .querySelector(
+          ".personal-project-row-heading .personal-project-conversation-count"
+        )
+        ?.getAttribute("aria-label")
+    ).toBe("1 Conversation");
+    expect(row.querySelector(".lucide-brain")).toBeNull();
+    expect(row.textContent).not.toContain("1000");
 
     await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>(`[data-project-id="${source.id}"]`)
-        ?.click();
+      row.click();
     });
     const heading = container.querySelector<HTMLElement>(
       '[data-personal-route-focus="project"]'
@@ -1281,6 +1299,11 @@ describe("PersonalMemoryWorkspace", () => {
     ).toHaveLength(2);
     expect(container.textContent?.match(/Research Agent/g)).toHaveLength(1);
     expect(container.textContent?.match(/Verification Agent/g)).toHaveLength(1);
+    expect(
+      container
+        .querySelector(".personal-project-conversation-count")
+        ?.getAttribute("aria-label")
+    ).toBe("1 Conversation");
   });
 
   it("provides initial Project loading states for wide and narrow layouts", async () => {
@@ -1615,6 +1638,116 @@ describe("PersonalMemoryWorkspace", () => {
     expect(
       container.querySelector('button[aria-label="Rename Captured Session"]')
     ).not.toBeNull();
+  });
+
+  it("opens Move from the Conversation menu, restores focus on cancel, and moves without opening the Conversation", async () => {
+    const selected = thread(1);
+    const source = project([selected]);
+    const target = { ...createdProject, name: "Destination" };
+    let moved = false;
+    const assignSessionProject = vi.fn(async () => {
+      moved = true;
+      return { projectId: target.id };
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () =>
+          moved
+            ? [
+                { ...source, threads: [] },
+                {
+                  ...target,
+                  threads: [
+                    {
+                      ...selected,
+                      projectId: target.id,
+                      projectName: target.name
+                    }
+                  ]
+                }
+              ]
+            : [source, target]
+      })
+    );
+    const onAssigned = vi.fn();
+    const onNavigate = vi.fn();
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          assignSessionProject={assignSessionProject}
+          onSessionProjectAssigned={onAssigned}
+          onNavigate={onNavigate}
+          route={{ kind: "project", projectId: source.id }}
+          store={store}
+        />
+      );
+    });
+    const menu = container.querySelector<HTMLDetailsElement>(
+      ".personal-session-actions"
+    )!;
+    const trigger = menu.querySelector<HTMLElement>("summary")!;
+    const openMove = async () => {
+      await act(async () => trigger.click());
+      await vi.waitFor(() => expect(menu.open).toBe(true));
+      const move = menu.querySelector<HTMLButtonElement>(
+        '[role="menuitem"][aria-label="Move Conversation"]'
+      )!;
+      expect(move.textContent).toBe("Move");
+      await act(async () => move.click());
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(".personal-session-assignment-dialog")
+        ).not.toBeNull()
+      );
+      expect(menu.open).toBe(false);
+    };
+    await openMove();
+    expect(assignSessionProject).not.toHaveBeenCalled();
+    await act(async () => {
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          ".personal-session-assignment-dialog button"
+        )
+      ]
+        .find((button) => button.textContent === "Cancel")!
+        .click();
+    });
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+    await openMove();
+    const select = document.querySelector<HTMLSelectElement>(
+      '.personal-session-assignment-dialog select[name="targetProjectId"]'
+    )!;
+    await act(async () => {
+      select.value = target.id;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(select.value).toBe(target.id);
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '.personal-session-assignment-dialog button[type="submit"]'
+      )?.disabled
+    ).toBe(false);
+    await act(async () => {
+      document
+        .querySelector(".personal-session-assignment-dialog form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true })
+        );
+    });
+    expect(assignSessionProject).toHaveBeenCalledWith({
+      action: "move",
+      sessionId,
+      targetProjectId: target.id,
+      expectedVersion: 1
+    });
+    expect(onAssigned).toHaveBeenCalledWith({
+      projectId: target.id,
+      sessionId
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(store.current().projectsById.get(target.id)?.threads).toHaveLength(
+      1
+    );
   });
 
   it("fences a stale Project move response after the selected session changes", async () => {
@@ -3691,15 +3824,13 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain(source.name)
     );
 
-    const rowRepo = container.querySelector(
-      `[data-project-id="${source.id}"] .personal-project-repo`
+    const rowContext = container.querySelector(
+      `[data-project-id="${source.id}"] .personal-project-context-label`
     );
-    expect(rowRepo?.classList.contains("personal-project-repo-static")).toBe(
-      true
-    );
-    expect(rowRepo?.getAttribute("role")).toBeNull();
+    expect(rowContext?.tagName).toBe("SPAN");
+    expect(rowContext?.getAttribute("role")).toBeNull();
     await act(async () => {
-      (rowRepo as HTMLElement)?.click();
+      (rowContext as HTMLElement)?.click();
     });
     expect(openExternal).not.toHaveBeenCalled();
 

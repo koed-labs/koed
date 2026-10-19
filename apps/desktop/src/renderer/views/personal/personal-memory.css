@@ -228,8 +228,73 @@
 }
 
 .personal-project-row {
-  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  grid-template-columns: 2rem minmax(0, 1fr);
   padding: 0.625rem;
+}
+
+.personal-project-source-icon {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  justify-content: center;
+}
+
+.personal-project-source-icon svg {
+  height: 1.125rem;
+  width: 1.125rem;
+}
+
+.personal-project-row-heading,
+.personal-project-row-context {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.personal-project-row-heading > strong {
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.personal-project-conversation-count {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+.personal-project-conversation-count svg,
+.personal-project-context-label svg {
+  flex: 0 0 auto;
+  height: 0.8rem;
+  width: 0.8rem;
+}
+
+.personal-project-context-label {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 0.75rem;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.personal-project-context-label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-project-row-context time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .personal-project-row[aria-current="page"],
@@ -3167,10 +3232,26 @@ button.personal-project-details-folder:hover {
   border-color: var(--ring);
 }
 
-.personal-agent-projects svg {
+.personal-agent-projects > button > svg {
   height: 1.25rem;
   margin-bottom: 0.5rem;
   width: 1.25rem;
+}
+
+.personal-agent-project-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.personal-agent-project-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .personal-agent-projects strong {
