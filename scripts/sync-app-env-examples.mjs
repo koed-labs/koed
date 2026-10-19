@@ -19,7 +19,11 @@ export const appEnvSources = [
     dir: "apps/privacy-service",
     prefix: "PRIVACY"
   },
-  { label: "Desktop", dir: "apps/desktop", prefix: "DESKTOP" }
+  {
+    label: "Desktop (launch environment only; .env is not loaded)",
+    dir: "apps/desktop",
+    prefix: "DESKTOP"
+  }
 ];
 
 const sharedRootKeyPrefixes = ["MEMORY_"];
