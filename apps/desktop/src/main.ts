@@ -93,8 +93,7 @@ const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
 const appName = "Koed";
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
-  packagedDesktop: app.isPackaged,
-  packagedResourcesPath: process.resourcesPath
+  packagedDesktop: app.isPackaged
 });
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 const menuBarIconFile = menuBarIconFilename(process.platform);
