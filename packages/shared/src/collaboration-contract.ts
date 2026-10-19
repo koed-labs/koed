@@ -23,6 +23,15 @@ export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 5;
+export const TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION = 1;
+export const TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE =
+  "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages";
+export const TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT =
+  "/v2/collaboration/realtime/snapshot";
+export const TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT =
+  "/v2/collaboration/realtime/stream";
+export const TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT =
+  "/v2/collaboration/realtime/ack";
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -190,6 +199,21 @@ const distinctUuidArray = (minimum: number, maximum: number) =>
       }
     });
 
+const distinctCanonicalUuidArray = (minimum: number, maximum: number) =>
+  z
+    .array(z.uuid())
+    .min(minimum)
+    .max(maximum)
+    .transform((values) => values.map((value) => value.toLowerCase()))
+    .superRefine((values, context) => {
+      if (new Set(values).size !== values.length) {
+        context.addIssue({
+          code: "custom",
+          message: "Identifiers must be distinct"
+        });
+      }
+    });
+
 export const collaborationNameSchema = boundedCodePoints(
   COLLABORATION_NAME_MAX_CODE_POINTS
 );
@@ -212,6 +236,44 @@ export const collaborationTimestampSchema = z
   .string()
   .max(64)
   .datetime({ offset: true });
+
+export const teamCollaborationV2CapabilitiesSchema = z
+  .object({
+    product: z.literal("koed"),
+    apiVersion: z.literal("v2"),
+    capabilitySchemaVersion: z.literal(
+      TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION
+    ),
+    teamCollaboration: z
+      .object({
+        availability: z.enum(["available", "unavailable"]),
+        messageContractVersion: z.literal(2),
+        messageEndpointTemplate: z.literal(
+          TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE
+        ),
+        realtime: z
+          .object({
+            protocolVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+            messageContractVersion: z.literal(2),
+            snapshotEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT
+            ),
+            streamEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT
+            ),
+            acknowledgementEndpoint: z.literal(
+              TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT
+            )
+          })
+          .strict()
+      })
+      .strict()
+  })
+  .strict();
+
+export type TeamCollaborationV2Capabilities = z.infer<
+  typeof teamCollaborationV2CapabilitiesSchema
+>;
 
 export const collaborationOpaqueCursorSchema = z
   .string()
@@ -807,7 +869,7 @@ export const teamCollaborationMessageV2RendererSchema = z
     recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     failure: collaborationSafeErrorSchema.nullable(),
     replyToMessageId: z.uuid().nullable(),
-    mentionsUserIds: distinctUuidArray(
+    mentionsUserIds: distinctCanonicalUuidArray(
       0,
       COLLABORATION_TEAM_MESSAGE_MENTION_MAX
     )
@@ -2625,7 +2687,7 @@ export const collaborationRendererCommandSchema = z
       clientMessageId: z.uuid(),
       body: collaborationMessageBodySchema,
       replyToMessageId: z.uuid().nullable(),
-      mentionsUserIds: distinctUuidArray(
+      mentionsUserIds: distinctCanonicalUuidArray(
         0,
         COLLABORATION_TEAM_MESSAGE_MENTION_MAX
       )

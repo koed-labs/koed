@@ -4,7 +4,9 @@ import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import {
   assertSecureHttpTransport,
-  isTeamMemoryAnswerTaskCapability
+  isTeamMemoryAnswerTaskCapability,
+  teamCollaborationV2CapabilitiesSchema,
+  type TeamCollaborationV2Capabilities
 } from "@koed/shared";
 import {
   createSecureUpstreamFetch,
@@ -27,6 +29,20 @@ export type UpstreamCapabilityState =
   | "validated"
   | "stale"
   | "failed";
+
+export type UpstreamTeamCollaborationV2CapabilityState =
+  | "validated"
+  | "unsupported"
+  | "stale"
+  | "failed";
+
+export interface UpstreamTeamCollaborationV2CapabilityCache {
+  state: UpstreamTeamCollaborationV2CapabilityState;
+  checkedAt: string | null;
+  expiresAt: string | null;
+  schemaVersion: number | null;
+  payload?: TeamCollaborationV2Capabilities;
+}
 
 export type UpstreamFailureCategory =
   | "network"
@@ -57,6 +73,7 @@ export interface UpstreamCapabilityCache {
   failureCategory?: UpstreamFailureCategory;
   failureMessage?: string;
   payload?: SanitizedCapabilitiesPayload;
+  teamCollaborationV2?: UpstreamTeamCollaborationV2CapabilityCache;
 }
 
 export interface UpstreamCredentialStatus {
@@ -90,7 +107,10 @@ export interface UpstreamBackendSummary {
   profile: UpstreamDeploymentProfile | null;
   routePolicy: UpstreamRoutePolicy;
   credential: UpstreamCredentialStatus;
-  capabilities: Omit<UpstreamCapabilityCache, "payload">;
+  capabilities: Omit<
+    UpstreamCapabilityCache,
+    "payload" | "teamCollaborationV2"
+  >;
 }
 
 export interface UpstreamRegistryResult {
@@ -382,8 +402,38 @@ const sanitizeCapabilityCache = (
   ...(cache?.failureMessage
     ? { failureMessage: cache.failureMessage.slice(0, 240) }
     : {}),
-  ...(cache?.payload ? { payload: cache.payload } : {})
+  ...(cache?.payload ? { payload: cache.payload } : {}),
+  ...(cache?.teamCollaborationV2
+    ? {
+        teamCollaborationV2: sanitizeTeamCollaborationV2Cache(
+          cache.teamCollaborationV2
+        )
+      }
+    : {})
 });
+
+const sanitizeTeamCollaborationV2Cache = (
+  cache: Partial<UpstreamTeamCollaborationV2CapabilityCache>
+): UpstreamTeamCollaborationV2CapabilityCache => {
+  const parsed = teamCollaborationV2CapabilitiesSchema.safeParse(cache.payload);
+  const cacheState =
+    cache.state === "validated" ||
+    cache.state === "unsupported" ||
+    cache.state === "stale" ||
+    cache.state === "failed"
+      ? cache.state
+      : "failed";
+  const state =
+    cacheState === "validated" && !parsed.success ? "failed" : cacheState;
+  return {
+    state,
+    checkedAt: typeof cache.checkedAt === "string" ? cache.checkedAt : null,
+    expiresAt: typeof cache.expiresAt === "string" ? cache.expiresAt : null,
+    schemaVersion:
+      typeof cache.schemaVersion === "number" ? cache.schemaVersion : null,
+    ...(state === "validated" && parsed.success ? { payload: parsed.data } : {})
+  };
+};
 
 const writeRegistry = (
   paths: KoedServerPaths,
@@ -402,8 +452,13 @@ const writeRegistry = (
 };
 
 const summarize = (backend: UpstreamBackendRecord): UpstreamBackendSummary => {
-  const { payload: _payload, ...capabilities } = backend.capabilities;
+  const {
+    payload: _payload,
+    teamCollaborationV2: _teamCollaborationV2,
+    ...capabilities
+  } = backend.capabilities;
   void _payload;
+  void _teamCollaborationV2;
   return {
     id: backend.id,
     displayName: backend.displayName,
@@ -866,6 +921,71 @@ const redactCapabilitySecrets = (value: unknown): unknown => {
 const capabilityExpiresAt = (checkedAt: Date): string =>
   new Date(checkedAt.getTime() + 15 * 60 * 1000).toISOString();
 
+const refreshTeamCollaborationV2Capabilities = async (
+  requestFetch: typeof fetch,
+  baseUrl: string,
+  checkedAt: Date,
+  signal?: AbortSignal
+): Promise<UpstreamTeamCollaborationV2CapabilityCache> => {
+  const checkedAtIso = checkedAt.toISOString();
+  const expiresAt = capabilityExpiresAt(checkedAt);
+  try {
+    const response = await requestFetch(
+      new URL("v2/capabilities", `${baseUrl}/`),
+      {
+        redirect: "error",
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000)
+      }
+    );
+    if ([404, 405, 410].includes(response.status)) {
+      await response.body?.cancel().catch(() => undefined);
+      return {
+        state: "unsupported",
+        checkedAt: checkedAtIso,
+        expiresAt,
+        schemaVersion: null
+      };
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return {
+        state: "failed",
+        checkedAt: checkedAtIso,
+        expiresAt,
+        schemaVersion: null
+      };
+    }
+    const payload = teamCollaborationV2CapabilitiesSchema.safeParse(
+      await response.json()
+    );
+    if (!payload.success) {
+      return {
+        state: "failed",
+        checkedAt: checkedAtIso,
+        expiresAt,
+        schemaVersion: null
+      };
+    }
+    return {
+      state: "validated",
+      checkedAt: checkedAtIso,
+      expiresAt,
+      schemaVersion: payload.data.capabilitySchemaVersion,
+      payload: payload.data
+    };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return {
+      state: "failed",
+      checkedAt: checkedAtIso,
+      expiresAt,
+      schemaVersion: null
+    };
+  }
+};
+
 const commitCapabilityRefresh = (
   paths: KoedServerPaths,
   backendId: string,
@@ -941,6 +1061,13 @@ export const refreshUpstreamBackendCapabilities = async (
     }
     const payload = sanitizeCapabilitiesPayload(await response.json());
     deps.signal?.throwIfAborted();
+    const teamCollaborationV2 = await refreshTeamCollaborationV2Capabilities(
+      requestFetch,
+      backend.baseUrl,
+      attemptedAt,
+      deps.signal
+    );
+    deps.signal?.throwIfAborted();
     const profile = normalizeProfile(payload.deployment?.profile);
     const refreshed = commitCapabilityRefresh(
       paths,
@@ -958,7 +1085,8 @@ export const refreshUpstreamBackendCapabilities = async (
           schemaVersion: payload.capabilitySchemaVersion,
           profile: profile ?? null,
           releaseVersion: payload.releaseVersion ?? null,
-          payload
+          payload,
+          teamCollaborationV2
         }
       }),
       resolvedDeps
@@ -1070,14 +1198,27 @@ export const collectUpstreamRegistryStatus = (
       backend.capabilities.state === "validated" &&
       backend.capabilities.expiresAt &&
       Date.parse(backend.capabilities.expiresAt) <= now;
-    return summarize(
-      expired
-        ? {
-            ...backend,
-            capabilities: { ...backend.capabilities, state: "stale" }
-          }
-        : backend
-    );
+    const teamCollaborationV2 = backend.capabilities.teamCollaborationV2;
+    const teamCollaborationV2Expired =
+      teamCollaborationV2?.state === "validated" &&
+      teamCollaborationV2.expiresAt &&
+      Date.parse(teamCollaborationV2.expiresAt) <= now;
+    if (!expired && !teamCollaborationV2Expired) return summarize(backend);
+    return summarize({
+      ...backend,
+      capabilities: {
+        ...backend.capabilities,
+        ...(expired ? { state: "stale" as const } : {}),
+        ...(teamCollaborationV2Expired && teamCollaborationV2
+          ? {
+              teamCollaborationV2: {
+                ...teamCollaborationV2,
+                state: "stale" as const
+              }
+            }
+          : {})
+      }
+    });
   });
   return {
     registered: backends.length,

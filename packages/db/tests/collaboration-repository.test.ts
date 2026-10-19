@@ -1207,10 +1207,19 @@ describeDb("Collaboration repository", () => {
     expect(legacyV2Send).not.toHaveProperty("replyToMessageId");
     expect(legacyV2Send?.metadata).not.toHaveProperty("__koed_team_message_v2");
 
-    const v2Page = await repository.listTeamMessagesV2(
-      actor(fixture.memberUserId),
-      { threadId: thread.id }
-    );
+    const v2Page = await (async () => {
+      const decryptSpy = vi.spyOn(provider, "decrypt");
+      try {
+        const page = await repository.listTeamMessagesV2(
+          actor(fixture.memberUserId),
+          { threadId: thread.id }
+        );
+        expect(decryptSpy).toHaveBeenCalledTimes(6);
+        return page;
+      } finally {
+        decryptSpy.mockRestore();
+      }
+    })();
     expect(
       v2Page?.messages.find((message) => message.id === original.id)
     ).toMatchObject({ replyToMessageId: null, mentionsUserIds: [] });
@@ -1232,6 +1241,32 @@ describeDb("Collaboration repository", () => {
       }
     );
     expect(finalReply?.replyToMessageId).toBe(sent!.id);
+
+    await pool.query(
+      `update team_memberships
+          set status = 'disabled', disabled_at = now(), version = version + 1
+        where team_id = $1 and user_id = $2`,
+      [fixture.teamId, fixture.memberUserId]
+    );
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), input)
+    ).resolves.toEqual(sent);
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), {
+        ...input,
+        mentionsUserIds: []
+      })
+    ).rejects.toBeInstanceOf(CollaborationIdempotencyConflictError);
+
+    await pool.query(
+      `update team_memberships
+          set status = 'disabled', disabled_at = now(), version = version + 1
+        where team_id = $1 and user_id = $2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.sendTeamMessageV2(actor(fixture.ownerUserId), input)
+    ).resolves.toBeNull();
 
     await expect(
       pool.query("delete from collaboration_messages where id = $1", [

@@ -5702,11 +5702,35 @@ describe("api health", () => {
       method: "GET",
       url: "/v1/capabilities"
     });
+    const v2Response = await app.inject({
+      method: "GET",
+      url: "/v2/capabilities"
+    });
     await app.close();
 
     const capabilities = jsonBody<CapabilitiesResponse>(response);
 
     expect(response.statusCode).toBe(200);
+    expect(v2Response.statusCode).toBe(200);
+    expect(capabilities).not.toHaveProperty("teamCollaborationV2");
+    expect(v2Response.json()).toEqual({
+      product: "koed",
+      apiVersion: "v2",
+      capabilitySchemaVersion: 1,
+      teamCollaboration: {
+        availability: "unavailable",
+        messageContractVersion: 2,
+        messageEndpointTemplate:
+          "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        realtime: {
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
+          messageContractVersion: 2,
+          snapshotEndpoint: "/v2/collaboration/realtime/snapshot",
+          streamEndpoint: "/v2/collaboration/realtime/stream",
+          acknowledgementEndpoint: "/v2/collaboration/realtime/ack"
+        }
+      }
+    });
     expect(capabilities.releaseVersion).toBe(releaseManifest.version);
     expect(capabilities).toMatchObject({
       product: "koed",
@@ -6091,14 +6115,24 @@ describe("api health", () => {
 
     process.env.KOED_DEPLOYMENT_PROFILE = "team-self-hosted";
     process.env.KOED_DEPENDENCY_MODE = "external";
+    process.env.KOED_TEAM_COLLABORATION_ENABLED = "true";
     const teamApp = await buildServer();
     const teamResponse = await teamApp.inject({
       method: "GET",
       url: "/v1/capabilities"
     });
+    const teamV2Response = await teamApp.inject({
+      method: "GET",
+      url: "/v2/capabilities"
+    });
     await teamApp.close();
 
     const teamSelfHosted = jsonBody<CapabilitiesResponse>(teamResponse);
+    expect(teamV2Response.statusCode).toBe(200);
+    expect(teamV2Response.json()).toMatchObject({
+      apiVersion: "v2",
+      teamCollaboration: { availability: "available" }
+    });
     expect(teamSelfHosted).toMatchObject({
       deployment: {
         profile: "team_self_hosted",

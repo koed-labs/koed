@@ -1914,7 +1914,8 @@ const mapMessageRow = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
   provider: EnvelopeEncryptionProvider,
-  row: MessageRow
+  row: MessageRow,
+  options?: { decodedMetadata: unknown }
 ): Promise<CollaborationMessageRecord> => {
   // A PoolClient must execute these authorization/decrypt queries in order.
   const bodyText = await decryptMessageField(
@@ -1924,13 +1925,9 @@ const mapMessageRow = async (
     row,
     "body"
   );
-  const metadata = await decryptMessageField(
-    client,
-    actor,
-    provider,
-    row,
-    "metadata"
-  );
+  const metadata = options
+    ? options.decodedMetadata
+    : await decryptMessageField(client, actor, provider, row, "metadata");
   const provenance = await decryptMessageField(
     client,
     actor,
@@ -2021,7 +2018,6 @@ const mapTeamMessageV2Row = async (
   if (row.scope !== "team") {
     throw new Error("Team Chat v2 cannot map a Personal collaboration message");
   }
-  const message = await mapMessageRow(client, actor, provider, row);
   const metadata = await decryptMessageField(
     client,
     actor,
@@ -2029,6 +2025,9 @@ const mapTeamMessageV2Row = async (
     row,
     "metadata"
   );
+  const message = await mapMessageRow(client, actor, provider, row, {
+    decodedMetadata: metadata
+  });
   const mentionsUserIds = teamMessageV2FieldsFromMetadata(metadata);
   return {
     ...message,
@@ -3740,26 +3739,6 @@ const sendCollaborationMessage = async (
         "Collaboration thread audience is unavailable"
       );
     }
-    if (
-      mentionsUserIds.some(
-        (userId) => !currentAudienceMembers!.includes(userId)
-      )
-    ) {
-      throw new CollaborationStateConflictError(
-        "One or more mentioned Users are unavailable in this message audience"
-      );
-    }
-    if (replyToMessageId !== null) {
-      const replyTarget = await client.query(
-        `select 1 from collaboration_messages where thread_id = $1 and id = $2 limit 1`,
-        [thread.id, replyToMessageId]
-      );
-      if (replyTarget.rowCount !== 1) {
-        throw new CollaborationStateConflictError(
-          "Reply target is unavailable in this thread"
-        );
-      }
-    }
   }
   const idempotencyKeyHash = hashDomain("message-idempotency", idempotencyKey);
   const messageRequestHash = requestHash(
@@ -3804,6 +3783,29 @@ const sendCollaborationMessage = async (
     return teamMessageV2
       ? mapTeamMessageV2Row(client, actor, provider, existing.rows[0])
       : mapMessageRow(client, actor, provider, existing.rows[0]);
+  }
+
+  if (teamMessageV2) {
+    if (
+      mentionsUserIds.some(
+        (userId) => !currentAudienceMembers!.includes(userId)
+      )
+    ) {
+      throw new CollaborationStateConflictError(
+        "One or more mentioned Users are unavailable in this message audience"
+      );
+    }
+    if (replyToMessageId !== null) {
+      const replyTarget = await client.query(
+        `select 1 from collaboration_messages where thread_id = $1 and id = $2 limit 1`,
+        [thread.id, replyToMessageId]
+      );
+      if (replyTarget.rowCount !== 1) {
+        throw new CollaborationStateConflictError(
+          "Reply target is unavailable in this thread"
+        );
+      }
+    }
   }
 
   const threadSequence = Number(thread.next_sequence);

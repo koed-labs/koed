@@ -86,6 +86,7 @@ import {
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
+  upstreamSupportsCollaborationCommands,
   upstreamBackendById,
   type LocalEdgeUpstreamBackend,
   type LocalEdgeUpstreamRegistry
@@ -94,7 +95,6 @@ import {
 const COMMAND_BODY_LIMIT_BYTES = 128 * 1024;
 const UPSTREAM_RESPONSE_LIMIT_BYTES = 2 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 30_000;
-const COLLABORATION_CAPABILITY_SCHEMA_VERSION = 9;
 const PERSONAL_SUBSCRIPTION_TTL_MS = 24 * 60 * 60 * 1_000;
 const PERSONAL_CURSOR_PREFIX = "cpc1";
 const TEAM_MESSAGE_CURSOR_PREFIX = "ctmc1";
@@ -1171,18 +1171,10 @@ const personalMessagePage = async (input: {
 };
 
 const supportsCollaborationCommands = (
-  backend: LocalEdgeUpstreamBackend
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
 ): boolean => {
-  const availability =
-    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
-      ?.availability;
-  return (
-    backend.capabilities?.schemaVersion ===
-      COLLABORATION_CAPABILITY_SCHEMA_VERSION &&
-    backend.capabilities.payload?.capabilitySchemaVersion ===
-      COLLABORATION_CAPABILITY_SCHEMA_VERSION &&
-    (availability === "available" || availability === "partial")
-  );
+  return upstreamSupportsCollaborationCommands(backend, messageContractVersion);
 };
 
 const isSafeBackend = (backend: LocalEdgeUpstreamBackend): boolean => {
@@ -1307,16 +1299,18 @@ const targetTeamMessageV2From = (
   value: unknown
 ): TeamCollaborationMessageV2Renderer | null => {
   const parsed = remoteTeamMessageV2Schema.safeParse(value);
-  if (!parsed.success || !parsed.data.senderUserId) return null;
+  if (!parsed.success) return null;
   const message = parsed.data;
+  const senderUserId = message.senderUserId;
+  if (!senderUserId) return null;
   const target = teamCollaborationMessageV2RendererSchema.safeParse({
-    id: message.id,
-    threadId: message.threadId,
+    id: message.id.toLowerCase(),
+    threadId: message.threadId.toLowerCase(),
     scope: "team",
-    teamId: message.teamId,
+    teamId: message.teamId.toLowerCase(),
     sequence: message.threadSequence,
     sender: {
-      id: message.senderUserId,
+      id: senderUserId.toLowerCase(),
       displayName: message.senderDisplayName ?? "Team member",
       membershipState: "enabled"
     },
@@ -1329,8 +1323,8 @@ const targetTeamMessageV2From = (
     delivery: "sent",
     recipientStatus: message.recipientStatus,
     failure: null,
-    replyToMessageId: message.replyToMessageId,
-    mentionsUserIds: message.mentionsUserIds
+    replyToMessageId: message.replyToMessageId?.toLowerCase() ?? null,
+    mentionsUserIds: message.mentionsUserIds.map((id) => id.toLowerCase())
   });
   return target.success ? target.data : null;
 };
@@ -2382,18 +2376,21 @@ const teamMessageV2Page = async (input: {
 }): Promise<unknown | null> => {
   if (
     input.thread.scope !== "team" ||
-    input.thread.teamId !== input.teamId ||
+    typeof input.thread.teamId !== "string" ||
+    input.thread.teamId.toLowerCase() !== input.teamId.toLowerCase() ||
     typeof input.thread.id !== "string" ||
     typeof input.thread.latestSequence !== "number"
   ) {
     return null;
   }
+  const teamId = input.teamId.toLowerCase();
+  const threadId = input.thread.id.toLowerCase();
   const decoded = input.cursor
     ? decodeTeamMessageV2Cursor(input.credential, input.cursor, {
         backendId: input.context.backendId,
         principalUserId: input.context.principal.id,
-        teamId: input.teamId,
-        threadId: input.thread.id,
+        teamId,
+        threadId,
         direction: input.direction
       })
     : null;
@@ -2410,7 +2407,7 @@ const teamMessageV2Page = async (input: {
     operationFamily: "team_chat_read",
     method: "GET",
     path: queryPath(
-      `/v2/collaboration/teams/${encodeURIComponent(input.teamId)}/threads/${encodeURIComponent(input.thread.id)}/messages`,
+      `/v2/collaboration/teams/${encodeURIComponent(teamId)}/threads/${encodeURIComponent(threadId)}/messages`,
       input.direction === "older"
         ? {
             beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
@@ -2428,9 +2425,7 @@ const teamMessageV2Page = async (input: {
   if (
     items.some((message) => message === null) ||
     items.some(
-      (message) =>
-        message!.teamId !== input.teamId ||
-        message!.threadId !== input.thread.id
+      (message) => message!.teamId !== teamId || message!.threadId !== threadId
     )
   ) {
     return null;
@@ -2446,8 +2441,8 @@ const teamMessageV2Page = async (input: {
     version: 2 as const,
     backendId: input.context.backendId,
     principalUserId: input.context.principal.id,
-    teamId: input.teamId,
-    threadId: input.thread.id,
+    teamId,
+    threadId,
     snapshotSequence
   };
   return teamCollaborationMessagePageV2Schema.parse({
@@ -2468,7 +2463,7 @@ const teamMessageV2Page = async (input: {
       : null,
     hasOlder,
     hasNewer,
-    threadId: input.thread.id,
+    threadId,
     items: messages
   });
 };
@@ -3215,7 +3210,8 @@ export const registerCollaborationCommandRoute = (
       | "action_grant"
       | "share_grant_management"
       | "managed_execution",
-    backendId?: string
+    backendId?: string,
+    messageContractVersion: 1 | 2 = 1
   ): Promise<TeamReadContext | null> => {
     const registry = readRegistry(options.upstreamBackendsPath);
     const backend = backendId
@@ -3255,7 +3251,7 @@ export const registerCollaborationCommandRoute = (
     });
     if (
       decision.action !== "live_upstream_proxy" ||
-      !supportsCollaborationCommands(backend)
+      !supportsCollaborationCommands(backend, messageContractVersion)
     ) {
       return null;
     }
@@ -3938,7 +3934,8 @@ export const registerCollaborationCommandRoute = (
         const threadRef = input.command.input.thread;
         const context = await resolveTeamReadContext(
           "team_chat_read",
-          input.upstream_backend_id
+          input.upstream_backend_id,
+          2
         );
         if (!context) {
           return failureResult(
@@ -3952,13 +3949,15 @@ export const registerCollaborationCommandRoute = (
             upstreamAuthorization: context.upstreamAuthorization,
             operationFamily: "team_chat_read",
             method: "GET",
-            path: `/v1/collaboration/teams/${encodeURIComponent(threadRef.teamId)}/threads/${encodeURIComponent(threadRef.threadId)}`
+            path: `/v1/collaboration/teams/${encodeURIComponent(threadRef.teamId.toLowerCase())}/threads/${encodeURIComponent(threadRef.threadId.toLowerCase())}`
           });
           const thread = threadDtoFromRemote(threadPayload.thread);
           if (
             !thread ||
-            thread.id !== threadRef.threadId ||
-            thread.teamId !== threadRef.teamId
+            typeof thread.id !== "string" ||
+            thread.id.toLowerCase() !== threadRef.threadId.toLowerCase() ||
+            typeof thread.teamId !== "string" ||
+            thread.teamId.toLowerCase() !== threadRef.teamId.toLowerCase()
           ) {
             return failureResult(input.command, safeError("not_available"));
           }
@@ -4199,10 +4198,12 @@ export const registerCollaborationCommandRoute = (
           : null,
         upstreamCredentialAvailable: Boolean(upstreamAuthorization)
       });
+      const messageContractVersion =
+        input.command.command === "collaboration.send_team_message_v2" ? 2 : 1;
       if (
         decision.action !== "live_upstream_proxy" ||
         !upstreamAuthorization ||
-        !supportsCollaborationCommands(backend)
+        !supportsCollaborationCommands(backend, messageContractVersion)
       ) {
         return failureResult(
           input.command,

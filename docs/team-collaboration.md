@@ -207,6 +207,15 @@ on v1 until it adopts this contract. These fields do not change sender kinds,
 grant requirements, notifications, Memory, or Agent input; no Team Chat UI
 behavior is implied here.
 
+An upstream must also return a valid, available `/v2/capabilities` response
+before the local edge routes v2 messages or realtime. The local edge fetches and
+caches this strict v2 capability separately alongside `/v1/capabilities` using
+its existing capability refresh process. Each v2 snapshot expires after 15
+minutes; missing, unsupported, malformed, or expired v2 evidence blocks v2
+routing until a fresh snapshot is validated. Valid v1 schema-9 evidence
+continues to govern the unchanged v1 paths. The existing `/v1/capabilities`
+schema and response shape remain unchanged.
+
 ### Encryption
 
 Remote Team message bodies, thread and channel names, topics, descriptions,

@@ -175,6 +175,7 @@ export const createCollaborationMessageSchema = z
 const distinctTeamMessageMentionUserIdsSchema = z
   .array(strictUuidSchema)
   .max(COLLABORATION_TEAM_MESSAGE_MENTION_MAX)
+  .transform((userIds) => userIds.map((userId) => userId.toLowerCase()))
   .superRefine((userIds, context) => {
     if (new Set(userIds).size !== userIds.length) {
       context.addIssue({

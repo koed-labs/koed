@@ -1199,7 +1199,12 @@ export const createCollaborationRealtimeBroker = (
     );
     const upstreamBackend = upstreamBackendById(registry, upstreamBackendId);
     if (!upstreamBackend) fail("Upstream backend is unavailable", 424);
-    if (!upstreamSupportsCollaborationRealtime(upstreamBackend!)) {
+    if (
+      !upstreamSupportsCollaborationRealtime(
+        upstreamBackend!,
+        messageContractVersion
+      )
+    ) {
       fail("Upstream collaboration realtime protocol is unavailable", 424);
     }
     const localEdgeCredential = readLocalEdgeCredential(

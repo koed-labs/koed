@@ -1184,6 +1184,20 @@ describe("collaboration HTTP routes", () => {
     });
     expect(personalApiTokenV2Read.statusCode).toBe(403);
     expect(personalApiTokenV2Write.statusCode).toBe(403);
+    const duplicateCanonicalMention = await app.inject({
+      method: "POST",
+      url: v2TeamMessageUrl,
+      headers: {
+        ...deviceHeaders(fixture.ids.alice, ["team_chat_write"]),
+        "idempotency-key": "v2-duplicate-case-variant-mention"
+      },
+      payload: {
+        bodyText: "Duplicate canonical mention",
+        replyToMessageId: null,
+        mentionsUserIds: [fixture.ids.bob, fixture.ids.bob.toUpperCase()]
+      }
+    });
+    expect(duplicateCanonicalMention.statusCode).toBe(400);
     const v2Created = await app.inject({
       method: "POST",
       url: v2TeamMessageUrl,
@@ -1194,7 +1208,7 @@ describe("collaboration HTTP routes", () => {
       payload: {
         bodyText: "Versioned Team message",
         replyToMessageId: null,
-        mentionsUserIds: [fixture.ids.bob]
+        mentionsUserIds: [fixture.ids.bob.toUpperCase()]
       }
     });
     expect(v2Created.statusCode).toBe(201);

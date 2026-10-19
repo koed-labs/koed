@@ -398,6 +398,13 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v2/capabilities",
+    "public",
+    "operations",
+    "Explicit Team message contract v2 capability discovery."
+  ),
+  route(
+    "GET",
     "/v1/capabilities/authenticated",
     "session",
     "operations",

@@ -55,6 +55,34 @@ describe("route identity contract", () => {
     ).toBeUndefined();
   });
 
+  it("publishes Team message v2 capability discovery as a separate public contract", () => {
+    expect(routeIdentityFor("GET", "/v2/capabilities")).toMatchObject({
+      identity: "public",
+      domain: "operations",
+      status: "implemented"
+    });
+    expect(openApiPaths["/v2/capabilities"]?.get).toMatchObject({
+      "x-koed-identity": "public",
+      responses: {
+        "200": {
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: [
+                  "product",
+                  "apiVersion",
+                  "capabilitySchemaVersion",
+                  "teamCollaboration"
+                ]
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+
   it("inventories raw-conversation mutation identities and request schemas", () => {
     expect(
       implementedRouteIdentityContracts

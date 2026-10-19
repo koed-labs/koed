@@ -10,6 +10,11 @@ import type {
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+  TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+  TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
   collaborationRendererEventSchema,
   teamCollaborationRealtimeUpdateV2Schema,
   type CollaborationRendererEvent
@@ -871,6 +876,34 @@ const createHarness = async (
                   options.realtimeProtocolVersion ??
                   COLLABORATION_CONTRACT_VERSION,
                 transport: "sse"
+              }
+            }
+          },
+          teamCollaborationV2: {
+            state: "validated",
+            checkedAt: "2099-01-01T00:00:00.000Z",
+            expiresAt: "2099-01-01T00:15:00.000Z",
+            schemaVersion: TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+            payload: {
+              product: "koed",
+              apiVersion: "v2",
+              capabilitySchemaVersion:
+                TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+              teamCollaboration: {
+                availability: "available",
+                messageContractVersion: 2,
+                messageEndpointTemplate:
+                  TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+                realtime: {
+                  protocolVersion: COLLABORATION_CONTRACT_VERSION,
+                  messageContractVersion: 2,
+                  snapshotEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+                  streamEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
+                  acknowledgementEndpoint:
+                    TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT
+                }
               }
             }
           }

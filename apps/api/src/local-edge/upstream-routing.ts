@@ -4,6 +4,8 @@ import {
   assertSecureHttpTransport,
   isTeamMemoryAnswerTaskCapability,
   readLocalEdgeUpstreamRegistry,
+  teamCollaborationV2CapabilitiesSchema,
+  TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
   upstreamAdvertisesCapability,
   upstreamBackendById,
   type LocalEdgeUpstreamBackend,
@@ -113,17 +115,63 @@ export const activeUpstreamBackend = (
     : null;
 
 export const upstreamSupportsCollaborationRealtime = (
-  backend: LocalEdgeUpstreamBackend
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
 ): boolean => {
   const availability =
     backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
       ?.availability;
-  return (
+  const supportsV1 =
     backend.capabilities?.schemaVersion === 9 &&
     backend.capabilities.payload?.capabilitySchemaVersion === 9 &&
     (availability === "available" || availability === "partial") &&
     backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
-      COLLABORATION_CONTRACT_VERSION
+      COLLABORATION_CONTRACT_VERSION;
+  return (
+    supportsV1 &&
+    (messageContractVersion === 1 ||
+      upstreamSupportsTeamCollaborationV2(backend))
+  );
+};
+
+export const upstreamSupportsTeamCollaborationV2 = (
+  backend: LocalEdgeUpstreamBackend,
+  now = Date.now()
+): boolean => {
+  const snapshot = backend.capabilities?.teamCollaborationV2;
+  if (
+    snapshot?.state !== "validated" ||
+    snapshot.schemaVersion !==
+      TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION ||
+    typeof snapshot.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(snapshot.expiresAt)) ||
+    Date.parse(snapshot.expiresAt) <= now
+  ) {
+    return false;
+  }
+  const parsed = teamCollaborationV2CapabilitiesSchema.safeParse(
+    snapshot.payload
+  );
+  return (
+    parsed.success && parsed.data.teamCollaboration.availability === "available"
+  );
+};
+
+export const upstreamSupportsCollaborationCommands = (
+  backend: LocalEdgeUpstreamBackend,
+  messageContractVersion: 1 | 2 = 1
+): boolean => {
+  const availability =
+    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
+      ?.availability;
+  const supportsV1 =
+    backend.capabilities?.schemaVersion === 9 &&
+    backend.capabilities.payload?.capabilitySchemaVersion === 9 &&
+    (availability === "available" || availability === "partial");
+  return (
+    supportsV1 &&
+    (messageContractVersion === 1 ||
+      upstreamSupportsTeamCollaborationV2(backend))
   );
 };
 

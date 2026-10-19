@@ -419,5 +419,40 @@ describe("collaboration command registry", () => {
       resultKey: "message",
       idempotencyKey: clientMessageId
     });
+    const uppercaseTeamId = "AB000000-0000-4000-8000-000000000002";
+    const uppercaseThreadId = "CD000000-0000-4000-8000-000000000004";
+    const uppercaseReplyId = "EF000000-0000-4000-8000-000000000005";
+    const uppercaseMentionId = "AB000000-0000-4000-8000-000000000007";
+    const uppercaseReplySend = command("collaboration.send_team_message_v2", {
+      thread: {
+        scope: "team",
+        teamId: uppercaseTeamId,
+        threadId: uppercaseThreadId
+      },
+      clientMessageId,
+      body: "A quoted reply",
+      replyToMessageId: uppercaseReplyId,
+      mentionsUserIds: [uppercaseMentionId]
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(uppercaseReplySend, {
+        scope: "team",
+        teamId: uppercaseTeamId.toLowerCase(),
+        threadId: uppercaseThreadId.toLowerCase(),
+        body: "A quoted reply",
+        replyToMessageId: uppercaseReplyId.toLowerCase(),
+        mentionsUserIds: [uppercaseMentionId.toLowerCase()]
+      })
+    ).toBe(true);
+    expect(
+      teamCollaborationResultMatchesCommand(uppercaseReplySend, {
+        scope: "team",
+        teamId: uppercaseTeamId.toLowerCase(),
+        threadId: uppercaseThreadId.toLowerCase(),
+        body: "A quoted reply",
+        replyToMessageId: messageId,
+        mentionsUserIds: [uppercaseMentionId.toLowerCase()]
+      })
+    ).toBe(false);
   });
 });

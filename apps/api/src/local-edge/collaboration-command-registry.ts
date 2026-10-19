@@ -474,18 +474,36 @@ export const collaborationCommandRegistry = {
     teamOperation: teamMessageV2Operation,
     matchesTeamResult: (command, result) => {
       const mentionsUserIds = result.mentionsUserIds;
+      const replyToMessageId = result.replyToMessageId;
+      const expectedReplyToMessageId = command.input.replyToMessageId;
+      const replyMatches =
+        replyToMessageId === null
+          ? expectedReplyToMessageId === null
+          : typeof replyToMessageId === "string" &&
+            expectedReplyToMessageId !== null &&
+            replyToMessageId.toLowerCase() ===
+              expectedReplyToMessageId.toLowerCase();
       const expectedMentions = command.input.mentionsUserIds
         .map((id) => id.toLowerCase())
         .sort();
+      const actualMentions =
+        Array.isArray(mentionsUserIds) &&
+        mentionsUserIds.every((id): id is string => typeof id === "string")
+          ? mentionsUserIds.map((id) => id.toLowerCase()).sort()
+          : null;
       return (
         result.scope === "team" &&
-        result.threadId === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
+        typeof result.threadId === "string" &&
+        result.threadId.toLowerCase() ===
+          command.input.thread.threadId.toLowerCase() &&
+        typeof result.teamId === "string" &&
+        result.teamId.toLowerCase() ===
+          command.input.thread.teamId.toLowerCase() &&
         result.body === command.input.body &&
-        result.replyToMessageId === command.input.replyToMessageId &&
-        Array.isArray(mentionsUserIds) &&
-        mentionsUserIds.length === expectedMentions.length &&
-        expectedMentions.every((id, index) => mentionsUserIds[index] === id)
+        replyMatches &&
+        actualMentions !== null &&
+        actualMentions.length === expectedMentions.length &&
+        expectedMentions.every((id, index) => actualMentions[index] === id)
       );
     }
   },

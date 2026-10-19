@@ -330,6 +330,30 @@ const backend = (
       capabilities: {
         "memory.collaboration": { availability: "partial" }
       }
+    },
+    teamCollaborationV2: {
+      state: "validated",
+      checkedAt: "2099-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:15:00.000Z",
+      schemaVersion: 1,
+      payload: {
+        product: "koed",
+        apiVersion: "v2",
+        capabilitySchemaVersion: 1,
+        teamCollaboration: {
+          availability: "available",
+          messageContractVersion: 2,
+          messageEndpointTemplate:
+            "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+          realtime: {
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
+            messageContractVersion: 2,
+            snapshotEndpoint: "/v2/collaboration/realtime/snapshot",
+            streamEndpoint: "/v2/collaboration/realtime/stream",
+            acknowledgementEndpoint: "/v2/collaboration/realtime/ack"
+          }
+        }
+      }
     }
   },
   ...overrides
@@ -3612,7 +3636,23 @@ describe("local-edge collaboration command route", () => {
         `/v2/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
       ) {
         return Response.json({
-          messages: [{ ...teamMessageV2Record, threadSequence: 3 }],
+          messages: [
+            {
+              ...teamMessageV2Record,
+              id: teamMessageV2Record.id.toUpperCase(),
+              threadId: teamMessageV2Record.threadId.toUpperCase(),
+              teamId: teamMessageV2Record.teamId.toUpperCase(),
+              teamWorkspaceId:
+                teamMessageV2Record.teamWorkspaceId.toUpperCase(),
+              senderUserId: teamMessageV2Record.senderUserId.toUpperCase(),
+              replyToMessageId:
+                teamMessageV2Record.replyToMessageId.toUpperCase(),
+              mentionsUserIds: teamMessageV2Record.mentionsUserIds.map((id) =>
+                id.toUpperCase()
+              ),
+              threadSequence: 3
+            }
+          ],
           hasMore: true,
           nextBeforeSequence: 3,
           nextAfterSequence: 3
@@ -3626,7 +3666,11 @@ describe("local-edge collaboration command route", () => {
       requestId: randomUUID(),
       command: "collaboration.load_team_message_page_v2",
       input: {
-        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        thread: {
+          scope: "team",
+          teamId: ids.team.toUpperCase(),
+          threadId: ids.thread.toUpperCase()
+        },
         direction: "older",
         cursor: null,
         limit: 1
@@ -3639,6 +3683,7 @@ describe("local-edge collaboration command route", () => {
       ok: true,
       data: {
         page: {
+          threadId: ids.thread,
           items: [
             {
               id: ids.messageThree,

@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   beginUpstreamDisconnectCleanup,
@@ -40,6 +41,27 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
     json: async () => body,
     text: async () => JSON.stringify(body)
   }) as Response;
+
+const v2Capabilities = (
+  availability: "available" | "unavailable" = "available"
+) => ({
+  product: "koed",
+  apiVersion: "v2",
+  capabilitySchemaVersion: 1,
+  teamCollaboration: {
+    availability,
+    messageContractVersion: 2,
+    messageEndpointTemplate:
+      "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
+    realtime: {
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      messageContractVersion: 2,
+      snapshotEndpoint: "/v2/collaboration/realtime/snapshot",
+      streamEndpoint: "/v2/collaboration/realtime/stream",
+      acknowledgementEndpoint: "/v2/collaboration/realtime/ack"
+    }
+  }
+});
 
 const firstBackend = (registry: UpstreamBackendRegistry) => {
   const backend = registry.backends[0];
@@ -431,44 +453,49 @@ describe("upstream backend registry", () => {
     const result = await refreshUpstreamBackendCapabilities(paths, "cloud", {
       now: () => new Date("2026-01-01T00:00:00.000Z"),
       fetch: async (url, init) => {
-        expect(String(url)).toBe(
-          "https://cloud.example.test/koed/v1/capabilities"
-        );
         expect(init?.redirect).toBe("error");
-        return response(true, 200, {
-          product: "koed",
-          apiVersion: "v1",
-          capabilitySchemaVersion: 4,
-          releaseVersion: "0.2.0",
-          audience: "public",
-          deployment: {
-            profile: "koed_managed_cloud",
-            managedBy: "koed",
-            distribution: "managed_service",
-            productBoundary: "koed-server"
-          },
-          runtime: { localEdge: false, remoteUpstreams: "unavailable" },
-          auth: {
-            providers: ["local", "workos"],
-            workosClientSecret: "client-secret-value",
-            nested: {
-              apiKey: "api-key-value",
-              cookie: "session-cookie-value"
-            }
-          },
-          capabilities: {
-            "auth.workos": {
-              availability: "partial",
-              description: "WorkOS mapping",
-              token: "capability-token-value"
-            }
-          },
-          notes: ["not persisted"]
-        });
+        if (String(url) === "https://cloud.example.test/koed/v1/capabilities") {
+          return response(true, 200, {
+            product: "koed",
+            apiVersion: "v1",
+            capabilitySchemaVersion: 4,
+            releaseVersion: "0.2.0",
+            audience: "public",
+            deployment: {
+              profile: "koed_managed_cloud",
+              managedBy: "koed",
+              distribution: "managed_service",
+              productBoundary: "koed-server"
+            },
+            runtime: { localEdge: false, remoteUpstreams: "unavailable" },
+            auth: {
+              providers: ["local", "workos"],
+              workosClientSecret: "client-secret-value",
+              nested: {
+                apiKey: "api-key-value",
+                cookie: "session-cookie-value"
+              }
+            },
+            capabilities: {
+              "auth.workos": {
+                availability: "partial",
+                description: "WorkOS mapping",
+                token: "capability-token-value"
+              }
+            },
+            notes: ["not persisted"]
+          });
+        }
+        expect(String(url)).toBe(
+          "https://cloud.example.test/koed/v2/capabilities"
+        );
+        return response(true, 200, v2Capabilities());
       }
     });
 
-    const raw = readFileSync(paths.upstreamBackendsPath, "utf8");
+    const raw = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
     expect(result.ok).toBe(true);
     expect(result.backend).toMatchObject({
       id: "cloud",
@@ -482,13 +509,87 @@ describe("upstream backend registry", () => {
         releaseVersion: "0.2.0"
       }
     });
-    expect(raw).not.toContain("notes");
-    expect(raw).not.toContain("client-secret-value");
-    expect(raw).not.toContain("api-key-value");
-    expect(raw).not.toContain("session-cookie-value");
-    expect(raw).not.toContain("capability-token-value");
-    expect(raw).toContain("[redacted]");
+    expect(result.backend?.capabilities).not.toHaveProperty(
+      "teamCollaborationV2"
+    );
+    expect(Object.keys(result.backend!.capabilities).sort()).toEqual([
+      "checkedAt",
+      "expiresAt",
+      "profile",
+      "releaseVersion",
+      "schemaVersion",
+      "state"
+    ]);
+    const publicStatus = collectUpstreamRegistryStatus(paths);
+    expect(Object.keys(publicStatus.backends[0]!.capabilities).sort()).toEqual([
+      "checkedAt",
+      "expiresAt",
+      "profile",
+      "releaseVersion",
+      "schemaVersion",
+      "state"
+    ]);
+    expect(firstBackend(raw).capabilities.teamCollaborationV2).toEqual({
+      state: "validated",
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:15:00.000Z",
+      schemaVersion: 1,
+      payload: v2Capabilities()
+    });
+    const serialized = JSON.stringify(raw);
+    expect(serialized).not.toContain("notes");
+    expect(serialized).not.toContain("client-secret-value");
+    expect(serialized).not.toContain("api-key-value");
+    expect(serialized).not.toContain("session-cookie-value");
+    expect(serialized).not.toContain("capability-token-value");
+    expect(serialized).toContain("[redacted]");
   });
+
+  it.each([
+    { status: 404, body: { error: "not found" }, state: "unsupported" },
+    {
+      status: 200,
+      body: { product: "koed", apiVersion: "v2" },
+      state: "failed"
+    }
+  ] as const)(
+    "preserves validated v1 capability state when the v2 probe is $state",
+    async ({ status, body, state }) => {
+      const paths = tempPaths();
+      registerUpstreamBackend(paths, {
+        id: "cloud",
+        url: "https://cloud.example.test/koed",
+        profile: "koed-managed-cloud"
+      });
+      const result = await refreshUpstreamBackendCapabilities(paths, "cloud", {
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/capabilities")) {
+            return response(true, 200, {
+              product: "koed",
+              apiVersion: "v1",
+              capabilitySchemaVersion: 4,
+              deployment: { profile: "koed_managed_cloud" },
+              capabilities: {}
+            });
+          }
+          return response(status >= 200 && status < 300, status, body);
+        }
+      });
+      const persisted = JSON.parse(
+        readFileSync(paths.upstreamBackendsPath, "utf8")
+      ) as UpstreamBackendRegistry;
+
+      expect(result.ok).toBe(true);
+      expect(firstBackend(persisted).capabilities.state).toBe("validated");
+      expect(
+        firstBackend(persisted).capabilities.teamCollaborationV2
+      ).toMatchObject({
+        state,
+        expiresAt: "2026-01-01T00:15:00.000Z"
+      });
+    }
+  );
 
   it.each([2, 3])(
     "continues to accept capability schema %i during rollout",

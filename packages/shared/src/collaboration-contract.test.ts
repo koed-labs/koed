@@ -1501,6 +1501,19 @@ describe("collaboration renderer commands", () => {
         mentionsUserIds: [ids.otherUser, ids.otherUser]
       }).success
     ).toBe(false);
+    const mixedCaseMention = "AB000000-0000-4000-8000-000000000003";
+    expect(
+      teamCollaborationMessageV2RendererSchema.parse({
+        ...v2Message,
+        mentionsUserIds: [mixedCaseMention]
+      }).mentionsUserIds
+    ).toEqual([mixedCaseMention.toLowerCase()]);
+    expect(
+      teamCollaborationMessageV2RendererSchema.safeParse({
+        ...v2Message,
+        mentionsUserIds: [mixedCaseMention, mixedCaseMention.toLowerCase()]
+      }).success
+    ).toBe(false);
 
     const v2Send = {
       contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -1517,6 +1530,28 @@ describe("collaboration renderer commands", () => {
     expect(collaborationRendererCommandSchema.safeParse(v2Send).success).toBe(
       true
     );
+    const canonicalV2Send = collaborationRendererCommandSchema.parse({
+      ...v2Send,
+      input: {
+        ...v2Send.input,
+        mentionsUserIds: [mixedCaseMention]
+      }
+    });
+    if (canonicalV2Send.command !== "collaboration.send_team_message_v2") {
+      throw new Error("Expected Team message v2 command");
+    }
+    expect(canonicalV2Send.input.mentionsUserIds).toEqual([
+      mixedCaseMention.toLowerCase()
+    ]);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        ...v2Send,
+        input: {
+          ...v2Send.input,
+          mentionsUserIds: [mixedCaseMention, mixedCaseMention.toLowerCase()]
+        }
+      }).success
+    ).toBe(false);
     expect(
       collaborationRendererCommandSchema.safeParse({
         ...v2Send,

@@ -3,6 +3,13 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
   REALTIME_TRANSPORT_TICKET_VERSION,
+  TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+  TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+  TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+  TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
+  teamCollaborationV2CapabilitiesSchema,
+  type TeamCollaborationV2Capabilities,
   type RealtimeTransportOffer
 } from "@koed/shared";
 
@@ -807,6 +814,38 @@ export const buildCapabilitiesResponse = (
       "Unavailable and partial capabilities should disable client surfaces without route probing."
     ]
   };
+};
+
+export const buildTeamCollaborationV2CapabilitiesResponse = (
+  config: Pick<
+    CapabilitiesConfig,
+    | "deploymentProfile"
+    | "developerTeamBackendEnabled"
+    | "teamCollaborationEnabled"
+  >
+): TeamCollaborationV2Capabilities => {
+  const teamFoundation =
+    config.teamCollaborationEnabled &&
+    (hasTeamFoundation(config.deploymentProfile) ||
+      (config.deploymentProfile === "developer" &&
+        config.developerTeamBackendEnabled === true));
+  return teamCollaborationV2CapabilitiesSchema.parse({
+    product: "koed",
+    apiVersion: "v2",
+    capabilitySchemaVersion: TEAM_COLLABORATION_V2_CAPABILITY_SCHEMA_VERSION,
+    teamCollaboration: {
+      availability: teamFoundation ? "available" : "unavailable",
+      messageContractVersion: 2,
+      messageEndpointTemplate: TEAM_COLLABORATION_V2_MESSAGE_ENDPOINT_TEMPLATE,
+      realtime: {
+        protocolVersion: collaborationRealtimeProtocolVersion,
+        messageContractVersion: 2,
+        snapshotEndpoint: TEAM_COLLABORATION_V2_REALTIME_SNAPSHOT_ENDPOINT,
+        streamEndpoint: TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
+        acknowledgementEndpoint: TEAM_COLLABORATION_V2_REALTIME_ACK_ENDPOINT
+      }
+    }
+  });
 };
 
 const buildCommercialEntitlement = (
