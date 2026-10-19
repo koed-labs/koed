@@ -1,17 +1,21 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode
 } from "react";
-import { sessionSelectionId } from "../../project-memory-ui.js";
+import {
+  sessionSelectionId,
+  type DesktopProject
+} from "../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../state/personal-memory.js";
 import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
 import { HqSearch } from "./HqSearch.js";
 import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
-import type { HqRoute } from "./hq-navigation.js";
+import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 
 const subscribeEmpty = () => () => undefined;
@@ -28,7 +32,10 @@ export function HqApplication({
   renderSettings?: (onClose: () => void) => ReactNode;
   accountIdentity?: HqAccountIdentity;
 }) {
-  const [route, setRoute] = useState<HqRoute>({ kind: "home" });
+  const [selection, setSelection] = useState<{
+    route: HqRoute;
+    project?: DesktopProject;
+  }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const shellActions = useRef<HqShellActions>(null);
@@ -49,10 +56,23 @@ export function HqApplication({
       }) ?? [],
     [snapshot]
   );
+  const route = reconcileHqRoute(selection.route, selection.project, projects);
+  const selectRoute = (next: HqRoute) =>
+    setSelection({
+      route: next,
+      project:
+        next.kind === "home"
+          ? undefined
+          : projects.find(({ id }) => id === next.projectId)
+    });
   const project =
     route.kind === "project" || route.kind === "conversation"
       ? projects.find(({ id }) => id === route.projectId)
       : undefined;
+  useEffect(() => {
+    if (project && (route !== selection.route || project !== selection.project))
+      setSelection({ route, project });
+  }, [route, project, selection]);
   const conversation =
     route.kind === "conversation"
       ? project?.threads.find(
@@ -114,7 +134,7 @@ export function HqApplication({
     const action = command.action;
     switch (action.kind) {
       case "route":
-        setRoute(action.route);
+        selectRoute(action.route);
         break;
       case "toggle-sidebar":
         shellActions.current?.toggleSidebar();
@@ -154,10 +174,10 @@ export function HqApplication({
             }}
             onOpenSearchAndCommands={() => setSearchOpen(true)}
             onSelectProject={(projectId) =>
-              setRoute({ kind: "project", projectId })
+              selectRoute({ kind: "project", projectId })
             }
             onSelectConversation={(projectId, sessionId) =>
-              setRoute({ kind: "conversation", projectId, sessionId })
+              selectRoute({ kind: "conversation", projectId, sessionId })
             }
           />
         )}
@@ -171,12 +191,23 @@ export function HqApplication({
           aria-label={title}
           className="hq-destination"
         >
-          <p className="hq-destination__empty">
-            {route.kind === "home"
-              ? "Choose a Project or Conversation from the sidebar."
-              : route.kind === "project"
-                ? "Your Project workspace will appear here."
-                : "Your Conversation will appear here."}
+          <p
+            className="hq-destination__empty"
+            role={
+              route.kind !== "home" &&
+              (!project || (route.kind === "conversation" && !conversation))
+                ? "status"
+                : undefined
+            }
+          >
+            {route.kind !== "home" &&
+            (!project || (route.kind === "conversation" && !conversation))
+              ? `This ${route.kind === "project" ? "Project" : "Conversation"} is no longer available.`
+              : route.kind === "home"
+                ? "Choose a Project or Conversation from the sidebar."
+                : route.kind === "project"
+                  ? "Your Project workspace will appear here."
+                  : "Your Conversation will appear here."}
           </p>
         </section>
       </HqShell>

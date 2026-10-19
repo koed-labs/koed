@@ -192,20 +192,20 @@ export function HqShell({
   useLayoutEffect(() => {
     if (modalOpen) {
       contextCloseRef.current?.focus();
-    } else if (previousMobileContextOpen.current) {
+    } else if (previousMobileContextOpen.current && !sidebarDialogOpen) {
       contextOpenerRef.current?.focus();
     }
     previousMobileContextOpen.current = modalOpen;
-  }, [modalOpen]);
+  }, [modalOpen, sidebarDialogOpen]);
 
   useLayoutEffect(() => {
     if (sidebarDialogOpen) {
       sidebarCloseRef.current?.focus();
-    } else if (previousMobileSidebarOpen.current) {
+    } else if (previousMobileSidebarOpen.current && !modalOpen) {
       sidebarOpenerRef.current?.focus();
     }
     previousMobileSidebarOpen.current = sidebarDialogOpen;
-  }, [sidebarDialogOpen]);
+  }, [sidebarDialogOpen, modalOpen]);
 
   useEffect(() => {
     const routeKey = route ? JSON.stringify(route) : "";

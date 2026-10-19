@@ -1732,6 +1732,78 @@ const runValidation = async () => {
         );
       }
     );
+    await runAssertion(
+      "HQ103 keyboard commands transfer phone focus between replacement overlays",
+      async () => {
+        const press = async (
+          key,
+          code,
+          windowsVirtualKeyCode,
+          modifiers = 0
+        ) => {
+          await debuggerClient.sendCommand("Input.dispatchKeyEvent", {
+            type: "keyDown",
+            key,
+            code,
+            windowsVirtualKeyCode,
+            modifiers
+          });
+          await debuggerClient.sendCommand("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key,
+            code,
+            windowsVirtualKeyCode,
+            modifiers
+          });
+        };
+        const searchCommand = async (label) => {
+          await press("k", "KeyK", 75, 4);
+          let inputFocused = false;
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            inputFocused = await window.webContents.executeJavaScript(
+              "document.activeElement === document.querySelector('.hq-search input')"
+            );
+            if (inputFocused) break;
+            await delay(25);
+          }
+          assert.equal(inputFocused, true);
+          await debuggerClient.sendCommand("Input.insertText", { text: label });
+          await press("Enter", "Enter", 13);
+        };
+        const expectOverlayFocus = async (label) => {
+          let focus;
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            focus = await window.webContents.executeJavaScript(
+              `(() => ({ label:document.activeElement?.getAttribute('aria-label') ?? null, inert:Boolean(document.activeElement?.closest('[inert]')), palette:Boolean(document.querySelector('.hq-search')) }))()`
+            );
+            if (focus.label === label && !focus.palette) break;
+            await delay(25);
+          }
+          assert.deepEqual(focus, { label, inert: false, palette: false });
+        };
+        await window.webContents.executeJavaScript(
+          "document.querySelector('.hq-mobile-navigation-trigger')?.click()"
+        );
+        await expectOverlayFocus("Close project navigation");
+        await searchCommand("Toggle context panel");
+        await expectOverlayFocus("Close project context");
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=dialog]'))"
+          ),
+          false
+        );
+        await searchCommand("Toggle sidebar");
+        await expectOverlayFocus("Close project navigation");
+        assert.equal(
+          await window.webContents.executeJavaScript(
+            "Boolean(document.querySelector('#hq-context-dialog'))"
+          ),
+          false
+        );
+        await press("Escape", "Escape", 27);
+      }
+    );
     const mobile = await window.webContents.executeJavaScript(`(() => {
       const trigger = document.querySelector('button[aria-label="Show project context"]');
       trigger?.click();

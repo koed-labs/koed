@@ -2,7 +2,8 @@
 
 import type {
   PersonalDesktopApi,
-  PersonalDesktopProject
+  PersonalDesktopProject,
+  PersonalDesktopProjectMetadata
 } from "@koed/shared/personal-desktop";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -216,6 +217,106 @@ describe("HQ Personal Projects loading", () => {
         !hasRows
       );
       expect(api.listProjects).toHaveBeenCalledTimes(2);
+    }
+  );
+  it.each(["project", "conversation"] as const)(
+    "retains the selected %s when metadata Retry canonicalizes a standalone Project into Chats",
+    async (destination) => {
+      actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+      const sessionId = "6749259b-8f10-4b53-92d8-66e7f87a8663";
+      const runtimePath = `/tmp/koed/managed-conversations/independent/${sessionId}`;
+      const source: PersonalDesktopProject = {
+        id: "provisional",
+        name: "Standalone",
+        path: runtimePath,
+        eventCount: 1,
+        threads: [
+          {
+            id: "thread",
+            name: "Retained Conversation",
+            sessionId,
+            sourceAiClient: "codex",
+            projectId: "provisional",
+            projectName: "Standalone",
+            projectPath: runtimePath,
+            projectAssignmentSource: "detected",
+            eventCount: 1,
+            invalidatedCount: 0,
+            latestAt: "2026-10-19T10:00:00.000Z",
+            sample: "",
+            presentation: null
+          }
+        ]
+      };
+      const metadata: PersonalDesktopProjectMetadata = {
+        schemaVersion: 1,
+        discoveredAt: "2026-10-19T10:00:00.000Z",
+        lastSeenAt: "2026-10-19T10:00:00.000Z",
+        localProjectId: "stable-chats",
+        displayName: "Chats",
+        contextKind: "independent",
+        path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
+      };
+      let failMetadata = true;
+      const api: PersonalDesktopApi = {
+        listProjects: async () => [source],
+        listProjectMetadata: async () => {
+          if (failMetadata) throw new Error("metadata unavailable");
+          return [metadata];
+        },
+        loadEventPage: async () => [],
+        assignSessionProject: async () => ({ projectId: null }),
+        updateSessionTitle: async ({ title }) => ({ title }),
+        updateSessionPresentation: async () => {
+          throw new Error("unused");
+        },
+        subscribe: () => () => undefined
+      };
+      const store = new PersonalMemoryStore(api);
+      const container = document.createElement("div");
+      containers.push(container);
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <HqApplication personalMemoryReady personalMemoryStore={store} />
+        )
+      );
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            destination === "project"
+              ? '[data-hq-project-link="provisional"]'
+              : "[data-hq-chat-row]"
+          )
+          ?.click()
+      );
+      expect(
+        container
+          .querySelector(`[data-hq-route="${destination}"]`)
+          ?.getAttribute("data-hq-project-id")
+      ).toBe("provisional");
+      failMetadata = false;
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>("[data-hq-project-retry]")
+          ?.click()
+      );
+      expect(
+        container
+          .querySelector(`[data-hq-route="${destination}"]`)
+          ?.getAttribute("data-hq-project-id")
+      ).toBe("stable-chats");
+      expect(
+        container.querySelector("[data-hq-route]")?.getAttribute("aria-label")
+      ).toBe(destination === "project" ? "Chats" : "Retained Conversation");
+      if (destination === "conversation")
+        expect(
+          container
+            .querySelector('[data-hq-chat-row][data-selected="true"]')
+            ?.getAttribute("data-hq-chat-project")
+        ).toBe("stable-chats");
     }
   );
 });

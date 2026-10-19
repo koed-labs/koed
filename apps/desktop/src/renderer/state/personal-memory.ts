@@ -170,8 +170,7 @@ export class PersonalMemoryStore {
     const request = ++this.#projectRequest;
     this.#replace({
       ...this.#snapshot,
-      ...(silent ? {} : { loading: true, error: null }),
-      projectsLoaded: false
+      ...(silent ? {} : { loading: true, error: null, projectsLoaded: false })
     });
     try {
       const graphProjects = await this.#api.listProjects();

@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { defaultHqLayoutPreferences } from "../../ipc/hq-layout-preferences-protocol.js";
 import type { DesktopApi } from "../../types.js";
-import { HqShell } from "./HqShell.js";
+import { HqShell, type HqShellActions } from "./HqShell.js";
 
 const actEnvironment = globalThis as {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -282,6 +282,26 @@ describe("HQ shell layout", () => {
     });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector("#hq-project-navigation")).toBe(aside);
+  });
+
+  it("moves focus into replacement phone overlays without returning to an inert opener", async () => {
+    isNarrow = true;
+    const actionsRef = createRef<HqShellActions>();
+    await render({ actionsRef });
+    await act(async () => actionsRef.current?.toggleSidebar());
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Close project navigation"
+    );
+    await act(async () => actionsRef.current?.toggleContext());
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Close project context"
+    );
+    expect(document.activeElement?.closest("[inert]")).toBeNull();
+    await act(async () => actionsRef.current?.toggleSidebar());
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Close project navigation"
+    );
+    expect(document.activeElement?.closest("[inert]")).toBeNull();
   });
 
   it("does not reopen stale mobile context after hiding it on desktop", async () => {
