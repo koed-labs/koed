@@ -6,10 +6,10 @@ on infrastructure controlled by the operator.
 ## Language
 
 **Agent**:
-A named, User-owned persona with optional role and look, bound to one AI Client
-instance and permission defaults. The User's Chief of Staff is the default
-Agent.
-_Avoid_: AI Client, subagent, bot
+A named, User-owned persona with an optional role and pixelkin look, bound to
+one AI Client instance and permission defaults. The User's Chief of Staff is
+the default Agent.
+_Avoid_: AI Client, subagent, bot, assistant
 
 **AI Client**:
 An external AI tool that produces conversations and may call Koed for capture or recall.
@@ -57,10 +57,9 @@ The activity boundary a capture policy applies to.
 _Avoid_: Capture state, visibility, search domain
 
 **Chief of Staff**:
-The User's default Agent. Each Project has one logical, private HQ Conversation
-between its owner and their Chief of Staff, created on first open. Ordinary
-Conversations remain optional.
-_Avoid_: Team Agent, Project Thread
+The User's default Agent and single point of contact, which may delegate to
+other Agents.
+_Avoid_: main agent, Koed (as an agent name)
 
 **Captured Session**:
 Koed's record of memory capture for a conversation.
@@ -99,6 +98,11 @@ A verified, bounded source snapshot exported at a completed turn boundary so a
 User may explicitly create a new Conversation lineage in an AI Client.
 _Avoid_: live collaboration, ownership transfer, continuing the owner's Conversation
 
+**Curated Memory Assertion**:
+A reviewed, source-linked durable statement in Personal Memory. It is canonical
+Memory, distinct from a pending proposal.
+_Avoid_: proposal, Memory Event, unsupported fact
+
 **Diagnostic Memory Tool**:
 A low-level memory tool exposed only for debugging or inspection.
 _Avoid_: Supported recall path, normal memory tool
@@ -127,10 +131,11 @@ progress belongs to that User, even when the Deck is shared.
 _Avoid_: Shared study progress, Memory Event
 
 **HQ Conversation**:
-The private Conversation between a Project's owner and their Chief of Staff.
-Each User has their own HQ Conversation; the Project Share Policy does not
-share it.
-_Avoid_: Project Thread, shared Conversation
+A Project has one logical, private HQ Conversation, materialized on first
+open. It is for the Project's owner and their Chief of Staff. Each User has
+their own HQ Conversation; the Project Share Policy does not share it. Ordinary
+Conversations remain optional.
+_Avoid_: main chat, project chat, Project Thread, shared Conversation
 
 **Koed**:
 The Apache-2.0-licensed Koed distribution for operator-managed memory
@@ -175,6 +180,11 @@ the local edge to perform Team operations. It is distinct from a Personal API
 Token and from the upstream device credential used against the Team Backend.
 _Avoid_: API Token, upstream credential, browser session
 
+**Managed Conversation**:
+A User-owned Conversation whose AI Client execution Koed manages. It is distinct
+from an externally created Conversation that Koed only captures.
+_Avoid_: Captured Session, Agent Conversation
+
 **MCP Server**:
 The integration surface that exposes Koed memory tools to an AI Client through
 a local adapter or an authorized remote connection.
@@ -189,6 +199,11 @@ _Avoid_: API Token, browser session, Team membership, Operator credential
 **Memory**:
 Durable knowledge captured from AI-client activity and later retrieved as evidence.
 _Avoid_: Fact, note, document
+
+**Memory Kind**:
+The category of a Curated Memory Assertion: decision, fact, learning, or
+preference.
+_Avoid_: tag, topic
 
 **Memory Answer**:
 The supported recall entry point that supplies evidence for AI-client answer synthesis.
@@ -221,10 +236,11 @@ background-service activity.
 _Avoid_: Agent status, read receipt, exact activity log
 
 **Project**:
-A User-owned container for that User's Conversations, sources, and work, with
-an optional folder. A local code context such as a repository, working
-directory, filepath, ref, branch, or cwd may resolve to a Project.
-_Avoid_: Workspace Project, repository context alone
+A User-owned container for that User's Conversations, Project Sources, and
+work, with an optional folder. A local AI Client execution context or code
+context such as a repository, working directory, filepath, ref, branch, or cwd
+may resolve to a Project.
+_Avoid_: Workspace Project, repository context alone, stable shared memory ID
 
 **Project Share Policy**:
 For each member, the policy shares summary representations of that member's
@@ -395,15 +411,19 @@ own those Users' Conversations, Project Sources, or Personal Memory.
 _Avoid_: Personal Project, Workspace, Team-owned memory
 
 **Work Item**:
-A to-do or ticket belonging to a Project, with a status and optional Agent,
-Due Date, or pull request link.
-_Avoid_: Team Chat Message, Project Source
+A to-do or ticket belonging to a Project, with a status, an optional assignee
+Agent, an optional Due Date, and an optional pull request link. It is work
+state, not Memory.
+_Avoid_: task (durable tasks), job, Memory, Team Chat Message, Project Source
 
 ## Relationships
 
 - **Koed** is operated by one **Operator**
 - An **Operator** may use **Local Operator Scripts** to create user API tokens
 - One **Operator** may create one or more **Users**
+- Each **User** owns exactly one **Chief of Staff** (their default **Agent**)
+  and may own zero or more additional **Agents**
+- An **Agent** runs on one **AI Client** instance
 - A **User** owns zero or more **API Tokens**
 - An **API Token** allows an AI-client integration to access memory visible to
   the owning **User**
@@ -434,6 +454,8 @@ _Avoid_: Team Chat Message, Project Source
 - Each **Project** belongs to one **User** and may contain that User's
   **Conversations**, **Project Sources**, **Work Items**, **Flashcard Decks**,
   and **Scheduled Jobs**
+- A **Project** has one logical private **HQ Conversation**, materialized
+  on first open
 - An **HQ Conversation** belongs to one **Project** and is excluded from its
   **Project Share Policy**
 - A **Project Source** belongs to a **Project** and has an owning **User**
@@ -445,6 +467,10 @@ _Avoid_: Team Chat Message, Project Source
 - **Work Items**, shared source metadata, **Flashcard Decks**, and a **Project
   Thread** may belong to a **Workspace Project**; each User's Personal Memory
   and study progress remain personal
+- A **Work Item** may be assigned to one **Agent** and linked to one Managed
+  Conversation
+- A **Curated Memory Assertion** has at most one **Memory Kind** and may
+  belong to one **Project**
 - A **Project Thread** is a **Team Chat Thread** and its messages are never
   **Memory** or **Agent** input under the current policy
 - An **AI Client** produces one or more **Conversations**
