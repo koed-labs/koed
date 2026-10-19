@@ -1087,19 +1087,19 @@ export const personalMemoryChangeFromSseFrame = (
 };
 
 const packagedRuntimeManifestPath = (
-  environment: NodeJS.ProcessEnv
+  packagedResourcesPath: string | undefined
 ): string | null => {
-  const resourcesPath = environment.KOED_PACKAGED_RESOURCES_PATH?.trim();
+  const resourcesPath = packagedResourcesPath?.trim();
   return resourcesPath
     ? resolve(resourcesPath, "koed-runtime", "runtime-asset-manifest.json")
     : null;
 };
 
 const runtimeInstallProvider = (
-  environment: NodeJS.ProcessEnv,
+  packagedResourcesPath: string | undefined,
   existsSync: (path: string) => boolean
 ): "packaged" | "homebrew" => {
-  const manifestPath = packagedRuntimeManifestPath(environment);
+  const manifestPath = packagedRuntimeManifestPath(packagedResourcesPath);
   if (manifestPath && existsSync(manifestPath)) return "packaged";
   return "homebrew";
 };
@@ -1139,14 +1139,15 @@ const bundledProvenanceForArchive = (archive: string): string | null => {
 };
 
 const bundledServerPackageRoot = (
-  environment: NodeJS.ProcessEnv
+  packagedResourcesPath: string | undefined
 ): string | null => {
-  const resourcesPath = environment.KOED_PACKAGED_RESOURCES_PATH?.trim();
+  const resourcesPath = packagedResourcesPath?.trim();
   return resourcesPath ? resolve(resourcesPath, "koed-server-package") : null;
 };
 
 const resolveServerPackageInstallPlan = (
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  packagedResourcesPath: string | undefined
 ): ServerPackageInstallPlan => {
   const explicitSource = environment.KOED_SERVER_PACKAGE_SOURCE?.trim();
   const explicitSha256 = environment.KOED_SERVER_PACKAGE_SHA256?.trim();
@@ -1192,7 +1193,7 @@ const resolveServerPackageInstallPlan = (
     };
   }
 
-  const bundledRoot = bundledServerPackageRoot(environment);
+  const bundledRoot = bundledServerPackageRoot(packagedResourcesPath);
   const bundledArchive = bundledRoot
     ? firstFileWithSuffix(bundledRoot, ".tar.gz")
     : null;
@@ -1570,7 +1571,6 @@ export const createKoedEnvironment = (
   options: {
     desktopManagedLocal?: boolean;
     packagedDesktop?: boolean;
-    packagedResourcesPath?: string;
   } = {}
 ): NodeJS.ProcessEnv => {
   const valueOr = (key: string, fallback: string): string =>
@@ -1578,8 +1578,12 @@ export const createKoedEnvironment = (
   const dependencyMode = options.desktopManagedLocal
     ? valueOr("KOED_DEPENDENCY_MODE", "bundled-local")
     : environment.KOED_DEPENDENCY_MODE?.trim();
+  const childEnvironment = { ...environment };
+  if (options.packagedDesktop) {
+    delete childEnvironment.KOED_PACKAGED_RESOURCES_PATH;
+  }
   return {
-    ...environment,
+    ...childEnvironment,
     ...(!options.packagedDesktop || environment.KOED_REPO_ROOT?.trim()
       ? { KOED_REPO_ROOT: valueOr("KOED_REPO_ROOT", repoRoot) }
       : {}),
@@ -1597,13 +1601,7 @@ export const createKoedEnvironment = (
           ),
           WORK_QUEUE_BACKEND: valueOr("WORK_QUEUE_BACKEND", "local"),
           ...(options.packagedDesktop
-            ? {
-                KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1"),
-                KOED_PACKAGED_RESOURCES_PATH: valueOr(
-                  "KOED_PACKAGED_RESOURCES_PATH",
-                  options.packagedResourcesPath ?? repoRoot
-                )
-              }
+            ? { KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1") }
             : {})
         }
       : {})
@@ -1806,7 +1804,7 @@ export const createKoedServerManager = ({
   );
 
   const selectedRuntimeInstallProvider = () =>
-    runtimeInstallProvider(environment, existsSync);
+    runtimeInstallProvider(packagedResourcesPath, existsSync);
 
   const runRuntimeStatusJson = () =>
     runJson(
@@ -1893,7 +1891,10 @@ export const createKoedServerManager = ({
   const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
 
   const runPackageInstallJson = async (args?: Record<string, unknown>) => {
-    const plan = resolveServerPackageInstallPlan(environment);
+    const plan = resolveServerPackageInstallPlan(
+      environment,
+      packagedResourcesPath
+    );
     if (!plan.available) {
       return {
         ok: false,
@@ -1952,7 +1953,7 @@ export const createKoedServerManager = ({
       ...withPersonalDeviceSync,
       serverPackage: packageComponent(
         packageStatus,
-        resolveServerPackageInstallPlan(environment)
+        resolveServerPackageInstallPlan(environment, packagedResourcesPath)
       )
     };
   };
@@ -5240,7 +5241,7 @@ export const createKoedServerManager = ({
           const status = objectValue(statusValue);
           const packageStatusComponent = packageComponent(
             objectValue(packageStatus),
-            resolveServerPackageInstallPlan(environment)
+            resolveServerPackageInstallPlan(environment, packagedResourcesPath)
           );
           const servicesComplete = setupServicesHealthy(status);
           const detectedAiClients = detectedSetupAiClients(status);

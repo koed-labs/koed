@@ -1974,11 +1974,10 @@ describe("Koed server desktop manager", () => {
   it("defaults packaged Desktop managed local server to bundled-local", () => {
     const packagedEnvironment = createKoedEnvironment(
       "/repo",
-      {},
+      { KOED_PACKAGED_RESOURCES_PATH: "/untrusted" },
       {
         desktopManagedLocal: true,
-        packagedDesktop: true,
-        packagedResourcesPath: "/resources"
+        packagedDesktop: true
       }
     );
     expect(packagedEnvironment).toMatchObject({
@@ -1987,10 +1986,12 @@ describe("Koed server desktop manager", () => {
       KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1",
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: "/resources"
+      KOED_PACKAGED_DESKTOP: "1"
     });
     expect(packagedEnvironment).not.toHaveProperty("KOED_REPO_ROOT");
+    expect(packagedEnvironment).not.toHaveProperty(
+      "KOED_PACKAGED_RESOURCES_PATH"
+    );
     expect(
       createKoedEnvironment(
         "/repo",
@@ -4257,7 +4258,8 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: { KOED_PACKAGED_RESOURCES_PATH: "/resources" },
+      environment: {},
+      packagedResourcesPath: "/resources",
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
@@ -4286,10 +4288,8 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: "/resources"
-      },
+      environment: { KOED_PACKAGED_DESKTOP: "1" },
+      packagedResourcesPath: "/resources",
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
@@ -4554,6 +4554,57 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           "Using the bundled fallback koed runtime; a standalone package is optional for this Desktop build."
       }
     });
+  });
+
+  it("uses trusted packaged resources for bundled server package install", async () => {
+    const resourcesPath = mkdtempSync(
+      resolve(tmpdir(), "koed-packaged-resources-")
+    );
+    const packageRoot = resolve(resourcesPath, "koed-server-package");
+    const archive = resolve(packageRoot, "koed-server-darwin-arm64.tar.gz");
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(archive, "archive");
+    writeFileSync(`${archive}.sha256`, `${"a".repeat(64)}  ${archive}\n`);
+
+    try {
+      const calls: string[][] = [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: {},
+        packagedResourcesPath: resourcesPath,
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          calls.push(args);
+          callback(null, JSON.stringify({ ok: true, state: "activated" }), "");
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+
+      await expect(manager.handlers.package_install!()).resolves.toMatchObject({
+        ok: true,
+        state: "activated"
+      });
+      expect(calls[0]).toEqual([
+        "/repo/cli.js",
+        "package",
+        "install",
+        "--source",
+        archive,
+        "--sha256-file",
+        `${archive}.sha256`,
+        "--activate",
+        "--json"
+      ]);
+    } finally {
+      rmSync(resourcesPath, { recursive: true, force: true });
+    }
   });
 
   it("keeps invalid standalone package configuration visible", async () => {
