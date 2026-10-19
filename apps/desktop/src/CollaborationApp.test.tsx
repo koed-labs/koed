@@ -1300,14 +1300,15 @@ describe("CollaborationApp", () => {
   };
 
   it("keeps a moved Captured Session open when unresolved history still has other Sessions", async () => {
+    // A named Project stays a visible move target while it is still empty.
     const identity: RepositoryIdentity = {
-      kind: "non_git_project",
-      key: "ng_destination",
-      root: "/tmp/destination",
+      kind: "local_project",
+      key: "project_destination",
+      root: null,
       branch: null,
-      checkoutId: "checkout_destination",
+      checkoutId: null,
       originatingDeviceId: "device",
-      reason: "non_git",
+      reason: "manual",
       selectedRemote: null,
       anchorDisplay: null
     };
@@ -1342,17 +1343,6 @@ describe("CollaborationApp", () => {
       name: "History B"
     };
     const api = createPersonalMemoryApi();
-    api.listProjectMetadata = async () => [
-      {
-        schemaVersion: 1,
-        discoveredAt: new Date().toISOString(),
-        lastSeenAt: new Date().toISOString(),
-        localProjectId: "lp_destination",
-        displayName: "Destination",
-        path: { cwd: identity.root!, projectRoot: null },
-        repository: identity
-      }
-    ];
     api.listProjects = async () => [
       {
         id: "unassigned",
@@ -1361,31 +1351,30 @@ describe("CollaborationApp", () => {
         eventCount: moved ? 1 : 2,
         threads: moved ? [other] : [history, other]
       },
-      ...(moved
-        ? [
-            {
-              id: destinationId,
-              name: "Destination",
-              path: identity.root,
-              eventCount: 1,
-              threads: [
-                {
-                  ...history,
-                  projectId: destinationId,
-                  projectName: "Destination",
-                  projectAssignmentSource: "user_override" as const,
-                  repositoryAssignment: {
-                    state: "historical_unresolved" as const,
-                    version: 2,
-                    automatic: null,
-                    override: identity,
-                    effective: identity
-                  }
+      {
+        id: destinationId,
+        name: "Destination",
+        repository: identity,
+        path: null,
+        eventCount: moved ? 1 : 0,
+        threads: moved
+          ? [
+              {
+                ...history,
+                projectId: destinationId,
+                projectName: "Destination",
+                projectAssignmentSource: "user_override" as const,
+                repositoryAssignment: {
+                  state: "historical_unresolved" as const,
+                  version: 2,
+                  automatic: null,
+                  override: identity,
+                  effective: identity
                 }
-              ]
-            }
-          ]
-        : [])
+              }
+            ]
+          : []
+      }
     ];
     api.assignSessionProject = vi.fn(async (input) => {
       moved = input.action === "move";
@@ -1451,7 +1440,12 @@ describe("CollaborationApp", () => {
     );
     await act(async () =>
       [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Reset to automatic")!
+        .find((button) => button.textContent === "Restore original…")!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((button) => button.textContent === "Restore")!
         .click()
     );
     await vi.waitFor(() =>
