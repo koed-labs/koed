@@ -2,10 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
-import { processPiTranscriptSignal } from "../src/pi-transcript-watcher.js";
+import {
+  processPiTranscriptSignal,
+  startPiTranscriptWatcher
+} from "../src/pi-transcript-watcher.js";
+import type { LocalProjectAssociationService } from "../src/local-project-association.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -31,6 +35,157 @@ const appendPaddingRecords = (
 };
 
 describe("Pi transcript watcher", () => {
+  it("associates accepted local capture, recovers unchanged source, and skips blocked capture", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-association-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    const koedHome = path.join(root, "koed");
+    const cwd = path.join(root, "local-project");
+    fs.mkdirSync(sessions);
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(path.join(koedHome, "config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(koedHome, "config", "projects.json"),
+      JSON.stringify({
+        projects: [
+          {
+            localProjectId: "lp_pi",
+            displayName: "Pi Project",
+            path: { cwd, projectRoot: null }
+          }
+        ]
+      })
+    );
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const source = line({
+      type: "session",
+      version: 3,
+      id: sourceSessionId,
+      cwd
+    });
+    const artifacts = new Map<string, Record<string, unknown>>();
+    const segments = new Map<string, Record<string, unknown>>();
+    let blockedId: string | undefined;
+    const client = {
+      async lookupConversationSourceArtifact(input: {
+        externalSessionId: string;
+      }) {
+        const artifact = artifacts.get(input.externalSessionId);
+        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+        return { artifact };
+      },
+      async getEffectiveCapturePolicy(input: { threadId: string }) {
+        return {
+          policy: {
+            captureState: input.threadId === blockedId ? "disabled" : "enabled"
+          }
+        };
+      },
+      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        const artifact = {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          sourceGenerationId: randomUUID(),
+          providerCursorOffset: Number(input.journalStartOffset),
+          providerCursorLine: Number(input.journalStartLine),
+          journalStartOffset: Number(input.journalStartOffset),
+          liveStartOffset: Number(input.liveStartOffset),
+          liveStartLine: Number(input.liveStartLine),
+          sourceFingerprint: input.sourceFingerprint
+        };
+        artifacts.set(String(input.externalSessionId), artifact);
+        return { artifact };
+      },
+      async appendConversationSourceSegment(
+        artifactId: string,
+        input: Record<string, unknown>
+      ) {
+        const artifact = [...artifacts.values()].find(
+          (row) => row.id === artifactId
+        )!;
+        const bytes = Buffer.from(String(input.bytesBase64), "base64");
+        segments.set(artifactId, {
+          id: randomUUID(),
+          segmentIndex: 0,
+          sourceStartOffset: input.expectedProviderOffset,
+          sourceEndOffset: input.sourceEndOffset,
+          sourceStartLine: input.expectedProviderLine,
+          sourceEndLine: input.sourceEndLine,
+          plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
+          plaintextSize: bytes.length
+        });
+        artifact.providerCursorOffset = input.sourceEndOffset;
+        artifact.providerCursorLine = input.sourceEndLine;
+        return { artifact };
+      },
+      async listConversationSourceSegments(artifactId: string) {
+        return { segments: [segments.get(artifactId)] };
+      },
+      async getConversationSourceCursor() {
+        return {
+          cursor: { sourceOffset: Buffer.byteLength(source), sourceLine: 1 }
+        };
+      }
+    } as unknown as MemoryApiClient;
+    let finishReplay: () => void = () => undefined;
+    const delayedReplay = new Promise<void>((resolve) => {
+      finishReplay = resolve;
+    });
+    const bridge: LocalProjectAssociationService = {
+      prepare: vi.fn(async () => true),
+      complete: vi.fn(async () => undefined),
+      discardBlocked: vi.fn(async () => undefined),
+      replay: vi.fn(() => delayedReplay),
+      confirm: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined)
+    };
+    const watcher = startPiTranscriptWatcher(
+      client,
+      {
+        KOED_HOME: koedHome,
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      },
+      bridge
+    );
+    try {
+      fs.writeFileSync(transcriptPath, source);
+      await watcher.scanNow();
+      expect(bridge.replay).toHaveBeenCalled();
+      expect(bridge.prepare).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceKind: "pi",
+          externalSessionId: sourceSessionId,
+          localProjectId: "lp_pi",
+          requiredSourceOffset: Buffer.byteLength(source)
+        })
+      );
+      expect(bridge.complete).toHaveBeenCalledWith(
+        "pi",
+        sourceSessionId,
+        expect.objectContaining({
+          providerCursorOffset: Buffer.byteLength(source)
+        })
+      );
+      const before = vi.mocked(bridge.complete).mock.calls.length;
+      await watcher.scanNow();
+      expect(vi.mocked(bridge.complete).mock.calls.length).toBeGreaterThan(
+        before
+      );
+      blockedId = randomUUID();
+      fs.writeFileSync(
+        path.join(sessions, `${blockedId}.jsonl`),
+        line({ type: "session", version: 3, id: blockedId, cwd })
+      );
+      await watcher.scanNow();
+      expect(
+        vi.mocked(bridge.complete).mock.calls.some(([, id]) => id === blockedId)
+      ).toBe(false);
+    } finally {
+      finishReplay();
+      await watcher.stop();
+    }
+  });
   it.each([false, true])(
     "resumes from durable cursor and fails closed on truncation (future only: %s)",
     async (futureOnly) => {

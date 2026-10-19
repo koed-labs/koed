@@ -7,7 +7,11 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "references": [{ "path": "../core" }, { "path": "../shared" }],
+  "references": [
+    { "path": "../core" },
+    { "path": "../shared" },
+    { "path": "../db" }
+  ],
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
 }

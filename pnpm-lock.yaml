@@ -398,6 +398,9 @@ importers:
       '@koed/core':
         specifier: workspace:*
         version: link:../core
+      '@koed/db':
+        specifier: workspace:*
+        version: link:../db
       '@koed/koed':
         specifier: workspace:*
         version: link:../koed
@@ -413,6 +416,9 @@ importers:
       pino:
         specifier: ^10.3.1
         version: 10.3.1
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -420,6 +426,9 @@ importers:
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
+      '@types/proper-lockfile':
+        specifier: 4.1.4
+        version: 4.1.4
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0

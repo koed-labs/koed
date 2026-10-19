@@ -128,10 +128,12 @@ type CapturedSessionRow = {
   automatic_project_name: string | null;
   automatic_project_path: string | null;
   automatic_project_detected_at: Date | null;
+  automatic_personal_project_id: string | null;
   project_override_id: string | null;
   project_override_name: string | null;
   project_override_path: string | null;
   project_override_at: Date | null;
+  project_override_personal_project_id: string | null;
   created_at: Date;
 };
 
@@ -373,7 +375,9 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
     metadata: row.metadata ?? {},
     capturedProjectProvenance: row.captured_project_provenance ?? {},
     automaticProject,
+    automaticPersonalProjectId: row.automatic_personal_project_id,
     projectOverride,
+    projectOverridePersonalProjectId: row.project_override_personal_project_id,
     project: projectOverride ?? automaticProject,
     projectAssignmentSource: projectOverride
       ? "user_override"
@@ -501,8 +505,9 @@ const capturedSessionColumns = `
   captured_project_provenance,
   automatic_project_id, automatic_project_name, automatic_project_path,
   automatic_project_detected_at,
+  automatic_personal_project_id,
   project_override_id, project_override_name, project_override_path,
-  project_override_at, created_at
+  project_override_at, project_override_personal_project_id, created_at
 `;
 
 export const createCapturedSessionRepository = (
@@ -931,6 +936,13 @@ export const createCapturedSessionRepository = (
           project_override_id = $3,
           project_override_name = $4,
           project_override_path = $5,
+          project_override_personal_project_id = coalesce(
+            (select id from projects where owner_user_id=$1 and id::text=$3),
+            (select min(project_id::text)::uuid from project_local_contexts
+              where owner_user_id=$1 and local_project_id=$3
+                and association_state='resolved'
+              having count(distinct project_id)=1)
+          ),
           project_override_at = now(),
           project_override_by_user_id = $1,
           updated_at = now()
@@ -954,6 +966,7 @@ export const createCapturedSessionRepository = (
           project_override_id = null,
           project_override_name = null,
           project_override_path = null,
+          project_override_personal_project_id = null,
           project_override_at = null,
           project_override_by_user_id = null,
           updated_at = now()

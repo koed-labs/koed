@@ -1316,7 +1316,9 @@ export interface CapturedSessionRecord {
   metadata: Record<string, unknown>;
   capturedProjectProvenance: Record<string, unknown>;
   automaticProject: PersonalProjectReference | null;
+  automaticPersonalProjectId?: string | null;
   projectOverride: PersonalProjectReference | null;
+  projectOverridePersonalProjectId?: string | null;
   project: PersonalProjectReference | null;
   projectAssignmentSource: "detected" | "user_override" | null;
   projectAssignmentUpdatedAt: string | null;

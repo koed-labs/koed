@@ -54,6 +54,7 @@ import { processClaudeTranscriptSignal } from "../src/claude-transcript-capture.
 import { discoverClaudeTranscriptSignals } from "../src/claude-transcript-discovery.js";
 import { registerClaudeHistoricalTranscriptSources } from "../src/claude-transcript-source.js";
 import { startClaudeTranscriptWatcher } from "../src/claude-transcript-watcher.js";
+import type { LocalProjectAssociationService } from "../src/local-project-association.js";
 import {
   claudeWatcherSignalDirectory,
   signalClaudeTranscriptWatcher
@@ -92,6 +93,137 @@ const fixture = () => {
 };
 
 describe("Claude transcript watcher", () => {
+  it("associates accepted local capture, recovers unchanged source, and skips blocked capture", async () => {
+    const { root, claudeHome, sourceSessionId, transcriptPath } = fixture();
+    const cwd = path.join(root, "local-project");
+    const koedHome = path.join(root, "koed");
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(path.join(koedHome, "config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(koedHome, "config", "projects.json"),
+      JSON.stringify({
+        projects: [
+          {
+            localProjectId: "lp_claude",
+            displayName: "Claude Project",
+            path: { cwd, projectRoot: null }
+          }
+        ]
+      })
+    );
+    const source = `${JSON.stringify({
+      type: "user",
+      uuid: randomUUID(),
+      sessionId: sourceSessionId,
+      cwd,
+      timestamp: new Date(Date.now() + 2_000).toISOString()
+    })}\n`;
+    fs.writeFileSync(transcriptPath, source);
+    getSessionMessages.mockResolvedValue([]);
+    const artifacts = new Map<string, Record<string, unknown>>();
+    let blocked = false;
+    const client = {
+      async lookupConversationSourceArtifact(input: {
+        externalSessionId: string;
+      }) {
+        const artifact = artifacts.get(input.externalSessionId);
+        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+        return { artifact };
+      },
+      async getEffectiveCapturePolicy() {
+        return { policy: { captureState: blocked ? "disabled" : "enabled" } };
+      },
+      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        if (blocked)
+          throw new MemoryApiError("capture policy blocked", { status: 409 });
+        const externalSessionId = String(input.externalSessionId);
+        const artifact = {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          sourceGenerationId: randomUUID(),
+          sourceComponentId: "main",
+          providerCursorOffset: Number(input.journalStartOffset),
+          providerCursorLine: Number(input.journalStartLine),
+          journalStartOffset: Number(input.journalStartOffset),
+          liveStartOffset: Number(input.liveStartOffset),
+          liveStartLine: Number(input.liveStartLine)
+        };
+        artifacts.set(externalSessionId, artifact);
+        return { artifact };
+      },
+      async appendConversationSourceSegment(
+        artifactId: string,
+        input: Record<string, unknown>
+      ) {
+        const artifact = [...artifacts.values()].find(
+          (row) => row.id === artifactId
+        )!;
+        artifact.providerCursorOffset = input.sourceEndOffset;
+        artifact.providerCursorLine = input.sourceEndLine;
+        return { artifact };
+      }
+    } as unknown as MemoryApiClient;
+    let finishReplay: () => void = () => undefined;
+    const delayedReplay = new Promise<void>((resolve) => {
+      finishReplay = resolve;
+    });
+    const bridge: LocalProjectAssociationService = {
+      prepare: vi.fn(async () => true),
+      complete: vi.fn(async () => undefined),
+      discardBlocked: vi.fn(async () => undefined),
+      replay: vi.fn(() => delayedReplay),
+      confirm: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined)
+    };
+    const watcher = startClaudeTranscriptWatcher(
+      client,
+      { CLAUDE_CONFIG_DIR: claudeHome, KOED_HOME: koedHome },
+      bridge
+    );
+    try {
+      await watcher.scanNow();
+      expect(bridge.replay).toHaveBeenCalled();
+      expect(bridge.prepare).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceKind: "claude-code",
+          externalSessionId: sourceSessionId,
+          localProjectId: "lp_claude",
+          requiredSourceOffset: Buffer.byteLength(source)
+        })
+      );
+      expect(bridge.complete).toHaveBeenCalledWith(
+        "claude-code",
+        sourceSessionId,
+        expect.objectContaining({
+          providerCursorOffset: Buffer.byteLength(source)
+        })
+      );
+      const before = vi.mocked(bridge.complete).mock.calls.length;
+      await watcher.scanNow();
+      expect(vi.mocked(bridge.complete).mock.calls.length).toBeGreaterThan(
+        before
+      );
+      blocked = true;
+      const blockedId = randomUUID();
+      fs.writeFileSync(
+        path.join(path.dirname(transcriptPath), `${blockedId}.jsonl`),
+        `${JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          sessionId: blockedId,
+          cwd,
+          timestamp: new Date(Date.now() + 2_000).toISOString()
+        })}\n`
+      );
+      await watcher.scanNow();
+      expect(
+        vi.mocked(bridge.complete).mock.calls.some(([, id]) => id === blockedId)
+      ).toBe(false);
+    } finally {
+      finishReplay();
+      await watcher.stop();
+    }
+  });
   it("pins component frontiers and journals only one bounded component page", async () => {
     const { claudeHome, sourceSessionId, transcriptPath } = fixture();
     const agentId = "bounded-history";

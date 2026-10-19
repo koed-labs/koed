@@ -18,6 +18,11 @@ import {
   persistRawConversationItems,
   projectRawConversationItems
 } from "./raw-conversation-items.js";
+import {
+  createLocalProjectAssociationService,
+  type LocalProjectAssociationService
+} from "./local-project-association.js";
+import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 
 export interface PiTranscriptWatcherSignal {
   sourceSessionId: string;
@@ -581,18 +586,73 @@ export const processPiTranscriptSignal = async (
 
 export const startPiTranscriptWatcher = (
   client: MemoryApiClient = new MemoryApiClient(defaultConfig()),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  associationOverride?: LocalProjectAssociationService
 ): PiTranscriptWatcherHandle => {
+  const association =
+    associationOverride ??
+    createLocalProjectAssociationService({
+      koedHome: koedHome(env),
+      captureClient:
+        client instanceof MemoryApiClient
+          ? { apiUrl: client.config.apiUrl, apiToken: client.config.apiToken }
+          : null,
+      environment: env
+    });
+  const associateAccepted = async (
+    signal: PiTranscriptWatcherSignal
+  ): Promise<void> => {
+    if (!association) return;
+    const target = await verifiedPiSessionPath(signal.transcriptPath, env);
+    const identity = piSessionIdentity(target);
+    if (identity.id !== signal.sourceSessionId || identity.cwd !== signal.cwd)
+      return;
+    const project = readProjectMetadataForRoot(identity.cwd, env);
+    if (!project) return;
+    const artifact = await lookupArtifact(client, identity.id);
+    const boundary = completeTranscriptBoundary(target);
+    if (!artifact?.sessionId || artifact.providerCursorOffset < boundary)
+      return;
+    if (!(await policyAllowsCapture(client, signal))) return;
+    await association.prepare({
+      sourceKind: "pi",
+      externalSessionId: identity.id,
+      sourceProjectPath: identity.cwd,
+      localProjectId: project.localProjectId,
+      requiredSourceOffset: boundary
+    });
+    await association.complete("pi", identity.id, {
+      id: artifact.id,
+      sessionId: artifact.sessionId,
+      externalSessionId: identity.id,
+      providerCursorOffset: artifact.providerCursorOffset
+    });
+  };
   const state = loadState(env);
   const directory = signalDirectory(env);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const wake = wakePath(env);
   if (!fs.existsSync(wake)) fs.writeFileSync(wake, "0\n", { mode: 0o600 });
   let running: Promise<void> | null = null;
+  let replayTask: Promise<void> | null = null;
+  const launchReplay = (): void => {
+    if (!association || replayTask) return;
+    replayTask = Promise.resolve()
+      .then(() => association.replay())
+      .catch((error: unknown) => {
+        console.error(
+          `Pi Project association retry failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      })
+      .finally(() => {
+        replayTask = null;
+      });
+  };
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
   const scan = (): Promise<void> =>
     (running ??= (async () => {
+      launchReplay();
       const pending = new Map<
         string,
         { signal: PiTranscriptWatcherSignal; target?: string }
@@ -621,6 +681,11 @@ export const startPiTranscriptWatcher = (
           await processPiTranscriptSignal(client, state, value.signal, env);
           persistState(env, state);
           if (value.target) fs.rmSync(value.target, { force: true });
+          await associateAccepted(value.signal).catch((error: unknown) => {
+            console.error(
+              `Pi Project association will retry: ${error instanceof Error ? error.message : String(error)}`
+            );
+          });
         } catch (error) {
           console.error(
             `Pi transcript capture failed: ${error instanceof Error ? error.message : String(error)}`
@@ -667,6 +732,8 @@ export const startPiTranscriptWatcher = (
       if (timer) clearTimeout(timer);
       watchers.forEach((watcher) => watcher.close());
       await running;
+      await replayTask;
+      await association?.close();
     }
   };
 };

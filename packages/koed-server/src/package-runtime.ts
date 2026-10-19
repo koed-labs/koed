@@ -48,6 +48,7 @@ export const requiredPackageRuntimeFiles = [
   "mcp-server/dist/prompts/codex-global-agent-guidance.md",
   "node_modules/@koed/db/dist/index.js",
   "node_modules/@koed/db/dist/connection.js",
+  "node_modules/@koed/db/dist/project-repository.js",
   "node_modules/@koed/db/dist/user-api-token-repository.js",
   "node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
