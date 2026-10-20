@@ -407,6 +407,95 @@ describe("Personal Project routes", () => {
       await app.close();
     }
   });
+  it("reports the selected historical batch and rejects an unknown batch", async () => {
+    const app = Fastify();
+    const cancelledBatch = randomUUID();
+    const completedBatch = randomUUID();
+    const source = {
+      sessionId: randomUUID(),
+      logicalMemoryId: randomUUID(),
+      backends: [{ backendId: "team-a", relationshipIds: [] }]
+    };
+    const baseOperation = {
+      projectId,
+      ownerUserId: owner,
+      executions: [],
+      backendAcks: [],
+      grantFreezeAcks: [],
+      runtimeAcks: [],
+      sourceManifestHash: "a".repeat(64),
+      executionSetHash: "b".repeat(64)
+    };
+    const cancelled = {
+      ...baseOperation,
+      batchId: cancelledBatch,
+      state: "cancelled",
+      sources: [source]
+    };
+    const completed = {
+      ...baseOperation,
+      batchId: completedBatch,
+      state: "complete",
+      sources: []
+    };
+    const repository = {
+      get: vi.fn(async () => ({
+        ...project,
+        lifecycle: "deleted",
+        deletionPhase: "complete",
+        deleteBatchId: completedBatch,
+        deletedAt: now
+      })),
+      getDeleteOperation: vi.fn(async () => completed),
+      getDeleteOperationByBatch: vi.fn(async (...args: string[]) => {
+        const batchId = args[2];
+        return batchId === cancelledBatch
+          ? cancelled
+          : batchId === completedBatch
+            ? completed
+            : null;
+      }),
+      listPendingReleaseOperations: vi.fn(async () => [])
+    };
+    registerProjectRoutes(app, {
+      repository: repository as never,
+      managedRepository: null,
+      sourceCoordinator: null,
+      deploymentProfile: "local_personal",
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: owner })
+      } as never,
+      readRateLimit: async () => undefined,
+      writeRateLimit: async () => undefined
+    });
+    try {
+      const status = async (batchId: string) =>
+        app.inject({
+          method: "GET",
+          url: `/v1/projects/${projectId}/delete-status?batchId=${batchId}`
+        });
+      const old = await status(cancelledBatch);
+      expect(old.statusCode).toBe(200);
+      expect(old.json()).toMatchObject({
+        operation: { batchId: cancelledBatch, state: "cancelled" },
+        complete: false,
+        retryable: false,
+        pendingFreezeCount: 1,
+        cancellationPending: true,
+        project: { lifecycle: "deleted", deleteBatchId: completedBatch }
+      });
+      const current = await status(completedBatch);
+      expect(current.statusCode).toBe(200);
+      expect(current.json()).toMatchObject({
+        operation: { batchId: completedBatch, state: "complete" },
+        complete: true,
+        pendingFreezeCount: 0
+      });
+      expect((await status(randomUUID())).statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
   it("completes only after the confirmed execution is terminal and source set is sealed", async () => {
     const app = Fastify(),
       batchId = randomUUID(),

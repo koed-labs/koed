@@ -1054,4 +1054,206 @@ describe.skipIf(!testUrl)("Personal Project API lifecycle", () => {
     expect(retained.rows[0]!.delete_batch_id).toBe(priorBatch);
     expect(retained.rows[0]!.trashed_at).toBeTruthy();
   });
+
+  it("retains revoked explicit-share backend history after registry removal", async () => {
+    const localOwner = randomUUID();
+    const unrelatedOwner = randomUUID();
+    await pool.query(`insert into users(id,email) values ($1,$2),($3,$4)`, [
+      localOwner,
+      `${localOwner}@example.test`,
+      unrelatedOwner,
+      `${unrelatedOwner}@example.test`
+    ]);
+    const project = await projects.create(localOwner, {
+      name: "Historical share",
+      idempotencyKey: "historical-share"
+    });
+    const sessionId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const deployment = await pool.query<{ id: string }>(
+      `select id from deployment_identities where locality='local' limit 1`
+    );
+    await pool.query(
+      `insert into sessions(id,owner_user_id,source_runtime,capture_method,
+       automatic_personal_project_id) values ($1,$2,'codex-cli','api',$3)`,
+      [sessionId, localOwner, project.id]
+    );
+    const seed = await pool.connect();
+    try {
+      await seed.query("begin");
+      await seed.query(
+        `insert into logical_memories(id,protocol_logical_id,owner_user_id,
+         owner_principal_id,origin_deployment_identity_id,source_kind,logical_key)
+         values ($1,$1,$2,$2,$3,'captured_session',$4)`,
+        [
+          logicalMemoryId,
+          localOwner,
+          deployment.rows[0]!.id,
+          `captured-session:${sessionId}`
+        ]
+      );
+      await seed.query(
+        `insert into captured_session_logical_memories
+         (logical_memory_id,source_session_id,owner_principal_id)
+         values ($1,$2,$3)`,
+        [logicalMemoryId, sessionId, localOwner]
+      );
+      await seed.query(
+        `insert into local_captured_session_logical_memories
+         (logical_memory_id,local_session_id,owner_user_id)
+         values ($1,$2,$3)`,
+        [logicalMemoryId, sessionId, localOwner]
+      );
+      await seed.query("commit");
+    } catch (error) {
+      await seed.query("rollback");
+      throw error;
+    } finally {
+      seed.release();
+    }
+    await pool.query(
+      `insert into collaboration_shared_memory_enrollments
+       (backend_id,local_owner_user_id,upstream_user_id,remote_device_id,revoked_at)
+       values ('removed-team',$1,$1,$2,now()),('other-team',$3,$3,$4,now())`,
+      [localOwner, randomUUID(), unrelatedOwner, randomUUID()]
+    );
+    const repository = createProjectApiRepository(pool, {
+      configuredBackendIds: () => []
+    });
+    const preview = await repository.deletePreview(localOwner, project.id);
+    const batchId = randomUUID();
+    await repository.beginDelete(localOwner, project.id, {
+      version: project.version,
+      batchId,
+      executionSetHash: preview.executionSetHash
+    });
+    const operation = await repository.getDeleteOperation(
+      localOwner,
+      project.id
+    );
+    expect(operation?.sources).toEqual([
+      {
+        sessionId,
+        logicalMemoryId,
+        backends: [{ backendId: "removed-team", relationshipIds: [] }]
+      }
+    ]);
+    const grant = {
+      logicalMemoryId,
+      backendId: "removed-team",
+      shareGrantId: randomUUID(),
+      reviewedGrantVersion: 2
+    };
+    const [first, overlap] = await Promise.all([
+      repository.reserveGrantFreezeReview(
+        localOwner,
+        project.id,
+        batchId,
+        grant
+      ),
+      repository.reserveGrantFreezeReview(
+        localOwner,
+        project.id,
+        batchId,
+        grant
+      )
+    ]);
+    expect(overlap).toEqual(first);
+    expect(
+      await repository.reserveGrantFreezeReview(
+        localOwner,
+        project.id,
+        batchId,
+        grant
+      )
+    ).toEqual(first);
+    await expect(
+      repository.reserveGrantFreezeReview(localOwner, project.id, batchId, {
+        ...grant,
+        logicalMemoryId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+    const reviewId = randomUUID();
+    await repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+      ...first,
+      state: "review_required",
+      actionGrantId: reviewId
+    });
+    expect(
+      await repository.reserveGrantFreezeReview(
+        localOwner,
+        project.id,
+        batchId,
+        grant
+      )
+    ).toMatchObject({
+      commandRequestId: first.commandRequestId,
+      actionGrantId: reviewId
+    });
+    const next = await repository.reserveGrantFreezeReview(
+      localOwner,
+      project.id,
+      batchId,
+      { ...grant, reviewedGrantVersion: 3 }
+    );
+    expect(next.commandRequestId).not.toBe(first.commandRequestId);
+    await expect(
+      repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+        ...first,
+        state: "review_required",
+        actionGrantId: reviewId
+      })
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+    await expect(
+      repository.reserveGrantFreezeReview(
+        localOwner,
+        project.id,
+        batchId,
+        grant
+      )
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+    const nextReviewId = randomUUID();
+    await repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+      ...next,
+      state: "review_required",
+      actionGrantId: nextReviewId
+    });
+    await expect(
+      repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+        ...next,
+        state: "review_required",
+        actionGrantId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+    await repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+      ...next,
+      state: "frozen",
+      actionGrantId: nextReviewId,
+      grantVersion: 4
+    });
+    await repository.recordGrantFreezeAck(localOwner, project.id, batchId, {
+      ...next,
+      state: "review_required",
+      actionGrantId: nextReviewId
+    });
+    expect(
+      (
+        await repository.getDeleteOperationByBatch(
+          localOwner,
+          project.id,
+          batchId
+        )
+      )?.grantFreezeAcks
+    ).toEqual([
+      expect.objectContaining({
+        commandRequestId: next.commandRequestId,
+        reviewedGrantVersion: 3,
+        grantVersion: 4,
+        state: "frozen"
+      })
+    ]);
+    await expect(
+      repository.markDeleteReady(localOwner, project.id, batchId)
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+  });
 });

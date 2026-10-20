@@ -90,6 +90,23 @@ export const projectHqSchema = z
 export const projectDeleteStatusSchema = z
   .object({
     project: projectSchema,
+    operation: z
+      .object({
+        batchId: z.uuid(),
+        state: z.enum([
+          "preparing",
+          "freezing",
+          "stopping",
+          "ready",
+          "complete",
+          "cancelled",
+          "needs_attention",
+          "restore_releasing",
+          "restored"
+        ])
+      })
+      .strict()
+      .nullable(),
     complete: z.boolean(),
     retryable: z.boolean(),
     pendingFreezeCount: z.number().int().nonnegative(),

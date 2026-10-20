@@ -43,6 +43,7 @@ describe("Project source deletion coordinator", () => {
     options: {
       review?: "required" | "approved";
       loseFreezeResponse?: boolean;
+      loseReviewAck?: boolean;
     } = {}
   ) => {
     let prepared = false;
@@ -106,48 +107,113 @@ describe("Project source deletion coordinator", () => {
       projectSourceRequest: remote
     } as unknown as CollaborationSharedMemoryControl;
     let actionCount = 0;
-    const action = {
-      dispatch: vi.fn(
-        async (command: {
-          command: string;
-          input: { intent?: { intent: string } };
-        }) => {
-          const freeze =
-            command.input.intent?.intent ===
-            "collaboration.freeze_shared_memory_grant";
-          actionCount++;
-          return {
-            ok: true,
-            data: {
-              status: {
-                version: 1,
-                actionGrant: { id: randomUUID() },
-                approvalTier: freeze ? "native_review" : "direct",
-                review: freeze ? {} : null,
-                state:
-                  freeze && options.review !== "approved"
-                    ? "review_required"
-                    : "approved",
-                activationUrl: null,
-                expiresAt: new Date(Date.now() + 300000).toISOString()
-              }
+    const reviewedCommands = new Map<string, string>();
+    const actionDispatch = vi.fn(
+      async (command: {
+        command: string;
+        input: {
+          intent?: { intent: string; commandRequestId: string };
+          actionGrant?: { id: string };
+        };
+      }) => {
+        const freeze =
+          command.input.intent?.intent ===
+          "collaboration.freeze_shared_memory_grant";
+        actionCount++;
+        const reviewId =
+          command.input.actionGrant?.id ??
+          reviewedCommands.get(command.input.intent?.commandRequestId ?? "") ??
+          randomUUID();
+        if (command.input.intent)
+          reviewedCommands.set(command.input.intent.commandRequestId, reviewId);
+        return {
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: reviewId },
+              approvalTier:
+                freeze || command.input.actionGrant
+                  ? "native_review"
+                  : "direct",
+              review: freeze || command.input.actionGrant ? {} : null,
+              state:
+                (freeze || command.input.actionGrant) &&
+                options.review !== "approved"
+                  ? "review_required"
+                  : "approved",
+              activationUrl: null,
+              expiresAt: new Date(Date.now() + 300000).toISOString()
             }
-          };
-        }
-      ),
+          }
+        };
+      }
+    );
+    const action = {
+      dispatch: actionDispatch,
       resolveSecret: vi.fn(async () => "approved-secret")
     } as unknown as CollaborationActionGrantControl;
     const backendAck = vi.fn(async () => undefined);
+    const durableReviews: Array<
+      Parameters<ProjectApiRepository["recordGrantFreezeAck"]>[3]
+    > = [];
+    let lostReviewAck = false;
+    const reserveReview = vi.fn(
+      async (
+        ...args: Parameters<ProjectApiRepository["reserveGrantFreezeReview"]>
+      ) => {
+        const input = args[3];
+        const existing = durableReviews.find(
+          (ack) =>
+            ack.backendId === input.backendId &&
+            ack.shareGrantId === input.shareGrantId
+        );
+        if (existing?.reviewedGrantVersion === input.reviewedGrantVersion)
+          return existing;
+        const reserved = {
+          ...input,
+          grantVersion: input.reviewedGrantVersion,
+          state: "reserved" as const,
+          actionGrantId: null,
+          commandRequestId: randomUUID()
+        };
+        const index = existing ? durableReviews.indexOf(existing) : -1;
+        if (index >= 0) durableReviews[index] = reserved;
+        else durableReviews.push(reserved);
+        return reserved;
+      }
+    );
     const freezeAck = vi.fn(
       async (
         ...args: Parameters<ProjectApiRepository["recordGrantFreezeAck"]>
       ) => {
-        void args;
+        const ack = args[3];
+        if (
+          options.loseReviewAck &&
+          !lostReviewAck &&
+          ack.state === "review_required"
+        ) {
+          lostReviewAck = true;
+          throw new Error("review ack interrupted");
+        }
+        const index = durableReviews.findIndex(
+          (item) =>
+            item.backendId === ack.backendId &&
+            item.shareGrantId === ack.shareGrantId
+        );
+        if (index >= 0) durableReviews[index] = ack;
+        else durableReviews.push(ack);
+        return ack;
       }
     );
     const repository = {
       recordBackendAck: backendAck,
-      recordGrantFreezeAck: freezeAck
+      reserveGrantFreezeReview: reserveReview,
+      recordGrantFreezeAck: freezeAck,
+      getDeleteOperationByBatch: vi.fn(async () => ({
+        ...operation,
+        grantFreezeAcks: [...durableReviews]
+      }))
     } as unknown as ProjectApiRepository;
     const coordinator = createProjectSourceCoordinator({
       repository,
@@ -164,6 +230,8 @@ describe("Project source deletion coordinator", () => {
       backendAck,
       freezeAck,
       action,
+      actionDispatch,
+      repository,
       get actionCount() {
         return actionCount;
       }
@@ -377,6 +445,67 @@ describe("Project source deletion coordinator", () => {
         command: "collaboration.request_action_grant"
       }),
       expect.anything()
+    );
+  });
+  it("reuses a reserved Native command after remote creation but before local acknowledgment", async () => {
+    const grant = {
+      id: randomUUID(),
+      teamId: randomUUID(),
+      teamWorkspaceId: randomUUID(),
+      grantVersion: 2
+    };
+    const { coordinator, actionDispatch, freezeAck, repository } = fixture(
+      grant,
+      {
+        loseReviewAck: true
+      }
+    );
+    await expect(
+      coordinator.advance({ ownerUserId: owner, projectId, batchId, operation })
+    ).rejects.toThrow("review ack interrupted");
+    const firstCommand = actionDispatch.mock.calls.find(
+      ([command]) =>
+        command.input.intent?.intent ===
+        "collaboration.freeze_shared_memory_grant"
+    )?.[0].input.intent?.commandRequestId;
+    expect(firstCommand).toBeTruthy();
+    const retained = await repository.getDeleteOperationByBatch(
+      owner,
+      projectId,
+      batchId
+    );
+    expect(retained?.grantFreezeAcks[0]).toMatchObject({
+      commandRequestId: firstCommand,
+      state: "reserved",
+      actionGrantId: null
+    });
+    await coordinator.advance({
+      ownerUserId: owner,
+      projectId,
+      batchId,
+      operation
+    });
+    const freezeRequests = actionDispatch.mock.calls.filter(
+      ([command]) =>
+        command.input.intent?.intent ===
+        "collaboration.freeze_shared_memory_grant"
+    );
+    expect(freezeRequests).toHaveLength(2);
+    expect(
+      new Set(
+        freezeRequests.map(
+          ([command]) => command.input.intent?.commandRequestId
+        )
+      ).size
+    ).toBe(1);
+    expect(freezeAck).toHaveBeenLastCalledWith(
+      owner,
+      projectId,
+      batchId,
+      expect.objectContaining({
+        commandRequestId: firstCommand,
+        state: "review_required"
+      })
     );
   });
 });

@@ -30,6 +30,17 @@ const cancelSchema = z.object({ batchId: z.uuid() }).strict();
 const deleteStatusQuerySchema = z
   .object({ batchId: z.uuid().optional() })
   .strict();
+const operationStatus = (
+  operation: { batchId: string; state: string } | null
+) =>
+  operation
+    ? {
+        batchId: operation.batchId,
+        state: operation.state as NonNullable<
+          z.infer<typeof projectDeleteStatusSchema>["operation"]
+        >["state"]
+      }
+    : null;
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -182,6 +193,7 @@ export function registerProjectRoutes(
     if (before.lifecycle === "deleted")
       return projectDeleteStatusSchema.parse({
         project: before,
+        operation: operationStatus(operation),
         complete: true,
         retryable: false,
         pendingFreezeCount: 0,
@@ -274,6 +286,7 @@ export function registerProjectRoutes(
               : false;
           return projectDeleteStatusSchema.parse({
             project,
+            operation: { batchId: operation.batchId, state: "cancelled" },
             complete: false,
             retryable: false,
             pendingFreezeCount: 0,
@@ -302,7 +315,7 @@ export function registerProjectRoutes(
         )
       ) &&
       refreshed.grantFreezeAcks.every(
-        (ack) => ack.state !== "review_required"
+        (ack) => ack.state === "frozen" || ack.state === "resolved"
       ) &&
       refreshed.runtimeAcks.length === refreshed.executions.length
     ) {
@@ -314,6 +327,7 @@ export function registerProjectRoutes(
       );
       return projectDeleteStatusSchema.parse({
         project,
+        operation: { batchId: operation.batchId, state: "complete" },
         complete: true,
         retryable: false,
         pendingFreezeCount: 0,
@@ -325,6 +339,7 @@ export function registerProjectRoutes(
     const project = await repository.get(ownerUserId, id);
     return projectDeleteStatusSchema.parse({
       project,
+      operation: operationStatus(refreshed),
       complete: false,
       retryable: true,
       pendingFreezeCount: refreshed.sources.reduce(
@@ -398,6 +413,11 @@ export function registerProjectRoutes(
           : operation.sources.every((source) => source.backends.length === 0);
         return projectDeleteStatusSchema.parse({
           project,
+          operation: operationStatus(
+            operation.state === "cancelled"
+              ? operation
+              : { batchId, state: "cancelled" }
+          ),
           complete: false,
           retryable: false,
           pendingFreezeCount: 0,
@@ -429,6 +449,17 @@ export function registerProjectRoutes(
           : ((await repository.getDeleteOperation(user.id, id)) ??
             (await repository.listPendingReleaseOperations(user.id, id))[0] ??
             null);
+        if (query.batchId && !operation)
+          throw new ProjectNotFoundError("Project deletion batch not found");
+        const activeOperation =
+          operation !== null &&
+          [
+            "preparing",
+            "freezing",
+            "stopping",
+            "ready",
+            "needs_attention"
+          ].includes(operation.state);
         const cancellationPending =
           (operation?.state === "cancelled" ||
             operation?.state === "restore_releasing") &&
@@ -445,9 +476,11 @@ export function registerProjectRoutes(
           );
         return projectDeleteStatusSchema.parse({
           project,
-          complete: project.lifecycle === "deleted",
-          retryable:
-            project.deletionPhase !== null && project.lifecycle === "active",
+          operation: operationStatus(operation),
+          complete: operation
+            ? operation.state === "complete"
+            : project.lifecycle === "deleted",
+          retryable: activeOperation,
           pendingFreezeCount:
             operation?.sources.reduce(
               (count, source) =>
@@ -467,11 +500,12 @@ export function registerProjectRoutes(
                 ).length,
               0
             ) ?? 0,
-          pendingExecutionCount: operation
-            ? operation.executions.length - operation.runtimeAcks.length
-            : 0,
+          pendingExecutionCount:
+            activeOperation && operation
+              ? operation.executions.length - operation.runtimeAcks.length
+              : 0,
           pendingReviews:
-            operation?.grantFreezeAcks
+            (activeOperation && operation ? operation.grantFreezeAcks : [])
               .filter(
                 (ack) => ack.state === "review_required" && ack.actionGrantId
               )

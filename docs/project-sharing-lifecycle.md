@@ -256,6 +256,17 @@ Restored jobs stay paused, and restored sources, Conversations, or Projects do
 not resume any frozen grant. A retry is idempotent; already-completed freezes
 stay in place.
 
+The local delete manifest includes every backend in the owner's retained
+Shared Memory enrollment history, including revoked enrollments and backends
+removed from the current registry. This covers explicit grants without a Sync
+relationship. If a historical backend cannot be reached, deletion remains
+pending until its exact source and grants can be checked and sealed. A Native
+freeze request reserves its command identity in the local batch before remote
+dispatch; retries reuse that identity for the same reviewed grant version, and
+a changed version requires a new review. Delete status names the selected
+batch and its state, so an older cancelled batch never reports a later batch's
+completion.
+
 ### Forget a Conversation, source, or Memory item
 
 Forgetting a Conversation uses the existing Personal deletion path

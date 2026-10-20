@@ -230,8 +230,9 @@ type GrantFreezeAck = {
   logicalMemoryId: string;
   backendId: string;
   shareGrantId: string;
+  reviewedGrantVersion: number;
   grantVersion: number;
-  state: "review_required" | "frozen" | "resolved";
+  state: "reserved" | "review_required" | "frozen" | "resolved";
   actionGrantId: string | null;
   commandRequestId: string;
 };
@@ -255,7 +256,12 @@ const mapDeleteOperation = (row: Row): ProjectDeleteOperation => ({
   sources: row.source_manifest as DeleteSource[],
   executions: row.execution_manifest as DeleteExecution[],
   backendAcks: row.backend_acks as BackendAck[],
-  grantFreezeAcks: row.grant_freeze_acks as GrantFreezeAck[],
+  grantFreezeAcks: (row.grant_freeze_acks as GrantFreezeAck[]).map((ack) => ({
+    ...ack,
+    reviewedGrantVersion:
+      ack.reviewedGrantVersion ??
+      (ack.state === "frozen" ? ack.grantVersion - 1 : ack.grantVersion)
+  })),
   runtimeAcks: row.runtime_acks as RuntimeAck[],
   state: String(row.state),
   sourceManifestHash: String(row.source_manifest_hash),
@@ -325,13 +331,27 @@ const sourceManifest = async (
       backend.relationshipIds.push(row.relationship_id);
     }
   }
+  // Enrollment is retained on revocation and is required before local-edge
+  // sharing. It is the durable backend history for explicit no-Sync grants,
+  // including backends removed from the current registry.
+  const historical = await client.query<{ backend_id: string }>(
+    `select distinct backend_id from collaboration_shared_memory_enrollments
+      where local_owner_user_id=$1 order by backend_id`,
+    [ownerUserId]
+  );
+  const relevantBackendIds = [
+    ...new Set([
+      ...configuredBackendIds,
+      ...historical.rows.map((row) => row.backend_id)
+    ])
+  ];
   const sources = [...grouped.values()].map((source) => ({
     ...source,
     backends: source.logicalMemoryId
       ? [
           ...new Map(
             [
-              ...configuredBackendIds.map((backendId) => ({
+              ...relevantBackendIds.map((backendId) => ({
                 backendId,
                 relationshipIds: []
               })),
@@ -777,6 +797,76 @@ export const createProjectApiRepository = (
       );
     });
   },
+  async reserveGrantFreezeReview(
+    ownerUserId: string,
+    projectId: string,
+    batchId: string,
+    grant: Pick<
+      GrantFreezeAck,
+      "logicalMemoryId" | "backendId" | "shareGrantId" | "reviewedGrantVersion"
+    >
+  ): Promise<GrantFreezeAck> {
+    return inTransaction(pool, async (client) => {
+      const selected = await client.query<Row>(
+        `select * from project_delete_operations
+         where owner_user_id=$1 and project_id=$2 and batch_id=$3 for update`,
+        [ownerUserId, projectId, batchId]
+      );
+      if (
+        !selected.rows[0] ||
+        !["preparing", "freezing", "stopping"].includes(
+          String(selected.rows[0].state)
+        )
+      )
+        throw new ProjectConflictError("Project deletion operation changed");
+      const operation = mapDeleteOperation(selected.rows[0]);
+      if (
+        !operation.sources.some(
+          (source) =>
+            source.logicalMemoryId === grant.logicalMemoryId &&
+            source.backends.some(
+              (backend) => backend.backendId === grant.backendId
+            )
+        )
+      )
+        throw new ProjectConflictError(
+          "Grant is outside Project source manifest"
+        );
+      const existing = operation.grantFreezeAcks.find(
+        (ack) =>
+          ack.backendId === grant.backendId &&
+          ack.shareGrantId === grant.shareGrantId
+      );
+      if (existing) {
+        if (existing.logicalMemoryId !== grant.logicalMemoryId)
+          throw new ProjectConflictError("Grant source identity changed");
+        if (existing.reviewedGrantVersion > grant.reviewedGrantVersion)
+          throw new ProjectConflictError("Grant review version changed");
+        if (existing.reviewedGrantVersion === grant.reviewedGrantVersion)
+          return existing;
+      }
+      const reserved: GrantFreezeAck = {
+        ...grant,
+        grantVersion: grant.reviewedGrantVersion,
+        state: "reserved",
+        actionGrantId: null,
+        commandRequestId: randomUUID()
+      };
+      const acks = operation.grantFreezeAcks.filter(
+        (ack) =>
+          ack.shareGrantId !== grant.shareGrantId ||
+          ack.backendId !== grant.backendId
+      );
+      acks.push(reserved);
+      await client.query(
+        `update project_delete_operations
+         set grant_freeze_acks=$4::jsonb,state='freezing',updated_at=now()
+         where owner_user_id=$1 and project_id=$2 and batch_id=$3`,
+        [ownerUserId, projectId, batchId, JSON.stringify(acks)]
+      );
+      return reserved;
+    });
+  },
   async recordGrantFreezeAck(
     ownerUserId: string,
     projectId: string,
@@ -809,17 +899,49 @@ export const createProjectApiRepository = (
         throw new ProjectConflictError(
           "Grant is outside Project source manifest"
         );
+      const current = operation.grantFreezeAcks.find(
+        (item) =>
+          item.shareGrantId === ack.shareGrantId &&
+          item.backendId === ack.backendId
+      );
+      if (
+        !current ||
+        current.logicalMemoryId !== ack.logicalMemoryId ||
+        current.reviewedGrantVersion !== ack.reviewedGrantVersion ||
+        current.commandRequestId !== ack.commandRequestId ||
+        (current.actionGrantId !== null &&
+          ack.actionGrantId !== null &&
+          current.actionGrantId !== ack.actionGrantId) ||
+        ((ack.state === "review_required" || ack.state === "frozen") &&
+          ack.actionGrantId === null) ||
+        (ack.state === "frozen" &&
+          ack.grantVersion <= ack.reviewedGrantVersion) ||
+        (ack.state !== "frozen" &&
+          ack.grantVersion !== ack.reviewedGrantVersion)
+      )
+        throw new ProjectConflictError("Grant review reservation changed");
+      const rank = { reserved: 0, review_required: 1, frozen: 2, resolved: 2 };
+      if (rank[ack.state] < rank[current.state]) return current;
+      if (
+        rank[ack.state] === rank[current.state] &&
+        current.state !== ack.state
+      )
+        throw new ProjectConflictError("Grant review terminal state changed");
       const acks = operation.grantFreezeAcks.filter(
         (item) =>
           item.shareGrantId !== ack.shareGrantId ||
           item.backendId !== ack.backendId
       );
-      acks.push(ack);
+      acks.push({
+        ...ack,
+        actionGrantId: current.actionGrantId ?? ack.actionGrantId
+      });
       await client.query(
         `update project_delete_operations set grant_freeze_acks=$4::jsonb,
         state='freezing',updated_at=now() where owner_user_id=$1 and project_id=$2 and batch_id=$3`,
         [ownerUserId, projectId, batchId, JSON.stringify(acks)]
       );
+      return ack;
     });
   },
   async recordRuntimeAck(
@@ -918,7 +1040,9 @@ export const createProjectApiRepository = (
           "Remote source acknowledgments are incomplete"
         );
       if (
-        operation.grantFreezeAcks.some((ack) => ack.state === "review_required")
+        operation.grantFreezeAcks.some(
+          (ack) => ack.state !== "frozen" && ack.state !== "resolved"
+        )
       )
         throw new ProjectConflictError(
           "Share Grant freeze reviews are incomplete"
@@ -986,7 +1110,7 @@ export const createProjectApiRepository = (
           )
         ) ||
         confirmed.grantFreezeAcks.some(
-          (ack) => ack.state === "review_required"
+          (ack) => ack.state !== "frozen" && ack.state !== "resolved"
         ) ||
         confirmed.executions.length !== confirmed.runtimeAcks.length
       )

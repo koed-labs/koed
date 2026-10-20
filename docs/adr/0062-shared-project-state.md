@@ -263,6 +263,14 @@ scheduled jobs, Workspace Project collaboration, and later HQ sections remain
 separate implementation work. If their schema capability is enabled without a
 lifecycle adapter, Project deletion fails closed.
 
+The local manifest also consults retained owner enrollment records for
+historical Team backends, including revoked enrollments, so an explicit grant
+without a Sync relationship cannot be omitted when its backend leaves the
+current registry. Unreachable backends leave deletion pending. Native freeze
+review commands are reserved durably per exact batch, source, backend, grant,
+and reviewed version before dispatch. Batch-specific status reports the
+selected operation's state, even if a later batch changed the Project.
+
 The repository supports user-owned Share Grants, revisioned Personal Notes
 and their `personal_note` sharing adapter, and local Project-to-Workspace
 recall mapping. It does not currently implement the Workspace Project and

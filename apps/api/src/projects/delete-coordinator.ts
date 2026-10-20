@@ -320,16 +320,26 @@ export const createProjectSourceCoordinator = (input: {
             })
           ).grants;
           for (const grant of grants) {
-            // A Native decision is bound to the reviewed grant version. A
-            // changed grant needs an entirely new decision and request identity.
-            const existing = operation.grantFreezeAcks.find(
-              (item) =>
-                item.backendId === backendId &&
-                item.shareGrantId === grant.id &&
-                item.grantVersion === grant.grantVersion
+            // Persist the immutable review identity before remote dispatch.
+            // A concurrent retry receives the same command and action grant.
+            const reservation = await input.repository.reserveGrantFreezeReview(
+              ownerUserId,
+              projectId,
+              batchId,
+              {
+                logicalMemoryId: source.logicalMemoryId,
+                backendId,
+                shareGrantId: grant.id,
+                reviewedGrantVersion: grant.grantVersion
+              }
             );
-            const commandRequestId = existing?.commandRequestId ?? randomUUID();
-            const mutationId = existing?.commandRequestId ?? commandRequestId;
+            if (
+              reservation.state === "frozen" ||
+              reservation.state === "resolved"
+            )
+              throw new Error("Previously closed Share Grant is active again");
+            const commandRequestId = reservation.commandRequestId;
+            const mutationId = commandRequestId;
             const intent = collaborationActionGrantIntentSchema.parse({
               intent: "collaboration.freeze_shared_memory_grant",
               commandRequestId,
@@ -342,7 +352,7 @@ export const createProjectSourceCoordinator = (input: {
             const status = await actionStatus(
               intent,
               authority,
-              existing?.actionGrantId ?? undefined
+              reservation.actionGrantId ?? undefined
             );
             if (status.approvalTier !== "native_review")
               throw new Error(
@@ -365,6 +375,7 @@ export const createProjectSourceCoordinator = (input: {
                   logicalMemoryId: source.logicalMemoryId,
                   backendId,
                   shareGrantId: grant.id,
+                  reviewedGrantVersion: grant.grantVersion,
                   grantVersion: grant.grantVersion,
                   state: "review_required",
                   actionGrantId: status.actionGrant.id,
@@ -401,6 +412,7 @@ export const createProjectSourceCoordinator = (input: {
                 logicalMemoryId: source.logicalMemoryId,
                 backendId,
                 shareGrantId: grant.id,
+                reviewedGrantVersion: grant.grantVersion,
                 grantVersion: grant.grantVersion + 1,
                 state: "frozen",
                 actionGrantId: status.actionGrant.id,
@@ -464,11 +476,17 @@ export const createProjectSourceCoordinator = (input: {
             admission.activeUnfrozenGrants !== 0
           )
             throw new Error("Project source seal is incomplete");
-          for (const prior of operation.grantFreezeAcks.filter(
+          const latest = await input.repository.getDeleteOperationByBatch(
+            ownerUserId,
+            projectId,
+            batchId
+          );
+          if (!latest) throw new Error("Project source operation changed");
+          for (const prior of latest.grantFreezeAcks.filter(
             (ack) =>
               ack.backendId === backendId &&
               ack.logicalMemoryId === source.logicalMemoryId &&
-              ack.state === "review_required"
+              (ack.state === "reserved" || ack.state === "review_required")
           )) {
             await input.repository.recordGrantFreezeAck(
               ownerUserId,
