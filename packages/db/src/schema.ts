@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  date,
   doublePrecision,
   foreignKey,
   halfvec,
@@ -211,6 +212,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "personal_memory_changed",
   "pending_share_lifecycle",
   "managed_conversation_changed",
+  "work_item_changed",
   "access_revoked"
 ]);
 export const collaborationStreamState = pgEnum("collaboration_stream_state", [
@@ -512,6 +514,88 @@ export const projects = pgTable(
     check(
       "projects_deleted_shape_check",
       sql`(${table.lifecycle} = 'active' and ${table.deletedAt} is null) or (${table.lifecycle} = 'deleted' and ${table.deletedAt} is not null)`
+    )
+  ]
+);
+
+export const projectWorkItems = pgTable(
+  "project_work_items",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    kind: text("kind").notNull(),
+    key: text("key"),
+    title: text("title").notNull(),
+    goal: text("goal").notNull(),
+    origin: text("origin").notNull(),
+    originRef: text("origin_ref"),
+    idempotencyKey: text("idempotency_key"),
+    creationPayloadHash: text("creation_payload_hash").notNull(),
+    status: text("status").notNull().default("todo"),
+    blockedReason: text("blocked_reason"),
+    assigneeAgentId: uuid("assignee_agent_id"),
+    executionId: uuid("execution_id"),
+    dispatchKey: text("dispatch_key"),
+    prProvider: text("pr_provider"),
+    prNumber: integer("pr_number"),
+    prUrl: text("pr_url"),
+    prState: text("pr_state"),
+    dueOn: date("due_on"),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    doneBy: uuid("done_by"),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    version: integer("version").notNull().default(1)
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_work_items_owner_project_fk"
+    }),
+    unique("project_work_items_owner_id_unique").on(
+      table.ownerUserId,
+      table.id
+    ),
+    uniqueIndex("project_work_items_origin_idempotency_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.origin,
+      table.idempotencyKey
+    ),
+    uniqueIndex("project_work_items_dispatch_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.dispatchKey
+    ),
+    index("project_work_items_project_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.status,
+      table.createdAt
+    ),
+    check(
+      "project_work_items_kind_check",
+      sql`${table.kind} in ('todo','ticket')`
+    ),
+    check(
+      "project_work_items_status_check",
+      sql`${table.status} in ('todo','doing','review','blocked','done')`
+    ),
+    check("project_work_items_version_check", sql`${table.version} > 0`),
+    check(
+      "project_work_items_title_check",
+      sql`length(trim(${table.title})) > 0`
+    ),
+    check(
+      "project_work_items_goal_check",
+      sql`length(trim(${table.goal})) > 0`
+    ),
+    check(
+      "project_work_items_ticket_key_check",
+      sql`${table.kind} = 'ticket' or ${table.key} is null`
     )
   ]
 );

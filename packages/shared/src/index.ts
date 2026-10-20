@@ -1853,3 +1853,4 @@ export {
   type TeamMemoryAnswerTaskCapability,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
+export * from "./work-item-contract.js";

@@ -53,6 +53,7 @@ export interface RouteIdentityContract {
     | "personal_memory"
     | "team_memory"
     | "collaboration"
+    | "projects"
     | "shared_memory"
     | "high_risk"
     | "retention"
@@ -379,6 +380,34 @@ const managedConversationRunnerRoutes = [
 ] as const;
 
 export const routeIdentityContracts = [
+  route(
+    "GET",
+    "/v1/projects/{id}/work-items",
+    "session_or_device_credential",
+    "projects",
+    "List Work Items in an owned active Personal Project."
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/work-items",
+    "session_or_device_credential",
+    "projects",
+    "Create an owned Personal Project Work Item."
+  ),
+  route(
+    "PATCH",
+    "/v1/work-items/{id}",
+    "session_or_device_credential",
+    "projects",
+    "Edit or manually transition an owned Work Item."
+  ),
+  route(
+    "DELETE",
+    "/v1/work-items/{id}",
+    "session_or_device_credential",
+    "projects",
+    "Delete an owned Personal Project to-do."
+  ),
   route("GET", "/", "public", "operations", "Coarse service orientation."),
   route("GET", "/health", "public", "operations", "Coarse health probe."),
   route("GET", "/ready", "public", "operations", "Coarse readiness probe."),

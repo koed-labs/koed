@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { workItemSchema } from "./work-item-contract.js";
 import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
@@ -3339,7 +3340,8 @@ const realtimeResourceSchema = z
     threadId: z.uuid().nullable(),
     messageId: z.uuid().nullable(),
     sharedSessionId: z.uuid().nullable(),
-    shareGrantId: z.uuid().nullable()
+    shareGrantId: z.uuid().nullable(),
+    workItemId: z.uuid().nullable().optional()
   })
   .strict()
   .superRefine((resource, context) => {
@@ -3383,6 +3385,13 @@ const teamRealtimeEventResourceV2Schema = z
   .strict();
 
 export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("work_item_changed"),
+      workItemId: z.uuid(),
+      item: workItemSchema.nullable()
+    })
+    .strict(),
   z
     .object({
       type: z.literal("navigation_snapshot"),
@@ -3620,6 +3629,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "personal_memory_changed",
   "pending_share_lifecycle",
   "managed_conversation_changed",
+  "work_item_changed",
   "access_revoked"
 ]);
 
@@ -3785,6 +3795,7 @@ const realtimeUpdateDeliverySchema = z
       personal_memory_changed: new Set(["personal_memory_upserted"]),
       pending_share_lifecycle: new Set(["owned_share_status_changed"]),
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
+      work_item_changed: new Set(["work_item_changed"]),
       access_revoked: new Set(["shared_session_removed"])
     };
 
@@ -3795,6 +3806,25 @@ const realtimeUpdateDeliverySchema = z
         message: "Realtime update does not match its event family"
       });
       return;
+    }
+
+    if (
+      update.type === "work_item_changed" &&
+      (resource.scope !== "personal" ||
+        resource.teamId !== null ||
+        resource.workspaceId !== null ||
+        resource.threadId !== null ||
+        resource.messageId !== null ||
+        resource.sharedSessionId !== null ||
+        resource.shareGrantId !== null ||
+        resource.workItemId !== update.workItemId ||
+        (update.item !== null && update.item.id !== update.workItemId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update"],
+        message: "Work Item update must match its Personal resource"
+      });
     }
 
     if (

@@ -462,3 +462,19 @@ export {
   verifyManagedJournalTerminal,
   type VerifiedManagedJournalTerminal
 } from "./managed-journal-terminal.js";
+export {
+  createWorkItemRepository,
+  WorkItemConflictError,
+  WorkItemCursorError,
+  WorkItemTransitionError,
+  WorkItemUnavailableError,
+  nextWorkItemStatus,
+  workItemDispatchKey,
+  workItemPlanLineKey,
+  type WorkItemRepository,
+  type WorkItemPage,
+  type WorkItemTransitionEvent,
+  type TrustedWorkItemTransitionEvent,
+  type TrustedWorkItemEvidence,
+  type VerifyTrustedWorkItemTransition
+} from "./work-item-repository.js";
