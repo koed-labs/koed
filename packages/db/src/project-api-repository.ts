@@ -137,7 +137,11 @@ const assertFutureProjectCapabilities = async (
   );
   if (
     result.rows.length !== 5 ||
-    result.rows.some((row) => row.state !== "absent" || row.relation !== null)
+    result.rows.some((row) =>
+      row.capability === "project_sources"
+        ? row.state !== "enabled" || row.relation !== "project_sources"
+        : row.state !== "absent" || row.relation !== null
+    )
   )
     throw new ProjectCapabilityError(
       "Project child capability is enabled without a lifecycle adapter"
@@ -627,6 +631,7 @@ export const createProjectApiRepository = (
     const result = await pool.query<{
       conversations: string;
       work_items: string;
+      sources: string;
     }>(
       `select
         (select count(*)::text from sessions s where s.owner_user_id=$1 and s.visibility='personal'
@@ -646,7 +651,8 @@ export const createProjectApiRepository = (
           )
           and (case when s.project_override_id is not null then s.project_override_personal_project_id
                else s.automatic_personal_project_id end)=$2) as conversations,
-        (select count(*)::text from project_work_items wi where wi.owner_user_id=$1 and wi.project_id=$2 and wi.deleted_at is null) as work_items`,
+        (select count(*)::text from project_work_items wi where wi.owner_user_id=$1 and wi.project_id=$2 and wi.deleted_at is null) as work_items,
+        (select count(*)::text from project_sources ps where ps.owner_user_id=$1 and ps.project_id=$2 and ps.deleted_at is null) as sources`,
       [ownerUserId, projectId]
     );
     return {
@@ -666,7 +672,10 @@ export const createProjectApiRepository = (
           availability: "available" as const,
           count: Number(result.rows[0]!.work_items)
         },
-        sources: { availability: "not_implemented" as const },
+        sources: {
+          availability: "available" as const,
+          count: Number(result.rows[0]!.sources)
+        },
         decks: { availability: "not_implemented" as const },
         scheduledJobs: { availability: "not_implemented" as const }
       }
@@ -677,6 +686,15 @@ export const createProjectApiRepository = (
       const current = await ownerProject(client, ownerUserId, projectId, true);
       personalOnly(current);
       activeOnly(current);
+      const noteBacked = await client.query(
+        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
+           and current_revision_id is not null limit 1`,
+        [ownerUserId, projectId]
+      );
+      if (noteBacked.rows[0])
+        throw new ProjectCapabilityError(
+          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
+        );
       return {
         project: mapProject(current),
         ...(await activeExecutionSet(client, ownerUserId, projectId))
@@ -698,6 +716,15 @@ export const createProjectApiRepository = (
       )
         return mapProject(current);
       activeOnly(current);
+      const noteBacked = await client.query(
+        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
+           and current_revision_id is not null limit 1`,
+        [ownerUserId, projectId]
+      );
+      if (noteBacked.rows[0])
+        throw new ProjectCapabilityError(
+          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
+        );
       const reused = await client.query(
         `select 1 from project_delete_operations where batch_id=$1`,
         [input.batchId]
@@ -1300,6 +1327,20 @@ export const createProjectApiRepository = (
         where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
         [ownerUserId, projectId, batchId]
       );
+      const noteBacked = await client.query(
+        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
+           and current_revision_id is not null limit 1`,
+        [ownerUserId, projectId]
+      );
+      if (noteBacked.rows[0])
+        throw new ProjectCapabilityError(
+          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
+        );
+      await client.query(
+        `update project_sources set deleted_at=now(),delete_batch_id=$3,updated_at=now()
+          where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
+        [ownerUserId, projectId, batchId]
+      );
       const current = await ownerProject(client, ownerUserId, projectId, true);
       if (
         current.lifecycle !== "active" ||
@@ -1374,6 +1415,11 @@ export const createProjectApiRepository = (
       await client.query(
         `update project_work_items set deleted_at=null,delete_batch_id=null,updated_at=now()
         where owner_user_id=$1 and project_id=$2 and delete_batch_id=$3`,
+        [ownerUserId, projectId, input.batchId]
+      );
+      await client.query(
+        `update project_sources set deleted_at=null,delete_batch_id=null,updated_at=now()
+          where owner_user_id=$1 and project_id=$2 and delete_batch_id=$3`,
         [ownerUserId, projectId, input.batchId]
       );
       const result = await client.query<Row>(

@@ -35,6 +35,10 @@
       "types": "./dist/project-contract.d.ts",
       "import": "./dist/project-contract.js"
     },
+    "./project-source-contract": {
+      "types": "./dist/project-source-contract.d.ts",
+      "import": "./dist/project-source-contract.js"
+    },
     "./agent-contract": {
       "types": "./dist/agent-contract.d.ts",
       "import": "./dist/agent-contract.js"

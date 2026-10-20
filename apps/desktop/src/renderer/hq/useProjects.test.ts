@@ -25,6 +25,11 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const mockApi = (list: ProjectsDesktopApi["list"]): ProjectsDesktopApi => ({
+  sourceList: vi.fn(async () => []),
+  sourceDiscoverRepos: vi.fn(async () => []),
+  sourceCreate: vi.fn(),
+  sourceRemove: vi.fn(),
+  sourceRetry: vi.fn(),
   list,
   pickFolder: vi.fn(),
   hq: vi.fn(),

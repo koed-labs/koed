@@ -45,6 +45,7 @@ import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
+import { HqProjectSources } from "./project/HqProjectSources.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 
 const subscribeEmpty = () => () => undefined;
@@ -107,6 +108,9 @@ export function HqApplication({
   const [blankIntent, setBlankIntent] = useState(0);
   const [blankLaunchPending, setBlankLaunchPending] = useState(false);
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [sourcesPanelHost, setSourcesPanelHost] =
+    useState<HTMLDivElement | null>(null);
   const shellActions = useRef<HqShellActions>(null);
   const [projectsStore] = useState(() =>
     projectsApi ? new ProjectsStore(projectsApi) : null
@@ -576,7 +580,23 @@ export function HqApplication({
       <HqShell
         actionsRef={shellActions}
         contextAvailable={contextAvailable}
-        contextContent={projectHqContent}
+        contextContent={
+          projectHqContent ? (
+            <>
+              <div
+                hidden={sourcesOpen}
+                className="hq-project-sources__conversation"
+              >
+                {projectHqContent}
+              </div>
+              <div
+                hidden={!sourcesOpen}
+                className="hq-project-sources__host"
+                ref={setSourcesPanelHost}
+              />
+            </>
+          ) : undefined
+        }
         title={title}
         route={route}
         sidebar={({ compact }) => (
@@ -758,6 +778,18 @@ export function HqApplication({
           ) : route.kind === "project" && project && projectHqContent ? (
             <div className="hq-project-route__overview">
               <h1>{project.name}</h1>
+              {projectsApi ? (
+                <HqProjectSources
+                  key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${project.id}`}
+                  projectId={project.id}
+                  projectName={project.name}
+                  api={projectsApi}
+                  visibilityOwnerId={visibilityOwnerId}
+                  visibilityProfileKey={visibilityProfileKey}
+                  panelHost={sourcesPanelHost}
+                  onOpenChange={setSourcesOpen}
+                />
+              ) : null}
             </div>
           ) : route.kind === "conversation" &&
             project &&

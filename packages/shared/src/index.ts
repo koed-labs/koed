@@ -1857,4 +1857,5 @@ export {
 export * from "./work-item-contract.js";
 export * from "./agent-contract.js";
 export * from "./project-contract.js";
+export * from "./project-source-contract.js";
 export * from "./project-activity-contract.js";

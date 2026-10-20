@@ -12,6 +12,7 @@ import {
   type ProjectsRequest,
   type ProjectsResult
 } from "../ipc/projects-protocol.js";
+import { createProjectSourceClient } from "./project-source-client.js";
 
 export type ProjectsAuthority = {
   key: string;
@@ -31,10 +32,26 @@ const projectPath = (id: string) => `/v1/projects/${encodeURIComponent(id)}`;
 
 export const createProjectsClient = (
   requestJson: RequestJson,
-  authority: () => Promise<ProjectsAuthority>
+  authority: () => Promise<ProjectsAuthority>,
+  discoverRepos: (
+    folderPath: string
+  ) => Promise<Array<{ name: string; uri: string }>> = async () => []
 ) => {
+  const sourceClient = createProjectSourceClient(
+    requestJson,
+    authority,
+    discoverRepos
+  );
   return async (value: ProjectsRequest): Promise<ProjectsResult> => {
     const request = projectsRequestSchema.parse(value);
+    if (
+      request.operation === "sourceList" ||
+      request.operation === "sourceDiscoverRepos" ||
+      request.operation === "sourceCreate" ||
+      request.operation === "sourceRemove" ||
+      request.operation === "sourceRetry"
+    )
+      return sourceClient(request);
     if (request.operation === "pickFolder")
       throw new Error("Project folder selection is handled by Desktop IPC.");
     const bound = await authority();

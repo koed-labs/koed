@@ -55,6 +55,11 @@ describe("Personal Project actions", () => {
       cancellationPending: false
     });
     const api: ProjectsDesktopApi = {
+      sourceList: vi.fn(async () => []),
+      sourceDiscoverRepos: vi.fn(async () => []),
+      sourceCreate: vi.fn(),
+      sourceRemove: vi.fn(),
+      sourceRetry: vi.fn(),
       list: vi.fn(async () =>
         current.lifecycle === "active" ? [current] : []
       ),
@@ -176,6 +181,11 @@ describe("Personal Project actions", () => {
       .mockRejectedValueOnce(new Error("connection lost"))
       .mockResolvedValueOnce(created);
     const api = {
+      sourceList: vi.fn(async () => []),
+      sourceDiscoverRepos: vi.fn(async () => []),
+      sourceCreate: vi.fn(),
+      sourceRemove: vi.fn(),
+      sourceRetry: vi.fn(),
       list: vi.fn(async () => []),
       hq: vi.fn(),
       create,

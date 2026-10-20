@@ -16,6 +16,19 @@ export const createProjectsPreloadApi = (
     );
     if (result.operation !== request.operation)
       throw new Error("Invalid Projects operation correlation.");
+    if (
+      request.operation === "sourceCreate" ||
+      request.operation === "sourceRemove" ||
+      request.operation === "sourceRetry"
+    ) {
+      if (
+        result.operation !== request.operation ||
+        result.value.projectId !== request.projectId ||
+        ("sourceId" in request && result.value.id !== request.sourceId)
+      )
+        throw new Error("Invalid Project Source identity correlation.");
+      return result;
+    }
     if ("projectId" in request && "value" in result && result.value !== null) {
       const project =
         "project" in result.value ? result.value.project : result.value;
@@ -31,6 +44,54 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    sourceList: async (projectId) => {
+      const result = await command({ operation: "sourceList", projectId });
+      if (
+        result.operation !== "sourceList" ||
+        result.value.sources.some((source) => source.projectId !== projectId)
+      )
+        throw new Error("Invalid Project Source list.");
+      return result.value.sources;
+    },
+    sourceDiscoverRepos: async (projectId) => {
+      const result = await command({
+        operation: "sourceDiscoverRepos",
+        projectId
+      });
+      if (result.operation !== "sourceDiscoverRepos")
+        throw new Error("Invalid Project remote discovery.");
+      return result.value.repos;
+    },
+    sourceCreate: async (projectId, value) => {
+      const result = await command({
+        operation: "sourceCreate",
+        projectId,
+        value
+      });
+      if (result.operation !== "sourceCreate")
+        throw new Error("Invalid Project Source create.");
+      return result.value;
+    },
+    sourceRemove: async (projectId, sourceId) => {
+      const result = await command({
+        operation: "sourceRemove",
+        projectId,
+        sourceId
+      });
+      if (result.operation !== "sourceRemove")
+        throw new Error("Invalid Project Source remove.");
+      return result.value;
+    },
+    sourceRetry: async (projectId, sourceId) => {
+      const result = await command({
+        operation: "sourceRetry",
+        projectId,
+        sourceId
+      });
+      if (result.operation !== "sourceRetry")
+        throw new Error("Invalid Project Source retry.");
+      return result.value;
+    },
     list: async () => {
       const result = await command({ operation: "list" });
       if (result.operation !== "list")

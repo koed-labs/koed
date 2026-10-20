@@ -65,6 +65,13 @@ Follow-ups:
   forced-colors support for the HQ shell. Preserve existing application
   forced-colors behavior.
 
+## Project Source usage
+
+- Connect `ProjectSource.recordTrustedUse` to source-aware turn citation and verified
+  tool-read producers as they land, including HQ-306 citation work. The producer
+  must pass an authoritative Source ID, captured Session, turn ID, and provenance;
+  a file-browser click or raw text/path resemblance is not evidence of a read.
+
 ## Memory Answer evidence-selection follow-ups
 
 Recall now preserves complete observed references when candidates with the same

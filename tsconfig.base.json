@@ -37,6 +37,9 @@
         "packages/shared/src/ai-client-contract.ts"
       ],
       "@koed/shared/agent-contract": ["packages/shared/src/agent-contract.ts"],
+      "@koed/shared/project-source-contract": [
+        "packages/shared/src/project-source-contract.ts"
+      ],
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
       ],

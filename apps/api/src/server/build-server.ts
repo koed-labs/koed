@@ -21,6 +21,7 @@ import {
   createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
+  createProjectSourceRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -46,6 +47,7 @@ import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
+import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import {
@@ -483,6 +485,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localEdgeUpstreamBackendsPath
           ).backends.map((backend) => backend.id)
       })
+    : null;
+  const projectSourceRepository = pool
+    ? createProjectSourceRepository(pool)
     : null;
   const retentionRepository =
     options.retentionRepository ??
@@ -1902,6 +1907,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
           })
         : null,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerProjectSourceRoutes(app, {
+    repository: projectSourceRepository,
     deploymentProfile: config.deploymentProfile,
     koedHome: config.koedHome,
     auth: authHelpers,

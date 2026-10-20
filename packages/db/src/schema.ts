@@ -2378,6 +2378,113 @@ export const personalNoteRevisions = pgTable(
   ]
 );
 
+// Project Sources remain owner-scoped references. A document becomes readable
+// only after HQ-209 attaches an actual Personal Note revision.
+export const projectSources = pgTable(
+  "project_sources",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    kind: text("kind").notNull(),
+    name: text("name").notNull(),
+    uri: text("uri"),
+    currentRevisionId: uuid("current_revision_id"),
+    status: text("status").notNull(),
+    failureReason: text("failure_reason"),
+    addedBy: uuid("added_by").notNull(),
+    uses: integer("uses").notNull().default(0),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deleteBatchId: uuid("delete_batch_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_sources_owner_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.currentRevisionId, table.ownerUserId],
+      foreignColumns: [
+        personalNoteRevisions.id,
+        personalNoteRevisions.ownerUserId
+      ],
+      name: "project_sources_owner_note_revision_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.addedBy],
+      foreignColumns: [users.id],
+      name: "project_sources_added_by_fk"
+    }),
+    unique("project_sources_owner_id_unique").on(table.ownerUserId, table.id),
+    index("project_sources_active_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.deletedAt,
+      table.createdAt
+    ),
+    check(
+      "project_sources_kind_check",
+      sql`${table.kind} in ('doc','folder','repo','skill')`
+    ),
+    check(
+      "project_sources_status_check",
+      sql`${table.status} in ('uploading','extracting','ready','failed')`
+    ),
+    check(
+      "project_sources_failure_check",
+      sql`(${table.status} = 'failed' and ${table.failureReason} is not null) or (${table.status} <> 'failed' and ${table.failureReason} is null)`
+    ),
+    check("project_sources_uses_check", sql`${table.uses} >= 0`),
+    check("project_sources_name_check", sql`length(trim(${table.name})) > 0`),
+    check(
+      "project_sources_trash_batch_check",
+      sql`${table.deleteBatchId} is null or ${table.deletedAt} is not null`
+    ),
+    check(
+      "project_sources_document_revision_check",
+      sql`${table.currentRevisionId} is null or ${table.kind} = 'doc'`
+    )
+  ]
+);
+
+export const projectSourceTurnUses = pgTable(
+  "project_source_turn_uses",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    capturedSessionId: uuid("captured_session_id").notNull(),
+    turnId: text("turn_id").notNull(),
+    provenance: text("provenance").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.ownerUserId,
+        table.sourceId,
+        table.capturedSessionId,
+        table.turnId
+      ]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.sourceId],
+      foreignColumns: [projectSources.ownerUserId, projectSources.id],
+      name: "project_source_turn_uses_owner_source_fk"
+    }).onDelete("cascade"),
+    check(
+      "project_source_turn_uses_provenance_check",
+      sql`${table.provenance} in ('citation','tool_read')`
+    ),
+    check(
+      "project_source_turn_uses_turn_check",
+      sql`length(trim(${table.turnId})) > 0`
+    )
+  ]
+);
+
 export const memoryNodes = pgTable(
   "memory_nodes",
   {

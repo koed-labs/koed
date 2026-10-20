@@ -382,6 +382,46 @@ const managedConversationRunnerRoutes = [
 export const routeIdentityContracts = [
   route(
     "GET",
+    "/v1/projects/{id}/sources",
+    "session_or_device_credential",
+    "projects",
+    "List owner-scoped Project Source metadata.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/sources",
+    "session_or_device_credential",
+    "projects",
+    "Add an owner-scoped Project Source reference.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/projects/{id}/sources/{sourceId}",
+    "session_or_device_credential",
+    "projects",
+    "Trash an unbacked Project Source reference.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/sources/{sourceId}/retry",
+    "session_or_device_credential",
+    "projects",
+    "Retry a failed Project Source when ingestion is available.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/projects",
     "session_or_device_credential",
     "projects",

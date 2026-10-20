@@ -123,6 +123,7 @@ const approvedTwoUserIds = [
 
 const browserSkipReason =
   "This acceptance-map clause remains SKIP until every listed owning ticket is implemented and validated.";
+const delegatedS09 = process.env.KOED_HQ205_DELEGATED_S09 === "1";
 const unitSkipReason =
   "This ID belongs to its owning unit suite, not the Electron browser harness.";
 const integrationSkipReason =
@@ -970,6 +971,12 @@ const runAssertion = async (name, assertion) => {
 
 const reportSkippedCases = () => {
   for (const entry of registry) {
+    if (delegatedS09 && entry.id === "S09.1") {
+      process.stdout.write(
+        "DELEGATED S09.1 [HQ-205]: dedicated native Sources proof runs after this harness.\n"
+      );
+      continue;
+    }
     const description = entry.description.trimEnd();
     const separator = /[.!?]$/u.test(description) ? " " : ". ";
     process.stdout.write(
@@ -2665,7 +2672,7 @@ const runValidation = async () => {
     assert.equal(hq208Created.dialogClosed, true);
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

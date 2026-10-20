@@ -335,7 +335,8 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
     try {
       await client.query("begin");
       for (const kind of [
-        "source_added",
+        "source_ready",
+        "source_failed",
         "assertion_created",
         "member_joined"
       ] as const)

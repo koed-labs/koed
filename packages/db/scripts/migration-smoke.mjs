@@ -23,6 +23,7 @@ import {
   getLatestMigrationTimestamp,
   runDbMigrations
 } from "../dist/migrate.js";
+import { createProjectApiRepository } from "../dist/project-api-repository.js";
 
 const { Client, Pool } = pg;
 
@@ -75,9 +76,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0053_demonic_gargoyle";
+const expectedLatestMigrationTag = "0054_woozy_diamondback";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 53;
+const expectedLatestMigrationIndex = 54;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -797,6 +798,31 @@ const assertLatestSchema = async (pool) => {
       ["creation_payload_hash", "text", "NO"],
       ["version", "integer", "NO"]
     ],
+    project_sources: [
+      ["id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["project_id", "uuid", "NO"],
+      ["kind", "text", "NO"],
+      ["name", "text", "NO"],
+      ["uri", "text", "YES"],
+      ["current_revision_id", "uuid", "YES"],
+      ["status", "text", "NO"],
+      ["failure_reason", "text", "YES"],
+      ["added_by", "uuid", "NO"],
+      ["uses", "integer", "NO"],
+      ["deleted_at", "timestamp with time zone", "YES"],
+      ["delete_batch_id", "uuid", "YES"],
+      ["created_at", "timestamp with time zone", "NO"],
+      ["updated_at", "timestamp with time zone", "NO"]
+    ],
+    project_source_turn_uses: [
+      ["owner_user_id", "uuid", "NO"],
+      ["source_id", "uuid", "NO"],
+      ["captured_session_id", "uuid", "NO"],
+      ["turn_id", "text", "NO"],
+      ["provenance", "text", "NO"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
     agents: [
       ["id", "uuid", "NO"],
       ["owner_user_id", "uuid", "NO"],
@@ -916,6 +942,38 @@ const assertLatestSchema = async (pool) => {
     ["project_work_items", "project_work_items_kind_check", "c"],
     ["project_work_items", "project_work_items_status_check", "c"],
     ["project_work_items", "project_work_items_version_check", "c"],
+    ["project_sources", "project_sources_pkey", "p"],
+    [
+      "project_sources",
+      "project_sources_owner_project_fk",
+      "f",
+      "projects",
+      "c"
+    ],
+    [
+      "project_sources",
+      "project_sources_owner_note_revision_fk",
+      "f",
+      "personal_note_revisions",
+      "r"
+    ],
+    ["project_sources", "project_sources_added_by_fk", "f", "users", "a"],
+    ["project_sources", "project_sources_kind_check", "c"],
+    ["project_sources", "project_sources_status_check", "c"],
+    ["project_sources", "project_sources_failure_check", "c"],
+    ["project_sources", "project_sources_uses_check", "c"],
+    [
+      "project_source_turn_uses",
+      "project_source_turn_uses_owner_source_fk",
+      "f",
+      "project_sources",
+      "c"
+    ],
+    [
+      "project_source_turn_uses",
+      "project_source_turn_uses_provenance_check",
+      "c"
+    ],
     [
       "project_activity",
       "project_activity_owner_user_id_project_id_sequence_pk",
@@ -1038,6 +1096,20 @@ const assertLatestSchema = async (pool) => {
       `Project HQ private-path constraint is missing: ${JSON.stringify(hqPathConstraint)}`
     );
   }
+  const sourceCapability = await pool.query(
+    `select state,enabled_at is not null as enabled,to_regclass('public.project_sources')::text as relation
+       from project_lifecycle_schema_capabilities where capability='project_sources'`
+  );
+  if (
+    !isDeepStrictEqual(sourceCapability.rows[0], {
+      state: "enabled",
+      enabled: true,
+      relation: "project_sources"
+    })
+  )
+    throw new Error(
+      `Project Source lifecycle adapter is not enabled: ${JSON.stringify(sourceCapability.rows[0])}`
+    );
   for (const [name, columns, referenced] of [
     [
       "project_hq_conversations_owner_project_fk",
@@ -1558,6 +1630,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preSourceFolder = await createMigrationSlice(journal, 53, {
+    folderPrefix: "koed-pre-project-sources-"
+  });
+  temporaryFolders.add(preSourceFolder);
+  const preSourceRecords = await migrationRecords(
+    preSourceFolder,
+    journal.entries.slice(0, 54)
+  );
   const preHqFolder = await createMigrationSlice(journal, 52, {
     folderPrefix: "koed-pre-project-hq-"
   });
@@ -2775,6 +2855,132 @@ try {
           throw new Error(
             "Project HQ migration rerun changed retained Project or execution"
           );
+      });
+    }
+  );
+
+  await runScenario(
+    "project-sources-0054-upgrade-rollback-idempotence",
+    async () => {
+      const target = await createDisposableDatabase("project_sources_upgrade");
+      const ownerId = randomUUID();
+      const projectId = randomUUID();
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: preSourceFolder });
+        await assertMigrationLedger(pool, preSourceRecords);
+        await pool.query("insert into users(id,email) values($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Retained Sources','SOURCES')",
+          [projectId, ownerId]
+        );
+        const before = await schemaFingerprint(pool);
+        const interrupted = await createMigrationSlice(journal, 54, {
+          folderPrefix: "koed-project-sources-interrupted-",
+          transformLastSql: (sql) =>
+            `${sql}--> statement-breakpoint\nselect 1/0;`
+        });
+        temporaryFolders.add(interrupted);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed)
+          throw new Error(
+            "Interrupted Project Sources migration unexpectedly succeeded"
+          );
+        const rollback = await pool.query(
+          `select to_regclass('public.project_sources')::text as sources,
+        to_regclass('public.project_source_turn_uses')::text as uses,
+        (select state from project_lifecycle_schema_capabilities where capability='project_sources') as capability,
+        exists(select 1 from projects where id=$1 and owner_user_id=$2) as project_retained`,
+          [projectId, ownerId]
+        );
+        if (
+          !isDeepStrictEqual(rollback.rows[0], {
+            sources: null,
+            uses: null,
+            capability: "absent",
+            project_retained: true
+          }) ||
+          (await schemaFingerprint(pool)) !== before
+        )
+          throw new Error(
+            `Interrupted Project Sources migration changed retained state: ${JSON.stringify(rollback.rows[0])}`
+          );
+        await assertMigrationLedger(pool, preSourceRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const activeId = randomUUID();
+        const pretrashedId = randomUUID();
+        await pool.query(
+          `insert into project_sources(id,owner_user_id,project_id,kind,name,uri,status,added_by)
+        values($1,$2,$3,'repo','example/repo','example.org/example/repo','ready',$2)`,
+          [activeId, ownerId, projectId]
+        );
+        await pool.query(
+          `insert into project_sources(id,owner_user_id,project_id,kind,name,status,added_by,deleted_at)
+        values($1,$2,$3,'skill','prior','ready',$2,now())`,
+          [pretrashedId, ownerId, projectId]
+        );
+        await expectSqlState(
+          pool,
+          `insert into project_sources(owner_user_id,project_id,kind,name,status,added_by) values($1,$2,'unsafe','No','ready',$1)`,
+          "23514",
+          "invalid source kind",
+          [ownerId, projectId]
+        );
+        const projects = createProjectApiRepository(pool);
+        const preview = await projects.deletePreview(ownerId, projectId);
+        const batchId = randomUUID();
+        await projects.beginDelete(ownerId, projectId, {
+          version: preview.project.version,
+          batchId,
+          executionSetHash: preview.executionSetHash
+        });
+        await projects.markDeleteReady(ownerId, projectId, batchId);
+        const deleted = await projects.completeDelete(
+          ownerId,
+          projectId,
+          batchId
+        );
+        const trashed = await pool.query(
+          "select id,delete_batch_id from project_sources where project_id=$1 order by id",
+          [projectId]
+        );
+        if (
+          trashed.rows.find((row) => row.id === activeId)?.delete_batch_id !==
+            batchId ||
+          trashed.rows.find((row) => row.id === pretrashedId)
+            ?.delete_batch_id !== null
+        )
+          throw new Error(
+            "Project delete did not tag only active Source references"
+          );
+        await projects.restore(ownerId, projectId, {
+          version: deleted.version,
+          batchId
+        });
+        const restored = await pool.query(
+          "select id,deleted_at from project_sources where project_id=$1 order by id",
+          [projectId]
+        );
+        if (
+          restored.rows.find((row) => row.id === activeId)?.deleted_at !==
+            null ||
+          restored.rows.find((row) => row.id === pretrashedId)?.deleted_at ===
+            null
+        )
+          throw new Error("Project Undo changed prior Source trash");
+        const fingerprint = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== fingerprint)
+          throw new Error("Project Sources migration rerun changed schema");
       });
     }
   );

@@ -84,6 +84,7 @@ import {
   runPersonalSyncCommand,
   writeKoedServerConfig
 } from "@koed-labs/server";
+import { discoverProjectSourceRepos } from "./project-source-repos.js";
 import {
   existsSync as nodeExistsSync,
   mkdirSync,
@@ -3887,7 +3888,12 @@ export const createKoedServerManager = ({
       }
       return remote.payload;
     },
-    projectsAuthority
+    projectsAuthority,
+    async (folderPath) =>
+      discoverProjectSourceRepos(
+        resolveKoedServerPaths(environment),
+        folderPath
+      )
   );
 
   const projectHqConversation = createProjectHqConversationClient({

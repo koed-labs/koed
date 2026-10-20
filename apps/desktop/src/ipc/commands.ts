@@ -483,6 +483,19 @@ export const registerDesktopCommandHandlers = (
     const result = projectsResultSchema.parse(await options.projects(request));
     if (result.operation !== request.operation)
       throw new Error("Invalid Projects operation correlation.");
+    if (
+      request.operation === "sourceCreate" ||
+      request.operation === "sourceRemove" ||
+      request.operation === "sourceRetry"
+    ) {
+      if (
+        result.operation !== request.operation ||
+        result.value.projectId !== request.projectId ||
+        ("sourceId" in request && result.value.id !== request.sourceId)
+      )
+        throw new Error("Invalid Project Source identity.");
+      return result;
+    }
     if ("projectId" in request && "value" in result && result.value !== null) {
       const project =
         "project" in result.value ? result.value.project : result.value;

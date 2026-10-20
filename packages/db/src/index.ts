@@ -16,6 +16,10 @@ export {
   type ProjectApiRepository
 } from "./project-api-repository.js";
 export {
+  createProjectSourceRepository,
+  type ProjectSourceRepository
+} from "./project-source-repository.js";
+export {
   createProjectRepository,
   type ProjectRepository,
   type ProjectAssociationResult,

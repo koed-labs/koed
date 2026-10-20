@@ -7,6 +7,11 @@ import {
   projectRestoreSchema,
   projectSchema
 } from "@koed/shared/project-contract";
+import {
+  createProjectSourceSchema,
+  projectSourceSchema,
+  projectSourcesSchema
+} from "@koed/shared/project-source-contract";
 import { z } from "zod";
 
 export const projectsCommandChannel = "koed:projects:command";
@@ -15,6 +20,36 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("pickFolder") }).strict(),
   z.object({ operation: z.literal("hq"), projectId: z.uuid() }).strict(),
+  z
+    .object({ operation: z.literal("sourceList"), projectId: z.uuid() })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceDiscoverRepos"),
+      projectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceCreate"),
+      projectId: z.uuid(),
+      value: createProjectSourceSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRemove"),
+      projectId: z.uuid(),
+      sourceId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRetry"),
+      projectId: z.uuid(),
+      sourceId: z.uuid()
+    })
+    .strict(),
   z
     .object({ operation: z.literal("create"), value: createProjectSchema })
     .strict(),
@@ -76,6 +111,38 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     })
     .strict(),
   z.object({ operation: z.literal("hq"), value: projectHqSchema }).strict(),
+  z
+    .object({ operation: z.literal("sourceList"), value: projectSourcesSchema })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceDiscoverRepos"),
+      value: z
+        .object({
+          repos: z.array(
+            z
+              .object({ name: z.string().min(1), uri: z.string().min(1) })
+              .strict()
+          )
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceCreate"),
+      value: projectSourceSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRemove"),
+      value: projectSourceSchema
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal("sourceRetry"), value: projectSourceSchema })
+    .strict(),
   z.object({ operation: z.literal("create"), value: projectSchema }).strict(),
   z
     .object({
@@ -122,6 +189,22 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  sourceList(projectId: string): Promise<z.infer<typeof projectSourceSchema>[]>;
+  sourceDiscoverRepos(
+    projectId: string
+  ): Promise<Array<{ name: string; uri: string }>>;
+  sourceCreate(
+    projectId: string,
+    value: z.infer<typeof createProjectSourceSchema>
+  ): Promise<z.infer<typeof projectSourceSchema>>;
+  sourceRemove(
+    projectId: string,
+    sourceId: string
+  ): Promise<z.infer<typeof projectSourceSchema>>;
+  sourceRetry(
+    projectId: string,
+    sourceId: string
+  ): Promise<z.infer<typeof projectSourceSchema>>;
   list(): Promise<z.infer<typeof projectSchema>[]>;
   pickFolder(): Promise<string | null>;
   hq(projectId: string): Promise<z.infer<typeof projectHqSchema>>;

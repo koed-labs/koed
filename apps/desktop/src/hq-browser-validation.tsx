@@ -33,6 +33,56 @@ const hq208Capture =
   new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes";
+const hq205Capture =
+  new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
+const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
+const hq205SourceOwnerId = "00000000-0000-4000-8000-000000002051";
+const hq205SourceTime = "2026-10-20T09:00:00.000Z";
+const hq205InitialSources = [
+  {
+    id: "00000000-0000-4000-8000-000000002052",
+    projectId: hq205ProjectId,
+    kind: "repo" as const,
+    name: "koed-labs/koed",
+    uri: "github.com/koed-labs/koed",
+    currentRevisionId: null,
+    status: "ready" as const,
+    failureReason: null,
+    addedBy: hq205SourceOwnerId,
+    uses: 0,
+    deletedAt: null,
+    createdAt: hq205SourceTime
+  },
+  {
+    id: "00000000-0000-4000-8000-000000002053",
+    projectId: hq205ProjectId,
+    kind: "doc" as const,
+    name: "Plan.md",
+    uri: null,
+    currentRevisionId: "00000000-0000-4000-8000-000000002054",
+    status: "ready" as const,
+    failureReason: null,
+    addedBy: hq205SourceOwnerId,
+    uses: 12,
+    deletedAt: null,
+    createdAt: hq205SourceTime
+  },
+  {
+    id: "00000000-0000-4000-8000-000000002055",
+    projectId: hq205ProjectId,
+    kind: "skill" as const,
+    name: "code-review",
+    uri: null,
+    currentRevisionId: null,
+    status: "ready" as const,
+    failureReason: null,
+    addedBy: hq205SourceOwnerId,
+    uses: 0,
+    deletedAt: null,
+    createdAt: hq205SourceTime
+  }
+];
+let hq205Sources = structuredClone(hq205InitialSources);
 const hq204ProjectId = "00000000-0000-4000-8000-000000002038";
 const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
 const hq204SessionId = "00000000-0000-4000-8000-000000002045";
@@ -204,7 +254,7 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
-    ...(hq204Capture
+    ...(hq204Capture || hq205Capture
       ? {
           agents: {
             list: async () => [
@@ -917,6 +967,45 @@ const hq208Status = () => {
   };
 };
 const sidebarProjectsApi = {
+  sourceList: async (projectId: string) =>
+    hq205Capture && projectId === hq205ProjectId
+      ? structuredClone(hq205Sources)
+      : [],
+  sourceDiscoverRepos: async () =>
+    hq205Capture
+      ? [
+          {
+            name: "github.com/koed-labs/koed",
+            uri: "github.com/koed-labs/koed"
+          }
+        ]
+      : [],
+  sourceCreate: async (
+    _projectId: string,
+    input: { kind: string; name: string; uri?: string | null }
+  ) => {
+    if (!hq205Capture || input.kind === "doc")
+      throw new Error("Document ingestion is unavailable.");
+    const source = {
+      ...hq205InitialSources[0]!,
+      id: crypto.randomUUID(),
+      kind: input.kind as "repo",
+      name: input.name,
+      uri: input.uri ?? "",
+      currentRevisionId: null
+    };
+    hq205Sources.unshift(source);
+    return source;
+  },
+  sourceRemove: async (_projectId: string, sourceId: string) => {
+    const source = hq205Sources.find((item) => item.id === sourceId);
+    if (!source) throw new Error("Source missing.");
+    hq205Sources = hq205Sources.filter((item) => item.id !== sourceId);
+    return { ...source, deletedAt: hq205SourceTime };
+  },
+  sourceRetry: async () => {
+    throw new Error("Fixture sources are unavailable.");
+  },
   pickFolder: async () => null,
   list: async () => {
     if (failInitialFirstClassProjectsLoad) {
@@ -1253,6 +1342,7 @@ export function HqValidationApp() {
   const restoreDesktop = useMemo(installSettingsDesktop, []);
 
   useLayoutEffect(() => {
+    hq205Sources = structuredClone(hq205InitialSources);
     document.documentElement.dataset.browserValidationReady = "false";
     document.documentElement.dataset.hqFixtureReady = "false";
     const shell = document.querySelector("[data-hq-shell]");
