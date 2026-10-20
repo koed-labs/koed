@@ -4,6 +4,7 @@ import { selectManagedMemoryCitation } from "./memory-action-selection.js";
 
 const ownedAlias = `r${"a".repeat(32)}c1`;
 const teammateAlias = `r${"b".repeat(32)}c1`;
+const unresolvedAlias = `r${"c".repeat(32)}c1`;
 const citations = [
   { alias: ownedAlias, visibility: "personal" },
   { alias: teammateAlias, visibility: "team" }
@@ -135,6 +136,94 @@ describe("managed memory citation selection", () => {
       selectManagedMemoryCitation({
         ...latestTeamOne,
         userPrompt: "Forget latest memory #2"
+      })
+    ).toEqual({ kind: "ask", reason: "uncited" });
+  });
+
+  it("keeps an unresolved latest citation authoritative past a later uncited answer", () => {
+    const unresolved = {
+      ...base,
+      citations: [citations[0]!],
+      assistantEvents: [
+        event("2026-10-20T09:59:00Z", `Older [m:${ownedAlias}]`),
+        event("2026-10-20T10:00:00Z", `Latest [m:${unresolvedAlias}]`),
+        event("2026-10-20T10:01:00Z", "A follow-up without citations")
+      ]
+    };
+    expect(selectManagedMemoryCitation(unresolved)).toEqual({
+      kind: "ask",
+      reason: "uncited"
+    });
+    expect(
+      selectManagedMemoryCitation({
+        ...unresolved,
+        userPrompt: `Forget ${ownedAlias}`
+      })
+    ).toEqual({ kind: "selected", citation: citations[0] });
+  });
+
+  it("does not fall back to a known citation before an unresolved last citation in one answer", () => {
+    expect(
+      selectManagedMemoryCitation({
+        ...base,
+        citations: [citations[0]!],
+        assistantEvents: [
+          event(
+            "2026-10-20T10:01:00Z",
+            `First [m:${ownedAlias}], last [m:${unresolvedAlias}]`
+          )
+        ]
+      })
+    ).toEqual({ kind: "ask", reason: "uncited" });
+  });
+
+  it("preserves displayed ordinals when an earlier citation is unresolved", () => {
+    const numbered = {
+      ...base,
+      citations: [citations[0]!],
+      assistantEvents: [
+        event(
+          "2026-10-20T10:01:00Z",
+          `One [m:${unresolvedAlias}], two [m:${ownedAlias}]`
+        )
+      ]
+    };
+    expect(
+      selectManagedMemoryCitation({
+        ...numbered,
+        userPrompt: "Forget memory #1"
+      })
+    ).toEqual({ kind: "ask", reason: "uncited" });
+    expect(
+      selectManagedMemoryCitation({
+        ...numbered,
+        userPrompt: "Forget memory #2"
+      })
+    ).toEqual({ kind: "selected", citation: citations[0] });
+  });
+
+  it("does not select an older owned number when the latest cited answer lacks it", () => {
+    const missingLatest = {
+      ...base,
+      citations: [citations[0]!],
+      assistantEvents: [
+        event(
+          "2026-10-20T10:00:00Z",
+          `One [m:${unresolvedAlias}], two [m:${ownedAlias}]`
+        ),
+        event("2026-10-20T10:01:00Z", `One [m:${unresolvedAlias}]`)
+      ]
+    };
+    expect(
+      selectManagedMemoryCitation({
+        ...missingLatest,
+        userPrompt: "Forget citation 2"
+      })
+    ).toEqual({ kind: "ask", reason: "uncited" });
+    expect(
+      selectManagedMemoryCitation({
+        ...missingLatest,
+        userPrompt: "Forget latest citation 2"
       })
     ).toEqual({ kind: "ask", reason: "uncited" });
   });

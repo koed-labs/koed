@@ -27,43 +27,37 @@ export const selectManagedMemoryCitation = (input: {
         Date.parse(b.timestamp) - Date.parse(a.timestamp) ||
         (b.sourceSequence ?? -1) - (a.sourceSequence ?? -1)
     );
-  const cited: ManagedConversationTurnCitation[] = [];
-  const displayedAliasesFor = (event: LcmGraphEvent): string[] =>
-    [
-      ...new Set(
-        [...(event.content ?? "").matchAll(aliasPattern)].map(
-          (match) => match[1]!
-        )
+  const citedAliases: string[] = [];
+  const displayedAliasesFor = (event: LcmGraphEvent): string[] => [
+    ...new Set(
+      [...(event.content ?? "").matchAll(aliasPattern)].map(
+        (match) => match[1]!
       )
-    ].filter((alias) => byAlias.has(alias));
+    )
+  ];
   for (const event of earlier) {
     const aliases = [...(event.content ?? "").matchAll(aliasPattern)].map(
       (match) => match[1]!
     );
-    for (const alias of aliases.reverse()) {
-      const citation = byAlias.get(alias);
-      if (citation) cited.push(citation);
-    }
+    citedAliases.push(...aliases.reverse());
   }
-  const latest = cited[0];
-  if (!latest) return { kind: "ask", reason: "uncited" };
+  const latestAlias = citedAliases[0];
+  if (!latestAlias) return { kind: "ask", reason: "uncited" };
   const literalAliases = [
     ...input.userPrompt.matchAll(/r[0-9a-f]{32}c[1-9][0-9]*/g)
   ].map((match) => match[0]);
   if (literalAliases.length > 1) return { kind: "ask", reason: "ambiguous" };
   if (literalAliases.length === 1) {
-    const explicit = cited.find((item) => item.alias === literalAliases[0]);
+    const explicit = citedAliases.includes(literalAliases[0]!)
+      ? byAlias.get(literalAliases[0]!)
+      : undefined;
     return explicit
       ? { kind: "selected", citation: explicit }
       : { kind: "ask", reason: "uncited" };
   }
-  const latestMessage = earlier[0];
-  if (
-    latestMessage &&
-    [...(latestMessage.content ?? "").matchAll(aliasPattern)].length > 0 &&
-    displayedAliasesFor(latestMessage).length === 0
-  )
-    return { kind: "ask", reason: "uncited" };
+  const latestCitedMessage = earlier.find(
+    (event) => displayedAliasesFor(event).length > 0
+  );
   const numbered = [
     ...input.userPrompt.matchAll(
       /\b(?:citation|memory)\s*#?\s*([1-9][0-9]*)\b/gi
@@ -74,9 +68,6 @@ export const selectManagedMemoryCitation = (input: {
     const ordinal = Number(numbered[0]![1]);
     const specifiedLatest = /\b(?:latest|last|most recent)\b/i.test(
       input.userPrompt
-    );
-    const latestCitedMessage = earlier.find(
-      (event) => displayedAliasesFor(event).length > 0
     );
     if (specifiedLatest) {
       const target = latestCitedMessage
@@ -90,12 +81,16 @@ export const selectManagedMemoryCitation = (input: {
     const matchingMessages = earlier.filter(
       (event) => displayedAliasesFor(event).length >= ordinal
     );
+    // A number absent from the latest cited answer cannot silently select
+    // an older answer, even when that older number is currently resolvable.
+    if (
+      !latestCitedMessage ||
+      displayedAliasesFor(latestCitedMessage).length < ordinal
+    )
+      return { kind: "ask", reason: "uncited" };
     if (matchingMessages.length > 1)
       return { kind: "ask", reason: "ambiguous" };
-    const chosen = matchingMessages[0];
-    const target = chosen
-      ? displayedAliasesFor(chosen)[ordinal - 1]
-      : undefined;
+    const target = displayedAliasesFor(latestCitedMessage)[ordinal - 1];
     const citation = target ? byAlias.get(target) : undefined;
     return citation
       ? { kind: "selected", citation }
@@ -105,7 +100,10 @@ export const selectManagedMemoryCitation = (input: {
     return { kind: "ask", reason: "ambiguous" };
   // A model-supplied alias has no authority to redirect an unqualified User
   // request away from the latest actually cited source.
-  if (input.requestedAlias && input.requestedAlias !== latest.alias)
+  if (input.requestedAlias && input.requestedAlias !== latestAlias)
     return { kind: "ask", reason: "ambiguous" };
-  return { kind: "selected", citation: latest };
+  const latest = byAlias.get(latestAlias);
+  return latest
+    ? { kind: "selected", citation: latest }
+    : { kind: "ask", reason: "uncited" };
 };
