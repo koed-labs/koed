@@ -57,9 +57,9 @@ import {
   parseWorkItemInput,
   projectWorkItemSections,
   safeWorkItemPrUrl,
-  viewerTimeZone,
-  workItemDueLabel
+  viewerTimeZone
 } from "./hq-work-item-model.js";
+import { HqDueControl } from "../due/HqDueControl.js";
 import "./hq-project-view.css";
 
 type HqSummary = Awaited<ReturnType<ProjectsDesktopApi["hq"]>>;
@@ -131,6 +131,8 @@ export function HqProjectView({
   personalProjects,
   graphProjects,
   projectsApi,
+  focusWorkItemId,
+  onFocusWorkItemHandled,
   curatedMemoryApi,
   agentsApi,
   conversationsApi,
@@ -156,6 +158,8 @@ export function HqProjectView({
   personalProjects: readonly Project[];
   graphProjects: readonly DesktopProject[];
   projectsApi: ProjectsDesktopApi;
+  focusWorkItemId?: string | null;
+  onFocusWorkItemHandled?: () => void;
   curatedMemoryApi?: CuratedMemoryDesktopApi | null;
   agentsApi?: AgentsDesktopApi | null;
   conversationsApi?: ManagedConversationDesktopApi | null;
@@ -324,6 +328,7 @@ export function HqProjectView({
   const [workPending, setWorkPending] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sendFor, setSendFor] = useState<string | null>(null);
+  const [dueFor, setDueFor] = useState<string | null>(null);
   const [briefFor, setBriefFor] = useState<string | null>(null);
   const [memoryPanelRow, setMemoryPanelRow] = useState<string | null>(null);
   const intent = useRef({
@@ -369,6 +374,7 @@ export function HqProjectView({
   useEffect(() => {
     setBriefFor(null);
     setSendFor(null);
+    setDueFor(null);
     setMemoryPanelRow(null);
   }, [closeSignal]);
   useEffect(() => {
@@ -377,6 +383,7 @@ export function HqProjectView({
     setWorkPending(false);
     setAgents([]);
     setSendFor(null);
+    setDueFor(null);
     setBriefFor(null);
     setMemoryPanelRow(null);
     setFolded({
@@ -786,6 +793,44 @@ export function HqProjectView({
       if (active()) setWorkPending(false);
     }
   };
+  const setDue = async (item: WorkItem, dueOn: string | null) => {
+    if (workPending || item.dueOn === dueOn || !projectsApi.workItemPatch)
+      return;
+    const generation = intent.current.generation;
+    const active = () => intent.current.generation === generation;
+    setWorkPending(true);
+    setWorkError("");
+    try {
+      const updated = await projectsApi.workItemPatch(project.id, item.id, {
+        version: item.version,
+        dueOn
+      });
+      if (!active()) return;
+      setInventory((current) =>
+        current.projectId === project.id &&
+        current.ownerId === (ownerId ?? null) &&
+        current.profileKey === (profileKey ?? null) &&
+        current.projectsApi === projectsApi
+          ? {
+              ...current,
+              workItems: current.workItems.map((row) =>
+                row.id === updated.id ? updated : row
+              )
+            }
+          : current
+      );
+      setRefresh((value) => value + 1);
+    } catch {
+      if (active()) {
+        setWorkError(
+          "Due date changed before it could be saved. The list is refreshing."
+        );
+        setRefresh((value) => value + 1);
+      }
+    } finally {
+      if (active()) setWorkPending(false);
+    }
+  };
   const backToTodo = async (item: WorkItem) => {
     if (workPending) return;
     const generation = intent.current.generation;
@@ -916,6 +961,7 @@ export function HqProjectView({
         onClick={() => setSendFor(sendFor === item.id ? null : item.id)}
         onContextMenu={(event) => {
           event.preventDefault();
+          event.stopPropagation();
           setSendFor(item.id);
         }}
       >
@@ -961,6 +1007,41 @@ export function HqProjectView({
       ) : null}
     </span>
   );
+  const dueContext = (item: WorkItem) => ({
+    tabIndex: 0,
+    onContextMenu: (event: React.MouseEvent) => {
+      event.preventDefault();
+      setSendFor(null);
+      setDueFor(item.id);
+    },
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (
+        event.key !== "ContextMenu" &&
+        !(event.shiftKey && event.key === "F10")
+      )
+        return;
+      event.preventDefault();
+      setSendFor(null);
+      setDueFor(item.id);
+    }
+  });
+  const dueControl = (item: WorkItem, onSend?: () => void) => (
+    <HqDueControl
+      title={item.title}
+      dueOn={item.dueOn}
+      timeZone={timeZone}
+      now={now}
+      open={dueFor === item.id}
+      onOpenChange={(open) => setDueFor(open ? item.id : null)}
+      onSelect={(dueOn) => setDue(item, dueOn)}
+      onSend={onSend}
+      disabled={
+        workPending ||
+        !visibleInventory.workItemsLoaded ||
+        item.status === "done"
+      }
+    />
+  );
   const openWorkItem = (item: WorkItem) => {
     setMemoryPanelRow(null);
     setMemoryOpen(false);
@@ -987,6 +1068,16 @@ export function HqProjectView({
       createdAt: item.updatedAt
     });
   };
+  useEffect(() => {
+    if (linked) return;
+    if (!focusWorkItemId || !visibleInventory.workItemsLoaded) return;
+    const item = visibleInventory.workItems.find(
+      (row) => row.id === focusWorkItemId
+    );
+    if (!item) return;
+    openWorkItem(item);
+    onFocusWorkItemHandled?.();
+  }, [focusWorkItemId, visibleInventory, linked]);
   const openMemoryPanel = (rowKey: string) => {
     setMemoryPanelRow(rowKey);
     setMemoryOpen(false);
@@ -1171,6 +1262,8 @@ export function HqProjectView({
           onMemoryOpen={openMemoryPanel}
           onMemoryClose={closeMemoryPanel}
           onOpenCitationMessage={onOpenCitationMessage}
+          focusWorkItemId={focusWorkItemId}
+          onFocusWorkItemHandled={onFocusWorkItemHandled}
         />
       ) : linked ? (
         <p role="status">Shared Project state is unavailable.</p>
@@ -1216,25 +1309,29 @@ export function HqProjectView({
                         <div
                           className="hq-project-view__work-item"
                           key={item.id}
-                          onContextMenu={(event) => {
-                            if (item.status === "todo") {
-                              event.preventDefault();
-                              setSendFor(item.id);
-                            }
-                          }}
+                          {...dueContext(item)}
                         >
                           <span className="hq-project-view__avatar">!</span>
                           <span className="hq-project-view__work-item-text">
                             <b>{item.title}</b>
-                            <small>
-                              {item.status === "blocked"
-                                ? item.blockedReason || "Work is blocked"
-                                : item.status === "todo"
-                                  ? workItemDueLabel(item, timeZone, now)
-                                  : item.prState === "ready_to_merge"
-                                    ? "PR ready to merge"
-                                    : "PR waiting for review"}
-                            </small>
+                            <span className="hq-project-view__work-item-meta">
+                              {dueControl(
+                                item,
+                                item.status === "todo" ||
+                                  item.status === "blocked"
+                                  ? () => setSendFor(item.id)
+                                  : undefined
+                              )}
+                              <small>
+                                {item.status === "blocked"
+                                  ? item.blockedReason || "Work is blocked"
+                                  : item.status === "review"
+                                    ? item.prState === "ready_to_merge"
+                                      ? "PR ready to merge"
+                                      : "PR waiting for review"
+                                    : "To do"}
+                              </small>
+                            </span>
                           </span>
                           {item.status === "blocked" ? (
                             <span className="hq-project-view__actions">
@@ -1306,6 +1403,7 @@ export function HqProjectView({
                         <div
                           className="hq-project-view__work-item"
                           key={item.id}
+                          {...dueContext(item)}
                         >
                           <span className="hq-project-view__avatar">
                             {agents.find(
@@ -1332,6 +1430,7 @@ export function HqProjectView({
                               <b>{item.title}</b>
                             </button>
                             <span className="hq-execution-memory__secondary">
+                              {dueControl(item)}
                               {item.executionId ? (
                                 <ExecutionMemoryChips
                                   api={conversationsApi}
@@ -1635,10 +1734,7 @@ export function HqProjectView({
                   <div
                     className="hq-project-view__work-item"
                     key={item.id}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setSendFor(item.id);
-                    }}
+                    {...dueContext(item)}
                   >
                     <button
                       type="button"
@@ -1655,9 +1751,9 @@ export function HqProjectView({
                         {item.key ? `${item.key} · ` : ""}
                         {item.title}
                       </b>
-                      {workItemDueLabel(item, timeZone, now) ? (
-                        <small>{workItemDueLabel(item, timeZone, now)}</small>
-                      ) : null}
+                      <span className="hq-project-view__work-item-meta">
+                        {dueControl(item, () => setSendFor(item.id))}
+                      </span>
                     </span>
                     {sendControl(item)}
                   </div>
@@ -1721,14 +1817,21 @@ export function HqProjectView({
                     Math.max(0, cap.review - reviewPrCount)
                   )
               ).map((item) => (
-                <div className="hq-project-view__work-item" key={item.id}>
+                <div
+                  className="hq-project-view__work-item"
+                  key={item.id}
+                  {...dueContext(item)}
+                >
                   <span className="hq-project-view__work-item-text">
                     <b>{item.title}</b>
-                    <small>
-                      {item.prNumber
-                        ? `PR #${item.prNumber} · ${item.prState ?? "open"}`
-                        : "In review"}
-                    </small>
+                    <span className="hq-project-view__work-item-meta">
+                      {dueControl(item)}
+                      <small>
+                        {item.prNumber
+                          ? `PR #${item.prNumber} · ${item.prState ?? "open"}`
+                          : "In review"}
+                      </small>
+                    </span>
                   </span>
                   {safeWorkItemPrUrl(item) ? (
                     <a
@@ -1813,6 +1916,11 @@ export function HqProjectView({
                 <div className="hq-project-view__work-item" key={item.id}>
                   <span className="hq-project-view__work-item-text">
                     <b>{item.title}</b>
+                    {item.dueOn ? (
+                      <span className="hq-project-view__work-item-meta">
+                        {dueControl(item)}
+                      </span>
+                    ) : null}
                   </span>
                   <Check size={15} aria-label="Done" />
                 </div>

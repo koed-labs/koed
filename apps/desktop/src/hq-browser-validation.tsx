@@ -56,12 +56,15 @@ const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq712Capture =
   new URLSearchParams(window.location.search).get("hq712Capture") === "yes";
+const hq407Capture =
+  new URLSearchParams(window.location.search).get("hq407Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
   hq308Capture ||
-  hq502Capture;
+  hq502Capture ||
+  hq407Capture;
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
@@ -87,7 +90,8 @@ const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
   hq404Capture ||
   hq405Capture ||
-  hq502Capture;
+  hq502Capture ||
+  hq407Capture;
 const hq106Capture =
   new URLSearchParams(window.location.search).get("hq106Capture") === "yes" ||
   hq307Capture;
@@ -1830,6 +1834,28 @@ const hq405WorkItem: WorkItem = {
   prState: "ready_to_merge"
 };
 let hq403Items: WorkItem[] = [
+  ...(hq407Capture
+    ? [
+        hq403Seed(
+          "00000000-0000-4000-8000-000000004071",
+          "Finish overdue reading",
+          "todo",
+          "2026-10-19"
+        ),
+        hq403Seed(
+          "00000000-0000-4000-8000-000000004072",
+          "Prepare tomorrow's notes",
+          "todo",
+          "2026-10-21"
+        ),
+        hq403Seed(
+          "00000000-0000-4000-8000-000000004073",
+          "Study Friday examples",
+          "todo",
+          "2026-10-23"
+        )
+      ]
+    : []),
   ...(hq502Capture
     ? [
         {
@@ -1869,7 +1895,8 @@ let hq403Items: WorkItem[] = [
   hq403Seed(
     "00000000-0000-4000-8000-000000004033",
     "Check the launch copy",
-    "doing"
+    "doing",
+    hq407Capture ? "2026-10-23" : null
   ),
   hq403Seed(
     "00000000-0000-4000-8000-000000004034",
@@ -2087,7 +2114,25 @@ const hq712OtherReview: WorkspaceProjectWorkItem = {
 let hq712Items: WorkspaceProjectWorkItem[] = [
   hq712InitialItem,
   hq712OwnReview,
-  hq712OtherReview
+  hq712OtherReview,
+  ...(hq407Capture && hq712Capture
+    ? [
+        {
+          ...hq712InitialItem,
+          id: "00000000-0000-4000-8000-000000004074",
+          title: "Finish shared overdue reading",
+          goal: "Finish shared overdue reading",
+          dueOn: "2026-10-19"
+        },
+        {
+          ...hq712InitialItem,
+          id: "00000000-0000-4000-8000-000000004075",
+          title: "Study shared Friday examples",
+          goal: "Study shared Friday examples",
+          dueOn: "2026-10-23"
+        }
+      ]
+    : [])
 ];
 const hq712Trace = {
   reads: 0,
@@ -2285,7 +2330,11 @@ const sidebarProjectsApi = {
   workItemPatch: async (
     projectId: string,
     itemId: string,
-    value: { version: number; action?: "mark_done" | "back_to_todo" | "untick" }
+    value: {
+      version: number;
+      action?: "mark_done" | "back_to_todo" | "untick";
+      dueOn?: string | null;
+    }
   ) => {
     const item = hq403Items.find(
       (row) => row.id === itemId && row.projectId === projectId
@@ -2294,8 +2343,19 @@ const sidebarProjectsApi = {
       throw new Error("Work Item changed.");
     const updated: WorkItem = {
       ...item,
-      status: value.action === "mark_done" ? "done" : "todo",
-      doneAt: value.action === "mark_done" ? new Date().toISOString() : null,
+      status:
+        value.action === "mark_done"
+          ? "done"
+          : value.action
+            ? "todo"
+            : item.status,
+      doneAt:
+        value.action === "mark_done"
+          ? new Date().toISOString()
+          : value.action
+            ? null
+            : item.doneAt,
+      dueOn: value.dueOn === undefined ? item.dueOn : value.dueOn,
       version: item.version + 1,
       updatedAt: new Date().toISOString()
     };

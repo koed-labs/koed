@@ -78,8 +78,86 @@ import { vi } from "vitest";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { WorkItem } from "@koed/shared/work-item-contract";
 import { HqProjectView } from "./HqProjectView.js";
+import { dueChoiceDate } from "../due/hq-due-model.js";
+import { viewerTimeZone } from "./hq-work-item-model.js";
 
 describe("Project HQ Work Item writes", () => {
+  it("opens the Due menu by right-click and saves a viewer-local calendar date", async () => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    const project = {
+      id: personalId,
+      name: "Koed",
+      lifecycle: "active"
+    } as Project;
+    const todo = {
+      id: "todo-due",
+      projectId: personalId,
+      title: "Review slides",
+      status: "todo",
+      version: 1,
+      dueOn: null,
+      createdAt: "2026-10-20T00:00:00Z",
+      updatedAt: "2026-10-20T00:00:00Z"
+    } as WorkItem;
+    const patch = vi.fn(
+      async (
+        _projectId: string,
+        _itemId: string,
+        value: { dueOn?: string | null }
+      ) => ({ ...todo, dueOn: value.dueOn ?? null, version: 2 })
+    );
+    const api = {
+      hq: vi.fn(async () => ({ project, activity: null })),
+      workItemList: vi.fn(async () => [todo]),
+      workItemPatch: patch,
+      sourceList: vi.fn(async () => [])
+    } as unknown as ProjectsDesktopApi;
+    try {
+      await act(async () =>
+        root.render(
+          <HqProjectView
+            project={project}
+            personalProjects={[project]}
+            graphProjects={[]}
+            projectsApi={api}
+            ownerId="owner"
+            profileKey="profile"
+            onSelectConversation={() => undefined}
+          />
+        )
+      );
+      const row = node.querySelector(
+        ".hq-project-view__section--todo .hq-project-view__work-item"
+      )!;
+      expect(
+        row.querySelector(".hq-project-view__work-item-meta > .hq-due")
+      ).toBeNull();
+      await act(async () =>
+        row.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+        )
+      );
+      expect(row.querySelector('[role="menu"]')).toBeTruthy();
+      const expected = dueChoiceDate("friday", viewerTimeZone(), new Date());
+      await act(async () =>
+        Array.from(row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+          .find((button) => button.textContent === "Friday")!
+          .click()
+      );
+      expect(patch).toHaveBeenCalledWith(personalId, todo.id, {
+        version: 1,
+        dueOn: expected
+      });
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+    }
+  });
   it("ignores a late creation after owner changes on the same Project", async () => {
     (
       globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }

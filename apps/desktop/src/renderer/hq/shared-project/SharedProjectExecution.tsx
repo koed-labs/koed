@@ -29,7 +29,8 @@ export function SharedProjectExecution({
   onPanelClose,
   onOpenMessage,
   onTeamRefresh,
-  title
+  title,
+  dueControl
 }: {
   binding: SharedDispatchBinding;
   item: WorkspaceProjectWorkItem;
@@ -47,6 +48,7 @@ export function SharedProjectExecution({
   >["onOpenMessage"];
   onTeamRefresh: () => void;
   title?: ReactNode;
+  dueControl?: ReactNode;
 }) {
   const [runtime, setRuntime] = useState<Awaited<
     ReturnType<ManagedConversationDesktopApi["runtime"]>
@@ -240,6 +242,7 @@ export function SharedProjectExecution({
       <span className="hq-project-view__work-item-text">
         {title}
         <span className="hq-execution-memory__secondary">
+          {dueControl}
           <ExecutionMemoryChips
             api={api}
             ownerId={ownerId}

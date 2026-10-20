@@ -1,0 +1,99 @@
+.hq-project-view__work-item {
+  position: relative;
+}
+.hq-due {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.hq-due__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 7px 0 5px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hq-surface);
+  color: var(--hq-muted);
+  font:
+    500 11.5px "DM Sans",
+    sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.hq-due__trigger--red {
+  color: var(--hq-heat-4, #bb5545);
+  background: color-mix(in srgb, #c97263 14%, transparent);
+}
+.hq-due__trigger--amber {
+  color: var(--hq-heat-3, #ac783c);
+  background: color-mix(in srgb, #d59b58 16%, transparent);
+}
+.hq-due__trigger--grey {
+  color: var(--hq-muted);
+  background: var(--hq-surface);
+}
+.hq-due__trigger--empty {
+  opacity: 0;
+}
+.hq-project-view__work-item:hover .hq-due__trigger--empty,
+.hq-project-view__work-item:focus-within .hq-due__trigger--empty {
+  opacity: 1;
+}
+.hq-due__trigger:focus-visible,
+.hq-due__menu button:focus-visible {
+  outline: 2px solid var(--hq-accent);
+  outline-offset: 2px;
+  opacity: 1;
+}
+.hq-due__menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  right: 8px;
+  z-index: 30;
+  display: grid;
+  gap: 4px;
+  min-width: 270px;
+  padding: 9px;
+  border: 1px solid var(--hq-border);
+  border-radius: 12px;
+  background: var(--hq-card);
+  box-shadow: 0 10px 25px #0002;
+}
+.hq-due__menu strong {
+  padding: 2px 5px;
+  color: var(--hq-muted);
+  font:
+    600 11px "DM Sans",
+    sans-serif;
+}
+.hq-due__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.hq-due__menu button {
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hq-surface);
+  color: var(--hq-fg);
+  font:
+    500 12px "DM Sans",
+    sans-serif;
+  cursor: pointer;
+}
+.hq-due__menu button:hover {
+  background: var(--hq-surface-hover);
+}
+.hq-due__menu .hq-due__send {
+  justify-self: start;
+  margin-top: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hq-due__trigger,
+  .hq-due__menu {
+    transition: none;
+  }
+}

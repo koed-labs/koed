@@ -67,6 +67,26 @@
 .hq-shared-project__pr-link:hover {
   color: var(--hq-fg);
 }
+.hq-shared-project__due-conflict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--hq-heat-4, #bb5545);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.hq-shared-project__due-conflict button {
+  border: 0;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--hq-surface-hover);
+  color: inherit;
+  cursor: pointer;
+}
+.hq-shared-project__due-conflict button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
 .hq-shared-project__row:focus-visible {
   outline: 2px solid var(--hq-accent, #6356a8);
   outline-offset: 2px;

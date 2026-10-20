@@ -123,6 +123,10 @@ export function HqApplication({
     eventId: string;
     generation: number;
   } | null>(null);
+  const [focusDueItem, setFocusDueItem] = useState<{
+    projectId: string;
+    itemId: string;
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatDeleteRequest, setChatDeleteRequest] =
     useState<ChatDeleteRequest | null>(null);
@@ -528,6 +532,7 @@ export function HqApplication({
     resolveBlankProject
   ]);
   const selectRoute = (next: HqRoute) => {
+    setFocusDueItem(null);
     routeEpoch.current++;
     setCitationFocus(null);
     setInventoryTarget(null);
@@ -1538,6 +1543,7 @@ export function HqApplication({
                   personalProjects={
                     projectsStore ? personalProjects : undefined
                   }
+                  projectsApi={projectsApi}
                   api={managedConversations}
                   ownerId={visibilityOwnerId}
                   profileKey={visibilityProfileKey}
@@ -1568,6 +1574,10 @@ export function HqApplication({
                   onSelectProject={(projectId) =>
                     selectRoute({ kind: "project", projectId })
                   }
+                  onSelectDueItem={(projectId, itemId) => {
+                    selectRoute({ kind: "project", projectId });
+                    setFocusDueItem({ projectId, itemId });
+                  }}
                   onSelectConversation={openNowNeed}
                 />
               ) : null}
@@ -1577,6 +1587,7 @@ export function HqApplication({
               key={visibilityOwnerId ?? "no-owner"}
               projects={projects}
               personalProjects={projectsStore ? personalProjects : undefined}
+              projectsApi={projectsApi}
               api={managedConversations}
               ownerId={visibilityOwnerId}
               profileKey={visibilityProfileKey}
@@ -1607,6 +1618,10 @@ export function HqApplication({
               onSelectProject={(projectId) =>
                 selectRoute({ kind: "project", projectId })
               }
+              onSelectDueItem={(projectId, itemId) => {
+                selectRoute({ kind: "project", projectId });
+                setFocusDueItem({ projectId, itemId });
+              }}
               onSelectConversation={openNowNeed}
             />
           ) : route.kind === "project" && personalProject && projectsApi ? (
@@ -1621,6 +1636,12 @@ export function HqApplication({
                 visibilityClient?.deleteWorkspaceProjectSource
               }
               sharedRefreshSignal={sharedRefreshSignal}
+              focusWorkItemId={
+                focusDueItem?.projectId === personalProject.id
+                  ? focusDueItem.itemId
+                  : null
+              }
+              onFocusWorkItemHandled={() => setFocusDueItem(null)}
               curatedMemoryApi={window.koedDesktop?.curatedMemory}
               agentsApi={agentsApi}
               conversationsApi={managedConversations}

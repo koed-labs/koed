@@ -12,7 +12,7 @@ import type { Agent } from "@koed/shared/agent-contract";
 import type { WorkspaceProjectWorkItem } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
-import { dueInfo, dueSoon, parseCanonicalDueDate } from "@koed/shared/due-date";
+import { dueSoon, parseCanonicalDueDate } from "@koed/shared/due-date";
 import {
   parseWorkItemInput,
   viewerTimeZone,
@@ -23,6 +23,7 @@ import {
   type SharedProjectIdentity
 } from "./shared-project-store.js";
 import { SharedProjectExecution } from "./SharedProjectExecution.js";
+import { HqDueControl } from "../due/HqDueControl.js";
 import "./shared-project.css";
 
 const statusLabel = (status: WorkspaceProjectWorkItem["status"]) =>
@@ -59,7 +60,9 @@ export function SharedProjectPanel({
   activeMemoryRow,
   onMemoryOpen,
   onMemoryClose,
-  onOpenCitationMessage
+  onOpenCitationMessage,
+  focusWorkItemId,
+  onFocusWorkItemHandled
 }: {
   store: SharedProjectStore;
   identity: SharedProjectIdentity;
@@ -75,6 +78,8 @@ export function SharedProjectPanel({
   onOpenCitationMessage?: React.ComponentProps<
     typeof SharedProjectExecution
   >["onOpenMessage"];
+  focusWorkItemId?: string | null;
+  onFocusWorkItemHandled?: () => void;
 }) {
   const snapshot = useSyncExternalStore(
     store.subscribe,
@@ -89,6 +94,12 @@ export function SharedProjectPanel({
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [sendFor, setSendFor] = useState<string | null>(null);
+  const [dueFor, setDueFor] = useState<string | null>(null);
+  const [dueDraft, setDueDraft] = useState<{
+    id: string;
+    dueOn: string | null;
+  } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const refreshSeen = useRef(refreshSignal);
   const identityKey = [
     identity.ownerId,
@@ -103,6 +114,8 @@ export function SharedProjectPanel({
     setDraftKey(null);
     setEditing(null);
     setSendFor(null);
+    setDueFor(null);
+    setDueDraft(null);
     return () => store.setIdentity(null);
   }, [store, identityKey]);
   useEffect(() => {
@@ -234,8 +247,81 @@ export function SharedProjectPanel({
     });
     if (saved) setEditing(null);
   };
+  const saveDue = async (
+    item: WorkspaceProjectWorkItem,
+    dueOn: string | null
+  ) => {
+    if (readOnly || current?.pendingItemId) return;
+    if (item.dueOn === dueOn) {
+      setDueDraft(null);
+      return;
+    }
+    setDueDraft({ id: item.id, dueOn });
+    const saved = await store.patchWorkItem(item.id, {
+      expectedVersion: item.version,
+      dueOn
+    });
+    if (saved) setDueDraft(null);
+  };
+  const dueControl = (item: WorkspaceProjectWorkItem) =>
+    item.status !== "done" ? (
+      <HqDueControl
+        title={item.title}
+        dueOn={item.dueOn}
+        timeZone={timeZone}
+        now={now}
+        open={dueFor === item.id}
+        onOpenChange={(open) => setDueFor(open ? item.id : null)}
+        onSelect={(dueOn) => saveDue(item, dueOn)}
+        disabled={readOnly || !!current?.pendingItemId}
+      />
+    ) : null;
+  useEffect(() => {
+    if (
+      !focusWorkItemId ||
+      !state?.workItems.some((item) => item.id === focusWorkItemId)
+    )
+      return;
+    const item = state.workItems.find((row) => row.id === focusWorkItemId)!;
+    const section =
+      item.status === "blocked" ||
+      (item.status === "todo" &&
+        !item.dispatchKey &&
+        dueSoon(parseCanonicalDueDate(item.dueOn), { timeZone, now })) ||
+      (item.status === "review" &&
+        ["ready_to_merge", "waiting_review"].includes(item.prState ?? ""))
+        ? "blocked"
+        : item.status;
+    setFolded((value) =>
+      value[section] === false ? value : { ...value, [section]: false }
+    );
+    setExpanded((value) =>
+      value[section] === true ? value : { ...value, [section]: true }
+    );
+    const frame = window.requestAnimationFrame(() => {
+      const row = [
+        ...(panelRef.current?.querySelectorAll<HTMLElement>(
+          ".hq-shared-project__row"
+        ) ?? [])
+      ].find(
+        (candidate) => candidate.dataset.sharedWorkItemId === focusWorkItemId
+      );
+      row?.scrollIntoView?.({ block: "nearest" });
+      row?.focus();
+      if (row) onFocusWorkItemHandled?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    focusWorkItemId,
+    state,
+    timeZone,
+    onFocusWorkItemHandled,
+    folded,
+    expanded
+  ]);
   return (
     <div
+      ref={panelRef}
       className="hq-project-view__work hq-shared-project"
       aria-label="Shared Project state"
     >
@@ -325,6 +411,7 @@ export function SharedProjectPanel({
                         <div
                           className="hq-project-view__work-item hq-shared-project__row"
                           key={item.id}
+                          data-shared-work-item-id={item.id}
                           tabIndex={0}
                           onKeyDown={(event) => {
                             if (
@@ -334,12 +421,30 @@ export function SharedProjectPanel({
                             ) {
                               event.preventDefault();
                               setEditing({ id: item.id, text: item.title });
+                            } else if (
+                              (event.key === "ContextMenu" ||
+                                (event.shiftKey && event.key === "F10")) &&
+                              item.status !== "done" &&
+                              !readOnly &&
+                              !current?.pendingItemId
+                            ) {
+                              event.preventDefault();
+                              setEditing(null);
+                              setSendFor(null);
+                              setDueFor(item.id);
                             }
                           }}
                           onContextMenu={(event) => {
-                            if (readOnly || current?.pendingItemId) return;
+                            if (
+                              item.status === "done" ||
+                              readOnly ||
+                              current?.pendingItemId
+                            )
+                              return;
                             event.preventDefault();
-                            setEditing({ id: item.id, text: item.title });
+                            setEditing(null);
+                            setSendFor(null);
+                            setDueFor(item.id);
                           }}
                         >
                           {item.status !== "todo" &&
@@ -448,6 +553,7 @@ export function SharedProjectPanel({
                                   onPanelClose={() => onMemoryClose?.()}
                                   onOpenMessage={onOpenCitationMessage}
                                   onTeamRefresh={() => void store.refresh()}
+                                  dueControl={dueControl(item)}
                                 />
                               ) : (
                                 <span className="hq-project-view__work-item-text">
@@ -455,18 +561,33 @@ export function SharedProjectPanel({
                                     {item.key ? `${item.key} · ` : ""}
                                     {item.title}
                                   </b>
-                                  <small>
-                                    {item.stepLabel ||
-                                      item.assigneeDisplayName ||
-                                      (item.dueOn
-                                        ? dueInfo(
-                                            parseCanonicalDueDate(item.dueOn)!,
-                                            { timeZone, now }
-                                          )[1]
-                                        : statusLabel(item.status))}
-                                  </small>
+                                  <span className="hq-project-view__work-item-meta">
+                                    {dueControl(item)}
+                                    <small>
+                                      {item.stepLabel ||
+                                        item.assigneeDisplayName ||
+                                        statusLabel(item.status)}
+                                    </small>
+                                  </span>
                                 </span>
                               )}
+                              {dueDraft?.id === item.id &&
+                              current?.conflictItemId === item.id ? (
+                                <span className="hq-shared-project__due-conflict">
+                                  <small>Due date not saved.</small>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      readOnly || !!current?.pendingItemId
+                                    }
+                                    onClick={() =>
+                                      void saveDue(item, dueDraft.dueOn)
+                                    }
+                                  >
+                                    Retry date
+                                  </button>
+                                </span>
+                              ) : null}
                               {safePrUrl(item.prUrl) ? (
                                 <a
                                   className="hq-shared-project__pr-link"

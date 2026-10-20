@@ -484,6 +484,18 @@ button.hq-project-view__row:hover:not(:disabled) {
   min-width: 0;
   flex-direction: column;
 }
+.hq-project-view__work-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 19px;
+}
+.hq-project-view__work-item-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .hq-project-view__work-item-text b {
   overflow: hidden;
   text-overflow: ellipsis;

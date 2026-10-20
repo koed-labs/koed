@@ -206,6 +206,180 @@ describe("SharedProjectPanel", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("saves a shared Due choice with Team item version and keeps it for a 409 retry", async () => {
+    let calls = 0;
+    const patch = vi.fn(
+      async (
+        _projectId: string,
+        _backendId: string,
+        _itemId: string,
+        value: WorkspaceProjectWorkItemPatch
+      ) =>
+        ++calls === 1
+          ? { status: "conflict" as const, state: state("Teammate title") }
+          : {
+              status: "ok" as const,
+              item: {
+                ...state("Teammate title").workItems[0]!,
+                dueOn: value.dueOn ?? null,
+                version: 3
+              }
+            }
+    );
+    const store = new SharedProjectStore({
+      sharedRefresh: vi.fn(async () => state("Original title")),
+      sharedPatchWorkItem: patch
+    });
+    await act(async () =>
+      root.render(
+        <SharedProjectPanel
+          store={store}
+          identity={identity}
+          refreshSignal={0}
+          agents={[]}
+        />
+      )
+    );
+    const row = container.querySelector(".hq-shared-project__row")!;
+    expect(
+      row.querySelector(".hq-project-view__work-item-meta > .hq-due")
+    ).toBeNull();
+    await act(async () =>
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    );
+    expect(
+      container.querySelector(
+        '[role="menu"][aria-label="Due date for Original title"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector('input[aria-label="Edit Original title"]')
+    ).toBeNull();
+    await act(async () =>
+      Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+      )
+        .find((button) => button.textContent === "Friday")!
+        .click()
+    );
+    expect(patch.mock.calls[0]?.[3]).toMatchObject({
+      expectedVersion: 1,
+      dueOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)
+    });
+    expect(container.textContent).toContain("Teammate title");
+    expect(container.textContent).toContain("Due date not saved.");
+    await act(async () =>
+      (
+        container.querySelector(
+          ".hq-shared-project__due-conflict button"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(patch.mock.calls[1]?.[3]).toEqual({
+      expectedVersion: 2,
+      dueOn: patch.mock.calls[0]![3].dueOn
+    });
+    expect(
+      container.querySelector(".hq-shared-project__due-conflict")
+    ).toBeNull();
+  });
+
+  it("does not intercept Due context events on completed shared items", async () => {
+    const complete = state("Completed task");
+    complete.workItems[0] = {
+      ...complete.workItems[0]!,
+      status: "done",
+      doneAt: new Date().toISOString()
+    };
+    const store = new SharedProjectStore({
+      sharedRefresh: vi.fn(async () => complete)
+    });
+    await act(async () =>
+      root.render(
+        <SharedProjectPanel
+          store={store}
+          identity={identity}
+          refreshSignal={0}
+          agents={[]}
+        />
+      )
+    );
+    const row = container.querySelector(".hq-shared-project__row")!;
+    for (const event of [
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", {
+        key: "ContextMenu",
+        bubbles: true,
+        cancelable: true
+      }),
+      new KeyboardEvent("keydown", {
+        key: "F10",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true
+      })
+    ]) {
+      await act(async () => {
+        row.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented).toBe(false);
+      expect(
+        container.querySelector('[role="menu"][aria-label^="Due date"]')
+      ).toBeNull();
+    }
+  });
+
+  it("disables Due changes for an offline viewer and focuses an exact Team row", async () => {
+    const patch = vi.fn();
+    const handled = vi.fn();
+    const store = new SharedProjectStore({
+      sharedRefresh: vi.fn(async () => {
+        const offline = state("Team deadline", true);
+        offline.workItems[0]!.dueOn = "2026-10-23";
+        return offline;
+      }),
+      sharedPatchWorkItem: patch
+    });
+    await act(async () =>
+      root.render(
+        <SharedProjectPanel
+          store={store}
+          identity={identity}
+          refreshSignal={0}
+          agents={[]}
+          focusWorkItemId="item-1"
+          onFocusWorkItemHandled={handled}
+        />
+      )
+    );
+    const row = container.querySelector<HTMLElement>(
+      '[data-shared-work-item-id="item-1"]'
+    )!;
+    expect(
+      (row.querySelector(".hq-due__trigger") as HTMLButtonElement).disabled
+    ).toBe(true);
+    await act(async () =>
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    );
+    expect(
+      container.querySelector('[role="menu"][aria-label^="Due date"]')
+    ).toBeNull();
+    expect(patch).not.toHaveBeenCalled();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(document.activeElement).toBe(row);
+    expect(handled).toHaveBeenCalled();
+  });
+
   it("parses a viewer-local due date and keeps the v50 leading to-do tick", async () => {
     const create = vi.fn(
       async (

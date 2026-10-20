@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   CircleHelp,
+  CalendarDays,
   Folder,
   RotateCw,
   ShieldAlert
@@ -8,6 +9,9 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { Project } from "@koed/shared";
+import type { WorkItem } from "@koed/shared/work-item-contract";
+import type { WorkspaceProjectWorkItem } from "@koed/shared";
+import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import {
   projectNavigation,
   type ProjectNavigationRow
@@ -33,11 +37,18 @@ import type { NowNeed } from "./now-model.js";
 import { readNowPreferences, writeNowPreferences } from "./now-preferences.js";
 import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
 import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
+import {
+  dueChip,
+  nowDeadlineItems,
+  nowSharedDeadlineItems
+} from "../due/hq-due-model.js";
+import { viewerTimeZone } from "../project/hq-work-item-model.js";
 import "./now.css";
 
 export function NowView({
   projects,
   personalProjects,
+  projectsApi,
   api,
   lifecycle,
   approvals,
@@ -51,10 +62,12 @@ export function NowView({
   onMemoryPanelOpenChange,
   onOpenCitationMessage,
   onSelectProject,
+  onSelectDueItem,
   onSelectConversation
 }: {
   projects: readonly DesktopProject[];
   personalProjects?: readonly Project[];
+  projectsApi?: ProjectsDesktopApi | null;
   api?: ManagedConversationDesktopApi | null;
   lifecycle?: ManagedConversationLifecycle;
   approvals: readonly CollaborationActionGrantProjection[];
@@ -72,11 +85,25 @@ export function NowView({
     >
   ) => Promise<boolean>;
   onSelectProject: (id: string) => void;
+  onSelectDueItem?: (projectId: string, itemId: string) => void;
   onSelectConversation: (need: NowNeed) => void;
 }) {
   const [preferences, setPreferences] = useState(readNowPreferences);
   const [moreNeeds, setMoreNeeds] = useState(false);
   const [moreProjects, setMoreProjects] = useState(false);
+  const [moreDues, setMoreDues] = useState(false);
+  const [duesOpen, setDuesOpen] = useState(false);
+  const [dueInventory, setDueInventory] = useState<{
+    api: ProjectsDesktopApi | null;
+    ownerId: string | null;
+    profileKey: string | null;
+    projectKey: string;
+    items: ReadonlyMap<string, readonly WorkItem[]>;
+    sharedItems: ReadonlyMap<string, readonly WorkspaceProjectWorkItem[]>;
+    loading: boolean;
+    error: string;
+    notice: string;
+  } | null>(null);
   const [memoryPanelRow, setMemoryPanelRow] = useState<string | null>(null);
   const [runtimeItems, setRuntimeItems] = useState<
     ReadonlyMap<string, readonly ManagedConversationRuntimeItem[]>
@@ -99,6 +126,157 @@ export function NowView({
   const [approvalClock, setApprovalClock] = useState(0);
   const drafts = lifecycle?.drafts;
   const draftIdentityKey = [...(drafts?.keys() ?? [])].sort().join("\u0000");
+  const privateDueProjects = (personalProjects ?? []).filter(
+    (project) => !project.workspaceProjectId
+  );
+  const sharedDueProjects = (personalProjects ?? []).filter(
+    (project) =>
+      project.workspaceProjectId &&
+      project.teamBackendId &&
+      project.teamWorkspaceId
+  );
+  const incompleteSharedLink = (personalProjects ?? []).some(
+    (project) =>
+      project.workspaceProjectId &&
+      (!project.teamBackendId || !project.teamWorkspaceId)
+  );
+  const dueProjectKey = [...(personalProjects ?? [])]
+    .map((project) =>
+      [
+        project.id,
+        project.workspaceProjectId ?? "",
+        project.teamBackendId ?? "",
+        project.teamWorkspaceId ?? ""
+      ].join(":")
+    )
+    .sort()
+    .join("\u0000");
+  useEffect(() => {
+    let active = true;
+    const base = {
+      api: projectsApi ?? null,
+      ownerId: ownerId ?? null,
+      profileKey: profileKey ?? null,
+      projectKey: dueProjectKey
+    };
+    const blank = {
+      items: new Map<string, readonly WorkItem[]>(),
+      sharedItems: new Map<string, readonly WorkspaceProjectWorkItem[]>()
+    };
+    setDueInventory({
+      ...base,
+      ...blank,
+      loading: true,
+      error: "",
+      notice: ""
+    });
+    if (
+      !projectsReady ||
+      !personalProjects ||
+      !projectsApi ||
+      (privateDueProjects.length > 0 && !projectsApi.workItemList) ||
+      (sharedDueProjects.length > 0 && !projectsApi.sharedRefresh)
+    ) {
+      setDueInventory({
+        ...base,
+        ...blank,
+        loading: false,
+        error:
+          projectsReady && personalProjects?.length
+            ? "Deadlines are unavailable."
+            : "",
+        notice: ""
+      });
+      return;
+    }
+    void (async () => {
+      const items = new Map<string, readonly WorkItem[]>();
+      const sharedItems = new Map<
+        string,
+        readonly WorkspaceProjectWorkItem[]
+      >();
+      const notices: string[] = [];
+      try {
+        for (let offset = 0; offset < privateDueProjects.length; offset += 8) {
+          const batch = privateDueProjects.slice(offset, offset + 8);
+          const results = await Promise.all(
+            batch.map((project) => projectsApi.workItemList!(project.id))
+          );
+          if (!active) return;
+          results.forEach((rows, index) => {
+            if (rows.some((item) => item.projectId !== batch[index]!.id))
+              throw new Error("Work Item Project identity mismatch.");
+            items.set(batch[index]!.id, rows);
+          });
+        }
+        for (let offset = 0; offset < sharedDueProjects.length; offset += 8) {
+          const batch = sharedDueProjects.slice(offset, offset + 8);
+          const results = await Promise.allSettled(
+            batch.map((project) =>
+              projectsApi.sharedRefresh!(
+                project.workspaceProjectId!,
+                project.teamBackendId!
+              )
+            )
+          );
+          if (!active) return;
+          results.forEach((result, index) => {
+            const project = batch[index]!;
+            if (result.status === "rejected") {
+              notices.push(
+                `Shared deadlines for ${project.name} could not be loaded.`
+              );
+              return;
+            }
+            const state = result.value;
+            if (
+              !state.project ||
+              state.project.id !== project.workspaceProjectId ||
+              state.project.workspaceId !== project.teamWorkspaceId
+            ) {
+              notices.push(
+                `Shared deadlines for ${project.name} could not be verified.`
+              );
+              return;
+            }
+            sharedItems.set(project.id, state.workItems);
+            if (state.readOnly && state.notice)
+              notices.push(`${project.name}: ${state.notice}`);
+          });
+        }
+        if (incompleteSharedLink)
+          notices.push("Some shared Project deadlines are unavailable.");
+        if (active)
+          setDueInventory({
+            ...base,
+            items,
+            sharedItems,
+            loading: false,
+            error: "",
+            notice: notices.join(" ")
+          });
+      } catch {
+        if (active)
+          setDueInventory({
+            ...base,
+            ...blank,
+            loading: false,
+            error: "Deadlines could not be loaded. Try refreshing.",
+            notice: ""
+          });
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    projectsApi,
+    projectsReady,
+    dueProjectKey,
+    ownerId,
+    profileKey,
+    refreshKey
+  ]);
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible")
@@ -266,6 +444,45 @@ export function NowView({
         : nowProjects(projects),
     [personalProjects, projects]
   );
+  const dueCurrent =
+    dueInventory?.api === (projectsApi ?? null) &&
+    dueInventory.ownerId === (ownerId ?? null) &&
+    dueInventory.profileKey === (profileKey ?? null) &&
+    dueInventory.projectKey === dueProjectKey;
+  const dueLoading = !projectsReady || !dueCurrent || dueInventory.loading;
+  const dueError = dueCurrent ? dueInventory.error : "";
+  const dueNotice = dueCurrent ? dueInventory.notice : "";
+  const privateDues =
+    dueCurrent && !dueInventory.loading && !dueInventory.error
+      ? nowDeadlineItems(
+          privateDueProjects,
+          dueInventory.items,
+          viewerTimeZone(),
+          new Date()
+        )
+      : { soon: [], week: [] };
+  const sharedDues =
+    dueCurrent && !dueInventory.loading && !dueInventory.error
+      ? nowSharedDeadlineItems(
+          sharedDueProjects,
+          dueInventory.sharedItems,
+          viewerTimeZone(),
+          new Date()
+        )
+      : { soon: [], week: [] };
+  const dueOrder = (
+    left: { daysUntil: number; item: { updatedAt: string; id: string } },
+    right: { daysUntil: number; item: { updatedAt: string; id: string } }
+  ) =>
+    left.daysUntil - right.daysUntil ||
+    left.item.updatedAt.localeCompare(right.item.updatedAt) ||
+    left.item.id.localeCompare(right.item.id);
+  const soonDues = [...privateDues.soon, ...sharedDues.soon].sort(dueOrder);
+  const weekDues = [...privateDues.week, ...sharedDues.week].sort(dueOrder);
+  const needRows = [
+    ...soonDues.map((due) => ({ type: "due" as const, due })),
+    ...needs.map((need) => ({ type: "need" as const, need }))
+  ];
   const setFold = (section: "needsFolded" | "projectsFolded") => {
     const next = { ...preferences, [section]: !preferences[section] };
     setPreferences(next);
@@ -277,7 +494,7 @@ export function NowView({
         <section
           className="hq-now__section"
           aria-label="Needs you"
-          data-has-items={needs.length > 0}
+          data-has-items={needRows.length > 0}
         >
           <header className="hq-now__section-header">
             <button
@@ -287,7 +504,7 @@ export function NowView({
             >
               <ChevronDown aria-hidden="true" />
               <i className="hq-now__section-dot" aria-hidden="true" />
-              Needs you <span>{needs.length}</span>
+              Needs you <span>{needRows.length}</span>
             </button>
             <button
               type="button"
@@ -304,6 +521,11 @@ export function NowView({
               {runtimeError && (sourceCurrent || !api?.list) ? (
                 <p role="alert">{runtimeError}</p>
               ) : null}
+              {dueError ? <p role="alert">{dueError}</p> : null}
+              {dueNotice ? <p role="status">{dueNotice}</p> : null}
+              {dueLoading && personalProjects?.length ? (
+                <p role="status">Checking deadlines…</p>
+              ) : null}
               {loading || !sourceCurrent ? (
                 <p role="status">Checking Conversations…</p>
               ) : null}
@@ -312,89 +534,139 @@ export function NowView({
                   Showing recent Conversations. Older activity may be missing.
                 </p>
               ) : null}
-              {!loading && sourceCurrent && complete && needs.length === 0 ? (
+              {!loading &&
+              !dueLoading &&
+              !dueError &&
+              sourceCurrent &&
+              complete &&
+              needRows.length === 0 ? (
                 <p className="hq-now__empty">Nothing needs you right now.</p>
               ) : null}
-              {nowVisible(needs, moreNeeds).map((item) =>
-                projects.some(({ id }) => id === item.projectId) &&
-                item.executionId &&
-                item.projectId &&
-                item.sessionId &&
-                item.threadId ? (
-                  <div key={item.id} className="hq-now__memory-row">
-                    <button
-                      type="button"
-                      className="hq-now__row"
-                      onClick={() => onSelectConversation(item)}
-                    >
-                      <span className="hq-now__need-icon" aria-hidden="true">
-                        {item.kind === "question" ? (
-                          <CircleHelp />
-                        ) : (
-                          <ShieldAlert />
-                        )}
-                      </span>
-                      <span className="hq-now__row-copy">
-                        <strong>{item.title}</strong>
-                      </span>
-                      <span aria-hidden="true">›</span>
-                    </button>
-                    <div className="hq-execution-memory__secondary">
-                      {item.kind === "question" ? (
-                        <ExecutionMemoryChips
-                          api={api}
-                          ownerId={ownerId}
-                          profileKey={profileKey}
-                          projectId={item.projectId}
-                          executionId={item.executionId}
-                          executionGeneration={visibleGenerations.get(
-                            item.executionId
-                          )}
-                          providerTurnId={latestRuntimeTurn(
-                            visibleRuntime.get(item.executionId) ?? [],
-                            item.runtimeItemId,
-                            visibleGenerations.get(item.executionId)
-                          )}
-                          variant="why"
-                          panelHost={memoryPanelHost}
-                          panelActive={memoryPanelRow === item.id}
-                          onPanelOpen={() => {
-                            setMemoryPanelRow(item.id);
-                            onMemoryPanelOpenChange?.(true);
-                          }}
-                          onPanelClose={() => {
-                            setMemoryPanelRow(null);
-                            onMemoryPanelOpenChange?.(false);
-                          }}
-                          onOpenMessage={onOpenCitationMessage}
-                        />
-                      ) : null}
-                      <small>{item.context}</small>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={item.id} className="hq-now__row">
-                    <span className="hq-now__need-icon" aria-hidden="true">
-                      {item.kind === "question" ? (
-                        <CircleHelp />
-                      ) : (
-                        <ShieldAlert />
-                      )}
+              {nowVisible(needRows, moreNeeds).map((entry) =>
+                entry.type === "due" ? (
+                  <button
+                    type="button"
+                    key={`due:${entry.due.item.id}`}
+                    className="hq-now__row hq-now__due-row"
+                    onClick={() =>
+                      onSelectDueItem
+                        ? onSelectDueItem(
+                            entry.due.project.id,
+                            entry.due.item.id
+                          )
+                        : onSelectProject(entry.due.project.id)
+                    }
+                  >
+                    <span className="hq-now__due-icon">
+                      <CalendarDays aria-hidden="true" />
                     </span>
                     <span className="hq-now__row-copy">
-                      <strong>{item.title}</strong>
-                      <small>{item.context}</small>
+                      <strong>{entry.due.item.title}</strong>
+                      <small>
+                        <span
+                          className={`hq-now__due-chip hq-now__due-chip--${dueChip(entry.due.item.dueOn, viewerTimeZone(), new Date())?.[0] ?? "grey"}`}
+                        >
+                          {
+                            dueChip(
+                              entry.due.item.dueOn,
+                              viewerTimeZone(),
+                              new Date()
+                            )?.[1]
+                          }
+                        </span>
+                        {" · "}
+                        {entry.due.project.name}
+                      </small>
                     </span>
-                  </div>
+                    <span aria-hidden="true">›</span>
+                  </button>
+                ) : (
+                  (() => {
+                    const item = entry.need;
+                    return projects.some(({ id }) => id === item.projectId) &&
+                      item.executionId &&
+                      item.projectId &&
+                      item.sessionId &&
+                      item.threadId ? (
+                      <div key={item.id} className="hq-now__memory-row">
+                        <button
+                          type="button"
+                          className="hq-now__row"
+                          onClick={() => onSelectConversation(item)}
+                        >
+                          <span
+                            className="hq-now__need-icon"
+                            aria-hidden="true"
+                          >
+                            {item.kind === "question" ? (
+                              <CircleHelp />
+                            ) : (
+                              <ShieldAlert />
+                            )}
+                          </span>
+                          <span className="hq-now__row-copy">
+                            <strong>{item.title}</strong>
+                          </span>
+                          <span aria-hidden="true">›</span>
+                        </button>
+                        <div className="hq-execution-memory__secondary">
+                          {item.kind === "question" ? (
+                            <ExecutionMemoryChips
+                              api={api}
+                              ownerId={ownerId}
+                              profileKey={profileKey}
+                              projectId={item.projectId}
+                              executionId={item.executionId}
+                              executionGeneration={visibleGenerations.get(
+                                item.executionId
+                              )}
+                              providerTurnId={latestRuntimeTurn(
+                                visibleRuntime.get(item.executionId) ?? [],
+                                item.runtimeItemId,
+                                visibleGenerations.get(item.executionId)
+                              )}
+                              variant="why"
+                              panelHost={memoryPanelHost}
+                              panelActive={memoryPanelRow === item.id}
+                              onPanelOpen={() => {
+                                setMemoryPanelRow(item.id);
+                                onMemoryPanelOpenChange?.(true);
+                              }}
+                              onPanelClose={() => {
+                                setMemoryPanelRow(null);
+                                onMemoryPanelOpenChange?.(false);
+                              }}
+                              onOpenMessage={onOpenCitationMessage}
+                            />
+                          ) : null}
+                          <small>{item.context}</small>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={item.id} className="hq-now__row">
+                        <span className="hq-now__need-icon" aria-hidden="true">
+                          {item.kind === "question" ? (
+                            <CircleHelp />
+                          ) : (
+                            <ShieldAlert />
+                          )}
+                        </span>
+                        <span className="hq-now__row-copy">
+                          <strong>{item.title}</strong>
+                          <small>{item.context}</small>
+                        </span>
+                      </div>
+                    );
+                  })()
                 )
               )}
-              {needs.length > 5 ? (
+              {needRows.length > 5 ? (
                 <button
                   type="button"
                   className="hq-now__more"
                   onClick={() => setMoreNeeds((value) => !value)}
                 >
-                  {moreNeeds ? "Show less" : `Show ${needs.length - 5} more`}
+                  {moreNeeds ? "Show less" : `Show ${needRows.length - 5} more`}
                 </button>
               ) : null}
             </div>
@@ -432,6 +704,11 @@ export function NowView({
                 const status = !("threads" in project)
                   ? nowPersonalProjectStatus(project, needs)
                   : nowProjectStatus(project, needs);
+                const pending =
+                  status.pending +
+                  soonDues.filter(
+                    ({ project: dueProject }) => dueProject.id === project.id
+                  ).length;
                 return (
                   <button
                     key={project.id}
@@ -445,10 +722,10 @@ export function NowView({
                     <span className="hq-now__row-copy">
                       <strong>{project.name}</strong>
                       <small>
-                        {status.pending > 0 ? (
+                        {pending > 0 ? (
                           <>
                             <span className="hq-now__pending-count">
-                              {status.pending} need you
+                              {pending} need you
                             </span>{" "}
                             ·{" "}
                           </>
@@ -478,6 +755,61 @@ export function NowView({
             </div>
           ) : null}
         </section>
+        {weekDues.length ? (
+          <section className="hq-now__due-week" aria-label="Due this week">
+            <button
+              type="button"
+              className="hq-now__due-week-head"
+              aria-expanded={duesOpen}
+              onClick={() => setDuesOpen((value) => !value)}
+            >
+              <CalendarDays size={16} aria-hidden="true" />
+              <span>
+                Due this week:{" "}
+                {weekDues
+                  .slice(0, 2)
+                  .map(({ item }) => item.title)
+                  .join(" · ")}
+                {weekDues.length > 2 ? ` · +${weekDues.length - 2}` : ""}
+              </span>
+              <ChevronDown size={15} aria-hidden="true" />
+            </button>
+            {duesOpen ? (
+              <div className="hq-now__due-week-list">
+                {nowVisible(weekDues, moreDues).map(({ item, project }) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className="hq-now__due-week-row"
+                    onClick={() =>
+                      onSelectDueItem
+                        ? onSelectDueItem(project.id, item.id)
+                        : onSelectProject(project.id)
+                    }
+                  >
+                    <CalendarDays size={14} aria-hidden="true" />
+                    <b>{item.title}</b>
+                    <small>
+                      {project.name} ·{" "}
+                      {dueChip(item.dueOn, viewerTimeZone(), new Date())?.[1]}
+                    </small>
+                  </button>
+                ))}
+                {weekDues.length > 5 ? (
+                  <button
+                    type="button"
+                    className="hq-now__more"
+                    onClick={() => setMoreDues((value) => !value)}
+                  >
+                    {moreDues
+                      ? "Show less"
+                      : `Show ${weekDues.length - 5} more`}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
       </div>
     </div>
   );
