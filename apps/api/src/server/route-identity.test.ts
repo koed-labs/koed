@@ -23,6 +23,24 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("advertises Personal Project activity only on local edge deployments", () => {
+    for (const [method, path] of [
+      ["GET", "/v1/projects/{id}/activity"],
+      ["GET", "/v1/projects/{id}/activity/seen"],
+      ["PUT", "/v1/projects/{id}/activity/seen"]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "session_or_device_credential",
+        domain: "projects",
+        teamAuthority: "none",
+        deploymentModes: ["developer", "local_personal"]
+      });
+      expect(openApiPaths[path]?.[method.toLowerCase()]).toMatchObject({
+        "x-koed-team-authority": "none",
+        "x-koed-deployment-modes": ["developer", "local_personal"]
+      });
+    }
+  });
   it("has one implemented contract per method/path and exports all implemented routes through OpenAPI", () => {
     const keys = routeIdentityContracts.map(
       (contract) => `${contract.method} ${contract.path}`

@@ -502,21 +502,30 @@ export const routeIdentityContracts = [
     "/v1/projects/{id}/activity",
     "session_or_device_credential",
     "projects",
-    "Page deterministic Personal Project activity after an owner-bound cursor."
+    "Page deterministic Personal Project activity after an owner-bound cursor.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "GET",
     "/v1/projects/{id}/activity/seen",
     "session_or_device_credential",
     "projects",
-    "Read the owner's Personal Project last-seen cursor."
+    "Read the owner's Personal Project last-seen cursor.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "PUT",
     "/v1/projects/{id}/activity/seen",
     "session_or_device_credential",
     "projects",
-    "Advance the owner's Personal Project last-seen cursor to a committed activity row."
+    "Advance the owner's Personal Project last-seen cursor to a committed activity row.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "POST",

@@ -181,6 +181,33 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
     );
   });
 
+  it("timestamps the activity after acquiring the Project lock, not at transaction start", async () => {
+    const client = await pool.connect();
+    const eventRef = `${ref}:clock`;
+    try {
+      await client.query("begin");
+      await client.query("select pg_sleep(0.02)");
+      const fence = (
+        await client.query<{ at: Date }>("select clock_timestamp() as at")
+      ).rows[0]!.at;
+      await appendProjectActivityWithClient(client, {
+        ownerUserId: owner,
+        projectId: project,
+        actorUserId: owner,
+        kind: "work_item_status",
+        ref: eventRef
+      });
+      await client.query("commit");
+      const row = await pool.query<{ at: Date }>(
+        "select at from project_activity where owner_user_id=$1 and project_id=$2 and kind='work_item_status' and ref=$3",
+        [owner, project, eventRef]
+      );
+      expect(row.rows[0]!.at.getTime()).toBeGreaterThanOrEqual(fence.getTime());
+    } finally {
+      client.release();
+    }
+  });
+
   it("counts exactly seven UTC dates including today and excludes older/future rows", async () => {
     const activity = createProjectActivityRepository(pool);
     const before = (await activity.summary(owner, project)).total;

@@ -115,8 +115,8 @@ export const appendProjectActivityWithClient = async (
   if (!input.ref.trim())
     throw new Error("Project activity reference is required");
   const result = await client.query<{ sequence: string }>(
-    `insert into project_activity(owner_user_id,project_id,sequence,actor_user_id,kind,ref)
-     select $1,$2,coalesce(max(sequence),0)+1,$3,$4,$5 from project_activity
+    `insert into project_activity(owner_user_id,project_id,sequence,actor_user_id,kind,ref,at)
+     select $1,$2,coalesce(max(sequence),0)+1,$3,$4,$5,clock_timestamp() from project_activity
        where owner_user_id=$1 and project_id=$2
      on conflict (owner_user_id,project_id,kind,ref) do nothing returning sequence`,
     [

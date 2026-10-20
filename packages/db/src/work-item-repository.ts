@@ -197,12 +197,13 @@ export function nextWorkItemStatus(
 const lockActiveProject = async (
   client: pg.PoolClient,
   ownerUserId: string,
-  projectId: string
+  projectId: string,
+  lock: "share" | "update" = "update"
 ) => {
   const result = await client.query(
     `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
        and team_backend_id is null and team_workspace_id is null and workspace_project_id is null
-       for update`,
+       for ${lock}`,
     [projectId, ownerUserId]
   );
   if (!result.rowCount)
@@ -274,7 +275,7 @@ export const createWorkItemRepository = (
     input: { limit?: number; cursor?: string } = {}
   ): Promise<WorkItemPage> {
     return inTransaction(pool, async (client) => {
-      await lockActiveProject(client, ownerUserId, projectId);
+      await lockActiveProject(client, ownerUserId, projectId, "share");
       const limit = input.limit ?? 100;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
         throw new WorkItemCursorError("Work Item page limit is invalid");
