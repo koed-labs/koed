@@ -17,6 +17,7 @@ import {
   createRealtimeTransportTicketRepository,
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
+  createWorkItemRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -39,6 +40,7 @@ import {
   type WorkosAuthKitClient
 } from "../auth/workos.js";
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
+import { registerWorkItemRoutes } from "../work-items/routes.js";
 import {
   type CacheProvider,
   createRateLimitHandlers,
@@ -462,6 +464,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           teamEnvelopeEncryptionProvider
         })
       : null);
+  const workItemRepository = pool ? createWorkItemRepository(pool) : null;
   const retentionRepository =
     options.retentionRepository ??
     (pool
@@ -1606,6 +1609,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       app,
       auth: authHelpers,
       repository: collaborationRepository,
+      workItemRepository,
       materializationRepository: collaborationRealtimeMaterializationRepository,
       sharedMemoryRepository: repository,
       teamPresenceRepository: repository,
@@ -1698,6 +1702,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         routeContext.localEdge.resolveUpstreamAuthorization,
       requireCollaborationRepository,
       requireCollaborationMaterializationRepository: requireRepository,
+      requireWorkItemRepository: () => workItemRepository,
       resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
       quarantineCrossIdentitySyncForBackend: async (
         ownerUserId,
@@ -1847,6 +1852,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   }
   registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
+  registerWorkItemRoutes(app, {
+    repository: workItemRepository,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,

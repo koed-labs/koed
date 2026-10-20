@@ -2,7 +2,8 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import type {
   CollaborationRepository,
   CollaborationSubscriptionRecord,
-  DbPool
+  DbPool,
+  WorkItemRepository
 } from "@koed/db";
 import { collaborationSubscriptionPrincipalHash } from "@koed/db";
 import {
@@ -32,6 +33,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   materializePersonalRealtimeEvent,
+  materializeWorkItemChangedEvent,
   type PersonalRealtimeMaterializationRepository
 } from "../collaboration/realtime.js";
 import {
@@ -350,7 +352,8 @@ const remoteEventSchema = z
         messageId: nullableUuidSchema,
         sharedSessionId: nullableUuidSchema,
         shareGrantId: nullableUuidSchema,
-        logicalMemoryId: nullableUuidSchema
+        logicalMemoryId: nullableUuidSchema,
+        workItemId: nullableUuidSchema.optional()
       })
       .strict()
       .superRefine((resource, context) => {
@@ -592,6 +595,10 @@ export interface CollaborationRealtimeBrokerOptions {
   ) => string | null;
   requireCollaborationRepository: () => CollaborationRepository;
   requireCollaborationMaterializationRepository: () => PersonalRealtimeMaterializationRepository;
+  requireWorkItemRepository: () => Pick<
+    WorkItemRepository,
+    "getForRealtime"
+  > | null;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
   quarantineCrossIdentitySyncForBackend: (
     ownerUserId: string,
@@ -2131,7 +2138,11 @@ export const createCollaborationRealtimeBroker = (
         threadId: event!.resource.threadId,
         messageId: event!.resource.messageId,
         sharedSessionId: event!.resource.sharedSessionId,
-        shareGrantId: event!.resource.shareGrantId
+        shareGrantId: event!.resource.shareGrantId,
+        ...(event!.type === "work_item_changed" &&
+        "workItemId" in event!.resource
+          ? { workItemId: event!.resource.workItemId }
+          : {})
       },
       update: event!.update
     };
@@ -2205,11 +2216,18 @@ export const createCollaborationRealtimeBroker = (
         connection.cursor = Math.max(connection.cursor, event.cursor);
         continue;
       }
-      const materialized = await materializePersonalRealtimeEvent(
-        { userId: connection.binding.localOwnerUserId },
-        event,
-        options.requireCollaborationMaterializationRepository()
-      );
+      const materialized =
+        event.family === "work_item_changed"
+          ? await materializeWorkItemChangedEvent(
+              { userId: connection.binding.localOwnerUserId },
+              event,
+              options.requireWorkItemRepository()
+            )
+          : await materializePersonalRealtimeEvent(
+              { userId: connection.binding.localOwnerUserId },
+              event,
+              options.requireCollaborationMaterializationRepository()
+            );
       if (materialized.action !== "deliver") {
         await sendPersonalControlAndStop(connection, "requires_snapshot");
         return;
@@ -2233,7 +2251,10 @@ export const createCollaborationRealtimeBroker = (
           threadId: event.threadId,
           messageId: event.messageId,
           sharedSessionId: event.shareGrantId,
-          shareGrantId: event.shareGrantId
+          shareGrantId: event.shareGrantId,
+          ...(event.family === "work_item_changed"
+            ? { workItemId: event.resourceId }
+            : {})
         },
         update: materialized.update
       });

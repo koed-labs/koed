@@ -25,8 +25,10 @@ import {
   materializeManagedConversationChangedEvent,
   materializePendingShareLifecycleEvent,
   materializePersonalMemoryChangedEvent,
+  materializeWorkItemChangedEvent,
   type CollaborationRealtimeServiceOptions
 } from "./realtime.js";
+import { registerWorkItemRoutes } from "../work-items/routes.js";
 
 type TestCollaborationRealtimeService = Awaited<
   ReturnType<typeof createCollaborationRealtimeService>
@@ -39,6 +41,93 @@ declare module "fastify" {
 }
 
 const iso = "2026-07-17T00:00:00.000Z";
+
+describe("Work Item realtime materialization", () => {
+  it("delivers only an active owner record and fails closed for Team or removed records", async () => {
+    const owner = randomUUID(),
+      itemId = randomUUID(),
+      projectId = randomUUID();
+    const event: CollaborationOutboxEventRecord = {
+      id: randomUUID(),
+      cursor: 1,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      family: "work_item_changed",
+      scope: "personal",
+      personalOwnerUserId: owner,
+      teamId: null,
+      teamWorkspaceId: null,
+      threadId: null,
+      messageId: null,
+      shareGrantId: null,
+      logicalMemoryId: null,
+      resourceType: "project_work_item",
+      resourceId: itemId,
+      actorPrincipalId: owner,
+      mutationId: randomUUID(),
+      occurredAt: iso
+    };
+    const item = {
+      id: itemId,
+      projectId,
+      kind: "todo",
+      key: null,
+      title: "Call",
+      goal: "Call Sam",
+      origin: "manual",
+      originRef: null,
+      idempotencyKey: null,
+      status: "todo",
+      blockedReason: null,
+      assigneeAgentId: null,
+      executionId: null,
+      dispatchKey: null,
+      prProvider: null,
+      prNumber: null,
+      prUrl: null,
+      prState: null,
+      dueOn: null,
+      doneAt: null,
+      doneBy: null,
+      createdBy: owner,
+      createdAt: iso,
+      updatedAt: iso,
+      version: 1
+    } as const;
+    const repository = { getForRealtime: vi.fn(async () => item) };
+    expect(
+      await materializeWorkItemChangedEvent(
+        { userId: owner },
+        event,
+        repository
+      )
+    ).toMatchObject({
+      action: "deliver",
+      update: { type: "work_item_changed", workItemId: itemId, item }
+    });
+    expect(
+      await materializeWorkItemChangedEvent(
+        { userId: randomUUID() },
+        event,
+        repository
+      )
+    ).toEqual({ action: "requires_snapshot" });
+    expect(
+      await materializeWorkItemChangedEvent(
+        { userId: owner },
+        { ...event, scope: "team", teamId: randomUUID() },
+        repository
+      )
+    ).toEqual({ action: "requires_snapshot" });
+    repository.getForRealtime.mockResolvedValueOnce(null as never);
+    expect(
+      await materializeWorkItemChangedEvent(
+        { userId: owner },
+        event,
+        repository
+      )
+    ).toEqual({ action: "requires_snapshot" });
+  });
+});
 const cursorSecret = "test-collaboration-realtime-secret";
 const backendIdentity = "test-backend";
 
@@ -64,6 +153,7 @@ const realtimeFamilyCases = [
   ["personal_memory_changed", "control", null],
   ["pending_share_lifecycle", "control", null],
   ["managed_conversation_changed", "control", null],
+  ["work_item_changed", "control", null],
   ["access_revoked", "access_revoked", null]
 ] as const satisfies ReadonlyArray<
   readonly [
@@ -546,6 +636,7 @@ const buildTestServer = async (
     replayBatchSize?: number;
     sharedMemoryRepository?: CollaborationRealtimeServiceOptions["sharedMemoryRepository"];
     teamPresenceRepository?: CollaborationRealtimeServiceOptions["teamPresenceRepository"];
+    workItemRepository?: CollaborationRealtimeServiceOptions["workItemRepository"];
   } = {}
 ) => {
   const app = Fastify({ logger: false });
@@ -597,6 +688,7 @@ const buildTestServer = async (
       resolveDeviceCredentialContext: async () => null
     },
     repository: fixture.repository,
+    workItemRepository: options.workItemRepository,
     materializationRepository: fixture.materializationRepository,
     sharedMemoryRepository: options.sharedMemoryRepository ?? null,
     teamPresenceRepository: options.teamPresenceRepository ?? null,
@@ -963,6 +1055,53 @@ const readStreamUntil = async (
   } finally {
     stream.close();
   }
+};
+
+const openPersonalStream = async (
+  app: Awaited<ReturnType<typeof buildTestServer>>,
+  userId: string,
+  cursor: string
+) => {
+  if (!app.server.listening) await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  if (!address || typeof address === "string")
+    throw new Error("test server did not listen");
+  const controller = new AbortController();
+  const url = new URL(
+    `http://127.0.0.1:${address.port}/v1/collaboration/realtime/stream`
+  );
+  url.searchParams.set("scope", "personal");
+  url.searchParams.set("clientInstanceId", "work-item-client");
+  url.searchParams.set("subscriptionKey", "work-item-subscription");
+  url.searchParams.set("cursor", cursor);
+  const response = await fetch(url, {
+    headers: sessionHeaders(userId),
+    signal: controller.signal
+  });
+  expect(response.status).toBe(200);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  return {
+    async readUntil(eventName: string, timeoutMs = 1000) {
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        while (!body.includes(`event: ${eventName}\n`)) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          body += decoder.decode(chunk.value, { stream: true });
+        }
+        expect(body).toContain(`event: ${eventName}\n`);
+        return body;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    close() {
+      controller.abort();
+      reader.releaseLock();
+    }
+  };
 };
 
 const eventData = (stream: string, eventName: string): unknown => {
@@ -1339,6 +1478,98 @@ describe("collaboration realtime protocol", () => {
         })
       ).statusCode
     ).toBe(403);
+  });
+
+  it("signals a deleted Work Item for resync and lets the owner re-list the Project", async () => {
+    const fixture = createRepositoryFixture();
+    fixture.events.splice(0);
+    const listenerPool = createListenerPool();
+    const itemId = randomUUID(),
+      projectId = randomUUID();
+    const list = vi.fn(async () => ({
+      items: [],
+      hasMore: false,
+      nextCursor: null
+    }));
+    const app = await buildTestServer(fixture, {
+      pool: listenerPool,
+      workItemRepository: { getForRealtime: vi.fn(async () => null) }
+    });
+    registerWorkItemRoutes(app, {
+      repository: { list } as never,
+      auth: {
+        authenticateSessionOrDeviceCredential: async () =>
+          fixture.users.get(fixture.ids.alice)!
+      } as never,
+      readRateLimit: async () => undefined,
+      writeRateLimit: async () => undefined
+    });
+    const snapshotResponse = await app.inject({
+      method: "POST",
+      url: "/v1/collaboration/realtime/snapshot",
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        scope: "personal",
+        clientInstanceId: "work-item-client",
+        subscriptionKey: "work-item-subscription"
+      }
+    });
+    expect(snapshotResponse.statusCode).toBe(200);
+    const snapshot = snapshotResponse.json<{
+      cursor: string;
+      subscription: { id: string };
+    }>();
+    const stream = await openPersonalStream(
+      app,
+      fixture.ids.alice,
+      snapshot.cursor
+    );
+    try {
+      await stream.readUntil("ready");
+      fixture.events.push({
+        ...event({
+          cursor: 1,
+          scope: "personal",
+          family: "work_item_changed",
+          resourceType: "project_work_item",
+          resourceId: itemId,
+          actorPrincipalId: fixture.ids.alice,
+          messageId: null
+        }),
+        personalOwnerUserId: fixture.ids.alice,
+        threadId: null
+      });
+      listenerPool.listeners[0]!.notification?.({
+        channel: "koed_collaboration_realtime",
+        payload: JSON.stringify({
+          scope: "personal",
+          personalOwnerUserId: fixture.ids.alice
+        })
+      });
+      const body = await stream.readUntil("control", 500);
+      expect(eventData(body, "control")).toEqual({
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
+        subscription: { id: snapshot.subscription.id },
+        reason: "requires_snapshot"
+      });
+      expect(body).not.toContain(`"workItemId":"${itemId}"`);
+      const relist = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/work-items`,
+        headers: sessionHeaders(fixture.ids.alice)
+      });
+      expect(relist.statusCode).toBe(200);
+      expect(relist.json()).toEqual({
+        items: [],
+        hasMore: false,
+        nextCursor: null
+      });
+      expect(list).toHaveBeenCalledWith(fixture.ids.alice, projectId, {
+        limit: 100
+      });
+    } finally {
+      stream.close();
+    }
   });
 
   it("issues an authorized snapshot with an opaque high-water cursor", async () => {

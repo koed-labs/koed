@@ -75,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0048_tan_spot";
+const expectedLatestMigrationTag = "0049_round_sinister_six";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 48;
+const expectedLatestMigrationIndex = 49;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -768,6 +768,19 @@ const assertLatestSchema = async (pool) => {
     collaboration_messages: [["reply_to_message_id", "uuid", "YES"]],
     local_edge_collaboration_subscriptions: [
       ["message_contract_version", "integer", "NO"]
+    ],
+    project_work_items: [
+      ["id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["project_id", "uuid", "NO"],
+      ["kind", "text", "NO"],
+      ["title", "text", "NO"],
+      ["goal", "text", "NO"],
+      ["status", "text", "NO"],
+      ["due_on", "date", "YES"],
+      ["deleted_at", "timestamp with time zone", "YES"],
+      ["creation_payload_hash", "text", "NO"],
+      ["version", "integer", "NO"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -855,7 +868,17 @@ const assertLatestSchema = async (pool) => {
       "local_edge_collaboration_subscriptions",
       "local_edge_collaboration_subscriptions_values_check",
       "c"
-    ]
+    ],
+    [
+      "project_work_items",
+      "project_work_items_owner_project_fk",
+      "f",
+      "projects",
+      "a"
+    ],
+    ["project_work_items", "project_work_items_kind_check", "c"],
+    ["project_work_items", "project_work_items_status_check", "c"],
+    ["project_work_items", "project_work_items_version_check", "c"]
   ].map(([table, name, ...contract]) => [
     table,
     name.slice(0, 63),
@@ -941,6 +964,24 @@ const assertLatestSchema = async (pool) => {
     and indexname in ('remote_mcp_oauth_credentials_grant_idx', 'remote_mcp_oauth_grants_user_idx')`);
   if (indexes.rows.length !== 2)
     throw new Error("Latest OAuth lookup indexes are missing");
+  const workItemPageIndex = await pool.query(
+    `select indexdef from pg_indexes where schemaname='public'
+     and tablename='project_work_items' and indexname='project_work_items_page_idx'`
+  );
+  if (
+    !/\(owner_user_id, project_id, created_at, id\)/.test(
+      workItemPageIndex.rows[0]?.indexdef ?? ""
+    )
+  )
+    throw new Error(
+      "Work Item cursor pagination index is missing or has the wrong key order"
+    );
+  const eventFamily = await pool.query(
+    `select enumlabel from pg_enum join pg_type on pg_type.oid=pg_enum.enumtypid
+      where pg_type.typname='collaboration_event_family' and enumlabel='work_item_changed'`
+  );
+  if (eventFamily.rows.length !== 1)
+    throw new Error("Work Item realtime event family is missing");
 };
 
 const assertCurrentSchema = async (pool) => {
@@ -1174,9 +1215,15 @@ const assertUpgradedStableDefaults = async (pool, fixture) => {
   }
 };
 
-const expectSqlState = async (pool, sql, expectedCode, description) => {
+const expectSqlState = async (
+  pool,
+  sql,
+  expectedCode,
+  description,
+  params = []
+) => {
   try {
-    await pool.query(sql);
+    await pool.query(sql, params);
   } catch (error) {
     if (
       typeof error === "object" &&
@@ -1373,6 +1420,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preWorkItemsFolder = await createMigrationSlice(journal, 48, {
+    folderPrefix: "koed-pre-work-items-"
+  });
+  temporaryFolders.add(preWorkItemsFolder);
+  const preWorkItemsRecords = await migrationRecords(
+    preWorkItemsFolder,
+    journal.entries.slice(0, 49)
+  );
   const preFreezeFolder = await createMigrationSlice(journal, 47, {
     folderPrefix: "koed-pre-freeze-"
   });
@@ -2412,6 +2467,205 @@ try {
       }
     });
   });
+
+  await runScenario(
+    "work-items-0049-upgrade-rollback-restore-idempotence",
+    async () => {
+      const target = await createDisposableDatabase("work_items_upgrade");
+      const ownerId = randomUUID();
+      const projectId = randomUUID();
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: preWorkItemsFolder });
+        await assertMigrationLedger(pool, preWorkItemsRecords);
+        await pool.query("insert into users(id,email) values ($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values ($1,$2,'Work','WORK')",
+          [projectId, ownerId]
+        );
+      });
+      const interrupted = await createMigrationSlice(journal, 49, {
+        folderPrefix: "koed-work-items-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        let failed = false;
+        try {
+          await runDbMigrations(pool, { migrationsFolder: interrupted });
+        } catch {
+          failed = true;
+        }
+        if (!failed)
+          throw new Error(
+            "Interrupted Work Item migration unexpectedly succeeded"
+          );
+        const rollback = await pool.query(
+          `select to_regclass('public.project_work_items')::text as items,
+        exists(select 1 from pg_enum join pg_type on pg_type.oid=pg_enum.enumtypid
+          where pg_type.typname='collaboration_event_family' and enumlabel='work_item_changed') as family,
+        exists(select 1 from projects where id=$1 and owner_user_id=$2) as project`,
+          [projectId, ownerId]
+        );
+        if (
+          rollback.rows[0]?.items !== null ||
+          rollback.rows[0]?.family !== false ||
+          rollback.rows[0]?.project !== true
+        )
+          throw new Error(
+            `Interrupted Work Item migration changed retained state: ${JSON.stringify(rollback.rows[0])}`
+          );
+        await assertMigrationLedger(pool, preWorkItemsRecords);
+      });
+      const backupFolder = await mkdtemp(
+        resolve(tmpdir(), "koed-work-items-backup-")
+      );
+      temporaryFolders.add(backupFolder);
+      const backupPath = resolve(backupFolder, "pre-0049.dump");
+      await runPostgresTool(
+        process.env.PG_DUMP_BIN ?? "pg_dump",
+        [
+          "--format=custom",
+          "--no-owner",
+          "--no-privileges",
+          "--file",
+          backupPath
+        ],
+        target.url
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const insert = `insert into project_work_items
+        (owner_user_id,project_id,kind,title,goal,origin,creation_payload_hash,created_by,due_on,status,version)
+        values ($1,$2,$3,'Call','Call Sam','manual','fixture',$1,$4,$5,$6) returning id,due_on::text as due_on`;
+        const valid = await pool.query(insert, [
+          ownerId,
+          projectId,
+          "todo",
+          "2026-10-22",
+          "todo",
+          1
+        ]);
+        if (valid.rows[0]?.due_on !== "2026-10-22")
+          throw new Error("Work Item DATE did not round-trip");
+        await pool.query(
+          `update project_work_items set idempotency_key='fixture-key',deleted_at=now()
+           where id=$1`,
+          [valid.rows[0].id]
+        );
+        const tombstone = await pool.query(
+          `select deleted_at is not null as retained from project_work_items where id=$1`,
+          [valid.rows[0].id]
+        );
+        if (tombstone.rows[0]?.retained !== true)
+          throw new Error(
+            "Deleted Work Item idempotency tombstone was not retained"
+          );
+        await expectSqlState(
+          pool,
+          `insert into project_work_items
+           (owner_user_id,project_id,kind,title,goal,origin,creation_payload_hash,created_by,idempotency_key)
+           values ($1,$2,'todo','Delayed','Delayed','manual','fixture',$1,'fixture-key')`,
+          "23505",
+          "Deleted Work Item idempotency identity",
+          [ownerId, projectId]
+        );
+        await expectSqlState(pool, insert, "23514", "Invalid Work Item kind", [
+          ownerId,
+          projectId,
+          "bad",
+          "2026-10-22",
+          "todo",
+          1
+        ]);
+        await expectSqlState(
+          pool,
+          insert,
+          "23514",
+          "Invalid Work Item status",
+          [ownerId, projectId, "todo", "2026-10-22", "bad", 1]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23514",
+          "Invalid Work Item version",
+          [ownerId, projectId, "todo", "2026-10-22", "todo", 0]
+        );
+        await expectSqlState(pool, insert, "22008", "Invalid Work Item date", [
+          ownerId,
+          projectId,
+          "todo",
+          "2026-02-30",
+          "todo",
+          1
+        ]);
+        await expectSqlState(
+          pool,
+          insert,
+          "23503",
+          "Cross-owner Work Item Project",
+          [randomUUID(), projectId, "todo", "2026-10-22", "todo", 1]
+        );
+        const before = {
+          schema: await schemaFingerprint(pool),
+          count: (
+            await pool.query(
+              `select count(*)::integer as count from project_work_items where project_id=$1`,
+              [projectId]
+            )
+          ).rows[0]?.count
+        };
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const after = {
+          schema: await schemaFingerprint(pool),
+          count: (
+            await pool.query(
+              `select count(*)::integer as count from project_work_items where project_id=$1`,
+              [projectId]
+            )
+          ).rows[0]?.count
+        };
+        if (!isDeepStrictEqual(after, before))
+          throw new Error("Work Item migration rerun changed schema or data");
+      });
+      const restored = await createDisposableDatabase("work_items_restore");
+      await runPostgresTool(
+        process.env.PG_RESTORE_BIN ?? "pg_restore",
+        [
+          "--exit-on-error",
+          "--single-transaction",
+          "--no-owner",
+          "--no-privileges",
+          "--dbname",
+          restored.database,
+          backupPath
+        ],
+        restored.url
+      );
+      await withPool(restored.url, async (pool) => {
+        await assertMigrationLedger(pool, preWorkItemsRecords);
+        const retained = await pool.query(
+          `select exists(select 1 from projects where id=$1 and owner_user_id=$2) as project,
+        to_regclass('public.project_work_items')::text as items`,
+          [projectId, ownerId]
+        );
+        if (
+          retained.rows[0]?.project !== true ||
+          retained.rows[0]?.items !== null
+        )
+          throw new Error(
+            "Restored pre-0049 backup lost Project or gained Work Items"
+          );
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+      });
+    }
+  );
 
   const latestMigration = await getLatestMigrationTimestamp();
   console.log(

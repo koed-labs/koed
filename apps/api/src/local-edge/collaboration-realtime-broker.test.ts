@@ -17,7 +17,8 @@ import {
   TEAM_COLLABORATION_V2_REALTIME_STREAM_ENDPOINT,
   collaborationRendererEventSchema,
   teamCollaborationRealtimeUpdateV2Schema,
-  type CollaborationRendererEvent
+  type CollaborationRendererEvent,
+  type WorkItem
 } from "@koed/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +50,34 @@ const desktopAuthorization =
 const localEdgeAuthorizationA = "Koed-Device local-a:local-secret-a";
 const localEdgeAuthorizationB = "Koed-Device local-b:local-secret-b";
 const remotePrincipalStatusPath = "/v1/local-edge/device-credentials/status";
+const workItemId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const workItem = (ownerUserId: string): WorkItem => ({
+  id: workItemId,
+  projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  kind: "todo",
+  key: null,
+  title: "Ship",
+  goal: "Finish Work Item",
+  origin: "manual",
+  originRef: null,
+  idempotencyKey: null,
+  status: "todo",
+  blockedReason: null,
+  assigneeAgentId: null,
+  executionId: null,
+  dispatchKey: null,
+  prProvider: null,
+  prNumber: null,
+  prUrl: null,
+  prState: null,
+  dueOn: null,
+  doneAt: null,
+  doneBy: null,
+  createdBy: ownerUserId,
+  createdAt: "2026-07-17T00:00:00.000Z",
+  updatedAt: "2026-07-17T00:00:00.000Z",
+  version: 1
+});
 
 interface MemoryRow {
   id: string;
@@ -541,6 +570,7 @@ interface Harness {
 
 interface HarnessOptions {
   remotePersonal?: boolean;
+  remotePersonalReadFamily?: boolean;
   stream?: (init?: RequestInit) => Response;
   ackStatus?: number;
   afterRemoteAck?: () => Promise<void>;
@@ -563,6 +593,7 @@ interface HarnessOptions {
   remotePrincipalStatus?: number;
   pool?: MemoryPool;
   repository?: MemoryCollaborationRepository;
+  workItem?: WorkItem | null;
   quarantineCrossIdentitySyncForBackend?: (
     ownerUserId: string,
     upstreamBackendId: string
@@ -808,6 +839,14 @@ const personalOutboxEvent = (
   occurredAt: "2026-07-17T00:01:00.000Z"
 });
 
+const workItemOutboxEvent = (): CollaborationOutboxEventRecord => ({
+  ...personalOutboxEvent(),
+  family: "work_item_changed",
+  resourceType: "project_work_item",
+  resourceId: workItemId,
+  logicalMemoryId: null
+});
+
 const managedConversationOutboxEvent = (
   eventId = eventA,
   cursor = 13
@@ -1006,9 +1045,10 @@ const createHarness = async (
           : localEdgeAuthorizationB,
       backendId,
       credentialKeyId: backendId === "backend-a" ? "local-a" : "local-b",
-      operationFamilies: options.remotePersonal
-        ? ["team_workspace_read", "personal_collaboration_read"]
-        : ["team_workspace_read"]
+      operationFamilies:
+        options.remotePersonal && options.remotePersonalReadFamily !== false
+          ? ["team_workspace_read", "personal_collaboration_read"]
+          : ["team_workspace_read"]
     };
   };
   const service = createCollaborationRealtimeBroker({
@@ -1026,6 +1066,13 @@ const createHarness = async (
       repository as unknown as CollaborationRepository,
     requireCollaborationMaterializationRepository: () =>
       repository as unknown as PersonalRealtimeMaterializationRepository,
+    requireWorkItemRepository: () => ({
+      getForRealtime: async (ownerUserId: string, itemId: string) =>
+        options.workItem?.createdBy === ownerUserId &&
+        options.workItem.id === itemId
+          ? options.workItem
+          : null
+    }),
     resolveActiveLocalUser: async (userId) =>
       !activeLocalOwner
         ? null
@@ -1427,6 +1474,79 @@ describe("local collaboration realtime broker", () => {
     });
   });
 
+  it("relays a bound remote Personal Work Item envelope to the desktop", async () => {
+    const base = remoteEvent(eventA, eventCursorA);
+    const personalWorkItemEvent = {
+      ...base,
+      type: "work_item_changed",
+      resource: {
+        ...base.resource,
+        scope: "personal",
+        type: "project_work_item",
+        id: workItemId,
+        teamId: null,
+        threadId: null,
+        messageId: null,
+        workItemId
+      },
+      update: {
+        type: "work_item_changed",
+        workItemId,
+        item: workItem(remotePrincipalA)
+      }
+    };
+    const harness = await createHarness({
+      remotePersonal: true,
+      stream: () =>
+        sseResponse([
+          { event: "collaboration_event", data: personalWorkItemEvent }
+        ])
+    });
+    harnesses.push(harness);
+    const { body } = await createPersonalSnapshot(harness);
+    await acknowledgePersonalSnapshot(harness, body);
+    const { response } = await openPersonalStream(
+      harness,
+      body.subscription.id
+    );
+    const stream = await readStream(response);
+    const update = eventPayload(stream);
+    expect(update).toMatchObject({
+      family: "work_item_changed",
+      resource: { scope: "personal", teamId: null, workItemId },
+      update: {
+        type: "work_item_changed",
+        workItemId,
+        item: { id: workItemId, version: 1 }
+      }
+    });
+    expect(stream).not.toContain(remoteSubscriptionId);
+    expect(stream).not.toContain("remote-secret");
+  });
+
+  it("denies remote Personal Work Items without the Personal read operation family", async () => {
+    const harness = await createHarness({
+      remotePersonal: true,
+      remotePersonalReadFamily: false
+    });
+    harnesses.push(harness);
+    const { response } = await createPersonalSnapshot(harness);
+    expect(response.statusCode).toBe(424);
+    expect(harness.pool.rows).toHaveLength(0);
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it("rejects a remote Personal snapshot bound to another upstream owner", async () => {
+    const harness = await createHarness({
+      remotePersonal: true,
+      remotePrincipalId: remotePrincipalB
+    });
+    harnesses.push(harness);
+    const { response } = await createPersonalSnapshot(harness);
+    expect(response.statusCode).toBe(502);
+    expect(harness.pool.rows).toHaveLength(0);
+  });
+
   it("closes a Personal stream safely when its database listener is interrupted", async () => {
     const harness = await createHarness({
       upstreamAuthorizationAvailable: false,
@@ -1498,6 +1618,35 @@ describe("local collaboration realtime broker", () => {
     expect(harness.repository.acknowledged).toEqual([
       { eventId: eventA, cursor: 13 }
     ]);
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it("delivers an owner-bound Work Item through the desktop-facing local Personal stream", async () => {
+    const harness = await createHarness({
+      upstreamAuthorizationAvailable: false,
+      localEdgeCredentialAvailable: false,
+      workItem: workItem(desktopOwnerUserId)
+    });
+    harness.repository.events.push(workItemOutboxEvent());
+    harnesses.push(harness);
+    const { body } = await createPersonalSnapshot(harness);
+    await acknowledgePersonalSnapshot(harness, body);
+    const { response, controller } = await openPersonalStream(
+      harness,
+      body.subscription.id
+    );
+    const stream = await readUntil(response, '"type":"update"');
+    controller.abort();
+    const event = eventPayload(stream);
+    expect(event).toMatchObject({
+      family: "work_item_changed",
+      resource: { scope: "personal", teamId: null, workItemId },
+      update: {
+        type: "work_item_changed",
+        workItemId,
+        item: { id: workItemId, version: 1 }
+      }
+    });
     expect(harness.calls).toHaveLength(0);
   });
 
@@ -2358,6 +2507,43 @@ describe("local collaboration realtime broker", () => {
       remoteCursor: snapshotCursor,
       lastAcknowledgedEventId: null
     });
+  });
+
+  it("does not deliver a Work Item payload on a Team stream", async () => {
+    const base = remoteEvent(eventA, eventCursorA);
+    const spoofed = {
+      ...base,
+      type: "work_item_changed",
+      resource: {
+        ...base.resource,
+        type: "project_work_item",
+        id: workItemId,
+        threadId: null,
+        messageId: null,
+        workItemId
+      },
+      update: {
+        type: "work_item_changed",
+        workItemId,
+        item: workItem(remotePrincipalA)
+      }
+    };
+    const harness = await createHarness({
+      stream: () =>
+        sseResponse([{ event: "collaboration_event", data: spoofed }])
+    });
+    harnesses.push(harness);
+    const { body } = await createSnapshot(harness);
+    await acknowledgeSnapshot(harness, body);
+    const { response } = await openLocalStream(harness, body.subscription.id);
+    const frames = brokerFrames(await readStream(response));
+    expect(frames.some((frame) => frame.type === "update")).toBe(false);
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: "connection",
+        connection: expect.objectContaining({ state: "unavailable" })
+      })
+    );
   });
 
   it("accepts the complete remote envelope and preserves Shared Session identity", async () => {
