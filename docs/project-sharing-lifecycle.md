@@ -415,6 +415,11 @@ Project list, including Projects without Conversations. It sends one placement
 request bound to the current owner profile and expected Personal Project ID.
 Move and Native-review routes also accept the existing scoped local Desktop
 credential on loopback; this does not confer Team authority on API Tokens.
+Conversation delete, restore, Forget, Undo, progress, review, and Deleted-list
+routes accept that same owner-bound Desktop credential on a local profile and
+loopback. Reads require `personal_collaboration_read`; mutations and progress
+require `personal_collaboration_write`. Bearer/session authentication remains
+available, and this credential does not authorize Team operations.
 
 The Project-policy grant-binding producer specified by HQ-702 is still to be
 built. It must record the exact, immutable source-to-grant binding when the

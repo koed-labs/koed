@@ -14,6 +14,7 @@ import {
 import type { ApiRouteContext } from "../server/context.js";
 import type { createChatDeleteCoordinator } from "./chat-delete-coordinator.js";
 import { ProjectNativeReviewDeclined } from "../projects/delete-coordinator.js";
+import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
 
 const paramsSchema = z.object({ sessionId: z.uuid() });
 const reviewParamsSchema = paramsSchema.extend({ actionGrantId: z.uuid() });
@@ -48,6 +49,21 @@ export const registerChatDeleteRoutes = (
   }
 ) => {
   const { authenticate } = context.auth;
+  const authenticateChatDelete = (
+    request: Parameters<typeof authenticate>[0],
+    write: boolean
+  ) =>
+    request.headers.authorization?.trim().startsWith("Koed-Desktop")
+      ? authenticateProjectOperation(
+          request,
+          {
+            deploymentProfile: context.config.deploymentProfile,
+            koedHome: context.config.koedHome,
+            auth: context.auth
+          },
+          write
+        )
+      : authenticate(request);
   const requireRepo = () => {
     if (!input.repository)
       throw Object.assign(new Error("Conversation deletion is unavailable"), {
@@ -275,7 +291,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       const { batchId = randomUUID() } = deleteBodySchema.parse(
         request.body ?? {}
@@ -293,7 +309,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/delete-progress",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       const { batchId } = z
         .object({ batchId: z.uuid() })
@@ -311,7 +327,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/delete-reviews/:actionGrantId",
     { preHandler: context.rateLimit.memoryRead },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, false);
       const { sessionId, actionGrantId } = reviewParamsSchema.parse(
         request.params
       );
@@ -365,7 +381,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/deleted",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, false);
       const { cursor } = z
         .object({ cursor: z.string().max(512).optional() })
         .strict()
@@ -403,7 +419,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/delete-pending",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, false);
       return {
         operations: (await requireRepo().listPendingChatDeletes(user.id)).map(
           status
@@ -415,7 +431,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/restore",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       try {
         const { batchId } = z
@@ -462,7 +478,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/forget",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       if (!input.forgetRepository)
         return reply
@@ -488,7 +504,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/forget-progress",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       const { batchId } = z
         .object({ batchId: z.uuid() })
@@ -506,7 +522,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/forget-pending",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, false);
       if (!input.forgetRepository) return { operations: [] };
       return {
         operations: (
@@ -522,7 +538,7 @@ export const registerChatDeleteRoutes = (
     "/v1/memory/graph/sessions/:sessionId/forget-undo",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const user = await authenticateChatDelete(request, true);
       const { sessionId } = paramsSchema.parse(request.params);
       const { batchId } = z
         .object({ batchId: z.uuid() })
