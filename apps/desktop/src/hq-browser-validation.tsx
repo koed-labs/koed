@@ -41,8 +41,11 @@ const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
 const hq209Capture =
   new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
+const hq404Capture =
+  new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
 const hq403Capture =
-  new URLSearchParams(window.location.search).get("hq403Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
+  hq404Capture;
 const hq106Capture =
   new URLSearchParams(window.location.search).get("hq106Capture") === "yes";
 const hq106Pending = new Map<string, string>();
@@ -396,7 +399,23 @@ const installSettingsDesktop = () => {
                 defaultModel: "gpt-fixture",
                 isChiefOfStaff: true,
                 createdAt: FIXTURE_TIME
-              }
+              },
+              ...(hq404Capture
+                ? [
+                    {
+                      id: "00000000-0000-4000-8000-000000004041",
+                      ownerUserId: "00000000-0000-4000-8000-000000000109",
+                      name: "Quinn",
+                      role: "Builder",
+                      look: {},
+                      aiClientInstanceId: "codex.fixture",
+                      defaultPermissionMode: "supervised" as const,
+                      defaultModel: "gpt-fixture",
+                      isChiefOfStaff: false,
+                      createdAt: FIXTURE_TIME
+                    }
+                  ]
+                : [])
             ]
           },
           projectHqConversation: {
@@ -773,6 +792,20 @@ const hq207ManagedConversations = {
     operation: "list" as const,
     complete: true,
     executions: [
+      ...(hq404Capture &&
+      hq403Items.some(
+        (item) => item.executionId === "00000000-0000-4000-8000-000000004404"
+      )
+        ? [
+            {
+              executionId: "00000000-0000-4000-8000-000000004404",
+              projectId: hq204ProjectId,
+              sessionId: hq204SessionId,
+              threadId: "hq404-fixture-thread",
+              state: "running" as const
+            }
+          ]
+        : []),
       ...hq207RuntimeExecutionIds.map((executionId) => ({
         executionId,
         projectId: hq204ProjectId,
@@ -799,30 +832,56 @@ const hq207ManagedConversations = {
   runtime: async (executionId: string) => {
     return {
       ...(await hq204ManagedConversations.runtime(executionId)),
-      items: hq207RuntimeExecutionIds.includes(executionId)
-        ? [
-            {
-              id: `${executionId}-approval`,
-              executionGeneration: 1,
-              providerTurnId: null,
-              providerItemId: null,
-              itemKind: "command_approval" as const,
-              presentation: {
-                mode: "expanded" as const,
-                renderer: "approval" as const,
-                policyKey: "hq207-fixture",
-                policyRevision: 1,
-                reason: "Pending"
-              },
-              state: "pending" as const,
-              payload: { command: ["review", "Project plan"] },
-              revision: 1,
-              createdAt: FIXTURE_TIME,
-              updatedAt: FIXTURE_TIME,
-              answered: false
-            }
-          ]
-        : []
+      items:
+        hq404Capture && executionId === "00000000-0000-4000-8000-000000004404"
+          ? [
+              {
+                id: `${executionId}-step`,
+                executionGeneration: 1,
+                providerTurnId: "fixture-turn",
+                providerItemId: "fixture-step",
+                itemKind: "transient_output" as const,
+                presentation: {
+                  mode: "status" as const,
+                  renderer: "message" as const,
+                  policyKey: "hq404-fixture",
+                  policyRevision: 1,
+                  reason: "Agent update"
+                },
+                state: "answered" as const,
+                payload: {
+                  text: "Read the Work Item goal and Project Sources"
+                },
+                revision: 1,
+                createdAt: FIXTURE_TIME,
+                updatedAt: FIXTURE_TIME,
+                answered: true
+              }
+            ]
+          : hq207RuntimeExecutionIds.includes(executionId)
+            ? [
+                {
+                  id: `${executionId}-approval`,
+                  executionGeneration: 1,
+                  providerTurnId: null,
+                  providerItemId: null,
+                  itemKind: "command_approval" as const,
+                  presentation: {
+                    mode: "expanded" as const,
+                    renderer: "approval" as const,
+                    policyKey: "hq207-fixture",
+                    policyRevision: 1,
+                    reason: "Pending"
+                  },
+                  state: "pending" as const,
+                  payload: { command: ["review", "Project plan"] },
+                  revision: 1,
+                  createdAt: FIXTURE_TIME,
+                  updatedAt: FIXTURE_TIME,
+                  answered: false
+                }
+              ]
+            : []
     };
   }
 } as ManagedConversationDesktopApi;
@@ -1079,6 +1138,16 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
     name,
     path: null,
     threads: [
+      ...(hq404Capture && id === "hq103-work"
+        ? [
+            {
+              ...sidebarConversation(id, name, 404),
+              id: "hq404-fixture-thread",
+              sessionId: hq204SessionId,
+              name: "Tidy the Project brief"
+            }
+          ]
+        : []),
       ...Array.from({ length: 4 }, (_, index) =>
         sidebarConversation(id, name, (projectIndex + 1) * 20 + index + 1)
       ),
@@ -1240,6 +1309,11 @@ let hq403Items: WorkItem[] = [
     prState: "open"
   }
 ];
+let hq404ExecutionStarts = 0;
+Object.defineProperty(window, "__hq404ExecutionStarts", {
+  configurable: true,
+  get: () => hq404ExecutionStarts
+});
 const sidebarProjectsApi = {
   workItemList: async (projectId: string) =>
     hq403Capture && projectId === hq204ProjectId
@@ -1282,6 +1356,37 @@ const sidebarProjectsApi = {
     };
     hq403Items = hq403Items.map((row) => (row.id === itemId ? updated : row));
     return structuredClone(updated);
+  },
+  workItemDispatch: async (
+    projectId: string,
+    itemId: string,
+    agentId: string,
+    version: number
+  ) => {
+    const item = hq403Items.find(
+      (row) => row.id === itemId && row.projectId === projectId
+    );
+    if (!hq404Capture || !item || item.version !== version)
+      throw new Error("Work Item changed.");
+    if (item.executionId)
+      return {
+        item: structuredClone(item),
+        executionId: item.executionId,
+        reused: true
+      };
+    hq404ExecutionStarts += 1;
+    const executionId = "00000000-0000-4000-8000-000000004404";
+    const updated: WorkItem = {
+      ...item,
+      status: "doing",
+      assigneeAgentId: agentId,
+      executionId,
+      dispatchKey: `${item.id}:${item.version}`,
+      version: item.version + 1,
+      updatedAt: new Date().toISOString()
+    };
+    hq403Items = hq403Items.map((row) => (row.id === itemId ? updated : row));
+    return { item: structuredClone(updated), executionId, reused: false };
   },
   sourceList: async (projectId: string) =>
     (hq205Capture && projectId === hq205ProjectId) ||

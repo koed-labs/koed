@@ -269,6 +269,57 @@ export const createWorkItemRepository = (
   pool: pg.Pool,
   options: { verifyTrustedTransition?: VerifyTrustedWorkItemTransition } = {}
 ) => ({
+  async hasActiveManagedWorkItem(input: {
+    ownerUserId: string;
+    executionId: string;
+    executionGeneration: number;
+  }): Promise<boolean> {
+    const found = await pool.query(
+      `select 1 from project_work_items wi
+         join projects project on project.id=wi.project_id and project.owner_user_id=wi.owner_user_id
+         join managed_conversation_executions execution on execution.id=wi.execution_id
+       where wi.owner_user_id=$1 and wi.execution_id=$2 and wi.status='doing'
+         and wi.deleted_at is null and wi.dispatch_key is not null
+         and project.lifecycle='active' and project.deletion_phase is null
+         and project.team_backend_id is null and project.team_workspace_id is null
+         and project.workspace_project_id is null
+         and execution.owner_user_id=$1 and execution.project_id=wi.project_id::text
+         and execution.execution_generation=$3
+         and execution.state in ('starting','running','reconciling') limit 1`,
+      [input.ownerUserId, input.executionId, input.executionGeneration]
+    );
+    return Boolean(found.rowCount);
+  },
+  async briefSources(
+    ownerUserId: string,
+    projectId: string
+  ): Promise<
+    Array<{
+      id: string;
+      kind: string;
+      name: string;
+      uri: string | null;
+      currentRevisionId: string | null;
+    }>
+  > {
+    return inTransaction(pool, async (client) => {
+      await lockActiveProject(client, ownerUserId, projectId, "share");
+      const rows = await client.query<{
+        id: string;
+        kind: string;
+        name: string;
+        uri: string | null;
+        currentRevisionId: string | null;
+      }>(
+        `select id,kind,name,uri,current_revision_id as "currentRevisionId" from project_sources
+         where owner_user_id=$1 and project_id=$2 and deleted_at is null
+           and remove_batch_id is null and status='ready'
+         order by created_at desc,id desc limit 20`,
+        [ownerUserId, projectId]
+      );
+      return rows.rows;
+    });
+  },
   async list(
     ownerUserId: string,
     projectId: string,
@@ -276,6 +327,22 @@ export const createWorkItemRepository = (
   ): Promise<WorkItemPage> {
     return inTransaction(pool, async (client) => {
       await lockActiveProject(client, ownerUserId, projectId, "share");
+      const ended = await client.query<{ id: string }>(
+        `update project_work_items wi set status='blocked',
+           blocked_reason=case execution.state
+             when 'failed' then 'Agent execution failed'
+             when 'fenced' then 'Agent execution was interrupted'
+             else 'Agent execution was cancelled' end,
+           version=wi.version+1,updated_at=now()
+          from managed_conversation_executions execution
+         where wi.owner_user_id=$1 and wi.project_id=$2 and wi.status='doing'
+           and wi.execution_id=execution.id and execution.owner_user_id=$1
+           and execution.state in ('failed','stopped','fenced')
+         returning wi.id`,
+        [ownerUserId, projectId]
+      );
+      for (const row of ended.rows)
+        await emitChanged(client, ownerUserId, row.id);
       const limit = input.limit ?? 100;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
         throw new WorkItemCursorError("Work Item page limit is invalid");
@@ -318,6 +385,220 @@ export const createWorkItemRepository = (
       [itemId, ownerUserId]
     );
     return result.rows[0] ? publicRecord(result.rows[0]) : null;
+  },
+  async completeFromManagedCommandLease(input: {
+    ownerUserId: string;
+    itemId: string;
+    expectedVersion: number;
+    commandId: string;
+    leaseToken: string;
+  }): Promise<WorkItem> {
+    if (
+      !uuidPattern.test(input.leaseToken) ||
+      !uuidPattern.test(input.commandId) ||
+      !Number.isSafeInteger(input.expectedVersion)
+    )
+      throw new WorkItemTransitionError(
+        "Trusted completion evidence is invalid"
+      );
+    return inTransaction(pool, async (client) => {
+      const scope = await client.query<{ project_id: string }>(
+        `select project_id from project_work_items
+         where id=$1 and owner_user_id=$2 and deleted_at is null`,
+        [input.itemId, input.ownerUserId]
+      );
+      if (!scope.rows[0])
+        throw new WorkItemUnavailableError("Work Item is unavailable");
+      await lockActiveProject(
+        client,
+        input.ownerUserId,
+        scope.rows[0].project_id
+      );
+      const found = await client.query<Row>(
+        `select wi.* from project_work_items wi
+          join projects p on p.id=wi.project_id and p.owner_user_id=wi.owner_user_id
+         where wi.id=$1 and wi.owner_user_id=$2 and wi.deleted_at is null
+           and p.lifecycle='active' and p.deletion_phase is null
+           and p.team_backend_id is null and p.team_workspace_id is null
+           and p.workspace_project_id is null
+         for update of wi`,
+        [input.itemId, input.ownerUserId]
+      );
+      if (!found.rows[0])
+        throw new WorkItemUnavailableError("Work Item is unavailable");
+      const current = publicRecord(found.rows[0]);
+      if (current.version !== input.expectedVersion)
+        throw new WorkItemConflictError("Version conflict", current);
+      if (
+        current.status !== "doing" ||
+        !current.executionId ||
+        !current.dispatchKey ||
+        current.prProvider ||
+        current.prNumber ||
+        current.prUrl ||
+        current.prState
+      )
+        throw new WorkItemTransitionError(
+          "Work Item cannot complete without a merged PR"
+        );
+      const execution = await client.query<{ execution_generation: number }>(
+        `select execution_generation from managed_conversation_executions
+         where id=$1 and owner_user_id=$2 and project_id=$3
+           and state in ('starting','running','reconciling') for update`,
+        [current.executionId, input.ownerUserId, current.projectId]
+      );
+      if (!execution.rows[0])
+        throw new WorkItemTransitionError(
+          "Managed runtime lease is unavailable"
+        );
+      const command = await client.query(
+        `select 1 from managed_conversation_commands
+         where id=$1 and owner_user_id=$2 and execution_id=$3
+           and lease_token=$4 and lease_expires_at>now()
+           and state='dispatching' and execution_generation=$5 for update`,
+        [
+          input.commandId,
+          input.ownerUserId,
+          current.executionId,
+          input.leaseToken,
+          execution.rows[0].execution_generation
+        ]
+      );
+      if (!command.rowCount)
+        throw new WorkItemTransitionError(
+          "Managed runtime lease is unavailable"
+        );
+      const changed = await client.query<Row>(
+        `update project_work_items set status='done',done_at=now(),done_by=null,
+           version=version+1,updated_at=now()
+         where id=$1 and owner_user_id=$2 and version=$3 returning *`,
+        [input.itemId, input.ownerUserId, input.expectedVersion]
+      );
+      const completed = publicRecord(changed.rows[0]!);
+      await appendProjectActivityWithClient(client, {
+        ownerUserId: input.ownerUserId,
+        projectId: completed.projectId,
+        actorUserId: input.ownerUserId,
+        kind: "work_item_done",
+        ref: `${completed.id}:${completed.version}`
+      });
+      await emitChanged(client, input.ownerUserId, completed.id);
+      return completed;
+    });
+  },
+  async completeForManagedExecutionLease(input: {
+    ownerUserId: string;
+    executionId: string;
+    commandId: string;
+    leaseToken: string;
+  }): Promise<WorkItem> {
+    const found = await pool.query<{ id: string; version: number }>(
+      `select id,version from project_work_items
+       where owner_user_id=$1 and execution_id=$2 and status='doing' and deleted_at is null`,
+      [input.ownerUserId, input.executionId]
+    );
+    if (found.rows.length !== 1)
+      throw new WorkItemTransitionError(
+        "Managed execution has no unique active Work Item"
+      );
+    return this.completeFromManagedCommandLease({
+      ownerUserId: input.ownerUserId,
+      itemId: found.rows[0]!.id,
+      expectedVersion: found.rows[0]!.version,
+      commandId: input.commandId,
+      leaseToken: input.leaseToken
+    });
+  },
+  async linkReviewRequestFromSourceControl(input: {
+    ownerUserId: string;
+    executionId: string;
+    executionGeneration: number;
+    provider: string;
+    number: number;
+    url: string;
+  }): Promise<WorkItem | null> {
+    return inTransaction(pool, async (client) => {
+      const linked = await client.query<{ id: string; project_id: string }>(
+        `select id,project_id from project_work_items
+         where execution_id=$1 and owner_user_id=$2 and deleted_at is null`,
+        [input.executionId, input.ownerUserId]
+      );
+      if (!linked.rows[0]) return null;
+      await lockActiveProject(
+        client,
+        input.ownerUserId,
+        linked.rows[0].project_id
+      );
+      const found = await client.query<Row>(
+        `select * from project_work_items where owner_user_id=$1 and execution_id=$2
+           and project_id=$3 and id=$4 and deleted_at is null for update`,
+        [
+          input.ownerUserId,
+          input.executionId,
+          linked.rows[0].project_id,
+          linked.rows[0].id
+        ]
+      );
+      if (!found.rows[0]) return null;
+      const current = publicRecord(found.rows[0]);
+      const currentExecution = await client.query<{
+        execution_generation: number;
+        state: string;
+      }>(
+        `select execution_generation,state from managed_conversation_executions
+         where id=$1 and owner_user_id=$2 and project_id=$3 for update`,
+        [input.executionId, input.ownerUserId, current.projectId]
+      );
+      if (!currentExecution.rows[0])
+        throw new WorkItemTransitionError("Review execution binding changed");
+      if (
+        current.status === "review" &&
+        current.prProvider === input.provider &&
+        current.prNumber === input.number &&
+        current.prUrl === input.url
+      )
+        return current;
+      if (
+        currentExecution.rows[0].execution_generation !==
+          input.executionGeneration ||
+        !["starting", "running", "reconciling"].includes(
+          currentExecution.rows[0].state
+        ) ||
+        current.status !== "doing" ||
+        !current.dispatchKey ||
+        current.prUrl ||
+        !input.provider.trim() ||
+        !Number.isSafeInteger(input.number) ||
+        input.number < 1 ||
+        !input.url.startsWith("https://")
+      )
+        throw new WorkItemTransitionError(
+          "Review request is not bound to an active dispatch"
+        );
+      const changed = await client.query<Row>(
+        `update project_work_items set status='review',pr_provider=$3,pr_number=$4,
+           pr_url=$5,pr_state='open',version=version+1,updated_at=now()
+         where id=$1 and owner_user_id=$2 returning *`,
+        [current.id, input.ownerUserId, input.provider, input.number, input.url]
+      );
+      const updated = publicRecord(changed.rows[0]!);
+      await appendProjectActivityWithClient(client, {
+        ownerUserId: input.ownerUserId,
+        projectId: updated.projectId,
+        actorUserId: input.ownerUserId,
+        kind: "work_item_status",
+        ref: `${updated.id}:${updated.version}`
+      });
+      await appendProjectActivityWithClient(client, {
+        ownerUserId: input.ownerUserId,
+        projectId: updated.projectId,
+        actorUserId: input.ownerUserId,
+        kind: "pr_opened",
+        ref: `${updated.id}:${updated.version}`
+      });
+      await emitChanged(client, input.ownerUserId, updated.id);
+      return updated;
+    });
   },
   async create(
     ownerUserId: string,
@@ -407,6 +688,23 @@ export const createWorkItemRepository = (
       const current = publicRecord(found.rows[0]);
       if (current.version !== input.version)
         throw new WorkItemConflictError("Version conflict", current);
+      if (
+        (input.action === "untick" || input.action === "back_to_todo") &&
+        current.executionId
+      ) {
+        const prior = await client.query<{ state: string }>(
+          `select state from managed_conversation_executions
+           where id=$1 and owner_user_id=$2 for update`,
+          [current.executionId, ownerUserId]
+        );
+        if (
+          !prior.rows[0] ||
+          !["stopped", "failed", "fenced"].includes(prior.rows[0].state)
+        )
+          throw new WorkItemTransitionError(
+            "Stop and reconcile the Agent execution before moving this Work Item to To do"
+          );
+      }
       const status =
         input.action === "mark_done"
           ? nextWorkItemStatus(current.status, "user_mark_done")
@@ -418,6 +716,9 @@ export const createWorkItemRepository = (
       const result = await client.query<Row>(
         `update project_work_items set title=$3,goal=$4,due_on=$5,status=$6,
          blocked_reason=case when $6='blocked' then blocked_reason else null end,
+         assignee_agent_id=case when $7 in ('untick','back_to_todo') then null else assignee_agent_id end,
+         execution_id=case when $7 in ('untick','back_to_todo') then null else execution_id end,
+         dispatch_key=case when $7 in ('untick','back_to_todo') then null else dispatch_key end,
          done_at=case when $6='done' then coalesce(done_at,now()) else null end,
          done_by=case when $7='mark_done' then $2 when $6='done' then done_by else null end,
          version=version+1,updated_at=now() where id=$1 and owner_user_id=$2 returning *`,

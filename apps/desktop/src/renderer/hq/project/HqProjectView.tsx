@@ -1,12 +1,18 @@
 import {
   Check,
   ChevronDown,
+  ArrowUpRight,
   Folder,
+  ListTodo,
   Plus,
   RotateCw,
-  Sparkles
+  Sparkles,
+  X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { Agent } from "@koed/shared/agent-contract";
+import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
 import type { Project } from "@koed/shared/project-contract";
 import type { WorkItem } from "@koed/shared/work-item-contract";
 import type { DesktopProject } from "../../../project-memory-ui.js";
@@ -98,6 +104,7 @@ export function HqProjectView({
   graphProjects,
   projectsApi,
   curatedMemoryApi,
+  agentsApi,
   conversationsApi,
   lifecycle,
   ownerId,
@@ -116,6 +123,7 @@ export function HqProjectView({
   graphProjects: readonly DesktopProject[];
   projectsApi: ProjectsDesktopApi;
   curatedMemoryApi?: CuratedMemoryDesktopApi | null;
+  agentsApi?: AgentsDesktopApi | null;
   conversationsApi?: ManagedConversationDesktopApi | null;
   lifecycle?: ManagedConversationLifecycle;
   ownerId?: string | null;
@@ -212,24 +220,33 @@ export function HqProjectView({
   const [draft, setDraft] = useState("");
   const [workError, setWorkError] = useState("");
   const [workPending, setWorkPending] = useState(false);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [sendFor, setSendFor] = useState<string | null>(null);
+  const [briefFor, setBriefFor] = useState<string | null>(null);
   const intent = useRef({
     projectId: project.id,
     ownerId,
     profileKey,
     api: projectsApi,
+    agentsApi,
+    conversationsApi,
     generation: 0
   });
   if (
     intent.current.projectId !== project.id ||
     intent.current.ownerId !== ownerId ||
     intent.current.profileKey !== profileKey ||
-    intent.current.api !== projectsApi
+    intent.current.api !== projectsApi ||
+    intent.current.agentsApi !== agentsApi ||
+    intent.current.conversationsApi !== conversationsApi
   ) {
     intent.current = {
       projectId: project.id,
       ownerId,
       profileKey,
       api: projectsApi,
+      agentsApi,
+      conversationsApi,
       generation: intent.current.generation + 1
     };
   }
@@ -240,10 +257,23 @@ export function HqProjectView({
     title: string;
     dueOn: string | null;
   } | null>(null);
+  useEffect(
+    () => () => {
+      intent.current.generation += 1;
+    },
+    []
+  );
+  useEffect(() => {
+    setBriefFor(null);
+    setSendFor(null);
+  }, [closeSignal]);
   useEffect(() => {
     setDraft("");
     setWorkError("");
     setWorkPending(false);
+    setAgents([]);
+    setSendFor(null);
+    setBriefFor(null);
     setFolded({
       need: false,
       doing: false,
@@ -259,8 +289,59 @@ export function HqProjectView({
       done: false
     });
     idempotency.current = null;
-  }, [project.id, ownerId, profileKey, projectsApi]);
+  }, [
+    project.id,
+    ownerId,
+    profileKey,
+    projectsApi,
+    agentsApi,
+    conversationsApi
+  ]);
   const draftIds = [...(lifecycle?.drafts.keys() ?? [])].sort().join("\u0000");
+  useEffect(() => {
+    let live = true;
+    if (!agentsApi) return;
+    void agentsApi
+      .list()
+      .then((rows) => {
+        if (live) setAgents(rows);
+      })
+      .catch(() => {
+        if (live) setAgents([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [agentsApi, project.id, ownerId, profileKey]);
+  useEffect(() => {
+    if (!sendFor) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(
+          `.hq-project-view__send-wrap:has([data-work-send-id="${sendFor}"]) [role="menuitem"]`
+        )
+        ?.focus();
+    });
+    const dismiss = (event: MouseEvent) => {
+      if (!(event.target as Element).closest(".hq-project-view__send-wrap"))
+        setSendFor(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      document
+        .querySelector<HTMLElement>(`[data-work-send-id="${sendFor}"]`)
+        ?.focus();
+      setSendFor(null);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [sendFor]);
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible")
@@ -556,6 +637,71 @@ export function HqProjectView({
       if (active()) setWorkPending(false);
     }
   };
+  const sendToAgent = async (item: WorkItem, agent: Agent) => {
+    if (!projectsApi.workItemDispatch || workPending) return;
+    const generation = intent.current.generation;
+    const active = () => intent.current.generation === generation;
+    setWorkPending(true);
+    setWorkError("");
+    setSendFor(null);
+    try {
+      const result = await projectsApi.workItemDispatch(
+        project.id,
+        item.id,
+        agent.id,
+        item.version,
+        Boolean(
+          item.executionId &&
+          (item.status === "doing" || item.status === "review")
+        )
+      );
+      if (!active()) return;
+      setInventory((current) =>
+        current.projectId === project.id &&
+        current.ownerId === (ownerId ?? null) &&
+        current.profileKey === (profileKey ?? null) &&
+        current.projectsApi === projectsApi
+          ? {
+              ...current,
+              workItems: current.workItems.map((row) =>
+                row.id === item.id && row.version <= result.item.version
+                  ? result.item
+                  : row
+              )
+            }
+          : current
+      );
+      if (result.stopPending)
+        setWorkError(
+          "Stopping the previous Agent. Send again after this Work Item shows as blocked."
+        );
+      else {
+        if (
+          result.reused &&
+          (item.status === "doing" || item.status === "review")
+        )
+          openWorkItem(result.item);
+        else {
+          setMemoryOpen(false);
+          setSourceCloseSignal((value) => value + 1);
+          setBriefFor(item.id);
+          onSourcesOpenChange?.(true);
+        }
+      }
+      setRefresh((value) => value + 1);
+    } catch (error) {
+      if (active()) {
+        setWorkError(
+          error instanceof Error
+            ? error.message
+            : "Work Item could not be sent."
+        );
+        setRefresh((value) => value + 1);
+      }
+    } finally {
+      if (active()) setWorkPending(false);
+    }
+  };
   const canOpen = (entry: {
     projectId?: string | null;
     sessionId?: string | null;
@@ -572,6 +718,91 @@ export function HqProjectView({
     if (entry.projectId === project.id) onOpenPrivateHq?.();
     else if (canOpen(entry)) onSelectConversation(entry);
   };
+  const sendControl = (item: WorkItem) => (
+    <span className="hq-project-view__send-wrap">
+      <button
+        type="button"
+        className="hq-project-view__send"
+        data-work-send-id={item.id}
+        aria-label={`Send ${item.title} to an Agent`}
+        aria-expanded={sendFor === item.id}
+        disabled={workPending || !agentsApi}
+        onClick={() => setSendFor(sendFor === item.id ? null : item.id)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setSendFor(item.id);
+        }}
+      >
+        <ArrowUpRight size={15} />
+      </button>
+      {sendFor === item.id ? (
+        <span className="hq-project-view__send-menu" role="menu">
+          <b>
+            {item.status === "blocked"
+              ? "Retry or send to someone else"
+              : item.executionId
+                ? "Send to someone else"
+                : "Send to an Agent"}
+          </b>
+          {agents.length ? (
+            agents.map((agent) => (
+              <button
+                type="button"
+                role="menuitem"
+                key={agent.id}
+                onClick={() => void sendToAgent(item, agent)}
+              >
+                <span
+                  className="hq-project-view__agent-initial"
+                  aria-hidden="true"
+                >
+                  {agent.name.slice(0, 1)}
+                </span>
+                <span className="hq-project-view__agent-name">
+                  {agent.name}
+                </span>
+                <small>
+                  {item.status === "blocked" &&
+                  item.assigneeAgentId === agent.id
+                    ? "Retry"
+                    : agent.role || "Agent"}
+                </small>
+              </button>
+            ))
+          ) : (
+            <small>No available Agents</small>
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
+  const openWorkItem = (item: WorkItem) => {
+    setMemoryOpen(false);
+    setSourceCloseSignal((value) => value + 1);
+    setBriefFor(item.id);
+    onSourcesOpenChange?.(true);
+    const execution = visibleInventory.executions.find(
+      (row) => row.executionId === item.executionId
+    );
+    if (!execution?.sessionId || !execution.threadId) return;
+    const graphProject = graphProjects.find((candidate) =>
+      candidate.threads.some((thread) => thread.id === execution.threadId)
+    );
+    if (!graphProject) return;
+    onSelectConversation({
+      id: `work-item:${item.id}`,
+      kind: "question",
+      title: item.title,
+      context: project.name,
+      projectId: graphProject.id,
+      sessionId: execution.sessionId,
+      threadId: execution.threadId,
+      executionId: execution.executionId,
+      createdAt: item.updatedAt
+    });
+  };
+  const selectedBrief =
+    visibleInventory.workItems.find((item) => item.id === briefFor) ?? null;
   const sectionHead = (
     kind: keyof typeof cap,
     label: string,
@@ -641,8 +872,9 @@ export function HqProjectView({
           onOpenChange={(value) => {
             if (value) {
               setMemoryOpen(false);
+              setBriefFor(null);
               onSourcesOpenChange?.(true);
-            } else if (!memoryOpen) {
+            } else if (!memoryOpen && !briefFor) {
               onSourcesOpenChange?.(false);
             }
           }}
@@ -659,6 +891,7 @@ export function HqProjectView({
             onClick={() => {
               setSourceCloseSignal((value) => value + 1);
               setMemoryOpen(true);
+              setBriefFor(null);
               onSourcesOpenChange?.(true);
               onContextChange?.("What Koed knows");
             }}
@@ -737,6 +970,12 @@ export function HqProjectView({
                         <div
                           className="hq-project-view__work-item"
                           key={item.id}
+                          onContextMenu={(event) => {
+                            if (item.status === "todo") {
+                              event.preventDefault();
+                              setSendFor(item.id);
+                            }
+                          }}
                         >
                           <span className="hq-project-view__avatar">!</span>
                           <span className="hq-project-view__work-item-text">
@@ -788,6 +1027,9 @@ export function HqProjectView({
                               Open on {item.prProvider || "provider"}
                             </a>
                           ) : null}
+                          {item.status === "todo" || item.status === "blocked"
+                            ? sendControl(item)
+                            : null}
                         </div>
                       ))
                     : workVisible.map((item) => (
@@ -798,14 +1040,19 @@ export function HqProjectView({
                           <span className="hq-project-view__avatar">
                             <Folder size={15} />
                           </span>
-                          <span className="hq-project-view__work-item-text">
+                          <button
+                            type="button"
+                            className="hq-project-view__work-item-text hq-project-view__brief-trigger"
+                            onClick={() => openWorkItem(item)}
+                          >
                             <b>{item.title}</b>
                             <small>
                               {item.executionId
                                 ? "Agent working"
                                 : "In progress"}
                             </small>
-                          </span>
+                          </button>
+                          {sendControl(item)}
                         </div>
                       ))}
                   {runtimeVisible.map((item) =>
@@ -959,7 +1206,14 @@ export function HqProjectView({
               </form>
               {(expanded.todo ? work.todos : work.todos.slice(0, cap.todo)).map(
                 (item) => (
-                  <div className="hq-project-view__work-item" key={item.id}>
+                  <div
+                    className="hq-project-view__work-item"
+                    key={item.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setSendFor(item.id);
+                    }}
+                  >
                     <button
                       type="button"
                       className="hq-project-view__tick"
@@ -979,6 +1233,7 @@ export function HqProjectView({
                         <small>{workItemDueLabel(item, timeZone, now)}</small>
                       ) : null}
                     </span>
+                    {sendControl(item)}
                   </div>
                 )
               )}
@@ -1038,6 +1293,7 @@ export function HqProjectView({
                         Open on {item.prProvider || "provider"}
                       </a>
                     ) : null}
+                    {sendControl(item)}
                   </div>
                 ))}
                 {work.review.length > cap.review ? (
@@ -1105,6 +1361,84 @@ export function HqProjectView({
           ) : null}
         </section>
       </div>
+      {selectedBrief && panelHost
+        ? createPortal(
+            <aside className="hq-project-view__brief" aria-label="Work brief">
+              <div className="hq-project-view__brief-head">
+                <span>
+                  <ListTodo size={13} aria-hidden="true" />
+                  {selectedBrief.key || `TO-DO ${selectedBrief.id.slice(0, 8)}`}
+                </span>
+                <button
+                  type="button"
+                  className="hq-project-view__brief-close"
+                  aria-label="Close work brief"
+                  onClick={() => {
+                    setBriefFor(null);
+                    onSourcesOpenChange?.(false);
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <span className="hq-project-view__brief-origin">
+                {selectedBrief.originRef
+                  ? `From ${selectedBrief.originRef}`
+                  : "Added by you"}
+              </span>
+              <h2>{selectedBrief.title}</h2>
+              <div className="hq-project-view__brief-state">
+                <i aria-hidden="true" />
+                {selectedBrief.status === "doing"
+                  ? "Working now"
+                  : selectedBrief.status === "review"
+                    ? "In review"
+                    : selectedBrief.status === "blocked"
+                      ? "Needs you"
+                      : selectedBrief.status === "done"
+                        ? "Done"
+                        : "To do"}
+                {selectedBrief.assigneeAgentId
+                  ? ` · ${agents.find((agent) => agent.id === selectedBrief.assigneeAgentId)?.name ?? "Agent"}`
+                  : null}
+              </div>
+              <span className="hq-project-view__brief-label">Goal</span>
+              <p className="hq-project-view__brief-goal">
+                {selectedBrief.goal || selectedBrief.title}
+              </p>
+              <span className="hq-project-view__brief-label hq-project-view__brief-live-label">
+                {selectedBrief.assigneeAgentId &&
+                agents.find(
+                  (agent) => agent.id === selectedBrief.assigneeAgentId
+                )
+                  ? `Live · ${agents.find((agent) => agent.id === selectedBrief.assigneeAgentId)!.name}`
+                  : "Live updates"}
+              </span>
+              {selectedBrief.executionId ? (
+                (visibleInventory.runtime.get(selectedBrief.executionId) ?? [])
+                  .length ? (
+                  <ol className="hq-project-view__brief-log">
+                    {(
+                      visibleInventory.runtime.get(selectedBrief.executionId) ??
+                      []
+                    ).map((event) => (
+                      <li key={event.id}>{hqRuntimeItemTitle(event)}</li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="hq-project-view__brief-empty">
+                    No updates yet.
+                  </p>
+                )
+              ) : (
+                <p className="hq-project-view__brief-empty">
+                  Waiting to start.
+                </p>
+              )}
+            </aside>,
+            panelHost
+          )
+        : null}
     </div>
   );
 }

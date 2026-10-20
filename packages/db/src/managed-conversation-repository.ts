@@ -12,6 +12,7 @@ import {
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 import pg from "pg";
+import { appendProjectActivityWithClient } from "./project-activity-repository.js";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings,
@@ -265,11 +266,29 @@ export interface ManagedConversationRepository {
       deferUntilRuntimeBinding?: boolean;
       hqProjectId?: string;
       hqPrivatePath?: string;
+      workItemDispatch?: {
+        itemId: string;
+        agentId: string;
+        version: number;
+        sources?: Array<{ id: string; currentRevisionId: string | null }>;
+      };
     }
   ): Promise<{
     execution: ManagedConversationExecutionRecord;
     command: ManagedConversationCommandRecord;
     fencingToken: string;
+  }>;
+  retryWorkItemConversation(
+    actor: ActorContext,
+    input: {
+      projectId: string;
+      itemId: string;
+      agentId: string;
+      expectedVersion: number;
+    }
+  ): Promise<{
+    execution: ManagedConversationExecutionRecord;
+    command: ManagedConversationCommandRecord;
   }>;
   enqueueManagedConversationPrompt(
     actor: ActorContext,
@@ -1244,6 +1263,10 @@ export const createManagedConversationRepository = (
     commandId: string;
     prompt: string;
     fileMentions?: Array<Record<string, unknown>>;
+    workItemSourceProof?: Array<{
+      id: string;
+      currentRevisionId: string | null;
+    }>;
     settings: ManagedConversationSettings;
   }) =>
     encryptCommandPayload({
@@ -1254,11 +1277,66 @@ export const createManagedConversationRepository = (
       value: {
         prompt: input.prompt,
         settings: input.settings,
+        ...(input.workItemSourceProof
+          ? { workItemSourceProof: input.workItemSourceProof }
+          : {}),
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
           : {})
       }
     });
+
+  const assertCurrentWorkItemSources = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    projectId: string,
+    sources: Array<{ id: string; currentRevisionId: string | null }>
+  ) => {
+    if (
+      sources.length > 20 ||
+      new Set(sources.map((source) => source.id)).size !== sources.length ||
+      sources.some(
+        (source) =>
+          typeof source.id !== "string" ||
+          (source.currentRevisionId !== null &&
+            typeof source.currentRevisionId !== "string")
+      )
+    )
+      throw statusError("Work Item Source context is invalid", 409);
+    for (const source of [...sources].sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )) {
+      const currentSource = await client.query<{
+        current_revision_id: string | null;
+        kind: string;
+      }>(
+        `select current_revision_id,kind from project_sources
+         where id=$1 and owner_user_id=$2 and project_id=$3
+           and deleted_at is null and remove_batch_id is null and status='ready'
+         for share`,
+        [source.id, ownerUserId, projectId]
+      );
+      if (
+        !currentSource.rows[0] ||
+        currentSource.rows[0].current_revision_id !== source.currentRevisionId
+      )
+        throw statusError("Work Item Source context changed", 409);
+      if (currentSource.rows[0].kind === "doc") {
+        const note = await client.query(
+          `select 1 from personal_note_revisions revision
+             join personal_notes note on note.id=revision.note_id
+              and note.owner_user_id=revision.owner_user_id
+           where revision.id=$1 and revision.owner_user_id=$2
+             and revision.projection_state='available'
+             and revision.forgotten_at is null and note.lifecycle='active'
+           for share of revision,note`,
+          [source.currentRevisionId, ownerUserId]
+        );
+        if (!note.rowCount)
+          throw statusError("Work Item Source Note is unavailable", 409);
+      }
+    }
+  };
 
   const decryptPayload = async (
     row: CommandRow
@@ -1460,6 +1538,109 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        // Lock the item before creating the command. The link and the start
+        // command commit together, so a crash cannot leave an orphan launch.
+        type DispatchItemRow = {
+          id: string;
+          version: number;
+          status: string;
+          execution_id: string | null;
+          assignee_agent_id: string | null;
+        };
+        let dispatchItem: DispatchItemRow | null = null;
+        if (input.workItemDispatch) {
+          const dispatch = input.workItemDispatch;
+          const activeProject = await client.query(
+            `select 1 from projects where id=$1 and owner_user_id=$2
+               and lifecycle='active' and deletion_phase is null
+               and team_backend_id is null and team_workspace_id is null
+               and workspace_project_id is null for update`,
+            [projectId, actor.userId]
+          );
+          if (!activeProject.rowCount)
+            throw statusError("Project is unavailable", 409);
+          const found = await client.query<DispatchItemRow>(
+            `select id,version,status,execution_id,assignee_agent_id
+               from project_work_items where id=$1 and owner_user_id=$2
+               and project_id=$3 and deleted_at is null for update`,
+            [dispatch.itemId, actor.userId, projectId]
+          );
+          dispatchItem = found.rows[0] ?? null;
+          if (!dispatchItem) throw statusError("Work Item is unavailable", 404);
+          await assertCurrentWorkItemSources(
+            client,
+            actor.userId,
+            projectId,
+            dispatch.sources ?? []
+          );
+          if (dispatchItem.execution_id) {
+            if (
+              dispatchItem.status === "blocked" &&
+              dispatchItem.assignee_agent_id !== dispatch.agentId &&
+              dispatchItem.version === dispatch.version
+            ) {
+              const old = await client.query<{ state: string }>(
+                `select state from managed_conversation_executions
+                 where id=$1 and owner_user_id=$2 for update`,
+                [dispatchItem.execution_id, actor.userId]
+              );
+              if (
+                !old.rows[0] ||
+                !["stopped", "failed", "fenced"].includes(old.rows[0].state)
+              )
+                throw statusError(
+                  "Previous Agent execution has not stopped",
+                  409
+                );
+            } else if (
+              dispatchItem.assignee_agent_id !== dispatch.agentId ||
+              !["doing", "review"].includes(dispatchItem.status)
+            ) {
+              throw statusError("Work Item dispatch needs reconciliation", 409);
+            } else {
+              const execution = await client.query<ExecutionRow>(
+                `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+               where id=$1 and owner_user_id=$2`,
+                [dispatchItem.execution_id, actor.userId]
+              );
+              const command = await client.query<CommandRow>(
+                `select ${COMMAND_COLUMNS} from managed_conversation_commands
+               where execution_id=$1 and owner_user_id=$2 and command_kind='start'
+               order by sequence asc limit 1`,
+                [dispatchItem.execution_id, actor.userId]
+              );
+              if (!execution.rows[0] || !command.rows[0])
+                throw statusError("Work Item execution is inconsistent", 409);
+              await client.query("commit");
+              return {
+                execution: mapExecution(execution.rows[0]),
+                command: mapCommand(
+                  command.rows[0],
+                  await decryptPayload(command.rows[0])
+                ),
+                fencingToken: ""
+              };
+            }
+          }
+          if (
+            !["todo", "blocked"].includes(dispatchItem.status) ||
+            dispatchItem.version !== dispatch.version
+          )
+            throw statusError("Work Item version changed", 409);
+          const agent = await client.query(
+            `select 1 from agents a join ai_client_instances i
+               on i.owner_user_id=a.owner_user_id and i.instance_id=a.ai_client_instance_id
+             where a.id=$1 and a.owner_user_id=$2 and a.ai_client_instance_id=$3
+               and i.driver_id=$4 and i.enabled=true for share of a,i`,
+            [
+              dispatch.agentId,
+              actor.userId,
+              input.aiClientInstanceId,
+              input.provider
+            ]
+          );
+          if (!agent.rowCount) throw statusError("Agent is unavailable", 409);
+        }
         if (input.hqProjectId) {
           if (projectId !== input.hqProjectId)
             throw statusError("HQ Project identity mismatch", 400);
@@ -1543,6 +1724,8 @@ export const createManagedConversationRepository = (
           [actor.userId, input.idempotencyKey]
         );
         if (existing.rows[0]) {
+          if (input.workItemDispatch)
+            throw statusError("Work Item start key is already in use", 409);
           const execution = await client.query<ExecutionRow>(
             `select ${EXECUTION_COLUMNS}
                from managed_conversation_executions
@@ -1632,6 +1815,9 @@ export const createManagedConversationRepository = (
               executionId,
               commandId,
               prompt: input.initialPrompt,
+              ...(input.workItemDispatch
+                ? { workItemSourceProof: input.workItemDispatch.sources ?? [] }
+                : {}),
               settings: {
                 model: input.model,
                 reasoningEffort: input.reasoningEffort ?? null,
@@ -1677,6 +1863,48 @@ export const createManagedConversationRepository = (
           if (bound.rowCount !== 1)
             throw statusError("Project HQ was started concurrently", 409);
         }
+        if (input.workItemDispatch && dispatchItem) {
+          const dispatch = input.workItemDispatch;
+          const changed = await client.query(
+            `update project_work_items set status='doing', assignee_agent_id=$4,
+               execution_id=$5, dispatch_key=$6, blocked_reason=null,
+               version=version+1, updated_at=now()
+             where id=$1 and owner_user_id=$2 and version=$3 and status in ('todo','blocked')
+               and deleted_at is null`,
+            [
+              dispatch.itemId,
+              actor.userId,
+              dispatch.version,
+              dispatch.agentId,
+              executionId,
+              `${dispatch.itemId}:${dispatch.version}`
+            ]
+          );
+          if (changed.rowCount !== 1)
+            throw statusError("Work Item version changed", 409);
+          await appendProjectActivityWithClient(client, {
+            ownerUserId: actor.userId,
+            projectId,
+            actorUserId: actor.userId,
+            kind: "work_item_status",
+            ref: `${dispatch.itemId}:${dispatch.version + 1}`
+          });
+          await appendCollaborationOutboxEventWithClient(client, {
+            family: "work_item_changed",
+            scope: "personal",
+            personalOwnerUserId: actor.userId,
+            teamId: null,
+            teamWorkspaceId: null,
+            threadId: null,
+            messageId: null,
+            shareGrantId: null,
+            logicalMemoryId: null,
+            resourceType: "project_work_item",
+            resourceId: dispatch.itemId,
+            actorPrincipalId: actor.userId,
+            mutationId: randomUUID()
+          });
+        }
         await notifyManagedConversationCommand(client, executionId);
         await client.query("commit");
         return {
@@ -1689,6 +1917,291 @@ export const createManagedConversationRepository = (
         };
       } catch (error) {
         await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async retryWorkItemConversation(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const project = await client.query(
+          `select 1 from projects where id=$1 and owner_user_id=$2
+             and lifecycle='active' and deletion_phase is null
+             and team_backend_id is null and team_workspace_id is null
+             and workspace_project_id is null for update`,
+          [input.projectId, actor.userId]
+        );
+        if (!project.rowCount) throw statusError("Project is unavailable", 409);
+        const item = await client.query<{
+          version: number;
+          status: string;
+          execution_id: string | null;
+          assignee_agent_id: string | null;
+        }>(
+          `select version,status,execution_id,assignee_agent_id
+             from project_work_items where id=$1 and owner_user_id=$2
+               and project_id=$3 and deleted_at is null for update`,
+          [input.itemId, actor.userId, input.projectId]
+        );
+        const current = item.rows[0];
+        if (!current) throw statusError("Work Item is unavailable", 404);
+        const availableAgent = await client.query(
+          `select 1 from agents agent
+             join ai_client_instances instance
+               on instance.owner_user_id=agent.owner_user_id
+              and instance.instance_id=agent.ai_client_instance_id
+             join managed_conversation_executions execution
+               on execution.id=$3 and execution.owner_user_id=agent.owner_user_id
+           where agent.id=$1 and agent.owner_user_id=$2
+             and agent.ai_client_instance_id=execution.ai_client_instance_id
+             and instance.driver_id=execution.provider and instance.enabled=true
+           for share of agent,instance`,
+          [input.agentId, actor.userId, current.execution_id]
+        );
+        if (!availableAgent.rowCount)
+          throw statusError("Agent or AI Client is unavailable", 409);
+        const retryKey = `work-item-retry:${input.itemId}:${input.expectedVersion}`;
+        if (
+          current.status === "doing" &&
+          current.version === input.expectedVersion + 1 &&
+          current.assignee_agent_id === input.agentId &&
+          current.execution_id
+        ) {
+          const prior = await client.query<CommandRow>(
+            `select ${COMMAND_COLUMNS} from managed_conversation_commands
+             where owner_user_id=$1 and idempotency_key=$2`,
+            [actor.userId, retryKey]
+          );
+          if (prior.rows[0]?.execution_id === current.execution_id) {
+            const execution = await client.query<ExecutionRow>(
+              `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+               where id=$1 and owner_user_id=$2`,
+              [current.execution_id, actor.userId]
+            );
+            if (execution.rows[0]) {
+              await client.query("commit");
+              return {
+                execution: mapExecution(execution.rows[0]),
+                command: mapCommand(
+                  prior.rows[0],
+                  await decryptPayload(prior.rows[0])
+                )
+              };
+            }
+          }
+        }
+        if (
+          current.status !== "blocked" ||
+          current.version !== input.expectedVersion ||
+          current.assignee_agent_id !== input.agentId ||
+          !current.execution_id
+        )
+          throw statusError("Work Item Retry binding changed", 409);
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+           where id=$1 and owner_user_id=$2 and project_id=$3 for update`,
+          [current.execution_id, actor.userId, input.projectId]
+        );
+        const execution = executionResult.rows[0];
+        if (
+          !execution ||
+          !["failed", "stopped", "fenced"].includes(execution.state)
+        )
+          throw statusError("Previous Agent execution has not stopped", 409);
+        await assertExecutionChatWritable(client, execution);
+        const binding = await client.query<RuntimeBindingRow>(
+          `select ${RUNTIME_BINDING_COLUMNS} from managed_conversation_runtime_bindings
+           where execution_id=$1 and owner_user_id=$2 for update`,
+          [execution.id, actor.userId]
+        );
+        if (
+          !binding.rows[0] ||
+          binding.rows[0].deployment_id !== execution.runner_deployment_id ||
+          binding.rows[0].device_id !== execution.runner_device_id ||
+          binding.rows[0].execution_generation !==
+            execution.execution_generation
+        )
+          throw statusError(
+            "Managed Conversation runtime binding changed",
+            409
+          );
+        const hasSession = Boolean(
+          execution.logical_session_id && execution.provider_thread_id
+        );
+        if (
+          Boolean(execution.logical_session_id) !==
+          Boolean(execution.provider_thread_id)
+        )
+          throw statusError(
+            "Managed Conversation identity needs reconciliation",
+            409
+          );
+        const original = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS} from managed_conversation_commands
+           where execution_id=$1 and owner_user_id=$2 and command_kind='start'
+           order by sequence asc limit 1`,
+          [execution.id, actor.userId]
+        );
+        if (!original.rows[0])
+          throw statusError("Managed Conversation start is missing", 409);
+        if (!hasSession && original.rows[0].state === "indeterminate")
+          throw statusError(
+            "Original start needs read-only reconciliation",
+            409
+          );
+        const initial = await decryptPayload(original.rows[0]);
+        if (!hasSession) {
+          const proof = initial?.workItemSourceProof;
+          if (
+            !Array.isArray(proof) ||
+            proof.some(
+              (source: unknown) =>
+                !source ||
+                typeof source !== "object" ||
+                Array.isArray(source) ||
+                !("id" in source) ||
+                typeof source.id !== "string" ||
+                !("currentRevisionId" in source) ||
+                (source.currentRevisionId !== null &&
+                  typeof source.currentRevisionId !== "string")
+            )
+          )
+            throw statusError(
+              "Original Work Item Source proof is unavailable",
+              409
+            );
+          await assertCurrentWorkItemSources(
+            client,
+            actor.userId,
+            input.projectId,
+            proof as Array<{ id: string; currentRevisionId: string | null }>
+          );
+        }
+        const prompt = hasSession
+          ? "Retry this Work Item in the same Conversation. Continue from the prior work and report progress."
+          : typeof initial?.prompt === "string"
+            ? initial.prompt
+            : null;
+        if (!prompt)
+          throw statusError("Original Work Item brief is unavailable", 409);
+        const commandId = randomUUID();
+        const sequenceResult = await client.query<{ sequence: number }>(
+          `select coalesce(max(sequence),-1)+1 as sequence from managed_conversation_commands
+           where execution_id=$1`,
+          [execution.id]
+        );
+        const generation = execution.execution_generation + 1;
+        const clientUserMessageId = hasSession ? randomUUID() : null;
+        const encryptedPayload = await encryptPrompt({
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          commandId,
+          prompt,
+          ...(!hasSession
+            ? {
+                workItemSourceProof: initial!.workItemSourceProof as Array<{
+                  id: string;
+                  currentRevisionId: string | null;
+                }>
+              }
+            : {}),
+          settings: {
+            model: execution.model,
+            reasoningEffort: execution.reasoning_effort,
+            permissionMode: execution.permission_mode
+          }
+        });
+        const commandKind = hasSession ? "prompt" : "start";
+        const requestDigest = sha256(
+          JSON.stringify({
+            kind: commandKind,
+            executionId: execution.id,
+            generation,
+            prompt,
+            clientUserMessageId
+          })
+        );
+        const changedExecution = await client.query<ExecutionRow>(
+          `update managed_conversation_executions set
+             execution_generation=$3,state=$4,state_version=state_version+1,
+             fencing_token_hash=$5,runner_id=null,runner_lease_expires_at=null,
+             last_error_code=null,stopped_at=null,updated_at=now()
+           where id=$1 and owner_user_id=$2 returning ${EXECUTION_COLUMNS}`,
+          [
+            execution.id,
+            actor.userId,
+            generation,
+            hasSession ? "running" : "starting",
+            sha256(randomBytes(32).toString("base64url"))
+          ]
+        );
+        await client.query(
+          `update managed_conversation_runtime_bindings set execution_generation=$3,
+             start_authority_acknowledged_at=null,updated_at=now()
+           where execution_id=$1 and owner_user_id=$2`,
+          [execution.id, actor.userId, generation]
+        );
+        const command = await client.query<CommandRow>(
+          `insert into managed_conversation_commands
+           (id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,
+            request_digest,client_user_message_id,execution_generation,encrypted_payload,state)
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'queued')
+           returning ${COMMAND_COLUMNS}`,
+          [
+            commandId,
+            actor.userId,
+            execution.id,
+            retryKey,
+            sequenceResult.rows[0]!.sequence,
+            commandKind,
+            requestDigest,
+            clientUserMessageId,
+            generation,
+            encryptedPayload
+          ]
+        );
+        await client.query(
+          `update project_work_items set status='doing',blocked_reason=null,
+             dispatch_key=$4,version=version+1,updated_at=now()
+           where id=$1 and owner_user_id=$2 and version=$3`,
+          [
+            input.itemId,
+            actor.userId,
+            input.expectedVersion,
+            `${input.itemId}:${input.expectedVersion}`
+          ]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          mutationId: `managed-conversation-command:${commandId}:queued`
+        });
+        await appendCollaborationOutboxEventWithClient(client, {
+          family: "work_item_changed",
+          scope: "personal",
+          personalOwnerUserId: actor.userId,
+          teamId: null,
+          teamWorkspaceId: null,
+          threadId: null,
+          messageId: null,
+          shareGrantId: null,
+          logicalMemoryId: null,
+          resourceType: "project_work_item",
+          resourceId: input.itemId,
+          actorPrincipalId: actor.userId,
+          mutationId: randomUUID()
+        });
+        await notifyManagedConversationCommand(client, execution.id);
+        await client.query("commit");
+        return {
+          execution: mapExecution(changedExecution.rows[0]!),
+          command: mapCommand(command.rows[0]!, { prompt })
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
         throw error;
       } finally {
         client.release();

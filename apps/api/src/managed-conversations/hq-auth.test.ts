@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
@@ -209,6 +209,294 @@ describe("HQ managed launch authority", () => {
 });
 
 describe("HQ managed start HTTP admission", () => {
+  it("launches a chosen Agent with a Source-bound brief through the scoped Desktop route", async () => {
+    const owner = randomUUID();
+    const projectId = randomUUID();
+    const itemId = randomUUID();
+    const agentId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const home = mkdtempSync(join(tmpdir(), "koed-work-send-http-"));
+    homes.push(home);
+    const config = join(home, "config", "projects.json");
+    mkdirSync(join(home, "config"), { recursive: true });
+    writeFileSync(
+      config,
+      JSON.stringify({
+        schemaVersion: 3,
+        projects: [
+          {
+            localProjectId: projectId,
+            path: { cwd: home, projectRoot: home }
+          }
+        ]
+      })
+    );
+    const app = Fastify();
+    app.setErrorHandler((error, _request, reply) =>
+      reply
+        .code((error as Error & { statusCode?: number }).statusCode ?? 500)
+        .send({ message: error.message })
+    );
+    const todo = {
+      id: itemId,
+      projectId,
+      kind: "todo",
+      title: "Ship brief",
+      goal: "Explain the release",
+      version: 1,
+      status: "todo",
+      executionId: null
+    };
+    const doing = {
+      ...todo,
+      version: 2,
+      status: "doing",
+      executionId,
+      assigneeAgentId: agentId,
+      dispatchKey: `${itemId}:1`
+    };
+    const getForRealtime = vi
+      .fn()
+      .mockResolvedValueOnce(todo)
+      .mockResolvedValue(doing);
+    const createManagedConversation = vi.fn(async () => ({
+      execution: { id: executionId, executionGeneration: 1 },
+      command: { id: randomUUID(), state: "blocked" }
+    }));
+    const upsertManagedConversationRuntimeBinding = vi.fn(
+      async () => undefined
+    );
+    registerManagedConversationRoutes(
+      app,
+      {
+        config: { deploymentProfile: "local_personal", koedHome: home },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticateSessionOrDeviceCredential: vi.fn() },
+        deploymentIdentity: {
+          inspect: () => ({
+            health: "healthy",
+            deploymentId,
+            deviceInstanceId: deviceId
+          })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined,
+          managedConversationRead: async () => undefined,
+          managedConversationWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: join(home, "upstreams.json"),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          listAiClientInstances: async () => [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              displayName: "Codex",
+              enabled: true,
+              configIdentityHash: "f".repeat(64)
+            }
+          ],
+          listCurrentAiClientCapabilitySnapshots: async () => [
+            {
+              instanceId: "codex.default",
+              installationIdentityHash: "f".repeat(64),
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              capabilities: {
+                descriptors: {
+                  managed_conversation_start: {
+                    support: "supported",
+                    readiness: "ready"
+                  }
+                }
+              },
+              models: [
+                {
+                  id: "gpt-test",
+                  provenance: "reported",
+                  supportedReasoningEfforts: ["low"]
+                }
+              ]
+            }
+          ],
+          createManagedConversation,
+          upsertManagedConversationRuntimeBinding
+        })
+      } as unknown as ApiRouteContext,
+      {
+        list: async () => [
+          {
+            id: agentId,
+            name: "Quinn",
+            role: "Builder",
+            aiClientInstanceId: "codex.default",
+            defaultModel: "gpt-test",
+            defaultPermissionMode: "supervised"
+          }
+        ]
+      } as never,
+      {
+        getForRealtime,
+        briefSources: async () => [
+          {
+            id: randomUUID(),
+            kind: "repo",
+            name: "Project repo",
+            uri: "https://github.com/acme/repo",
+            currentRevisionId: null
+          }
+        ]
+      } as never
+    );
+    try {
+      const credential = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_write", "managed_execution"]
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/work-items/${itemId}/dispatch`,
+        headers: { authorization: credential.authorization },
+        payload: { agentId, version: 1 }
+      });
+      expect(response.statusCode, response.body).toBe(202);
+      expect(response.json()).toMatchObject({
+        item: doing,
+        executionId,
+        reused: false
+      });
+      expect(createManagedConversation).toHaveBeenCalledWith(
+        { userId: owner },
+        expect.objectContaining({
+          projectId,
+          contextKind: "project",
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          workItemDispatch: expect.objectContaining({
+            itemId,
+            agentId,
+            version: 1,
+            sources: [expect.objectContaining({ currentRevisionId: null })]
+          }),
+          initialPrompt: expect.stringContaining("Explain the release")
+        })
+      );
+      expect(upsertManagedConversationRuntimeBinding).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+  it("reuses a dispatched Work Item through the scoped Desktop HTTP route", async () => {
+    const owner = randomUUID();
+    const projectId = randomUUID();
+    const itemId = randomUUID();
+    const agentId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const home = mkdtempSync(join(tmpdir(), "koed-work-dispatch-http-"));
+    homes.push(home);
+    const app = Fastify();
+    app.setErrorHandler((error, _request, reply) =>
+      reply
+        .code((error as Error & { statusCode?: number }).statusCode ?? 500)
+        .send({ message: error.message })
+    );
+    const item = {
+      id: itemId,
+      projectId,
+      version: 2,
+      status: "doing",
+      executionId,
+      assigneeAgentId: agentId,
+      dispatchKey: `${itemId}:1`
+    };
+    const getForRealtime = vi.fn(async () => item);
+    registerManagedConversationRoutes(
+      app,
+      {
+        config: { deploymentProfile: "local_personal", koedHome: home },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticateSessionOrDeviceCredential: vi.fn() },
+        deploymentIdentity: {
+          inspect: () => ({
+            health: "healthy",
+            deploymentId,
+            deviceInstanceId: deviceId
+          })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined,
+          managedConversationRead: async () => undefined,
+          managedConversationWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: join(home, "upstreams.json"),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          getManagedConversationExecution: async () => ({
+            id: executionId,
+            projectId,
+            runnerDeploymentId: deploymentId,
+            runnerDeviceId: deviceId,
+            executionGeneration: 1
+          }),
+          getManagedConversationRuntimeBinding: async () => ({
+            deploymentId,
+            deviceId,
+            executionGeneration: 1
+          })
+        })
+      } as unknown as ApiRouteContext,
+      { list: async () => [] } as never,
+      { getForRealtime } as never
+    );
+    try {
+      const insufficient = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const denied = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/work-items/${itemId}/dispatch`,
+        headers: { authorization: insufficient.authorization },
+        payload: { agentId, version: 2 }
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(getForRealtime).not.toHaveBeenCalled();
+      deleteDesktopLocalCredential(home);
+      const credential = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_write", "managed_execution"]
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/work-items/${itemId}/dispatch`,
+        headers: { authorization: credential.authorization },
+        payload: { agentId, version: 2 }
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        item,
+        executionId,
+        reused: true
+      });
+      expect(getForRealtime).toHaveBeenCalledWith(owner, itemId);
+    } finally {
+      await app.close();
+    }
+  });
   it("rejects forged HQ payload fields and a missing Chief before runtime or database creation", async () => {
     const owner = randomUUID();
     const projectId = randomUUID();

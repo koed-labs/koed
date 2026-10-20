@@ -6,7 +6,11 @@ import type {
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
 } from "@koed/db";
-import type { AgentsRepository } from "@koed/db";
+import type {
+  AgentsRepository,
+  WorkItemRepository,
+  ProjectSourceRepository
+} from "@koed/db";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import { z } from "zod";
 import {
@@ -829,7 +833,9 @@ const assertLocalSettingsSelection = async (
 export const registerManagedConversationRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext,
-  hqAgents?: AgentsRepository | null
+  hqAgents?: AgentsRepository | null,
+  workItems?: WorkItemRepository | null,
+  projectSources?: ProjectSourceRepository | null
 ): void => {
   // Managed Conversations are interactive. Keep their capacity independent
   // from background Capture Hook and historical-import memory traffic.
@@ -2044,6 +2050,337 @@ export const registerManagedConversationRoutes = (
           state: created.command.state
         }
       });
+    }
+  );
+
+  app.post(
+    "/v1/projects/:id/work-items/:itemId/dispatch",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      if (
+        !localExecutionProfiles.has(context.config.deploymentProfile) ||
+        !hqAgents ||
+        !workItems
+      )
+        throw Object.assign(
+          new Error("Work Item dispatch requires a local profile"),
+          { statusCode: 503 }
+        );
+      const user = await authenticateHqManagedWrite(request, context);
+      // This transaction binds the Work Item to a local managed command. A
+      // remote authority worker would claim a different command store.
+      if (remoteAuthority())
+        throw Object.assign(
+          new Error(
+            "Work Item dispatch is unavailable while remote Managed Conversations are active"
+          ),
+          { statusCode: 503 }
+        );
+      const params = z
+        .object({ id: z.uuid(), itemId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const body = z
+        .object({
+          agentId: z.uuid(),
+          version: z.number().int().positive(),
+          replace: z.boolean().optional()
+        })
+        .strict()
+        .parse(request.body);
+      const item = await workItems.getForRealtime(user.id, params.itemId);
+      if (!item || item.projectId !== params.id)
+        throw Object.assign(new Error("Work Item is unavailable"), {
+          statusCode: 404
+        });
+      const reconcileBinding = async (executionId: string) => {
+        const repository = context.requireRepository();
+        const runner = await runnerIdentity(request);
+        const execution = await repository.getManagedConversationExecution(
+          { userId: user.id },
+          executionId
+        );
+        if (
+          !execution ||
+          execution.projectId !== params.id ||
+          execution.runnerDeploymentId !== runner.deploymentId ||
+          execution.runnerDeviceId !== runner.deviceId
+        )
+          throw Object.assign(
+            new Error("Work Item execution belongs to another runtime"),
+            { statusCode: 409 }
+          );
+        const currentBinding =
+          await repository.getManagedConversationRuntimeBinding(
+            { userId: user.id },
+            executionId
+          );
+        if (currentBinding) {
+          if (
+            currentBinding.deploymentId !== runner.deploymentId ||
+            currentBinding.deviceId !== runner.deviceId ||
+            currentBinding.executionGeneration !== execution.executionGeneration
+          )
+            throw Object.assign(
+              new Error("Work Item runtime binding changed"),
+              { statusCode: 409 }
+            );
+          return;
+        }
+        const projectPath = await localProjectExecutionPath(
+          context.config.koedHome,
+          params.id
+        );
+        if (!projectPath)
+          throw Object.assign(
+            new Error("Project has no verified local execution path"),
+            { statusCode: 409 }
+          );
+        await repository.upsertManagedConversationRuntimeBinding(
+          { userId: user.id },
+          {
+            executionId,
+            deploymentId: runner.deploymentId,
+            deviceId: runner.deviceId,
+            executionGeneration: execution.executionGeneration,
+            projectPath
+          }
+        );
+      };
+      if (
+        item.executionId &&
+        (item.status === "doing" || item.status === "review")
+      ) {
+        if (
+          body.version !== item.version &&
+          item.dispatchKey !== `${item.id}:${body.version}`
+        )
+          throw Object.assign(new Error("Work Item version changed"), {
+            statusCode: 409
+          });
+        if (item.assigneeAgentId !== body.agentId) {
+          if (!body.replace || item.version !== body.version)
+            throw Object.assign(
+              new Error("Explicit Send to someone else is required"),
+              { statusCode: 409 }
+            );
+          const current = await context
+            .requireRepository()
+            .getManagedConversationExecution(
+              { userId: user.id },
+              item.executionId
+            );
+          if (!current || current.projectId !== params.id)
+            throw Object.assign(
+              new Error("Previous Agent execution needs reconciliation"),
+              { statusCode: 409 }
+            );
+          if (!["stopped", "failed", "fenced"].includes(current.state)) {
+            await context.requireRepository().enqueueManagedConversationControl(
+              { userId: user.id },
+              {
+                executionId: current.id,
+                executionGeneration: current.executionGeneration,
+                idempotencyKey: `work-item-stop:${item.id}:${item.version}`,
+                commandKind: "stop"
+              }
+            );
+            return reply
+              .status(202)
+              .send({
+                item,
+                executionId: current.id,
+                reused: true,
+                stopPending: true
+              });
+          }
+          throw Object.assign(
+            new Error("Refresh the Work Item after the previous Agent stops"),
+            { statusCode: 409 }
+          );
+        }
+        await reconcileBinding(item.executionId);
+        return { item, executionId: item.executionId, reused: true };
+      }
+      if (
+        item.status === "blocked" &&
+        item.executionId &&
+        item.assigneeAgentId === body.agentId
+      ) {
+        const retried = await context
+          .requireRepository()
+          .retryWorkItemConversation(
+            { userId: user.id },
+            {
+              projectId: params.id,
+              itemId: item.id,
+              agentId: body.agentId,
+              expectedVersion: body.version
+            }
+          );
+        await reconcileBinding(retried.execution.id);
+        const updated = await workItems.getForRealtime(user.id, item.id);
+        if (!updated || updated.executionId !== retried.execution.id)
+          throw Object.assign(
+            new Error("Work Item Retry needs reconciliation"),
+            { statusCode: 409 }
+          );
+        return reply
+          .status(202)
+          .send({
+            item: updated,
+            executionId: retried.execution.id,
+            reused: true
+          });
+      }
+      if (
+        !["todo", "blocked"].includes(item.status) ||
+        item.version !== body.version
+      )
+        throw Object.assign(new Error("Work Item version changed"), {
+          statusCode: 409
+        });
+      const agent = (await hqAgents.list(user.id)).find(
+        (candidate) => candidate.id === body.agentId
+      );
+      if (!agent)
+        throw Object.assign(new Error("Agent is unavailable"), {
+          statusCode: 404
+        });
+      const repository = context.requireRepository();
+      const runner = await runnerIdentity(request);
+      const instance = (await launchInstances(repository, user.id)).find(
+        (candidate) => candidate.instanceId === agent.aiClientInstanceId
+      );
+      if (!instance || !isSupportedAiClientDriverId(instance.driverId))
+        throw Object.assign(new Error("Agent AI Client is unavailable"), {
+          statusCode: 409
+        });
+      const model = agent.defaultModel
+        ? instance.models.find(
+            (candidate) => modelId(candidate) === agent.defaultModel
+          )
+        : instance.models[0];
+      const selectedModel = model ? modelId(model) : null;
+      if (!selectedModel)
+        throw Object.assign(new Error("Agent model is unavailable"), {
+          statusCode: 409
+        });
+      const selection = {
+        projectId: params.id,
+        contextKind: "project" as const,
+        provider: instance.driverId,
+        aiClientInstanceId: agent.aiClientInstanceId,
+        model: selectedModel,
+        reasoningEffort: null,
+        permissionMode: agent.defaultPermissionMode,
+        runnerKind: "local_device" as const,
+        idempotencyKey: `work-item:${item.id}:${item.version}`
+      };
+      await assertLocalLaunchSelection(repository, user.id, selection);
+      const projectPath = await localProjectExecutionPath(
+        context.config.koedHome,
+        params.id
+      );
+      if (!projectPath)
+        throw Object.assign(
+          new Error("Project has no verified local execution path"),
+          { statusCode: 409 }
+        );
+      const sources = await workItems.briefSources(user.id, params.id);
+      const documents = projectSources
+        ? await Promise.all(
+            sources
+              .filter((source) => source.kind === "doc")
+              .slice(0, 3)
+              .map(async (source) => {
+                try {
+                  const read = await projectSources.readDocument(
+                    user.id,
+                    params.id,
+                    source.id
+                  );
+                  return {
+                    sourceId: source.id,
+                    revisionId: read.noteRevisionId,
+                    name: read.name.slice(0, 200),
+                    excerpt: read.text.slice(0, 4_000)
+                  };
+                } catch {
+                  return null;
+                }
+              })
+          )
+        : [];
+      if (
+        documents.some(
+          (document) =>
+            document &&
+            sources.find((source) => source.id === document.sourceId)
+              ?.currentRevisionId !== document.revisionId
+        )
+      )
+        throw Object.assign(new Error("Project Source revision changed"), {
+          statusCode: 409
+        });
+      const brief = [
+        `Work on ${item.kind === "ticket" && item.key ? item.key : "this to-do"}: ${item.title}`,
+        `Goal: ${item.goal || item.title}`,
+        `Project Source references (metadata only; inspect exact content through authorized Project Source tools when needed): ${JSON.stringify(
+          sources.map((source) => ({
+            id: source.id,
+            kind: source.kind,
+            name: source.name.slice(0, 200),
+            uri: source.uri?.slice(0, 500) ?? null
+          }))
+        )}`,
+        `Bounded readable Project Source excerpts: ${JSON.stringify(documents.filter(Boolean))}`,
+        `Call memory_answer with search_domain=project and a question about this Work Item's goal to find related Personal Memory. Treat returned citations as evidence, and do not use Team chat messages as input.`,
+        "Report meaningful progress in this Conversation. If no pull request is needed, call work_item_complete when the goal is met."
+      ].join("\n\n");
+      const started = await repository.createManagedConversation(
+        { userId: user.id },
+        {
+          ...selection,
+          initialPrompt: brief,
+          runnerDeploymentId: runner.deploymentId,
+          runnerDeviceId: runner.deviceId,
+          deferUntilRuntimeBinding: true,
+          workItemDispatch: {
+            itemId: item.id,
+            agentId: agent.id,
+            version: item.version,
+            sources: sources.map((source) => ({
+              id: source.id,
+              currentRevisionId: source.currentRevisionId
+            }))
+          }
+        }
+      );
+      await repository.upsertManagedConversationRuntimeBinding(
+        { userId: user.id },
+        {
+          executionId: started.execution.id,
+          deploymentId: runner.deploymentId,
+          deviceId: runner.deviceId,
+          executionGeneration: started.execution.executionGeneration,
+          projectPath
+        }
+      );
+      const updated = await workItems.getForRealtime(user.id, item.id);
+      if (!updated || updated.executionId !== started.execution.id)
+        throw Object.assign(
+          new Error("Work Item dispatch needs reconciliation"),
+          { statusCode: 409 }
+        );
+      return reply
+        .status(202)
+        .send({
+          item: updated,
+          executionId: started.execution.id,
+          reused: false
+        });
     }
   );
 

@@ -85,7 +85,8 @@ export const createProjectsClient = (
     if (
       request.operation === "workItemList" ||
       request.operation === "workItemCreate" ||
-      request.operation === "workItemPatch"
+      request.operation === "workItemPatch" ||
+      request.operation === "workItemDispatch"
     )
       return createProjectWorkItemClient(send, json)(request);
     if (request.operation === "create") {

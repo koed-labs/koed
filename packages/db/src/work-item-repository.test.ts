@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runDbMigrations } from "./migrate.js";
@@ -15,6 +16,9 @@ import {
 } from "./work-item-repository.js";
 import type { TrustedWorkItemEvidence } from "./work-item-repository.js";
 import type { CreateWorkItem } from "@koed/shared";
+import { createAgentsRepository } from "./agents-repository.js";
+import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+import { createMemorySourceRepository } from "./repository.js";
 
 const testUrl =
   process.env.KOED_WORK_ITEM_TEST_DATABASE_URL ??
@@ -85,6 +89,7 @@ describe.skipIf(!testUrl)("Work Item repository", () => {
   const owner = randomUUID();
   const other = randomUUID();
   let project: string;
+  let dispatchAgentId: string;
   const body: CreateWorkItem = {
     kind: "todo",
     title: "Call Alex",
@@ -132,6 +137,21 @@ describe.skipIf(!testUrl)("Work Item repository", () => {
       [owner]
     );
     project = created.rows[0]!.id;
+    await pool.query(
+      `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name,enabled)
+       values($1,'codex.dispatch','codex','Dispatch',true)`,
+      [owner]
+    );
+    dispatchAgentId = (
+      await createAgentsRepository(pool).create(owner, {
+        name: "Quinn",
+        role: "Builder",
+        look: {},
+        aiClientInstanceId: "codex.dispatch",
+        defaultPermissionMode: "supervised",
+        defaultModel: null
+      })
+    ).id;
   }, 120_000);
   afterAll(async () => {
     try {
@@ -170,6 +190,714 @@ describe.skipIf(!testUrl)("Work Item repository", () => {
       [itemId, owner, version, payload.event, JSON.stringify(payload)]
     );
   };
+  it("atomically dispatches once under concurrent Send and rejects unleased completion", async () => {
+    const item = await repository.create(owner, project, {
+      ...body,
+      title: "Ship dispatch",
+      idempotencyKey: `dispatch-${randomUUID()}`
+    });
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    const launch = {
+      projectId: project,
+      contextKind: "project" as const,
+      provider: "codex",
+      aiClientInstanceId: "codex.dispatch",
+      model: "gpt-test",
+      permissionMode: "supervised" as const,
+      runnerKind: "local_device" as const,
+      runnerDeploymentId: randomUUID(),
+      runnerDeviceId: randomUUID(),
+      idempotencyKey: `work-item:${item.id}:${item.version}`,
+      initialPrompt: "Complete this work item",
+      deferUntilRuntimeBinding: true,
+      workItemDispatch: {
+        itemId: item.id,
+        agentId: dispatchAgentId,
+        version: item.version
+      }
+    };
+    const [a, b] = await Promise.all([
+      managed.createManagedConversation({ userId: owner }, launch),
+      managed.createManagedConversation({ userId: owner }, launch)
+    ]);
+    expect(a.execution.id).toBe(b.execution.id);
+    const sent = await repository.getForRealtime(owner, item.id);
+    expect(sent).toMatchObject({
+      status: "doing",
+      executionId: a.execution.id,
+      dispatchKey: `${item.id}:${item.version}`,
+      assigneeAgentId: dispatchAgentId
+    });
+    const count = await pool.query<{ count: number }>(
+      `select count(*)::integer as count from managed_conversation_executions
+       where owner_user_id=$1 and project_id=$2`,
+      [owner, project]
+    );
+    expect(count.rows[0]?.count).toBe(1);
+    await expect(
+      managed.createManagedConversation({ userId: other }, launch)
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repository.completeFromManagedCommandLease({
+        ownerUserId: owner,
+        itemId: item.id,
+        expectedVersion: sent!.version,
+        commandId: a.command.id,
+        leaseToken: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    expect((await repository.getForRealtime(owner, item.id))?.status).toBe(
+      "doing"
+    );
+    const lease = randomUUID();
+    await pool.query(
+      `update managed_conversation_commands set state='dispatching',lease_token=$2,
+         lease_expires_at=now()+interval '1 minute',blocked_on_kind=null,blocked_on_id=null
+       where id=$1`,
+      [a.command.id, lease]
+    );
+    const facade = createMemorySourceRepository(pool);
+    const completed = await facade.completeForManagedExecutionLease({
+      ownerUserId: owner,
+      executionId: a.execution.id,
+      commandId: a.command.id,
+      leaseToken: lease
+    });
+    expect(completed.status).toBe("done");
+    await expect(
+      repository.completeForManagedExecutionLease({
+        ownerUserId: owner,
+        executionId: a.execution.id,
+        commandId: a.command.id,
+        leaseToken: lease
+      })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    const reassigned = await repository.create(owner, project, {
+      ...body,
+      title: "Reassign after failure",
+      idempotencyKey: `reassign-${randomUUID()}`
+    });
+    const first = await managed.createManagedConversation(
+      { userId: owner },
+      {
+        ...launch,
+        idempotencyKey: `work-item:${reassigned.id}:1`,
+        workItemDispatch: {
+          itemId: reassigned.id,
+          agentId: dispatchAgentId,
+          version: 1
+        }
+      }
+    );
+    await managed.upsertManagedConversationRuntimeBinding(
+      { userId: owner },
+      {
+        executionId: first.execution.id,
+        deploymentId: launch.runnerDeploymentId,
+        deviceId: launch.runnerDeviceId,
+        executionGeneration: first.execution.executionGeneration,
+        projectPath: "/tmp/hq404-retry-fixture"
+      }
+    );
+    const nextAgent = await createAgentsRepository(pool).create(owner, {
+      name: "Rook",
+      role: "Reviewer",
+      look: {},
+      aiClientInstanceId: "codex.dispatch",
+      defaultPermissionMode: "supervised",
+      defaultModel: null
+    });
+    await expect(
+      managed.createManagedConversation(
+        { userId: owner },
+        {
+          ...launch,
+          idempotencyKey: `work-item:${reassigned.id}:2`,
+          workItemDispatch: {
+            itemId: reassigned.id,
+            agentId: nextAgent.id,
+            version: 2
+          }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await pool.query(
+      `update managed_conversation_executions set state='failed' where id=$1`,
+      [first.execution.id]
+    );
+    const blocked = (await repository.list(owner, project)).items.find(
+      (row) => row.id === reassigned.id
+    );
+    expect(blocked?.status).toBe("blocked");
+    await pool.query(
+      `update ai_client_instances set enabled=false where owner_user_id=$1 and instance_id='codex.dispatch'`,
+      [owner]
+    );
+    await expect(
+      managed.retryWorkItemConversation(
+        { userId: owner },
+        {
+          projectId: project,
+          itemId: reassigned.id,
+          agentId: dispatchAgentId,
+          expectedVersion: blocked!.version
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await pool.query(
+      `update ai_client_instances set enabled=true where owner_user_id=$1 and instance_id='codex.dispatch'`,
+      [owner]
+    );
+    const retry = await managed.retryWorkItemConversation(
+      { userId: owner },
+      {
+        projectId: project,
+        itemId: reassigned.id,
+        agentId: dispatchAgentId,
+        expectedVersion: blocked!.version
+      }
+    );
+    expect(retry.execution.id).toBe(first.execution.id);
+    expect(retry.execution.executionGeneration).toBe(
+      first.execution.executionGeneration + 1
+    );
+    expect(retry.command.commandKind).toBe("start");
+    expect(
+      (await repository.getForRealtime(owner, reassigned.id))?.status
+    ).toBe("doing");
+    const claimedRetry = await managed.claimManagedConversationCommands({
+      ownerUserId: owner,
+      runnerId: randomUUID(),
+      deploymentId: launch.runnerDeploymentId,
+      deviceId: launch.runnerDeviceId,
+      limit: 8,
+      leaseMs: 60_000
+    });
+    const resumed = claimedRetry.find(
+      (command) => command.id === retry.command.id
+    );
+    expect(resumed).toMatchObject({
+      commandKind: "start",
+      executionGeneration: retry.execution.executionGeneration,
+      execution: {
+        id: first.execution.id,
+        executionGeneration: retry.execution.executionGeneration
+      }
+    });
+    expect(
+      await managed.completeManagedConversationCommand({
+        commandId: resumed!.id,
+        leaseToken: resumed!.leaseToken!,
+        result: { providerTurnId: "fake-provider-retry-turn" }
+      })
+    ).toBe(true);
+    const staleLease = randomUUID();
+    await pool.query(
+      `update managed_conversation_commands set state='dispatching',lease_token=$2,
+         lease_expires_at=now()+interval '1 minute',blocked_on_kind=null,blocked_on_id=null
+       where id=$1`,
+      [first.command.id, staleLease]
+    );
+    await expect(
+      repository.completeForManagedExecutionLease({
+        ownerUserId: owner,
+        executionId: first.execution.id,
+        commandId: first.command.id,
+        leaseToken: staleLease
+      })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    await pool.query(
+      `update managed_conversation_executions set state='failed' where id=$1`,
+      [first.execution.id]
+    );
+    const reblocked = (await repository.list(owner, project)).items.find(
+      (row) => row.id === reassigned.id
+    );
+    const second = await managed.createManagedConversation(
+      { userId: owner },
+      {
+        ...launch,
+        idempotencyKey: `work-item:${reassigned.id}:${reblocked!.version}`,
+        workItemDispatch: {
+          itemId: reassigned.id,
+          agentId: nextAgent.id,
+          version: reblocked!.version
+        }
+      }
+    );
+    expect(second.execution.id).not.toBe(first.execution.id);
+    expect(
+      (await repository.getForRealtime(owner, reassigned.id))?.assigneeAgentId
+    ).toBe(nextAgent.id);
+    await managed.upsertManagedConversationRuntimeBinding(
+      { userId: owner },
+      {
+        executionId: second.execution.id,
+        deploymentId: launch.runnerDeploymentId,
+        deviceId: launch.runnerDeviceId,
+        executionGeneration: second.execution.executionGeneration,
+        projectPath: "/tmp/hq404-retry-fixture"
+      }
+    );
+    const logicalSessionId = randomUUID();
+    await pool.query(
+      `update managed_conversation_executions set logical_session_id=$2,
+         provider_thread_id='provider-thread-404',state='failed' where id=$1`,
+      [second.execution.id, logicalSessionId]
+    );
+    const blockedWithSession = (
+      await repository.list(owner, project)
+    ).items.find((row) => row.id === reassigned.id);
+    const continued = await managed.retryWorkItemConversation(
+      { userId: owner },
+      {
+        projectId: project,
+        itemId: reassigned.id,
+        agentId: nextAgent.id,
+        expectedVersion: blockedWithSession!.version
+      }
+    );
+    expect(continued.execution.id).toBe(second.execution.id);
+    expect(continued.execution.logicalSessionId).toBe(logicalSessionId);
+    expect(continued.command.commandKind).toBe("prompt");
+  });
+  it("keeps a running Agent linked when a completed item is unticked or a blocked item returns to To do", async () => {
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    for (const nextAction of ["untick", "back_to_todo"] as const) {
+      const item = await repository.create(owner, project, {
+        ...body,
+        title: `Keep running ${nextAction}`,
+        idempotencyKey: `running-${nextAction}-${randomUUID()}`
+      });
+      const launch = {
+        projectId: project,
+        contextKind: "project" as const,
+        provider: "codex",
+        aiClientInstanceId: "codex.dispatch",
+        model: "gpt-test",
+        permissionMode: "supervised" as const,
+        runnerKind: "local_device" as const,
+        runnerDeploymentId: randomUUID(),
+        runnerDeviceId: randomUUID(),
+        idempotencyKey: `work-item:${item.id}:${item.version}`,
+        initialPrompt: "Complete this work item",
+        deferUntilRuntimeBinding: true,
+        workItemDispatch: {
+          itemId: item.id,
+          agentId: dispatchAgentId,
+          version: item.version
+        }
+      };
+      const sent = await managed.createManagedConversation(
+        { userId: owner },
+        launch
+      );
+      const running = await repository.getForRealtime(owner, item.id);
+      const moved =
+        nextAction === "untick"
+          ? await repository.patch(owner, item.id, {
+              version: running!.version,
+              action: "mark_done"
+            })
+          : (await pool.query(
+              `update project_work_items set status='blocked', version=version+1 where id=$1 returning version`,
+              [item.id]
+            ),
+            await repository.getForRealtime(owner, item.id))!;
+      await expect(
+        repository.patch(owner, item.id, {
+          version: moved.version,
+          action: nextAction
+        })
+      ).rejects.toBeInstanceOf(WorkItemTransitionError);
+      const preserved = await repository.getForRealtime(owner, item.id);
+      expect(preserved?.executionId).toBe(sent.execution.id);
+      expect(preserved?.assigneeAgentId).toBe(dispatchAgentId);
+      await expect(
+        managed.createManagedConversation(
+          { userId: owner },
+          {
+            ...launch,
+            idempotencyKey: `work-item:${item.id}:${preserved!.version}`,
+            workItemDispatch: {
+              itemId: item.id,
+              agentId: dispatchAgentId,
+              version: preserved!.version
+            }
+          }
+        )
+      ).rejects.toMatchObject({ statusCode: 409 });
+      await pool.query(
+        `update managed_conversation_executions set state='failed' where id=$1`,
+        [sent.execution.id]
+      );
+      const detached = await repository.patch(owner, item.id, {
+        version: preserved!.version,
+        action: nextAction
+      });
+      expect(detached.status).toBe("todo");
+      expect(detached.executionId).toBeNull();
+    }
+  });
+  it("links a verified review request to only the current dispatch and replays idempotently", async () => {
+    const item = await repository.create(owner, project, {
+      ...body,
+      title: "Open review",
+      idempotencyKey: `review-${randomUUID()}`
+    });
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    const launch = await managed.createManagedConversation(
+      { userId: owner },
+      {
+        projectId: project,
+        contextKind: "project",
+        provider: "codex",
+        aiClientInstanceId: "codex.dispatch",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        runnerDeploymentId: randomUUID(),
+        runnerDeviceId: randomUUID(),
+        idempotencyKey: `work-item:${item.id}:1`,
+        initialPrompt: "Open a review",
+        deferUntilRuntimeBinding: true,
+        workItemDispatch: {
+          itemId: item.id,
+          agentId: dispatchAgentId,
+          version: 1
+        }
+      }
+    );
+    const proof = {
+      ownerUserId: owner,
+      executionId: launch.execution.id,
+      executionGeneration: launch.execution.executionGeneration,
+      provider: "github.com",
+      number: 42,
+      url: "https://github.com/acme/repo/pull/42"
+    };
+    expect(await repository.hasActiveManagedWorkItem(proof)).toBe(true);
+    await expect(
+      repository.linkReviewRequestFromSourceControl({
+        ...proof,
+        executionGeneration: 9
+      })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    expect(
+      await repository.linkReviewRequestFromSourceControl({
+        ...proof,
+        ownerUserId: other
+      })
+    ).toBeNull();
+    const linked = await repository.linkReviewRequestFromSourceControl(proof);
+    expect(linked).toMatchObject({
+      status: "review",
+      prProvider: "github.com",
+      prNumber: 42,
+      prUrl: proof.url,
+      prState: "open"
+    });
+    expect(await repository.linkReviewRequestFromSourceControl(proof)).toEqual(
+      linked
+    );
+    await expect(
+      repository.linkReviewRequestFromSourceControl({ ...proof, number: 43 })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    await expect(
+      repository.completeForManagedExecutionLease({
+        ownerUserId: owner,
+        executionId: launch.execution.id,
+        commandId: launch.command.id,
+        leaseToken: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(WorkItemTransitionError);
+    expect(await repository.hasActiveManagedWorkItem(proof)).toBe(false);
+  });
+  it("ignores a provider review request from an ordinary technical Managed Conversation", async () => {
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    const regular = await managed.createManagedConversation(
+      { userId: owner },
+      {
+        projectId: "technical/local-project",
+        contextKind: "project",
+        provider: "codex",
+        aiClientInstanceId: "codex.dispatch",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        runnerDeploymentId: randomUUID(),
+        runnerDeviceId: randomUUID(),
+        idempotencyKey: `ordinary-review-${randomUUID()}`,
+        initialPrompt: "Open an ordinary PR",
+        deferUntilRuntimeBinding: true
+      }
+    );
+    expect(
+      await repository.linkReviewRequestFromSourceControl({
+        ownerUserId: owner,
+        executionId: regular.execution.id,
+        executionGeneration: regular.execution.executionGeneration,
+        provider: "github.com",
+        number: 11,
+        url: "https://github.com/acme/repo/pull/11"
+      })
+    ).toBeNull();
+  });
+  it.each(["execution fence", "command revocation"])(
+    "rejects completion when a concurrent %s wins the runtime lock",
+    async (failure) => {
+      const item = await repository.create(owner, project, {
+        ...body,
+        title: `Lease race ${failure}`,
+        idempotencyKey: `lease-race-${randomUUID()}`
+      });
+      const managed = createManagedConversationRepository(pool, {
+        envelopeEncryptionProvider:
+          createLocalTestKeyEnvelopeEncryptionProvider(
+            randomBytes(32).toString("base64url")
+          )
+      });
+      const launch = await managed.createManagedConversation(
+        { userId: owner },
+        {
+          projectId: project,
+          contextKind: "project",
+          provider: "codex",
+          aiClientInstanceId: "codex.dispatch",
+          model: "gpt-test",
+          permissionMode: "supervised",
+          runnerKind: "local_device",
+          runnerDeploymentId: randomUUID(),
+          runnerDeviceId: randomUUID(),
+          idempotencyKey: `work-item:${item.id}:1`,
+          initialPrompt: "Complete this",
+          deferUntilRuntimeBinding: true,
+          workItemDispatch: {
+            itemId: item.id,
+            agentId: dispatchAgentId,
+            version: 1
+          }
+        }
+      );
+      const lease = randomUUID();
+      await pool.query(
+        `update managed_conversation_commands set state='dispatching',lease_token=$2,
+           lease_expires_at=now()+interval '1 minute',blocked_on_kind=null,blocked_on_id=null
+         where id=$1`,
+        [launch.command.id, lease]
+      );
+      const lock = await pool.connect();
+      try {
+        await lock.query("begin");
+        if (failure === "execution fence")
+          await lock.query(
+            `select 1 from managed_conversation_executions where id=$1 for update`,
+            [launch.execution.id]
+          );
+        else
+          await lock.query(
+            `select 1 from managed_conversation_commands where id=$1 for update`,
+            [launch.command.id]
+          );
+        const pending = createMemorySourceRepository(
+          pool
+        ).completeForManagedExecutionLease({
+          ownerUserId: owner,
+          executionId: launch.execution.id,
+          commandId: launch.command.id,
+          leaseToken: lease
+        });
+        const rejected = expect(pending).rejects.toBeInstanceOf(
+          WorkItemTransitionError
+        );
+        if (failure === "execution fence")
+          await lock.query(
+            `update managed_conversation_executions set state='failed' where id=$1`,
+            [launch.execution.id]
+          );
+        else
+          await lock.query(
+            `update managed_conversation_commands set state='failed',
+            lease_token=null,lease_expires_at=null where id=$1`,
+            [launch.command.id]
+          );
+        await lock.query("commit");
+        await rejected;
+        expect((await repository.getForRealtime(owner, item.id))?.status).toBe(
+          "doing"
+        );
+      } finally {
+        await lock.query("rollback").catch(() => undefined);
+        lock.release();
+      }
+    }
+  );
+  it("rejects a Source removed after brief read but before dispatch commit", async () => {
+    const source = await pool.query<{ id: string }>(
+      `insert into project_sources(owner_user_id,project_id,kind,name,uri,status,added_by)
+       values($1,$2,'repo','Koed repo','https://github.com/acme/repo','ready',$1) returning id`,
+      [owner, project]
+    );
+    const sources = await repository.briefSources(owner, project);
+    const selected = sources.find((row) => row.id === source.rows[0]!.id)!;
+    const item = await repository.create(owner, project, {
+      ...body,
+      title: "Use removed Source",
+      idempotencyKey: `source-race-${randomUUID()}`
+    });
+    await pool.query(
+      `update project_sources set remove_batch_id=$2 where id=$1`,
+      [selected.id, randomUUID()]
+    );
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    await expect(
+      managed.createManagedConversation(
+        { userId: owner },
+        {
+          projectId: project,
+          contextKind: "project",
+          provider: "codex",
+          aiClientInstanceId: "codex.dispatch",
+          model: "gpt-test",
+          permissionMode: "supervised",
+          runnerKind: "local_device",
+          runnerDeploymentId: randomUUID(),
+          runnerDeviceId: randomUUID(),
+          idempotencyKey: `work-item:${item.id}:1`,
+          initialPrompt: `Use ${selected.name}`,
+          deferUntilRuntimeBinding: true,
+          workItemDispatch: {
+            itemId: item.id,
+            agentId: dispatchAgentId,
+            version: 1,
+            sources: [
+              { id: selected.id, currentRevisionId: selected.currentRevisionId }
+            ]
+          }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect((await repository.getForRealtime(owner, item.id))?.status).toBe(
+      "todo"
+    );
+    const commands = await pool.query<{ count: number }>(
+      `select count(*)::integer as count from managed_conversation_commands
+       where idempotency_key=$1`,
+      [`work-item:${item.id}:1`]
+    );
+    expect(commands.rows[0]?.count).toBe(0);
+  });
+  it("does not replay removed Source excerpts when a start failed before session creation", async () => {
+    const source = await pool.query<{ id: string }>(
+      `insert into project_sources(owner_user_id,project_id,kind,name,uri,status,added_by)
+       values($1,$2,'repo','Retry repo','https://github.com/acme/retry','ready',$1) returning id`,
+      [owner, project]
+    );
+    const selected = (await repository.briefSources(owner, project)).find(
+      (row) => row.id === source.rows[0]!.id
+    )!;
+    const item = await repository.create(owner, project, {
+      ...body,
+      title: "Retry Source fence",
+      idempotencyKey: `retry-source-${randomUUID()}`
+    });
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const launched = await managed.createManagedConversation(
+      { userId: owner },
+      {
+        projectId: project,
+        contextKind: "project",
+        provider: "codex",
+        aiClientInstanceId: "codex.dispatch",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: `work-item:${item.id}:1`,
+        initialPrompt: `Use removed excerpt from ${selected.name}`,
+        deferUntilRuntimeBinding: true,
+        workItemDispatch: {
+          itemId: item.id,
+          agentId: dispatchAgentId,
+          version: 1,
+          sources: [
+            { id: selected.id, currentRevisionId: selected.currentRevisionId }
+          ]
+        }
+      }
+    );
+    await managed.upsertManagedConversationRuntimeBinding(
+      { userId: owner },
+      {
+        executionId: launched.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: launched.execution.executionGeneration,
+        projectPath: "/tmp/hq404-retry-source-fixture"
+      }
+    );
+    await pool.query(
+      `update managed_conversation_executions set state='failed' where id=$1`,
+      [launched.execution.id]
+    );
+    const blocked = (await repository.list(owner, project)).items.find(
+      (row) => row.id === item.id
+    )!;
+    expect(blocked.status).toBe("blocked");
+    await pool.query(
+      `update project_sources set remove_batch_id=$2 where id=$1`,
+      [selected.id, randomUUID()]
+    );
+    await expect(
+      managed.retryWorkItemConversation(
+        { userId: owner },
+        {
+          projectId: project,
+          itemId: item.id,
+          agentId: dispatchAgentId,
+          expectedVersion: blocked.version
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const after = await pool.query<{ execution_generation: number }>(
+      `select execution_generation from managed_conversation_executions where id=$1`,
+      [launched.execution.id]
+    );
+    expect(after.rows[0]?.execution_generation).toBe(1);
+    const commands = await pool.query<{ count: number }>(
+      `select count(*)::integer as count from managed_conversation_commands
+       where execution_id=$1`,
+      [launched.execution.id]
+    );
+    expect(commands.rows[0]?.count).toBe(1);
+  });
   it("creates, replays exact payload, rejects drift, scopes owners, and emits after commit", async () => {
     const item = await repository.create(owner, project, body);
     expect(item).toMatchObject({

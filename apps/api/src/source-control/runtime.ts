@@ -305,6 +305,14 @@ export const createSourceControlRuntime = (options: {
     ownerUserId: string,
     executionId: string
   ): Promise<ManagedTerminalExecutionAuthority>;
+  onReviewRequestCreated?: (input: {
+    ownerUserId: string;
+    executionId: string;
+    executionGeneration: number;
+    provider: string;
+    number: number;
+    url: string;
+  }) => Promise<void>;
 }): SourceControlRuntime => {
   const connectionsPath = resolve(
     options.koedHome,
@@ -980,7 +988,7 @@ export const createSourceControlRuntime = (options: {
         JSON.stringify([ownerUserId, operation.idempotencyKey])
       );
       const digest = sha256(JSON.stringify([ownerUserId, operation]));
-      return await journal(async () => {
+      const result = await journal(async () => {
         const operations = await readJournal();
         const existing = operations[journalKey];
         if (existing) {
@@ -1026,6 +1034,21 @@ export const createSourceControlRuntime = (options: {
         await writeJournal(operations);
         return result;
       });
+      if (
+        operation.kind === "review_request_create" &&
+        result.kind === "review_request_create" &&
+        result.reviewRequest
+      ) {
+        await options.onReviewRequestCreated?.({
+          ownerUserId,
+          executionId: operation.executionId,
+          executionGeneration: operation.executionGeneration,
+          provider: new URL(result.reviewRequest.webUrl).hostname,
+          number: result.reviewRequest.number,
+          url: result.reviewRequest.webUrl
+        });
+      }
+      return result;
     }
   };
 };

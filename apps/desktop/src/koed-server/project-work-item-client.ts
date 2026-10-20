@@ -7,7 +7,13 @@ import {
 
 type WorkItemRequest = Extract<
   ProjectsRequest,
-  { operation: "workItemList" | "workItemCreate" | "workItemPatch" }
+  {
+    operation:
+      | "workItemList"
+      | "workItemCreate"
+      | "workItemPatch"
+      | "workItemDispatch";
+  }
 >;
 const pageSchema = z
   .object({
@@ -80,6 +86,36 @@ export const createProjectWorkItemClient =
       return projectsResultSchema.parse({
         operation: "workItemCreate",
         value: item
+      });
+    }
+    if (request.operation === "workItemDispatch") {
+      const value = z
+        .object({
+          item: workItemSchema,
+          executionId: z.uuid(),
+          reused: z.boolean(),
+          stopPending: z.boolean().optional()
+        })
+        .strict()
+        .parse(
+          await send(
+            `/v1/projects/${encodeURIComponent(request.projectId)}/work-items/${encodeURIComponent(request.itemId)}/dispatch`,
+            json("POST", {
+              agentId: request.agentId,
+              version: request.version,
+              ...(request.replace ? { replace: true } : {})
+            })
+          )
+        );
+      if (
+        value.item.projectId !== request.projectId ||
+        value.item.id !== request.itemId ||
+        value.item.executionId !== value.executionId
+      )
+        throw new Error("Work Item dispatch identity mismatch.");
+      return projectsResultSchema.parse({
+        operation: "workItemDispatch",
+        value
       });
     }
     const item = workItemSchema.parse(

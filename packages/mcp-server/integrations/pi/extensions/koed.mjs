@@ -18,6 +18,7 @@ import {
 } from "../memory-answer-task-presentation.mjs";
 import { formatMemoryAnswerCompletion } from "../memory-answer-presentation.mjs";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
+import { workItemCompletionRequest } from "../work-item-completion-request.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
@@ -351,6 +352,18 @@ export default function koedExtension(pi) {
     "Propose curated Personal Memory backed by evidence.",
     intakeParameters
   );
+  if (process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1") {
+    pi.registerTool({
+      name: "work_item_complete",
+      label: "Complete Work Item",
+      description:
+        "Report that the current managed Work Item is complete without a pull request. Koed validates this request against the running Agent execution before changing its status. Call only after the goal is met.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return workItemCompletionRequest();
+      }
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();

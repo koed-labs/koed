@@ -1491,6 +1491,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     koedHome: config.koedHome,
     requireRepository,
     fetch: localEdgeFetch,
+    ...(workItemRepository
+      ? {
+          onReviewRequestCreated: async (review: {
+            ownerUserId: string;
+            executionId: string;
+            executionGeneration: number;
+            provider: string;
+            number: number;
+            url: string;
+          }) => {
+            await workItemRepository.linkReviewRequestFromSourceControl(review);
+          }
+        }
+      : {}),
     ...(options.sourceControlCredentialResolver
       ? { resolveCredential: options.sourceControlCredentialResolver }
       : {})
@@ -2120,7 +2134,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerConversationSourceReplicationRoutes(app, routeContext);
   registerConversationSourceRestoreRoutes(app, routeContext);
-  registerManagedConversationRoutes(app, routeContext, agentsRepository);
+  registerManagedConversationRoutes(
+    app,
+    routeContext,
+    agentsRepository,
+    workItemRepository,
+    projectSourceRepository
+  );
   registerSourceControlRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);

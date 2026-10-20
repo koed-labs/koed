@@ -163,6 +163,24 @@ const fixture = async (options?: {
         { status: 200 }
       );
     }
+    if (url.pathname.endsWith("/pulls") && init?.method === "POST") {
+      return new Response(
+        JSON.stringify({
+          id: 7,
+          node_id: "PR_7",
+          number: 7,
+          title: "Fixture review",
+          state: "open",
+          draft: false,
+          head: { ref: "feature", sha },
+          base: { ref: "main" },
+          user: { login: "author" },
+          html_url: "https://github.com/acme/repo/pull/7",
+          updated_at: "2026-08-19T00:00:00.000Z"
+        }),
+        { status: 201 }
+      );
+    }
     if (url.pathname.endsWith("/comments") && init?.method === "POST") {
       return new Response(
         JSON.stringify({
@@ -187,12 +205,14 @@ const fixture = async (options?: {
       });
     return execution;
   });
+  const onReviewRequestCreated = vi.fn(async () => undefined);
   const runtime = createSourceControlRuntime({
     assertExecutionAuthority,
     koedHome,
     requireRepository: () => repository,
     fetch: providerFetch,
-    resolveCredential: credentialResolver
+    resolveCredential: credentialResolver,
+    onReviewRequestCreated
   });
   return {
     assertExecutionAuthority,
@@ -201,6 +221,7 @@ const fixture = async (options?: {
     headObjectId,
     koedHome,
     providerFetch,
+    onReviewRequestCreated,
     repositoryPath,
     runtime
   };
@@ -479,6 +500,54 @@ describe("source-control runtime", () => {
     );
     expect(journal).not.toContain("fixture-secret");
     expect(journal).toContain('"state":"completed"');
+  });
+
+  it("observes only a real provider-created review request and reapplies its durable journal result", async () => {
+    const { runtime, providerFetch, onReviewRequestCreated, headObjectId } =
+      await fixture({
+        capabilities: [...defaultCapabilities, "review_request_create"]
+      });
+    const remotes = await runtime.execute(userId, {
+      contractVersion: 1,
+      executionId,
+      executionGeneration: 2,
+      kind: "remotes"
+    });
+    if (remotes.kind !== "remotes") throw new Error("Unexpected result");
+    const operation = {
+      contractVersion: 1 as const,
+      executionId,
+      executionGeneration: 2,
+      remoteIdentityHash: remotes.remotes[0]!.remoteIdentityHash,
+      kind: "review_request_create" as const,
+      title: "Fixture review",
+      body: "Ready",
+      sourceBranch: "feature",
+      targetBranch: "main",
+      draft: false,
+      expectedHeadObjectId: headObjectId,
+      credentialGeneration: 4,
+      idempotencyKey: "source-review:fixture-0001"
+    };
+    const first = await runtime.execute(userId, operation);
+    expect(first).toMatchObject({
+      kind: "review_request_create",
+      reviewRequest: {
+        number: 7,
+        webUrl: "https://github.com/acme/repo/pull/7"
+      }
+    });
+    expect(onReviewRequestCreated).toHaveBeenCalledWith({
+      ownerUserId: userId,
+      executionId,
+      executionGeneration: 2,
+      provider: "github.com",
+      number: 7,
+      url: "https://github.com/acme/repo/pull/7"
+    });
+    expect(await runtime.execute(userId, operation)).toEqual(first);
+    expect(onReviewRequestCreated).toHaveBeenCalledTimes(2);
+    expect(providerFetch).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed for stale execution, remote, credential, and idempotency state", async () => {

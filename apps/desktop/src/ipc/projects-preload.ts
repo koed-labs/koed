@@ -87,6 +87,24 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid Work Item patch identity.");
       return result.value;
     },
+    workItemDispatch: async (projectId, itemId, agentId, version, replace) => {
+      const result = await command({
+        operation: "workItemDispatch",
+        projectId,
+        itemId,
+        agentId,
+        version,
+        replace
+      });
+      if (
+        result.operation !== "workItemDispatch" ||
+        result.value.item.projectId !== projectId ||
+        result.value.item.id !== itemId ||
+        result.value.item.executionId !== result.value.executionId
+      )
+        throw new Error("Invalid Work Item dispatch identity.");
+      return result.value;
+    },
     sourceUpload: async (projectId) => {
       const result = await command({ operation: "sourceUpload", projectId });
       if (result.operation !== "sourceUpload")

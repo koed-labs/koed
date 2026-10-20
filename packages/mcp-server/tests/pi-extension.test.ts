@@ -3,6 +3,23 @@ import { describe, expect, it } from "vitest";
 import { resolveInstalledKoedHome } from "../integrations/pi/koed-home.mjs";
 
 describe("Koed Pi extension package", () => {
+  it("gates native completion registration and returns a request-only result", async () => {
+    const source = readFileSync(
+      new URL("../integrations/pi/extensions/koed.mjs", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain(
+      'process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"'
+    );
+    expect(source).toContain('name: "work_item_complete"');
+    expect(source).toContain("return workItemCompletionRequest()");
+    const { workItemCompletionRequest } =
+      await import("../integrations/pi/work-item-completion-request.mjs");
+    const receipt = workItemCompletionRequest();
+    expect(receipt.details).toEqual({ status: "requested" });
+    expect(receipt.content[0]?.type).toBe("text");
+    expect(receipt.content[0]?.text).toContain("will verify");
+  });
   it("packages supported tools and session-scoped lifecycle handlers", () => {
     const source = readFileSync(
       new URL("../integrations/pi/extensions/koed.mjs", import.meta.url),

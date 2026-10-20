@@ -6,6 +6,10 @@ const label = (value: unknown): string =>
 export function hqRuntimeItemTitle(
   item: ManagedConversationRuntimeItem
 ): string {
+  if (item.itemKind === "transient_output") {
+    const text = label(item.payload?.text).split("\n")[0]?.trim();
+    return text || label(item.payload?.toolName) || "Runtime update";
+  }
   if (item.itemKind === "user_input") {
     const questions = item.payload?.questions;
     const first = Array.isArray(questions) ? questions[0] : null;

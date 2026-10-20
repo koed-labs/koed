@@ -46,6 +46,16 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
     })
     .strict(),
   z
+    .object({
+      operation: z.literal("workItemDispatch"),
+      projectId: z.uuid(),
+      itemId: z.uuid(),
+      agentId: z.uuid(),
+      version: z.number().int().positive(),
+      replace: z.boolean().optional()
+    })
+    .strict(),
+  z
     .object({ operation: z.literal("sourceList"), projectId: z.uuid() })
     .strict(),
   z
@@ -177,6 +187,19 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     .object({ operation: z.literal("workItemPatch"), value: workItemSchema })
     .strict(),
   z
+    .object({
+      operation: z.literal("workItemDispatch"),
+      value: z
+        .object({
+          item: workItemSchema,
+          executionId: z.uuid(),
+          reused: z.boolean(),
+          stopPending: z.boolean().optional()
+        })
+        .strict()
+    })
+    .strict(),
+  z
     .object({ operation: z.literal("sourceList"), value: projectSourcesSchema })
     .strict(),
   z
@@ -293,6 +316,18 @@ export interface ProjectsDesktopApi {
     itemId: string,
     value: z.infer<typeof patchWorkItemSchema>
   ): Promise<z.infer<typeof workItemSchema>>;
+  workItemDispatch?(
+    projectId: string,
+    itemId: string,
+    agentId: string,
+    version: number,
+    replace?: boolean
+  ): Promise<{
+    item: z.infer<typeof workItemSchema>;
+    executionId: string;
+    reused: boolean;
+    stopPending?: boolean;
+  }>;
   sourceUpload?(
     projectId: string
   ): Promise<z.infer<typeof projectSourceSchema> | null>;

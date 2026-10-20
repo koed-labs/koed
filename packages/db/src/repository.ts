@@ -57,6 +57,7 @@ import { createHighRiskActionRepository } from "./high-risk-action-repository.js
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+import { createWorkItemRepository } from "./work-item-repository.js";
 import { createManagedTerminalRepository } from "./managed-terminal-repository.js";
 import { createDevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
@@ -4036,6 +4037,8 @@ export const createMemorySourceRepository = (
   ): Promise<T[]> =>
     Promise.all(rows.map((row) => hydrateRepositoryMemoryNodeRow(client, row)));
 
+  const workItemRepository = createWorkItemRepository(pool);
+
   const repository: MemorySourceRepository = {
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
     // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
@@ -4079,6 +4082,10 @@ export const createMemorySourceRepository = (
     ...createManagedConversationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    completeForManagedExecutionLease: (input) =>
+      workItemRepository.completeForManagedExecutionLease(input),
+    hasActiveManagedWorkItem: (input) =>
+      workItemRepository.hasActiveManagedWorkItem(input),
     ...createManagedTerminalRepository(pool),
     ...createDevelopmentWorkspaceSnapshotRepository(pool),
     ...createManagedConversationForkRepository(pool),

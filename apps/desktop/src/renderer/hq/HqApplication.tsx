@@ -1406,6 +1406,7 @@ export function HqApplication({
               graphProjects={projects}
               projectsApi={projectsApi}
               curatedMemoryApi={window.koedDesktop?.curatedMemory}
+              agentsApi={agentsApi}
               conversationsApi={managedConversations}
               lifecycle={managedConversationLifecycle}
               ownerId={visibilityOwnerId}
