@@ -75,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0050_red_lifeguard";
+const expectedLatestMigrationTag = "0051_useful_zemo";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 50;
+const expectedLatestMigrationIndex = 51;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -769,6 +769,21 @@ const assertLatestSchema = async (pool) => {
     local_edge_collaboration_subscriptions: [
       ["message_contract_version", "integer", "NO"]
     ],
+    project_activity: [
+      ["owner_user_id", "uuid", "NO"],
+      ["project_id", "uuid", "NO"],
+      ["sequence", "bigint", "NO"],
+      ["actor_user_id", "uuid", "NO"],
+      ["kind", "text", "NO"],
+      ["ref", "text", "NO"],
+      ["at", "timestamp with time zone", "NO"]
+    ],
+    project_seen: [
+      ["owner_user_id", "uuid", "NO"],
+      ["project_id", "uuid", "NO"],
+      ["seen_sequence", "bigint", "NO"],
+      ["seen_at", "timestamp with time zone", "NO"]
+    ],
     project_work_items: [
       ["id", "uuid", "NO"],
       ["owner_user_id", "uuid", "NO"],
@@ -878,7 +893,25 @@ const assertLatestSchema = async (pool) => {
     ],
     ["project_work_items", "project_work_items_kind_check", "c"],
     ["project_work_items", "project_work_items_status_check", "c"],
-    ["project_work_items", "project_work_items_version_check", "c"]
+    ["project_work_items", "project_work_items_version_check", "c"],
+    [
+      "project_activity",
+      "project_activity_owner_user_id_project_id_sequence_pk",
+      "p"
+    ],
+    [
+      "project_activity",
+      "project_activity_owner_project_fk",
+      "f",
+      "projects",
+      "c"
+    ],
+    ["project_activity", "project_activity_event_unique", "u"],
+    ["project_activity", "project_activity_sequence_positive", "c"],
+    ["project_activity", "project_activity_kind_check", "c"],
+    ["project_seen", "project_seen_owner_user_id_project_id_pk", "p"],
+    ["project_seen", "project_seen_owner_project_fk", "f", "projects", "c"],
+    ["project_seen", "project_seen_sequence_nonnegative", "c"]
   ].map(([table, name, ...contract]) => [
     table,
     name.slice(0, 63),
@@ -1420,6 +1453,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preActivityFolder = await createMigrationSlice(journal, 50, {
+    folderPrefix: "koed-pre-project-activity-"
+  });
+  temporaryFolders.add(preActivityFolder);
+  const preActivityRecords = await migrationRecords(
+    preActivityFolder,
+    journal.entries.slice(0, 51)
+  );
   const preProjectApiFolder = await createMigrationSlice(journal, 49, {
     folderPrefix: "koed-pre-project-api-"
   });
@@ -2387,6 +2428,79 @@ try {
       await stableFixtureFingerprint(pool, oldShapeFixture);
       await assertUpgradedStableDefaults(pool, oldShapeFixture);
       await assertMigrationLedger(pool, through0020Records);
+    });
+  });
+
+  await runScenario("project-activity-0051-upgrade-and-rollback", async () => {
+    const target = await createDisposableDatabase("project_activity_upgrade");
+    const ownerId = randomUUID();
+    const projectId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preActivityFolder });
+      await assertMigrationLedger(pool, preActivityRecords);
+      await pool.query("insert into users(id,email) values ($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        "insert into projects(id,owner_user_id,name,key) values ($1,$2,'Retained','RETAINED')",
+        [projectId, ownerId]
+      );
+    });
+    const interrupted = await createMigrationSlice(journal, 51, {
+      folderPrefix: "koed-project-activity-interrupted-",
+      transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+    });
+    temporaryFolders.add(interrupted);
+    await withPool(target.url, async (pool) => {
+      let failed = false;
+      try {
+        await runDbMigrations(pool, { migrationsFolder: interrupted });
+      } catch {
+        failed = true;
+      }
+      if (!failed)
+        throw new Error(
+          "Interrupted Project activity migration unexpectedly succeeded"
+        );
+      const rollback = await pool.query(
+        `select to_regclass('public.project_activity')::text as activity,
+        to_regclass('public.project_seen')::text as seen,
+        exists(select 1 from projects where id=$1 and owner_user_id=$2) as retained`,
+        [projectId, ownerId]
+      );
+      if (
+        rollback.rows[0]?.activity !== null ||
+        rollback.rows[0]?.seen !== null ||
+        rollback.rows[0]?.retained !== true
+      )
+        throw new Error(
+          "Interrupted Project activity migration changed retained state"
+        );
+      await assertMigrationLedger(pool, preActivityRecords);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      await pool.query(
+        `insert into project_activity(owner_user_id,project_id,sequence,actor_user_id,kind,ref)
+        values ($1,$2,1,$1,'work_item_created',$3)`,
+        [ownerId, projectId, randomUUID()]
+      );
+      await pool.query(
+        `insert into project_seen(owner_user_id,project_id,seen_sequence) values ($1,$2,1)`,
+        [ownerId, projectId]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const retained = await pool.query(
+        `select a.sequence,s.seen_sequence from project_activity a
+        join project_seen s using(owner_user_id,project_id) where a.owner_user_id=$1 and a.project_id=$2`,
+        [ownerId, projectId]
+      );
+      if (
+        retained.rows[0]?.sequence !== "1" ||
+        retained.rows[0]?.seen_sequence !== "1"
+      )
+        throw new Error("Project activity migration rerun lost retained rows");
     });
   });
 

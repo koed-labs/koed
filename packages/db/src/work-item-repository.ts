@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import type { CreateWorkItem, PatchWorkItem, WorkItem } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
+import { appendProjectActivityWithClient } from "./project-activity-repository.js";
 
 export class WorkItemUnavailableError extends Error {}
 export class WorkItemConflictError extends Error {
@@ -196,12 +197,13 @@ export function nextWorkItemStatus(
 const lockActiveProject = async (
   client: pg.PoolClient,
   ownerUserId: string,
-  projectId: string
+  projectId: string,
+  lock: "share" | "update" = "update"
 ) => {
   const result = await client.query(
     `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
        and team_backend_id is null and team_workspace_id is null and workspace_project_id is null
-       for share`,
+       for ${lock}`,
     [projectId, ownerUserId]
   );
   if (!result.rowCount)
@@ -273,7 +275,7 @@ export const createWorkItemRepository = (
     input: { limit?: number; cursor?: string } = {}
   ): Promise<WorkItemPage> {
     return inTransaction(pool, async (client) => {
-      await lockActiveProject(client, ownerUserId, projectId);
+      await lockActiveProject(client, ownerUserId, projectId, "share");
       const limit = input.limit ?? 100;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
         throw new WorkItemCursorError("Work Item page limit is invalid");
@@ -369,6 +371,13 @@ export const createWorkItemRepository = (
         ]
       );
       const item = publicRecord(result.rows[0]!);
+      await appendProjectActivityWithClient(client, {
+        ownerUserId,
+        projectId,
+        actorUserId: ownerUserId,
+        kind: "work_item_created",
+        ref: item.id
+      });
       await emitChanged(client, ownerUserId, item.id);
       return item;
     });
@@ -423,6 +432,14 @@ export const createWorkItemRepository = (
         ]
       );
       const item = publicRecord(result.rows[0]!);
+      if (item.status !== current.status)
+        await appendProjectActivityWithClient(client, {
+          ownerUserId,
+          projectId: item.projectId,
+          actorUserId: ownerUserId,
+          kind: item.status === "done" ? "work_item_done" : "work_item_status",
+          ref: `${item.id}:${item.version}`
+        });
       await emitChanged(client, ownerUserId, item.id);
       return item;
     });
@@ -598,6 +615,23 @@ export const createWorkItemRepository = (
       if (!result.rows[0])
         throw new WorkItemConflictError("Version conflict", current);
       const updated = publicRecord(result.rows[0]);
+      if (updated.status !== current.status)
+        await appendProjectActivityWithClient(client, {
+          ownerUserId,
+          projectId: updated.projectId,
+          actorUserId: ownerUserId,
+          kind:
+            updated.status === "done" ? "work_item_done" : "work_item_status",
+          ref: `${updated.id}:${updated.version}`
+        });
+      if (event === "pr_opened" || event === "pr_merged")
+        await appendProjectActivityWithClient(client, {
+          ownerUserId,
+          projectId: updated.projectId,
+          actorUserId: ownerUserId,
+          kind: event,
+          ref: `${updated.id}:${updated.version}`
+        });
       await emitChanged(client, ownerUserId, updated.id);
       return updated;
     });

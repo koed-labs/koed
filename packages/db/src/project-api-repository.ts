@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import type { CreateProject, PatchProject, Project } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
+import { createProjectActivityRepository } from "./project-activity-repository.js";
 
 type Row = Record<string, unknown>;
 const textValue = (value: unknown): string => {
@@ -531,6 +532,12 @@ export const createProjectApiRepository = (
     );
     return {
       project,
+      activity: {
+        lastSevenDays: await createProjectActivityRepository(pool).summary(
+          ownerUserId,
+          projectId
+        )
+      },
       sections: {
         conversations: {
           availability: "available" as const,

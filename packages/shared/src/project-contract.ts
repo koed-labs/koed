@@ -75,6 +75,26 @@ export const projectSectionCountSchema = z.discriminatedUnion("availability", [
 export const projectHqSchema = z
   .object({
     project: projectSchema,
+    activity: z
+      .object({
+        lastSevenDays: z
+          .object({
+            days: z
+              .array(
+                z
+                  .object({
+                    date: z.iso.date(),
+                    count: z.number().int().nonnegative()
+                  })
+                  .strict()
+              )
+              .length(7),
+            total: z.number().int().nonnegative()
+          })
+          .strict()
+      })
+      .strict()
+      .optional(),
     sections: z
       .object({
         conversations: projectSectionCountSchema,

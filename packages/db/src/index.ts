@@ -1,5 +1,14 @@
 export { createAuditRepository } from "./audit-repository.js";
 export {
+  appendProjectActivityWithClient,
+  createProjectActivityRepository,
+  ProjectActivityCursorError,
+  ProjectActivityUnavailableError,
+  type ProjectActivityKind,
+  type ProjectActivityWriteKind,
+  type ProjectActivityRepository
+} from "./project-activity-repository.js";
+export {
   createProjectApiRepository,
   ProjectCapabilityError,
   ProjectConflictError,

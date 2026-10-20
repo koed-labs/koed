@@ -18,6 +18,7 @@ import {
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
   createWorkItemRepository,
+  createProjectActivityRepository,
   createProjectApiRepository,
   databaseErrorCode,
   runDbMigrations,
@@ -43,6 +44,7 @@ import {
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
+import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import {
   type CacheProvider,
@@ -468,6 +470,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         })
       : null);
   const workItemRepository = pool ? createWorkItemRepository(pool) : null;
+  const projectActivityRepository = pool
+    ? createProjectActivityRepository(pool)
+    : null;
   const projectApiRepository = pool
     ? createProjectApiRepository(pool, {
         configuredBackendIds: () =>
@@ -1886,6 +1891,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
           })
         : null,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerProjectActivityRoutes(app, {
+    repository: projectActivityRepository,
     deploymentProfile: config.deploymentProfile,
     koedHome: config.koedHome,
     auth: authHelpers,
