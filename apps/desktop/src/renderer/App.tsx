@@ -1182,6 +1182,7 @@ export function App({
         visibilityRevision={snapshot?.snapshotRevision ?? null}
         visibilityConnected={snapshot?.connection.state === "live"}
         managedConversations={managedConversations}
+        projectHqConversation={window.koedDesktop?.projectHqConversation}
         localAiClients={window.koedDesktop?.localAiClients}
         managedProject={managedProject}
         managedConversationLifecycle={managedConversationLifecycle}

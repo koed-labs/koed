@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
+import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   structuredLcmSummarySchema
@@ -2010,6 +2011,7 @@ const ensureCandidateSourceIdentity = async (
   ownerPrincipalId: string;
   deploymentIdentityId: string;
   remoteUserIdentityId: string | null;
+  remoteDeployment: boolean;
   credential: Row;
 }> => {
   const hasDeployment = input.sourceDeploymentProtocolId !== undefined;
@@ -2154,6 +2156,7 @@ const ensureCandidateSourceIdentity = async (
       ownerPrincipalId: stringValue(localIdentity.rows[0].owner_principal_id),
       deploymentIdentityId: stringValue(deployment.id),
       remoteUserIdentityId: null,
+      remoteDeployment: false,
       credential: credential.rows[0]
     };
   }
@@ -2189,6 +2192,7 @@ const ensureCandidateSourceIdentity = async (
       ownerPrincipalId: input.sourceOwnerPrincipalId,
       deploymentIdentityId: stringValue(deployment.id),
       remoteUserIdentityId,
+      remoteDeployment: deployment.locality === "remote",
       credential: credential.rows[0]
     };
   }
@@ -2228,8 +2232,67 @@ const ensureCandidateSourceIdentity = async (
     ownerPrincipalId: input.sourceOwnerPrincipalId,
     deploymentIdentityId: stringValue(deployment.id),
     remoteUserIdentityId,
+    remoteDeployment: deployment.locality === "remote",
     credential: credential.rows[0]
   };
+};
+
+const capturedSourceMayEnterSharedMemory = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  logicalMemoryId: string,
+  sessionId: string,
+  admittedRemote?: boolean
+): Promise<boolean> => {
+  // A local Session (including a protocol alias) takes precedence over a
+  // remote source claim. This also rejects a Session owned by another User.
+  const local = await client.query<{ known_local: boolean }>(
+    `select (
+       exists (select 1 from sessions where id=$1::uuid)
+       or exists (
+         select 1 from captured_session_logical_memories protocol
+         join local_captured_session_logical_memories local
+           on local.logical_memory_id=protocol.logical_memory_id
+         join sessions session on session.id=local.local_session_id
+        where protocol.source_session_id=$1::uuid
+       )
+     ) as known_local`,
+    [sessionId]
+  );
+  if (local.rows[0]?.known_local)
+    return capturedSessionMayLeavePersonalBoundary(
+      client,
+      ownerUserId,
+      sessionId
+    );
+  if (admittedRemote !== undefined) return admittedRemote;
+  // Later stages have no device request. Read the retained source origin and
+  // current principal link rather than trusting a caller-supplied flag.
+  const remote = await client.query<{ admitted: boolean }>(
+    `select exists (
+       select 1 from logical_memories memory
+       join captured_session_logical_memories captured
+         on captured.logical_memory_id=memory.id
+        and captured.owner_principal_id=memory.owner_principal_id
+        and captured.source_session_id=$3::uuid
+       join deployment_identities deployment
+         on deployment.id=memory.origin_deployment_identity_id
+        and deployment.locality='remote' and deployment.disabled_at is null
+       join sync_external_user_identities identity
+         on identity.deployment_identity_id=deployment.id
+        and identity.external_subject_id=memory.owner_principal_id::text
+        and identity.status='active' and identity.revoked_at is null
+       join sync_principal_links link
+         on link.external_user_identity_id=identity.id
+        and link.local_user_id=$1 and link.revoked_at is null
+      where memory.id=$2 and memory.owner_user_id=$1
+        and memory.source_kind='captured_session'
+        and memory.lifecycle='active' and memory.invalidated_at is null
+        and memory.purge_completed_at is null
+     ) as admitted`,
+    [ownerUserId, logicalMemoryId, sessionId]
+  );
+  return remote.rows[0]?.admitted === true;
 };
 
 const pendingShareSourceRefFromRow = (
@@ -8070,6 +8133,17 @@ export const createSharedMemoryRepository = (
         representation,
         continuousGrantId
       });
+      if (
+        context.localSessionId &&
+        !(await capturedSessionMayLeavePersonalBoundary(
+          client,
+          actor.userId,
+          context.localSessionId
+        ))
+      )
+        throw new SharedMemoryConflictError(
+          "Project HQ Conversation cannot be shared"
+        );
       const provider = await resolveOwnerPrivateReplicaEncryptionProvider({
         ownerUserId: context.ownerUserId,
         ownerPrincipalId: context.ownerPrincipalId,
@@ -11075,6 +11149,20 @@ export const createSharedMemoryRepository = (
             deviceCredentialId: input.deviceCredentialId
           }
         );
+        if (
+          source.kind === "captured_session" &&
+          !(await capturedSourceMayEnterSharedMemory(
+            client,
+            actor.userId,
+            source.logicalMemoryId,
+            source.sessionId,
+            admittedSourceIdentity.remoteDeployment &&
+              admittedSourceIdentity.remoteUserIdentityId !== null
+          ))
+        )
+          throw new SharedMemoryConflictError(
+            "Project HQ Conversation cannot be shared"
+          );
         const requestHash = crossIdentitySyncDigest({
           version: 2,
           ownerUserId: actor.userId,
@@ -11423,6 +11511,18 @@ export const createSharedMemoryRepository = (
               "Pending Share mutation was reused with different bindings"
             );
           }
+          if (
+            sourceRef.kind === "captured_session" &&
+            !(await capturedSourceMayEnterSharedMemory(
+              client,
+              actor.userId,
+              sourceRef.logicalMemoryId,
+              sourceRef.sessionId
+            ))
+          )
+            throw new SharedMemoryConflictError(
+              "Project HQ Conversation cannot be shared"
+            );
           return mapPendingShare(existing.rows[0]);
         }
         await requireWorkspaceSharePermission(
@@ -11504,6 +11604,18 @@ export const createSharedMemoryRepository = (
             "Pending Share source does not match the reviewed preview"
           );
         }
+        if (
+          sourceRef.kind === "captured_session" &&
+          !(await capturedSourceMayEnterSharedMemory(
+            client,
+            actor.userId,
+            sourceRef.logicalMemoryId,
+            sourceRef.sessionId
+          ))
+        )
+          throw new SharedMemoryConflictError(
+            "Project HQ Conversation cannot be shared"
+          );
         const representation = representationValue(source.representation);
         if (
           !sharedMemoryCeilingAuthorizes(
@@ -13503,6 +13615,18 @@ export const createSharedMemoryRepository = (
         if (!consent || consent.owner_user_id !== actor.userId)
           throw new SharedMemoryAuthorizationError(
             "Only the source owner may create a Share Grant"
+          );
+        if (
+          consent.source_session_id &&
+          !(await capturedSourceMayEnterSharedMemory(
+            client,
+            actor.userId,
+            stringValue(consent.logical_memory_id),
+            stringValue(consent.source_session_id)
+          ))
+        )
+          throw new SharedMemoryAuthorizationError(
+            "Project HQ Conversation cannot be shared"
           );
         const existing = await client.query(
           `select grant_row.*,binding.source_kind,binding.source_session_id,

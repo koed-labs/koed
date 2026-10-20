@@ -491,6 +491,36 @@ export const routeIdentityContracts = [
     localEdgeDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/projects/{id}/hq/conversation",
+    "session_or_device_credential",
+    "projects",
+    "Reserve the owner's private HQ Conversation on first explicit open.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/hq/conversation",
+    "session_or_device_credential",
+    "projects",
+    "Read an existing private HQ binding and captured runtime identity without creating it.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/hq/conversation:start",
+    "session_or_device_credential",
+    "projects",
+    "Start the reserved HQ through the Chief's validated Managed Conversation selection.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/projects/{id}/work-items",
     "session_or_device_credential",

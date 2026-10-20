@@ -148,6 +148,127 @@ describe("HQ shell layout", () => {
     );
   });
 
+  it("renders custom context once in the existing desktop pane without a blank shell header", async () => {
+    const set = vi.fn(async (preferences) => preferences);
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        hqLayout: { get: vi.fn(async () => defaultHqLayoutPreferences), set }
+      } as unknown as DesktopApi
+    });
+    await render({
+      contextContent: <div data-hq-custom-context="">Project conversation</div>
+    });
+    const pane = container.querySelector('[data-hq-context=""]');
+    expect(container.querySelectorAll('[data-hq-context=""]')).toHaveLength(1);
+    expect(pane?.getAttribute("id")).toBe("hq-context-panel");
+    expect(pane?.querySelectorAll('[data-hq-custom-context=""]')).toHaveLength(
+      1
+    );
+    expect(pane?.querySelector(".hq-context__header")).toBeNull();
+    const handle = container.querySelector<HTMLElement>(
+      "[data-hq-context-handle]"
+    );
+    const originalWidth = Number(handle?.getAttribute("aria-valuenow"));
+    await act(async () => {
+      handle?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" })
+      );
+      handle?.dispatchEvent(
+        new KeyboardEvent("keyup", { bubbles: true, key: "ArrowLeft" })
+      );
+    });
+    expect(Number(handle?.getAttribute("aria-valuenow"))).toBe(
+      originalWidth + 8
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Hide project context"]'
+        )
+        ?.click()
+    );
+    expect(container.querySelector('[data-hq-context=""]')).toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Show project context"]'
+        )
+        ?.click()
+    );
+    expect(
+      container.querySelectorAll('[data-hq-custom-context=""]')
+    ).toHaveLength(1);
+    expect(
+      Number(
+        container
+          .querySelector("[data-hq-context-handle]")
+          ?.getAttribute("aria-valuenow")
+      )
+    ).toBe(originalWidth + 8);
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rightColumnWidth: originalWidth + 8,
+        rightColumnHidden: false
+      })
+    );
+    await render();
+    expect(
+      container.querySelector('[data-hq-context=""] .hq-context__header')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-hq-context=""] .hq-context__body')
+        ?.childElementCount
+    ).toBe(0);
+  });
+
+  it("shows custom context in the same narrow modal and preserves close and focus handling", async () => {
+    isNarrow = true;
+    await render({
+      contextContent: (
+        <button type="button" data-hq-custom-context="">
+          Project action
+        </button>
+      )
+    });
+    const opener = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show project context"]'
+    );
+    await act(async () => opener?.click());
+    const dialog = container.querySelector<HTMLElement>(
+      '[data-hq-context=""][role="dialog"]'
+    );
+    const close = dialog?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close project context"]'
+    );
+    const action = dialog?.querySelector<HTMLButtonElement>(
+      '[data-hq-custom-context=""]'
+    );
+    expect(
+      container.querySelectorAll('[data-hq-custom-context=""]')
+    ).toHaveLength(1);
+    expect(dialog?.getAttribute("id")).toBe("hq-context-dialog");
+    expect(dialog?.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(close);
+    await act(async () =>
+      close?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          key: "Tab",
+          shiftKey: true
+        })
+      )
+    );
+    expect(document.activeElement).toBe(action);
+    await act(async () =>
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })
+      )
+    );
+    expect(container.querySelector('[data-hq-custom-context=""]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("uses a trapped modal on narrow screens and restores focus on Escape", async () => {
     isNarrow = true;
     await render();

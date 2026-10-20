@@ -75,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0052_free_ghost_rider";
+const expectedLatestMigrationTag = "0053_demonic_gargoyle";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 52;
+const expectedLatestMigrationIndex = 53;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -808,6 +808,16 @@ const assertLatestSchema = async (pool) => {
       ["default_model", "text", "YES"],
       ["is_chief_of_staff", "boolean", "NO"],
       ["created_at", "timestamp with time zone", "NO"]
+    ],
+    project_hq_conversations: [
+      ["project_id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["managed_execution_id", "uuid", "YES"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    managed_conversation_executions: [
+      ["is_project_hq", "boolean", "NO"],
+      ["hq_private_path", "text", "YES"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -931,7 +941,37 @@ const assertLatestSchema = async (pool) => {
     ["agents", "agents_role_check", "c"],
     ["agents", "agents_look_check", "c"],
     ["agents", "agents_permission_mode_check", "c"],
-    ["agents", "agents_model_check", "c"]
+    ["agents", "agents_model_check", "c"],
+    ["project_hq_conversations", "project_hq_conversations_pkey", "p"],
+    [
+      "project_hq_conversations",
+      "project_hq_conversations_execution_unique",
+      "u"
+    ],
+    [
+      "project_hq_conversations",
+      "project_hq_conversations_owner_project_fk",
+      "f",
+      "projects",
+      "c"
+    ],
+    [
+      "project_hq_conversations",
+      "project_hq_conversations_owner_execution_fk",
+      "f",
+      "managed_conversation_executions",
+      "a"
+    ],
+    [
+      "managed_conversation_executions",
+      "managed_conversation_executions_owner_id_unique",
+      "u"
+    ],
+    [
+      "managed_conversation_executions",
+      "managed_conversation_executions_hq_path_check",
+      "c"
+    ]
   ].map(([table, name, ...contract]) => [
     table,
     name.slice(0, 63),
@@ -984,6 +1024,40 @@ const assertLatestSchema = async (pool) => {
     throw new Error(
       `Team Chat reply constraint does not enforce same-thread references: ${JSON.stringify(replyConstraint)}`
     );
+  }
+  const hqPathConstraint = constraints.rows.find(
+    (constraint) =>
+      constraint.conname === "managed_conversation_executions_hq_path_check"
+  );
+  if (
+    !hqPathConstraint?.definition?.includes("is_project_hq") ||
+    !hqPathConstraint.definition.includes("hq_private_path IS NOT NULL") ||
+    !hqPathConstraint.definition.includes("hq_private_path IS NULL")
+  ) {
+    throw new Error(
+      `Project HQ private-path constraint is missing: ${JSON.stringify(hqPathConstraint)}`
+    );
+  }
+  for (const [name, columns, referenced] of [
+    [
+      "project_hq_conversations_owner_project_fk",
+      "(owner_user_id, project_id)",
+      "projects(owner_user_id, id)"
+    ],
+    [
+      "project_hq_conversations_owner_execution_fk",
+      "(owner_user_id, managed_execution_id)",
+      "managed_conversation_executions(owner_user_id, id)"
+    ]
+  ]) {
+    const constraint = constraints.rows.find((row) => row.conname === name);
+    if (
+      !constraint?.definition?.includes(`FOREIGN KEY ${columns}`) ||
+      !constraint.definition.includes(`REFERENCES ${referenced}`)
+    )
+      throw new Error(
+        `Project HQ owner-bound foreign key ${name} is incomplete: ${JSON.stringify(constraint)}`
+      );
   }
   const messageContractColumn = await pool.query(
     `select column_default from information_schema.columns
@@ -1484,6 +1558,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preHqFolder = await createMigrationSlice(journal, 52, {
+    folderPrefix: "koed-pre-project-hq-"
+  });
+  temporaryFolders.add(preHqFolder);
+  const preHqRecords = await migrationRecords(
+    preHqFolder,
+    journal.entries.slice(0, 53)
+  );
   const preAgentsFolder = await createMigrationSlice(journal, 51, {
     folderPrefix: "koed-pre-agents-"
   });
@@ -2531,6 +2613,171 @@ try {
         throw new Error("Agents migration rerun lost the retained Chief");
     });
   });
+
+  await runScenario(
+    "project-hq-0053-upgrade-rollback-idempotence",
+    async () => {
+      const target = await createDisposableDatabase("project_hq_upgrade");
+      const ownerId = randomUUID();
+      const projectId = randomUUID();
+      const retainedExecutionId = randomUUID();
+      const hqExecutionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: preHqFolder });
+        await assertMigrationLedger(pool, preHqRecords);
+        await pool.query("insert into users(id,email) values ($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values ($1,$2,'Retained HQ Project','HQ_RETAINED')",
+          [projectId, ownerId]
+        );
+        await pool.query(
+          `insert into managed_conversation_executions
+          (id,owner_user_id,project_id,fencing_token_hash,runner_deployment_id,
+           runner_device_id,ai_client_instance_id,model,permission_mode,runner_kind)
+         values ($1,$2,'retained-local-project',$3,$4,$5,'codex.default','gpt-test','supervised','local_device')`,
+          [retainedExecutionId, ownerId, "a".repeat(64), deploymentId, deviceId]
+        );
+      });
+      const interrupted = await createMigrationSlice(journal, 53, {
+        folderPrefix: "koed-project-hq-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        const before = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed)
+          throw new Error(
+            "Interrupted Project HQ migration unexpectedly succeeded"
+          );
+        const rollback = await pool.query(
+          `select to_regclass('public.project_hq_conversations')::text as hq_table,
+          exists(select 1 from information_schema.columns where table_name='managed_conversation_executions' and column_name='is_project_hq') as hq_flag,
+          exists(select 1 from information_schema.columns where table_name='managed_conversation_executions' and column_name='hq_private_path') as hq_path,
+          exists(select 1 from projects where id=$1 and owner_user_id=$2) as project_retained,
+          exists(select 1 from managed_conversation_executions where id=$3 and owner_user_id=$2 and project_id='retained-local-project') as execution_retained`,
+          [projectId, ownerId, retainedExecutionId]
+        );
+        const row = rollback.rows[0];
+        if (
+          row?.hq_table !== null ||
+          row?.hq_flag !== false ||
+          row?.hq_path !== false ||
+          row?.project_retained !== true ||
+          row?.execution_retained !== true ||
+          (await schemaFingerprint(pool)) !== before
+        )
+          throw new Error(
+            `Interrupted Project HQ migration changed retained state: ${JSON.stringify(row)}`
+          );
+        await assertMigrationLedger(pool, preHqRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const retained = await pool.query(
+          "select is_project_hq,hq_private_path from managed_conversation_executions where id=$1",
+          [retainedExecutionId]
+        );
+        if (
+          !isDeepStrictEqual(retained.rows[0], {
+            is_project_hq: false,
+            hq_private_path: null
+          })
+        )
+          throw new Error(
+            "Project HQ upgrade changed a retained ordinary execution"
+          );
+        await pool.query(
+          "insert into project_hq_conversations(project_id,owner_user_id) values ($1,$2)",
+          [projectId, ownerId]
+        );
+        await pool.query(
+          `insert into managed_conversation_executions
+          (id,owner_user_id,project_id,is_project_hq,hq_private_path,fencing_token_hash,
+           runner_deployment_id,runner_device_id,ai_client_instance_id,model,permission_mode,runner_kind)
+         values ($1,$2,$3,true,$4,$5,$6,$7,'codex.default','gpt-test','supervised','local_device')`,
+          [
+            hqExecutionId,
+            ownerId,
+            projectId,
+            `/private/project-hq/${ownerId}/${projectId}`,
+            "b".repeat(64),
+            deploymentId,
+            deviceId
+          ]
+        );
+        await pool.query(
+          "update project_hq_conversations set managed_execution_id=$2 where project_id=$1",
+          [projectId, hqExecutionId]
+        );
+        await expectSqlState(
+          pool,
+          `update managed_conversation_executions set hq_private_path=null where id=$1`,
+          "23514",
+          "HQ execution without private path",
+          [hqExecutionId]
+        );
+        await expectSqlState(
+          pool,
+          `update managed_conversation_executions set hq_private_path='/invalid' where id=$1`,
+          "23514",
+          "Ordinary execution with HQ path",
+          [retainedExecutionId]
+        );
+        const stable = await pool.query(
+          `select h.project_id,h.owner_user_id,h.managed_execution_id,e.is_project_hq,e.hq_private_path
+         from project_hq_conversations h join managed_conversation_executions e on e.id=h.managed_execution_id
+         where h.project_id=$1`,
+          [projectId]
+        );
+        const fingerprint = await schemaFingerprint(pool);
+        const retainedBeforeRerun = await pool.query(
+          `select
+            (select to_jsonb(projects) from projects where id=$1 and owner_user_id=$2) as project,
+            (select to_jsonb(managed_conversation_executions) from managed_conversation_executions where id=$3 and owner_user_id=$2) as ordinary_execution`,
+          [projectId, ownerId, retainedExecutionId]
+        );
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const retainedAfterRerun = await pool.query(
+          `select
+            (select to_jsonb(projects) from projects where id=$1 and owner_user_id=$2) as project,
+            (select to_jsonb(managed_conversation_executions) from managed_conversation_executions where id=$3 and owner_user_id=$2) as ordinary_execution`,
+          [projectId, ownerId, retainedExecutionId]
+        );
+        if (
+          (await schemaFingerprint(pool)) !== fingerprint ||
+          !isDeepStrictEqual(
+            retainedAfterRerun.rows,
+            retainedBeforeRerun.rows
+          ) ||
+          !isDeepStrictEqual(
+            (
+              await pool.query(
+                `select h.project_id,h.owner_user_id,h.managed_execution_id,e.is_project_hq,e.hq_private_path
+         from project_hq_conversations h join managed_conversation_executions e on e.id=h.managed_execution_id
+         where h.project_id=$1`,
+                [projectId]
+              )
+            ).rows,
+            stable.rows
+          )
+        )
+          throw new Error(
+            "Project HQ migration rerun changed retained Project or execution"
+          );
+      });
+    }
+  );
 
   await runScenario("project-activity-0051-upgrade-and-rollback", async () => {
     const target = await createDisposableDatabase("project_activity_upgrade");

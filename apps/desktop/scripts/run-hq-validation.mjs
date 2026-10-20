@@ -16,14 +16,35 @@ const userDataPath = await mkdtemp(
 );
 
 try {
-  const result = spawnSync(electronPath, ["scripts/validate-hq.mjs"], {
-    cwd: desktopDir,
-    env: { ...process.env, KOED_HQ_USER_DATA_DIR: userDataPath },
-    stdio: "inherit"
-  });
-
-  if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
+  if (process.env.KOED_HQ204_FORCE_FAILURE !== "1") {
+    const result = spawnSync(electronPath, ["scripts/validate-hq.mjs"], {
+      cwd: desktopDir,
+      env: { ...process.env, KOED_HQ_USER_DATA_DIR: userDataPath },
+      stdio: "inherit"
+    });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const privateProfile = await mkdtemp(
+      resolve(scratchDir, "hq204-electron-profile-")
+    );
+    try {
+      const privateHq = spawnSync(
+        electronPath,
+        ["scripts/validate-hq204.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ204_USER_DATA_DIR: privateProfile },
+          stdio: "inherit"
+        }
+      );
+      if (privateHq.error) throw privateHq.error;
+      process.exitCode = privateHq.status ?? 1;
+    } finally {
+      await rm(privateProfile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

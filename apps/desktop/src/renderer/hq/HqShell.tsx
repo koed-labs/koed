@@ -99,11 +99,13 @@ const focusableElements = (container: HTMLElement): HTMLElement[] =>
 
 function ContextPanel({
   dialog = false,
+  content,
   onClose,
   closeRef,
   dialogRef
 }: {
   dialog?: boolean;
+  content?: ReactNode;
   onClose?: () => void;
   closeRef?: Ref<HTMLButtonElement>;
   dialogRef?: Ref<HTMLElement>;
@@ -120,27 +122,29 @@ function ContextPanel({
       ref={dialogRef}
       tabIndex={dialog ? -1 : undefined}
     >
-      <div className="hq-context__header">
-        {dialog ? (
-          <Button
-            aria-label="Close project context"
-            className="hq-icon-button"
-            onClick={onClose}
-            ref={closeRef}
-            size="icon"
-            variant="ghost"
+      {content === undefined || dialog ? (
+        <div className="hq-context__header">
+          {dialog ? (
+            <Button
+              aria-label="Close project context"
+              className="hq-icon-button"
+              onClick={onClose}
+              ref={closeRef}
+              size="icon"
+              variant="ghost"
+            >
+              <X aria-hidden="true" />
+            </Button>
+          ) : null}
+          <h2
+            className="hq-visually-hidden"
+            id={dialog ? "hq-context-dialog-title" : undefined}
           >
-            <X aria-hidden="true" />
-          </Button>
-        ) : null}
-        <h2
-          className="hq-visually-hidden"
-          id={dialog ? "hq-context-dialog-title" : undefined}
-        >
-          Project context
-        </h2>
-      </div>
-      <div className="hq-context__body"></div>
+            Project context
+          </h2>
+        </div>
+      ) : null}
+      <div className="hq-context__body">{content}</div>
     </section>
   );
 }
@@ -149,6 +153,7 @@ export function HqShell({
   children,
   title = "HQ",
   sidebar,
+  contextContent,
   actionsRef,
   route,
   contextAvailable = true
@@ -157,6 +162,7 @@ export function HqShell({
   title?: string;
   route?: HqRoute;
   sidebar?: ReactNode | ((layout: HqSidebarLayout) => ReactNode);
+  contextContent?: ReactNode;
   actionsRef?: Ref<HqShellActions>;
   contextAvailable?: boolean;
 } = {}) {
@@ -563,7 +569,7 @@ export function HqShell({
                     onDoubleClick={() => store.setRightColumnWidth(null)}
                   />
                   <ResizablePanel className="hq-context-panel" primary>
-                    <ContextPanel />
+                    <ContextPanel content={contextContent} />
                   </ResizablePanel>
                 </>
               ) : null}
@@ -595,6 +601,7 @@ export function HqShell({
           >
             <ContextPanel
               closeRef={contextCloseRef}
+              content={contextContent}
               dialog
               dialogRef={dialogRef}
               onClose={closeMobileContext}

@@ -93,6 +93,7 @@ export const personalDevicePairingLinkConsumeChannel =
 export const personalDevicePairingProgressChannel =
   "koed:personal-device-pairing:progress";
 export { managedConversationCommandChannel } from "./managed-conversation-protocol.js";
+export { projectHqConversationChannel } from "./project-hq-conversation-protocol.js";
 export {
   managedProjectCommandChannel,
   managedProjectEventChannel

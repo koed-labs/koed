@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
@@ -1285,6 +1286,14 @@ export const createCrossIdentitySyncRepository = (
 
   return {
     async prepareCapturedSessionSyncCandidateRevision(actor, sessionId) {
+      if (
+        !(await capturedSessionMayLeavePersonalBoundary(
+          pool,
+          actor.userId,
+          sessionId
+        ))
+      )
+        return null;
       const result = await pool.query<{ source_revision: string | null }>(
         `with owned_session as (
            select id
@@ -1340,6 +1349,14 @@ export const createCrossIdentitySyncRepository = (
       );
       const session = result.rows[0];
       if (!session) return null;
+      if (
+        !(await capturedSessionMayLeavePersonalBoundary(
+          pool,
+          actor.userId,
+          sessionId
+        ))
+      )
+        return null;
       return {
         originSessionId: String(session.id),
         externalSessionId: optionalString(session.external_session_id),
@@ -1475,6 +1492,16 @@ export const createCrossIdentitySyncRepository = (
         );
         const session = sessionResult.rows[0] as Row | undefined;
         if (!session) {
+          await client.query("rollback");
+          return null;
+        }
+        if (
+          !(await capturedSessionMayLeavePersonalBoundary(
+            client,
+            actor.userId,
+            input.sessionId
+          ))
+        ) {
           await client.query("rollback");
           return null;
         }
@@ -2386,6 +2413,14 @@ export const createCrossIdentitySyncRepository = (
       if (!row) return null;
       const relationship = mapRelationship(row);
       const sessionId = String(row.local_session_id);
+      if (
+        !(await capturedSessionMayLeavePersonalBoundary(
+          pool,
+          String(row.local_user_id),
+          sessionId
+        ))
+      )
+        return null;
       const sessionResult = await pool.query(
         "select * from sessions where id=$1",
         [sessionId]

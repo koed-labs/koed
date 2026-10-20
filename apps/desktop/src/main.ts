@@ -414,6 +414,7 @@ const bootstrap = async () => {
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     projects: server.projects,
+    projectHqConversation: server.projectHqConversation,
     agents: server.agents,
     managedConversation: server.managedConversation,
     managedProject: server.managedProject,

@@ -263,6 +263,8 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       initialPrompt?: string;
       deferUntilRuntimeBinding?: boolean;
+      hqProjectId?: string;
+      hqPrivatePath?: string;
     }
   ): Promise<{
     execution: ManagedConversationExecutionRecord;
@@ -677,6 +679,8 @@ type ExecutionRow = {
   id: string;
   owner_user_id: string;
   project_id: string;
+  is_project_hq: boolean;
+  hq_private_path: string | null;
   provider: string;
   ai_client_instance_id: string;
   model: string;
@@ -829,7 +833,8 @@ type DiffRow = {
 };
 
 const EXECUTION_COLUMNS = `
-  id, owner_user_id, project_id, provider, ai_client_instance_id, model,
+  id, owner_user_id, project_id, is_project_hq, hq_private_path,
+  provider, ai_client_instance_id, model,
   reasoning_effort, permission_mode, runner_kind, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
@@ -1376,6 +1381,24 @@ export const createManagedConversationRepository = (
     client: pg.PoolClient,
     execution: ExecutionRow
   ) => {
+    if (execution.is_project_hq) {
+      const hqProject = await client.query<{
+        lifecycle: string;
+        deletion_phase: string | null;
+      }>(
+        `select lifecycle,deletion_phase from projects
+          where owner_user_id=$1 and id=$2::uuid
+          for share`,
+        [execution.owner_user_id, execution.project_id]
+      );
+      if (
+        hqProject.rowCount !== 1 ||
+        hqProject.rows[0]?.lifecycle !== "active" ||
+        hqProject.rows[0]?.deletion_phase !== null
+      )
+        throw statusError("Project is unavailable for managed execution", 409);
+      return;
+    }
     const result = await client.query<{
       lifecycle: string;
       deletion_phase: string | null;
@@ -1415,9 +1438,66 @@ export const createManagedConversationRepository = (
       ) {
         throw statusError("Managed Conversation identity is invalid", 400);
       }
+      if (input.hqProjectId && !input.hqPrivatePath?.startsWith("/"))
+        throw statusError("Project HQ private path is invalid", 400);
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (input.hqProjectId) {
+          if (projectId !== input.hqProjectId)
+            throw statusError("HQ Project identity mismatch", 400);
+          const hq = await client.query<{
+            managed_execution_id: string | null;
+          }>(
+            `select h.managed_execution_id from project_hq_conversations h
+              join projects p on p.id=h.project_id and p.owner_user_id=h.owner_user_id
+             where h.project_id=$1 and h.owner_user_id=$2
+               and p.lifecycle='active' and p.deletion_phase is null
+             for update of h, p`,
+            [input.hqProjectId, actor.userId]
+          );
+          if (!hq.rows[0]) throw statusError("Project HQ is unavailable", 404);
+          if (hq.rows[0].managed_execution_id) {
+            const execution = await client.query<ExecutionRow>(
+              `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+                where id=$1 and owner_user_id=$2 and is_project_hq
+                  and hq_private_path=$3`,
+              [
+                hq.rows[0].managed_execution_id,
+                actor.userId,
+                input.hqPrivatePath
+              ]
+            );
+            const command = await client.query<CommandRow>(
+              `select ${COMMAND_COLUMNS} from managed_conversation_commands
+                where execution_id=$1 and owner_user_id=$2 and command_kind='start'
+                order by sequence asc limit 1`,
+              [hq.rows[0].managed_execution_id, actor.userId]
+            );
+            if (!execution.rows[0] || !command.rows[0])
+              throw statusError("Project HQ execution is inconsistent", 409);
+            if (execution.rows[0].permission_mode !== input.permissionMode)
+              throw statusError(
+                "Project HQ already started with another permission choice",
+                409
+              );
+            const originalStart = await decryptPayload(command.rows[0]);
+            if (
+              input.initialPrompt &&
+              originalStart?.prompt !== input.initialPrompt
+            )
+              throw statusError(
+                "Project HQ already started with another first message",
+                409
+              );
+            await client.query("commit");
+            return {
+              execution: mapExecution(execution.rows[0]),
+              command: mapCommand(command.rows[0], originalStart),
+              fencingToken: ""
+            };
+          }
+        }
         const projectAvailability = await client.query<{
           lifecycle: string;
           deletion_phase: string | null;
@@ -1507,10 +1587,10 @@ export const createManagedConversationRepository = (
         });
         const executionResult = await client.query<ExecutionRow>(
           `insert into managed_conversation_executions (
-             id, owner_user_id, project_id, provider, ai_client_instance_id,
+             id, owner_user_id, project_id, is_project_hq, hq_private_path, provider, ai_client_instance_id,
              model, reasoning_effort, permission_mode, runner_kind,
              fencing_token_hash, runner_deployment_id, runner_device_id
-           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ) values ($1, $2, $3, $13, $14, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            returning ${EXECUTION_COLUMNS}`,
           [
             executionId,
@@ -1524,7 +1604,9 @@ export const createManagedConversationRepository = (
             input.runnerKind,
             sha256(fencingToken),
             input.runnerDeploymentId,
-            input.runnerDeviceId
+            input.runnerDeviceId,
+            Boolean(input.hqProjectId),
+            input.hqPrivatePath ?? null
           ]
         );
         const encryptedPayload = input.initialPrompt
@@ -1568,6 +1650,16 @@ export const createManagedConversationRepository = (
           executionId,
           mutationId: `managed-conversation:${executionId}:created`
         });
+        if (input.hqProjectId) {
+          const bound = await client.query(
+            `update project_hq_conversations set managed_execution_id=$3
+              where project_id=$1 and owner_user_id=$2
+                and managed_execution_id is null`,
+            [input.hqProjectId, actor.userId, executionId]
+          );
+          if (bound.rowCount !== 1)
+            throw statusError("Project HQ was started concurrently", 409);
+        }
         await notifyManagedConversationCommand(client, executionId);
         await client.query("commit");
         return {
@@ -2544,6 +2636,7 @@ export const createManagedConversationRepository = (
            from managed_conversation_executions
           where owner_user_id = $1
             and ($2::text is null or project_id = $2)
+            and not is_project_hq
           order by updated_at desc, id desc
           limit $3`,
         [actor.userId, input.projectId ?? null, limit]
@@ -2648,6 +2741,16 @@ export const createManagedConversationRepository = (
                 )
               )
               and execution.state not in ('stopped','failed','fenced')
+              and (
+                not execution.is_project_hq
+                or exists (
+                  select 1 from projects hq_project
+                   where hq_project.owner_user_id=execution.owner_user_id
+                     and hq_project.id::text=execution.project_id
+                     and hq_project.lifecycle='active'
+                     and hq_project.deletion_phase is null
+                )
+              )
               and not exists (
                 select 1 from projects project
                   left join project_local_contexts context
@@ -2817,6 +2920,16 @@ export const createManagedConversationRepository = (
               and ($6::uuid is null or command.owner_user_id = $6)
               and execution.runner_device_id = $4
               and execution.runner_deployment_id = $5
+              and (
+                not execution.is_project_hq
+                or exists (
+                  select 1 from projects hq_project
+                   where hq_project.owner_user_id=execution.owner_user_id
+                     and hq_project.id::text=execution.project_id
+                     and hq_project.lifecycle='active'
+                     and hq_project.deletion_phase is null
+                )
+              )
               and not exists (
                 select 1 from projects project
                   left join project_local_contexts context
@@ -3328,6 +3441,16 @@ export const createManagedConversationRepository = (
             and runner_deployment_id = $3
             and runner_device_id = $4
             and state = 'running'
+            and (
+              not is_project_hq
+              or exists (
+                select 1 from projects hq_project
+                 where hq_project.owner_user_id=managed_conversation_executions.owner_user_id
+                   and hq_project.id::text=managed_conversation_executions.project_id
+                   and hq_project.lifecycle='active'
+                   and hq_project.deletion_phase is null
+              )
+            )
             and (
               runner_id is null
               or runner_id = $5

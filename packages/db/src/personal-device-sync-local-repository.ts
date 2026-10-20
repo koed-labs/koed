@@ -10,6 +10,7 @@ import {
 } from "./conversation-item-repository.js";
 import type { ConversationItemInput } from "./types.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
+import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
 
 export type PdsMaterializationState =
   | "pending"
@@ -426,6 +427,14 @@ export const createPersonalDeviceSyncLocalRepository = (
     );
     const groupRow = group.rows[0];
     if (!groupRow) return null;
+    if (
+      !(await capturedSessionMayLeavePersonalBoundary(
+        pool,
+        input.userId,
+        input.sessionId
+      ))
+    )
+      return null;
     const session = await pool.query<{
       id: string;
       external_session_id: string | null;
@@ -526,6 +535,23 @@ export const createPersonalDeviceSyncLocalRepository = (
         and p.enabled_at is not null and s.created_at>=p.enabled_at
         and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
         and s.external_session_id is not null
+        and not exists (
+          select 1 from managed_conversation_executions execution
+          left join managed_conversation_runtime_bindings binding
+            on binding.execution_id=execution.id
+           and binding.owner_user_id=execution.owner_user_id
+          where execution.owner_user_id=s.owner_user_id
+            and execution.is_project_hq
+            and (execution.logical_session_id=s.logical_session_id
+              or binding.local_session_id=s.id
+              or (s.cwd is not null and execution.hq_private_path=s.cwd))
+        )
+        and (s.metadata->>'managedConversation' is distinct from 'true'
+          or exists (
+            select 1 from managed_conversation_executions execution
+            where execution.owner_user_id=s.owner_user_id
+              and execution.logical_session_id=s.logical_session_id
+          ))
         and not exists (select 1 from pds_logical_replicas r where r.local_session_id=s.id)
         and not exists (select 1 from pds_session_closures c where c.source_session_id=s.id and c.publication_kind='closed')
         and exists (select 1 from conversation_items ci where ci.session_id=s.id
@@ -534,11 +560,23 @@ export const createPersonalDeviceSyncLocalRepository = (
       order by s.id limit 50`,
       [input.afterSessionId ?? null]
     );
-    return result.rows.map((row) => ({
-      userId: row.user_id,
-      groupId: row.group_id,
-      sessionId: row.session_id
-    }));
+    const eligible = await Promise.all(
+      result.rows.map(async (row) => ({
+        row,
+        mayPublish: await capturedSessionMayLeavePersonalBoundary(
+          pool,
+          row.user_id,
+          row.session_id
+        )
+      }))
+    );
+    return eligible
+      .filter(({ mayPublish }) => mayPublish)
+      .map(({ row }) => ({
+        userId: row.user_id,
+        groupId: row.group_id,
+        sessionId: row.session_id
+      }));
   },
 
   async reservePdsSourceSequence(input) {
@@ -2288,6 +2326,14 @@ async function publishPdsSource(
       throw new Error(
         "PDS source Session is unavailable or lacks native identity"
       );
+    if (
+      !(await capturedSessionMayLeavePersonalBoundary(
+        client,
+        input.userId,
+        input.sessionId
+      ))
+    )
+      throw new Error("Project HQ Conversation cannot be published by PDS");
     if (checkpointMode && sourceSession.created_at < groupRow.enabled_at) {
       await client.query("commit");
       return null;

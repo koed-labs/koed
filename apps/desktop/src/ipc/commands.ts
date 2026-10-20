@@ -39,6 +39,7 @@ import {
   desktopRendererOrigin,
   isDesktopCommandName,
   managedConversationCommandChannel,
+  projectHqConversationChannel,
   managedProjectCommandChannel,
   managedProjectEventChannel,
   personalDevicePairingProgressChannel,
@@ -60,6 +61,12 @@ import {
   type ManagedConversationRequest,
   type ManagedConversationResult
 } from "./managed-conversation-protocol.js";
+import {
+  projectHqConversationRequestSchema,
+  projectHqConversationResultSchema,
+  type ProjectHqConversationRequest,
+  type ProjectHqConversationResult
+} from "./project-hq-conversation-protocol.js";
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
 import type { HqLayoutPreferences } from "./hq-layout-preferences-protocol.js";
@@ -177,6 +184,9 @@ export const registerDesktopCommandHandlers = (
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
+    projectHqConversation?: (
+      request: ProjectHqConversationRequest
+    ) => Promise<ProjectHqConversationResult>;
     managedProject: (
       request: ManagedProjectRequest,
       context?: DesktopCommandContext
@@ -504,6 +514,26 @@ export const registerDesktopCommandHandlers = (
       throw new Error("Invalid Agent identity.");
     return result;
   });
+
+  ipcMain.handle(
+    projectHqConversationChannel,
+    async (event, value: unknown) => {
+      if (!trustedSender(event, options.allowedRendererOrigins))
+        throw new Error("Untrusted Desktop IPC sender.");
+      if (
+        process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+        !options.projectHqConversation
+      )
+        throw new Error("Project HQ Conversation is unavailable.");
+      const request = projectHqConversationRequestSchema.parse(value);
+      const result = projectHqConversationResultSchema.parse(
+        await options.projectHqConversation(request)
+      );
+      if (result.operation !== request.operation)
+        throw new Error("Invalid Project HQ Conversation correlation.");
+      return result;
+    }
+  );
 
   ipcMain.handle(
     managedConversationCommandChannel,

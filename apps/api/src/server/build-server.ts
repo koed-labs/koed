@@ -1989,7 +1989,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerConversationSourceReplicationRoutes(app, routeContext);
   registerConversationSourceRestoreRoutes(app, routeContext);
-  registerManagedConversationRoutes(app, routeContext);
+  registerManagedConversationRoutes(app, routeContext, agentsRepository);
   registerSourceControlRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);

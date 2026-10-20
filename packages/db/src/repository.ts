@@ -7890,6 +7890,18 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
+            and (s.id is null or not exists (
+              select 1 from managed_conversation_executions execution
+              left join managed_conversation_runtime_bindings binding
+                on binding.execution_id=execution.id
+               and binding.owner_user_id=execution.owner_user_id
+              where execution.owner_user_id=s.owner_user_id
+                and execution.is_project_hq
+                and (execution.logical_session_id=s.logical_session_id
+                  or binding.local_session_id=s.id
+                  or (execution.hq_private_path is not null
+                    and execution.hq_private_path=s.cwd))
+            ))
             and ($2::boolean = true or me.personal_deleted_at is null)
           union all
           select
@@ -7955,6 +7967,18 @@ export const createMemorySourceRepository = (
             )
             and s.visibility = 'personal'
             and s.owner_user_id = $1
+            and not exists (
+              select 1 from managed_conversation_executions execution
+              left join managed_conversation_runtime_bindings binding
+                on binding.execution_id=execution.id
+               and binding.owner_user_id=execution.owner_user_id
+              where execution.owner_user_id=s.owner_user_id
+                and execution.is_project_hq
+                and (execution.logical_session_id=s.logical_session_id
+                  or binding.local_session_id=s.id
+                  or (execution.hq_private_path is not null
+                    and execution.hq_private_path=s.cwd))
+            )
         ),
         ranked_threads as (
           select

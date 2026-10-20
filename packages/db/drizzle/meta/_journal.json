@@ -372,6 +372,13 @@
       "when": 1792476611980,
       "tag": "0052_free_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792482673775,
+      "tag": "0053_demonic_gargoyle",
+      "breakpoints": true
     }
   ]
 }

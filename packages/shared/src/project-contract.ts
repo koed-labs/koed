@@ -107,6 +107,34 @@ export const projectHqSchema = z
   })
   .strict();
 
+export const projectHqConversationSchema = z
+  .object({
+    projectId: z.uuid(),
+    executionId: z.uuid().nullable(),
+    createdAt: timestamp
+  })
+  .strict();
+
+export type ProjectHqConversation = z.infer<typeof projectHqConversationSchema>;
+
+export const projectHqConversationReadSchema = z
+  .object({
+    conversation: projectHqConversationSchema.nullable(),
+    execution: z
+      .object({
+        state: z.string(),
+        capturedSessionId: z.uuid().nullable(),
+        threadId: z.string().nullable(),
+        graphProjectId: z.string().nullable(),
+        graphThreadId: z.string().nullable(),
+        provider: z.string(),
+        aiClientInstanceId: z.string()
+      })
+      .strict()
+      .nullable()
+  })
+  .strict();
+
 export const projectDeleteStatusSchema = z
   .object({
     project: projectSchema,

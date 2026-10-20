@@ -67,6 +67,7 @@ export class PersonalMemoryStore {
   readonly #cache = new Map<string, PersonalMemoryDetail>();
   readonly #detailPageLoadKeys = new Set<string>();
   readonly #detailRefreshEventIds = new Map<string, Set<string>>();
+  readonly #privateThreads = new Map<string, PersonalDesktopProjectThread>();
   readonly #detailRefreshRetryAttempts = new Map<string, number>();
   readonly #detailRefreshRetryTimers = new Map<
     string,
@@ -160,6 +161,15 @@ export class PersonalMemoryStore {
     const entry = this.#cache.get(personalMemoryThreadKey(thread)) ?? null;
     if (entry) entry.lastAccessedAt = Date.now();
     return entry;
+  }
+
+  registerPrivateThread(thread: PersonalDesktopProjectThread): () => void {
+    const key = personalMemoryThreadKey(thread);
+    this.#privateThreads.set(key, thread);
+    return () => {
+      if (this.#privateThreads.get(key) === thread)
+        this.#privateThreads.delete(key);
+    };
   }
 
   async loadProjects({
@@ -334,7 +344,10 @@ export class PersonalMemoryStore {
         refresh ? entry.events : [],
         events
       );
-      entry.hasOlder = entry.events.length < thread.eventCount;
+      entry.hasOlder = this.#privateThreads.has(key)
+        ? (refresh && entry.hasOlder) ||
+          events.length >= PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
+        : entry.events.length < thread.eventCount;
       entry.loadedAt = Date.now();
       entry.status = "ready";
       entry.error = null;
@@ -359,7 +372,8 @@ export class PersonalMemoryStore {
         continue;
       }
       if (entry.status === "loading") continue;
-      const thread = this.#snapshot.threadsByKey.get(key);
+      const thread =
+        this.#snapshot.threadsByKey.get(key) ?? this.#privateThreads.get(key);
       this.#detailRefreshEventIds.delete(key);
       this.#clearDetailRefreshRetry(key);
       if (!thread) {
@@ -381,7 +395,10 @@ export class PersonalMemoryStore {
           entry.events.filter(({ id }) => !changedEventIds.has(id)),
           events
         );
-        entry.hasOlder = entry.events.length < thread.eventCount;
+        entry.hasOlder = this.#privateThreads.has(key)
+          ? entry.hasOlder ||
+            events.length >= PERSONAL_DESKTOP_OLDER_EVENT_LIMIT
+          : entry.events.length < thread.eventCount;
         entry.loadedAt = Date.now();
         if (!this.#detailPageLoadKeys.has(key)) entry.status = "ready";
         entry.error = null;
@@ -436,7 +453,9 @@ export class PersonalMemoryStore {
       entry.hasOlder =
         !repeatedCursor &&
         entry.events.length > previousCount &&
-        entry.events.length < thread.eventCount;
+        (this.#privateThreads.has(key)
+          ? older.length >= PERSONAL_DESKTOP_OLDER_EVENT_LIMIT
+          : entry.events.length < thread.eventCount);
       entry.loadedAt = Date.now();
       entry.status = "ready";
     } catch (cause) {

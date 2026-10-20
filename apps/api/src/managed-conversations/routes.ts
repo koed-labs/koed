@@ -6,6 +6,7 @@ import type {
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
 } from "@koed/db";
+import type { AgentsRepository } from "@koed/db";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import { z } from "zod";
 import {
@@ -39,6 +40,7 @@ import { listCodexDraftCommands } from "@koed/worker/command-discovery-adapter-c
 import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-claude";
 import { createPiCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter-pi";
 import type { ApiRouteContext } from "../server/context.js";
+import { authenticateHqManagedWrite } from "./hq-auth.js";
 import {
   managedConversationTransferRequestHash,
   managedConversationTransferScopeHash
@@ -826,7 +828,8 @@ const assertLocalSettingsSelection = async (
 
 export const registerManagedConversationRoutes = (
   app: FastifyInstance,
-  context: ApiRouteContext
+  context: ApiRouteContext,
+  hqAgents?: AgentsRepository | null
 ): void => {
   // Managed Conversations are interactive. Keep their capacity independent
   // from background Capture Hook and historical-import memory traffic.
@@ -2040,6 +2043,114 @@ export const registerManagedConversationRoutes = (
           id: created.command.id,
           state: created.command.state
         }
+      });
+    }
+  );
+
+  app.post(
+    "/v1/projects/:id/hq/conversation::start",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      if (!localExecutionProfiles.has(context.config.deploymentProfile))
+        throw Object.assign(new Error("Project HQ requires a local profile"), {
+          statusCode: 403
+        });
+      if (!hqAgents)
+        throw Object.assign(new Error("Chief of Staff is unavailable"), {
+          statusCode: 503
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const params = z.object({ id: z.uuid() }).strict().parse(request.params);
+      const firstMessage = z
+        .object({
+          prompt: z
+            .string()
+            .min(1)
+            .max(256_000)
+            .refine((value) => value.trim().length > 0),
+          permissionMode: z
+            .enum(["supervised", "auto_edit", "auto", "full_access"])
+            .optional()
+        })
+        .strict()
+        .parse(request.body ?? {});
+      const chief = (await hqAgents.list(user.id)).find(
+        (agent) => agent.isChiefOfStaff
+      );
+      if (!chief)
+        throw Object.assign(new Error("Chief of Staff is not configured"), {
+          statusCode: 409
+        });
+      const repository = context.requireRepository();
+      const runner = await runnerIdentity(request);
+      const instances = await launchInstances(repository, user.id);
+      const instance = instances.find(
+        (candidate) => candidate.instanceId === chief.aiClientInstanceId
+      );
+      if (!instance || !isSupportedAiClientDriverId(instance.driverId))
+        throw Object.assign(
+          new Error("Chief of Staff AI Client is unavailable"),
+          {
+            statusCode: 409
+          }
+        );
+      const model = chief.defaultModel
+        ? instance.models.find(
+            (candidate) => modelId(candidate) === chief.defaultModel
+          )
+        : instance.models[0];
+      const selectedModel = model ? modelId(model) : null;
+      if (!selectedModel)
+        throw Object.assign(new Error("Chief of Staff model is unavailable"), {
+          statusCode: 409
+        });
+      const selection = {
+        projectId: params.id,
+        contextKind: "independent" as const,
+        provider: instance.driverId,
+        aiClientInstanceId: chief.aiClientInstanceId,
+        model: selectedModel,
+        reasoningEffort: null,
+        permissionMode: firstMessage.permissionMode ?? ("supervised" as const),
+        runnerKind: "local_device" as const,
+        idempotencyKey: `project-hq:${params.id}`
+      };
+      await assertLocalLaunchSelection(repository, user.id, selection);
+      const privatePath = resolve(
+        context.config.koedHome,
+        "managed-conversations",
+        "project-hq",
+        user.id,
+        params.id
+      );
+      await mkdir(privatePath, { mode: 0o700, recursive: true });
+      const canonicalPrivatePath = await realpath(privatePath);
+      const created = await repository.createManagedConversation(
+        { userId: user.id },
+        {
+          ...selection,
+          hqProjectId: params.id,
+          hqPrivatePath: canonicalPrivatePath,
+          initialPrompt: firstMessage.prompt,
+          runnerDeploymentId: runner.deploymentId,
+          runnerDeviceId: runner.deviceId,
+          deferUntilRuntimeBinding: true
+        }
+      );
+      await repository.upsertManagedConversationRuntimeBinding(
+        { userId: user.id },
+        {
+          executionId: created.execution.id,
+          deploymentId: runner.deploymentId,
+          deviceId: runner.deviceId,
+          executionGeneration: created.execution.executionGeneration,
+          projectPath: canonicalPrivatePath
+        }
+      );
+      return reply.status(202).send({
+        execution: await publicExecutionFor(user.id, created.execution),
+        command: { id: created.command.id, state: created.command.state }
       });
     }
   );

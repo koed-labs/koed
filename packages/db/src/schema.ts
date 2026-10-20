@@ -4308,6 +4308,8 @@ export const managedConversationExecutions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: text("project_id").notNull(),
+    isProjectHq: boolean("is_project_hq").notNull().default(false),
+    hqPrivatePath: text("hq_private_path"),
     provider: text("provider").notNull().default("codex"),
     aiClientInstanceId: text("ai_client_instance_id").notNull(),
     model: text("model").notNull(),
@@ -4336,6 +4338,10 @@ export const managedConversationExecutions = pgTable(
     stoppedAt: timestamp("stopped_at", { withTimezone: true })
   },
   (table) => [
+    unique("managed_conversation_executions_owner_id_unique").on(
+      table.ownerUserId,
+      table.id
+    ),
     unique("managed_conversation_executions_session_owner_unique").on(
       table.logicalSessionId,
       table.ownerUserId
@@ -4401,9 +4407,44 @@ export const managedConversationExecutions = pgTable(
       )`
     ),
     check(
+      "managed_conversation_executions_hq_path_check",
+      sql`(${table.isProjectHq} and ${table.hqPrivatePath} is not null)
+        or (not ${table.isProjectHq} and ${table.hqPrivatePath} is null)`
+    ),
+    check(
       "managed_conversation_executions_runner_lease_check",
       sql`(${table.runnerId} is null and ${table.runnerLeaseExpiresAt} is null)
         or (${table.runnerId} is not null and ${table.runnerLeaseExpiresAt} is not null)`
+    )
+  ]
+);
+
+// The Project HQ exists independently of an AI Client execution. The execution
+// is bound only when its owner sends the first message.
+export const projectHqConversations = pgTable(
+  "project_hq_conversations",
+  {
+    projectId: uuid("project_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    managedExecutionId: uuid("managed_execution_id"),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_hq_conversations_owner_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.managedExecutionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "project_hq_conversations_owner_execution_fk"
+    }),
+    unique("project_hq_conversations_execution_unique").on(
+      table.managedExecutionId
     )
   ]
 );

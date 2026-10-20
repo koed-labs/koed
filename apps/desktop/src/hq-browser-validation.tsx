@@ -31,6 +31,22 @@ const hq203Empty =
 // Renderer-only presentation fixture. API behavior is verified in Project route tests.
 const hq208Capture =
   new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
+const hq204Capture =
+  new URLSearchParams(window.location.search).get("hq204Capture") === "yes";
+const hq204ProjectId = "00000000-0000-4000-8000-000000002038";
+const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
+const hq204SessionId = "00000000-0000-4000-8000-000000002045";
+let hq204Started = false;
+const hq204Trace = {
+  reserve: 0,
+  reserveByProject: {} as Record<string, number>,
+  start: 0,
+  inspect: 0,
+  resume: 0,
+  send: 0,
+  firstPrompt: "",
+  nextPrompt: ""
+};
 const hq108ProjectIds = [
   "hq103-koed",
   "hq103-notes",
@@ -188,6 +204,74 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    ...(hq204Capture
+      ? {
+          agents: {
+            list: async () => [
+              {
+                id: "00000000-0000-4000-8000-000000002046",
+                ownerUserId: "00000000-0000-4000-8000-000000000109",
+                name: "Chief of Staff",
+                role: "Project assistant",
+                look: {},
+                aiClientInstanceId: "codex.fixture",
+                defaultPermissionMode: "supervised",
+                defaultModel: "gpt-fixture",
+                isChiefOfStaff: true,
+                createdAt: FIXTURE_TIME
+              }
+            ]
+          },
+          projectHqConversation: {
+            reserve: async (projectId: string) => {
+              hq204Trace.reserve += 1;
+              hq204Trace.reserveByProject[projectId] =
+                (hq204Trace.reserveByProject[projectId] ?? 0) + 1;
+              return {
+                projectId,
+                executionId:
+                  projectId === hq204ProjectId && hq204Started
+                    ? hq204ExecutionId
+                    : null,
+                createdAt: FIXTURE_TIME
+              };
+            },
+            read: async (projectId: string) => ({
+              conversation: {
+                projectId,
+                executionId:
+                  projectId === hq204ProjectId && hq204Started
+                    ? hq204ExecutionId
+                    : null,
+                createdAt: FIXTURE_TIME
+              },
+              execution:
+                projectId === hq204ProjectId && hq204Started
+                  ? {
+                      state: "running",
+                      capturedSessionId: hq204SessionId,
+                      threadId: "hq204-fixture-thread",
+                      graphProjectId: "unassigned",
+                      graphThreadId: "hq204-fixture-thread",
+                      provider: "codex",
+                      aiClientInstanceId: "codex.fixture"
+                    }
+                  : null
+            }),
+            start: async (projectId: string, prompt: string) => {
+              hq204Trace.start += 1;
+              hq204Trace.firstPrompt = prompt;
+              hq204Started = true;
+              return {
+                projectId,
+                executionId: hq204ExecutionId,
+                commandId: "00000000-0000-4000-8000-000000002047",
+                commandState: "queued" as const
+              };
+            }
+          }
+        }
+      : {}),
     invoke: async (channel: string) => {
       if (channel === "ensure_independent_project")
         return {
@@ -439,6 +523,73 @@ const hq104ManagedConversations = {
   }),
   targets: async () => ({ operation: "targets", devices: [] })
 } as unknown as ManagedConversationDesktopApi;
+
+const hq204ManagedConversations = {
+  ...hq104ManagedConversations,
+  inspect: async (executionId: string) => {
+    hq204Trace.inspect += 1;
+    return {
+      operation: "inspect" as const,
+      executionId,
+      status: hq204Started ? ("ready" as const) : ("starting" as const),
+      ...(hq204Started
+        ? {
+            conversation: {
+              executionId: hq204ExecutionId,
+              projectId: hq204ProjectId,
+              capturedSessionId: hq204SessionId,
+              threadId: "hq204-fixture-thread",
+              executionOwner: {
+                driverId: "codex" as const,
+                instanceId: "codex.fixture"
+              }
+            }
+          }
+        : {})
+    };
+  },
+  resume: async () => {
+    hq204Trace.resume += 1;
+    return {
+      operation: "resume" as const,
+      status: "ready" as const,
+      conversation: {
+        executionId: hq204ExecutionId,
+        projectId: hq204ProjectId,
+        capturedSessionId: hq204SessionId,
+        threadId: "hq204-fixture-thread",
+        executionOwner: {
+          driverId: "codex" as const,
+          instanceId: "codex.fixture"
+        }
+      }
+    };
+  },
+  send: async (input: {
+    prompt: string;
+    idempotencyKey: string;
+    clientUserMessageId: string;
+  }) => {
+    hq204Trace.send += 1;
+    hq204Trace.nextPrompt = input.prompt;
+    return {
+      operation: "send" as const,
+      status: "queued" as const,
+      conversation: {
+        executionId: hq204ExecutionId,
+        projectId: hq204ProjectId,
+        capturedSessionId: hq204SessionId,
+        threadId: "hq204-fixture-thread",
+        executionOwner: {
+          driverId: "codex" as const,
+          instanceId: "codex.fixture"
+        }
+      },
+      idempotencyKey: input.idempotencyKey,
+      clientUserMessageId: input.clientUserMessageId
+    };
+  }
+} as ManagedConversationDesktopApi;
 
 const seededData = {
   fixedAt: FIXTURE_TIME,
@@ -742,12 +893,9 @@ const initialSidebarPersonalProjects = sidebarProjectGroups
       id === "hq103-notes" ? "Research archive" : name
     )
   );
-if (hq203Empty)
+if (hq203Empty || hq204Capture)
   initialSidebarPersonalProjects.push(
-    sidebarProjectRecord(
-      "00000000-0000-4000-8000-000000002038",
-      "New empty Project"
-    )
+    sidebarProjectRecord(hq204ProjectId, "New empty Project")
   );
 let sidebarPersonalProjects: Project[] = structuredClone(
   initialSidebarPersonalProjects
@@ -873,49 +1021,64 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
   },
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async ({ threadId }) =>
-    threadId === "hq103-loose-conversation-91"
+    threadId === "hq204-fixture-thread" && hq204Started
       ? [
           {
-            id: "hq105-conversation-91-user",
+            id: "hq204-first-user",
             actor: "user",
             eventType: "message",
             timestamp: FIXTURE_TIME,
             sourceEventTime: FIXTURE_TIME,
             sourceSequence: 1,
-            content: "Captured message for Conversation 91.",
-            contentPreview: "Captured message for Conversation 91.",
+            content: hq204Trace.firstPrompt,
+            contentPreview: hq204Trace.firstPrompt,
             invalidatedAt: null,
             metadata: {}
           }
         ]
-      : threadId === hq104Identity.threadId && hq104SentPrompt
+      : threadId === "hq103-loose-conversation-91"
         ? [
             {
-              id: "hq104-user",
+              id: "hq105-conversation-91-user",
               actor: "user",
               eventType: "message",
               timestamp: FIXTURE_TIME,
               sourceEventTime: FIXTURE_TIME,
               sourceSequence: 1,
-              content: hq104SentPrompt,
-              contentPreview: hq104SentPrompt,
-              invalidatedAt: null,
-              metadata: { clientUserMessageId: hq104SentMessageId }
-            },
-            {
-              id: "hq104-assistant",
-              actor: "assistant",
-              eventType: "message",
-              timestamp: FIXTURE_TIME,
-              sourceEventTime: FIXTURE_TIME,
-              sourceSequence: 2,
-              content: "I can help with that. Here is the first step.",
-              contentPreview: "I can help with that.",
+              content: "Captured message for Conversation 91.",
+              contentPreview: "Captured message for Conversation 91.",
               invalidatedAt: null,
               metadata: {}
             }
           ]
-        : [],
+        : threadId === hq104Identity.threadId && hq104SentPrompt
+          ? [
+              {
+                id: "hq104-user",
+                actor: "user",
+                eventType: "message",
+                timestamp: FIXTURE_TIME,
+                sourceEventTime: FIXTURE_TIME,
+                sourceSequence: 1,
+                content: hq104SentPrompt,
+                contentPreview: hq104SentPrompt,
+                invalidatedAt: null,
+                metadata: { clientUserMessageId: hq104SentMessageId }
+              },
+              {
+                id: "hq104-assistant",
+                actor: "assistant",
+                eventType: "message",
+                timestamp: FIXTURE_TIME,
+                sourceEventTime: FIXTURE_TIME,
+                sourceSequence: 2,
+                content: "I can help with that. Here is the first step.",
+                contentPreview: "I can help with that.",
+                invalidatedAt: null,
+                metadata: {}
+              }
+            ]
+          : [],
   assignSessionProject: async () => ({ projectId: null }),
   updateSessionTitle: async ({ title }) => ({ title }),
   updateSessionPresentation: async () => ({
@@ -1098,6 +1261,20 @@ export function HqValidationApp() {
     }
     fixture.reset();
     hq104SentPrompt = "";
+    hq204Started = false;
+    Object.assign(hq204Trace, {
+      reserve: 0,
+      reserveByProject: {},
+      start: 0,
+      inspect: 0,
+      resume: 0,
+      send: 0,
+      firstPrompt: "",
+      nextPrompt: ""
+    });
+    (
+      window as Window & { __koedHq204Trace?: typeof hq204Trace }
+    ).__koedHq204Trace = hq204Trace;
     hq104SentMessageId = "";
     hq104Recovery.clear();
     resumedFixtureIdentities.clear();
@@ -1143,7 +1320,9 @@ export function HqValidationApp() {
       onboardingComplete
       personalMemoryApi={sidebarPersonalMemoryApi}
       projectsApi={sidebarProjectsApi}
-      managedConversations={hq104ManagedConversations}
+      managedConversations={
+        hq204Capture ? hq204ManagedConversations : hq104ManagedConversations
+      }
       statusReadyOverride
       teamCollaborationEnabled
     />

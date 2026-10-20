@@ -69,11 +69,13 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
       await client.query("begin");
       const session = await client.query<{
         id: string;
+        logical_session_id: string;
+        cwd: string | null;
         automatic_personal_project_id: string | null;
         project_override_personal_project_id: string | null;
         project_override_id: string | null;
       }>(
-        `select id, automatic_personal_project_id, project_override_personal_project_id, project_override_id
+        `select id,logical_session_id,cwd, automatic_personal_project_id, project_override_personal_project_id, project_override_id
            from sessions
           where id=$1 and owner_user_id=$2 and external_session_id=$3
             and visibility='personal' and invalidated_at is null
@@ -101,6 +103,68 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
           state: "session_missing",
           projectId: null,
           sessionAssigned: false
+        };
+      }
+      // A Project HQ execution is server-owned and has a stable private path.
+      // Resolve it before ordinary local-path association can create a second
+      // Personal Project for the managed runtime's isolated directory.
+      const privateExecution = await client.query<{
+        project_id: string;
+      }>(
+        `select execution.project_id
+           from managed_conversation_executions execution
+           left join managed_conversation_runtime_bindings binding
+             on binding.execution_id=execution.id
+            and binding.owner_user_id=execution.owner_user_id
+          where execution.owner_user_id=$1 and execution.runner_device_id=$2
+            and execution.is_project_hq
+            and (execution.logical_session_id=$4
+              or binding.local_session_id=$3
+              or (execution.hq_private_path=$5 and not exists (
+                select 1 from managed_conversation_executions ordinary
+                where ordinary.owner_user_id=$1
+                  and ordinary.logical_session_id=$4
+                  and not ordinary.is_project_hq
+              )))
+          order by case when execution.logical_session_id=$4
+            then 0 when binding.local_session_id=$3 then 1 else 2 end
+          limit 1 for share of execution`,
+        [
+          input.ownerUserId,
+          input.deviceId,
+          found.id,
+          found.logical_session_id,
+          found.cwd
+        ]
+      );
+      if (privateExecution.rows[0]) {
+        const hq = privateExecution.rows[0];
+        const project = await client.query(
+          `select id from projects where id::text=$1 and owner_user_id=$2
+             and lifecycle='active' and deletion_phase is null for share`,
+          [hq.project_id, input.ownerUserId]
+        );
+        const active = Boolean(project.rows[0]);
+        const assigned =
+          active &&
+          !found.project_override_id &&
+          !found.project_override_personal_project_id &&
+          (!found.automatic_personal_project_id ||
+            found.automatic_personal_project_id === hq.project_id)
+            ? await client.query(
+                `update sessions set automatic_personal_project_id=$3,updated_at=now()
+                where id=$1 and owner_user_id=$2
+                  and project_override_personal_project_id is null
+                  and project_override_id is null`,
+                [found.id, input.ownerUserId, hq.project_id]
+              )
+            : null;
+        await client.query("commit");
+        return {
+          state: active ? "resolved" : "unresolved",
+          projectId: active ? hq.project_id : null,
+          sessionAssigned: Boolean(assigned?.rowCount),
+          ...(active ? {} : { reason: "project_unavailable" })
         };
       }
       const groupLock = `personal-project:${input.ownerUserId}:${input.deviceId}:${input.commonDirHash ?? input.localProjectId}`;

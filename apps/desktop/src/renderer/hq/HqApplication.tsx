@@ -14,6 +14,7 @@ import {
 import type { PersonalMemoryStore } from "../state/personal-memory.js";
 import type { ManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
+import type { ProjectHqConversationDesktopApi } from "../../ipc/project-hq-conversation-protocol.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
@@ -43,6 +44,7 @@ import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
+import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 
 const subscribeEmpty = () => () => undefined;
@@ -64,6 +66,7 @@ export function HqApplication({
   renderSettings,
   accountIdentity,
   managedConversations,
+  projectHqConversation,
   managedProject,
   managedConversationLifecycle,
   markdownAdapters,
@@ -83,6 +86,7 @@ export function HqApplication({
   renderSettings?: (onClose: () => void) => ReactNode;
   accountIdentity?: HqAccountIdentity;
   managedConversations?: ManagedConversationDesktopApi | null;
+  projectHqConversation?: ProjectHqConversationDesktopApi | null;
   managedProject?: ManagedProjectDesktopApi | null;
   managedConversationLifecycle?: ManagedConversationLifecycle;
   markdownAdapters?: MarkdownPlatformAdapters;
@@ -110,7 +114,7 @@ export function HqApplication({
   const [agentsStore] = useState(() =>
     agentsApi ? new AgentsStore(agentsApi) : null
   );
-  useSyncExternalStore(
+  const agentsSnapshot = useSyncExternalStore(
     agentsStore?.subscribe ?? subscribeEmpty,
     agentsStore?.current ?? emptySnapshot
   );
@@ -174,6 +178,12 @@ export function HqApplication({
     personalProjectsSnapshot?.profileKey === visibilityProfileKey
       ? (personalProjectsSnapshot?.projects ?? emptyPersonalProjects)
       : emptyPersonalProjects;
+  const chiefAgent =
+    agentsSnapshot &&
+    agentsSnapshot.ownerId === visibilityOwnerId &&
+    agentsSnapshot.profileKey === visibilityProfileKey
+      ? (agentsSnapshot.agents.find((agent) => agent.isChiefOfStaff) ?? null)
+      : null;
   const projectsAuthorityCurrent = Boolean(
     projectsStore &&
     personalProjectsSnapshot?.ownerId === visibilityOwnerId &&
@@ -304,14 +314,38 @@ export function HqApplication({
     profileKey: visibilityProfileKey,
     onOpenProject: (projectId) => selectRoute({ kind: "project", projectId })
   });
+  const personalProject =
+    route.kind === "project"
+      ? personalProjects.find(({ id }) => id === route.projectId)
+      : undefined;
+  const projectPresentation = useMemo<DesktopProject | undefined>(
+    () =>
+      personalProject
+        ? {
+            id: personalProject.id,
+            name: personalProject.name,
+            path: personalProject.folderPath,
+            eventCount: 0,
+            threads: [],
+            contextKind: "project",
+            catalogued: false,
+            discoveredAt: null,
+            lastSeenAt: null,
+            localProjectId: null,
+            branch: null,
+            remoteDisplay: null,
+            isWorktree: false
+          }
+        : undefined,
+    [personalProject]
+  );
   const project =
     route.kind === "conversation"
       ? projects.find(({ id }) => id === route.projectId)
-      : projectsStore
-        ? undefined
-        : route.kind === "project"
-          ? projects.find(({ id }) => id === route.projectId)
-          : undefined;
+      : route.kind === "project"
+        ? (projectPresentation ??
+          projects.find(({ id }) => id === route.projectId))
+        : undefined;
   useEffect(() => {
     if (project && (route !== selection.route || project !== selection.project))
       setSelection({ route, project });
@@ -511,11 +545,38 @@ export function HqApplication({
         break;
     }
   };
+  const projectHqContent =
+    route.kind === "project" &&
+    project &&
+    contextAvailable &&
+    projectHqConversation &&
+    managedConversations &&
+    managedConversationLifecycle &&
+    personalMemoryStore ? (
+      <HqProjectConversation
+        key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${project.id}`}
+        project={project}
+        chiefName={chiefAgent?.name ?? "Chief of Staff"}
+        chiefInstanceId={chiefAgent?.aiClientInstanceId ?? null}
+        api={projectHqConversation}
+        managedConversations={managedConversations}
+        managedProject={managedProject ?? null}
+        store={personalMemoryStore}
+        lifecycle={managedConversationLifecycle}
+        markdownAdapters={
+          markdownAdapters ?? {
+            openExternal: () => undefined,
+            writeClipboard: (value) => navigator.clipboard.writeText(value)
+          }
+        }
+      />
+    ) : undefined;
   return (
     <>
       <HqShell
         actionsRef={shellActions}
         contextAvailable={contextAvailable}
+        contextContent={projectHqContent}
         title={title}
         route={route}
         sidebar={({ compact }) => (
@@ -694,6 +755,10 @@ export function HqApplication({
               }
               onSelectConversation={openNowNeed}
             />
+          ) : route.kind === "project" && project && projectHqContent ? (
+            <div className="hq-project-route__overview">
+              <h1>{project.name}</h1>
+            </div>
           ) : route.kind === "conversation" &&
             project &&
             conversationThread &&

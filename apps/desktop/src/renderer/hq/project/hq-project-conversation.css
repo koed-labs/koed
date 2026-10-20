@@ -1,0 +1,111 @@
+.hq-project-conversation__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 58px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hq-line);
+  color: var(--hq-muted);
+  font-size: 13px;
+}
+.hq-project-conversation {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.hq-project-conversation__active,
+.hq-project-conversation__empty {
+  flex: 1;
+  min-height: 0;
+}
+.hq-project-conversation__header strong {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--hq-surface-hover);
+  color: var(--hq-fg);
+  font-weight: 600;
+}
+.hq-project-conversation .hq-composer__permission-trigger span {
+  display: none;
+}
+.hq-project-conversation__empty .hq-conversation__scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--hq-muted);
+  font-size: 13px;
+}
+.hq-project-conversation__active
+  .hq-conversation--blank:has(.hq-conversation__hero-composer) {
+  gap: 0;
+  padding-bottom: 0;
+  justify-content: flex-start;
+}
+.hq-project-conversation__active
+  .hq-conversation--blank
+  .hq-conversation__hero {
+  flex: 1;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 12px 16px;
+}
+.hq-project-conversation__active .hq-conversation__hero h1 {
+  display: none;
+}
+.hq-project-conversation__active .hq-conversation__hero-composer {
+  width: min(100% - 32px, 760px);
+  margin: 0 auto 16px !important;
+}
+.hq-project-conversation .hq-composer__toolbar {
+  justify-content: flex-start;
+  padding-left: 13px;
+  color: var(--hq-muted);
+  font-size: 13px;
+}
+.hq-project-conversation__status {
+  margin-left: auto;
+  font-size: 12px;
+}
+.hq-project-conversation__unsent {
+  border-top: 1px solid var(--hq-line);
+  padding: 12px 16px;
+  font-size: 12px;
+}
+.hq-project-conversation__unsent p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.hq-project-conversation__unsent button {
+  text-decoration: underline;
+}
+.hq-project-conversation__recovery {
+  display: flex;
+  gap: 12px;
+  padding: 8px 14px;
+}
+.hq-project-conversation__recovery button {
+  color: var(--hq-fg);
+  text-decoration: underline;
+}
+.hq-project-route__overview {
+  min-height: 100%;
+  padding: 40px;
+}
+.hq-project-route__overview h1 {
+  margin: 0;
+  font-size: 29px;
+  letter-spacing: -0.035em;
+}
+.hq-context__body > .hq-project-conversation {
+  height: 100%;
+}
+@media (max-width: 760px) {
+  .hq-project-route__overview {
+    padding: 24px;
+  }
+}

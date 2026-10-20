@@ -5613,6 +5613,124 @@ describeDb("Shared Memory repository", () => {
     expect(
       admitted.rows.every((row) => row.owner_user_id === fixture.ownerUserId)
     ).toBe(true);
+    const remoteSource = sources[0]!;
+    if (remoteSource.kind !== "captured_session")
+      throw new Error("Expected a remote captured Session source");
+    const shareAuthority = authority(fixture);
+    const remotePreview = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        source: remoteSource,
+        sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        logicalMemoryId: remoteSource.logicalMemoryId,
+        candidateHash: hash("prebound-remote-pending"),
+        sourceRevision: 1,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: [
+          {
+            sourceId: remoteSource.sessionId,
+            revisionHash: hash("prebound-remote-pending-revision")
+          }
+        ],
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    expect(remotePreview).not.toBeNull();
+    const remotePendingInput: Parameters<
+      SharedMemoryRepository["createPendingShare"]
+    >[1] = {
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId: randomUUID(),
+      source: remoteSource,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      logicalMemoryId: remoteSource.logicalMemoryId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      preview: remotePreview!,
+      previewRevision: remotePreview!.previewRevision,
+      mode: "continuous",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      authority: shareAuthority
+    };
+    const remotePending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      remotePendingInput
+    );
+    expect(remotePending.state).toBe("preparing");
+    // A remote provenance record cannot launder a known private or foreign
+    // local Session into a Share candidate.
+    for (const localOwner of [fixture.ownerUserId, fixture.outsiderUserId]) {
+      const localSessionId = randomUUID();
+      await pool.query(
+        `insert into sessions(id,owner_user_id,visibility,source_runtime,capture_method,metadata)
+         values ($1,$2,'personal','codex','transcript',$3::jsonb)`,
+        [
+          localSessionId,
+          localOwner,
+          JSON.stringify({ managedConversation: true })
+        ]
+      );
+      const localLogicalMemoryId = crossIdentitySyncDeterministicUuid({
+        protocol: "koed.captured-session-sync/v1",
+        sourceDeploymentId: sourceDeploymentProtocolId,
+        sourceUserId: sourceOwnerPrincipalId,
+        originSessionId: localSessionId,
+        identity: "logical-memory"
+      });
+      await expect(
+        repository.createSharedMemoryCandidatePreview(
+          actor(fixture.ownerUserId),
+          {
+            source: {
+              kind: "captured_session",
+              sessionId: localSessionId,
+              logicalMemoryId: localLogicalMemoryId
+            },
+            sourceDeploymentProtocolId,
+            sourceOwnerPrincipalId,
+            deviceCredentialId: fixture.deviceCredentialId,
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            logicalMemoryId: localLogicalMemoryId,
+            candidateHash: hash(`known-local-${localOwner}`),
+            sourceRevision: 1,
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [
+              {
+                sourceId: localSessionId,
+                revisionHash: hash(`known-local-revision-${localOwner}`)
+              }
+            ],
+            byteCount: 128,
+            teamId: fixture.teamId,
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            mode: "continuous",
+            authority: {
+              action: SHARED_MEMORY_AUTHORITY,
+              source: "device_action_grant",
+              referenceId: randomUUID()
+            }
+          }
+        )
+      ).rejects.toThrow("Project HQ Conversation cannot be shared");
+    }
     await expect(
       pool.query<{ count: string }>(
         `select count(*)::text as count
@@ -5735,6 +5853,12 @@ describeDb("Shared Memory repository", () => {
         where local_user_id=$1 and external_user_identity_id=$2`,
       [fixture.ownerUserId, fixture.remoteUserIdentityId]
     );
+    await expect(
+      repository.createPendingShare(
+        actor(fixture.ownerUserId),
+        remotePendingInput
+      )
+    ).rejects.toThrow("Project HQ Conversation cannot be shared");
     const revokedSource = sources[0]!;
     if (revokedSource.kind !== "captured_session") {
       throw new Error("Expected captured session source");

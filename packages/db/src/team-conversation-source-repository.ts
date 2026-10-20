@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { isPrivacyMaterializationSourceAdapter } from "@koed/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
+import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
 import type {
   ActorContext,
   ConversationSourceArtifactRecord,
@@ -730,9 +731,21 @@ export const createTeamConversationSourceRepository = (
         [input.shareGrantId, actor.userId, input.teamId]
       );
       const parentRow = parent.rows[0];
-      if (!parentRow || !parentRow.local_session_id) {
+      if (
+        !parentRow ||
+        typeof parentRow.local_session_id !== "string" ||
+        !parentRow.local_session_id
+      ) {
         throw new TeamConversationSourceAuthorizationError();
       }
+      if (
+        !(await capturedSessionMayLeavePersonalBoundary(
+          client,
+          actor.userId,
+          parentRow.local_session_id
+        ))
+      )
+        throw new TeamConversationSourceAuthorizationError();
       const artifactResult = await client.query<Row>(
         `select candidate.* from conversation_source_artifacts candidate
           where candidate.owner_user_id = $1 and candidate.session_id = $2

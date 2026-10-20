@@ -13,6 +13,8 @@ import {
   projectDeletePreviewSchema,
   projectDeleteStatusSchema,
   projectHqSchema,
+  projectHqConversationSchema,
+  projectHqConversationReadSchema,
   projectListQuerySchema,
   projectListSchema,
   projectRestoreSchema,
@@ -621,6 +623,36 @@ export function registerProjectRoutes(
       const { id } = paramsSchema.parse(request.params);
       try {
         return projectHqSchema.parse(await repo().hq(user.id, id));
+      } catch (error) {
+        return handle(reply, error);
+      }
+    }
+  );
+  app.post(
+    "/v1/projects/:id/hq/conversation",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const user = await authenticate(request, true);
+      const { id } = paramsSchema.parse(request.params);
+      try {
+        return projectHqConversationSchema.parse(
+          await repo().reserveHqConversation(user.id, id)
+        );
+      } catch (error) {
+        return handle(reply, error);
+      }
+    }
+  );
+  app.get(
+    "/v1/projects/:id/hq/conversation",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const user = await authenticateProjectRead(request, input);
+      const { id } = paramsSchema.parse(request.params);
+      try {
+        return projectHqConversationReadSchema.parse(
+          await repo().readHqConversation(user.id, id)
+        );
       } catch (error) {
         return handle(reply, error);
       }

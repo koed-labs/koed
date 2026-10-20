@@ -93,18 +93,20 @@ const draftScope = (identity: ManagedConversationIdentity) => ({
   threadId: identity.threadId
 });
 
-function Settings({
+export function HqConversationSettings({
   options,
   selection,
   onChange,
   locked,
-  disabled
+  disabled,
+  permissionOnly = false
 }: {
   options: ManagedConversationLaunchOptions | null;
   selection: HqSelection;
   onChange: (value: HqSelection) => void;
   locked?: boolean;
   disabled?: boolean;
+  permissionOnly?: boolean;
 }) {
   const instance = options?.instances.find(
     (item) => item.instanceId === selection.instanceId
@@ -228,171 +230,177 @@ function Settings({
         </DropdownMenuPopup>
       </DropdownMenu>
       <div className="hq-composer__spacer" />
-      <div className="hq-conversation-settings">
-        <DropdownMenu onOpenChange={() => setModelList(false)}>
-          <DropdownMenuTrigger
-            className="hq-composer__setting-trigger hq-composer__model-trigger"
-            aria-label={`Model and reasoning: ${(model?.displayName ?? selection.model) || "Unavailable"}${selection.reasoningEffort ? `, ${hqReasoningLabel(selection.reasoningEffort)}` : ""}; AI Client: ${instance?.displayName ?? "Unavailable"}`}
-            disabled={disabled}
-          >
-            <span>{(model?.displayName ?? selection.model) || "Model"}</span>
-            {selection.reasoningEffort ? (
-              <>
-                <span
-                  className="hq-composer__heat"
-                  style={{
-                    background: `var(--hq-heat-${hqReasoningHeat(effortIndex, efforts.length)})`
-                  }}
-                  aria-hidden="true"
-                />
-                <span className="hq-composer__effort-label">
-                  {hqReasoningLabel(selection.reasoningEffort)}
-                </span>
-              </>
-            ) : null}
-            <ChevronDown size={14} />
-          </DropdownMenuTrigger>
-          <DropdownMenuPopup
-            side="top"
-            align="end"
-            className="hq-conversation-menu hq-conversation-menu--model"
-          >
-            {modelList ? (
-              <>
-                <DropdownMenuItem
-                  closeOnClick={false}
-                  onClick={() => setModelList(false)}
-                >
-                  <ChevronLeft size={14} /> Back
-                </DropdownMenuItem>
-                <DropdownMenuRadioGroup
-                  value={`${selection.instanceId}\u0000${selection.model}`}
-                  onValueChange={(value) => {
-                    const [instanceId, modelId] = value.split("\u0000");
-                    if (instanceId && modelId) chooseModel(instanceId, modelId);
-                  }}
-                >
-                  {options?.instances.map((client) => (
-                    <DropdownMenuGroup key={client.instanceId}>
-                      <DropdownMenuLabel>
-                        {client.displayName}
-                      </DropdownMenuLabel>
-                      {client.models.map((item) => (
-                        <DropdownMenuRadioItem
-                          className="hq-conversation-menu__item"
-                          key={`${client.instanceId}:${item.id}`}
-                          value={`${client.instanceId}\u0000${item.id}`}
-                          disabled={
-                            !client.ready ||
-                            (locked &&
-                              client.instanceId !== selection.instanceId)
-                          }
-                        >
-                          {item.displayName ?? item.id}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuGroup>
-                  ))}
-                </DropdownMenuRadioGroup>
-                {locked ? (
-                  <p>Start a new Conversation to change AI Client.</p>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <div className="hq-reasoning__top">
-                  <div className="hq-reasoning__title">
-                    <strong>
-                      {hqReasoningLabel(selection.reasoningEffort)}
-                    </strong>
-                    <button
-                      type="button"
-                      onClick={() => setModelList(true)}
-                      aria-label="Choose AI Client and model"
-                    >
-                      {(model?.displayName ?? selection.model) ||
-                        "Select model"}
-                      <ChevronRight size={12} />
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="hq-reasoning__reset"
-                    aria-label="Reset reasoning effort"
-                    title="Reset reasoning effort"
-                    disabled={!model || !efforts.length}
-                    onClick={() => {
-                      if (!model) return;
-                      onChange({
-                        ...selection,
-                        reasoningEffort: efforts.includes("medium")
-                          ? "medium"
-                          : (model.defaultReasoningEffort ?? efforts[0] ?? "")
-                      });
+      {!permissionOnly ? (
+        <div className="hq-conversation-settings">
+          <DropdownMenu onOpenChange={() => setModelList(false)}>
+            <DropdownMenuTrigger
+              className="hq-composer__setting-trigger hq-composer__model-trigger"
+              aria-label={`Model and reasoning: ${(model?.displayName ?? selection.model) || "Unavailable"}${selection.reasoningEffort ? `, ${hqReasoningLabel(selection.reasoningEffort)}` : ""}; AI Client: ${instance?.displayName ?? "Unavailable"}`}
+              disabled={disabled}
+            >
+              <span>{(model?.displayName ?? selection.model) || "Model"}</span>
+              {selection.reasoningEffort ? (
+                <>
+                  <span
+                    className="hq-composer__heat"
+                    style={{
+                      background: `var(--hq-heat-${hqReasoningHeat(effortIndex, efforts.length)})`
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span className="hq-composer__effort-label">
+                    {hqReasoningLabel(selection.reasoningEffort)}
+                  </span>
+                </>
+              ) : null}
+              <ChevronDown size={14} />
+            </DropdownMenuTrigger>
+            <DropdownMenuPopup
+              side="top"
+              align="end"
+              className="hq-conversation-menu hq-conversation-menu--model"
+            >
+              {modelList ? (
+                <>
+                  <DropdownMenuItem
+                    closeOnClick={false}
+                    onClick={() => setModelList(false)}
+                  >
+                    <ChevronLeft size={14} /> Back
+                  </DropdownMenuItem>
+                  <DropdownMenuRadioGroup
+                    value={`${selection.instanceId}\u0000${selection.model}`}
+                    onValueChange={(value) => {
+                      const [instanceId, modelId] = value.split("\u0000");
+                      if (instanceId && modelId)
+                        chooseModel(instanceId, modelId);
                     }}
                   >
-                    <RotateCcw size={14} />
-                  </button>
-                </div>
-                {efforts.length ? (
-                  <div
-                    className="hq-reasoning__bars"
-                    role="radiogroup"
-                    aria-label="Reasoning effort"
-                  >
-                    {efforts.map((effort, index) => (
-                      <button
-                        key={effort}
-                        type="button"
-                        ref={(node) => {
-                          effortButtons.current[index] = node;
-                        }}
-                        role="radio"
-                        aria-label={`Reasoning effort: ${hqReasoningLabel(effort)}`}
-                        aria-checked={selection.reasoningEffort === effort}
-                        tabIndex={selection.reasoningEffort === effort ? 0 : -1}
-                        onClick={() => chooseEffort(index)}
-                        onKeyDown={(event) => {
-                          const next =
-                            event.key === "ArrowRight" ||
-                            event.key === "ArrowUp"
-                              ? (index + 1) % efforts.length
-                              : event.key === "ArrowLeft" ||
-                                  event.key === "ArrowDown"
-                                ? (index - 1 + efforts.length) % efforts.length
-                                : event.key === "Home"
-                                  ? 0
-                                  : event.key === "End"
-                                    ? efforts.length - 1
-                                    : -1;
-                          if (next < 0) return;
-                          event.preventDefault();
-                          chooseEffort(next);
-                          effortButtons.current[next]?.focus();
-                        }}
-                        style={
-                          {
-                            "--hq-reasoning-heat": `var(--hq-heat-${hqReasoningHeat(index, efforts.length)})`
-                          } as React.CSSProperties
-                        }
-                      >
-                        {Array.from(
-                          { length: hqReasoningHeat(index, efforts.length) },
-                          (_, segment) => (
-                            <i key={segment} aria-hidden="true" />
-                          )
-                        )}
-                      </button>
+                    {options?.instances.map((client) => (
+                      <DropdownMenuGroup key={client.instanceId}>
+                        <DropdownMenuLabel>
+                          {client.displayName}
+                        </DropdownMenuLabel>
+                        {client.models.map((item) => (
+                          <DropdownMenuRadioItem
+                            className="hq-conversation-menu__item"
+                            key={`${client.instanceId}:${item.id}`}
+                            value={`${client.instanceId}\u0000${item.id}`}
+                            disabled={
+                              !client.ready ||
+                              (locked &&
+                                client.instanceId !== selection.instanceId)
+                            }
+                          >
+                            {item.displayName ?? item.id}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuGroup>
                     ))}
+                  </DropdownMenuRadioGroup>
+                  {locked ? (
+                    <p>Start a new Conversation to change AI Client.</p>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <div className="hq-reasoning__top">
+                    <div className="hq-reasoning__title">
+                      <strong>
+                        {hqReasoningLabel(selection.reasoningEffort)}
+                      </strong>
+                      <button
+                        type="button"
+                        onClick={() => setModelList(true)}
+                        aria-label="Choose AI Client and model"
+                      >
+                        {(model?.displayName ?? selection.model) ||
+                          "Select model"}
+                        <ChevronRight size={12} />
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="hq-reasoning__reset"
+                      aria-label="Reset reasoning effort"
+                      title="Reset reasoning effort"
+                      disabled={!model || !efforts.length}
+                      onClick={() => {
+                        if (!model) return;
+                        onChange({
+                          ...selection,
+                          reasoningEffort: efforts.includes("medium")
+                            ? "medium"
+                            : (model.defaultReasoningEffort ?? efforts[0] ?? "")
+                        });
+                      }}
+                    >
+                      <RotateCcw size={14} />
+                    </button>
                   </div>
-                ) : (
-                  <p>Reasoning effort is unavailable for this model.</p>
-                )}
-              </>
-            )}
-          </DropdownMenuPopup>
-        </DropdownMenu>
-      </div>
+                  {efforts.length ? (
+                    <div
+                      className="hq-reasoning__bars"
+                      role="radiogroup"
+                      aria-label="Reasoning effort"
+                    >
+                      {efforts.map((effort, index) => (
+                        <button
+                          key={effort}
+                          type="button"
+                          ref={(node) => {
+                            effortButtons.current[index] = node;
+                          }}
+                          role="radio"
+                          aria-label={`Reasoning effort: ${hqReasoningLabel(effort)}`}
+                          aria-checked={selection.reasoningEffort === effort}
+                          tabIndex={
+                            selection.reasoningEffort === effort ? 0 : -1
+                          }
+                          onClick={() => chooseEffort(index)}
+                          onKeyDown={(event) => {
+                            const next =
+                              event.key === "ArrowRight" ||
+                              event.key === "ArrowUp"
+                                ? (index + 1) % efforts.length
+                                : event.key === "ArrowLeft" ||
+                                    event.key === "ArrowDown"
+                                  ? (index - 1 + efforts.length) %
+                                    efforts.length
+                                  : event.key === "Home"
+                                    ? 0
+                                    : event.key === "End"
+                                      ? efforts.length - 1
+                                      : -1;
+                            if (next < 0) return;
+                            event.preventDefault();
+                            chooseEffort(next);
+                            effortButtons.current[next]?.focus();
+                          }}
+                          style={
+                            {
+                              "--hq-reasoning-heat": `var(--hq-heat-${hqReasoningHeat(index, efforts.length)})`
+                            } as React.CSSProperties
+                          }
+                        >
+                          {Array.from(
+                            { length: hqReasoningHeat(index, efforts.length) },
+                            (_, segment) => (
+                              <i key={segment} aria-hidden="true" />
+                            )
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>Reasoning effort is unavailable for this model.</p>
+                  )}
+                </>
+              )}
+            </DropdownMenuPopup>
+          </DropdownMenu>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -419,6 +427,7 @@ function Composer({
   slashCommands,
   lockDraft,
   settingsDisabled,
+  privateProjectHq,
   visibility
 }: {
   value: string;
@@ -442,6 +451,7 @@ function Composer({
   slashCommands?: ManagedConversationSlashCommand[];
   lockDraft?: boolean;
   settingsDisabled?: boolean;
+  privateProjectHq?: boolean;
   visibility: HqVisibility;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -543,53 +553,61 @@ function Composer({
           >
             <Paperclip size={17} />
           </button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              className="hq-composer__setting-trigger hq-composer__project-trigger"
-              aria-label={`Project: ${projects.find((item) => item.id === projectId)?.name ?? "Choose Project"}`}
-              disabled={!onProjectChange || busy}
-            >
-              <Folder size={15} />
-              <span>
-                {projects.find((item) => item.id === projectId)?.contextKind ===
-                "independent"
-                  ? "Just me"
-                  : (projects.find((item) => item.id === projectId)?.name ??
-                    "Choose Project")}
-              </span>
-              <ChevronDown size={14} />
-            </DropdownMenuTrigger>
-            <DropdownMenuPopup
-              side="top"
-              align="start"
-              className="hq-conversation-menu"
-            >
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>Project</DropdownMenuLabel>
-              </DropdownMenuGroup>
-              <DropdownMenuRadioGroup
-                value={projectId}
-                onValueChange={(value) => onProjectChange?.(value)}
+          {!privateProjectHq ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="hq-composer__setting-trigger hq-composer__project-trigger"
+                aria-label={`Project: ${projects.find((item) => item.id === projectId)?.name ?? "Choose Project"}`}
+                disabled={!onProjectChange || busy}
               >
-                {projects.map((item) => (
-                  <DropdownMenuRadioItem
-                    className="hq-conversation-menu__item"
-                    key={item.id}
-                    value={item.id}
-                  >
-                    {item.contextKind === "independent" ? "Just me" : item.name}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuPopup>
-          </DropdownMenu>
-          <Settings
+                <Folder size={15} />
+                <span>
+                  {projects.find((item) => item.id === projectId)
+                    ?.contextKind === "independent"
+                    ? "Just me"
+                    : (projects.find((item) => item.id === projectId)?.name ??
+                      "Choose Project")}
+                </span>
+                <ChevronDown size={14} />
+              </DropdownMenuTrigger>
+              <DropdownMenuPopup
+                side="top"
+                align="start"
+                className="hq-conversation-menu"
+              >
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>Project</DropdownMenuLabel>
+                </DropdownMenuGroup>
+                <DropdownMenuRadioGroup
+                  value={projectId}
+                  onValueChange={(value) => onProjectChange?.(value)}
+                >
+                  {projects.map((item) => (
+                    <DropdownMenuRadioItem
+                      className="hq-conversation-menu__item"
+                      key={item.id}
+                      value={item.id}
+                    >
+                      {item.contextKind === "independent"
+                        ? "Just me"
+                        : item.name}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuPopup>
+            </DropdownMenu>
+          ) : null}
+          <HqConversationSettings
             options={options}
             selection={selection}
             onChange={onSelectionChange}
             locked={locked}
             disabled={busy || active || settingsDisabled}
+            permissionOnly={privateProjectHq}
           />
+          {privateProjectHq ? (
+            <span className="hq-project-conversation__status">Auto</span>
+          ) : null}
           {active ? (
             <button
               className="hq-composer__send"
@@ -988,6 +1006,8 @@ export function HqBlankConversation({
 
 export function HqActiveConversation({
   api,
+  privateProjectHq = false,
+  privateProjectHqIdentity,
   managedProject,
   store,
   project,
@@ -1005,6 +1025,8 @@ export function HqActiveConversation({
   inventoryOnly = false
 }: {
   api: ManagedConversationDesktopApi | null;
+  privateProjectHq?: boolean;
+  privateProjectHqIdentity?: ManagedConversationIdentity;
   managedProject: ManagedProjectDesktopApi | null;
   store: PersonalMemoryStore;
   project: DesktopProject;
@@ -1046,7 +1068,7 @@ export function HqActiveConversation({
   const conversation =
     resumed?.key === identityKey
       ? resumed.conversation
-      : (draft?.conversation ?? null);
+      : (draft?.conversation ?? privateProjectHqIdentity ?? null);
   const visibilityIdentity = hqVisibilityIdentity(
     thread,
     detailThread,
@@ -1293,7 +1315,9 @@ export function HqActiveConversation({
           void store.loadInitial(
             {
               ...detailThread,
-              id: conversation?.threadId ?? detailThread.id,
+              id: privateProjectHq
+                ? detailThread.id
+                : (conversation?.threadId ?? detailThread.id),
               sessionId:
                 conversation?.capturedSessionId ?? detailThread.sessionId
             },
@@ -1508,7 +1532,7 @@ export function HqActiveConversation({
       .resume({
         projectId: project.id,
         capturedSessionId: detailThread.sessionId,
-        threadId: detailThread.id
+        threadId: privateProjectHqIdentity?.threadId ?? detailThread.id
       })
       .then((result) => {
         if (!active || identityKeyRef.current !== identityKey) return;
@@ -1529,7 +1553,14 @@ export function HqActiveConversation({
     return () => {
       active = false;
     };
-  }, [api, identityKey, project.id, detailThread.id, detailThread.sessionId]);
+  }, [
+    api,
+    identityKey,
+    project.id,
+    detailThread.id,
+    detailThread.sessionId,
+    privateProjectHqIdentity?.threadId
+  ]);
   useEffect(() => {
     if (!api || !conversation) return;
     let alive = true;
@@ -2247,7 +2278,8 @@ export function HqActiveConversation({
           </p>
         ) : null}
         <Composer
-          visibility={visibility}
+          visibility={privateProjectHq ? "personal-private" : visibility}
+          privateProjectHq={privateProjectHq}
           value={prompt}
           setValue={(value) => {
             if (sendLocked || resumeStatus === "read_only" || !recoveryReady)
@@ -2344,7 +2376,7 @@ export function HqActiveConversation({
             </button>
           </div>
         ) : null}
-        {usage?.usage ? (
+        {!privateProjectHq && usage?.usage ? (
           <p
             className="hq-conversation__usage"
             title={`Input ${usage.usage.inputTokens ?? 0} · Output ${usage.usage.outputTokens ?? 0}`}
@@ -2365,7 +2397,10 @@ export function HqActiveConversation({
             Secure Conversation recovery is unavailable. Sending is paused.
           </p>
         ) : null}
-        {authorizeTransfer && executionId && resumeStatus === "ready" ? (
+        {!privateProjectHq &&
+        authorizeTransfer &&
+        executionId &&
+        resumeStatus === "ready" ? (
           <details
             className="hq-conversation__transfer"
             onToggle={(event) => {

@@ -2,7 +2,7 @@
 
 Status: First-class storage, local capture association, and the Projects API
 are implemented under [ADR 0059](./adr/0059-first-class-personal-projects.md).
-The HQ Conversation and shared Project links remain later work.
+The private HQ Conversation is implemented locally; shared Project links remain later work.
 
 The Desktop Projects bridge reads the owner-scoped `/v1/projects` and
 `/v1/projects/:id/hq` endpoints and submits create and lifecycle actions with
@@ -19,6 +19,33 @@ the Desktop keeps that ID separate from local discovery and execution IDs.
 The capture association commits an owner-scoped Project change event with a
 new Project or first Session assignment. HQ refreshes both the Project list
 and captured graph after that event or an authoritative reconnect.
+
+## Private HQ Conversation
+
+Opening a Personal Project in HQ reserves one owner-bound private Conversation.
+This creates no provider run and sends no prompt. The first actual message starts
+its Managed Conversation through the validated local execution path, using the
+configured Chief of Staff instance and Ask first permission mode by default.
+The first message is retained exactly; a retry of the same first message returns
+the same execution, while a competing first message must be reviewed and sent
+separately. A Project without a folder uses a Koed-owned private working directory.
+The captured Session is associated with the original Personal Project, including
+when capture happens before a provider thread ID is known.
+
+The HQ Conversation opens in the Project's right pane under “Just me.” Its
+captured transcript remains available after the run stops or the Project is
+restored. Stopped runs are read-only when the existing managed runtime cannot
+resume them. Project delete and restore include the HQ execution and captured
+Session; a hard-purged Project cannot dispatch new HQ work.
+
+The HQ source is excluded from the ordinary Conversation sidebar and Team
+sharing. Both direct sharing and existing-grant publication reject it. The
+private classification survives late capture and execution cleanup. HQ sources
+also do not publish through Personal Device Sync V1 or cross-identity sync,
+because those transports cannot carry the private classification; ordinary
+Conversation sync is unchanged. HQ Conversations remain local to their owner
+device until a privacy-aware transport is available. Personal capture and
+recall on that device continue to work.
 
 ## Purpose
 

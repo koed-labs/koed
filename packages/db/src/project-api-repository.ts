@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
-import type { CreateProject, PatchProject, Project } from "@koed/shared";
+import type {
+  CreateProject,
+  PatchProject,
+  Project,
+  ProjectHqConversation
+} from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { createProjectActivityRepository } from "./project-activity-repository.js";
 
@@ -162,7 +167,8 @@ const activeExecutionSet = async (
       on context.owner_user_id=execution.owner_user_id
      and context.device_id=execution.runner_device_id
      and context.local_project_id=execution.project_id
-   where execution.owner_user_id=$1 and context.association_state='unresolved'
+   where execution.owner_user_id=$1 and not execution.is_project_hq
+     and context.association_state='unresolved'
      and execution.state in ('starting','running','reconciling','quiesce_requested','quiesced','stopping')
    limit 1`,
     [ownerUserId]
@@ -179,12 +185,16 @@ const activeExecutionSet = async (
   }>(
     `select execution.id,execution.execution_generation,execution.state,execution.state_version
        from managed_conversation_executions execution
-       join project_local_contexts context
-         on context.owner_user_id=execution.owner_user_id
-        and context.device_id=execution.runner_device_id
-        and context.local_project_id=execution.project_id
-      where execution.owner_user_id=$1 and context.project_id=$2
-        and context.association_state='resolved'
+      where execution.owner_user_id=$1
+        and ((execution.is_project_hq and execution.project_id=$2::text)
+          or (not execution.is_project_hq and exists (
+            select 1 from project_local_contexts context
+             where context.owner_user_id=execution.owner_user_id
+               and context.device_id=execution.runner_device_id
+               and context.local_project_id=execution.project_id
+               and context.project_id=$2::uuid
+               and context.association_state='resolved'
+          )))
         and execution.state in ('starting','running','reconciling','quiesce_requested','quiesced','stopping')
       order by execution.id`,
     [ownerUserId, projectId]
@@ -372,6 +382,102 @@ export const createProjectApiRepository = (
   pool: pg.Pool,
   options: { configuredBackendIds?: () => string[] } = {}
 ) => ({
+  async readHqConversation(ownerUserId: string, projectId: string) {
+    const project = await pool.query(
+      `select 1 from projects where id=$1 and owner_user_id=$2
+        and lifecycle='active' and deletion_phase is null`,
+      [projectId, ownerUserId]
+    );
+    if (!project.rowCount) throw new ProjectNotFoundError("Project not found");
+    const result = await pool.query<{
+      project_id: string;
+      managed_execution_id: string | null;
+      created_at: Date;
+      state: string | null;
+      captured_session_id: string | null;
+      graph_project_id: string | null;
+      graph_thread_id: string | null;
+      provider_thread_id: string | null;
+      provider: string | null;
+      ai_client_instance_id: string | null;
+    }>(
+      `select h.project_id,h.managed_execution_id,h.created_at,
+              execution.state,coalesce(binding.local_session_id,captured.id) as captured_session_id,
+              coalesce(local_session.project_override_id,local_session.automatic_project_id,'unassigned') as graph_project_id,
+              coalesce(local_session.metadata->>'externalSessionId',local_session.external_session_id,local_session.id::text) as graph_thread_id,
+              execution.provider_thread_id,execution.provider,execution.ai_client_instance_id
+         from project_hq_conversations h
+         join projects project on project.id=h.project_id
+           and project.owner_user_id=h.owner_user_id
+           and project.lifecycle='active' and project.deletion_phase is null
+         left join managed_conversation_executions execution
+           on execution.id=h.managed_execution_id
+          and execution.owner_user_id=h.owner_user_id
+          and execution.is_project_hq
+         left join managed_conversation_runtime_bindings binding
+           on binding.execution_id=execution.id
+          and binding.owner_user_id=execution.owner_user_id
+         left join lateral (
+           select id from sessions
+            where owner_user_id=h.owner_user_id
+              and logical_session_id=execution.logical_session_id
+            order by captured_at desc nulls last,id desc limit 1
+         ) captured on true
+         left join sessions local_session
+           on local_session.id=coalesce(binding.local_session_id,captured.id)
+          and local_session.owner_user_id=h.owner_user_id
+        where h.project_id=$1 and h.owner_user_id=$2`,
+      [projectId, ownerUserId]
+    );
+    const row = result.rows[0];
+    return {
+      conversation: row
+        ? {
+            projectId: row.project_id,
+            executionId: row.managed_execution_id,
+            createdAt: row.created_at.toISOString()
+          }
+        : null,
+      execution:
+        row?.state && row.provider && row.ai_client_instance_id
+          ? {
+              state: row.state,
+              capturedSessionId: row.captured_session_id,
+              threadId: row.provider_thread_id,
+              graphProjectId: row.graph_project_id,
+              graphThreadId: row.graph_thread_id,
+              provider: row.provider,
+              aiClientInstanceId: row.ai_client_instance_id
+            }
+          : null
+    };
+  },
+  async reserveHqConversation(
+    ownerUserId: string,
+    projectId: string
+  ): Promise<ProjectHqConversation> {
+    return inTransaction(pool, async (client) => {
+      const project = await ownerProject(client, ownerUserId, projectId, true);
+      activeOnly(project);
+      const result = await client.query<{
+        project_id: string;
+        managed_execution_id: string | null;
+        created_at: Date;
+      }>(
+        `insert into project_hq_conversations(project_id,owner_user_id)
+         values ($1,$2) on conflict(project_id) do update
+           set owner_user_id=excluded.owner_user_id
+         returning project_id,managed_execution_id,created_at`,
+        [projectId, ownerUserId]
+      );
+      const row = result.rows[0]!;
+      return {
+        projectId: row.project_id,
+        executionId: row.managed_execution_id,
+        createdAt: row.created_at.toISOString()
+      };
+    });
+  },
   async list(
     ownerUserId: string,
     input: { limit: number; cursor?: string; includeDeleted: boolean }
@@ -525,6 +631,19 @@ export const createProjectApiRepository = (
       `select
         (select count(*)::text from sessions s where s.owner_user_id=$1 and s.visibility='personal'
           and s.invalidated_at is null and s.personal_deleted_at is null and s.trashed_at is null
+          and not exists (
+            select 1 from project_hq_conversations hq
+            left join managed_conversation_executions execution
+              on execution.id=hq.managed_execution_id
+             and execution.owner_user_id=hq.owner_user_id
+            left join managed_conversation_runtime_bindings binding
+              on binding.execution_id=hq.managed_execution_id
+             and binding.owner_user_id=hq.owner_user_id
+            where hq.owner_user_id=s.owner_user_id
+              and (execution.logical_session_id=s.logical_session_id
+                or binding.local_session_id=s.id
+                or (s.cwd is not null and binding.project_path=s.cwd))
+          )
           and (case when s.project_override_id is not null then s.project_override_personal_project_id
                else s.automatic_personal_project_id end)=$2) as conversations,
         (select count(*)::text from project_work_items wi where wi.owner_user_id=$1 and wi.project_id=$2 and wi.deleted_at is null) as work_items`,

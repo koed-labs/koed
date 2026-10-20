@@ -1,0 +1,77 @@
+import { randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import { createProjectHqConversationPreloadApi } from "./project-hq-conversation-preload.js";
+import { projectHqConversationChannel } from "./project-hq-conversation-protocol.js";
+
+describe("Project HQ Conversation preload", () => {
+  it("preserves the first prompt and permission mode while rejecting invalid requests before IPC", async () => {
+    const projectId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const prompt = "  Review this Project.\nKeep the spacing exactly.  ";
+    const invoke = vi.fn().mockResolvedValue({
+      operation: "start",
+      projectId,
+      executionId,
+      commandId,
+      commandState: "queued"
+    });
+    const api = createProjectHqConversationPreloadApi(invoke);
+
+    await expect(api.start(projectId, prompt, "auto_edit")).resolves.toEqual({
+      projectId,
+      executionId,
+      commandId,
+      commandState: "queued"
+    });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      projectHqConversationChannel,
+      { operation: "start", projectId, prompt, permissionMode: "auto_edit" }
+    );
+
+    await expect(api.start("not-a-uuid", prompt)).rejects.toThrow();
+    await expect(api.start(projectId, "   ")).rejects.toThrow();
+    await expect(api.read("not-a-uuid")).rejects.toThrow();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects responses for a different operation or Project", async () => {
+    const projectId = randomUUID();
+    const foreignProjectId = randomUUID();
+    const createdAt = "2026-10-20T00:00:00.000Z";
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        operation: "reserve",
+        value: { projectId, executionId: null, createdAt }
+      })
+      .mockResolvedValueOnce({
+        operation: "read",
+        value: {
+          conversation: {
+            projectId: foreignProjectId,
+            executionId: null,
+            createdAt
+          },
+          execution: null
+        }
+      })
+      .mockResolvedValueOnce({
+        operation: "reserve",
+        value: { projectId: foreignProjectId, executionId: null, createdAt }
+      })
+      .mockResolvedValueOnce({
+        operation: "start",
+        projectId: foreignProjectId,
+        executionId: randomUUID(),
+        commandId: randomUUID(),
+        commandState: "queued"
+      });
+    const api = createProjectHqConversationPreloadApi(invoke);
+
+    await expect(api.read(projectId)).rejects.toThrow("correlation");
+    await expect(api.read(projectId)).rejects.toThrow("identity");
+    await expect(api.reserve(projectId)).rejects.toThrow("identity");
+    await expect(api.start(projectId, "Start here")).rejects.toThrow("start");
+  });
+});

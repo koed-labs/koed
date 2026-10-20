@@ -6,7 +6,10 @@ import type {
   PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
-import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+import {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
+} from "@koed/shared/personal-desktop";
 import { describe, expect, it, vi } from "vitest";
 import {
   PersonalMemoryStore,
@@ -243,6 +246,64 @@ describe("PersonalMemoryStore", () => {
       49, 50, 51
     ]);
     expect(paged.hasOlder).toBe(false);
+  });
+
+  it("keeps private HQ history pagable and refreshes it without adding a sidebar thread", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    const selected = { ...thread(204, "hq-graph-project"), eventCount: 0 };
+    const head = Array.from(
+      { length: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT },
+      (_, index) => event(index + 51)
+    );
+    const older = [event(1), event(2)];
+    const next = event(101);
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce(head)
+      .mockResolvedValueOnce(older)
+      .mockResolvedValueOnce([next]);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => []),
+        loadEventPage,
+        subscribe: vi.fn((listener) => {
+          onChange = listener;
+          return () => undefined;
+        })
+      })
+    );
+    const unregister = store.registerPrivateThread(selected);
+    const initial = await store.loadInitial(selected);
+    expect(initial.hasOlder).toBe(true);
+    expect(
+      store.current().threadsByKey.has(personalMemoryThreadKey(selected))
+    ).toBe(false);
+
+    const paged = await store.loadOlder(selected);
+    expect(paged.events[0]?.sourceSequence).toBe(1);
+    expect(paged.hasOlder).toBe(false);
+
+    onChange?.({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: next.id,
+          projectId: selected.projectId,
+          sourceTable: "messages",
+          threadId: selected.id
+        }
+      ]
+    });
+    await vi.waitFor(() =>
+      expect(
+        store.detail(selected)?.events.some(({ id }) => id === next.id)
+      ).toBe(true)
+    );
+    expect(
+      store.current().threadsByKey.has(personalMemoryThreadKey(selected))
+    ).toBe(false);
+    unregister();
   });
 
   it("bounds and concurrency-limits prewarming", async () => {

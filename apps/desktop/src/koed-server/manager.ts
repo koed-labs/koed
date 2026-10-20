@@ -8,6 +8,14 @@ import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
 import { agentBootstrapContextSchema } from "@koed/shared/agent-contract";
 import type { AgentsRequest, AgentsResult } from "../ipc/agents-protocol.js";
 import type {
+  ProjectHqConversationRequest,
+  ProjectHqConversationResult
+} from "../ipc/project-hq-conversation-protocol.js";
+import {
+  createProjectHqConversationClient,
+  type ProjectHqAuthority
+} from "./project-hq-conversation-client.js";
+import type {
   ProjectsRequest,
   ProjectsResult
 } from "../ipc/projects-protocol.js";
@@ -258,6 +266,9 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  projectHqConversation: (
+    request: ProjectHqConversationRequest
+  ) => Promise<ProjectHqConversationResult>;
   agents: (request: AgentsRequest) => Promise<AgentsResult>;
   localAiClients: LocalAiClientDesktopHandler;
   hardwareAcceleration: {
@@ -3622,11 +3633,46 @@ export const createKoedServerManager = ({
     const execution =
       request.operation === "send"
         ? await getManagedExecution(request.executionId)
-        : (await listManagedExecutions(request.projectId)).find(
-            (candidate) =>
+        : await (async () => {
+            const ordinary = (
+              await listManagedExecutions(request.projectId)
+            ).find(
+              (candidate) =>
+                candidate.sessionId === request.capturedSessionId &&
+                candidate.providerThreadId === request.threadId
+            );
+            if (ordinary) return ordinary;
+            if (
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+                request.projectId
+              )
+            )
+              return undefined;
+            let hq: ProjectHqConversationResult;
+            try {
+              hq = await projectHqConversation({
+                operation: "read",
+                projectId: request.projectId
+              });
+            } catch (error) {
+              if (
+                error instanceof PersonalMemoryBoundaryError &&
+                error.code === "not_found"
+              )
+                return undefined;
+              throw error;
+            }
+            if (hq.operation !== "read" || !hq.value.conversation?.executionId)
+              return undefined;
+            const candidate = await getManagedExecution(
+              hq.value.conversation.executionId
+            );
+            return candidate.projectId === request.projectId &&
               candidate.sessionId === request.capturedSessionId &&
               candidate.providerThreadId === request.threadId
-          );
+              ? candidate
+              : undefined;
+          })();
     const conversation = {
       executionId: execution?.id ?? null,
       ...(execution
@@ -3795,6 +3841,27 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
+  const projectsAuthority = async (): Promise<
+    ProjectsAuthority & ProjectHqAuthority
+  > => {
+    const access = await managedProjectAccess(true);
+    const credential = readDesktopLocalCredentialAuthorization(
+      resolveKoedHome(environment)
+    );
+    if (!credential || credential.authorization !== access.authorization)
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    return {
+      key: `${access.apiOrigin}\u0000${credential.authorization}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}\u0000${credential.operationFamilies.join(",")}`,
+      ownerId: credential.ownerUserId,
+      apiOrigin: access.apiOrigin,
+      authorization: credential.authorization,
+      canWrite: credential.operationFamilies.includes(
+        "personal_collaboration_write"
+      ),
+      operationFamilies: credential.operationFamilies
+    };
+  };
+
   const projects = createProjectsClient(
     async (path, init, bound: ProjectsAuthority) => {
       const remote = await fetchBoundedJsonObject(
@@ -3820,24 +3887,45 @@ export const createKoedServerManager = ({
       }
       return remote.payload;
     },
-    async () => {
-      const access = await managedProjectAccess(true);
-      const credential = readDesktopLocalCredentialAuthorization(
-        resolveKoedHome(environment)
-      );
-      if (!credential || credential.authorization !== access.authorization)
-        throw new PersonalMemoryBoundaryError("not_ready", true);
-      return {
-        key: `${access.apiOrigin}\u0000${credential.authorization}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}`,
-        ownerId: credential.ownerUserId,
-        apiOrigin: access.apiOrigin,
-        authorization: credential.authorization,
-        canWrite: credential.operationFamilies.includes(
-          "personal_collaboration_write"
-        )
-      };
-    }
+    projectsAuthority
   );
+
+  const projectHqConversation = createProjectHqConversationClient({
+    authority: projectsAuthority,
+    requestJson: async (path, init, authority: ProjectHqAuthority) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, authority.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: authority.authorization
+          }
+        },
+        { timeoutMs: 30_000, maxBytes: 64_000 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        const detail =
+          typeof remote.payload.error === "string" ? remote.payload.error : "";
+        if (
+          remote.response.status === 409 &&
+          (detail === "Project HQ already started with another first message" ||
+            detail ===
+              "Project HQ already started with another permission choice")
+        )
+          throw new Error(detail);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    }
+  });
 
   const managedTerminalConnectionKey = (
     ownerId: string,
@@ -5622,6 +5710,7 @@ export const createKoedServerManager = ({
     managedConversation,
     managedProject,
     projects,
+    projectHqConversation,
     agents,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),
