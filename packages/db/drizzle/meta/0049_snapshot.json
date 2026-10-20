@@ -1,5 +1,5 @@
 {
-  "id": "9e0f0e73-f6d6-4be6-b0d1-c947a8da3169",
+  "id": "0c5eb2b5-b50d-4e83-a29c-bd1971b7478c",
   "prevId": "0c7815d2-cec2-4ede-9f40-93a847c669f6",
   "version": "7",
   "dialect": "postgresql",
@@ -28058,6 +28058,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "done_at": {
           "name": "done_at",
           "type": "timestamp with time zone",
@@ -28159,8 +28165,8 @@
           "method": "btree",
           "with": {}
         },
-        "project_work_items_project_idx": {
-          "name": "project_work_items_project_idx",
+        "project_work_items_page_idx": {
+          "name": "project_work_items_page_idx",
           "columns": [
             {
               "expression": "owner_user_id",
@@ -28175,13 +28181,13 @@
               "nulls": "last"
             },
             {
-              "expression": "status",
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "created_at",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

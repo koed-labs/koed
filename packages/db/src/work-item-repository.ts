@@ -14,6 +14,7 @@ export class WorkItemConflictError extends Error {
 }
 export class WorkItemTransitionError extends Error {}
 export class WorkItemCursorError extends Error {}
+export class WorkItemGoneError extends Error {}
 
 export interface WorkItemPage {
   items: WorkItem[];
@@ -281,7 +282,7 @@ export const createWorkItemRepository = (
         : null;
       const rows = await client.query<Row>(
         `select *, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at
-           from project_work_items where owner_user_id=$1 and project_id=$2
+           from project_work_items where owner_user_id=$1 and project_id=$2 and deleted_at is null
            and ($3::timestamptz is null or (created_at,id) < ($3::timestamptz,$4::uuid))
            order by created_at desc,id desc limit $5`,
         [
@@ -310,7 +311,7 @@ export const createWorkItemRepository = (
     const result = await pool.query<Row>(
       `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
        and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
-       and p.lifecycle='active' and p.team_backend_id is null
+       and wi.deleted_at is null and p.lifecycle='active' and p.team_backend_id is null
        and p.team_workspace_id is null and p.workspace_project_id is null`,
       [itemId, ownerUserId]
     );
@@ -338,15 +339,16 @@ export const createWorkItemRepository = (
           )
         : null;
       if (existing?.rows[0]) {
-        const item = publicRecord(existing.rows[0]);
+        const deleted = existing.rows[0].deleted_at !== null;
         if (
           existing.rows[0].creation_payload_hash !== creationPayloadHash(input)
         )
           throw new WorkItemConflictError(
             "Idempotency key has a different payload",
-            item
+            deleted ? null : publicRecord(existing.rows[0])
           );
-        return item;
+        if (deleted) throw new WorkItemGoneError("Work Item was deleted");
+        return publicRecord(existing.rows[0]);
       }
       const result = await client.query<Row>(
         `insert into project_work_items
@@ -378,7 +380,7 @@ export const createWorkItemRepository = (
   ): Promise<WorkItem> {
     return inTransaction(pool, async (client) => {
       const binding = await client.query<{ project_id: string }>(
-        `select project_id from project_work_items where id=$1 and owner_user_id=$2`,
+        `select project_id from project_work_items where id=$1 and owner_user_id=$2 and deleted_at is null`,
         [itemId, ownerUserId]
       );
       if (!binding.rows[0])
@@ -388,7 +390,7 @@ export const createWorkItemRepository = (
         `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
          and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
          and p.lifecycle='active' and p.team_backend_id is null and p.team_workspace_id is null
-         and p.workspace_project_id is null for update of wi`,
+         and p.workspace_project_id is null and wi.deleted_at is null for update of wi`,
         [itemId, ownerUserId]
       );
       if (!found.rows[0])
@@ -453,14 +455,14 @@ export const createWorkItemRepository = (
       throw new WorkItemTransitionError("Trusted transition event is invalid");
     return inTransaction(pool, async (client) => {
       const binding = await client.query<{ project_id: string }>(
-        `select project_id from project_work_items where id=$1 and owner_user_id=$2`,
+        `select project_id from project_work_items where id=$1 and owner_user_id=$2 and deleted_at is null`,
         [itemId, ownerUserId]
       );
       if (!binding.rows[0])
         throw new WorkItemUnavailableError("Work Item is unavailable");
       await lockActiveProject(client, ownerUserId, binding.rows[0].project_id);
       const found = await client.query<Row>(
-        `select * from project_work_items where id=$1 and owner_user_id=$2 for update`,
+        `select * from project_work_items where id=$1 and owner_user_id=$2 and deleted_at is null for update`,
         [itemId, ownerUserId]
       );
       if (!found.rows[0])
@@ -603,7 +605,7 @@ export const createWorkItemRepository = (
   async deleteTodo(ownerUserId: string, itemId: string): Promise<void> {
     await inTransaction(pool, async (client) => {
       const binding = await client.query<{ project_id: string }>(
-        `select project_id from project_work_items where id=$1 and owner_user_id=$2`,
+        `select project_id from project_work_items where id=$1 and owner_user_id=$2 and deleted_at is null`,
         [itemId, ownerUserId]
       );
       if (!binding.rows[0])
@@ -613,7 +615,7 @@ export const createWorkItemRepository = (
         `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
          and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
          and p.lifecycle='active' and p.team_backend_id is null and p.team_workspace_id is null
-         and p.workspace_project_id is null for update of wi`,
+         and p.workspace_project_id is null and wi.deleted_at is null for update of wi`,
         [itemId, ownerUserId]
       );
       if (!found.rows[0])
@@ -622,7 +624,8 @@ export const createWorkItemRepository = (
       if (item.kind !== "todo")
         throw new WorkItemTransitionError("Only to-dos can be deleted");
       await client.query(
-        `delete from project_work_items where id=$1 and owner_user_id=$2`,
+        `update project_work_items set deleted_at=now(),updated_at=now(),version=version+1
+         where id=$1 and owner_user_id=$2 and deleted_at is null`,
         [itemId, ownerUserId]
       );
       await emitChanged(client, ownerUserId, itemId);

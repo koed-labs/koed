@@ -1702,6 +1702,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         routeContext.localEdge.resolveUpstreamAuthorization,
       requireCollaborationRepository,
       requireCollaborationMaterializationRepository: requireRepository,
+      requireWorkItemRepository: () => workItemRepository,
       resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
       quarantineCrossIdentitySyncForBackend: async (
         ownerUserId,

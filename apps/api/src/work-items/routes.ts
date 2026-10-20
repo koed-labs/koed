@@ -3,6 +3,7 @@ import type { WorkItemRepository } from "@koed/db";
 import {
   WorkItemConflictError,
   WorkItemCursorError,
+  WorkItemGoneError,
   WorkItemTransitionError,
   WorkItemUnavailableError
 } from "@koed/db";
@@ -63,6 +64,8 @@ export function registerWorkItemRoutes(
       return { statusCode: 409, message: error.message };
     if (error instanceof WorkItemCursorError)
       return { statusCode: 400, message: error.message };
+    if (error instanceof WorkItemGoneError)
+      return { statusCode: 410, message: error.message };
     throw error;
   };
   app.get(

@@ -542,6 +542,7 @@ export const projectWorkItems = pgTable(
     prUrl: text("pr_url"),
     prState: text("pr_state"),
     dueOn: date("due_on"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     doneAt: timestamp("done_at", { withTimezone: true }),
     doneBy: uuid("done_by"),
     createdBy: uuid("created_by").notNull(),
@@ -570,11 +571,11 @@ export const projectWorkItems = pgTable(
       table.projectId,
       table.dispatchKey
     ),
-    index("project_work_items_project_idx").on(
+    index("project_work_items_page_idx").on(
       table.ownerUserId,
       table.projectId,
-      table.status,
-      table.createdAt
+      table.createdAt,
+      table.id
     ),
     check(
       "project_work_items_kind_check",

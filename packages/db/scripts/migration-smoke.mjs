@@ -778,6 +778,7 @@ const assertLatestSchema = async (pool) => {
       ["goal", "text", "NO"],
       ["status", "text", "NO"],
       ["due_on", "date", "YES"],
+      ["deleted_at", "timestamp with time zone", "YES"],
       ["creation_payload_hash", "text", "NO"],
       ["version", "integer", "NO"]
     ]
@@ -963,6 +964,18 @@ const assertLatestSchema = async (pool) => {
     and indexname in ('remote_mcp_oauth_credentials_grant_idx', 'remote_mcp_oauth_grants_user_idx')`);
   if (indexes.rows.length !== 2)
     throw new Error("Latest OAuth lookup indexes are missing");
+  const workItemPageIndex = await pool.query(
+    `select indexdef from pg_indexes where schemaname='public'
+     and tablename='project_work_items' and indexname='project_work_items_page_idx'`
+  );
+  if (
+    !/\(owner_user_id, project_id, created_at, id\)/.test(
+      workItemPageIndex.rows[0]?.indexdef ?? ""
+    )
+  )
+    throw new Error(
+      "Work Item cursor pagination index is missing or has the wrong key order"
+    );
   const eventFamily = await pool.query(
     `select enumlabel from pg_enum join pg_type on pg_type.oid=pg_enum.enumtypid
       where pg_type.typname='collaboration_event_family' and enumlabel='work_item_changed'`
@@ -2538,6 +2551,28 @@ try {
         ]);
         if (valid.rows[0]?.due_on !== "2026-10-22")
           throw new Error("Work Item DATE did not round-trip");
+        await pool.query(
+          `update project_work_items set idempotency_key='fixture-key',deleted_at=now()
+           where id=$1`,
+          [valid.rows[0].id]
+        );
+        const tombstone = await pool.query(
+          `select deleted_at is not null as retained from project_work_items where id=$1`,
+          [valid.rows[0].id]
+        );
+        if (tombstone.rows[0]?.retained !== true)
+          throw new Error(
+            "Deleted Work Item idempotency tombstone was not retained"
+          );
+        await expectSqlState(
+          pool,
+          `insert into project_work_items
+           (owner_user_id,project_id,kind,title,goal,origin,creation_payload_hash,created_by,idempotency_key)
+           values ($1,$2,'todo','Delayed','Delayed','manual','fixture',$1,'fixture-key')`,
+          "23505",
+          "Deleted Work Item idempotency identity",
+          [ownerId, projectId]
+        );
         await expectSqlState(pool, insert, "23514", "Invalid Work Item kind", [
           ownerId,
           projectId,

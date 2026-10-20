@@ -21,6 +21,7 @@ CREATE TABLE "project_work_items" (
 	"pr_url" text,
 	"pr_state" text,
 	"due_on" date,
+	"deleted_at" timestamp with time zone,
 	"done_at" timestamp with time zone,
 	"done_by" uuid,
 	"created_by" uuid NOT NULL,
@@ -39,4 +40,4 @@ CREATE TABLE "project_work_items" (
 ALTER TABLE "project_work_items" ADD CONSTRAINT "project_work_items_owner_project_fk" FOREIGN KEY ("owner_user_id","project_id") REFERENCES "public"."projects"("owner_user_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "project_work_items_origin_idempotency_unique" ON "project_work_items" USING btree ("owner_user_id","project_id","origin","idempotency_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "project_work_items_dispatch_unique" ON "project_work_items" USING btree ("owner_user_id","project_id","dispatch_key");--> statement-breakpoint
-CREATE INDEX "project_work_items_project_idx" ON "project_work_items" USING btree ("owner_user_id","project_id","status","created_at");
+CREATE INDEX "project_work_items_page_idx" ON "project_work_items" USING btree ("owner_user_id","project_id","created_at","id");

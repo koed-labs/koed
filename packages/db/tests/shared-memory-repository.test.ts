@@ -9893,6 +9893,16 @@ describeDb("Shared Memory repository", () => {
     const rollupGrant = grants.find(
       (grant) => grant.representation === "lcm_rollups"
     )!;
+    // Earlier fixtures create many synthetic policies. Refresh the test DB's
+    // planner estimates before claiming and embedding the global pending set.
+    await pool.query(
+      `analyze source_owner_representation_policies,
+               team_representation_policies,
+               workspace_representation_policies,
+               team_memory_share_grants,
+               team_memory_semantic_items,
+               team_memory_representations`
+    );
     const decryptsBeforePendingClaim = decryptSpy.mock.calls.length;
     const semanticItems = await repository.listPendingSharedMemorySemanticItems(
       {
@@ -10517,10 +10527,37 @@ describeDb("Shared Memory repository", () => {
       expectedGrantVersion: grant.grantVersion,
       authority: authority(fixture)
     });
-    const pending = (
-      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
-    ).filter((item) => item.shareGrantId === grant.shareGrantId);
-    expect(pending.length).toBeGreaterThan(0);
+    const frozenRows = await pool.query<{
+      item_count: number;
+      chunk_count: number;
+    }>(
+      `select count(*)::integer as item_count,
+              count(distinct (item.representation_id,item.encrypted_chunk_index))::integer as chunk_count
+       from team_memory_semantic_items item
+       join team_memory_representations representation on representation.id=item.representation_id
+       where item.share_grant_id=$1 and item.embedding_state='pending'
+         and representation.frozen_snapshot=true`,
+      [grant.shareGrantId]
+    );
+    const frozenItemCount = frozenRows.rows[0]!.item_count;
+    expect(frozenItemCount).toBeGreaterThan(0);
+    await pool.query(
+      `update team_memory_semantic_items
+       set updated_at='2000-01-01T00:00:00Z'::timestamptz
+       where share_grant_id=$1 and embedding_state='pending'`,
+      [grant.shareGrantId]
+    );
+    const decryptsBeforeFrozenClaim = decryptSpy.mock.calls.length;
+    const pending = await repository.listPendingSharedMemorySemanticItems({
+      limit: frozenItemCount
+    });
+    expect(pending).toHaveLength(frozenItemCount);
+    expect(
+      pending.every((item) => item.shareGrantId === grant.shareGrantId)
+    ).toBe(true);
+    expect(decryptSpy.mock.calls.length - decryptsBeforeFrozenClaim).toBe(
+      frozenRows.rows[0]!.chunk_count
+    );
     const vector = [1, ...Array.from({ length: 383 }, () => 0)];
     for (const item of pending) {
       expect(
@@ -10555,15 +10592,26 @@ describeDb("Shared Memory repository", () => {
     expect(first.some((item) => item.shareGrantId === grant.shareGrantId)).toBe(
       true
     );
-    const changed = (
-      await repository.listPendingSharedMemorySemanticItems({
-        limit: 100,
-        model: "frozen-model-b",
-        dimensions: 384,
-        version: "frozen-model-b-v1"
-      })
-    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    await pool.query(
+      `update team_memory_semantic_items
+       set updated_at='2000-01-01T00:00:00Z'::timestamptz
+       where share_grant_id=$1 and embedding_state='embedded'`,
+      [grant.shareGrantId]
+    );
+    const decryptsBeforeModelRefresh = decryptSpy.mock.calls.length;
+    const changed = await repository.listPendingSharedMemorySemanticItems({
+      limit: frozenItemCount,
+      model: "frozen-model-b",
+      dimensions: 384,
+      version: "frozen-model-b-v1"
+    });
     expect(changed).toHaveLength(pending.length);
+    expect(
+      changed.every((item) => item.shareGrantId === grant.shareGrantId)
+    ).toBe(true);
+    expect(decryptSpy.mock.calls.length - decryptsBeforeModelRefresh).toBe(
+      frozenRows.rows[0]!.chunk_count
+    );
     for (const item of changed) {
       expect(
         await repository.storeSharedMemorySemanticEmbedding({

@@ -466,6 +466,7 @@ export {
   createWorkItemRepository,
   WorkItemConflictError,
   WorkItemCursorError,
+  WorkItemGoneError,
   WorkItemTransitionError,
   WorkItemUnavailableError,
   nextWorkItemStatus,

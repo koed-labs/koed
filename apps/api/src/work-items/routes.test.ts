@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   WorkItemConflictError,
   WorkItemCursorError,
+  WorkItemGoneError,
   WorkItemTransitionError
 } from "@koed/db";
 import type { WorkItem } from "@koed/shared";
@@ -196,6 +197,28 @@ describe("Work Item routes", () => {
       });
       expect(response.statusCode).toBe(400);
       expect(repository.create).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+  it("returns Gone for an exact replay after deletion", async () => {
+    const { app, repository } = fixture();
+    repository.create.mockRejectedValueOnce(
+      new WorkItemGoneError("Work Item was deleted")
+    );
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${project}/work-items`,
+        payload: {
+          kind: "todo",
+          title: "Call",
+          goal: "Call Sam",
+          origin: "manual",
+          idempotencyKey: "deleted-key"
+        }
+      });
+      expect(response.statusCode).toBe(410);
     } finally {
       await app.close();
     }

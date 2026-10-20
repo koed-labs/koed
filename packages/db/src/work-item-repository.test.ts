@@ -7,6 +7,7 @@ import {
   nextWorkItemStatus,
   WorkItemConflictError,
   WorkItemCursorError,
+  WorkItemGoneError,
   WorkItemTransitionError,
   WorkItemUnavailableError,
   workItemDispatchKey,
@@ -320,6 +321,42 @@ describe.skipIf(!testUrl)("Work Item repository", () => {
     ).rejects.toBeInstanceOf(WorkItemTransitionError);
     await repository.deleteTodo(owner, item.id);
     expect(await repository.getForRealtime(owner, item.id)).toBeNull();
+    expect(
+      (await repository.list(owner, project)).items.some(
+        (entry) => entry.id === item.id
+      )
+    ).toBe(false);
+    await expect(
+      repository.create(owner, project, body)
+    ).rejects.toBeInstanceOf(WorkItemGoneError);
+    await expect(
+      repository.create(owner, project, {
+        ...body,
+        title: "Drift after deletion"
+      })
+    ).rejects.toMatchObject({ current: null });
+    await expect(repository.deleteTodo(owner, item.id)).rejects.toBeInstanceOf(
+      WorkItemUnavailableError
+    );
+    await expect(
+      repository.patch(owner, item.id, {
+        version: todo.version,
+        title: "Resurrect"
+      })
+    ).rejects.toBeInstanceOf(WorkItemUnavailableError);
+    await expect(
+      trusted.transitionTrusted(owner, item.id, todo.version, "dispatch")
+    ).rejects.toBeInstanceOf(WorkItemUnavailableError);
+    const deleted = await pool.query<{ deleted_at: Date | null }>(
+      `select deleted_at from project_work_items where id=$1`,
+      [item.id]
+    );
+    expect(deleted.rows[0]?.deleted_at).toBeInstanceOf(Date);
+    const afterDeletionEvents = await pool.query<{ count: number }>(
+      `select count(*)::integer as count from collaboration_outbox where resource_id=$1`,
+      [item.id]
+    );
+    expect(afterDeletionEvents.rows[0]?.count).toBe(4);
   });
   it("fails closed when the authoritative Project is inactive or Team-linked", async () => {
     await pool.query(
