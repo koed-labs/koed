@@ -424,4 +424,54 @@ describeDb("Curated assertion panel and Undo", () => {
       (await repo.getCuratedMemoryAssertion(actor(), conflictId))?.status
     ).toBe("suppressed");
   });
+  it("pages same-millisecond assertions without losing or repeating rows", async () => {
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    const anchor = (
+      await pool.query<{ at: Date }>(
+        "select date_trunc('milliseconds',now() + interval '1 hour') as at"
+      )
+    ).rows[0]!.at.toISOString();
+    for (const [index, id] of ids.entries()) {
+      await pool.query(
+        `insert into curated_memory_assertions (
+           id,owner_user_id,visibility,assertion_text,normalized_assertion,
+           status,scope,project_id,kind,updated_at
+         ) values ($1,$2,'personal',$3,$3,'current','project',$4,'fact',
+           $5::timestamptz + ($6::int * interval '100 microseconds'))`,
+        [id, ownerId, `Paged fact ${index}`, projectId, anchor, index]
+      );
+      await pool.query(
+        `insert into curated_memory_sources (
+           assertion_id,source_type,source_role,project_work_item_id,metadata
+         ) values ($1,'project_work_item','primary_evidence',$2,'{}')`,
+        [id, sourceId]
+      );
+    }
+    const repo = createCuratedMemoryRepository(pool);
+    const first = await repo.listCuratedMemoryAssertions(actor(), {
+      scope: "project",
+      projectId,
+      status: "current",
+      limit: 2
+    });
+    const second = await repo.listCuratedMemoryAssertions(actor(), {
+      scope: "project",
+      projectId,
+      status: "current",
+      limit: 2,
+      beforeUpdatedAt: first[1]!.updatedAt,
+      beforeId: first[1]!.id
+    });
+    expect(first).toHaveLength(2);
+    expect(first.map((row) => row.id)).toEqual(
+      [...ids].sort().reverse().slice(0, 2)
+    );
+    expect(first[0]!.updatedAt).toBe(first[1]!.updatedAt);
+    expect(second.map((row) => row.id)).toContain(
+      ids.find((id) => !first.some((row) => row.id === id))
+    );
+    expect(new Set([...first, ...second].map((row) => row.id)).size).toBe(
+      first.length + second.length
+    );
+  });
 });

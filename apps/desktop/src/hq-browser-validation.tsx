@@ -19,6 +19,10 @@ import type {
 import type { DesktopApi, KoedServerStatus } from "./types.js";
 import type { Project, ProjectSource, WorkItem } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type {
+  CuratedAssertion,
+  CuratedMemoryDesktopApi
+} from "./ipc/curated-memory-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
@@ -47,7 +51,108 @@ const hq106Forgotten = new Map<string, string>();
 const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
   hq209Capture ||
-  hq403Capture;
+  hq403Capture ||
+  new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
+const hq304Capture =
+  new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
+const hq304OwnerId = "00000000-0000-4000-8000-000000000109";
+const hq304Ids = [
+  "00000000-0000-4000-8000-000000003041",
+  "00000000-0000-4000-8000-000000003042",
+  "00000000-0000-4000-8000-000000003043"
+];
+const hq304Row = (
+  id: string,
+  scope: "project" | "me" | "unscoped",
+  kind: "decision" | "fact" | "learning" | "preference",
+  text: string
+): CuratedAssertion => ({
+  id,
+  ownerUserId: hq304OwnerId,
+  visibility: "personal",
+  scope,
+  projectId:
+    scope === "project" ? "00000000-0000-4000-8000-000000002038" : null,
+  kind,
+  authorKind: "user",
+  authorRef: hq304OwnerId,
+  classificationVersion: 1,
+  assertionText: text,
+  status: "current",
+  createdAt: FIXTURE_TIME,
+  observedAt: FIXTURE_TIME,
+  updatedAt: FIXTURE_TIME,
+  suppressionToken: null,
+  sources: [
+    {
+      id: crypto.randomUUID(),
+      sourceType: "conversation_item",
+      sourceRole: "primary_evidence",
+      metadata: { title: "Project planning chat" },
+      createdAt: FIXTURE_TIME
+    }
+  ],
+  replaces:
+    id === hq304Ids[0]
+      ? [
+          {
+            id: crypto.randomUUID(),
+            text: "Use the old launch plan",
+            author: { kind: "user", ref: hq304OwnerId },
+            at: "2026-10-18T09:00:00.000Z"
+          }
+        ]
+      : []
+});
+let hq304Rows = [
+  hq304Row(
+    hq304Ids[0]!,
+    "project",
+    "decision",
+    "Ship the smaller launch first"
+  ),
+  hq304Row(hq304Ids[1]!, "me", "preference", "Prefer concise updates"),
+  hq304Row(hq304Ids[2]!, "unscoped", "fact", "The legacy note needs a home")
+];
+const hq304MemoryApi: CuratedMemoryDesktopApi = {
+  page: async (scope, projectId) => ({
+    assertions: await hq304MemoryApi.list(scope, projectId),
+    nextCursor: null
+  }),
+  list: async (scope, projectId) =>
+    structuredClone(
+      hq304Rows.filter(
+        (row) =>
+          row.scope === scope &&
+          (scope !== "project" || row.projectId === projectId) &&
+          row.status === "current"
+      )
+    ),
+  detail: async (id) =>
+    structuredClone(hq304Rows.find((row) => row.id === id)!),
+  forget: async (id) => {
+    const row = hq304Rows.find((item) => item.id === id)!;
+    row.status = "suppressed";
+    row.suppressionToken = "1792490400123456";
+    return structuredClone(row);
+  },
+  undo: async (id, token) => {
+    const row = hq304Rows.find((item) => item.id === id)!;
+    if (row.suppressionToken !== token) throw new Error("Invalid Undo token");
+    row.status = "current";
+    row.suppressionToken = null;
+    return structuredClone(row);
+  },
+  move: async (id, scope, version, projectId) => {
+    const row = hq304Rows.find((item) => item.id === id)!;
+    if (row.scope !== "unscoped" || row.classificationVersion !== version)
+      throw new Error("Classification changed");
+    row.scope = scope;
+    row.projectId = scope === "project" ? projectId! : null;
+    row.classificationVersion++;
+    return { assertion: structuredClone(row), pending: false };
+  }
+};
 const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
 const hq205SourceOwnerId = "00000000-0000-4000-8000-000000002051";
 const hq205SourceTime = "2026-10-20T09:00:00.000Z";
@@ -274,6 +379,7 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
     ...(hq204Capture || hq205Capture || hq207Capture
       ? {
@@ -1769,6 +1875,16 @@ export function HqValidationApp() {
     hq106Deleted.clear();
     hq106Forgotten.clear();
     hq205Sources = structuredClone(hq205InitialSources);
+    hq304Rows = [
+      hq304Row(
+        hq304Ids[0]!,
+        "project",
+        "decision",
+        "Ship the smaller launch first"
+      ),
+      hq304Row(hq304Ids[1]!, "me", "preference", "Prefer concise updates"),
+      hq304Row(hq304Ids[2]!, "unscoped", "fact", "The legacy note needs a home")
+    ];
     document.documentElement.dataset.browserValidationReady = "false";
     document.documentElement.dataset.hqFixtureReady = "false";
     const shell = document.querySelector("[data-hq-shell]");

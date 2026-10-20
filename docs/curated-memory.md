@@ -133,6 +133,34 @@ acknowledged withdrawal followed by the Personal transaction. This is the
 conditional lifecycle in [Project-Sharing Lifecycle](./project-sharing-lifecycle.md)
 and the scope contract in [ADR 0063](./adr/0063-project-memory-scope-and-combined-recall.md).
 
+## Desktop inspection
+
+The Project HQ Memory chip opens the owner-facing “What Koed knows” panel.
+Project, Me, and Other are separate assertion classifications. Other contains
+legacy unscoped assertions until the owner explicitly moves one to Me or a
+Project. The panel reads current owner assertions, their direct source metadata,
+and replacement history through the Desktop IPC boundary. Forget suppresses
+one owned assertion; Undo sends the suppression token back within the existing
+seven-day window. Classification changes may remain pending while previously
+shared Team representations are withdrawn.
+Older assertions load in bounded, stable pages; the chip and tabs show a plus
+sign when their displayed page has more results. The panel clears private rows
+immediately when the owner, profile, Project, API, or tab changes. Shared rows,
+when supplied by an authorized Team feed, remain read-only even if their bare
+owner ID matches the Personal owner ID.
+
+Only these assertion list, detail, suppress, unsuppress, and classification
+routes accept the existing owner-bound local Desktop credential. The API
+verifies its stored secret, local deployment profile, loopback caller, and
+Personal read or write operation family. Other Curated Memory routes keep
+their previous authorization. This panel does not query Team memory; shared
+teammate evidence requires its separate authorized Team retrieval and detail
+flow under [ADR 0063](./adr/0063-project-memory-scope-and-combined-recall.md).
+The current assertion source record identifies a Conversation item or Memory
+Event but does not provide an owner-authorized Session navigation target. The
+detail panel shows the source label and date without an Open chat action until
+that resolver exists.
+
 ## Retrieval
 
 Normal recall remains `memory_answer`. Curated Memory participates in the normal

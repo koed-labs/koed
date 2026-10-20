@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  deleteDesktopLocalCredential,
+  storeDesktopLocalCredential
+} from "@koed/shared";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
@@ -24,9 +31,17 @@ const setup = (
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError)
       return reply.status(400).send({ error: "Invalid request" });
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unexpected error"
-    });
+    return reply
+      .status(
+        error instanceof Error &&
+          "statusCode" in error &&
+          typeof error.statusCode === "number"
+          ? error.statusCode
+          : 500
+      )
+      .send({
+        error: error instanceof Error ? error.message : "Unexpected error"
+      });
   });
   const repo = {
     listCuratedMemoryAssertions: vi.fn(async () => [baseAssertion]),
@@ -95,6 +110,148 @@ describe("Curated assertion routes", () => {
     await Promise.all(apps.splice(0).map((app) => app.close()));
   });
 
+  it("binds Desktop assertion reads and writes to the on-disk local owner credential", async () => {
+    const home = mkdtempSync(join(tmpdir(), "koed-curated-desktop-"));
+    const credential = storeDesktopLocalCredential(home, {
+      ownerUserId: ownerId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const { app, repo, context } = setup();
+    Object.assign(context, {
+      config: { deploymentProfile: "local_personal", koedHome: home }
+    });
+    apps.push(app);
+    try {
+      const auth = { authorization: credential.authorization };
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/memory/curated/assertions?scope=unscoped",
+            headers: auth
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/memory/curated/assertions",
+            headers: auth,
+            remoteAddress: "192.0.2.1"
+          })
+        ).statusCode
+      ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/memory/curated/assertions",
+            headers: { authorization: "Koed-Desktop wrong-secret" }
+          })
+        ).statusCode
+      ).toBe(401);
+      expect(repo.listCuratedMemoryAssertions).toHaveBeenCalledWith(
+        { userId: ownerId },
+        expect.objectContaining({ scope: "unscoped" })
+      );
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/memory/curated/assertions/${assertionId}/unsuppress`,
+            headers: auth,
+            payload: { suppression_token: "1792490400123456" }
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/v1/memory/curated/assertions/${assertionId}`,
+            headers: auth,
+            payload: { scope: "me", expected_version: 1 }
+          })
+        ).statusCode
+      ).toBe(200);
+      const old = credential.authorization;
+      deleteDesktopLocalCredential(home);
+      storeDesktopLocalCredential(home, {
+        ownerUserId: ownerId,
+        operationFamilies: ["personal_collaboration_read"]
+      });
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/memory/curated/assertions",
+            headers: { authorization: old }
+          })
+        ).statusCode
+      ).toBe(401);
+      deleteDesktopLocalCredential(home);
+      const readOnly = storeDesktopLocalCredential(home, {
+        ownerUserId: ownerId,
+        operationFamilies: ["personal_collaboration_read"]
+      });
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/memory/curated/assertions/${assertionId}/unsuppress`,
+            headers: { authorization: readOnly.authorization },
+            payload: { suppression_token: "1792490400123456" }
+          })
+        ).statusCode
+      ).toBe(401);
+      Object.assign(context, {
+        config: { deploymentProfile: "team_self_hosted", koedHome: home }
+      });
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/memory/curated/assertions",
+            headers: { authorization: readOnly.authorization }
+          })
+        ).statusCode
+      ).toBe(403);
+      vi.mocked(context.auth.authenticateSession).mockRejectedValueOnce(
+        Object.assign(new Error("Session cookie required"), { statusCode: 401 })
+      );
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/v1/memory/curated/assertions/${assertionId}`,
+            headers: { authorization: "Bearer personal-token" },
+            payload: { scope: "me", expected_version: 1 }
+          })
+        ).statusCode
+      ).toBe(401);
+      vi.mocked(context.auth.authenticateSession).mockRejectedValueOnce(
+        Object.assign(new Error("Session cookie required"), { statusCode: 401 })
+      );
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/memory/curated/assertions/${assertionId}/unsuppress`,
+            headers: { authorization: "Bearer personal-token" },
+            payload: { suppression_token: "1792490400123456" }
+          })
+        ).statusCode
+      ).toBe(401);
+      expect(context.auth.authenticateSession).toHaveBeenCalled();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("passes exact panel filters and returns owner-scoped replacement history", async () => {
     const { app, repo } = setup();
     apps.push(app);
@@ -125,6 +282,61 @@ describe("Curated assertion routes", () => {
       url: `/v1/memory/curated/assertions/${assertionId}`
     });
     expect(detail.json().assertion.replaces[0].text).toBe("Prior claim");
+  });
+  it("returns an owner-scoped keyset cursor only when another row exists", async () => {
+    const first = {
+      ...baseAssertion,
+      id: randomUUID(),
+      updatedAt: "2026-10-20T10:00:00.000Z"
+    };
+    const second = {
+      ...baseAssertion,
+      id: randomUUID(),
+      updatedAt: "2026-10-20T09:00:00.000Z"
+    };
+    const third = {
+      ...baseAssertion,
+      id: randomUUID(),
+      updatedAt: "2026-10-20T08:00:00.000Z"
+    };
+    const { app, repo } = setup({
+      listCuratedMemoryAssertions: vi.fn(async () => [first, second, third])
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/memory/curated/assertions?scope=unscoped&limit=2"
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().assertions).toHaveLength(2);
+    expect(response.json().next_cursor).toEqual({
+      updated_at: second.updatedAt,
+      id: second.id
+    });
+    expect(repo.listCuratedMemoryAssertions).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({ scope: "unscoped", limit: 3 })
+    );
+    const next = await app.inject({
+      method: "GET",
+      url: `/v1/memory/curated/assertions?scope=unscoped&limit=2&before_updated_at=${encodeURIComponent(second.updatedAt)}&before_id=${second.id}`
+    });
+    expect(next.statusCode).toBe(200);
+    expect(repo.listCuratedMemoryAssertions).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({
+        beforeUpdatedAt: second.updatedAt,
+        beforeId: second.id
+      })
+    );
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/v1/memory/curated/assertions?before_id=" + second.id
+        })
+      ).statusCode
+    ).toBe(400);
   });
 
   it("requires a suppression token and delegates Undo under session identity", async () => {

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "@koed/shared/project-contract";
 import type { WorkItem } from "@koed/shared/work-item-contract";
 import type { DesktopProject } from "../../../project-memory-ui.js";
+import type { CuratedMemoryDesktopApi } from "../../../ipc/curated-memory-protocol.js";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationListEntry,
@@ -21,6 +22,7 @@ import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
 import { projectNavigation } from "../project-navigation.js";
 import { nowInspectableExecutions, type NowNeed } from "../now/now-model.js";
 import { HqProjectSources } from "./HqProjectSources.js";
+import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
 import {
   parseWorkItemInput,
   projectWorkItemSections,
@@ -95,10 +97,12 @@ export function HqProjectView({
   personalProjects,
   graphProjects,
   projectsApi,
+  curatedMemoryApi,
   conversationsApi,
   lifecycle,
   ownerId,
   profileKey,
+  ownedAgents,
   panelHost,
   onSourcesOpenChange,
   onContextChange,
@@ -111,10 +115,12 @@ export function HqProjectView({
   personalProjects: readonly Project[];
   graphProjects: readonly DesktopProject[];
   projectsApi: ProjectsDesktopApi;
+  curatedMemoryApi?: CuratedMemoryDesktopApi | null;
   conversationsApi?: ManagedConversationDesktopApi | null;
   lifecycle?: ManagedConversationLifecycle;
   ownerId?: string | null;
   profileKey?: string | null;
+  ownedAgents?: readonly { id: string; name: string }[];
   panelHost?: HTMLElement | null;
   onSourcesOpenChange?: (open: boolean) => void;
   onContextChange?: (label: string | null) => void;
@@ -124,6 +130,69 @@ export function HqProjectView({
   blockedConversationSessions?: ReadonlySet<string>;
 }) {
   const [inventory, setInventory] = useState<Inventory>(emptyInventory);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [sourceCloseSignal, setSourceCloseSignal] = useState(0);
+  const [memoryCountState, setMemoryCountState] = useState<{
+    key: number;
+    count: string | null;
+  }>({ key: -1, count: null });
+  const [memoryRevision, setMemoryRevision] = useState(0);
+  const memoryIdentity = useRef({
+    api: curatedMemoryApi,
+    ownerId,
+    profileKey,
+    projectId: project.id,
+    key: 0
+  });
+  const previousMemoryIdentity = memoryIdentity.current;
+  if (
+    previousMemoryIdentity.api !== curatedMemoryApi ||
+    previousMemoryIdentity.ownerId !== ownerId ||
+    previousMemoryIdentity.profileKey !== profileKey ||
+    previousMemoryIdentity.projectId !== project.id
+  ) {
+    memoryIdentity.current = {
+      api: curatedMemoryApi,
+      ownerId,
+      profileKey,
+      projectId: project.id,
+      key: previousMemoryIdentity.key + 1
+    };
+  }
+  const memoryKey = memoryIdentity.current.key;
+  const memoryCount =
+    memoryCountState.key === memoryKey ? memoryCountState.count : null;
+  useEffect(() => {
+    if (!curatedMemoryApi) return;
+    let current = true;
+    setMemoryCountState({ key: memoryKey, count: null });
+    void curatedMemoryApi
+      .page("project", project.id)
+      .then((page) => {
+        if (current && memoryIdentity.current.key === memoryKey)
+          setMemoryCountState({
+            key: memoryKey,
+            count: `${page.assertions.length}${page.nextCursor ? "+" : ""}`
+          });
+      })
+      .catch(() => {
+        if (current && memoryIdentity.current.key === memoryKey)
+          setMemoryCountState({ key: memoryKey, count: null });
+      });
+    return () => {
+      current = false;
+    };
+  }, [
+    curatedMemoryApi,
+    project.id,
+    ownerId,
+    profileKey,
+    memoryRevision,
+    memoryKey
+  ]);
+  useEffect(() => {
+    if (closeSignal) setMemoryOpen(false);
+  }, [closeSignal]);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [folded, setFolded] = useState({
@@ -569,17 +638,56 @@ export function HqProjectView({
           visibilityOwnerId={ownerId}
           visibilityProfileKey={profileKey}
           panelHost={panelHost}
-          onOpenChange={onSourcesOpenChange}
-          onContextChange={onContextChange}
-          closeSignal={closeSignal}
+          onOpenChange={(value) => {
+            if (value) {
+              setMemoryOpen(false);
+              onSourcesOpenChange?.(true);
+            } else if (!memoryOpen) {
+              onSourcesOpenChange?.(false);
+            }
+          }}
+          onContextChange={(label) => {
+            if (!memoryOpen) onContextChange?.(label);
+          }}
+          closeSignal={(closeSignal ?? 0) + sourceCloseSignal}
         />
-        <span
-          className="hq-project-view__memory"
-          title="Project memory list is not available yet"
-        >
-          <Sparkles size={14} /> Memory unavailable
-        </span>
+        {curatedMemoryApi ? (
+          <button
+            type="button"
+            className="hq-project-view__memory"
+            aria-label="What Koed knows"
+            onClick={() => {
+              setSourceCloseSignal((value) => value + 1);
+              setMemoryOpen(true);
+              onSourcesOpenChange?.(true);
+              onContextChange?.("What Koed knows");
+            }}
+          >
+            <Sparkles size={14} />{" "}
+            {memoryCount === null ? "Memory" : `${memoryCount} in memory`}
+          </button>
+        ) : (
+          <span className="hq-project-view__memory">Memory unavailable</span>
+        )}
       </div>
+      {curatedMemoryApi && (
+        <WhatKoedKnows
+          api={curatedMemoryApi}
+          project={project}
+          projects={personalProjects}
+          ownerId={ownerId ?? null}
+          profileKey={profileKey ?? null}
+          ownedAgents={ownedAgents}
+          panelHost={panelHost}
+          open={memoryOpen}
+          onChanged={() => setMemoryRevision((value) => value + 1)}
+          onClose={() => {
+            setMemoryOpen(false);
+            onSourcesOpenChange?.(false);
+            onContextChange?.(null);
+          }}
+        />
+      )}
       {visibleInventory.error ? (
         <p className="hq-project-view__error" role="alert">
           {visibleInventory.error}{" "}

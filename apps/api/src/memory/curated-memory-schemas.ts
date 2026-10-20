@@ -150,18 +150,27 @@ export const curatedMemoryProposalQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(250).default(50)
 });
 
-export const curatedMemoryListQuerySchema = z.object({
-  status: z
-    .enum(["current", "superseded", "conflicting", "suppressed"])
-    .optional(),
-  topic_id: z.string().uuid().optional(),
-  project_id: z.string().uuid().optional(),
-  scope: z.enum(["project", "me", "unscoped"]).optional(),
-  kind: z.enum(["decision", "fact", "learning", "preference"]).optional(),
-  since: z.string().datetime({ offset: true }).optional(),
-  include_sources: queryBooleanSchema.default(false),
-  limit: z.coerce.number().int().positive().max(250).default(50)
-});
+export const curatedMemoryListQuerySchema = z
+  .object({
+    status: z
+      .enum(["current", "superseded", "conflicting", "suppressed"])
+      .optional(),
+    topic_id: z.string().uuid().optional(),
+    project_id: z.string().uuid().optional(),
+    scope: z.enum(["project", "me", "unscoped"]).optional(),
+    kind: z.enum(["decision", "fact", "learning", "preference"]).optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    before_updated_at: z.string().datetime({ offset: true }).optional(),
+    before_id: z.string().uuid().optional(),
+    include_sources: queryBooleanSchema.default(false),
+    limit: z.coerce.number().int().positive().max(250).default(50)
+  })
+  .refine(
+    (value) => Boolean(value.before_updated_at) === Boolean(value.before_id),
+    {
+      message: "Both cursor fields are required"
+    }
+  );
 
 export const curatedMemoryClassificationSchema = z.discriminatedUnion("scope", [
   z.object({

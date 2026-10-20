@@ -23,6 +23,11 @@ const chatLifecycleReportPath = resolve(
   "browser-report.json"
 );
 const chatMoveReportPath = resolve(scratchDir, "hq-107", "browser-report.json");
+const memoryScopeReportPath = resolve(
+  scratchDir,
+  "hq-304",
+  "browser-report.json"
+);
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
@@ -30,6 +35,7 @@ await rm(projectViewReportPath, { force: true });
 await rm(workItemReportPath, { force: true });
 await rm(chatLifecycleReportPath, { force: true });
 await rm(chatMoveReportPath, { force: true });
+await rm(memoryScopeReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -42,7 +48,8 @@ try {
         ...process.env,
         KOED_HQ_USER_DATA_DIR: userDataPath,
         KOED_HQ205_DELEGATED_S09: "1",
-        KOED_HQ207_DELEGATED_S01_S11: "1"
+        KOED_HQ207_DELEGATED_S01_S11: "1",
+        KOED_HQ304_DELEGATED_S18: "1"
       },
       stdio: "inherit"
     });
@@ -242,6 +249,42 @@ try {
       process.stdout.write(
         "PASS HQ107.private-native [HQ-107]: private Project/Chats drag, highlights, Undo, and light/dark captures; S15.1 shared destination remains HQ-702.\n"
       );
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const memoryProfile = await mkdtemp(
+      resolve(scratchDir, "hq304-electron-profile-")
+    );
+    try {
+      const memoryHq = spawnSync(electronPath, ["scripts/validate-hq304.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ304_USER_DATA_DIR: memoryProfile },
+        stdio: "inherit"
+      });
+      if (memoryHq.error) throw memoryHq.error;
+      process.exitCode = memoryHq.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(
+          await readFile(memoryScopeReportPath, "utf8")
+        );
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ304.native", owner: "HQ-304", status: "pass" }
+        );
+        assert.ok(
+          report.assertions.some(
+            (entry) =>
+              entry.id === "S18.2" &&
+              entry.owner === "HQ-304" &&
+              entry.status === "pass"
+          )
+        );
+        process.stdout.write(
+          "PASS S18.2 [HQ-304]: native Project/Me/Other memory scope separation.\n"
+        );
+      }
+    } finally {
+      await rm(memoryProfile, { recursive: true, force: true });
     }
   }
 } finally {

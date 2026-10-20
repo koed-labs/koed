@@ -1405,10 +1405,18 @@ export function HqApplication({
               personalProjects={personalProjects}
               graphProjects={projects}
               projectsApi={projectsApi}
+              curatedMemoryApi={window.koedDesktop?.curatedMemory}
               conversationsApi={managedConversations}
               lifecycle={managedConversationLifecycle}
               ownerId={visibilityOwnerId}
               profileKey={visibilityProfileKey}
+              ownedAgents={
+                agentsSnapshot &&
+                agentsSnapshot.ownerId === visibilityOwnerId &&
+                agentsSnapshot?.profileKey === visibilityProfileKey
+                  ? agentsSnapshot.agents
+                  : []
+              }
               panelHost={sourcesPanelHost}
               onSourcesOpenChange={setSourcesOpen}
               onContextChange={setArtifactContext}

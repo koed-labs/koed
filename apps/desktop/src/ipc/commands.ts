@@ -1,5 +1,12 @@
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
+  curatedMemoryCommandChannel,
+  curatedMemoryRequestSchema,
+  curatedMemoryResultSchema,
+  type CuratedMemoryRequest,
+  type CuratedMemoryResult
+} from "./curated-memory-protocol.js";
+import {
   projectsCommandChannel,
   projectsRequestSchema,
   projectsResultSchema,
@@ -202,6 +209,9 @@ export const registerDesktopCommandHandlers = (
       >["data"]
     >;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    curatedMemory?: (
+      request: CuratedMemoryRequest
+    ) => Promise<CuratedMemoryResult>;
     uploadProjectSource?: (
       projectId: string
     ) => Promise<
@@ -548,6 +558,20 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(curatedMemoryCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.curatedMemory)
+      throw new Error("Curated Memory is unavailable.");
+    const request = curatedMemoryRequestSchema.parse(value);
+    const result = curatedMemoryResultSchema.parse(
+      await options.curatedMemory(request)
+    );
+    if (result.operation !== request.operation)
+      throw new Error("Invalid memory operation correlation.");
+    return result;
+  });
 
   ipcMain.handle(projectsCommandChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))

@@ -578,6 +578,7 @@ const bootstrap = async () => {
       return { status };
     },
     projects: server.projects,
+    curatedMemory: server.curatedMemory,
     projectHqConversation: server.projectHqConversation,
     agents: server.agents,
     managedConversation: server.managedConversation,

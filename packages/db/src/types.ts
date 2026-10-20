@@ -1951,6 +1951,8 @@ export interface CuratedMemoryListInput {
   topicId?: string;
   sessionId?: string;
   includeSources?: boolean;
+  beforeUpdatedAt?: string;
+  beforeId?: string;
   limit?: number;
 }
 

@@ -1,5 +1,10 @@
 import { hostname } from "node:os";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
+import { createCuratedMemoryClient } from "./curated-memory-client.js";
+import type {
+  CuratedMemoryRequest,
+  CuratedMemoryResult
+} from "../ipc/curated-memory-protocol.js";
 import { createChatDeleteNativeClient } from "./chat-delete-native-client.js";
 import { createChatMoveNativeClient } from "./chat-move-native-client.js";
 import { createChatMovePlacementClient } from "./chat-move-placement-client.js";
@@ -272,6 +277,9 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  curatedMemory: (
+    request: CuratedMemoryRequest
+  ) => Promise<CuratedMemoryResult>;
   projectSourceNative: ReturnType<typeof createProjectSourceNativeClient>;
   chatDeleteNative: ReturnType<typeof createChatDeleteNativeClient>;
   chatMoveNative: ReturnType<typeof createChatMoveNativeClient>;
@@ -4034,6 +4042,31 @@ export const createKoedServerManager = ({
       )
   );
 
+  const curatedMemory = createCuratedMemoryClient(async (path, init, bound) => {
+    const remote = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL(path, bound.apiOrigin),
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          ...init.headers,
+          authorization: bound.authorization
+        }
+      },
+      { timeoutMs: 30_000, maxBytes: 8_000_000 }
+    );
+    if (!remote.response.ok) {
+      await remote.response.body?.cancel().catch(() => undefined);
+      throw new PersonalMemoryBoundaryError(
+        remote.response.status === 404 ? "not_found" : "request_failed",
+        remote.response.status === 408 || remote.response.status >= 500
+      );
+    }
+    return remote.payload;
+  }, projectsAuthority);
+
   const projectHqConversation = createProjectHqConversationClient({
     authority: projectsAuthority,
     requestJson: async (path, init, authority: ProjectHqAuthority) => {
@@ -5923,6 +5956,7 @@ export const createKoedServerManager = ({
     managedConversation,
     managedProject,
     projects,
+    curatedMemory,
     projectSourceNative,
     chatDeleteNative,
     chatMoveNative,

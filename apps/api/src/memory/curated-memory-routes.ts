@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { CuratedMemorySourceRole, MemorySourceRepository } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
 import type { CuratedClassificationCoordinator } from "./curated-classification-coordinator.js";
+import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
 
 const replacementChain = async (
   repo: MemorySourceRepository,
@@ -39,6 +40,25 @@ export const registerCuratedMemoryRoutes = (
   context: ApiRouteContext,
   classificationCoordinator?: CuratedClassificationCoordinator | null
 ) => {
+  // Only these owner-facing assertion operations accept the existing local
+  // Desktop credential. Other Curated routes retain their original auth.
+  const assertionOwner = (
+    request: Parameters<typeof authenticateProjectOperation>[0],
+    write: boolean
+  ) =>
+    request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+      ? authenticateProjectOperation(
+          request,
+          {
+            deploymentProfile: context.config.deploymentProfile,
+            koedHome: context.config.koedHome,
+            auth: context.auth
+          },
+          write
+        )
+      : write
+        ? context.auth.authenticateSession(request)
+        : context.auth.authenticate(request);
   const {
     requireRepository,
     auth: { authenticateApiToken },
@@ -289,7 +309,7 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await context.auth.authenticate(request);
+      const user = await assertionOwner(request, false);
       const query = curatedMemoryListQuerySchema.parse(request.query);
       const assertions = await repo.listCuratedMemoryAssertions(
         { userId: user.id },
@@ -301,11 +321,15 @@ export const registerCuratedMemoryRoutes = (
           since: query.since,
           topicId: query.topic_id,
           includeSources: query.include_sources,
-          limit: query.limit
+          beforeUpdatedAt: query.before_updated_at,
+          beforeId: query.before_id,
+          limit: query.limit + 1
         }
       );
+      const page = assertions.slice(0, query.limit);
+      const last = page.at(-1);
       const withReplacements = await Promise.all(
-        assertions.map(async (assertion) => ({
+        page.map(async (assertion) => ({
           ...assertion,
           replaces: await replacementChain(
             repo,
@@ -314,7 +338,14 @@ export const registerCuratedMemoryRoutes = (
           )
         }))
       );
-      return { assertions: withReplacements, count: withReplacements.length };
+      return {
+        assertions: withReplacements,
+        count: withReplacements.length,
+        next_cursor:
+          assertions.length > query.limit && last
+            ? { updated_at: last.updatedAt, id: last.id }
+            : null
+      };
     }
   );
 
@@ -345,7 +376,7 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await context.auth.authenticate(request);
+      const user = await assertionOwner(request, false);
       const params = curatedMemoryAssertionParamsSchema.parse(request.params);
       const assertion = await repo.getCuratedMemoryAssertion(
         { userId: user.id },
@@ -371,7 +402,11 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
+      const user = request.headers.authorization
+        ?.trim()
+        .startsWith("Koed-Desktop ")
+        ? await assertionOwner(request, true)
+        : await authenticateApiToken(request);
       const params = curatedMemoryAssertionParamsSchema.parse(request.params);
       const input = curatedMemorySuppressSchema.parse(request.body);
       const assertion = await repo.suppressCuratedMemoryAssertion(
@@ -393,7 +428,7 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await context.auth.authenticateSession(request);
+      const user = await assertionOwner(request, true);
       const { assertionId } = curatedMemoryAssertionParamsSchema.parse(
         request.params
       );
@@ -416,7 +451,7 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await context.auth.authenticateSession(request);
+      const user = await assertionOwner(request, true);
       const { assertionId } = curatedMemoryAssertionParamsSchema.parse(
         request.params
       );

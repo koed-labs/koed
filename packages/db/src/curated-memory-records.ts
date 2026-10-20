@@ -898,6 +898,7 @@ export const createCuratedMemoryRecordMethods = ({
           and ($7::text is null or cma.scope = $7::curated_memory_scope)
           and ($8::text is null or cma.kind = $8::curated_memory_kind)
           and ($9::timestamptz is null or cma.created_at >= $9)
+          and ($10::timestamptz is null or (date_trunc('milliseconds',cma.updated_at),cma.id) < ($10::timestamptz,$11::uuid))
           and (cma.status <> 'current' or (
             cma.suppressed_at is null
             and (cma.expires_at is null or cma.expires_at > now())
@@ -906,19 +907,23 @@ export const createCuratedMemoryRecordMethods = ({
         order by
           case when $5::uuid is not null then cma.observed_at end asc,
           case when $5::uuid is not null then cma.id end asc,
-          cma.updated_at desc,cma.id desc
+          date_trunc('milliseconds',cma.updated_at) desc,cma.id desc
         limit $4
       `,
       [
         actor.userId,
         input.status ?? null,
         input.topicId ?? null,
-        positiveLimit(input.limit),
+        Number.isInteger(input.limit) && input.limit! > 0
+          ? Math.min(input.limit!, 251)
+          : 50,
         input.sessionId ?? null,
         input.projectId ?? null,
         input.scope ?? null,
         input.kind ?? null,
-        input.since ?? null
+        input.since ?? null,
+        input.beforeUpdatedAt ?? null,
+        input.beforeId ?? null
       ]
     );
     const sourceMap = input.includeSources
