@@ -433,6 +433,7 @@ export {
 } from "./shared-memory-repository.js";
 export {
   createTeamAccessRepository,
+  TeamActionGrantRequiredError,
   type TeamAccessRepository
 } from "./team-access-repository.js";
 export {

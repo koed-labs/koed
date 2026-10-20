@@ -56,7 +56,10 @@ import {
 import { createDbPool } from "../src/connection.js";
 import { createDb } from "../src/connection.js";
 import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
-import { createTeamAccessRepository } from "../src/team-access-repository.js";
+import {
+  createTeamAccessRepository,
+  TeamActionGrantRequiredError
+} from "../src/team-access-repository.js";
 import { createTeamConversationSourceRepository } from "../src/team-conversation-source-repository.js";
 import { createSavepointPool } from "../src/savepoint-pool.js";
 import { createMemorySourceRepository } from "../src/repository.js";
@@ -2658,18 +2661,41 @@ describeDb("Shared Memory repository", () => {
           [sourceRepresentationId]
         )
       ).rejects.toMatchObject({ code: "55000" });
-      const frozenItem = await pool.query<{ id: string }>(
-        `select id from team_memory_semantic_items
+      const frozenItem = await pool.query<{
+        id: string;
+        content_hash: string;
+        source_item_index: number;
+        attempt_count: number;
+      }>(
+        `select id,content_hash,source_item_index,attempt_count
+           from team_memory_semantic_items
           where representation_id=$1 order by source_item_index limit 1`,
         [frozen.frozen_representation_id]
       );
       if (frozenItem.rows[0]) {
+        const item = frozenItem.rows[0];
+        const derived = await pool.query<{
+          content_hash: string;
+          source_item_index: number;
+          attempt_count: number;
+        }>(
+          `update team_memory_semantic_items
+              set attempt_count=attempt_count+1
+            where id=$1
+          returning content_hash,source_item_index,attempt_count`,
+          [item.id]
+        );
+        expect(derived.rows[0]).toEqual({
+          content_hash: item.content_hash,
+          source_item_index: item.source_item_index,
+          attempt_count: item.attempt_count + 1
+        });
         await expect(
           pool.query(
             `update team_memory_semantic_items
-                set attempt_count=attempt_count+1
+                set content_hash=$2
               where id=$1`,
-            [frozenItem.rows[0].id]
+            [item.id, hash(`frozen-item-tamper:${item.id}`)]
           )
         ).rejects.toMatchObject({ code: "55000" });
       }
@@ -4037,7 +4063,26 @@ describeDb("Shared Memory repository", () => {
         teamId: fixture.teamId,
         expectedVersion
       })
-    ).rejects.toThrow("Backend parent freeze stage is unavailable");
+    ).rejects.toBeInstanceOf(TeamActionGrantRequiredError);
+    const stillEnabled = await pool.query<{
+      status: string;
+      access: string;
+      frozen_at: Date | null;
+    }>(
+      `select membership.status, access.access, share_grant.frozen_at
+         from team_memberships membership
+         join team_workspace_access_grants access
+           on access.team_id=membership.team_id and access.user_id=membership.user_id
+         join team_memory_share_grants share_grant
+           on share_grant.team_id=membership.team_id and share_grant.owner_user_id=membership.user_id
+        where membership.team_id=$1 and membership.user_id=$2 and share_grant.id=$3`,
+      [fixture.teamId, fixture.ownerUserId, grant.shareGrantId]
+    );
+    expect(stillEnabled.rows[0]).toMatchObject({
+      status: "enabled",
+      access: "write",
+      frozen_at: null
+    });
     const credential = await pool.query<{ upstream_backend_id: string }>(
       `update device_credentials
           set operation_families=array_append(operation_families,'action_grant')
@@ -9854,14 +9899,23 @@ describeDb("Shared Memory repository", () => {
         limit: 100
       }
     );
-    const claimedChunkCount = await pool.query<{ count: number }>(
-      `select count(distinct (representation_id,encrypted_chunk_index))::integer as count
-         from team_memory_semantic_items
-        where id=any($1::uuid[])`,
+    const claimedChunkCount = await pool.query<{
+      ordinary_count: number;
+      frozen_count: number;
+    }>(
+      `select count(distinct (item.representation_id,item.encrypted_chunk_index))
+                filter (where representation.frozen_snapshot=false)::integer as ordinary_count,
+              count(distinct (item.representation_id,item.encrypted_chunk_index))
+                filter (where representation.frozen_snapshot=true)::integer as frozen_count
+         from team_memory_semantic_items item
+         join team_memory_representations representation
+           on representation.id=item.representation_id
+        where item.id=any($1::uuid[])`,
       [semanticItems.map((item) => item.semanticItemId)]
     );
     expect(decryptSpy.mock.calls.length - decryptsBeforePendingClaim).toBe(
-      claimedChunkCount.rows[0]!.count * 2
+      claimedChunkCount.rows[0]!.ordinary_count * 2 +
+        claimedChunkCount.rows[0]!.frozen_count
     );
     expect(
       semanticItems.find(
@@ -10447,6 +10501,431 @@ describeDb("Shared Memory repository", () => {
       [fixture.teamWorkspaceId, fixture.readerUserId]
     );
     await expect(search()).resolves.toEqual([]);
+  });
+
+  it("completes frozen semantic embeddings from copied Team bytes and re-embeds on model change", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "frozen-embedding-maintenance"
+    });
+    await materialize(fixture, grant, {
+      label: "frozen-embedding-maintenance"
+    });
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const pending = (
+      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(pending.length).toBeGreaterThan(0);
+    const vector = [1, ...Array.from({ length: 383 }, () => 0)];
+    for (const item of pending) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-a",
+          dimensions: 384,
+          version: "frozen-model-a-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+    const boundary = await repository.freezeSharedMemorySemanticRecallBoundary(
+      actor(fixture.readerUserId),
+      { teamWorkspaceId: fixture.teamWorkspaceId, maximumGrantCount: 128 }
+    );
+    expect(boundary.shareGrantIds).toContain(grant.shareGrantId);
+    const first = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model: "frozen-model-a",
+        dimensions: 384,
+        version: "frozen-model-a-v1",
+        limit: 50,
+        searchDomain: "global",
+        authorizationBoundary: boundary
+      }
+    );
+    expect(first.some((item) => item.shareGrantId === grant.shareGrantId)).toBe(
+      true
+    );
+    const changed = (
+      await repository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1"
+      })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(changed).toHaveLength(pending.length);
+    for (const item of changed) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-b",
+          dimensions: 384,
+          version: "frozen-model-b-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+    const second = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1",
+        limit: 50,
+        searchDomain: "global"
+      }
+    );
+    expect(
+      second.some((item) => item.shareGrantId === grant.shareGrantId)
+    ).toBe(true);
+    const retryRows = await pool.query<{ id: string }>(
+      `select item.id from team_memory_semantic_items item
+         join team_memory_representations representation
+           on representation.id=item.representation_id
+        where item.share_grant_id=$1 and representation.frozen_snapshot=true
+        order by item.source_item_index limit 2`,
+      [grant.shareGrantId]
+    );
+    expect(retryRows.rows).toHaveLength(2);
+    await pool.query(
+      `update team_memory_semantic_items
+          set embedding_state='failed',embedded_at=null,
+              last_error_class='TransientFailure',
+              next_attempt_at=now()-interval '1 second',updated_at=now()
+        where id=$1`,
+      [retryRows.rows[0]!.id]
+    );
+    await pool.query(
+      `update team_memory_semantic_items
+          set embedding_state='processing',embedded_at=null,
+              updated_at=now()-interval '6 minutes'
+        where id=$1`,
+      [retryRows.rows[1]!.id]
+    );
+    const reclaimed = (
+      await repository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1"
+      })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(new Set(reclaimed.map((item) => item.semanticItemId))).toEqual(
+      new Set(retryRows.rows.map((row) => row.id))
+    );
+    for (const item of reclaimed) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-b",
+          dimensions: 384,
+          version: "frozen-model-b-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+  });
+
+  it.each(["revoke", "policy"] as const)(
+    "denies a frozen embedding stored after %s invalidates its claim",
+    async (invalidator) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, {
+        label: `frozen-embedding-${invalidator}`
+      });
+      await materialize(fixture, grant);
+      await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      });
+      const pending = (
+        await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+      ).find((item) => item.shareGrantId === grant.shareGrantId);
+      expect(pending).toBeDefined();
+      if (invalidator === "revoke") {
+        const current = await pool.query<{ grant_version: number }>(
+          `select grant_version from team_memory_share_grants where id=$1`,
+          [grant.shareGrantId]
+        );
+        await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          expectedGrantVersion: current.rows[0]!.grant_version,
+          reasonCode: "owner_revoked_embedding",
+          authority: authority(fixture)
+        });
+      } else {
+        await repository.putTeamPolicy(actor(fixture.managerUserId), {
+          mutationId: randomUUID(),
+          teamId: fixture.teamId,
+          expectedCurrentVersion: 1,
+          ...fidelityConsent(["lcm_leaves"])
+        });
+      }
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: pending!.semanticItemId,
+          contentHash: pending!.contentHash,
+          model: "invalidated-frozen-model",
+          dimensions: 384,
+          version: "v1",
+          vector: [1, ...Array.from({ length: 383 }, () => 0)]
+        })
+      ).toBe(false);
+      const stored = await pool.query<{ count: number }>(
+        `select count(*)::integer as count from team_memory_semantic_vectors_384
+          where semantic_item_id=$1`,
+        [pending!.semanticItemId]
+      );
+      expect(stored.rows[0]?.count).toBe(0);
+    }
+  );
+
+  it("keeps an unpublished frozen Conversation Source owner-visible and exactly revocable", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "frozen-empty-source-access"
+    });
+    await materialize(fixture, grant);
+    const logicalSourceId = randomUUID();
+    const externalSessionId = `frozen-empty-${randomUUID()}`;
+    await pool.query(`update sessions set external_session_id=$2 where id=$1`, [
+      grant.localSessionId,
+      externalSessionId
+    ]);
+    const source = await createMemorySourceRepository(
+      pool
+    ).ensureConversationSourceArtifact(actor(fixture.ownerUserId), {
+      sessionId: grant.localSessionId,
+      logicalSourceId,
+      sourceGenerationId: randomUUID(),
+      replicaRole: "origin_local",
+      sourceKind: "codex",
+      sourceRuntime: "codex",
+      externalSessionId,
+      sourceFingerprint: hash(`frozen-empty:${logicalSourceId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "codex-transcript-v1",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: 0,
+      sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+      storageProvider: "filesystem",
+      storagePrefix: `frozen-empty-${randomUUID()}`,
+      originDeploymentId: `deployment-${randomUUID()}`,
+      originDeviceId: `device-${randomUUID()}`,
+      originKeyId: `key-${randomUUID()}`,
+      originPublicKey: "a".repeat(43),
+      redactedSourceLabel: "Empty conversation source"
+    });
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        source.sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const sourceState = await pool.query<{
+      lifecycle: string;
+      version: number;
+    }>(
+      `select lifecycle,version from team_conversation_source_grants where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(sourceState.rows[0]?.lifecycle).toBe("frozen_empty");
+    const owned = await repository.getOwnerShare(actor(fixture.ownerUserId), {
+      kind: "grant",
+      id: grant.shareGrantId
+    });
+    expect(owned?.sourceAccess).toEqual({
+      mode: "continuous",
+      lifecycle: "active",
+      version: sourceState.rows[0]!.version
+    });
+    const sourceAccess = createTeamConversationSourceRepository(pool);
+    const revoked = await sourceAccess.revokeTeamConversationSourceGrant(
+      actor(fixture.ownerUserId),
+      {
+        shareGrantId: grant.shareGrantId,
+        teamId: fixture.teamId,
+        expectedVersion: sourceState.rows[0]!.version,
+        mutationId: randomUUID(),
+        reasonCode: "owner_revoked_empty_source"
+      }
+    );
+    expect(revoked?.lifecycle).toBe("revoked");
+    await expect(
+      sourceAccess.getTeamConversationSourceAccess(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.shareGrantId }
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("reads an authenticated published empty Conversation Source after freeze", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "published-empty-source"
+    });
+    await materialize(fixture, grant);
+    const logicalSourceId = randomUUID();
+    const externalSessionId = `published-empty-${randomUUID()}`;
+    await pool.query(`update sessions set external_session_id=$2 where id=$1`, [
+      grant.localSessionId,
+      externalSessionId
+    ]);
+    const source = await createMemorySourceRepository(
+      pool
+    ).ensureConversationSourceArtifact(actor(fixture.ownerUserId), {
+      sessionId: grant.localSessionId,
+      logicalSourceId,
+      sourceGenerationId: randomUUID(),
+      replicaRole: "origin_local",
+      sourceKind: "codex",
+      sourceRuntime: "codex",
+      externalSessionId,
+      sourceFingerprint: hash(`published-empty:${logicalSourceId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "codex-transcript-v1",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: 0,
+      sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+      storageProvider: "filesystem",
+      storagePrefix: `published-empty-${randomUUID()}`,
+      originDeploymentId: `deployment-${randomUUID()}`,
+      originDeviceId: `device-${randomUUID()}`,
+      originKeyId: `key-${randomUUID()}`,
+      originPublicKey: "a".repeat(43),
+      redactedSourceLabel: "Published empty source"
+    });
+    const closureHash = hash(`published-empty-closure:${source.id}`);
+    await pool.query(
+      `update conversation_source_artifacts
+          set lifecycle='finalized',closure_hash=$2,closure_manifest=$3::jsonb,
+              closure_signature=$4,finalized_at=now(),source_modified_at=now(),
+              source_set_closure_hash=$5,source_set_closure_manifest=$6::jsonb,
+              source_set_closure_signature=$4,source_set_finalized_at=now()
+        where id=$1`,
+      [
+        source.id,
+        closureHash,
+        JSON.stringify({ version: 1, segmentCount: 0, chainHeadDigest: null }),
+        "a".repeat(86),
+        hash(`published-empty-set:${source.id}`),
+        JSON.stringify({
+          version: 1,
+          components: [
+            { sourceComponentId: "main", artifactClosureDigest: closureHash }
+          ]
+        })
+      ]
+    );
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        source.sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    const deployment = await pool.query<{ deployment_identity_id: string }>(
+      `select deployment_identity_id from privacy_content_policies
+        where scope='deployment' and status='active' limit 1`
+    );
+    const policy = await privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId: deployment.rows[0]!.deployment_identity_id,
+      sourceOwnerUserId: fixture.ownerUserId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId
+    });
+    await privacyRepository.storeSanitizedSourceArtifact({
+      actor: actor(fixture.ownerUserId),
+      provider: privacyProvider,
+      shareGrantId: grant.shareGrantId,
+      sourceArtifactId: source.id,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      classifierHash: privacyClassifier.classifierHash,
+      effectivePolicyHash: policy.effectivePolicyHash,
+      sourceFrontierHash: privacySourceFrontierHash({
+        sourceArtifactId: source.id,
+        sourceFrontierCursor: 0,
+        sourceSegmentCount: 0,
+        headContentDigest: null
+      }),
+      sourceFrontierCursor: 0,
+      sourceSegmentCount: 0,
+      sourceClosureHash: closureHash,
+      format: "codex_rollout_jsonl",
+      formatVersion: 1,
+      metadata: { redactedTitle: "Empty but published" },
+      chunks: []
+    });
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const access = createTeamConversationSourceRepository(pool);
+    const manifest = await access.getTeamConversationSourceManifest(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+    );
+    expect(manifest?.artifact.id).toBe(source.id);
+    expect(manifest?.segments).toEqual([]);
+    expect(manifest?.grant.maximumSegmentIndex).toBe(0);
+    expect(manifest?.grant.maximumSourceOffset).toBe(0);
   });
 
   it("preserves exact rollup fidelity and policy provenance through owner-private sync and Team materialization", async () => {
@@ -11707,6 +12186,49 @@ describeDb("Shared Memory repository", () => {
       ).toEqual(["Frozen assertion two."]);
       expect(await search()).toHaveLength(1);
       expect((await scan())[0]?.candidateCount).toBe(1);
+      const blockedEmbedding = await pool.query<{
+        id: string;
+        content_hash: string;
+      }>(
+        `update team_memory_semantic_items item
+            set embedding_state='processing',embedded_at=null,
+                updated_at=now()-interval '6 minutes'
+          from team_memory_representations representation
+         where item.representation_id=representation.id
+           and representation.frozen_snapshot=true
+           and item.share_grant_id=$1 and item.pseudonymous_source_id=$2
+        returning item.id,item.content_hash`,
+        [grant.id, sharedMemoryGrantScopedSourceId(grant.id, firstId)]
+      );
+      expect(blockedEmbedding.rows).toHaveLength(1);
+      const blockedPending =
+        await repository.listPendingSharedMemorySemanticItems({
+          limit: 100,
+          model: "frozen-curated-test",
+          dimensions: 384,
+          version: "v1"
+        });
+      expect(
+        blockedPending.some(
+          (item) => item.semanticItemId === blockedEmbedding.rows[0]!.id
+        )
+      ).toBe(false);
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: blockedEmbedding.rows[0]!.id,
+          contentHash: blockedEmbedding.rows[0]!.content_hash,
+          model: "frozen-curated-test-v2",
+          dimensions: 384,
+          version: "v2",
+          vector: curatedVector
+        })
+      ).toBe(false);
+      await pool.query(
+        `update team_memory_semantic_items
+            set embedding_state='embedded',embedded_at=now(),updated_at=now()
+          where id=$1`,
+        [blockedEmbedding.rows[0]!.id]
+      );
       await expect(
         repository.expandAuthorizedSharedMemorySemanticItem(
           actor(fixture.readerUserId),

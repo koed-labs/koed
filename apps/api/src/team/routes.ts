@@ -4,6 +4,7 @@ import {
 } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
+  TeamActionGrantRequiredError,
   type DeviceCredentialAuthContext,
   type MemorySourceRepository,
   type TeamAccessRepository
@@ -315,7 +316,17 @@ export const registerTeamRoutes = (
       if (requireIdentity) {
         await requireVerifiedTeamIdentity(repository, actor.user);
       }
-      const result = await execute(repository);
+      let result: Awaited<ReturnType<typeof execute>>;
+      try {
+        result = await execute(repository);
+      } catch (error) {
+        if (error instanceof TeamActionGrantRequiredError) {
+          throw forbidden(
+            "A scoped one-time Action Grant is required for this Team change"
+          );
+        }
+        throw error;
+      }
       if (!result) {
         throw forbidden("Team administration action is not authorized");
       }

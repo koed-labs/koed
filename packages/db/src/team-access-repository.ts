@@ -542,6 +542,15 @@ export interface TeamAccessRepositoryOptions {
   ) => Promise<void>;
 }
 
+export class TeamActionGrantRequiredError extends Error {
+  constructor() {
+    super(
+      "A one-time Action Grant is required to freeze affected shared memory"
+    );
+    this.name = "TeamActionGrantRequiredError";
+  }
+}
+
 export const createTeamAccessRepository = (
   pool: pg.Pool,
   options: TeamAccessRepositoryOptions = {}
@@ -697,7 +706,7 @@ export const createTeamAccessRepository = (
     );
     if (grants.rows.length === 0) return;
     if (!options.freezeShareGrantForParent) {
-      throw new Error("Backend parent freeze stage is unavailable");
+      throw new TeamActionGrantRequiredError();
     }
     for (const grant of grants.rows) {
       await options.freezeShareGrantForParent(client, {

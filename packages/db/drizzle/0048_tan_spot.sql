@@ -984,20 +984,8 @@ BEGIN
       RAISE EXCEPTION 'Shared Memory semantic source identity is immutable'
         USING ERRCODE = '55000';
     END IF;
-    IF v_is_frozen_snapshot AND (
-      NEW.embedding_state IS DISTINCT FROM OLD.embedding_state OR
-      NEW.embedding_model IS DISTINCT FROM OLD.embedding_model OR
-      NEW.embedding_dimensions IS DISTINCT FROM OLD.embedding_dimensions OR
-      NEW.embedding_version IS DISTINCT FROM OLD.embedding_version OR
-      NEW.embedding_input_hash IS DISTINCT FROM OLD.embedding_input_hash OR
-      NEW.embedded_at IS DISTINCT FROM OLD.embedded_at OR
-      NEW.last_error_class IS DISTINCT FROM OLD.last_error_class OR
-      NEW.attempt_count IS DISTINCT FROM OLD.attempt_count OR
-      NEW.next_attempt_at IS DISTINCT FROM OLD.next_attempt_at
-    ) THEN
-      RAISE EXCEPTION 'Frozen Shared Memory semantic item embedding state is immutable'
-        USING ERRCODE = '55000';
-    END IF;
+    -- Embedding state is derived from the already pinned item bytes. The
+    -- source identity/content fields above remain immutable after freeze.
     RETURN NEW;
   END IF;
   IF v_is_frozen_snapshot AND v_lifecycle NOT IN ('revoked','purge_pending','purged') THEN
@@ -1019,27 +1007,35 @@ DECLARE
   v_is_frozen_snapshot boolean;
   v_frozen_at timestamptz;
   v_lifecycle text;
+  v_embedding_state text;
 BEGIN
   v_item_id := CASE WHEN TG_OP='DELETE' THEN OLD.semantic_item_id ELSE NEW.semantic_item_id END;
-  SELECT item.logical_memory_id, item.representation_id,
-         representation.frozen_snapshot, grant_row.frozen_at, grant_row.lifecycle
-    INTO v_logical_memory_id, v_representation_id, v_is_frozen_snapshot,
-         v_frozen_at, v_lifecycle
+  SELECT item.logical_memory_id INTO v_logical_memory_id
+    FROM team_memory_semantic_items item WHERE item.id=v_item_id;
+  IF v_logical_memory_id IS NOT NULL THEN
+    PERFORM koed_lock_shared_memory_publication_fence(v_logical_memory_id);
+  END IF;
+  SELECT item.representation_id, representation.frozen_snapshot,
+         grant_row.frozen_at, grant_row.lifecycle, item.embedding_state
+    INTO v_representation_id, v_is_frozen_snapshot, v_frozen_at,
+         v_lifecycle, v_embedding_state
     FROM team_memory_semantic_items item
     JOIN team_memory_representations representation
       ON representation.id=item.representation_id
     JOIN team_memory_share_grants grant_row
       ON grant_row.id=item.share_grant_id
    WHERE item.id=v_item_id;
-  IF v_logical_memory_id IS NOT NULL THEN
-    PERFORM koed_lock_shared_memory_publication_fence(v_logical_memory_id);
-  END IF;
   IF v_is_frozen_snapshot AND v_frozen_at IS NOT NULL THEN
     IF TG_OP IN ('INSERT','UPDATE') THEN
-      RAISE EXCEPTION 'Frozen Shared Memory vectors cannot be changed after grant freeze'
-        USING ERRCODE = '55000';
+      IF TG_OP='UPDATE' OR v_lifecycle <> 'active' OR
+         v_embedding_state <> 'processing' THEN
+        RAISE EXCEPTION 'Frozen Shared Memory vectors require an active embedding lease'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
     END IF;
-    IF v_lifecycle NOT IN ('revoked','purge_pending','purged') THEN
+    IF v_lifecycle NOT IN ('revoked','purge_pending','purged') AND
+       (v_lifecycle <> 'active' OR v_embedding_state <> 'processing') THEN
       RAISE EXCEPTION 'Frozen Shared Memory vectors can be deleted only by revocation or retention'
         USING ERRCODE = '55000';
     END IF;

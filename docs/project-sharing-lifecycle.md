@@ -475,6 +475,11 @@ stage only of an exact allowlisted outer Team action and inherits that action's
 target, authority, request binding, and approval; callers cannot request the
 stage independently. Current Team parent actions use this freeze while the
 source owner's Desktop is offline; Workspace Project parents remain pending.
+When an affected browser Team lifecycle request needs that freeze, the
+existing browser route returns an explicit Action Grant requirement. The
+reviewed, exact one-use Action Grant path performs the freeze and parent
+mutation together; browser requests with no affected unfrozen grant keep their
+existing behavior.
 
 If the grant has attached continuous Conversation Source Access, the same
 atomic operation pins its last authorized sanitized source generation and
@@ -484,6 +489,12 @@ Its independent expiry, revocation, membership, Workspace Access, and
 Team-audience policy checks still apply. Snapshot source access remains pinned
 to its existing snapshot. Unrelated grants and Cross-Identity Sync relationships
 are unchanged.
+An empty published source has a pinned zero-segment frontier and remains
+readable as empty metadata. If no sanitized source was published, the internal
+source capability is `frozen_empty`: it exposes no bytes but remains separately
+revocable by its owner. The strict v1 Source Access lifecycle reports that
+unrevoked state as `active` with its current version, so an owner can review
+and revoke the exact capability without treating freeze as revocation.
 
 A freeze keeps the grant's consent and published representation, stops future
 advancement, and does not itself end Team recall. Revocation, suppression,
@@ -510,6 +521,11 @@ path can prove the exact pinned revision. Source evidence invalidation blocks
 the affected Session's copied Curated items until owner reconciliation proves
 their eligibility. Neither a Team reader nor an offline Team lifecycle action
 reads the owner's Personal store to decide this state.
+Semantic embedding jobs may finish or refresh vectors for the already copied,
+fixed Team-safe items after freeze. They recheck current authorization and
+privacy before storing a result; only derived embedding state and vectors may
+change. The pinned source identity, ciphertext, item set, and content hashes
+cannot advance.
 
 Restoring a resource does not resume a frozen grant, recreate a revoked grant,
 or re-enable sharing. A new grant or explicit owner sharing action is required

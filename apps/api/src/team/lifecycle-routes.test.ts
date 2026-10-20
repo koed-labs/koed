@@ -6,6 +6,7 @@ import type {
   TeamWorkspaceRecord,
   UserRecord
 } from "@koed/db";
+import { TeamActionGrantRequiredError } from "@koed/db";
 import {
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
@@ -1344,6 +1345,24 @@ describe("Team lifecycle routes", () => {
       { userId: user.id },
       { teamId, expectedVersion: 1 }
     );
+  });
+
+  it("returns a scoped Action Grant requirement for an affected browser Team write", async () => {
+    const leaveTeam = vi.fn(async () => {
+      throw new TeamActionGrantRequiredError();
+    });
+    const fixture = await createFixture({ repository: { leaveTeam } });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/leave`,
+      payload: { expectedVersion: 1 }
+    });
+    await fixture.app.close();
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      message: expect.stringContaining("Action Grant")
+    });
+    expect(leaveTeam).toHaveBeenCalledTimes(1);
   });
 
   it("consumes an exact one-use Action Grant for device Team leave and rejects replay", async () => {

@@ -511,6 +511,9 @@ const frozenSourceState = async (
   const snapshot = row?.source_snapshot as Record<string, unknown> | undefined;
   const published = snapshot?.published as Record<string, unknown> | null;
   const closures = published?.sourceComponentClosures;
+  const sanitized = published?.sanitizedArtifact as
+    | Record<string, unknown>
+    | undefined;
   if (!row || snapshot?.schemaVersion !== 1 || !Array.isArray(closures)) {
     return { frozen: true, access: null };
   }
@@ -568,12 +571,22 @@ const frozenSourceState = async (
       component.sourceComponentId === "main" &&
       component.sourceComponentRole === "primary"
   );
+  // An authenticated published empty closure pins index zero in the existing
+  // snapshot shape. The header's exact zero count distinguishes it from a
+  // published first segment, without widening ordinary snapshot grants.
+  const pinnedEmpty =
+    sanitized?.sourceSegmentCount === 0 &&
+    grant.maximumSegmentIndex === 0 &&
+    grant.maximumSourceOffset === 0 &&
+    segments.filter((segment) => segment.artifactId === artifact?.id).length ===
+      0;
   if (
     !artifact ||
     artifact.id !== grant.artifactId ||
     components.length !== closures.length ||
     (components.length > 1 && artifact.sourceSetFinalizedAt === null) ||
     (grant.maximumSegmentIndex !== null &&
+      !pinnedEmpty &&
       segments.filter((segment) => segment.artifactId === artifact.id)
         .length !==
         grant.maximumSegmentIndex + 1)
@@ -902,7 +915,7 @@ export const createTeamConversationSourceRepository = (
            from team_memory_share_grants share_grant
           where source_grant.share_grant_id = $1
             and source_grant.version = $4
-            and source_grant.lifecycle = 'active'
+            and source_grant.lifecycle in ('active','frozen_empty')
             and share_grant.id = source_grant.share_grant_id
             and share_grant.owner_user_id = $2
             and source_grant.team_id = $6
