@@ -14430,8 +14430,21 @@ export const createSharedMemoryRepository = (
             verified.teamId !== grantRow.team_id ||
             verified.targetUserId !== ownerUserId ||
             (verified.action === "team.leave" &&
-              (actor.userId !== ownerUserId ||
-                verified.approvalTier !== "native_review")) ||
+              (verified.approvalTier === "native_review"
+                ? actor.userId !== ownerUserId
+                : verified.approvalTier !== "step_up" ||
+                  (actor.userId !== ownerUserId &&
+                    (!verified.workspaceProjectId ||
+                      verified.teamWorkspaceId !==
+                        grantRow.team_workspace_id)))) ||
+            ((verified.action.startsWith("workspace_project.") ||
+              verified.action === "project_source.team_metadata.delete") &&
+              (verified.approvalTier !== "step_up" ||
+                verified.teamWorkspaceId !== grantRow.team_workspace_id ||
+                !verified.workspaceProjectId)) ||
+            (verified.action === "project_source.team_metadata.delete" &&
+              (!verified.workspaceProjectSourceId ||
+                !verified.sourceVersion)) ||
             (verified.action === "team.member.disable" &&
               (verified.approvalTier !== "step_up" ||
                 actor.userId === ownerUserId)) ||
@@ -14461,7 +14474,165 @@ export const createSharedMemoryRepository = (
               "Parent target membership changed before freeze"
             );
           }
-          if (verified.action !== "team.leave") {
+          if (
+            verified.action === "team.leave" &&
+            actor.userId !== ownerUserId
+          ) {
+            const binding = await client.query<Row>(
+              `
+              select 1 from workspace_project_share_grant_bindings
+               where workspace_project_id=$1 and share_grant_id=$2`,
+              [verified.workspaceProjectId, input.shareGrantId]
+            );
+            if (!binding.rows[0])
+              throw new SharedMemoryAuthorizationError(
+                "Other member Share Grant is not bound to owned Project"
+              );
+            const project = await client.query<Row>(
+              `
+              select project.id
+                from workspace_projects project
+                join team_memberships actor_member
+                  on actor_member.id=project.owner_team_member_id
+               where project.id=$1 and project.team_id=$2
+                 and project.workspace_id=$3
+                 and actor_member.user_id=$4
+                 and project.lifecycle='active'
+               for update of project`,
+              [
+                verified.workspaceProjectId,
+                verified.teamId,
+                verified.teamWorkspaceId,
+                verified.actorUserId
+              ]
+            );
+            if (!project.rows[0])
+              throw new SharedMemoryAuthorizationError(
+                "Team leave owned Project authority changed before freeze"
+              );
+          }
+          if (
+            verified.action.startsWith("workspace_project.") ||
+            verified.action === "project_source.team_metadata.delete"
+          ) {
+            const binding = await client.query<Row>(
+              `
+              select 1 from workspace_project_share_grant_bindings
+               where workspace_project_id=$1 and share_grant_id=$2
+                 and ($3::uuid is null or workspace_project_source_id=$3)`,
+              [
+                verified.workspaceProjectId,
+                input.shareGrantId,
+                verified.action === "project_source.team_metadata.delete"
+                  ? verified.workspaceProjectSourceId
+                  : null
+              ]
+            );
+            if (!binding.rows[0])
+              throw new SharedMemoryAuthorizationError(
+                "Share Grant is not bound to the reviewed Project"
+              );
+            const project = await client.query<Row>(
+              `
+              select project.owner_team_member_id,
+                     actor_member.id as actor_member_id,
+                     target_member.id as target_member_id,
+                     target_link.access as target_access,
+                     actor_link.access as actor_access,
+                     actor_workspace.access as actor_workspace_access
+                from workspace_projects project
+                join team_memberships actor_member
+                  on actor_member.team_id=project.team_id
+                 and actor_member.user_id=$4
+                 and actor_member.status='enabled'
+                 and actor_member.disabled_at is null
+                join workspace_project_members actor_link
+                  on actor_link.workspace_project_id=project.id
+                 and actor_link.team_member_id=actor_member.id
+                 and actor_link.disabled_at is null
+                join team_workspace_access_grants actor_workspace
+                  on actor_workspace.team_workspace_id=project.workspace_id
+                 and actor_workspace.user_id=$4
+                 and actor_workspace.access in ('read','write')
+                 and actor_workspace.disabled_at is null
+                join team_memberships target_member
+                  on target_member.team_id=project.team_id
+                 and target_member.user_id=$5
+                 and target_member.status='enabled'
+                 and target_member.disabled_at is null
+                join workspace_project_members target_link
+                  on target_link.workspace_project_id=project.id
+                 and target_link.team_member_id=target_member.id
+                 and target_link.disabled_at is null
+               where project.id=$1 and project.team_id=$2
+                 and project.workspace_id=$3 and project.lifecycle='active'
+               for update of project,target_link`,
+              [
+                verified.workspaceProjectId,
+                verified.teamId,
+                verified.teamWorkspaceId,
+                verified.actorUserId,
+                verified.targetUserId
+              ]
+            );
+            const state = project.rows[0];
+            const actorIsOwner =
+              state?.owner_team_member_id === state?.actor_member_id;
+            if (
+              !state ||
+              (verified.action === "workspace_project.leave"
+                ? !["read", "write"].includes(
+                    stringValue(state.actor_access)
+                  ) ||
+                  !["read", "write"].includes(
+                    stringValue(state.actor_workspace_access)
+                  )
+                : state.actor_access !== "write" ||
+                  state.actor_workspace_access !== "write") ||
+              state.target_access === "disabled" ||
+              (verified.action === "workspace_project.leave" &&
+                (actorIsOwner ||
+                  verified.actorUserId !== verified.targetUserId)) ||
+              (verified.action === "workspace_project.member_remove" &&
+                (!actorIsOwner ||
+                  verified.actorUserId === verified.targetUserId ||
+                  state.target_member_id === state.owner_team_member_id)) ||
+              (verified.action === "workspace_project.delete" && !actorIsOwner)
+            ) {
+              throw new SharedMemoryAuthorizationError(
+                "Parent Workspace Project authority changed before freeze"
+              );
+            }
+            if (verified.action === "project_source.team_metadata.delete") {
+              const source = await client.query<Row>(
+                `
+                select source.uploader_team_member_id, uploader.user_id
+                  from workspace_project_sources source
+                  join team_memberships uploader
+                    on uploader.id=source.uploader_team_member_id
+                 where source.id=$1 and source.workspace_project_id=$2
+                   and source.version=$3 and source.deleted_at is null
+                 for update of source,uploader`,
+                [
+                  verified.workspaceProjectSourceId,
+                  verified.workspaceProjectId,
+                  verified.sourceVersion
+                ]
+              );
+              if (
+                !source.rows[0] ||
+                source.rows[0].user_id !== verified.targetUserId ||
+                source.rows[0].uploader_team_member_id !==
+                  state.target_member_id ||
+                (!actorIsOwner &&
+                  verified.actorUserId !== verified.targetUserId) ||
+                grantRow.source_kind !== "personal_note"
+              )
+                throw new SharedMemoryAuthorizationError(
+                  "Parent Source authority changed before freeze"
+                );
+            }
+          } else if (verified.action !== "team.leave") {
             const manager = await client.query<Row>(
               `select role,status,disabled_at from team_memberships
                 where team_id=$1 and user_id=$2 for update`,

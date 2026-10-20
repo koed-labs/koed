@@ -391,6 +391,15 @@ const collaborationRevisionSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._~-]*$/);
 
 const positiveVersionSchema = z.number().int().safe().positive();
+const exactOwnedWorkspaceProjectsSchema = z
+  .array(z.object({ id: z.uuid(), version: positiveVersionSchema }).strict())
+  .refine(
+    (projects) =>
+      projects.every(
+        (project, index) => index === 0 || projects[index - 1]!.id < project.id
+      ),
+    "Owned Workspace Projects must be unique and sorted by ID"
+  );
 const nonNegativeSequenceSchema = z.number().int().safe().min(0);
 
 export const collaborationLimitsSchema = z
@@ -1839,7 +1848,16 @@ export const collaborationActionGrantIntentSchema = z
     }),
     actionGrantIntent("collaboration.leave_team", {
       teamId: z.uuid(),
-      expectedVersion: positiveVersionSchema
+      expectedVersion: positiveVersionSchema,
+      expectedTeamVersion: positiveVersionSchema,
+      expectedOwnedWorkspaceProjects: exactOwnedWorkspaceProjectsSchema
+    }),
+    actionGrantIntent("collaboration.delete_project_source", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      sourceId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedSourceVersion: positiveVersionSchema
     }),
     actionGrantIntent("collaboration.archive_workspace", {
       teamId: z.uuid(),
@@ -2789,6 +2807,16 @@ export const collaborationRendererCommandSchema = z
     command("collaboration.leave_team", {
       teamId: z.uuid(),
       expectedVersion: positiveVersionSchema,
+      expectedTeamVersion: positiveVersionSchema,
+      expectedOwnedWorkspaceProjects: exactOwnedWorkspaceProjectsSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.delete_project_source", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      sourceId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedSourceVersion: positiveVersionSchema,
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.archive_workspace", {
@@ -3098,6 +3126,7 @@ const commandNameSchema = z.enum([
   "collaboration.update_member_role",
   "collaboration.disable_member",
   "collaboration.leave_team",
+  "collaboration.delete_project_source",
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
   "collaboration.set_workspace_access",
@@ -3239,6 +3268,17 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.leave_team",
     z.object({ membership: collaborationMembershipSchema }).strict()
+  ),
+  successResult(
+    "collaboration.delete_project_source",
+    z
+      .object({
+        projectId: z.uuid(),
+        sourceId: z.uuid(),
+        version: positiveVersionSchema,
+        deleted: z.literal(true)
+      })
+      .strict()
   ),
   successResult(
     "collaboration.archive_workspace",

@@ -837,6 +837,14 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       acceptedAt: at,
       disabledAt: at
     })),
+    deleteWorkspaceProjectSource: vi.fn(
+      async ({ projectId, sourceId, expectedSourceVersion }) => ({
+        projectId,
+        sourceId,
+        version: expectedSourceVersion + 1,
+        deleted: true as const
+      })
+    ),
     archiveWorkspace: vi.fn(
       async ({ teamId, workspaceId, expectedVersion }) => ({
         id: workspaceId,

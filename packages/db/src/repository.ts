@@ -75,6 +75,7 @@ import { createSettingsRepository } from "./settings-repository.js";
 import { createSavepointPool } from "./savepoint-pool.js";
 import { createSharedMemoryRepository } from "./shared-memory-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
+import { createWorkspaceProjectRepository } from "./workspace-project-repository.js";
 import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import {
   isGenericDevelopmentActivity,
@@ -4053,6 +4054,7 @@ export const createMemorySourceRepository = (
     ...createTeamAccessRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createWorkspaceProjectRepository(pool),
     ...createCollaborationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
@@ -4092,6 +4094,8 @@ export const createMemorySourceRepository = (
       workItemRepository.completeForManagedExecutionLease(input),
     hasActiveManagedWorkItem: (input) =>
       workItemRepository.hasActiveManagedWorkItem(input),
+    getSharedDispatchLink: (ownerUserId, personalProjectId) =>
+      workItemRepository.getSharedDispatchLink(ownerUserId, personalProjectId),
     ...createManagedConversationCitationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),

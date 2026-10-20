@@ -248,6 +248,55 @@ export interface ClaimedManagedConversationCommand extends ManagedConversationCo
 }
 
 export interface ManagedConversationRepository {
+  listSharedDispatchProgressCandidates(
+    actor: ActorContext,
+    input: {
+      deploymentId: string;
+      deviceId: string;
+      afterExecutionId?: string;
+      limit?: number;
+    }
+  ): Promise<Array<{ executionId: string; commandId: string }>>;
+  listSharedWorkItemDispatches(
+    actor: ActorContext,
+    input: {
+      personalProjectId: string;
+      teamBackendId: string;
+      workspaceProjectId: string;
+    }
+  ): Promise<
+    Array<{ teamWorkItemId: string; executionId: string; agentId: string }>
+  >;
+  getSharedWorkItemDispatchForExecution(
+    actor: ActorContext,
+    executionId: string
+  ): Promise<{
+    agentId: string;
+    teamBackendId: string;
+    teamPrincipalUserId: string;
+    workspaceProjectId: string;
+    teamWorkItemId: string;
+    teamWorkItemVersion: number;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+  } | null>;
+  getSharedWorkItemDispatch(
+    actor: ActorContext,
+    input: {
+      projectId: string;
+      idempotencyKey: string;
+    }
+  ): Promise<{
+    executionId: string;
+    agentId: string;
+    teamBackendId: string;
+    teamPrincipalUserId: string;
+    workspaceProjectId: string;
+    teamWorkItemId: string;
+    teamWorkItemVersion: number;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+  } | null>;
   createManagedConversation(
     actor: ActorContext,
     input: {
@@ -271,6 +320,16 @@ export interface ManagedConversationRepository {
         agentId: string;
         version: number;
         sources?: Array<{ id: string; currentRevisionId: string | null }>;
+      };
+      sharedWorkItemDispatch?: {
+        teamBackendId: string;
+        teamPrincipalUserId: string;
+        workspaceProjectId: string;
+        teamWorkItemId: string;
+        teamWorkItemVersion: number;
+        expectedProjectVersion: number;
+        expectedMemberVersion: number;
+        agentId: string;
       };
     }
   ): Promise<{
@@ -1276,6 +1335,16 @@ export const createManagedConversationRepository = (
       id: string;
       currentRevisionId: string | null;
     }>;
+    sharedWorkItemDispatch?: {
+      teamBackendId: string;
+      teamPrincipalUserId: string;
+      workspaceProjectId: string;
+      teamWorkItemId: string;
+      teamWorkItemVersion: number;
+      expectedProjectVersion: number;
+      expectedMemberVersion: number;
+      agentId: string;
+    };
     settings: ManagedConversationSettings;
   }) =>
     encryptCommandPayload({
@@ -1288,6 +1357,9 @@ export const createManagedConversationRepository = (
         settings: input.settings,
         ...(input.workItemSourceProof
           ? { workItemSourceProof: input.workItemSourceProof }
+          : {}),
+        ...(input.sharedWorkItemDispatch
+          ? { sharedWorkItemDispatch: input.sharedWorkItemDispatch }
           : {}),
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
@@ -1529,6 +1601,204 @@ export const createManagedConversationRepository = (
   };
 
   return {
+    async listSharedDispatchProgressCandidates(actor, input) {
+      const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+      const result = await pool.query<{
+        execution_id: string;
+        command_id: string;
+      }>(
+        `select execution.id as execution_id, latest.id as command_id
+         from managed_conversation_executions execution
+         join projects project on project.id::text=execution.project_id
+           and project.owner_user_id=execution.owner_user_id
+         join lateral (
+           select command.id,command.state from managed_conversation_commands command
+            where command.owner_user_id=execution.owner_user_id
+              and command.execution_id=execution.id
+              and command.command_kind in ('start','prompt')
+            order by command.sequence desc,command.created_at desc,command.id desc limit 1
+         ) latest on true
+         where execution.owner_user_id=$1 and execution.runner_deployment_id=$2
+           and execution.runner_device_id=$3 and execution.id>$4::uuid
+           and project.lifecycle='active' and project.deletion_phase is null
+           and project.team_backend_id is not null and project.workspace_project_id is not null
+           and latest.state in ('completed','failed','indeterminate','canceled')
+           and exists (select 1 from managed_conversation_commands start_command
+             where start_command.owner_user_id=execution.owner_user_id
+               and start_command.execution_id=execution.id
+               and start_command.command_kind='start'
+               and start_command.idempotency_key like
+                 'shared-work-item:'||project.workspace_project_id::text||':%')
+           and not exists (select 1 from managed_shared_dispatch_detachments detached
+             where detached.owner_user_id=execution.owner_user_id
+               and detached.execution_id=execution.id)
+         order by execution.id limit $5`,
+        [
+          actor.userId,
+          input.deploymentId,
+          input.deviceId,
+          input.afterExecutionId ?? "00000000-0000-0000-0000-000000000000",
+          limit
+        ]
+      );
+      return result.rows.map((row) => ({
+        executionId: row.execution_id,
+        commandId: row.command_id
+      }));
+    },
+    async listSharedWorkItemDispatches(actor, input) {
+      const link = await pool.query<{ team_principal_user_id: string }>(
+        `select binding.team_principal_user_id from projects project
+         join personal_workspace_project_principal_bindings binding
+           on binding.local_user_id=project.owner_user_id
+          and binding.team_backend_id=project.team_backend_id
+         where project.id=$1 and project.owner_user_id=$2
+           and project.lifecycle='active' and project.deletion_phase is null
+           and project.team_backend_id=$3 and project.workspace_project_id=$4
+           and not exists (select 1 from personal_workspace_project_share_attempts attempt
+             where attempt.personal_project_id=project.id and attempt.state='pending')`,
+        [
+          input.personalProjectId,
+          actor.userId,
+          input.teamBackendId,
+          input.workspaceProjectId
+        ]
+      );
+      const principal = link.rows[0]?.team_principal_user_id;
+      if (!principal) return [];
+      const starts = await pool.query<CommandRow>(
+        `select command.* from managed_conversation_commands command
+         join managed_conversation_executions execution
+           on execution.id=command.execution_id and execution.owner_user_id=command.owner_user_id
+         left join managed_shared_dispatch_detachments detached
+           on detached.owner_user_id=command.owner_user_id and detached.execution_id=command.execution_id
+         where command.owner_user_id=$1 and execution.project_id=$2
+           and command.command_kind='start' and detached.execution_id is null
+         order by command.created_at desc limit 501`,
+        [actor.userId, input.personalProjectId]
+      );
+      if (starts.rows.length > 500)
+        throw statusError("Shared dispatch list is too large", 409);
+      const result: Array<{
+        teamWorkItemId: string;
+        executionId: string;
+        agentId: string;
+      }> = [];
+      for (const command of starts.rows) {
+        const payload = await decryptPayload(command);
+        const dispatch = payload?.sharedWorkItemDispatch;
+        if (
+          !dispatch ||
+          typeof dispatch !== "object" ||
+          Array.isArray(dispatch)
+        )
+          continue;
+        const value = dispatch as Record<string, unknown>;
+        if (
+          value.teamBackendId !== input.teamBackendId ||
+          value.workspaceProjectId !== input.workspaceProjectId ||
+          value.teamPrincipalUserId !== principal ||
+          typeof value.teamWorkItemId !== "string" ||
+          typeof value.agentId !== "string"
+        )
+          continue;
+        result.push({
+          teamWorkItemId: value.teamWorkItemId,
+          executionId: command.execution_id,
+          agentId: value.agentId
+        });
+      }
+      return result;
+    },
+    async getSharedWorkItemDispatchForExecution(actor, executionId) {
+      const detached = await pool.query(
+        `select 1 from managed_shared_dispatch_detachments
+         where owner_user_id=$1 and execution_id=$2 limit 1`,
+        [actor.userId, executionId]
+      );
+      if (detached.rowCount) return null;
+      const result = await pool.query<CommandRow>(
+        `select ${COMMAND_COLUMNS} from managed_conversation_commands
+         where owner_user_id=$1 and execution_id=$2 and command_kind='start'
+         order by sequence asc limit 1`,
+        [actor.userId, executionId]
+      );
+      const command = result.rows[0];
+      if (!command) return null;
+      const payload = await decryptPayload(command);
+      const dispatch = payload?.sharedWorkItemDispatch;
+      if (dispatch === undefined) return null;
+      if (!dispatch || typeof dispatch !== "object" || Array.isArray(dispatch))
+        throw statusError("Shared Work Item dispatch metadata is invalid", 409);
+      const value = dispatch as Record<string, unknown>;
+      if (
+        typeof value.agentId !== "string" ||
+        typeof value.teamBackendId !== "string" ||
+        typeof value.teamPrincipalUserId !== "string" ||
+        typeof value.workspaceProjectId !== "string" ||
+        typeof value.teamWorkItemId !== "string" ||
+        typeof value.teamWorkItemVersion !== "number" ||
+        typeof value.expectedProjectVersion !== "number" ||
+        typeof value.expectedMemberVersion !== "number"
+      )
+        throw statusError("Shared Work Item dispatch metadata is invalid", 409);
+      return {
+        agentId: value.agentId,
+        teamBackendId: value.teamBackendId,
+        teamPrincipalUserId: value.teamPrincipalUserId,
+        workspaceProjectId: value.workspaceProjectId,
+        teamWorkItemId: value.teamWorkItemId,
+        teamWorkItemVersion: value.teamWorkItemVersion,
+        expectedProjectVersion: value.expectedProjectVersion,
+        expectedMemberVersion: value.expectedMemberVersion
+      };
+    },
+    async getSharedWorkItemDispatch(actor, input) {
+      const result = await pool.query<CommandRow>(
+        `select ${COMMAND_COLUMNS} from managed_conversation_commands
+         where owner_user_id=$1 and idempotency_key=$2 and command_kind='start'
+           and exists (
+             select 1 from managed_conversation_executions execution
+               join projects project
+                 on project.id::text=execution.project_id and project.owner_user_id=execution.owner_user_id
+              where execution.id=managed_conversation_commands.execution_id
+                and execution.owner_user_id=$1 and execution.project_id=$3
+                and project.lifecycle='active' and project.deletion_phase is null
+                and project.team_backend_id is not null and project.workspace_project_id is not null
+           )
+         limit 1`,
+        [actor.userId, input.idempotencyKey, input.projectId]
+      );
+      const command = result.rows[0];
+      if (!command) return null;
+      const payload = await decryptPayload(command);
+      const dispatch = payload?.sharedWorkItemDispatch;
+      if (!dispatch || typeof dispatch !== "object" || Array.isArray(dispatch))
+        throw statusError("Shared Work Item dispatch key is inconsistent", 409);
+      const value = dispatch as Record<string, unknown>;
+      if (
+        typeof value.agentId !== "string" ||
+        typeof value.teamBackendId !== "string" ||
+        typeof value.teamPrincipalUserId !== "string" ||
+        typeof value.workspaceProjectId !== "string" ||
+        typeof value.teamWorkItemId !== "string" ||
+        typeof value.teamWorkItemVersion !== "number" ||
+        typeof value.expectedProjectVersion !== "number" ||
+        typeof value.expectedMemberVersion !== "number"
+      )
+        throw statusError("Shared Work Item dispatch metadata is invalid", 409);
+      return {
+        executionId: command.execution_id,
+        agentId: value.agentId,
+        teamBackendId: value.teamBackendId,
+        teamPrincipalUserId: value.teamPrincipalUserId,
+        workspaceProjectId: value.workspaceProjectId,
+        teamWorkItemId: value.teamWorkItemId,
+        teamWorkItemVersion: value.teamWorkItemVersion,
+        expectedProjectVersion: value.expectedProjectVersion,
+        expectedMemberVersion: value.expectedMemberVersion
+      };
+    },
     async createManagedConversation(actor, input) {
       const projectId = input.projectId.trim();
       if (
@@ -1650,6 +1920,50 @@ export const createManagedConversationRepository = (
           );
           if (!agent.rowCount) throw statusError("Agent is unavailable", 409);
         }
+        if (input.sharedWorkItemDispatch) {
+          const dispatch = input.sharedWorkItemDispatch;
+          const link = await client.query(
+            `select 1 from projects project
+                join personal_workspace_project_principal_bindings binding
+                  on binding.local_user_id=project.owner_user_id
+                 and binding.team_backend_id=project.team_backend_id
+               where project.id=$1 and project.owner_user_id=$2
+                 and project.lifecycle='active' and project.deletion_phase is null
+                 and project.team_backend_id=$3 and project.workspace_project_id=$4
+                 and binding.team_principal_user_id=$5
+                 and not exists (
+                   select 1 from personal_workspace_project_share_attempts attempt
+                    where attempt.personal_project_id=project.id and attempt.state='pending'
+                 )
+               for share of project`,
+            [
+              projectId,
+              actor.userId,
+              dispatch.teamBackendId,
+              dispatch.workspaceProjectId,
+              dispatch.teamPrincipalUserId
+            ]
+          );
+          if (!link.rowCount)
+            throw statusError("Shared Project dispatch link changed", 409);
+          const agent = await client.query(
+            `select 1 from agents agent
+                join ai_client_instances instance
+                  on instance.owner_user_id=agent.owner_user_id
+                 and instance.instance_id=agent.ai_client_instance_id
+               where agent.id=$1 and agent.owner_user_id=$2
+                 and instance.instance_id=$3 and instance.driver_id=$4
+                 and instance.enabled=true
+               for share of agent,instance`,
+            [
+              dispatch.agentId,
+              actor.userId,
+              input.aiClientInstanceId,
+              input.provider
+            ]
+          );
+          if (!agent.rowCount) throw statusError("Agent is unavailable", 409);
+        }
         if (input.hqProjectId) {
           if (projectId !== input.hqProjectId)
             throw statusError("HQ Project identity mismatch", 400);
@@ -1735,6 +2049,14 @@ export const createManagedConversationRepository = (
         if (existing.rows[0]) {
           if (input.workItemDispatch)
             throw statusError("Work Item start key is already in use", 409);
+          if (input.sharedWorkItemDispatch) {
+            const original = await decryptPayload(existing.rows[0]);
+            if (
+              JSON.stringify(original?.sharedWorkItemDispatch) !==
+              JSON.stringify(input.sharedWorkItemDispatch)
+            )
+              throw statusError("Shared Work Item dispatch key changed", 409);
+          }
           const execution = await client.query<ExecutionRow>(
             `select ${EXECUTION_COLUMNS}
                from managed_conversation_executions
@@ -1826,6 +2148,9 @@ export const createManagedConversationRepository = (
               prompt: input.initialPrompt,
               ...(input.workItemDispatch
                 ? { workItemSourceProof: input.workItemDispatch.sources ?? [] }
+                : {}),
+              ...(input.sharedWorkItemDispatch
+                ? { sharedWorkItemDispatch: input.sharedWorkItemDispatch }
                 : {}),
               settings: {
                 model: input.model,

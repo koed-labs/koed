@@ -1746,7 +1746,17 @@ describe("collaboration renderer client", () => {
 
   it("uses strict versioned commands for Team and Workspace administration", async () => {
     const mock = createBridge(fixture({ selectedTeam: true }));
-    const client = createCollaborationRendererClient(mock.bridge);
+    const teamLeaveStage = vi.fn(async () => ({
+      teamId: ids.team,
+      expectedTeamVersion: 3,
+      expectedMembershipVersion: 1,
+      expectedOwnedWorkspaceProjects: [],
+      ownedSetHash: "a".repeat(64),
+      stages: []
+    }));
+    const client = createCollaborationRendererClient(mock.bridge, {
+      teamLeaveStage
+    });
     await client.load();
 
     await client.createWorkspace({
@@ -1798,6 +1808,7 @@ describe("collaboration renderer client", () => {
       expectedVersion: 2
     });
     await client.leaveTeam({ teamId: ids.team, expectedVersion: 1 });
+    expect(teamLeaveStage).toHaveBeenCalledWith("up_team_example", ids.team);
 
     const commands = mock.command.mock.calls.map(([command]) => command);
     for (const protectedCommand of commands.filter((command) =>
@@ -1822,6 +1833,16 @@ describe("collaboration renderer client", () => {
     }
     expect(commands).toContainEqual(
       expect.objectContaining({
+        command: "collaboration.leave_team",
+        input: expect.objectContaining({
+          expectedVersion: 1,
+          expectedTeamVersion: 3,
+          expectedOwnedWorkspaceProjects: []
+        })
+      })
+    );
+    expect(commands).toContainEqual(
+      expect.objectContaining({
         command: "collaboration.set_workspace_access",
         input: expect.objectContaining({
           access: "write",
@@ -1829,6 +1850,77 @@ describe("collaboration renderer client", () => {
         })
       })
     );
+    client.dispose();
+  });
+
+  it("binds a complete owned Project set and finishes only staged Personal copies after Team leave", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const owned = [
+      { id: id(40), version: 2 },
+      { id: id(41), version: 4 }
+    ];
+    const order: string[] = [];
+    const client = createCollaborationRendererClient(mock.bridge, {
+      teamLeaveStage: async () => {
+        order.push("stage");
+        return {
+          teamId: ids.team,
+          expectedTeamVersion: 5,
+          expectedMembershipVersion: 1,
+          expectedOwnedWorkspaceProjects: owned,
+          ownedSetHash: "b".repeat(64),
+          stages: [{ workspaceProjectId: owned[0]!.id, stageId: id(42) }]
+        };
+      },
+      teamLeaveFinish: async (_backend, stageIds) => {
+        order.push("finish");
+        expect(stageIds).toEqual([id(42)]);
+      }
+    });
+    const originalCommand = mock.bridge.command;
+    mock.bridge.command = async (command) => {
+      if (command.command === "collaboration.request_action_grant")
+        order.push("grant");
+      if (command.command === "collaboration.leave_team") order.push("leave");
+      return originalCommand(command);
+    };
+    await client.load();
+    await client.leaveTeam({ teamId: ids.team, expectedVersion: 1 });
+    expect(order).toEqual(["stage", "grant", "leave", "finish"]);
+    const leave = mock.command.mock.calls.find(
+      ([command]) => command.command === "collaboration.leave_team"
+    )?.[0];
+    expect(leave?.input).toMatchObject({
+      expectedVersion: 1,
+      expectedTeamVersion: 5,
+      expectedOwnedWorkspaceProjects: owned
+    });
+    client.dispose();
+  });
+
+  it("rejects a stale Team leave stage before requesting a grant", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient(mock.bridge, {
+      teamLeaveStage: async () => ({
+        teamId: ids.team,
+        expectedTeamVersion: 5,
+        expectedMembershipVersion: 2,
+        expectedOwnedWorkspaceProjects: [],
+        ownedSetHash: "b".repeat(64),
+        stages: []
+      })
+    });
+    await client.load();
+    await expect(
+      client.leaveTeam({ teamId: ids.team, expectedVersion: 1 })
+    ).rejects.toThrow("Team leave review changed");
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) =>
+          command.command === "collaboration.request_action_grant" ||
+          command.command === "collaboration.leave_team"
+      )
+    ).toBe(false);
     client.dispose();
   });
 

@@ -42,6 +42,7 @@ import {
 } from "../source-replication/schemas.js";
 import { resolveTeamInviteCreateActionGrantOperation } from "./team-invite-create-action-definition.js";
 import { resolveTeamAndMembershipActionGrantOperation } from "./team-and-membership-action-definitions.js";
+import { bindTeamAdminOperation } from "./action-definition-support.js";
 import {
   bindTeamWorkspaceAccessUpdateOperation,
   bindTeamWorkspaceCreateOperation,
@@ -114,6 +115,59 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       action: z.literal("team.leave"),
       teamId: uuidSchema,
       body: teamLeaveActionSchema
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("workspace_project.leave"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      body: z
+        .object({
+          expectedProjectVersion: z.number().int().positive(),
+          expectedMemberVersion: z.number().int().positive()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("workspace_project.member_remove"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      targetUserId: uuidSchema,
+      body: z
+        .object({
+          expectedProjectVersion: z.number().int().positive(),
+          expectedMemberVersion: z.number().int().positive()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("workspace_project.delete"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      body: z
+        .object({
+          expectedProjectVersion: z.number().int().positive()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("project_source.team_metadata.delete"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      sourceId: uuidSchema,
+      body: z
+        .object({
+          expectedProjectVersion: z.number().int().positive(),
+          expectedSourceVersion: z.number().int().positive()
+        })
+        .strict()
     })
     .strict(),
   z
@@ -662,7 +716,22 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
       return {
         action: "team.leave",
         teamId: intent.teamId,
-        body: { expectedVersion: intent.expectedVersion }
+        body: {
+          expectedVersion: intent.expectedVersion,
+          expectedTeamVersion: intent.expectedTeamVersion,
+          expectedOwnedWorkspaceProjects: intent.expectedOwnedWorkspaceProjects
+        }
+      };
+    case "collaboration.delete_project_source":
+      return {
+        action: "project_source.team_metadata.delete",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        sourceId: intent.sourceId,
+        body: {
+          expectedProjectVersion: intent.expectedProjectVersion,
+          expectedSourceVersion: intent.expectedSourceVersion
+        }
       };
     case "collaboration.archive_workspace":
       return {
@@ -867,6 +936,33 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return resolveTeamAndMembershipActionGrantOperation({
         clientRequestId,
         intent
+      });
+    case "workspace_project.leave":
+    case "workspace_project.member_remove":
+    case "workspace_project.delete":
+      return bindTeamAdminOperation({
+        operationFamily: "admin",
+        action: intent.action,
+        teamId: intent.teamId,
+        targetId: intent.projectId,
+        method: "POST",
+        path:
+          intent.action === "workspace_project.leave"
+            ? `/v1/workspace-projects/${intent.projectId}/leave`
+            : intent.action === "workspace_project.delete"
+              ? `/v1/workspace-projects/${intent.projectId}/delete`
+              : `/v1/workspace-projects/${intent.projectId}/members/${intent.targetUserId}/remove`,
+        body: intent.body
+      });
+    case "project_source.team_metadata.delete":
+      return bindTeamAdminOperation({
+        operationFamily: "admin",
+        action: intent.action,
+        teamId: intent.teamId,
+        targetId: intent.projectId,
+        method: "POST",
+        path: `/v1/workspace-projects/${intent.projectId}/sources/${intent.sourceId}/delete`,
+        body: intent.body
       });
     case "team.invite.create":
       return resolveTeamInviteCreateActionGrantOperation({

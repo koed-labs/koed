@@ -39,6 +39,8 @@ type HighRiskRepository = Pick<
   | "getTeamInviteRevocationReview"
   | "getTeamMembershipActionReview"
   | "getTeamLeaveReview"
+  | "getLifecycleReview"
+  | "getSourceDeleteReview"
   | "getTeamWorkspaceCreationReview"
   | "getTeamWorkspaceLifecycleReview"
   | "getTeamWorkspaceAccessUpdateReview"

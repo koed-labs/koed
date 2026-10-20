@@ -269,6 +269,38 @@ export const createWorkItemRepository = (
   pool: pg.Pool,
   options: { verifyTrustedTransition?: VerifyTrustedWorkItemTransition } = {}
 ) => ({
+  async getSharedDispatchLink(ownerUserId: string, personalProjectId: string) {
+    const result = await pool.query<{
+      team_backend_id: string;
+      workspace_project_id: string;
+      team_principal_user_id: string;
+    }>(
+      `select project.team_backend_id,project.workspace_project_id,
+              binding.team_principal_user_id
+         from projects project
+         join personal_workspace_project_principal_bindings binding
+           on binding.local_user_id=project.owner_user_id
+          and binding.team_backend_id=project.team_backend_id
+        where project.id=$1 and project.owner_user_id=$2
+          and project.lifecycle='active' and project.deletion_phase is null
+          and project.team_backend_id is not null
+          and project.workspace_project_id is not null
+          and not exists (
+            select 1 from personal_workspace_project_share_attempts attempt
+             where attempt.personal_project_id=project.id
+               and attempt.state='pending'
+          )`,
+      [personalProjectId, ownerUserId]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          teamBackendId: row.team_backend_id,
+          workspaceProjectId: row.workspace_project_id,
+          teamPrincipalUserId: row.team_principal_user_id
+        }
+      : null;
+  },
   async hasActiveManagedWorkItem(input: {
     ownerUserId: string;
     executionId: string;

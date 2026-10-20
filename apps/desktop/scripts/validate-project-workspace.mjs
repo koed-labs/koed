@@ -846,18 +846,50 @@ const run = async () => {
 
     window.webContents.setZoomFactor(2);
     await delay(100);
-    await window.webContents.executeJavaScript(`(() => {
+    const scrollZoomedTimelineToEnd = () =>
+      window.webContents.executeJavaScript(`(() => {
       const timeline = document.querySelector('.native-timeline-scroll');
       if (timeline) {
         timeline.scrollTop = timeline.scrollHeight;
         timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
       }
     })()`);
+    await scrollZoomedTimelineToEnd();
+    await delay(200);
+    const zoomedAnchorReady = await window.webContents.executeJavaScript(
+      `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`
+    );
+    let zoomedTimelineRelayout = false;
+    if (!zoomedAnchorReady) {
+      const geometry = await window.webContents.executeJavaScript(`(() => {
+        const timeline = document.querySelector('.native-timeline-scroll');
+        return { scrollTop: timeline?.scrollTop ?? null,
+          scrollHeight: timeline?.scrollHeight ?? null,
+          clientHeight: timeline?.clientHeight ?? null };
+      })()`);
+      process.stderr.write(
+        `Zoomed timeline anchor absent after first scroll; remeasuring viewport once: ${JSON.stringify(geometry)}\n`
+      );
+      // LegendList can retain pre-zoom item measurements even when the DOM is
+      // scrolled to its maximum. One real viewport relayout remeasures items.
+      window.webContents.setZoomFactor(1);
+      await delay(150);
+      window.webContents.setZoomFactor(2);
+      await delay(150);
+      await scrollZoomedTimelineToEnd();
+      zoomedTimelineRelayout = true;
+    }
+    assert.equal(window.webContents.getZoomFactor(), 2);
     await waitFor(
       window,
       `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
       "zoomed rich Markdown scroll anchor"
     );
+    if (zoomedTimelineRelayout) {
+      process.stderr.write(
+        "Zoomed timeline anchor recovered after viewport remeasurement.\n"
+      );
+    }
     const zoomedPersonalFormatting = await inspectPersonalFormatting(window);
     assert.equal(
       zoomedPersonalFormatting.overflow,

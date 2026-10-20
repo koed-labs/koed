@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0065_colossal_shadowcat";
-const expectedLatestMigrationIndex = 65;
+const expectedLatestMigrationTag = "0066_late_nighthawk";
+const expectedLatestMigrationIndex = 66;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -186,7 +186,7 @@ const assertAlphaMigrationContract = async () => {
     journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
   ) {
     throw new Error(
-      `Expected ${expectedBaseMigrationTag} at migration index ${expectedBaseMigrationIndex} in the migration history`
+      `Expected ${expectedBaseMigrationTag} at index ${expectedBaseMigrationIndex} and ${expectedLatestMigrationTag} at index ${expectedLatestMigrationIndex} in the migration history`
     );
   }
   return journal;
@@ -896,6 +896,66 @@ const assertLatestSchema = async (pool) => {
       ["node_ids", "jsonb", "NO"],
       ["assertion_snapshots", "jsonb", "NO"],
       ["undone_at", "timestamp with time zone", "YES"]
+    ],
+    workspace_projects: [
+      ["id", "uuid", "NO"],
+      ["team_id", "uuid", "NO"],
+      ["workspace_id", "uuid", "NO"],
+      ["owner_team_member_id", "uuid", "NO"],
+      ["share_attempt_key", "text", "NO"],
+      ["copy_manifest_hash", "text", "YES"],
+      ["lifecycle", "text", "NO"],
+      ["version", "integer", "NO"]
+    ],
+    workspace_project_sources: [
+      ["workspace_project_id", "uuid", "NO"],
+      ["uploader_team_member_id", "uuid", "NO"],
+      ["personal_note_revision_id", "uuid", "YES"],
+      ["personal_note_id", "uuid", "YES"],
+      ["version", "integer", "NO"]
+    ],
+    workspace_project_work_items: [
+      ["workspace_project_id", "uuid", "NO"],
+      ["dispatch_key", "text", "YES"],
+      ["dispatch_owner_team_member_id", "uuid", "YES"],
+      ["done_at", "timestamp with time zone", "YES"]
+    ],
+    personal_workspace_project_share_attempts: [
+      ["personal_project_id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["team_backend_id", "text", "NO"],
+      ["manifest_hash", "text", "NO"],
+      ["snapshot", "jsonb", "NO"],
+      ["state", "text", "NO"]
+    ],
+    personal_workspace_project_copyback_stages: [
+      ["owner_user_id", "uuid", "NO"],
+      ["personal_project_id", "uuid", "NO"],
+      ["team_backend_id", "text", "NO"],
+      ["workspace_project_id", "uuid", "NO"],
+      ["owned_set_hash", "text", "NO"],
+      ["payload_hash", "text", "NO"],
+      ["state", "text", "NO"]
+    ],
+    personal_workspace_project_principal_bindings: [
+      ["local_user_id", "uuid", "NO"],
+      ["team_backend_id", "text", "NO"],
+      ["team_principal_user_id", "uuid", "NO"],
+      ["local_credential_key_id", "text", "NO"],
+      ["team_credential_key_id", "text", "NO"]
+    ],
+    personal_workspace_project_reconciliations: [
+      ["owner_user_id", "uuid", "NO"],
+      ["personal_project_id", "uuid", "NO"],
+      ["workspace_project_id", "uuid", "NO"],
+      ["reason", "text", "NO"]
+    ],
+    managed_shared_dispatch_detachments: [
+      ["owner_user_id", "uuid", "NO"],
+      ["execution_id", "uuid", "NO"],
+      ["personal_project_id", "text", "NO"],
+      ["workspace_project_id", "uuid", "NO"],
+      ["detached_generation", "integer", "NO"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -1122,6 +1182,69 @@ const assertLatestSchema = async (pool) => {
       "f",
       "sessions",
       "c"
+    ],
+    [
+      "workspace_projects",
+      "workspace_projects_workspace_team_fk",
+      "f",
+      "team_workspaces",
+      "a"
+    ],
+    [
+      "workspace_projects",
+      "workspace_projects_owner_team_fk",
+      "f",
+      "team_memberships",
+      "a"
+    ],
+    ["workspace_projects", "workspace_projects_lifecycle_check", "c"],
+    ["workspace_projects", "workspace_projects_deleted_shape", "c"],
+    [
+      "workspace_project_sources",
+      "workspace_project_sources_personal_source_unique",
+      "u"
+    ],
+    [
+      "workspace_project_work_items",
+      "workspace_project_work_items_create_idempotency_unique",
+      "u"
+    ],
+    [
+      "personal_workspace_project_share_attempts",
+      "personal_workspace_project_share_attempt_state_check",
+      "c"
+    ],
+    [
+      "personal_workspace_project_copyback_stages",
+      "personal_workspace_project_copyback_stage_unique",
+      "u"
+    ],
+    [
+      "personal_workspace_project_copyback_stages",
+      "personal_workspace_project_copyback_state_check",
+      "c"
+    ],
+    [
+      "personal_workspace_project_principal_bindings",
+      "personal_workspace_project_principal_remote_unique",
+      "u"
+    ],
+    [
+      "personal_workspace_project_reconciliations",
+      "personal_workspace_project_reconciliation_reason_check",
+      "c"
+    ],
+    [
+      "managed_shared_dispatch_detachments",
+      "managed_shared_dispatch_detachments_execution_fk",
+      "f",
+      "managed_conversation_executions",
+      "c"
+    ],
+    [
+      "managed_shared_dispatch_detachments",
+      "managed_shared_dispatch_detachments_generation_check",
+      "c"
     ]
   ].map(([table, name, ...contract]) => [
     table,
@@ -1202,6 +1325,20 @@ const assertLatestSchema = async (pool) => {
   )
     throw new Error(
       `Project Source lifecycle adapter is not enabled: ${JSON.stringify(sourceCapability.rows[0])}`
+    );
+  const workspaceCapability = await pool.query(
+    `select state,enabled_at is not null as enabled,to_regclass('public.workspace_projects')::text as relation
+       from project_lifecycle_schema_capabilities where capability='workspace_projects'`
+  );
+  if (
+    !isDeepStrictEqual(workspaceCapability.rows[0], {
+      state: "enabled",
+      enabled: true,
+      relation: "workspace_projects"
+    })
+  )
+    throw new Error(
+      `Workspace Project lifecycle adapter is not enabled: ${JSON.stringify(workspaceCapability.rows[0])}`
     );
   for (const [name, columns, referenced] of [
     [
@@ -1746,6 +1883,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preWorkspaceProjectsFolder = await createMigrationSlice(journal, 65, {
+    folderPrefix: "koed-pre-workspace-projects-"
+  });
+  temporaryFolders.add(preWorkspaceProjectsFolder);
+  const preWorkspaceProjectsRecords = await migrationRecords(
+    preWorkspaceProjectsFolder,
+    journal.entries.slice(0, 66)
+  );
   const preMemoryActionsFolder = await createMigrationSlice(journal, 64, {
     folderPrefix: "koed-pre-managed-memory-actions-"
   });
@@ -2512,26 +2657,22 @@ try {
       await runDbMigrations(pool, { migrationsFolder: preFreezeFolder });
       await assertMigrationLedger(pool, preFreezeRecords);
       const before = await pool.query(
-        "select to_regclass('public.team_memory_grant_freeze_sources') as closure"
+        `select to_regclass('public.team_memory_grant_freeze_sources') as closure,
+                to_regclass('public.workspace_projects') as workspace_projects`
       );
-      if (before.rows[0]?.closure !== null) {
-        throw new Error("Frozen closure unexpectedly exists before 0048");
+      if (
+        !isDeepStrictEqual(before.rows[0], {
+          closure: null,
+          workspace_projects: null
+        })
+      ) {
+        throw new Error(
+          "Pre-0048 freeze or Workspace Project boundary is incorrect"
+        );
       }
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
-      const capability = await pool.query(
-        `select state,to_regclass('public.workspace_projects') as project_relation
-           from project_lifecycle_schema_capabilities
-          where capability='workspace_projects'`
-      );
-      if (
-        capability.rows[0]?.state !== "absent" ||
-        capability.rows[0]?.project_relation !== null
-      ) {
-        throw new Error(
-          "Workspace Project capability is not explicitly absent"
-        );
-      }
+      // assertMigrationLedger checks the latest enabled capability and schema.
       const closure = await pool.query(
         `select to_regclass('public.team_memory_grant_freeze_sources') as header,
                 to_regclass('public.team_memory_grant_freeze_source_payloads') as payloads,
@@ -3404,6 +3545,125 @@ try {
         throw new Error("0062 migration rerun changed schema");
     });
   });
+
+  await runScenario(
+    "workspace-projects-0066-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase(
+        "workspace_projects_upgrade"
+      );
+      const ownerId = randomUUID();
+      const projectId = randomUUID();
+      const interrupted = await createMigrationSlice(journal, 66, {
+        folderPrefix: "koed-workspace-projects-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: preWorkspaceProjectsFolder
+        });
+        await assertMigrationLedger(pool, preWorkspaceProjectsRecords);
+        await pool.query("insert into users(id,email) values($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Retained Personal','RETAINED')",
+          [projectId, ownerId]
+        );
+        const before = await pool.query(
+          `select state, enabled_at, to_regclass('public.workspace_projects')::text as workspace_projects
+           from project_lifecycle_schema_capabilities where capability='workspace_projects'`
+        );
+        if (
+          !isDeepStrictEqual(before.rows[0], {
+            state: "absent",
+            enabled_at: null,
+            workspace_projects: null
+          })
+        )
+          throw new Error(
+            `0066 predecessor capability is not absent: ${JSON.stringify(before.rows[0])}`
+          );
+        const fingerprint = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed)
+          throw new Error("Interrupted 0066 migration unexpectedly succeeded");
+        const rollback = await pool.query(
+          `select state, enabled_at,
+                to_regclass('public.workspace_projects')::text as workspace_projects,
+                to_regclass('public.personal_workspace_project_copyback_stages')::text as copyback,
+                to_regclass('public.personal_workspace_project_reconciliations')::text as receipt,
+                to_regclass('public.managed_shared_dispatch_detachments')::text as detachments,
+                exists(select 1 from projects where id=$1 and owner_user_id=$2) as retained
+           from project_lifecycle_schema_capabilities where capability='workspace_projects'`,
+          [projectId, ownerId]
+        );
+        if (
+          !isDeepStrictEqual(rollback.rows[0], {
+            state: "absent",
+            enabled_at: null,
+            workspace_projects: null,
+            copyback: null,
+            receipt: null,
+            detachments: null,
+            retained: true
+          }) ||
+          (await schemaFingerprint(pool)) !== fingerprint
+        )
+          throw new Error(
+            `Interrupted 0066 migration leaked schema or data: ${JSON.stringify(rollback.rows[0])}`
+          );
+        await assertMigrationLedger(pool, preWorkspaceProjectsRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        await pool.query(
+          `insert into personal_workspace_project_share_attempts
+          (personal_project_id,owner_user_id,team_backend_id,share_attempt_key,manifest_hash,snapshot)
+         values($1,$2,'team-backend','attempt-1','manifest-1','{}'::jsonb)`,
+          [projectId, ownerId]
+        );
+        await expectSqlState(
+          pool,
+          "update projects set name='Changed During Share' where id=$1",
+          "40001",
+          "Pending first share must fence Personal Project core edits",
+          [projectId]
+        );
+        await expectSqlState(
+          pool,
+          `insert into personal_workspace_project_reconciliations
+          (owner_user_id,personal_project_id,team_backend_id,workspace_project_id,reason)
+         values($1,$2,'team-backend',$3,'unverified')`,
+          "23514",
+          "Personal reconciliation receipt reason must be constrained",
+          [ownerId, projectId, randomUUID()]
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0066 migration rerun changed schema");
+        const retained = await pool.query(
+          `select (select count(*)::integer from projects where id=$1) as projects,
+                (select count(*)::integer from personal_workspace_project_share_attempts
+                  where personal_project_id=$1 and state='pending') as attempts`,
+          [projectId]
+        );
+        if (!isDeepStrictEqual(retained.rows[0], { projects: 1, attempts: 1 }))
+          throw new Error(
+            `0066 migration rerun lost Personal data: ${JSON.stringify(retained.rows[0])}`
+          );
+      });
+    }
+  );
 
   await runScenario(
     "memory-actions-0065-upgrade-rollback-and-custody",

@@ -677,7 +677,9 @@ describe("collaboration Action Grant control", () => {
         intent: "collaboration.leave_team",
         commandRequestId: ids.commandRequest,
         teamId: ids.team,
-        expectedVersion: 2
+        expectedVersion: 2,
+        expectedTeamVersion: 3,
+        expectedOwnedWorkspaceProjects: []
       })
     ).toEqual({
       operationFamily: "admin",
@@ -686,7 +688,11 @@ describe("collaboration Action Grant control", () => {
       targetId: ids.team,
       method: "POST",
       path: `/v1/teams/${ids.team}/leave`,
-      body: { expectedVersion: 2 },
+      body: {
+        expectedVersion: 2,
+        expectedTeamVersion: 3,
+        expectedOwnedWorkspaceProjects: []
+      },
       idempotencyKey: ids.commandRequest
     });
 

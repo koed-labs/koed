@@ -537,6 +537,7 @@ export interface TeamAccessRepositoryOptions {
         targetUserId: string;
         targetVersion: number;
         teamWorkspaceId?: string;
+        workspaceProjectId?: string;
       };
     }
   ) => Promise<void>;
@@ -690,19 +691,30 @@ export const createTeamAccessRepository = (
       targetUserId: string;
       targetVersion: number;
       teamWorkspaceId?: string;
+      workspaceProjectId?: string;
     }
   ): Promise<void> => {
     const grants = await client.query<{
       id: string;
       grant_version: number;
     }>(
-      `select id,grant_version from team_memory_share_grants
-        where team_id=$1 and owner_user_id=$2
-          and ($3::uuid is null or team_workspace_id=$3)
-          and lifecycle='active' and revoked_at is null
-          and frozen_at is null
-        order by id for update`,
-      [parent.teamId, parent.targetUserId, parent.teamWorkspaceId ?? null]
+      `select grant_row.id,grant_row.grant_version
+         from team_memory_share_grants grant_row
+        where grant_row.team_id=$1 and grant_row.owner_user_id=$2
+          and ($3::uuid is null or grant_row.team_workspace_id=$3)
+          and ($4::uuid is null or exists (select 1
+            from workspace_project_share_grant_bindings binding
+           where binding.share_grant_id=grant_row.id
+             and binding.workspace_project_id=$4))
+          and grant_row.lifecycle='active' and grant_row.revoked_at is null
+          and grant_row.frozen_at is null
+        order by grant_row.id for update of grant_row`,
+      [
+        parent.teamId,
+        parent.targetUserId,
+        parent.teamWorkspaceId ?? null,
+        parent.workspaceProjectId ?? null
+      ]
     );
     if (grants.rows.length === 0) return;
     if (!options.freezeShareGrantForParent) {
@@ -719,7 +731,8 @@ export const createTeamAccessRepository = (
           teamId: parent.teamId,
           targetUserId: parent.targetUserId,
           targetVersion: parent.targetVersion,
-          teamWorkspaceId: parent.teamWorkspaceId
+          teamWorkspaceId: parent.teamWorkspaceId,
+          workspaceProjectId: parent.workspaceProjectId
         }
       });
     }
@@ -2605,7 +2618,12 @@ export const createTeamAccessRepository = (
 
     async leaveTeam(
       actor: ActorContext,
-      input: { teamId: string; expectedVersion: number }
+      input: {
+        teamId: string;
+        expectedVersion: number;
+        expectedTeamVersion?: number;
+        expectedOwnedWorkspaceProjects?: Array<{ id: string; version: number }>;
+      }
     ): Promise<TeamMembershipRecord | null> {
       return withTeamAccessTransaction(async (tx, client) => {
         await lockTeamOwnerLifecycle(tx, input.teamId);
@@ -2650,13 +2668,64 @@ export const createTeamAccessRepository = (
           }
         }
 
+        const ownedProjects = await ownedWorkspaceProjectSet(
+          client,
+          input.teamId,
+          membership.id
+        );
+        const claimed = input.expectedOwnedWorkspaceProjects ?? [];
         if (
-          (await ownedWorkspaceProjectSet(client, input.teamId, membership.id))
-            .length > 0
-        ) {
-          return null;
+          claimed.length !== ownedProjects.length ||
+          claimed.some(
+            (project, index) =>
+              project.id !== ownedProjects[index]?.id ||
+              project.version !== ownedProjects[index]?.version
+          )
+        )
+          staleVersion();
+        if (
+          ownedProjects.length > 0 &&
+          input.expectedTeamVersion !== membershipRows[0]?.teams.version
+        )
+          staleVersion();
+        // Lock the complete reviewed set before any freeze or copy-back
+        // dependent Team mutation. A changed Project set/version conflicts.
+        for (const project of ownedProjects) {
+          const locked = await client.query<{ id: string; version: number }>(
+            `
+            select id,version from workspace_projects
+             where id=$1 and team_id=$2 and owner_team_member_id=$3
+               and lifecycle='active' for update`,
+            [project.id, input.teamId, membership.id]
+          );
+          if (locked.rows[0]?.version !== project.version) staleVersion();
         }
 
+        const linked = await client.query<{
+          id: string;
+          workspace_id: string;
+          owner_team_member_id: string;
+        }>(
+          `
+          select project.id,project.workspace_id,project.owner_team_member_id
+            from workspace_project_members association
+            join workspace_projects project on project.id=association.workspace_project_id
+           where association.team_member_id=$1 and association.disabled_at is null
+             and project.team_id=$2 and project.lifecycle='active'
+           order by project.id for update of project,association`,
+          [membership.id, input.teamId]
+        );
+        if (
+          ownedProjects.some(
+            (project) =>
+              !linked.rows.some(
+                (link) =>
+                  link.id === project.id &&
+                  link.owner_team_member_id === membership.id
+              )
+          )
+        )
+          staleVersion();
         await freezeSourceOwnerGrantsForParent(client, {
           action: "team.leave",
           actorUserId: actor.userId,
@@ -2664,6 +2733,79 @@ export const createTeamAccessRepository = (
           targetUserId: actor.userId,
           targetVersion: input.expectedVersion
         });
+        await client.query(
+          `update workspace_project_work_items
+          set dispatch_key=null,dispatch_owner_team_member_id=null,
+              version=version+1,updated_at=now()
+          where dispatch_owner_team_member_id=$1 and dispatch_key is not null`,
+          [membership.id]
+        );
+        for (const project of linked.rows) {
+          if (project.owner_team_member_id === membership.id) {
+            await client.query(
+              `update workspace_project_work_items
+              set dispatch_key=null,dispatch_owner_team_member_id=null,
+                  version=version+1,updated_at=now()
+              where workspace_project_id=$1 and dispatch_key is not null`,
+              [project.id]
+            );
+            const members = await client.query<{
+              id: string;
+              user_id: string;
+              version: number;
+            }>(
+              `
+              select member.id,member.user_id,member.version
+                from workspace_project_members association
+                join team_memberships member on member.id=association.team_member_id
+               where association.workspace_project_id=$1 and association.disabled_at is null
+               order by member.id for update of association,member`,
+              [project.id]
+            );
+            for (const member of members.rows) {
+              if (member.id === membership.id) continue;
+              await freezeSourceOwnerGrantsForParent(client, {
+                action: "team.leave",
+                actorUserId: actor.userId,
+                teamId: input.teamId,
+                targetUserId: member.user_id,
+                targetVersion: member.version,
+                teamWorkspaceId: project.workspace_id,
+                workspaceProjectId: project.id
+              });
+            }
+            await client.query(
+              `
+              update workspace_projects
+                 set lifecycle='deleted',deleted_at=now(),version=version+1,updated_at=now()
+               where id=$1`,
+              [project.id]
+            );
+            await client.query(
+              `
+              update workspace_project_members
+                 set access='disabled',disabled_at=now(),version=version+1,updated_at=now()
+               where workspace_project_id=$1 and disabled_at is null`,
+              [project.id]
+            );
+            await client.query(
+              `
+              update collaboration_threads
+                 set lifecycle='archived',archived_at=now(),version=version+1,updated_at=now()
+               where team_workspace_id=$1 and scope='team'
+                 and kind='workspace_channel' and lifecycle='active'`,
+              [project.workspace_id]
+            );
+          } else {
+            await client.query(
+              `
+              update workspace_project_members
+                 set access='disabled',disabled_at=now(),version=version+1,updated_at=now()
+               where workspace_project_id=$1 and team_member_id=$2`,
+              [project.id, membership.id]
+            );
+          }
+        }
 
         await disableWorkspaceAccessGrantsForMembership(tx, {
           teamId: input.teamId,

@@ -3,7 +3,11 @@ import type pg from "pg";
 type TeamLifecycleAction =
   | "team.leave"
   | "team.member.disable"
-  | "team.workspace.access_update";
+  | "team.workspace.access_update"
+  | "workspace_project.leave"
+  | "workspace_project.member_remove"
+  | "workspace_project.delete"
+  | "project_source.team_metadata.delete";
 
 interface VerifiedFreezeScope {
   transactionClient: pg.PoolClient;
@@ -17,6 +21,9 @@ interface VerifiedFreezeScope {
   targetUserId: string;
   targetVersion: number;
   teamWorkspaceId: string | null;
+  workspaceProjectId?: string | null;
+  workspaceProjectSourceId?: string | null;
+  sourceVersion?: number;
   shareGrantId: string;
   expectedGrantVersion: number;
 }

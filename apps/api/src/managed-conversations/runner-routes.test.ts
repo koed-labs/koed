@@ -1,4 +1,7 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 import {
   calculateConversationSourceClosureDigest,
@@ -40,8 +43,10 @@ const buildServer = async (options?: {
   operationFamilies?: string[];
   protocolDeploymentId?: string | null;
   repository?: Record<string, unknown>;
+  localEdge?: ApiRouteContext["localEdge"];
 }) => {
   const repository = {
+    getSharedWorkItemDispatchForExecution: vi.fn(async () => null),
     claimManagedConversationCommands: vi.fn(async () => []),
     claimManagedConversationControlCommands: vi.fn(async () => []),
     claimManagedConversationFileOperations: vi.fn(async () => []),
@@ -135,6 +140,7 @@ const buildServer = async (options?: {
       memoryWrite: async () => undefined
     },
     encryption: {},
+    localEdge: options?.localEdge,
     managedConversations: { commandWakePool: null }
   } as unknown as ApiRouteContext);
   await app.ready();
@@ -708,6 +714,102 @@ describe("managed Conversation runner routes", () => {
       leaseMs: 30_000
     });
     await fixture.app.close();
+  });
+
+  it("fails a claimed private shared command if Team revokes its exact attempt before claim returns", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "koed-shared-claim-"));
+    const registry = resolve(home, "team-backends.json");
+    const workspaceProjectId = randomUUID();
+    const itemId = randomUUID();
+    const principalId = randomUUID();
+    const projectId = randomUUID();
+    const dispatchKey = `shared-work-item:${workspaceProjectId}:${itemId}:7`;
+    let authorityUrl = "";
+    writeFileSync(
+      registry,
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "team-vps",
+        backends: [
+          {
+            id: "team-vps",
+            baseUrl: "https://team.example.test/",
+            routePolicy: { teamWorkspaceRead: "enabled" }
+          }
+        ]
+      })
+    );
+    const leaseToken = randomUUID();
+    const requeue = vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: false
+    }));
+    const fixture = await buildServer({
+      localEdge: {
+        upstreamBackendsPath: registry,
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Koed-Device team:key",
+        fetch: vi.fn(async (url: RequestInfo | URL) => {
+          const path = new URL(String(url)).pathname;
+          if (path.endsWith("/device-credentials/status"))
+            return Response.json({
+              ok: true,
+              auth: "device_credential",
+              user: { id: principalId }
+            });
+          authorityUrl = String(url);
+          return Response.json({ error: "Attempt revoked" }, { status: 409 });
+        })
+      } as unknown as ApiRouteContext["localEdge"],
+      repository: {
+        getSharedWorkItemDispatchForExecution: vi.fn(async () => ({
+          agentId: randomUUID(),
+          teamBackendId: "team-vps",
+          teamPrincipalUserId: principalId,
+          workspaceProjectId,
+          teamWorkItemId: itemId,
+          teamWorkItemVersion: 7,
+          expectedProjectVersion: 9,
+          expectedMemberVersion: 4
+        })),
+        getSharedDispatchLink: vi.fn(async () => ({
+          teamBackendId: "team-vps",
+          teamPrincipalUserId: principalId,
+          workspaceProjectId
+        })),
+        claimManagedConversationCommands: vi.fn(async () => [
+          {
+            id: ids.command,
+            leaseToken,
+            execution: { id: ids.execution, projectId }
+          }
+        ]),
+        failManagedConversationCommand: requeue
+      }
+    });
+    try {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/commands/claim",
+        headers: runnerHeaders,
+        payload: { runnerId: "runner", limit: 1, leaseMs: 30_000 }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.body).not.toContain(ids.command);
+      expect(requeue).toHaveBeenCalledWith({
+        commandId: ids.command,
+        leaseToken,
+        state: "failed",
+        errorCode: "SharedDispatchAuthorityUnavailable"
+      });
+      expect(new URL(authorityUrl).searchParams.get("dispatchKey")).toBe(
+        dispatchKey
+      );
+    } finally {
+      await fixture.app.close();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("scopes the concurrent control lane to the authenticated runner", async () => {

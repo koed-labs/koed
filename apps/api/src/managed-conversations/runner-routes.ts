@@ -11,6 +11,7 @@ import {
 import type { ApiRouteContext } from "../server/context.js";
 import { resolveConversationSourceDownloadMaterial } from "../source-replication/download-material.js";
 import { sourceReplicationRecipientKeySchema } from "../source-replication/schemas.js";
+import { requireSharedDispatchRunnerAuthority } from "./shared-work-item-dispatch.js";
 
 const uuid = z.uuid();
 const boundedRunnerId = z.string().trim().min(1).max(160);
@@ -730,6 +731,7 @@ const requireExecutionForRunner = async (
       statusCode: 403
     });
   }
+  await requireSharedDispatchRunnerAuthority(context, auth.userId, execution);
   return execution;
 };
 
@@ -765,6 +767,7 @@ const requireCommandForRunner = async (
       statusCode: 403
     });
   }
+  await requireSharedDispatchRunnerAuthority(context, auth.userId, execution);
   return { command, execution };
 };
 
@@ -1036,6 +1039,18 @@ export const registerManagedConversationRunnerRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  // The embedded local runner uses the local repository directly. It checks
+  // this authority before using any shared command, including renewals.
+  app.get(
+    "/v1/managed-conversation-runner/executions/:executionId/shared-authority",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      await requireExecutionForRunner(context, auth, executionId);
+      return { allowed: true };
+    }
+  );
   app.get(
     "/v1/managed-conversation-runner/executions",
     { preHandler: context.rateLimit.memoryRead },
@@ -1069,6 +1084,26 @@ export const registerManagedConversationRunnerRoutes = (
           limit: input.limit,
           leaseMs: input.leaseMs
         });
+      for (const command of commands) {
+        try {
+          await requireSharedDispatchRunnerAuthority(
+            context,
+            auth.userId,
+            command.execution
+          );
+        } catch (error) {
+          // Shared starts remain blocked until the Team CAS receipt is
+          // authoritative. A denied claim is terminal, including offline.
+          if (command.leaseToken)
+            await context.requireRepository().failManagedConversationCommand({
+              commandId: command.id,
+              leaseToken: command.leaseToken,
+              state: "failed",
+              errorCode: "SharedDispatchAuthorityUnavailable"
+            });
+          throw error;
+        }
+      }
       return { commands };
     }
   );
@@ -1113,6 +1148,26 @@ export const registerManagedConversationRunnerRoutes = (
           limit: input.limit,
           leaseMs: input.leaseMs
         });
+      for (const command of commands) {
+        try {
+          await requireSharedDispatchRunnerAuthority(
+            context,
+            auth.userId,
+            command.execution
+          );
+        } catch (error) {
+          if (command.leaseToken)
+            await context
+              .requireRepository()
+              .failManagedConversationFileOperation({
+                commandId: command.id,
+                leaseToken: command.leaseToken,
+                state: "failed",
+                errorCode: "SharedDispatchAuthorityUnavailable"
+              });
+          throw error;
+        }
+      }
       return { commands };
     }
   );

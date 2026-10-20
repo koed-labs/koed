@@ -17,7 +17,15 @@ import type {
   CollaborationRendererClient
 } from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
-import type { Project, ProjectSource, WorkItem } from "@koed/shared";
+import type {
+  Project,
+  ProjectSource,
+  WorkItem,
+  WorkspaceProjectState,
+  WorkspaceProjectWorkItem,
+  WorkspaceProjectWorkItemCreate,
+  WorkspaceProjectWorkItemPatch
+} from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type {
@@ -46,6 +54,8 @@ const hq308Capture =
   new URLSearchParams(window.location.search).get("hq308Capture") === "yes";
 const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
+const hq712Capture =
+  new URLSearchParams(window.location.search).get("hq712Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
@@ -88,6 +98,7 @@ const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
   hq209Capture ||
   hq403Capture ||
+  hq712Capture ||
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
   hq308Capture ||
@@ -1710,7 +1721,14 @@ const initialSidebarPersonalProjects = sidebarProjectGroups
 if (hq203Empty || hq204Capture || hq207Capture)
   initialSidebarPersonalProjects.push({
     ...sidebarProjectRecord(hq204ProjectId, "New empty Project"),
-    folderPath: hq207Capture ? "/fixtures/koed" : null
+    folderPath: hq207Capture ? "/fixtures/koed" : null,
+    ...(hq712Capture
+      ? {
+          teamBackendId: "fixture-team-backend",
+          teamWorkspaceId: "00000000-0000-4000-8000-000000007121",
+          workspaceProjectId: "00000000-0000-4000-8000-000000007122"
+        }
+      : {})
   });
 let sidebarPersonalProjects: Project[] = structuredClone(
   initialSidebarPersonalProjects
@@ -2027,7 +2045,203 @@ const hq405ManagedProject = {
   subscribe: () => () => undefined
 } as unknown as ManagedProjectDesktopApi;
 
+const hq712WorkspaceProjectId = "00000000-0000-4000-8000-000000007122";
+const hq712TeamBackendId = "fixture-team-backend";
+const hq712InitialItem: WorkspaceProjectWorkItem = {
+  id: "00000000-0000-4000-8000-000000007123",
+  sourceOwnerTeamMemberId: "00000000-0000-4000-8000-000000007124",
+  sourceWorkItemId: null,
+  kind: "todo",
+  key: null,
+  title: "Review shared launch plan",
+  goal: "Review shared launch plan",
+  status: "todo",
+  dueOn: null,
+  assigneeDisplayName: null,
+  stepLabel: null,
+  doneAt: null,
+  dispatchKey: null,
+  createdAt: FIXTURE_TIME,
+  updatedAt: FIXTURE_TIME,
+  prUrl: null,
+  prState: null,
+  version: 1
+};
+let hq712Offline = false;
+const hq712OwnReview: WorkspaceProjectWorkItem = {
+  ...hq712InitialItem,
+  id: "00000000-0000-4000-8000-000000007127",
+  title: "Review my shared release",
+  status: "review",
+  prUrl: hq405Review(212).webUrl,
+  prState: "waiting_review",
+  stepLabel: "Pull request open"
+};
+const hq712OtherReview: WorkspaceProjectWorkItem = {
+  ...hq712OwnReview,
+  id: "00000000-0000-4000-8000-000000007128",
+  sourceOwnerTeamMemberId: "00000000-0000-4000-8000-000000007129",
+  title: "Teammate's private PR",
+  prUrl: hq405Review(213).webUrl
+};
+let hq712Items: WorkspaceProjectWorkItem[] = [
+  hq712InitialItem,
+  hq712OwnReview,
+  hq712OtherReview
+];
+const hq712Trace = {
+  reads: 0,
+  writes: 0,
+  setOffline: (value: boolean) => {
+    hq712Offline = value;
+  },
+  teammateEdit: () => {
+    hq712Items = hq712Items.map((item) =>
+      item.id === hq712InitialItem.id
+        ? {
+            ...item,
+            title: "Teammate changed the plan",
+            version: item.version + 1
+          }
+        : item
+    );
+    publishHq105VisibilityUpdate({
+      kind: "realtime",
+      realtimeUpdate: {
+        type: "navigation_snapshot",
+        navigation: settingsCollaborationSnapshot.navigation,
+        selection: settingsCollaborationSnapshot.selection,
+        view: settingsCollaborationSnapshot.view
+      }
+    });
+  }
+};
+Object.defineProperty(window, "__koedHq712Trace", {
+  configurable: true,
+  value: hq712Trace
+});
+const hq712State = (): WorkspaceProjectState => ({
+  project: {
+    id: hq712WorkspaceProjectId,
+    teamId: "00000000-0000-4000-8000-000000007120",
+    workspaceId: "00000000-0000-4000-8000-000000007121",
+    ownerTeamMemberId: "00000000-0000-4000-8000-000000007124",
+    name: "New empty Project",
+    key: "TEAM",
+    lifecycle: "active",
+    version: 1,
+    copiedAt: FIXTURE_TIME
+  },
+  memberVersion: 1,
+  activity: {
+    days: [
+      "2026-10-14",
+      "2026-10-15",
+      "2026-10-16",
+      "2026-10-17",
+      "2026-10-18",
+      "2026-10-19",
+      "2026-10-20"
+    ].map((date, index) => ({
+      date,
+      count: index === 5 ? 2 : index === 6 ? 1 : 0
+    })),
+    done: 2,
+    merged: 1
+  },
+  workItems: structuredClone(hq712Items),
+  sources: [
+    {
+      id: "00000000-0000-4000-8000-000000007125",
+      uploaderTeamMemberId: "00000000-0000-4000-8000-000000007124",
+      sourceProjectSourceId: "00000000-0000-4000-8000-000000007126",
+      name: "Plan.md",
+      kind: "doc",
+      status: "ready",
+      personalNoteRevisionId: null,
+      personalNoteId: null,
+      version: 1
+    }
+  ],
+  readOnly: hq712Offline,
+  notice: hq712Offline ? "Offline. Shared changes are paused." : null
+});
 const sidebarProjectsApi = {
+  sharedDispatches: async (personalProjectId: string) => {
+    if (!hq712Capture || personalProjectId !== hq204ProjectId || hq712Offline)
+      return [];
+    return [
+      {
+        teamWorkItemId: hq712OwnReview.id,
+        executionId: hq405ExecutionId,
+        agentId: "00000000-0000-4000-8000-000000002046"
+      }
+    ];
+  },
+  sharedRefresh: async (workspaceProjectId: string, teamBackendId: string) => {
+    if (
+      !hq712Capture ||
+      workspaceProjectId !== hq712WorkspaceProjectId ||
+      teamBackendId !== hq712TeamBackendId
+    )
+      throw new Error("Shared Project unavailable in fixture.");
+    hq712Trace.reads++;
+    return hq712State();
+  },
+  sharedCreateWorkItem: async (
+    workspaceProjectId: string,
+    teamBackendId: string,
+    value: WorkspaceProjectWorkItemCreate
+  ) => {
+    if (
+      !hq712Capture ||
+      hq712Offline ||
+      workspaceProjectId !== hq712WorkspaceProjectId ||
+      teamBackendId !== hq712TeamBackendId
+    )
+      throw new Error("Shared Project unavailable in fixture.");
+    hq712Trace.writes++;
+    const item: WorkspaceProjectWorkItem = {
+      ...hq712InitialItem,
+      id: crypto.randomUUID(),
+      title: value.title,
+      goal: value.goal,
+      dueOn: value.dueOn ?? null,
+      status: value.status,
+      version: 1
+    };
+    hq712Items = [...hq712Items, item];
+    return { status: "ok" as const, item: structuredClone(item) };
+  },
+  sharedPatchWorkItem: async (
+    workspaceProjectId: string,
+    teamBackendId: string,
+    itemId: string,
+    patch: WorkspaceProjectWorkItemPatch
+  ) => {
+    if (
+      !hq712Capture ||
+      hq712Offline ||
+      workspaceProjectId !== hq712WorkspaceProjectId ||
+      teamBackendId !== hq712TeamBackendId
+    )
+      throw new Error("Shared Project unavailable in fixture.");
+    const current = hq712Items.find((item) => item.id === itemId);
+    if (!current) throw new Error("Shared Work Item unavailable.");
+    hq712Trace.writes++;
+    if (current.version !== patch.expectedVersion)
+      return { status: "conflict" as const, state: hq712State() };
+    const item: WorkspaceProjectWorkItem = {
+      ...current,
+      title: patch.title ?? current.title,
+      goal: patch.goal ?? current.goal,
+      status: patch.status ?? current.status,
+      dueOn: patch.dueOn === undefined ? current.dueOn : patch.dueOn,
+      version: current.version + 1
+    };
+    hq712Items = hq712Items.map((row) => (row.id === itemId ? item : row));
+    return { status: "ok" as const, item: structuredClone(item) };
+  },
   workItemList: async (projectId: string) =>
     hq403Capture && projectId === hq204ProjectId
       ? structuredClone(

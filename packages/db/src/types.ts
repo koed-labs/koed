@@ -39,6 +39,7 @@ import type { MemoryAnswerTaskRepository } from "./memory-answer-task-repository
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
+import type { WorkspaceProjectRepository } from "./workspace-project-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
 export type Visibility = "personal";
@@ -2000,7 +2001,9 @@ export interface MemorySourceRepository
     ManagedMemoryActionRepository,
     Pick<
       WorkItemRepository,
-      "completeForManagedExecutionLease" | "hasActiveManagedWorkItem"
+      | "completeForManagedExecutionLease"
+      | "hasActiveManagedWorkItem"
+      | "getSharedDispatchLink"
     >,
     ManagedConversationCitationRepository,
     ManagedTerminalRepository,
@@ -2027,6 +2030,10 @@ export interface MemorySourceRepository
       | "commitCuratedClassification"
     >,
     TeamConversationSourceRepository,
+    Pick<
+      WorkspaceProjectRepository,
+      "getLifecycleReview" | "getSourceDeleteReview"
+    >,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;

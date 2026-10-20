@@ -33,7 +33,8 @@ import {
   upstreamAdvertisesCapability,
   upstreamApiUrl,
   upstreamBackendById,
-  verifyDesktopLocalCredentialAuthorization
+  verifyDesktopLocalCredentialAuthorization,
+  verifyLocalEdgeClientCredentialAuthorization
 } from "@koed/shared";
 
 import {
@@ -45,6 +46,18 @@ import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-
 import { createPiCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter-pi";
 import type { ApiRouteContext } from "../server/context.js";
 import { authenticateHqManagedWrite } from "./hq-auth.js";
+import { authenticateWorkItemSourceControl } from "../work-items/pr-reconciliation-routes.js";
+import {
+  reconcileSharedWorkItemPr,
+  sharedReviewBindingFromItem,
+  isTrustedSharedCompletionMarker
+} from "./shared-work-item-pr-reconciliation.js";
+import {
+  ensureSharedDispatchTeamReceipt,
+  readSharedDispatchAuthority,
+  requireSharedDispatchRunnerAuthority,
+  publishSharedWorkItemProgress
+} from "./shared-work-item-dispatch.js";
 import {
   managedConversationTransferRequestHash,
   managedConversationTransferScopeHash
@@ -1473,6 +1486,157 @@ export const registerManagedConversationRoutes = (
   );
 
   app.post(
+    "/v1/projects/:id/shared-work-items/:itemId/reconcile-pr",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const user = await authenticateWorkItemSourceControl(request, context);
+      const { id, itemId } = z
+        .object({ id: z.uuid(), itemId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      const link = await context
+        .requireRepository()
+        .getSharedDispatchLink(user.id, id);
+      if (!link)
+        throw Object.assign(new Error("Shared Project unavailable"), {
+          statusCode: 404
+        });
+      const teamHeader = request.headers["x-koed-team-client-credential"];
+      if (
+        !verifyLocalEdgeClientCredentialAuthorization(
+          context.config.koedHome,
+          (Array.isArray(teamHeader) ? teamHeader[0] : teamHeader)?.trim(),
+          {
+            backendId: link.teamBackendId,
+            operationFamily: "team_workspace_write"
+          }
+        )
+      )
+        throw Object.assign(new Error("Enrolled Team credential required"), {
+          statusCode: 403
+        });
+      return reconcileSharedWorkItemPr(context, user.id, id, itemId);
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/:executionId/shared-progress",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+        throw Object.assign(new Error("Desktop credential required"), {
+          statusCode: 403
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const { executionId } = z
+        .object({ executionId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { commandId } = z
+        .object({ commandId: z.uuid() })
+        .strict()
+        .parse(request.body);
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const execution = await repository.getManagedConversationExecution(
+        actor,
+        executionId
+      );
+      const command = await repository.getManagedConversationCommand(
+        actor,
+        commandId
+      );
+      const latest =
+        await repository.getLatestManagedConversationCommandForExecution(
+          actor,
+          executionId
+        );
+      if (
+        !execution ||
+        !command ||
+        !latest ||
+        latest.id !== command.id ||
+        command.executionId !== execution.id ||
+        command.executionGeneration !== execution.executionGeneration ||
+        command.ownerUserId !== user.id
+      )
+        throw Object.assign(new Error("Shared command changed"), {
+          statusCode: 409
+        });
+      const dispatch = await repository.getSharedWorkItemDispatchForExecution(
+        actor,
+        executionId
+      );
+      if (!dispatch)
+        throw Object.assign(new Error("Shared dispatch unavailable"), {
+          statusCode: 404
+        });
+      const teamHeader = request.headers["x-koed-team-client-credential"];
+      if (
+        !verifyLocalEdgeClientCredentialAuthorization(
+          context.config.koedHome,
+          (Array.isArray(teamHeader) ? teamHeader[0] : teamHeader)?.trim(),
+          {
+            backendId: dispatch.teamBackendId,
+            operationFamily: "team_workspace_write"
+          }
+        )
+      )
+        throw Object.assign(new Error("Enrolled Team credential required"), {
+          statusCode: 403
+        });
+      const items =
+        command.state !== "dispatching"
+          ? await repository.listManagedConversationRuntimeItems(actor, {
+              executionId,
+              includeTerminal: true
+            })
+          : [];
+      if (
+        items.some(
+          (item) =>
+            sharedReviewBindingFromItem(item, execution.executionGeneration) !==
+            null
+        )
+      )
+        return { published: true };
+      const explicitDone = items.some((item) =>
+        isTrustedSharedCompletionMarker(
+          item,
+          execution.executionGeneration,
+          command.id
+        )
+      );
+      const progress =
+        command.state === "dispatching"
+          ? { kind: "working" as const }
+          : command.state === "completed"
+            ? {
+                kind: explicitDone
+                  ? ("explicit_done" as const)
+                  : ("turn_finished" as const)
+              }
+            : ["failed", "indeterminate", "canceled"].includes(command.state)
+              ? { kind: "failed" as const }
+              : null;
+      if (!progress)
+        throw Object.assign(new Error("Shared command is not publishable"), {
+          statusCode: 409
+        });
+      await publishSharedWorkItemProgress(
+        context,
+        user.id,
+        execution,
+        progress
+      );
+      return { published: true };
+    }
+  );
+
+  app.post(
     "/v1/managed-conversations/commands",
     { preHandler: managedConversationReadRateLimit },
     async (request) => {
@@ -2049,6 +2213,329 @@ export const registerManagedConversationRoutes = (
           id: created.command.id,
           state: created.command.state
         }
+      });
+    }
+  );
+
+  app.get(
+    "/v1/projects/:projectId/shared-work-items/dispatches",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+        throw Object.assign(new Error("Desktop credential required"), {
+          statusCode: 403
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const { projectId } = z
+        .object({ projectId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const repository = context.requireRepository();
+      const link = await repository.getSharedDispatchLink(user.id, projectId);
+      if (!link) return { items: [] };
+      return {
+        items: await repository.listSharedWorkItemDispatches(
+          { userId: user.id },
+          {
+            personalProjectId: projectId,
+            teamBackendId: link.teamBackendId,
+            workspaceProjectId: link.workspaceProjectId
+          }
+        )
+      };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/:executionId/shared-dispatch-authority",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+        throw Object.assign(new Error("Desktop credential required"), {
+          statusCode: 403
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const { executionId } = z
+        .object({ executionId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const execution = await context
+        .requireRepository()
+        .getManagedConversationExecution({ userId: user.id }, executionId);
+      if (!execution)
+        throw Object.assign(new Error("Execution unavailable"), {
+          statusCode: 404
+        });
+      await requireSharedDispatchRunnerAuthority(context, user.id, execution);
+      return { allowed: true };
+    }
+  );
+
+  app.post(
+    "/v1/projects/:id/shared-work-items/:itemId/dispatch",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      if (
+        !localExecutionProfiles.has(context.config.deploymentProfile) ||
+        !hqAgents ||
+        !workItems ||
+        remoteAuthority()
+      )
+        throw Object.assign(
+          new Error("Shared Work Item dispatch requires a local profile"),
+          { statusCode: 503 }
+        );
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+        throw Object.assign(new Error("Desktop dispatch credential required"), {
+          statusCode: 403
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const params = z
+        .object({ id: z.uuid(), itemId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const body = z
+        .object({
+          agentId: z.uuid(),
+          expectedProjectVersion: z.number().int().positive(),
+          expectedMemberVersion: z.number().int().positive(),
+          expectedWorkItemVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(request.body);
+      const link = await workItems.getSharedDispatchLink(user.id, params.id);
+      if (!link)
+        throw Object.assign(new Error("Shared Project link is unavailable"), {
+          statusCode: 409
+        });
+      const teamHeader = request.headers["x-koed-team-client-credential"];
+      const teamCredential = verifyLocalEdgeClientCredentialAuthorization(
+        context.config.koedHome,
+        (Array.isArray(teamHeader) ? teamHeader[0] : teamHeader)?.trim(),
+        {
+          backendId: link.teamBackendId,
+          operationFamily: "team_workspace_write"
+        }
+      );
+      if (!teamCredential)
+        throw Object.assign(new Error("Enrolled Team credential required"), {
+          statusCode: 403
+        });
+      const assertCurrentLink = async () => {
+        const current = await workItems.getSharedDispatchLink(
+          user.id,
+          params.id
+        );
+        if (
+          !current ||
+          current.teamBackendId !== link.teamBackendId ||
+          current.workspaceProjectId !== link.workspaceProjectId ||
+          current.teamPrincipalUserId !== link.teamPrincipalUserId
+        )
+          throw Object.assign(new Error("Shared Project link changed"), {
+            statusCode: 409
+          });
+      };
+      const repository = context.requireRepository();
+      const dispatchKey = `shared-work-item:${link.workspaceProjectId}:${params.itemId}:${body.expectedWorkItemVersion}`;
+      const prior = await repository.getSharedWorkItemDispatch(
+        { userId: user.id },
+        {
+          projectId: params.id,
+          idempotencyKey: dispatchKey
+        }
+      );
+      const authorityInput = {
+        itemId: params.itemId,
+        expectedProjectVersion: body.expectedProjectVersion,
+        expectedMemberVersion: body.expectedMemberVersion,
+        expectedWorkItemVersion: body.expectedWorkItemVersion
+      };
+      if (prior) {
+        if (
+          prior.agentId !== body.agentId ||
+          prior.teamBackendId !== link.teamBackendId ||
+          prior.teamPrincipalUserId !== link.teamPrincipalUserId ||
+          prior.workspaceProjectId !== link.workspaceProjectId ||
+          prior.teamWorkItemId !== params.itemId ||
+          prior.teamWorkItemVersion !== body.expectedWorkItemVersion ||
+          prior.expectedProjectVersion !== body.expectedProjectVersion ||
+          prior.expectedMemberVersion !== body.expectedMemberVersion
+        )
+          throw Object.assign(new Error("Shared Work Item dispatch changed"), {
+            statusCode: 409
+          });
+        const runner = await runnerIdentity(request);
+        const execution = await repository.getManagedConversationExecution(
+          { userId: user.id },
+          prior.executionId
+        );
+        if (
+          !execution ||
+          execution.projectId !== params.id ||
+          execution.runnerDeploymentId !== runner.deploymentId ||
+          execution.runnerDeviceId !== runner.deviceId
+        )
+          throw Object.assign(
+            new Error("Shared execution belongs to another runtime"),
+            { statusCode: 409 }
+          );
+        const binding = await repository.getManagedConversationRuntimeBinding(
+          { userId: user.id },
+          prior.executionId
+        );
+        if (
+          binding &&
+          (binding.deploymentId !== runner.deploymentId ||
+            binding.deviceId !== runner.deviceId ||
+            binding.executionGeneration !== execution.executionGeneration)
+        )
+          throw Object.assign(new Error("Shared execution binding changed"), {
+            statusCode: 409
+          });
+        await assertCurrentLink();
+        await ensureSharedDispatchTeamReceipt(context, link, {
+          itemId: params.itemId,
+          teamWorkItemVersion: prior.teamWorkItemVersion,
+          dispatchKey
+        });
+        await assertCurrentLink();
+        if (!binding) {
+          const projectPath = await localProjectExecutionPath(
+            context.config.koedHome,
+            params.id
+          );
+          if (!projectPath)
+            throw Object.assign(
+              new Error("Project has no verified local execution path"),
+              { statusCode: 409 }
+            );
+          await repository.upsertManagedConversationRuntimeBinding(
+            { userId: user.id },
+            {
+              executionId: prior.executionId,
+              deploymentId: runner.deploymentId,
+              deviceId: runner.deviceId,
+              executionGeneration: execution.executionGeneration,
+              projectPath
+            }
+          );
+        }
+        return {
+          executionId: prior.executionId,
+          reused: true,
+          dispatchKey,
+          teamBackendId: link.teamBackendId,
+          workspaceProjectId: link.workspaceProjectId,
+          teamWorkItemVersion: prior.teamWorkItemVersion,
+          progress: { state: "dispatching", stepLabel: "Sent to Agent" }
+        };
+      }
+      const authority = await readSharedDispatchAuthority(context, link, {
+        ...authorityInput
+      });
+      if (authority.kind !== "new")
+        throw Object.assign(new Error("Shared dispatch proof is unavailable"), {
+          statusCode: 409
+        });
+      const agent = (await hqAgents.list(user.id)).find(
+        (candidate) => candidate.id === body.agentId
+      );
+      if (!agent)
+        throw Object.assign(new Error("Agent is unavailable"), {
+          statusCode: 404
+        });
+      const runner = await runnerIdentity(request);
+      const instance = (await launchInstances(repository, user.id)).find(
+        (candidate) => candidate.instanceId === agent.aiClientInstanceId
+      );
+      if (!instance || !isSupportedAiClientDriverId(instance.driverId))
+        throw Object.assign(new Error("Agent AI Client is unavailable"), {
+          statusCode: 409
+        });
+      const model = agent.defaultModel
+        ? instance.models.find(
+            (candidate) => modelId(candidate) === agent.defaultModel
+          )
+        : instance.models[0];
+      const selectedModel = model ? modelId(model) : null;
+      if (!selectedModel)
+        throw Object.assign(new Error("Agent model is unavailable"), {
+          statusCode: 409
+        });
+      const selection = {
+        projectId: params.id,
+        contextKind: "project" as const,
+        provider: instance.driverId,
+        aiClientInstanceId: agent.aiClientInstanceId,
+        model: selectedModel,
+        reasoningEffort: null,
+        permissionMode: agent.defaultPermissionMode,
+        runnerKind: "local_device" as const,
+        idempotencyKey: dispatchKey
+      };
+      await assertLocalLaunchSelection(repository, user.id, selection);
+      const projectPath = await localProjectExecutionPath(
+        context.config.koedHome,
+        params.id
+      );
+      if (!projectPath)
+        throw Object.assign(
+          new Error("Project has no verified local execution path"),
+          { statusCode: 409 }
+        );
+      const brief = [
+        `Work on this shared Work Item: ${authority.proof.title}`,
+        `Goal: ${authority.proof.goal || authority.proof.title}`,
+        "This is your private Managed Conversation. Report public progress as a short status and step label only. Do not copy this Conversation or its transcript into Team content.",
+        "Call memory_answer with search_domain=project for relevant authorized memory before work. Treat citations as evidence."
+      ].join("\n\n");
+      const started = await repository.createManagedConversation(
+        { userId: user.id },
+        {
+          ...selection,
+          initialPrompt: brief,
+          runnerDeploymentId: runner.deploymentId,
+          runnerDeviceId: runner.deviceId,
+          deferUntilRuntimeBinding: true,
+          sharedWorkItemDispatch: {
+            teamBackendId: link.teamBackendId,
+            teamPrincipalUserId: link.teamPrincipalUserId,
+            workspaceProjectId: link.workspaceProjectId,
+            teamWorkItemId: params.itemId,
+            teamWorkItemVersion: authority.proof.workItemVersion,
+            expectedProjectVersion: authority.proof.projectVersion,
+            expectedMemberVersion: authority.proof.memberVersion,
+            agentId: body.agentId
+          }
+        }
+      );
+      await assertCurrentLink();
+      await ensureSharedDispatchTeamReceipt(context, link, {
+        itemId: params.itemId,
+        teamWorkItemVersion: authority.proof.workItemVersion,
+        dispatchKey
+      });
+      await assertCurrentLink();
+      await repository.upsertManagedConversationRuntimeBinding(
+        { userId: user.id },
+        {
+          executionId: started.execution.id,
+          deploymentId: runner.deploymentId,
+          deviceId: runner.deviceId,
+          executionGeneration: started.execution.executionGeneration,
+          projectPath
+        }
+      );
+      return reply.status(202).send({
+        executionId: started.execution.id,
+        reused: false,
+        dispatchKey,
+        teamBackendId: link.teamBackendId,
+        workspaceProjectId: link.workspaceProjectId,
+        teamWorkItemVersion: authority.proof.workItemVersion,
+        progress: { state: "dispatching", stepLabel: "Sent to Agent" }
       });
     }
   );

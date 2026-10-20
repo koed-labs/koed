@@ -26,6 +26,7 @@ export type LocalEdgeOperationFamily =
   | "personal_collaboration_read"
   | "personal_collaboration_write"
   | "team_workspace_read"
+  | "team_workspace_write"
   | "team_chat_read"
   | "team_chat_write"
   | "share_grant_management"
@@ -76,6 +77,7 @@ const operationRoutePolicyKey: Record<
   personal_collaboration_read: "personalCollaboration",
   personal_collaboration_write: "personalCollaboration",
   team_workspace_read: "teamWorkspaceRead",
+  team_workspace_write: "teamWorkspaceRead",
   team_chat_read: "teamWorkspaceRead",
   team_chat_write: "teamWorkspaceRead",
   share_grant_management: "shareGrantManagement",
@@ -94,6 +96,7 @@ const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   personal_collaboration_read: "live_upstream_proxy",
   personal_collaboration_write: "live_upstream_proxy",
   team_workspace_read: "live_upstream_proxy",
+  team_workspace_write: "live_upstream_proxy",
   team_chat_read: "live_upstream_proxy",
   team_chat_write: "live_upstream_proxy",
   share_grant_management: "live_upstream_proxy",
@@ -459,6 +462,10 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "personal_collaboration_read") {
     if (
+      (method === "GET" &&
+        /^\/v1\/projects\/[0-9a-f-]{36}\/workspace-project-share-snapshot$/i.test(
+          pathname
+        )) ||
       (method === "POST" &&
         (pathname === "/v1/collaboration/realtime/snapshot" ||
           pathname === "/v1/collaboration/realtime/ack")) ||
@@ -470,6 +477,20 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "personal_collaboration_write") {
+    if (
+      (method === "PUT" &&
+        /^\/v1\/projects\/[0-9a-f-]{36}\/workspace-project-link$/i.test(
+          pathname
+        )) ||
+      (method === "POST" &&
+        (/^\/v1\/projects\/[0-9a-f-]{36}\/workspace-project-copy-back$/i.test(
+          pathname
+        ) ||
+          /^\/v1\/projects\/[0-9a-f-]{36}\/workspace-project-link\/[0-9a-f-]{36}\/reconcile$/i.test(
+            pathname
+          )))
+    )
+      return;
     deny();
   }
 
@@ -493,6 +514,38 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "team_workspace_read") {
     if (
+      method === "GET" &&
+      (/^\/v1\/teams\/[0-9a-f-]{36}\/(?:workspace-projects|workspace-project-leave-review)$/i.test(
+        pathname
+      ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}(?:\/(?:work-items|sources|lifecycle|link-proof|tombstone-proof))?$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/activity\/summary$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-proof$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-authority$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-status$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/sources\/[0-9a-f-]{36}\/uploader-proof$/i.test(
+          pathname
+        ))
+    )
+      return;
+    if (
+      method === "POST" &&
+      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/dispatch-check$/i.test(
+        pathname
+      )
+    )
+      return;
+    if (
       (method === "GET" && pathname === "/v1/team-context") ||
       (method === "POST" &&
         pathname === "/v1/collaboration/realtime/snapshot") ||
@@ -509,6 +562,28 @@ export const assertUpstreamOperationPathAllowed = (
     ) {
       return;
     }
+    deny();
+  }
+
+  if (operationFamily === "team_workspace_write") {
+    if (
+      (method === "POST" &&
+        (pathname === "/v1/workspace-projects" ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:join|first-share-copy|work-items|sources|share-grant-bindings)$/i.test(
+            pathname
+          ) ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-receipt$/i.test(
+            pathname
+          ))) ||
+      (method === "PATCH" &&
+        (/^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:work-items|sources)\/[0-9a-f-]{36}$/i.test(
+          pathname
+        ) ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-progress$/i.test(
+            pathname
+          )))
+    )
+      return;
     deny();
   }
 
@@ -633,6 +708,12 @@ export const assertUpstreamOperationPathAllowed = (
       pathname === "/v1/team-invites/accept" ||
       pathname.startsWith("/v1/teams/") ||
       pathname.startsWith("/v1/team-workspaces/") ||
+      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:leave|delete|members\/[0-9a-f-]{36}\/remove)$/i.test(
+        pathname
+      ) ||
+      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/sources\/[0-9a-f-]{36}\/delete$/i.test(
+        pathname
+      ) ||
       pathname.startsWith("/v1/retention/")
     ) {
       return;
@@ -641,7 +722,17 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "admin") {
-    if (pathname === "/v1/teams" || pathname.startsWith("/v1/teams/")) {
+    if (
+      pathname === "/v1/teams" ||
+      pathname.startsWith("/v1/teams/") ||
+      (method === "POST" &&
+        (/^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:leave|delete|members\/[0-9a-f-]{36}\/remove)$/i.test(
+          pathname
+        ) ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/sources\/[0-9a-f-]{36}\/delete$/i.test(
+            pathname
+          )))
+    ) {
       return;
     }
     deny();

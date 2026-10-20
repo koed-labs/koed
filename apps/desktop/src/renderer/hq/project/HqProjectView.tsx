@@ -10,7 +10,14 @@ import {
   Sparkles,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from "react";
 import { createPortal } from "react-dom";
 import type { Agent } from "@koed/shared/agent-contract";
 import { Pixelkin } from "../agents/Pixelkin.js";
@@ -29,6 +36,7 @@ import type {
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
 import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
 import { projectNavigation } from "../project-navigation.js";
@@ -39,6 +47,12 @@ import { HqProjectPullRequests } from "./HqProjectPullRequests.js";
 import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
 import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
 import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
+import { SharedProjectPanel } from "../shared-project/SharedProjectPanel.js";
+import { SharedProjectSources } from "../shared-project/SharedProjectSources.js";
+import type {
+  SharedProjectStore,
+  SharedProjectSnapshot
+} from "../shared-project/shared-project-store.js";
 import {
   parseWorkItemInput,
   projectWorkItemSections,
@@ -49,6 +63,8 @@ import {
 import "./hq-project-view.css";
 
 type HqSummary = Awaited<ReturnType<ProjectsDesktopApi["hq"]>>;
+const subscribeNoShared = () => () => {};
+const noSharedSnapshot = (): SharedProjectSnapshot | null => null;
 type Inventory = {
   projectsApi: ProjectsDesktopApi | null;
   conversationsApi: ManagedConversationDesktopApi | null;
@@ -131,7 +147,10 @@ export function HqProjectView({
   onOpenPrivateHq,
   onOpenCitationMessage,
   blockedConversationSessions,
-  onConversationAgentsChange
+  onConversationAgentsChange,
+  sharedProjectStore,
+  deleteSharedProjectSource,
+  sharedRefreshSignal = 0
 }: {
   project: Project;
   personalProjects: readonly Project[];
@@ -161,7 +180,21 @@ export function HqProjectView({
     projectId: string,
     bySession: Readonly<Record<string, string>>
   ) => void;
+  sharedProjectStore?: SharedProjectStore | null;
+  deleteSharedProjectSource?: CollaborationRendererClient["deleteWorkspaceProjectSource"];
+  sharedRefreshSignal?: number;
 }) {
+  const linked = Boolean(project.workspaceProjectId);
+  const sharedIdentity =
+    ownerId && profileKey && project.workspaceProjectId && project.teamBackendId
+      ? {
+          ownerId,
+          profileKey,
+          personalProjectId: project.id,
+          workspaceProjectId: project.workspaceProjectId,
+          teamBackendId: project.teamBackendId
+        }
+      : null;
   const [inventory, setInventory] = useState<Inventory>(emptyInventory);
   const [mergeRequestedItemId, setMergeRequestedItemId] = useState<
     string | null
@@ -430,9 +463,11 @@ export function HqProjectView({
         await Promise.allSettled([
           projectsApi.hq(project.id),
           conversationsApi?.list?.() ?? Promise.resolve(null),
-          projectsApi.workItemList?.(project.id) ??
-            Promise.reject(new Error("Work Items unavailable")),
-          projectsApi.sourceList(project.id)
+          linked
+            ? Promise.resolve([] as WorkItem[])
+            : (projectsApi.workItemList?.(project.id) ??
+              Promise.reject(new Error("Work Items unavailable"))),
+          linked ? Promise.resolve([]) : projectsApi.sourceList(project.id)
         ]);
       if (!live || intent.current.generation !== generation) return;
       const summary =
@@ -525,6 +560,7 @@ export function HqProjectView({
     projectsApi,
     conversationsApi,
     project.id,
+    linked,
     ownerId,
     profileKey,
     refresh,
@@ -572,8 +608,22 @@ export function HqProjectView({
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
     [visibleInventory]
   );
+  const sharedSnapshot = useSyncExternalStore(
+    sharedProjectStore?.subscribe ?? subscribeNoShared,
+    sharedProjectStore?.current ?? noSharedSnapshot
+  );
+  const sharedActivity =
+    linked &&
+    sharedIdentity &&
+    sharedSnapshot?.identity?.ownerId === sharedIdentity.ownerId &&
+    sharedSnapshot.identity.profileKey === sharedIdentity.profileKey &&
+    sharedSnapshot.identity.workspaceProjectId ===
+      sharedIdentity.workspaceProjectId &&
+    sharedSnapshot.identity.teamBackendId === sharedIdentity.teamBackendId
+      ? sharedSnapshot.state?.activity
+      : null;
   const activity = visibleInventory.summary?.activity?.lastSevenDays;
-  const outcomes = activity?.outcomes;
+  const outcomes = linked ? sharedActivity : activity?.outcomes;
   const max = Math.max(1, ...(outcomes?.days.map(({ count }) => count) ?? [0]));
   const rows = {
     need: needs,
@@ -607,8 +657,42 @@ export function HqProjectView({
       )
         bySession[execution.sessionId] = item.assigneeAgentId;
     }
+    if (
+      linked &&
+      sharedIdentity &&
+      sharedSnapshot?.identity?.ownerId === sharedIdentity.ownerId &&
+      sharedSnapshot.identity.profileKey === sharedIdentity.profileKey &&
+      sharedSnapshot.identity.personalProjectId ===
+        sharedIdentity.personalProjectId &&
+      sharedSnapshot.identity.workspaceProjectId ===
+        sharedIdentity.workspaceProjectId &&
+      sharedSnapshot.identity.teamBackendId === sharedIdentity.teamBackendId
+    ) {
+      for (const binding of sharedSnapshot.dispatches) {
+        const execution = visibleInventory.executions.find(
+          (row) => row.executionId === binding.executionId
+        );
+        if (
+          execution?.sessionId &&
+          agents.some((agent) => agent.id === binding.agentId)
+        )
+          bySession[execution.sessionId] = binding.agentId;
+      }
+    }
     onConversationAgentsChange(project.id, bySession);
-  }, [onConversationAgentsChange, project.id, visibleInventory, agents]);
+  }, [
+    onConversationAgentsChange,
+    project.id,
+    visibleInventory,
+    agents,
+    linked,
+    sharedIdentity?.ownerId,
+    sharedIdentity?.profileKey,
+    sharedIdentity?.personalProjectId,
+    sharedIdentity?.workspaceProjectId,
+    sharedIdentity?.teamBackendId,
+    sharedSnapshot
+  ]);
   const createTodo = async () => {
     const parsed = parseWorkItemInput(draft, timeZone, new Date());
     if (!parsed.title || workPending) return;
@@ -969,36 +1053,56 @@ export function HqProjectView({
             Done and merged unavailable
           </span>
         )}
-        <span
-          className="hq-project-view__shared"
-          title="Project sharing is not available yet"
-        >
-          Just me
+        <span className="hq-project-view__shared">
+          {linked ? "Team" : "Just me"}
         </span>
       </header>
       <div className="hq-project-view__keys">
-        <HqProjectSources
-          projectId={project.id}
-          projectName={project.name}
-          api={projectsApi}
-          visibilityOwnerId={ownerId}
-          visibilityProfileKey={profileKey}
-          panelHost={panelHost}
-          onOpenChange={(value) => {
-            if (value) {
-              setMemoryPanelRow(null);
-              setMemoryOpen(false);
-              setBriefFor(null);
-              onSourcesOpenChange?.(true);
-            } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
-              onSourcesOpenChange?.(false);
-            }
-          }}
-          onContextChange={(label) => {
-            if (!memoryOpen) onContextChange?.(label);
-          }}
-          closeSignal={(closeSignal ?? 0) + sourceCloseSignal}
-        />
+        {linked && sharedIdentity && sharedProjectStore ? (
+          <SharedProjectSources
+            store={sharedProjectStore}
+            identity={sharedIdentity}
+            deleteSource={deleteSharedProjectSource}
+            panelHost={panelHost}
+            onOpenChange={(value) => {
+              if (value) {
+                setMemoryPanelRow(null);
+                setMemoryOpen(false);
+                setBriefFor(null);
+                onSourcesOpenChange?.(true);
+              } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
+                onSourcesOpenChange?.(false);
+              }
+            }}
+            onContextChange={(label) => {
+              if (!memoryOpen) onContextChange?.(label);
+            }}
+            closeSignal={(closeSignal ?? 0) + sourceCloseSignal}
+          />
+        ) : !linked ? (
+          <HqProjectSources
+            projectId={project.id}
+            projectName={project.name}
+            api={projectsApi}
+            visibilityOwnerId={ownerId}
+            visibilityProfileKey={profileKey}
+            panelHost={panelHost}
+            onOpenChange={(value) => {
+              if (value) {
+                setMemoryPanelRow(null);
+                setMemoryOpen(false);
+                setBriefFor(null);
+                onSourcesOpenChange?.(true);
+              } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
+                onSourcesOpenChange?.(false);
+              }
+            }}
+            onContextChange={(label) => {
+              if (!memoryOpen) onContextChange?.(label);
+            }}
+            closeSignal={(closeSignal ?? 0) + sourceCloseSignal}
+          />
+        ) : null}
         {curatedMemoryApi ? (
           <button
             type="button"
@@ -1054,7 +1158,24 @@ export function HqProjectView({
           </button>
         </p>
       ) : null}
-      <div className="hq-project-view__work">
+      {linked && sharedIdentity && sharedProjectStore ? (
+        <SharedProjectPanel
+          store={sharedProjectStore}
+          identity={sharedIdentity}
+          refreshSignal={sharedRefreshSignal}
+          agents={agents}
+          conversationsApi={conversationsApi}
+          managedProject={managedProject}
+          panelHost={panelHost}
+          activeMemoryRow={memoryPanelRow}
+          onMemoryOpen={openMemoryPanel}
+          onMemoryClose={closeMemoryPanel}
+          onOpenCitationMessage={onOpenCitationMessage}
+        />
+      ) : linked ? (
+        <p role="status">Shared Project state is unavailable.</p>
+      ) : null}
+      <div className="hq-project-view__work" hidden={linked}>
         {(["need", "doing"] as const).map((kind) => {
           const workRows = kind === "need" ? work.needs : work.doing;
           const boundExecutions = new Set(

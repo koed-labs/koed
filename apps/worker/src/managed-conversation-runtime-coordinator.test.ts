@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import pino from "pino";
+import type { MemorySourceRepository } from "@koed/db";
+import {
+  storeDesktopLocalCredential,
+  storeLocalEdgeClientCredential
+} from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
@@ -77,6 +82,7 @@ describe("Managed Conversation runtime coordinator", () => {
         getConversationSourceArtifactByGeneration,
         enqueueConversationSourceArtifactReplication,
         completeForManagedExecutionLease,
+        getSharedWorkItemDispatchForExecution: vi.fn(async () => null),
         putManagedConversationRuntimeItem
       } as never,
       localOwnerUserId: "00000000-0000-4000-8000-000000000001",
@@ -169,5 +175,156 @@ describe("Managed Conversation runtime coordinator", () => {
 
     await coordinator.stop();
     expect(stopped).toEqual([0, 1]);
+  });
+
+  it("uses the guarded repository in the actual local coordinator before launching a shared command", async () => {
+    const home = await mkdtemp(join(tmpdir(), "koed-shared-local-runner-"));
+    homes.push(home);
+    const ownerUserId = "00000000-0000-4000-8000-000000000021";
+    const executionId = "00000000-0000-4000-8000-000000000022";
+    const commandId = "00000000-0000-4000-8000-000000000023";
+    storeDesktopLocalCredential(home, {
+      ownerUserId,
+      operationFamilies: ["personal_collaboration_write", "managed_execution"]
+    });
+    storeLocalEdgeClientCredential(home, {
+      backendId: "team-vps",
+      secret: "team-secret",
+      operationFamilies: ["team_workspace_write"]
+    });
+    let allowed = false;
+    const send = vi.fn(async (url: RequestInfo | URL) => {
+      if (!allowed)
+        return Response.json({ message: "revoked" }, { status: 409 });
+      return Response.json(
+        new URL(String(url)).pathname.endsWith("shared-progress")
+          ? { published: true }
+          : { allowed: true }
+      );
+    });
+    const command = {
+      id: commandId,
+      executionId,
+      leaseToken: "00000000-0000-4000-8000-000000000024",
+      execution: { id: executionId }
+    };
+    const fail = vi.fn(async () => ({ updated: true }));
+    const putRuntimeItem = vi.fn<
+      MemorySourceRepository["putManagedConversationRuntimeItem"]
+    >(async () => ({}) as never);
+    const localRepository = {
+      getSharedWorkItemDispatchForExecution: vi.fn(async () => ({
+        teamBackendId: "team-vps"
+      })),
+      claimManagedConversationCommands: vi.fn(async () => [command]),
+      failManagedConversationCommand: fail,
+      renewManagedConversationCommandLease: vi.fn(async () => true),
+      getManagedConversationExecution: vi.fn(async () => ({
+        id: executionId,
+        executionGeneration: 1
+      })),
+      getManagedConversationCommand: vi.fn(async () => ({
+        ...command,
+        state: "dispatching"
+      })),
+      putManagedConversationRuntimeItem: putRuntimeItem,
+      completeForManagedExecutionLease: vi.fn(async () => ({}))
+    };
+    let guarded: MemorySourceRepository | null = null;
+    let completedTool: ((event: unknown) => Promise<void>) | undefined;
+    const coordinator = createManagedConversationRuntimeCoordinator({
+      localRepository: localRepository as never,
+      localOwnerUserId: ownerUserId,
+      apiUrl: "http://127.0.0.1:3300/",
+      apiToken: "unused",
+      appServerBinary: "codex",
+      deviceId: "device",
+      deploymentId: "deployment",
+      koedHome: home,
+      envelopeEncryptionProvider: {} as never,
+      commandWakePool: {} as never,
+      fetch: send as unknown as typeof fetch,
+      logger: pino({ enabled: false }),
+      createService: ((input: {
+        repository: MemorySourceRepository;
+        onKoedToolCompleted?: (event: unknown) => Promise<void>;
+      }) => {
+        guarded = input.repository;
+        completedTool = input.onKoedToolCompleted;
+        return {
+          start() {},
+          async stop() {},
+          async processOnce() {
+            return { completed: 0, failed: 0 };
+          }
+        };
+      }) as never,
+      resolveAuthority: () => null
+    });
+    coordinator.start();
+    await vi.waitFor(() => expect(guarded).not.toBeNull());
+    const claimInput = {
+      runnerId: "runner",
+      deploymentId: "deployment",
+      deviceId: "device",
+      leaseMs: 30_000
+    };
+    expect(await guarded!.claimManagedConversationCommands(claimInput)).toEqual(
+      []
+    );
+    expect(fail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commandId,
+        state: "failed",
+        errorCode: "SharedDispatchAuthorityUnavailable"
+      })
+    );
+    allowed = true;
+    expect(
+      await guarded!.claimManagedConversationCommands(claimInput)
+    ).toHaveLength(1);
+    const event = {
+      execution: { id: executionId, ownerUserId, executionGeneration: 1 },
+      command: { id: commandId, leaseToken: command.leaseToken },
+      toolName: "work_item_complete",
+      arguments: {},
+      result: { structuredContent: { status: "requested" } },
+      toolCallId: "provider-tool-1"
+    };
+    await completedTool?.(event);
+    expect(putRuntimeItem).toHaveBeenCalledWith(
+      { userId: ownerUserId },
+      expect.objectContaining({
+        providerRequestId: `shared-work-item-complete:${commandId}:provider-tool-1`,
+        payload: { sharedWorkItemCompletion: "accepted" }
+      })
+    );
+    allowed = false;
+    const acceptedBeforeRevoke = putRuntimeItem.mock.calls.filter(
+      (call) =>
+        (call[1] as { payload?: { sharedWorkItemCompletion?: string } }).payload
+          ?.sharedWorkItemCompletion === "accepted"
+    ).length;
+    await completedTool?.({ ...event, toolCallId: "provider-tool-2" });
+    expect(
+      putRuntimeItem.mock.calls.filter(
+        (call) =>
+          (call[1] as { payload?: { sharedWorkItemCompletion?: string } })
+            .payload?.sharedWorkItemCompletion === "accepted"
+      )
+    ).toHaveLength(acceptedBeforeRevoke);
+    await expect(
+      guarded!.renewManagedConversationCommandLease({
+        commandId,
+        executionId,
+        leaseToken: command.leaseToken,
+        runnerId: "runner",
+        leaseMs: 30_000
+      })
+    ).rejects.toThrow("SharedDispatchAuthorityUnavailable");
+    expect(
+      localRepository.renewManagedConversationCommandLease
+    ).not.toHaveBeenCalled();
+    await coordinator.stop();
   });
 });

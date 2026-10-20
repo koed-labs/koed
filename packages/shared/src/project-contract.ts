@@ -18,7 +18,10 @@ export const projectSchema = z
     deletedAt: timestamp.nullable(),
     createdAt: timestamp,
     updatedAt: timestamp,
-    version: z.number().int().positive()
+    version: z.number().int().positive(),
+    teamBackendId: z.string().nullable().optional(),
+    teamWorkspaceId: z.uuid().nullable().optional(),
+    workspaceProjectId: z.uuid().nullable().optional()
   })
   .strict();
 

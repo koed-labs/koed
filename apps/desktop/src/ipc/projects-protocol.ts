@@ -9,12 +9,23 @@ import {
 } from "@koed/shared/project-contract";
 import {
   createProjectSourceSchema,
+  projectSourceUploadSchema,
   projectSourceReadSchema,
   projectSourceRemovalStatusSchema,
   projectSourceSchema,
   projectSourcesSchema
 } from "@koed/shared/project-source-contract";
 import { z } from "zod";
+import {
+  workspaceProjectStateSchema,
+  workspaceProjectCreateSchema,
+  workspaceProjectRecordSchema,
+  workspaceProjectSourceSchema,
+  workspaceProjectSourceMetadataPatchSchema,
+  workspaceProjectWorkItemCreateSchema,
+  workspaceProjectHumanWorkItemPatchSchema,
+  workspaceProjectWorkItemSchema
+} from "@koed/shared/workspace-project-contract";
 import {
   createWorkItemSchema,
   patchWorkItemSchema,
@@ -24,6 +35,114 @@ import {
 export const projectsCommandChannel = "koed:projects:command";
 
 export const projectsRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("sharedFirstShare"),
+      personalProjectId: z.uuid(),
+      teamBackendId: z.string().min(1),
+      value: workspaceProjectCreateSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedTeamLeaveStage"),
+      teamBackendId: z.string().min(1),
+      teamId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedTeamLeaveFinish"),
+      teamBackendId: z.string().min(1),
+      stageIds: z.array(z.uuid()).max(100)
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedAttachSource"),
+      teamBackendId: z.string().min(1),
+      workspaceProjectId: z.uuid(),
+      personalProjectId: z.uuid(),
+      sourceId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPatchSource"),
+      teamBackendId: z.string().min(1),
+      workspaceProjectId: z.uuid(),
+      sourceId: z.uuid(),
+      value: workspaceProjectSourceMetadataPatchSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedUploadSource"),
+      teamBackendId: z.string().min(1),
+      workspaceProjectId: z.uuid(),
+      personalProjectId: z.uuid(),
+      upload: projectSourceUploadSchema,
+      expectedProfileKey: z.string().min(1).optional()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedSourcePick"),
+      teamBackendId: z.string().min(1),
+      workspaceProjectId: z.uuid(),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedReadSource"),
+      teamBackendId: z.string().min(1),
+      workspaceProjectId: z.uuid(),
+      personalProjectId: z.uuid(),
+      sourceId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedDispatchWorkItem"),
+      personalProjectId: z.uuid(),
+      itemId: z.uuid(),
+      agentId: z.uuid(),
+      expectedProjectVersion: z.number().int().positive(),
+      expectedMemberVersion: z.number().int().positive(),
+      expectedWorkItemVersion: z.number().int().positive()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedDispatches"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedRefresh"),
+      workspaceProjectId: z.uuid(),
+      teamBackendId: z.string().min(1)
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedCreateWorkItem"),
+      workspaceProjectId: z.uuid(),
+      teamBackendId: z.string().min(1),
+      value: workspaceProjectWorkItemCreateSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPatchWorkItem"),
+      workspaceProjectId: z.uuid(),
+      teamBackendId: z.string().min(1),
+      itemId: z.uuid(),
+      value: workspaceProjectHumanWorkItemPatchSchema
+    })
+    .strict(),
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("pickFolder") }).strict(),
   z.object({ operation: z.literal("hq"), projectId: z.uuid() }).strict(),
@@ -170,6 +289,159 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
 ]);
 
 export const projectsResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("sharedFirstShare"),
+      project: workspaceProjectRecordSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedTeamLeaveStage"),
+      review: z
+        .object({
+          teamId: z.uuid(),
+          expectedTeamVersion: z.number().int().positive(),
+          expectedMembershipVersion: z.number().int().positive(),
+          expectedOwnedWorkspaceProjects: z.array(
+            z
+              .object({ id: z.uuid(), version: z.number().int().positive() })
+              .strict()
+          ),
+          ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+          stages: z.array(
+            z
+              .object({ workspaceProjectId: z.uuid(), stageId: z.uuid() })
+              .strict()
+          )
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedTeamLeaveFinish"),
+      completed: z.array(
+        z
+          .object({
+            stageId: z.uuid(),
+            projectId: z.uuid().optional(),
+            copied: z.number().int().nonnegative().optional(),
+            alreadyApplied: z.boolean().optional()
+          })
+          .strict()
+      )
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedAttachSource"),
+      source: workspaceProjectSourceSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPatchSource"),
+      source: workspaceProjectSourceSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedUploadSource"),
+      source: workspaceProjectSourceSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedSourcePick"),
+      value: z.discriminatedUnion("canceled", [
+        z.object({ canceled: z.literal(true), source: z.null() }).strict(),
+        z
+          .object({
+            canceled: z.literal(false),
+            source: workspaceProjectSourceSchema
+          })
+          .strict()
+      ])
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedReadSource"),
+      content: projectSourceReadSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedDispatchWorkItem"),
+      executionId: z.uuid(),
+      reused: z.boolean(),
+      dispatchKey: z.string().min(1),
+      progress: z
+        .object({ state: z.literal("dispatching"), stepLabel: z.string() })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedDispatches"),
+      items: z
+        .array(
+          z
+            .object({
+              teamWorkItemId: z.uuid(),
+              executionId: z.uuid(),
+              agentId: z.uuid()
+            })
+            .strict()
+        )
+        .max(500)
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedRefresh"),
+      state: workspaceProjectStateSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedCreateWorkItem"),
+      outcome: z.discriminatedUnion("status", [
+        z
+          .object({
+            status: z.literal("ok"),
+            item: workspaceProjectWorkItemSchema
+          })
+          .strict(),
+        z
+          .object({
+            status: z.literal("conflict"),
+            state: workspaceProjectStateSchema
+          })
+          .strict()
+      ])
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPatchWorkItem"),
+      outcome: z.discriminatedUnion("status", [
+        z
+          .object({
+            status: z.literal("ok"),
+            item: workspaceProjectWorkItemSchema
+          })
+          .strict(),
+        z
+          .object({
+            status: z.literal("conflict"),
+            state: workspaceProjectStateSchema
+          })
+          .strict()
+      ])
+    })
+    .strict(),
   z
     .object({ operation: z.literal("list"), projects: z.array(projectSchema) })
     .strict(),
@@ -319,6 +591,106 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  sharedFirstShare?(
+    personalProjectId: string,
+    teamBackendId: string,
+    value: z.infer<typeof workspaceProjectCreateSchema>
+  ): Promise<z.infer<typeof workspaceProjectRecordSchema>>;
+  sharedTeamLeaveStage?(
+    teamBackendId: string,
+    teamId: string
+  ): Promise<{
+    teamId: string;
+    expectedTeamVersion: number;
+    expectedMembershipVersion: number;
+    expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
+    ownedSetHash: string;
+    stages: Array<{ workspaceProjectId: string; stageId: string }>;
+  }>;
+  sharedTeamLeaveFinish?(
+    teamBackendId: string,
+    stageIds: string[]
+  ): Promise<{
+    completed: Array<{
+      stageId: string;
+      projectId?: string;
+      copied?: number;
+      alreadyApplied?: boolean;
+    }>;
+  }>;
+  sharedAttachSource?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    personalProjectId: string,
+    sourceId: string
+  ): Promise<z.infer<typeof workspaceProjectSourceSchema>>;
+  sharedPatchSource?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    sourceId: string,
+    value: z.infer<typeof workspaceProjectSourceMetadataPatchSchema>
+  ): Promise<z.infer<typeof workspaceProjectSourceSchema>>;
+  sharedUploadSource?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    personalProjectId: string,
+    upload: z.infer<typeof projectSourceUploadSchema>
+  ): Promise<z.infer<typeof workspaceProjectSourceSchema>>;
+  sharedSourcePick?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    personalProjectId: string
+  ): Promise<
+    | { canceled: true; source: null }
+    | { canceled: false; source: z.infer<typeof workspaceProjectSourceSchema> }
+  >;
+  sharedReadSource?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    personalProjectId: string,
+    sourceId: string
+  ): Promise<z.infer<typeof projectSourceReadSchema>>;
+  sharedDispatchWorkItem?(
+    personalProjectId: string,
+    itemId: string,
+    agentId: string,
+    expectedProjectVersion: number,
+    expectedMemberVersion: number,
+    expectedWorkItemVersion: number
+  ): Promise<{
+    executionId: string;
+    reused: boolean;
+    dispatchKey: string;
+    progress: { state: "dispatching"; stepLabel: string };
+  }>;
+  sharedDispatches?(personalProjectId: string): Promise<
+    Array<{
+      teamWorkItemId: string;
+      executionId: string;
+      agentId: string;
+    }>
+  >;
+  sharedRefresh?(
+    workspaceProjectId: string,
+    teamBackendId: string
+  ): Promise<z.infer<typeof workspaceProjectStateSchema>>;
+  sharedCreateWorkItem?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    value: z.infer<typeof workspaceProjectWorkItemCreateSchema>
+  ): Promise<
+    | { status: "ok"; item: z.infer<typeof workspaceProjectWorkItemSchema> }
+    | { status: "conflict"; state: z.infer<typeof workspaceProjectStateSchema> }
+  >;
+  sharedPatchWorkItem?(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    itemId: string,
+    value: z.infer<typeof workspaceProjectHumanWorkItemPatchSchema>
+  ): Promise<
+    | { status: "ok"; item: z.infer<typeof workspaceProjectWorkItemSchema> }
+    | { status: "conflict"; state: z.infer<typeof workspaceProjectStateSchema> }
+  >;
   workItemList?(projectId: string): Promise<z.infer<typeof workItemSchema>[]>;
   workItemReconcile?(
     projectId: string,

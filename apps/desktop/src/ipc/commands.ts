@@ -227,6 +227,13 @@ export const registerDesktopCommandHandlers = (
     ) => Promise<
       Extract<ProjectsResult, { operation: "sourceUpload" }>["value"]
     >;
+    uploadSharedProjectSource?: (
+      personalProjectId: string,
+      workspaceProjectId: string,
+      teamBackendId: string
+    ) => Promise<
+      Extract<ProjectsResult, { operation: "sharedSourcePick" }>["value"]
+    >;
     readProjectSource?: (
       projectId: string,
       sourceId: string,
@@ -619,6 +626,19 @@ export const registerDesktopCommandHandlers = (
       if (!value.canceled && value.source.projectId !== request.projectId)
         throw new Error("Invalid Project Source upload identity.");
       return projectsResultSchema.parse({ operation: "sourceUpload", value });
+    }
+    if (request.operation === "sharedSourcePick") {
+      if (!options.uploadSharedProjectSource)
+        throw new Error("Shared Project Source upload is unavailable.");
+      const value = await options.uploadSharedProjectSource(
+        request.personalProjectId,
+        request.workspaceProjectId,
+        request.teamBackendId
+      );
+      return projectsResultSchema.parse({
+        operation: "sharedSourcePick",
+        value
+      });
     }
     if (request.operation === "sourceRead") {
       if (!options.readProjectSource)

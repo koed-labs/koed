@@ -704,6 +704,37 @@ const bootstrap = async () => {
           : await dialog.showOpenDialog(options);
         return selected.canceled ? null : (selected.filePaths[0] ?? null);
       }),
+    uploadSharedProjectSource: (
+      personalProjectId,
+      workspaceProjectId,
+      teamBackendId
+    ) =>
+      server.projectSourceNative.uploadShared(
+        async () => {
+          const options = {
+            buttonLabel: "Add source",
+            properties: ["openFile"] as Array<"openFile">,
+            title: "Add a Project Source"
+          };
+          const selected = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, options)
+            : await dialog.showOpenDialog(options);
+          return selected.canceled ? null : (selected.filePaths[0] ?? null);
+        },
+        async (upload, expectedProfileKey) => {
+          const result = await server.projects({
+            operation: "sharedUploadSource",
+            personalProjectId,
+            workspaceProjectId,
+            teamBackendId,
+            upload,
+            expectedProfileKey
+          });
+          if (result.operation !== "sharedUploadSource")
+            throw new Error("Invalid shared Source upload result.");
+          return result.source;
+        }
+      ),
     readProjectSource: (projectId, sourceId, noteRevisionId) =>
       server.projectSourceNative.read(projectId, sourceId, noteRevisionId),
     removeProjectSource: (projectId, sourceId) =>

@@ -39,6 +39,10 @@
       "types": "./dist/project-contract.d.ts",
       "import": "./dist/project-contract.js"
     },
+    "./workspace-project-contract": {
+      "types": "./dist/workspace-project-contract.d.ts",
+      "import": "./dist/workspace-project-contract.js"
+    },
     "./project-source-contract": {
       "types": "./dist/project-source-contract.d.ts",
       "import": "./dist/project-source-contract.js"

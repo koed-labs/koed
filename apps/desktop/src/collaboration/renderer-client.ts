@@ -57,6 +57,15 @@ export interface CollaborationRendererBridge {
   subscribe(listener: (event: CollaborationRendererEvent) => void): () => void;
 }
 
+type TeamLeaveStage = {
+  teamId: string;
+  expectedTeamVersion: number;
+  expectedMembershipVersion: number;
+  expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
+  ownedSetHash: string;
+  stages: Array<{ workspaceProjectId: string; stageId: string }>;
+};
+
 export type CollaborationClientUpdate = {
   kind: "command" | "realtime" | "connection" | "purge";
   authoritativeRecovery?: boolean;
@@ -193,6 +202,18 @@ export interface CollaborationRendererClient {
     teamId: string;
     expectedVersion: number;
   }): Promise<CollaborationMembership>;
+  deleteWorkspaceProjectSource(input: {
+    teamId: string;
+    projectId: string;
+    sourceId: string;
+    expectedProjectVersion: number;
+    expectedSourceVersion: number;
+  }): Promise<{
+    projectId: string;
+    sourceId: string;
+    version: number;
+    deleted: true;
+  }>;
   archiveWorkspace(input: {
     teamId: string;
     workspaceId: string;
@@ -1482,6 +1503,14 @@ export const createCollaborationRendererClient = (
     confirmNativeReview?: (
       review: CollaborationApprovalReview
     ) => boolean | Promise<boolean>;
+    teamLeaveStage?: (
+      teamBackendId: string,
+      teamId: string
+    ) => Promise<TeamLeaveStage>;
+    teamLeaveFinish?: (
+      teamBackendId: string,
+      stageIds: string[]
+    ) => Promise<unknown>;
   } = {}
 ): CollaborationRendererClient => {
   let snapshot: CollaborationSnapshot | null = null;
@@ -1519,6 +1548,20 @@ export const createCollaborationRendererClient = (
           .join("\n\n")
       );
     });
+  const teamLeaveStage =
+    options.teamLeaveStage ??
+    ((teamBackendId: string, teamId: string) => {
+      const stage = window.koedDesktop?.projects?.sharedTeamLeaveStage;
+      if (!stage) throw new Error("Team leave staging is unavailable.");
+      return stage(teamBackendId, teamId);
+    });
+  const teamLeaveFinish =
+    options.teamLeaveFinish ??
+    ((teamBackendId: string, stageIds: string[]) => {
+      const finish = window.koedDesktop?.projects?.sharedTeamLeaveFinish;
+      if (!finish) throw new Error("Team leave completion is unavailable.");
+      return finish(teamBackendId, stageIds);
+    });
   let pendingSharedSessionRecovery: {
     selection: Extract<CollaborationSelection, { kind: "shared_session" }>;
     expiresAt: number;
@@ -1546,6 +1589,7 @@ export const createCollaborationRendererClient = (
       "collaboration.update_member_role": "Change member role",
       "collaboration.disable_member": "Disable member",
       "collaboration.leave_team": "Leave Team",
+      "collaboration.delete_project_source": "Remove shared Project Source",
       "collaboration.archive_workspace": "Archive Workspace",
       "collaboration.restore_workspace": "Restore Workspace",
       "collaboration.set_workspace_access": "Change Workspace access",
@@ -2216,7 +2260,8 @@ export const createCollaborationRendererClient = (
   };
 
   const runApprovedAction = async (
-    command: CollaborationRendererCommand
+    command: CollaborationRendererCommand,
+    options: { retry?: boolean } = {}
   ): Promise<CollaborationCommandResult> => {
     const actionGrant = (
       command.input as { actionGrant?: CollaborationActionGrantReference }
@@ -2246,6 +2291,7 @@ export const createCollaborationRendererClient = (
         if (
           !(error instanceof CollaborationClientError) ||
           !error.retryable ||
+          options.retry === false ||
           attempt >= 3
         ) {
           if (existing) {
@@ -3549,19 +3595,62 @@ export const createCollaborationRendererClient = (
       return result.data.membership;
     },
     async leaveTeam(input) {
+      const current = requireSnapshot();
+      const leaveAuthorityGeneration = clientRuntime.authorityGeneration();
+      const teamBackendId = current.connection.backendId;
+      if (!teamBackendId) throw new Error("Team connection is unavailable.");
+      const stage = await teamLeaveStage(teamBackendId, input.teamId);
+      const owned = stage.expectedOwnedWorkspaceProjects;
+      if (
+        stage.teamId !== input.teamId ||
+        stage.expectedMembershipVersion !== input.expectedVersion ||
+        !Number.isSafeInteger(stage.expectedTeamVersion) ||
+        stage.expectedTeamVersion < 1 ||
+        !/^[a-f0-9]{64}$/.test(stage.ownedSetHash) ||
+        owned.some(
+          (project, index) =>
+            !Number.isSafeInteger(project.version) ||
+            project.version < 1 ||
+            (index > 0 && owned[index - 1]!.id >= project.id)
+        ) ||
+        stage.stages.some(
+          (item, index) =>
+            !owned.some((project) => project.id === item.workspaceProjectId) ||
+            (index > 0 &&
+              stage.stages[index - 1]!.workspaceProjectId >=
+                item.workspaceProjectId) ||
+            !item.stageId ||
+            stage.stages.findIndex(
+              (other) => other.stageId === item.stageId
+            ) !== index
+        ) ||
+        requireSnapshot().connection.backendId !== teamBackendId ||
+        !clientRuntime.authorityIsCurrent(leaveAuthorityGeneration)
+      ) {
+        throw new Error("Team leave review changed. Refresh and try again.");
+      }
+      const reviewedInput = {
+        ...input,
+        expectedTeamVersion: stage.expectedTeamVersion,
+        expectedOwnedWorkspaceProjects: owned
+      };
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.leave_team",
         commandRequestId,
-        ...input
+        ...reviewedInput
       });
+      if (!clientRuntime.authorityIsCurrent(leaveAuthorityGeneration)) {
+        throw new CollaborationClientError(accessRevokedError());
+      }
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.leave_team",
-          input: { ...input, actionGrant }
-        })
+          input: { ...reviewedInput, actionGrant }
+        }),
+        { retry: false }
       );
       if (!result.ok || result.command !== "collaboration.leave_team") {
         throw new Error("Unexpected collaboration result.");
@@ -3572,7 +3661,41 @@ export const createCollaborationRendererClient = (
           kind: "command"
         }
       );
+      if (stage.stages.length > 0) {
+        await teamLeaveFinish(
+          teamBackendId,
+          stage.stages.map((item) => item.stageId)
+        );
+      }
       return result.data.membership;
+    },
+    async deleteWorkspaceProjectSource(input) {
+      const authorityGeneration = clientRuntime.authorityGeneration();
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.delete_project_source",
+        commandRequestId,
+        ...input
+      });
+      if (!clientRuntime.authorityIsCurrent(authorityGeneration))
+        throw new CollaborationClientError(accessRevokedError());
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.delete_project_source",
+          input: { ...input, actionGrant }
+        }),
+        { retry: false }
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.delete_project_source"
+      )
+        throw new Error("Unexpected shared Source removal result.");
+      if (!clientRuntime.authorityIsCurrent(authorityGeneration))
+        throw new CollaborationClientError(accessRevokedError());
+      return result.data;
     },
     async archiveWorkspace(input) {
       const commandRequestId = crypto.randomUUID();

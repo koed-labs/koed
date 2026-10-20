@@ -67,7 +67,8 @@ export const createProjectSourceRepository = (
     client: pg.PoolClient | pg.Pool,
     ownerUserId: string,
     projectId: string,
-    lock = false
+    lock = false,
+    linked?: { teamBackendId: string; workspaceProjectId: string } | true
   ) => {
     const found = await client.query<Row>(
       `select * from projects where owner_user_id=$1 and id=$2 ${lock ? "for update" : ""}`,
@@ -80,9 +81,19 @@ export const createProjectSourceRepository = (
     )
       throw new ProjectConflictError("Project is unavailable during deletion");
     if (
-      found.rows[0].team_backend_id != null ||
-      found.rows[0].workspace_project_id != null ||
-      found.rows[0].team_workspace_id != null
+      linked &&
+      linked !== true &&
+      (found.rows[0].team_backend_id !== linked.teamBackendId ||
+        found.rows[0].workspace_project_id !== linked.workspaceProjectId)
+    )
+      throw new ProjectCapabilityError(
+        "Linked Project source authority changed"
+      );
+    if (
+      !linked &&
+      (found.rows[0].team_backend_id != null ||
+        found.rows[0].workspace_project_id != null ||
+        found.rows[0].team_workspace_id != null)
     )
       throw new ProjectCapabilityError(
         "Linked Project sources require Team authority"
@@ -104,8 +115,137 @@ export const createProjectSourceRepository = (
       client.release();
     }
   };
+  const uploadDocument = async (
+    ownerUserId: string,
+    projectId: string,
+    input: {
+      name: string;
+      mediaType: string;
+      bytesBase64: string;
+      idempotencyKey: string;
+    },
+    linked?: { teamBackendId: string; workspaceProjectId: string }
+  ) => {
+    const provider = options.envelopeEncryptionProvider;
+    if (!provider)
+      throw new ProjectCapabilityError(
+        "Project Source encryption is unavailable"
+      );
+    const name = input.name.trim();
+    if (!name || name.length > 200 || input.idempotencyKey.length > 512)
+      throw new TypeError("Invalid Project Source upload metadata");
+    if (input.bytesBase64.length % 4 !== 0)
+      throw new TypeError("Project Source bytes are not canonical base64");
+    const bytes = Buffer.from(input.bytesBase64, "base64");
+    if (bytes.length > PROJECT_SOURCE_MAX_BYTES)
+      throw new ProjectCapabilityError("Project Source exceeds 25 MB");
+    if (bytes.toString("base64") !== input.bytesBase64)
+      throw new TypeError("Project Source bytes are not canonical base64");
+    const contentHash = sha256(bytes);
+    const keyHash = sha256(`project-source-upload:v1\n${input.idempotencyKey}`);
+    return transaction(async (client) => {
+      await project(client, ownerUserId, projectId, true, linked);
+      const existing = await client.query<Row>(
+        `select * from project_sources where owner_user_id=$1 and project_id=$2
+            and kind='doc' and name=$3 and deleted_at is null
+            order by created_at,id limit 1 for update`,
+        [ownerUserId, projectId, name]
+      );
+      let source = existing.rows[0];
+      if (source?.remove_batch_id != null)
+        throw new ProjectConflictError("Project Source removal is pending");
+      if (!source) {
+        const inserted = await client.query<Row>(
+          `insert into project_sources
+              (owner_user_id,project_id,kind,name,status,added_by)
+             values ($1,$2,'doc',$3,'uploading',$1) returning *`,
+          [ownerUserId, projectId, name]
+        );
+        source = inserted.rows[0]!;
+        await appendProjectActivityWithClient(client, {
+          ownerUserId,
+          projectId,
+          actorUserId: ownerUserId,
+          kind: "source_added",
+          ref: String(source.id)
+        });
+      }
+      const repeated = await client.query<Row>(
+        `select * from project_source_revisions where owner_user_id=$1
+            and source_id=$2 and idempotency_key_hash=$3`,
+        [ownerUserId, source.id, keyHash]
+      );
+      if (repeated.rows[0]) {
+        if (repeated.rows[0].content_hash !== contentHash)
+          throw new ProjectConflictError(
+            "Project Source upload idempotency key changed content"
+          );
+        return {
+          source: map(source),
+          attempt: sourceAttempt(repeated.rows[0])
+        };
+      }
+      if (source.pending_revision_id != null)
+        throw new ProjectConflictError(
+          "Project Source upload is already pending"
+        );
+      const latest = await client.query<{ revision: number }>(
+        `select coalesce(max(revision),0)::integer as revision
+             from project_source_revisions where owner_user_id=$1 and source_id=$2`,
+        [ownerUserId, source.id]
+      );
+      const attemptId = randomUUID();
+      const attempt = await client.query<Row>(
+        `insert into project_source_revisions
+             (id,owner_user_id,source_id,revision,idempotency_key_hash,
+              content_hash,byte_length,media_type,state)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,'uploading') returning *`,
+        [
+          attemptId,
+          ownerUserId,
+          source.id,
+          (latest.rows[0]?.revision ?? 0) + 1,
+          keyHash,
+          contentHash,
+          bytes.length,
+          input.mediaType
+        ]
+      );
+      await upsertEncryptedFieldPayloadWithClient(
+        client,
+        { userId: ownerUserId },
+        provider,
+        {
+          sourceTable: "project_source_revisions",
+          sourceId: attemptId,
+          sourceColumn: "original_binary",
+          plaintext: input.bytesBase64,
+          plaintextContentType: "application/octet-stream",
+          plaintextEncoding: "base64",
+          scope: { objectClass: "project_source_revision", projectId },
+          rowFamily: "project_source_revision",
+          aad: {
+            ownerUserId,
+            projectId,
+            sourceId: String(source.id),
+            contentHash
+          }
+        }
+      );
+      const updated = await client.query<Row>(
+        `update project_sources set pending_revision_id=$3,status='extracting',
+             failure_reason=null,updated_at=now()
+            where owner_user_id=$1 and id=$2 returning *`,
+        [ownerUserId, source.id, attemptId]
+      );
+      return {
+        source: map(updated.rows[0]!),
+        attempt: sourceAttempt(attempt.rows[0]!)
+      };
+    });
+  };
   return {
-    async uploadDocument(
+    uploadDocument: (
       ownerUserId: string,
       projectId: string,
       input: {
@@ -114,127 +254,18 @@ export const createProjectSourceRepository = (
         bytesBase64: string;
         idempotencyKey: string;
       }
-    ) {
-      const provider = options.envelopeEncryptionProvider;
-      if (!provider)
-        throw new ProjectCapabilityError(
-          "Project Source encryption is unavailable"
-        );
-      const name = input.name.trim();
-      if (!name || name.length > 200 || input.idempotencyKey.length > 512)
-        throw new TypeError("Invalid Project Source upload metadata");
-      if (input.bytesBase64.length % 4 !== 0)
-        throw new TypeError("Project Source bytes are not canonical base64");
-      const bytes = Buffer.from(input.bytesBase64, "base64");
-      if (bytes.length > PROJECT_SOURCE_MAX_BYTES)
-        throw new ProjectCapabilityError("Project Source exceeds 25 MB");
-      if (bytes.toString("base64") !== input.bytesBase64)
-        throw new TypeError("Project Source bytes are not canonical base64");
-      const contentHash = sha256(bytes);
-      const keyHash = sha256(
-        `project-source-upload:v1\n${input.idempotencyKey}`
-      );
-      return transaction(async (client) => {
-        await project(client, ownerUserId, projectId, true);
-        const existing = await client.query<Row>(
-          `select * from project_sources where owner_user_id=$1 and project_id=$2
-            and kind='doc' and name=$3 and deleted_at is null
-            order by created_at,id limit 1 for update`,
-          [ownerUserId, projectId, name]
-        );
-        let source = existing.rows[0];
-        if (source?.remove_batch_id != null)
-          throw new ProjectConflictError("Project Source removal is pending");
-        if (!source) {
-          const inserted = await client.query<Row>(
-            `insert into project_sources
-              (owner_user_id,project_id,kind,name,status,added_by)
-             values ($1,$2,'doc',$3,'uploading',$1) returning *`,
-            [ownerUserId, projectId, name]
-          );
-          source = inserted.rows[0]!;
-          await appendProjectActivityWithClient(client, {
-            ownerUserId,
-            projectId,
-            actorUserId: ownerUserId,
-            kind: "source_added",
-            ref: String(source.id)
-          });
-        }
-        const repeated = await client.query<Row>(
-          `select * from project_source_revisions where owner_user_id=$1
-            and source_id=$2 and idempotency_key_hash=$3`,
-          [ownerUserId, source.id, keyHash]
-        );
-        if (repeated.rows[0]) {
-          if (repeated.rows[0].content_hash !== contentHash)
-            throw new ProjectConflictError(
-              "Project Source upload idempotency key changed content"
-            );
-          return {
-            source: map(source),
-            attempt: sourceAttempt(repeated.rows[0])
-          };
-        }
-        if (source.pending_revision_id != null)
-          throw new ProjectConflictError(
-            "Project Source upload is already pending"
-          );
-        const latest = await client.query<{ revision: number }>(
-          `select coalesce(max(revision),0)::integer as revision
-             from project_source_revisions where owner_user_id=$1 and source_id=$2`,
-          [ownerUserId, source.id]
-        );
-        const attemptId = randomUUID();
-        const attempt = await client.query<Row>(
-          `insert into project_source_revisions
-             (id,owner_user_id,source_id,revision,idempotency_key_hash,
-              content_hash,byte_length,media_type,state)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,'uploading') returning *`,
-          [
-            attemptId,
-            ownerUserId,
-            source.id,
-            (latest.rows[0]?.revision ?? 0) + 1,
-            keyHash,
-            contentHash,
-            bytes.length,
-            input.mediaType
-          ]
-        );
-        await upsertEncryptedFieldPayloadWithClient(
-          client,
-          { userId: ownerUserId },
-          provider,
-          {
-            sourceTable: "project_source_revisions",
-            sourceId: attemptId,
-            sourceColumn: "original_binary",
-            plaintext: input.bytesBase64,
-            plaintextContentType: "application/octet-stream",
-            plaintextEncoding: "base64",
-            scope: { objectClass: "project_source_revision", projectId },
-            rowFamily: "project_source_revision",
-            aad: {
-              ownerUserId,
-              projectId,
-              sourceId: String(source.id),
-              contentHash
-            }
-          }
-        );
-        const updated = await client.query<Row>(
-          `update project_sources set pending_revision_id=$3,status='extracting',
-             failure_reason=null,updated_at=now()
-            where owner_user_id=$1 and id=$2 returning *`,
-          [ownerUserId, source.id, attemptId]
-        );
-        return {
-          source: map(updated.rows[0]!),
-          attempt: sourceAttempt(attempt.rows[0]!)
-        };
-      });
-    },
+    ) => uploadDocument(ownerUserId, projectId, input),
+    uploadLinkedDocument: (
+      ownerUserId: string,
+      projectId: string,
+      input: {
+        name: string;
+        mediaType: string;
+        bytesBase64: string;
+        idempotencyKey: string;
+      },
+      linked: { teamBackendId: string; workspaceProjectId: string }
+    ) => uploadDocument(ownerUserId, projectId, input, linked),
     async claimDocumentAttempt() {
       const provider = options.envelopeEncryptionProvider;
       if (!provider) return null;
@@ -249,9 +280,6 @@ export const createProjectSourceRepository = (
               and source.deleted_at is null
               and source.remove_batch_id is null
               and project.lifecycle='active' and project.deletion_phase is null
-              and project.team_backend_id is null
-              and project.workspace_project_id is null
-              and project.team_workspace_id is null
               and (revision.state='uploading' or
                 (revision.state='extracting' and revision.updated_at < now() - interval '2 minutes'))
             order by revision.created_at,revision.id
@@ -322,6 +350,7 @@ export const createProjectSourceRepository = (
           client,
           input.ownerUserId,
           identity.rows[0].project_id,
+          true,
           true
         );
         const found = await client.query<Row>(
@@ -418,6 +447,7 @@ export const createProjectSourceRepository = (
           client,
           input.ownerUserId,
           identity.rows[0].project_id,
+          true,
           true
         );
         const result = await client.query<Row>(
@@ -588,7 +618,8 @@ export const createProjectSourceRepository = (
     async readDocument(
       ownerUserId: string,
       projectId: string,
-      sourceId: string
+      sourceId: string,
+      linked?: { teamBackendId: string; workspaceProjectId: string }
     ) {
       const provider = options.envelopeEncryptionProvider;
       if (!provider)
@@ -596,7 +627,7 @@ export const createProjectSourceRepository = (
           "Project Source encryption is unavailable"
         );
       return transaction(async (client) => {
-        await project(client, ownerUserId, projectId, true);
+        await project(client, ownerUserId, projectId, true, linked);
         const result = await client.query<{
           source_id: string;
           source_revision_id: string;

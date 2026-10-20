@@ -1196,6 +1196,7 @@ export const teamMemberships = pgTable(
   },
   (table) => [
     unique("team_memberships_team_user_unique").on(table.teamId, table.userId),
+    unique("team_memberships_team_id_unique").on(table.teamId, table.id),
     index("team_memberships_user_idx").on(table.userId, table.status),
     index("team_memberships_team_idx").on(table.teamId, table.role),
     check("team_memberships_version_check", sql`${table.version} > 0`),
@@ -1316,6 +1317,358 @@ export const teamWorkspaces = pgTable(
         ${table.lifecycle} = 'purged'
         and ${table.purgeCompletedAt} is not null
       )`
+    )
+  ]
+);
+
+// Workspace Projects are Team collaboration identities. Personal Project IDs
+// deliberately never cross this boundary.
+export const workspaceProjects = pgTable(
+  "workspace_projects",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => teamWorkspaces.id),
+    ownerTeamMemberId: uuid("owner_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    name: text("name").notNull(),
+    key: text("key").notNull(),
+    shareAttemptKey: text("share_attempt_key").notNull(),
+    lifecycle: text("lifecycle").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    copiedAt: timestamp("copied_at", { withTimezone: true }),
+    copyManifestHash: text("copy_manifest_hash"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "workspace_projects_workspace_team_fk"
+    }),
+    foreignKey({
+      columns: [table.teamId, table.ownerTeamMemberId],
+      foreignColumns: [teamMemberships.teamId, teamMemberships.id],
+      name: "workspace_projects_owner_team_fk"
+    }),
+    unique("workspace_projects_workspace_unique").on(table.workspaceId),
+    unique("workspace_projects_share_attempt_unique").on(
+      table.teamId,
+      table.ownerTeamMemberId,
+      table.shareAttemptKey
+    ),
+    check("workspace_projects_version_positive", sql`${table.version} > 0`),
+    check(
+      "workspace_projects_lifecycle_check",
+      sql`${table.lifecycle} in ('active','deleted')`
+    ),
+    check(
+      "workspace_projects_deleted_shape",
+      sql`(${table.lifecycle} = 'active' and ${table.deletedAt} is null) or (${table.lifecycle} = 'deleted' and ${table.deletedAt} is not null)`
+    )
+  ]
+);
+
+// This private Personal-backend binding records the dual credential lineage
+// across deployments. Team Project associations never reference it.
+export const personalWorkspaceProjectPrincipalBindings = pgTable(
+  "personal_workspace_project_principal_bindings",
+  {
+    localUserId: uuid("local_user_id")
+      .notNull()
+      .references(() => users.id),
+    teamBackendId: text("team_backend_id").notNull(),
+    teamPrincipalUserId: uuid("team_principal_user_id").notNull(),
+    localCredentialKeyId: text("local_credential_key_id").notNull(),
+    teamCredentialKeyId: text("team_credential_key_id").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.localUserId, table.teamBackendId] }),
+    unique("personal_workspace_project_principal_remote_unique").on(
+      table.teamBackendId,
+      table.teamPrincipalUserId
+    )
+  ]
+);
+
+export const personalWorkspaceProjectShareAttempts = pgTable(
+  "personal_workspace_project_share_attempts",
+  {
+    personalProjectId: uuid("personal_project_id")
+      .primaryKey()
+      .references(() => projects.id),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    teamBackendId: text("team_backend_id").notNull(),
+    shareAttemptKey: text("share_attempt_key").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    snapshot: jsonb("snapshot").notNull(),
+    state: text("state").notNull().default("pending"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    check(
+      "personal_workspace_project_share_attempt_state_check",
+      sql`${table.state} in ('pending','confirmed')`
+    )
+  ]
+);
+
+export const personalWorkspaceProjectCopybackStages = pgTable(
+  "personal_workspace_project_copyback_stages",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    personalProjectId: uuid("personal_project_id")
+      .notNull()
+      .references(() => projects.id),
+    teamBackendId: text("team_backend_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    ownerTeamMemberId: uuid("owner_team_member_id").notNull(),
+    reviewedTeamVersion: integer("reviewed_team_version").notNull(),
+    reviewedMemberVersion: integer("reviewed_member_version").notNull(),
+    reviewedProjectVersion: integer("reviewed_project_version").notNull(),
+    ownedSetHash: text("owned_set_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    workItems: jsonb("work_items").notNull(),
+    state: text("state").notNull().default("staged"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_workspace_project_copyback_stage_unique").on(
+      table.ownerUserId,
+      table.teamBackendId,
+      table.workspaceProjectId,
+      table.reviewedProjectVersion
+    ),
+    check(
+      "personal_workspace_project_copyback_state_check",
+      sql`${table.state} in ('staged','applied')`
+    )
+  ]
+);
+
+// Durable Personal-side receipt for future local job reconciliation. A cleared
+// Project link alone cannot tell a later scheduler which Team scope to revoke.
+export const personalWorkspaceProjectReconciliations = pgTable(
+  "personal_workspace_project_reconciliations",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    personalProjectId: uuid("personal_project_id")
+      .notNull()
+      .references(() => projects.id),
+    teamBackendId: text("team_backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.ownerUserId,
+        table.teamBackendId,
+        table.workspaceProjectId
+      ]
+    }),
+    check(
+      "personal_workspace_project_reconciliation_reason_check",
+      sql`${table.reason} in ('copy_back','invalidation')`
+    )
+  ]
+);
+
+export const workspaceProjectMembers = pgTable(
+  "workspace_project_members",
+  {
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    teamMemberId: uuid("team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    access: text("access").notNull().default("write"),
+    version: integer("version").notNull().default(1),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceProjectId, table.teamMemberId] }),
+    check(
+      "workspace_project_members_access_check",
+      sql`${table.access} in ('read','write','disabled')`
+    ),
+    check(
+      "workspace_project_members_version_positive",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "workspace_project_members_disabled_shape",
+      sql`(${table.access} = 'disabled') = (${table.disabledAt} is not null)`
+    )
+  ]
+);
+
+export const workspaceProjectWorkItems = pgTable(
+  "workspace_project_work_items",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    sourceWorkItemId: uuid("source_work_item_id"),
+    idempotencyKey: text("idempotency_key"),
+    kind: text("kind").notNull(),
+    key: text("key"),
+    title: text("title").notNull(),
+    goal: text("goal").notNull(),
+    status: text("status").notNull().default("todo"),
+    dueOn: date("due_on"),
+    assigneeDisplayName: text("assignee_display_name"),
+    stepLabel: text("step_label"),
+    dispatchKey: text("dispatch_key"),
+    dispatchOwnerTeamMemberId: uuid("dispatch_owner_team_member_id"),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    prUrl: text("pr_url"),
+    prState: text("pr_state"),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("workspace_project_work_items_create_idempotency_unique").on(
+      table.workspaceProjectId,
+      table.sourceOwnerTeamMemberId,
+      table.idempotencyKey
+    ),
+    unique("workspace_project_work_items_source_unique").on(
+      table.workspaceProjectId,
+      table.sourceOwnerTeamMemberId,
+      table.sourceWorkItemId
+    ),
+    index("workspace_project_work_items_recent_idx").on(
+      table.workspaceProjectId,
+      table.createdAt
+    ),
+    check(
+      "workspace_project_work_items_kind_check",
+      sql`${table.kind} in ('todo','ticket')`
+    ),
+    check(
+      "workspace_project_work_items_status_check",
+      sql`${table.status} in ('todo','doing','review','blocked','done')`
+    ),
+    check(
+      "workspace_project_work_items_version_positive",
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const workspaceProjectSources = pgTable(
+  "workspace_project_sources",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    uploaderTeamMemberId: uuid("uploader_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    sourceProjectSourceId: uuid("source_project_source_id"),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(),
+    status: text("status").notNull(),
+    // The uploader's real Personal Note revision identity. Content stays Personal.
+    personalNoteId: uuid("personal_note_id"),
+    personalNoteRevisionId: uuid("personal_note_revision_id"),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("workspace_project_sources_personal_source_unique").on(
+      table.workspaceProjectId,
+      table.uploaderTeamMemberId,
+      table.sourceProjectSourceId
+    ),
+    check(
+      "workspace_project_sources_version_positive",
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
+// Explicit grant provenance. Existing Workspace grants are never inferred to
+// belong to a Workspace Project from a shared Workspace or source UUID.
+export const workspaceProjectShareGrantBindings = pgTable(
+  "workspace_project_share_grant_bindings",
+  {
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references(() => teamMemoryShareGrants.id),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    workspaceProjectSourceId: uuid("workspace_project_source_id").references(
+      () => workspaceProjectSources.id
+    ),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceProjectId, table.shareGrantId] }),
+    unique("workspace_project_share_grant_single_project").on(
+      table.shareGrantId
+    )
+  ]
+);
+
+export const workspaceProjectActivity = pgTable(
+  "workspace_project_activity",
+  {
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    sequence: bigint("sequence", { mode: "bigint" }).notNull(),
+    actorTeamMemberId: uuid("actor_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceProjectId, table.sequence] }),
+    unique("workspace_project_activity_event_unique").on(
+      table.workspaceProjectId,
+      table.kind,
+      table.ref
     )
   ]
 );
@@ -15830,6 +16183,44 @@ export const managedConversationMemoryActions = pgTable(
         and ${table.actionKind} in ('forget','correct')
         and ${table.state} in ('pending','completed','rejected')
         and ${table.requestDigest} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+// A Personal reconciliation fences an old Team dispatch before clearing the
+// Project link. The marker is durable so a later explicit private prompt can
+// continue the Conversation without restoring Team progress authority.
+export const managedSharedDispatchDetachments = pgTable(
+  "managed_shared_dispatch_detachments",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    personalProjectId: text("personal_project_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    detachedGeneration: integer("detached_generation").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "managed_shared_dispatch_detachments_pk",
+      columns: [table.ownerUserId, table.executionId]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "managed_shared_dispatch_detachments_execution_fk"
+    }).onDelete("cascade"),
+    index("managed_shared_dispatch_detachments_project_idx").on(
+      table.ownerUserId,
+      table.personalProjectId,
+      table.workspaceProjectId
+    ),
+    check(
+      "managed_shared_dispatch_detachments_generation_check",
+      sql`${table.detachedGeneration} > 0`
     )
   ]
 );

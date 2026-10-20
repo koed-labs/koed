@@ -2,14 +2,16 @@
 
 ## Status
 
-Accepted design; exact grant freeze and the Personal Project lifecycle are
-implemented. Workspace Project lifecycle workflows remain pending.
+Accepted design; Workspace Project state, exact grant binding and freeze,
+and Team/Project leave lifecycle paths are implemented. Deck/card and Project
+Thread surfaces remain follow-up work.
 
 This ADR defines target behavior. HQ-715 implements the exact owner-reviewed
 Share Grant freeze, immutable published closure, and current Team lifecycle
 parent integration. HQ-202 implements local Personal Project routes and their
-Captured Session lifecycle coordination. Workspace Project records and Team
-Project lifecycle routes remain pending.
+Captured Session lifecycle coordination. HQ-712 adds Team Workspace Project
+records, member associations, shared Work Items and Source metadata, Personal
+first-share coordination, and Team-side Project lifecycle routes.
 
 Related decisions:
 

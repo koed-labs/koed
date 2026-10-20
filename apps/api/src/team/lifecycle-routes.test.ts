@@ -1415,6 +1415,49 @@ describe("Team lifecycle routes", () => {
     await fixture.app.close();
   });
 
+  it("allows a read-only Team member to leave their own membership with a reviewed grant", async () => {
+    const member = { ...membership(), role: "member" as const };
+    const leaveTeam = vi.fn(async () => ({
+      ...member,
+      status: "disabled" as const,
+      version: 2,
+      disabledAt: now()
+    }));
+    const fixture = await createFixture({
+      repository: {
+        getTeamMembership: vi.fn(async () => member),
+        getTeamWorkspaceAccess: vi.fn(async () => ({
+          teamId,
+          teamWorkspaceId: workspaceId,
+          userId: user.id,
+          role: "member",
+          access: "read"
+        })),
+        leaveTeam
+      }
+    });
+    const payload = {
+      expectedVersion: 1,
+      expectedTeamVersion: 1,
+      expectedOwnedWorkspaceProjects: []
+    };
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/leave`,
+      headers: {
+        authorization: "Koed-Device device-key:secret",
+        "x-koed-action-grant": "hrg_member_leave_once"
+      },
+      payload
+    });
+    expect(response.statusCode).toBe(200);
+    expect(leaveTeam).toHaveBeenCalledWith(
+      { userId: user.id },
+      { teamId, ...payload }
+    );
+    await fixture.app.close();
+  });
+
   it("requires a matching verified WorkOS identity and current backend origin in managed cloud", async () => {
     const deploymentId = randomUUID();
     const invite = pendingInvite();

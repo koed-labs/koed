@@ -1866,6 +1866,7 @@ export {
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
 export * from "./work-item-contract.js";
+export * from "./workspace-project-contract.js";
 export * from "./agent-contract.js";
 export * from "./project-contract.js";
 export * from "./project-source-contract.js";

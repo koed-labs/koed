@@ -140,6 +140,7 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.update_member_role": { scope: "team", desktop: write },
   "collaboration.disable_member": { scope: "team", desktop: write },
   "collaboration.leave_team": { scope: "team", desktop: write },
+  "collaboration.delete_project_source": { scope: "team", desktop: write },
   "collaboration.archive_workspace": { scope: "team", desktop: write },
   "collaboration.restore_workspace": { scope: "team", desktop: write },
   "collaboration.set_workspace_access": { scope: "team", desktop: write },

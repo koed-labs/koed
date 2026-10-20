@@ -750,7 +750,7 @@ export const registerTeamRoutes = (
             async (repo) => {
               const membership = await repo.leaveTeam(
                 { userId: actor.user.id },
-                { teamId, expectedVersion: input.expectedVersion }
+                { teamId, ...input }
               );
               return membership
                 ? { statusCode: 200, body: { membership } }

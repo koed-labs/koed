@@ -1,5 +1,9 @@
 import { hostname } from "node:os";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
+import { createWorkspaceProjectDesktopService } from "./workspace-project-service.js";
+import { createWorkspaceProjectTransport } from "./workspace-project-transport.js";
+import { createWorkspaceProjectPersonalClient } from "./workspace-project-personal-client.js";
 import { createCuratedMemoryClient } from "./curated-memory-client.js";
 import type {
   CuratedMemoryRequest,
@@ -4213,6 +4217,57 @@ export const createKoedServerManager = ({
       )
   );
 
+  const sharedProjectIdentity = new AsyncLocalStorage<string>();
+  const workspaceProjectTransport = createWorkspaceProjectTransport({
+    identity: sharedProjectIdentity,
+    authority: projectsAuthority,
+    fetch: personalMemoryFetch,
+    koedHome: resolveKoedHome(environment)
+  });
+  const workspaceProjectPersonal = createWorkspaceProjectPersonalClient(
+    workspaceProjectTransport.sendPersonal,
+    workspaceProjectTransport.teamCredential
+  );
+  const workspaceProjectService = createWorkspaceProjectDesktopService({
+    identityKey: async () => (await projectsAuthority()).key,
+    loadPersonalCopy: workspaceProjectPersonal.loadPersonalCopy,
+    loadPersonalSource: workspaceProjectPersonal.sourceMetadata,
+    loadLinkedPersonalSources: workspaceProjectPersonal.linkedSourcesMetadata,
+    markPersonalMoved: workspaceProjectPersonal.markPersonalMoved,
+    stageTeamLeave: workspaceProjectPersonal.stageTeamLeave,
+    finishTeamLeave: workspaceProjectPersonal.finishTeamLeave,
+    dispatchLocal: workspaceProjectPersonal.dispatchSharedWorkItem,
+    loadDispatches: workspaceProjectPersonal.listSharedDispatches,
+    loadPersonalLink: workspaceProjectPersonal.linkedProject,
+    uploadLinkedSource: workspaceProjectPersonal.uploadLinkedSource,
+    readLinkedSource: workspaceProjectPersonal.readLinkedSource,
+    onInvalidation: (teamBackendId, workspaceProjectId) =>
+      workspaceProjectPersonal.reconcileWorkspaceInvalidation(
+        workspaceProjectId,
+        teamBackendId
+      ),
+    sendTeam: workspaceProjectTransport.sendTeam
+  });
+  const projectsWithShared = async (
+    request: ProjectsRequest
+  ): Promise<ProjectsResult> =>
+    request.operation === "sharedRefresh" ||
+    request.operation === "sharedFirstShare" ||
+    request.operation === "sharedTeamLeaveStage" ||
+    request.operation === "sharedTeamLeaveFinish" ||
+    request.operation === "sharedAttachSource" ||
+    request.operation === "sharedPatchSource" ||
+    request.operation === "sharedUploadSource" ||
+    request.operation === "sharedReadSource" ||
+    request.operation === "sharedDispatchWorkItem" ||
+    request.operation === "sharedDispatches" ||
+    request.operation === "sharedCreateWorkItem" ||
+    request.operation === "sharedPatchWorkItem"
+      ? sharedProjectIdentity.run((await projectsAuthority()).key, () =>
+          workspaceProjectService(request)
+        )
+      : projects(request);
+
   const managedMemoryActions = createBoundManagedMemoryActionClient(
     personalMemoryFetch,
     projectsAuthority
@@ -6146,7 +6201,7 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     managedProject,
-    projects,
+    projects: projectsWithShared,
     curatedMemory,
     managedMemoryActions,
     projectSourceNative,

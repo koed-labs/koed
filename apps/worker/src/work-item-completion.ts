@@ -21,7 +21,8 @@ export const createWorkItemCompletionObserver =
     repository: Pick<
       MemorySourceRepository,
       "completeForManagedExecutionLease" | "putManagedConversationRuntimeItem"
-    >
+    >,
+    completeShared?: (event: ManagedWorkItemToolCompletion) => Promise<boolean>
   ) =>
   async (event: ManagedWorkItemToolCompletion): Promise<boolean> => {
     if (event.toolName !== "work_item_complete" || !event.command.leaseToken)
@@ -72,13 +73,16 @@ export const createWorkItemCompletionObserver =
       return false;
     let accepted = false;
     try {
-      await repository.completeForManagedExecutionLease({
-        ownerUserId: event.execution.ownerUserId,
-        executionId: event.execution.id,
-        commandId: event.command.id,
-        leaseToken: event.command.leaseToken
-      });
-      accepted = true;
+      if (completeShared && (await completeShared(event))) accepted = true;
+      else {
+        await repository.completeForManagedExecutionLease({
+          ownerUserId: event.execution.ownerUserId,
+          executionId: event.execution.id,
+          commandId: event.command.id,
+          leaseToken: event.command.leaseToken
+        });
+        accepted = true;
+      }
     } catch {
       // A stale or duplicate request is a Work Item outcome, not a provider turn failure.
     }

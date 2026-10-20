@@ -3,6 +3,7 @@ import { registerMergeProposalDecisionRoutes } from "../work-items/merge-proposa
 import { registerWorkItemPrReconciliationRoutes } from "../work-items/pr-reconciliation-routes.js";
 import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
+import { publishSharedWorkItemProgress } from "../managed-conversations/shared-work-item-dispatch.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
@@ -26,6 +27,8 @@ import {
   createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
+  createWorkspaceProjectRepository,
+  createPersonalWorkspaceProjectRepository,
   createChatDeleteRepository,
   createChatMoveRepository,
   createChatForgetRepository,
@@ -59,6 +62,9 @@ import { registerProjectRoutes } from "../projects/routes.js";
 import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
+import { registerWorkspaceProjectRoutes } from "../team/workspace-project-routes.js";
+import { registerWorkspaceProjectLinkRoutes } from "../projects/workspace-project-link-routes.js";
+import { registerWorkspaceProjectCoordinationRoutes } from "../local-edge/workspace-project-coordination-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import { createCuratedClassificationCoordinator } from "../memory/curated-classification-coordinator.js";
 import { createChatDeleteCoordinator } from "../memory/chat-delete-coordinator.js";
@@ -491,6 +497,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const agentsRepository = pool ? createAgentsRepository(pool) : null;
   const projectActivityRepository = pool
     ? createProjectActivityRepository(pool)
+    : null;
+  const workspaceProjectRepository = pool
+    ? createWorkspaceProjectRepository(pool)
+    : null;
+  const personalWorkspaceProjectRepository = pool
+    ? createPersonalWorkspaceProjectRepository(pool)
     : null;
   const projectApiRepository = pool
     ? createProjectApiRepository(pool, {
@@ -1512,7 +1524,51 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             provider: string;
             number: number;
             url: string;
+            remoteIdentityHash: string;
           }) => {
+            const actor = { userId: review.ownerUserId };
+            const execution =
+              await requireRepository().getManagedConversationExecution(
+                actor,
+                review.executionId
+              );
+            if (
+              !execution ||
+              execution.executionGeneration !== review.executionGeneration
+            )
+              throw new Error("Review execution generation changed");
+            const shared =
+              await requireRepository().getSharedWorkItemDispatchForExecution(
+                actor,
+                review.executionId
+              );
+            if (shared) {
+              await requireRepository().putManagedConversationRuntimeItem(
+                actor,
+                {
+                  executionId: execution.id,
+                  executionGeneration: execution.executionGeneration,
+                  providerRequestId: `shared-review-created:${review.remoteIdentityHash}:${review.number}`,
+                  itemKind: "transient_output",
+                  payload: {
+                    text: "Pull request opened.",
+                    sharedReviewBinding: {
+                      provider: review.provider,
+                      number: review.number,
+                      url: review.url,
+                      remoteIdentityHash: review.remoteIdentityHash
+                    }
+                  }
+                }
+              );
+              await publishSharedWorkItemProgress(
+                routeContext,
+                review.ownerUserId,
+                execution,
+                { kind: "review_open", prUrl: review.url }
+              );
+              return;
+            }
             await workItemRepository.linkReviewRequestFromSourceControl(review);
           }
         }
@@ -2074,6 +2130,27 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
   registerTeamRoutes(app, routeContext);
+  registerWorkspaceProjectRoutes(app, {
+    repository: workspaceProjectRepository,
+    requireRepository,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerWorkspaceProjectLinkRoutes(app, {
+    repository: personalWorkspaceProjectRepository,
+    auth: authHelpers,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    readRateLimit: rateLimitHandlers.memoryRead
+  });
+  registerWorkspaceProjectCoordinationRoutes(
+    app,
+    routeContext,
+    personalWorkspaceProjectRepository,
+    projectSourceRepository,
+    () => void projectSourceIngestionService?.runNow()
+  );
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
     requireSharedMemoryRepository: requireRepository,

@@ -351,7 +351,7 @@ const teamLeaveActionDefinition = defineTeamAction<
         description:
           "Review the exact owned Workspace Project set before leaving the Team.",
         consequence:
-          "Owned Projects require copy-back and Team cleanup before membership removal.",
+          "Each owned Project is tombstoned for every member, its Project Thread is archived, and affected Share Grants freeze at their published frontier. Remaining members keep Workspace Access to retained Team memory. Your Desktop copies back work and each member reconciles their own chats and jobs later.",
         confirmLabel: "Review Team departure",
         details: [
           { label: "Team", value: review.team.name },

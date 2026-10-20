@@ -367,6 +367,8 @@ describe("Team-control integration requirements", () => {
           input: {
             teamId: ids.team,
             expectedVersion: 1,
+            expectedTeamVersion: 1,
+            expectedOwnedWorkspaceProjects: [],
             actionGrant: { id: ids.actionGrant }
           }
         }),
@@ -1142,6 +1144,8 @@ describe("member and lifecycle administration", () => {
       input: {
         teamId: ids.team,
         expectedVersion: 1,
+        expectedTeamVersion: 1,
+        expectedOwnedWorkspaceProjects: [],
         actionGrant: { id: ids.actionGrant }
       }
     });
@@ -1168,6 +1172,11 @@ describe("member and lifecycle administration", () => {
     expect(headers.get("cookie")).toBeNull();
     expect(headers.get("authorization")).toBe(deviceAuthorization);
     expect(headers.get("x-koed-action-grant")).toBe(grantSecret);
+    expect(JSON.parse(String(init?.body))).toEqual({
+      expectedVersion: 1,
+      expectedTeamVersion: 1,
+      expectedOwnedWorkspaceProjects: []
+    });
   });
 
   it.each([

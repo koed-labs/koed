@@ -1,10 +1,11 @@
 # Shared Project State
 
-Status: Target contract under [ADR 0062](./adr/0062-shared-project-state.md).
-The repository supports explicit user-owned Share Grants, an owner-reviewed
-per-grant freeze, revisioned Personal Notes, and local Project-to-Workspace
-recall mapping. It does not yet implement Workspace Project records, Project
-collaboration routes, or Project lifecycle callers described here.
+Status: Workspace Project state and lifecycle are implemented under
+[ADR 0062](./adr/0062-shared-project-state.md). Deck/card collaboration,
+Project Thread, and Project Share Policy remain separate follow-up work.
+Workspace Project Work Items, Source metadata, activity, member associations,
+and exact Project lifecycle actions use the Team backend; binaries, extracted
+Personal Note revisions, Conversations, and execution state stay Personal.
 
 This document applies the accepted D1, D4, and D9 outcomes. It does not change
 ADR 0004's user-owned memory model, ADR 0013's Team Chat boundary, ADR 0057's
@@ -53,6 +54,13 @@ per-member association are separate from this routing setting. See
 | Private HQ Conversation, Agent state, Deck progress and last-seen cursor                           | Each member's Personal backend            | Private to that member, including in a shared Project.                                                                                          |
 
 ## First share
+
+The local Desktop prepares a durable first-share attempt before the Team copy.
+It pins the owner Personal snapshot and stops Work Item/Source edits while the
+attempt is pending. A retry with the same attempt key reuses that snapshot; a
+different attempt conflicts. The Team copy stores the immutable manifest hash,
+and the local edge confirms it against the enrolled Team principal before
+marking Personal rows moved. A lost confirmation response can be retried.
 
 The initiating Desktop performs an idempotent operation for one Personal Project
 and share attempt:
@@ -108,6 +116,22 @@ owner, exact source, destination, consent, revision, and lifecycle.
 
 ## Project collaboration records
 
+An explicit `workspace_project_share_grant_bindings` record identifies a
+Share Grant created for one Workspace Project. The Team backend binds only a
+current grant owned by the acting member in the same Team and Workspace.
+Existing independent Workspace grants are never adopted by matching a source
+or Workspace ID. Project leave, member removal, and deletion freeze only
+bound grants through the verified lifecycle parent; Team leave also freezes
+all grants owned by the departing member. This covers bound Captured Session
+and Personal Note grants without changing their custody.
+
+Shared Source edits change metadata only. The uploader's Personal backend
+attests its own Project Source and current real Personal Note revision before
+Desktop attaches metadata to the Team Project. The uploader or Project owner
+may rename, trash, and restore metadata; only the uploader may advance the
+Personal Note revision link. Mutations advance the Project version and publish
+a Team lifecycle/access event.
+
 Work Items, Decks and cards, activity, and the Project Thread are Team
 collaboration records; they are not automatically projected into Memory,
 indexed for Memory Answer, or ingested into Team semantic recall. The target
@@ -143,7 +167,9 @@ Sources under D2.
 A Project Source has two distinct records:
 
 - Team-side metadata, such as the source's Project association and display
-  information, is collaboration state under the Workspace Project.
+  information and the uploader's Note identity, is collaboration state under
+  the Workspace Project. The Note identity links an explicitly selected grant
+  to the same Note across revisions; its body stays Personal.
 - The original binary and extracted document revisions stay in the uploader's
   Personal storage. The original uses the existing encrypted content
   reference. Each extracted revision is a real owner-owned Personal Note
@@ -161,8 +187,8 @@ Deterministic Team-side materialization and indexing remain within the
 Trash of Team Source metadata and trash of the Personal source are separate.
 The uploader or Workspace Project owner may delete the Team metadata through
 the target Step-up `project_source.team_metadata.delete` action, with current
-Team and Workspace authority. Its lifecycle freeze stage covers grants for the
-exact affected Note revisions before the metadata is tombstoned. This does not
+Team and Workspace authority. Its lifecycle freeze stage covers explicitly
+bound grants for that exact Note identity before the metadata is tombstoned. This does not
 delete or transfer the uploader's Note content. Forgetting a Personal Note
 revision follows its Note revision forget or suppression path; it does not
 delete Team metadata. A Project Source never uses
@@ -194,18 +220,31 @@ otherwise it refreshes and shows the conflict. When Team service is
 unavailable, the shared Project is read-only from the last loaded state. There
 is no offline write queue.
 
+The first-share copy accepts at most 500 Work Items, 500 Source metadata
+records, and 7,000,000 bytes of serialized copy data. Personal preflight checks
+the full snapshot before creating the pending share fence. The Desktop sends
+the exact pinned snapshot on retry; neither side truncates records. The Team
+copy and local-edge proxy allow an 8 MiB request body to cover its envelope.
+
 A Team lifecycle operation commits its authoritative Team-side effects without
 waiting for offline members' Desktops and without reading or writing any
 Personal backend. The Team Backend tombstones or invalidates the
 Team-authoritative per-member association and access, then stops accepting
 that member's Project progress and job dispatch. On reconciliation, each
 member's own Desktop clears that member's private Personal Project mapping,
-detaches that member's Conversations to **Just me**, and pauses that member's
-Project Scheduled Jobs before that member can use the affected shared Project
-again. A Project-scoped job checks authoritative Workspace Project lifecycle
-before dispatch and fails closed if the Project is tombstoned or authority
-cannot be confirmed. Other members' links, grants, progress, and jobs remain
+detaches that member's Conversations to **Just me**, and records a durable
+owner-local reconciliation receipt before removing the Project link. HQ-601/602
+will use that receipt to pause Project Scheduled Jobs and require an authoritative
+Workspace Project lifecycle check before dispatch. Those jobs are not yet
+implemented. Other members' links, grants, and progress remain
 unchanged unless their Project is also tombstoned.
+
+For a member's Agent work, reconciliation atomically advances the private
+execution generation, cancels old shared command leases, and records a durable
+detach marker before removing the Personal Project link. A Conversation that
+already has a private session can receive a later explicit Personal prompt;
+reconciliation does not send a prompt or resume Team progress. A shared start
+that never established a session stops and requires a new private Conversation.
 
 ## Grant freeze and retained memory
 
@@ -273,8 +312,8 @@ read or write their Personal databases. It tombstones the Team-authoritative
 per-member association and access and stops accepting progress or job dispatch.
 On reconciliation, each member's own Desktop clears that member's private
 Personal Project mapping, detaches their own Conversations to Just me, and
-pauses their own Project Scheduled Jobs. A Project job fails closed if it
-cannot confirm active Project lifecycle. Only the Workspace Project owner may
+records an owner-local reconciliation receipt for HQ-601/602 Scheduled Job
+cleanup. Only the Workspace Project owner may
 restore Team Project metadata and its Project Thread within the target restore
 window and with current Team/Workspace authority. Restore does not reattach
 Personal Conversations, resume grants, or restore another member's Personal
@@ -332,7 +371,7 @@ that member's Team Membership last; do not wait for Personal reconciliation.
 Remaining members retain their existing Workspace Access to retained Team
 Memory. On later reconciliation, each member's own Desktop
 clears that member's private Personal Project mapping, detaches only that
-member's Conversations to **Just me**, and pauses that member's Project
+member's Conversations to **Just me**, and records the durable receipt for that member's future Project
 Scheduled Jobs. Interruption leaves records and membership recoverable for
 retry. Leaving has no Undo; a new Team invite is required to return.
 
@@ -359,18 +398,31 @@ not claim those target paths are available in the current app.
 
 ## Current implementation boundary
 
-Current code has a local Project-to-Workspace mapping for recall and explicit
-Share Grant paths. It has first-class owner-scoped `personal_notes` and
-immutable `personal_note_revisions`, including Personal Note revision
-projection and the `personal_note` logical-memory/source adapter. The source
-adapter is supported by the existing Shared Memory repository. Project Source
-ingestion and Team-side Workspace Project records are not implemented.
+Current code implements Team-authoritative Workspace Projects, per-member
+Project access, versioned shared Work Items, Source metadata, and safe activity.
+The uploader's actual document and Note revisions remain in Personal storage.
+First share, linked Source upload/read, Team leave copy-back, Project delete,
+member removal, and self-leave use the scoped authority and lifecycle paths
+described above. An explicit trusted binding relates a Share Grant to one
+Workspace Project; independent grants are never inferred from a Personal
+Project ID. Verified parent actions freeze only bound grants affected by that
+Project and all departing-member grants on Team leave.
 
-`shared_memory.grant.freeze` is an implemented Native-review route for the
-exact source owner and Share Grant. The backend-only
-`project.lifecycle.freeze_grant` stage has an exact allowlisted parent binding;
-it remains unavailable until a Workspace Project parent can supply and verify
-authoritative Project state. Current Team leave, member disable, and Workspace
-Access disable freeze affected grants in their own transactions. The target
-Workspace Project and Project Source delete, leave, member-removal, and restore
-workflows remain pending. Local Project mapping is not Project authority.
+The visible first-share and invite controls, default Note-grant choices, and
+additional grant policy UI belong to HQ-701/HQ-702. Scheduled Jobs and Decks
+must reuse the authoritative lifecycle gate when their implementations land;
+this code does not claim those producers are complete. Restore remains subject
+to its separate parent workflow and cannot resume a frozen grant.
+
+The Desktop stages every owned Project before requesting Team leave. A missing
+verified Personal link blocks that flow. Work Items are paged against the exact
+reviewed Project version; changed versions or an incomplete bounded snapshot
+block leave rather than copying a partial set. A retry reuses the same durable
+stage, and a lost leave response is reconciled through read-only tombstone proof.
+
+Team Source fields are the authenticated uploader's metadata assertions, not
+permission to read Personal storage or issue a Share Grant. The Desktop derives
+them from the real Personal Source and Note joins. The uploader content route
+requires that same Note identity and revision and rechecks the Team Source
+version after decryption. Invalid or stale metadata returns no document bytes.
+Grant binding separately checks the registered Note's owner and Workspace.

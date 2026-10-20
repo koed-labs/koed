@@ -24,6 +24,7 @@ import {
 } from "./managed-conversation-service.js";
 import { createWorkItemCompletionObserver } from "./work-item-completion.js";
 import { createReviewRequestMergeProposalObserver } from "./review-request-merge-proposal.js";
+import { guardLocalSharedWorkItemRepository } from "./shared-work-item-runtime-guard.js";
 import {
   createManagedMemoryActionObserver,
   createManagedMemoryActionProcessor
@@ -97,8 +98,54 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   let reconcilePromise: Promise<void> | null = null;
   let stopped = false;
   const watchers: FSWatcher[] = [];
+  const localRunnerRepository = guardLocalSharedWorkItemRepository({
+    repository: options.localRepository,
+    ownerUserId: options.localOwnerUserId,
+    apiUrl: options.apiUrl,
+    koedHome: options.koedHome,
+    ...(options.fetch ? { fetch: options.fetch } : {})
+  });
   const observeLocalWorkItemCompletion = createWorkItemCompletionObserver(
-    options.localRepository
+    options.localRepository,
+    async (event) => {
+      const actor = { userId: event.execution.ownerUserId };
+      const dispatch =
+        await options.localRepository.getSharedWorkItemDispatchForExecution(
+          actor,
+          event.execution.id
+        );
+      if (!dispatch) return false;
+      const execution =
+        await localRunnerRepository.getManagedConversationExecution(
+          actor,
+          event.execution.id
+        );
+      const command = await localRunnerRepository.getManagedConversationCommand(
+        actor,
+        event.command.id
+      );
+      if (
+        !execution ||
+        !command ||
+        execution.executionGeneration !== event.execution.executionGeneration ||
+        command.executionId !== execution.id ||
+        command.state !== "dispatching" ||
+        command.leaseToken !== event.command.leaseToken
+      )
+        throw new Error("Shared Work Item completion lease changed");
+      await options.localRepository.putManagedConversationRuntimeItem(actor, {
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration,
+        providerRequestId: `shared-work-item-complete:${command.id}:${event.toolCallId ?? "result"}`,
+        ...(event.providerTurnId
+          ? { providerTurnId: event.providerTurnId }
+          : {}),
+        ...(event.toolCallId ? { providerItemId: event.toolCallId } : {}),
+        itemKind: "transient_output",
+        payload: { sharedWorkItemCompletion: "accepted" }
+      });
+      return true;
+    }
   );
   const observeLocalMergeProposal = createReviewRequestMergeProposalObserver(
     options.localRepository
@@ -181,7 +228,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
           authorityClient,
           options.localOwnerUserId
         )
-      : options.localRepository;
+      : localRunnerRepository;
     const sourceRestoreControl =
       authority && authorityClient
         ? {

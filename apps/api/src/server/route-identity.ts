@@ -385,7 +385,471 @@ const managedConversationRunnerRoutes = [
   ]
 ] as const;
 
+const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
+  route(
+    "POST",
+    "/v1/workspace-projects",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/workspace-projects",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/workspace-project-leave-review",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/link-proof",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/tombstone-proof",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/lifecycle",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/dispatch-check",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/join",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/first-share-copy",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/activity/summary",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-proof",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-authority",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-status",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/work-items",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-receipt",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-progress",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/sources",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/share-grant-bindings",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/sources",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/workspace-projects/{projectId}/sources/{sourceId}",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/sources/{sourceId}/delete",
+    "device_credential",
+    "projects",
+    "Exact current Project action with single-use Step-up authority.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/sources/{sourceId}/uploader-proof",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/leave",
+    "device_credential",
+    "projects",
+    "Exact current Project action with single-use Step-up authority.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/members/{targetUserId}/remove",
+    "device_credential",
+    "projects",
+    "Exact current Project action with single-use Step-up authority.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/delete",
+    "device_credential",
+    "projects",
+    "Exact current Project action with single-use Step-up authority.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{projectId}/workspace-project-share-snapshot",
+    "session_or_device_credential",
+    "projects",
+    "Owner-scoped Personal Project metadata; API Tokens are not accepted.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{projectId}/workspace-project-link",
+    "session_or_device_credential",
+    "projects",
+    "Owner-scoped Personal Project metadata; API Tokens are not accepted.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{projectId}/workspace-project-source-metadata/{sourceId}",
+    "session_or_device_credential",
+    "projects",
+    "Owner-scoped Personal Project metadata; API Tokens are not accepted.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/workspace-projects/{workspaceProjectId}/source-metadata/{sourceId}",
+    "session_or_device_credential",
+    "projects",
+    "Owner-scoped Personal Project metadata; API Tokens are not accepted.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/workspace-projects/{workspaceProjectId}/source-metadata",
+    "session_or_device_credential",
+    "projects",
+    "Owner-scoped Personal Project metadata; API Tokens are not accepted.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-sources/upload",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/projects/{projectId}/workspace-project-sources/{teamSourceId}/content",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-prepare",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-confirm",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-reconcile",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/workspace-projects/{projectId}/reconcile",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/workspace-project-team-leave-stage",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/workspace-project-team-leave-finish",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/shared-work-items/{itemId}/reconcile-pr",
+    "desktop_local_credential",
+    "projects",
+    "Reconcile only provider-verified PR metadata using exact Personal and Team authority.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/shared-work-items/{itemId}/dispatch",
+    "desktop_local_credential",
+    "projects",
+    "Dispatch the exact Team Work Item through the current owner local runtime using dual credentials.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{projectId}/shared-work-items/dispatches",
+    "desktop_local_credential",
+    "projects",
+    "List only this Personal owner private execution bindings for the current Team Project link.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/shared-dispatch-authority",
+    "desktop_local_credential",
+    "projects",
+    "Revalidate current Team dispatch before a local runner claims or launches work.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/shared-progress",
+    "desktop_local_credential",
+    "projects",
+    "Publish fixed safe progress for a current leased private command; independently enrolled Team credentials are required.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  )
+];
+
 export const routeIdentityContracts = [
+  ...workspaceProjectRouteIdentityContracts,
   route(
     "POST",
     "/v1/projects/{id}/sources/upload",

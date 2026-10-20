@@ -1103,7 +1103,7 @@ export const registerLocalEdgeRoutes = (
 
   app.post(
     "/v1/local-edge/upstream-operations",
-    { preHandler: memoryWriteRateLimit },
+    { preHandler: memoryWriteRateLimit, bodyLimit: 8 * 1024 * 1024 },
     async (request, reply) => {
       assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();

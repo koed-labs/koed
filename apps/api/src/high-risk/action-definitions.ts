@@ -12,6 +12,7 @@ import { workspaceActionDefinitions } from "./workspace-action-definitions.js";
 import { sharedMemoryActionDefinitions } from "./shared-memory-action-definitions.js";
 import { managedSourceActionDefinitions } from "./managed-source-action-definitions.js";
 import { governanceActionDefinitions } from "./governance-action-definitions.js";
+import { workspaceProjectActionDefinitions } from "./workspace-project-action-definitions.js";
 
 type OperationFamily =
   | "admin"
@@ -26,6 +27,8 @@ export type HighRiskActionDefinitionRepository = Pick<
   | "getTeamInviteRevocationReview"
   | "getTeamMembershipActionReview"
   | "getTeamLeaveReview"
+  | "getLifecycleReview"
+  | "getSourceDeleteReview"
   | "getTeamWorkspaceCreationReview"
   | "getTeamWorkspaceLifecycleReview"
   | "getTeamWorkspaceAccessUpdateReview"
@@ -80,6 +83,7 @@ export const highRiskActionDefinitions: Record<
   ...sharedMemoryActionDefinitions,
   ...managedSourceActionDefinitions,
   ...governanceActionDefinitions,
+  ...workspaceProjectActionDefinitions,
   "team.invite.create": teamInviteCreateActionDefinition
 };
 

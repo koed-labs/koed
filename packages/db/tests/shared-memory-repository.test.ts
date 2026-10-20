@@ -4043,7 +4043,12 @@ describeDb("Shared Memory repository", () => {
       `update team_memberships set role='owner' where team_id=$1 and user_id=$2`,
       [fixture.teamId, fixture.managerUserId]
     );
-    await pool.query(`create table workspace_projects (id uuid primary key)`);
+    // 0066 has the real table and permanently enables its guarded capability.
+    // Hide only its relation name in this disposable database to exercise the
+    // same inconsistent-schema failure without downgrading the capability.
+    await pool.query(
+      `alter table workspace_projects rename to workspace_projects_capability_probe`
+    );
     try {
       await expect(
         team.leaveTeam(actor(fixture.ownerUserId), {
@@ -4057,7 +4062,9 @@ describeDb("Shared Memory repository", () => {
       );
       expect(unchanged.rows[0]?.frozen_at).toBeNull();
     } finally {
-      await pool.query(`drop table workspace_projects`);
+      await pool.query(
+        `alter table workspace_projects_capability_probe rename to workspace_projects`
+      );
     }
     await expect(
       team.leaveTeam(actor(fixture.ownerUserId), {

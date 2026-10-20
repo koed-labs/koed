@@ -19,6 +19,7 @@ export const realtimeTransportOperationFamilySchema = z.enum([
   "personal_collaboration_read",
   "team_chat_read",
   "team_workspace_read",
+  "team_workspace_write",
   "managed_execution",
   "managed_terminal",
   "sync"

@@ -39,6 +39,7 @@ export const collaborationTeamControlCommandNames = [
   "collaboration.update_member_role",
   "collaboration.disable_member",
   "collaboration.leave_team",
+  "collaboration.delete_project_source",
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
   "collaboration.set_workspace_access"
@@ -1074,7 +1075,12 @@ const dispatch = async (
 
     case "collaboration.leave_team": {
       const path = `/v1/teams/${encodeURIComponent(command.input.teamId)}/leave`;
-      const body = { expectedVersion: command.input.expectedVersion };
+      const body = {
+        expectedVersion: command.input.expectedVersion,
+        expectedTeamVersion: command.input.expectedTeamVersion,
+        expectedOwnedWorkspaceProjects:
+          command.input.expectedOwnedWorkspaceProjects
+      };
       const grant = await actionGrantSecret(command, context, {
         reference: command.input.actionGrant,
         action: "team.leave",
@@ -1106,6 +1112,49 @@ const dispatch = async (
         membership.disabledAt !== null &&
         membership.version > command.input.expectedVersion
         ? success(command, { membership })
+        : failure(command, safeError("internal_error"));
+    }
+
+    case "collaboration.delete_project_source": {
+      const path =
+        `/v1/workspace-projects/${encodeURIComponent(command.input.projectId)}` +
+        `/sources/${encodeURIComponent(command.input.sourceId)}/delete`;
+      const body = {
+        expectedProjectVersion: command.input.expectedProjectVersion,
+        expectedSourceVersion: command.input.expectedSourceVersion
+      };
+      const grant = await actionGrantSecret(command, context, {
+        reference: command.input.actionGrant,
+        action: "project_source.team_metadata.delete",
+        teamId: command.input.teamId,
+        targetId: command.input.projectId,
+        method: "POST",
+        path,
+        body
+      });
+      if (isDispatchResult(grant)) return grant;
+      if (!grant) return failure(command, safeError("permission_denied"));
+      const payload = z
+        .object({
+          projectId: z.uuid(),
+          sourceId: z.uuid(),
+          version: z.number().int().positive(),
+          deleted: z.literal(true)
+        })
+        .strict()
+        .parse(
+          await remoteRequest(context, {
+            operationFamily: "admin",
+            method: "POST",
+            path,
+            body,
+            idempotencyKey: command.requestId,
+            authentication: { kind: "device", actionGrant: grant }
+          })
+        );
+      return payload.projectId === command.input.projectId &&
+        payload.sourceId === command.input.sourceId
+        ? success(command, payload)
         : failure(command, safeError("internal_error"));
     }
 

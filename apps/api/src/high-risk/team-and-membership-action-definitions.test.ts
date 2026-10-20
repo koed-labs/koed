@@ -57,7 +57,7 @@ const baseRepository = () => ({
     team: { id: ids.team, name: "Koed Team", version: 4 },
     membership: {
       userId: ids.actor,
-      role: "admin" as const,
+      role: "admin" as "admin" | "member",
       status: "enabled" as const,
       version: 9,
       disabledAt: null
@@ -353,7 +353,7 @@ describe("Team and membership action definitions", () => {
       team: { id: ids.team, name: "Koed Team", version: 4 },
       membership: {
         userId: ids.actor,
-        role: "admin",
+        role: "member",
         status: "enabled",
         version: 9,
         disabledAt: null

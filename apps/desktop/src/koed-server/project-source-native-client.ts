@@ -8,6 +8,10 @@ import {
   projectSourceSchema,
   type ProjectSource
 } from "@koed/shared/project-source-contract";
+import {
+  workspaceProjectSourceSchema,
+  type WorkspaceProjectSource
+} from "@koed/shared/workspace-project-contract";
 import type { ProjectsAuthority } from "./projects-client.js";
 
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -15,6 +19,39 @@ const sameAuthority = (a: ProjectsAuthority, b: ProjectsAuthority) =>
   a.key === b.key && a.ownerId === b.ownerId;
 const path = (projectId: string) =>
   `/v1/projects/${encodeURIComponent(projectId)}/sources`;
+
+const readSelectedUpload = async (selected: string) => {
+  const handle = await open(selected, "r");
+  let bytes: Buffer;
+  try {
+    const file = await handle.stat();
+    if (!file.isFile())
+      throw new Error("Selected Project Source is not a file.");
+    if (file.size > MAX_BYTES) throw new Error("Project Source exceeds 25 MB.");
+    const bounded = Buffer.allocUnsafe(MAX_BYTES + 1);
+    let length = 0;
+    while (length < bounded.length) {
+      const { bytesRead } = await handle.read(
+        bounded,
+        length,
+        bounded.length - length,
+        length
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > MAX_BYTES) throw new Error("Project Source exceeds 25 MB.");
+    bytes = bounded.subarray(0, length);
+  } finally {
+    await handle.close();
+  }
+  return {
+    name: basename(selected),
+    mediaType: "application/octet-stream",
+    bytesBase64: bytes.toString("base64"),
+    idempotencyKey: randomUUID()
+  };
+};
 
 export const createProjectSourceNativeClient = (input: {
   authority: () => Promise<ProjectsAuthority>;
@@ -66,31 +103,7 @@ export const createProjectSourceNativeClient = (input: {
     if (!selected) return { canceled: true, source: null };
     if (!sameAuthority(bound, await input.authority()))
       throw new Error("Projects profile changed during file selection.");
-    const handle = await open(selected, "r");
-    let bytes: Buffer;
-    try {
-      const file = await handle.stat();
-      if (!file.isFile())
-        throw new Error("Selected Project Source is not a file.");
-      if (file.size > MAX_BYTES)
-        throw new Error("Project Source exceeds 25 MB.");
-      const bounded = Buffer.allocUnsafe(MAX_BYTES + 1);
-      let length = 0;
-      while (length < bounded.length) {
-        const { bytesRead } = await handle.read(
-          bounded,
-          length,
-          bounded.length - length,
-          length
-        );
-        if (bytesRead === 0) break;
-        length += bytesRead;
-      }
-      if (length > MAX_BYTES) throw new Error("Project Source exceeds 25 MB.");
-      bytes = bounded.subarray(0, length);
-    } finally {
-      await handle.close();
-    }
+    const upload = await readSelectedUpload(selected);
     if (!sameAuthority(bound, await input.authority()))
       throw new Error("Projects profile changed before upload.");
     const source = projectSourceSchema.parse(
@@ -99,12 +112,7 @@ export const createProjectSourceNativeClient = (input: {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: basename(selected),
-            mediaType: "application/octet-stream",
-            bytesBase64: bytes.toString("base64"),
-            idempotencyKey: randomUUID()
-          })
+          body: JSON.stringify(upload)
         },
         bound
       )
@@ -115,6 +123,30 @@ export const createProjectSourceNativeClient = (input: {
     )
       throw new Error("Project Source profile or Project identity changed.");
     return { canceled: false, source };
+  },
+  async uploadShared(
+    selectFile: () => Promise<string | null>,
+    submit: (
+      upload: Awaited<ReturnType<typeof readSelectedUpload>>,
+      expectedProfileKey: string
+    ) => Promise<WorkspaceProjectSource>
+  ) {
+    const bound = await input.authority();
+    if (!bound.canWrite)
+      throw new Error("Project Sources write authority is unavailable.");
+    const selected = await selectFile();
+    if (!selected) return { canceled: true as const, source: null };
+    if (!sameAuthority(bound, await input.authority()))
+      throw new Error("Projects profile changed during file selection.");
+    const upload = await readSelectedUpload(selected);
+    if (!sameAuthority(bound, await input.authority()))
+      throw new Error("Projects profile changed before shared upload.");
+    const source = workspaceProjectSourceSchema.parse(
+      await submit(upload, bound.key)
+    );
+    if (!sameAuthority(bound, await input.authority()))
+      throw new Error("Projects profile changed during shared upload.");
+    return { canceled: false as const, source };
   },
   async read(
     projectId: string,

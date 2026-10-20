@@ -617,6 +617,10 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.delete_project_source": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.archive_workspace": {
     scope: "team",
     desktopOperationFamily: write

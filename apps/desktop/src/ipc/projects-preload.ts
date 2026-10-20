@@ -49,6 +49,212 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    sharedFirstShare: async (personalProjectId, teamBackendId, value) => {
+      const result = await command({
+        operation: "sharedFirstShare",
+        personalProjectId,
+        teamBackendId,
+        value
+      });
+      if (
+        result.operation !== "sharedFirstShare" ||
+        result.project.teamId !== value.teamId ||
+        result.project.workspaceId !== value.workspaceId
+      )
+        throw new Error("Invalid first-share Project identity.");
+      return result.project;
+    },
+    sharedTeamLeaveStage: async (teamBackendId, teamId) => {
+      const result = await command({
+        operation: "sharedTeamLeaveStage",
+        teamBackendId,
+        teamId
+      });
+      if (
+        result.operation !== "sharedTeamLeaveStage" ||
+        result.review.teamId !== teamId
+      )
+        throw new Error("Invalid Team leave review identity.");
+      return result.review;
+    },
+    sharedTeamLeaveFinish: async (teamBackendId, stageIds) => {
+      const result = await command({
+        operation: "sharedTeamLeaveFinish",
+        teamBackendId,
+        stageIds
+      });
+      if (
+        result.operation !== "sharedTeamLeaveFinish" ||
+        result.completed.some((item) => !stageIds.includes(item.stageId))
+      )
+        throw new Error("Invalid Team leave completion identity.");
+      return { completed: result.completed };
+    },
+    sharedAttachSource: async (
+      workspaceProjectId,
+      teamBackendId,
+      personalProjectId,
+      sourceId
+    ) => {
+      const result = await command({
+        operation: "sharedAttachSource",
+        workspaceProjectId,
+        teamBackendId,
+        personalProjectId,
+        sourceId
+      });
+      if (result.operation !== "sharedAttachSource")
+        throw new Error("Invalid shared Source result.");
+      return result.source;
+    },
+    sharedPatchSource: async (
+      workspaceProjectId,
+      teamBackendId,
+      sourceId,
+      value
+    ) => {
+      const result = await command({
+        operation: "sharedPatchSource",
+        workspaceProjectId,
+        teamBackendId,
+        sourceId,
+        value
+      });
+      if (
+        result.operation !== "sharedPatchSource" ||
+        result.source.id !== sourceId
+      )
+        throw new Error("Invalid shared Source identity.");
+      return result.source;
+    },
+    sharedUploadSource: async (
+      workspaceProjectId,
+      teamBackendId,
+      personalProjectId,
+      upload
+    ) => {
+      const result = await command({
+        operation: "sharedUploadSource",
+        workspaceProjectId,
+        teamBackendId,
+        personalProjectId,
+        upload
+      });
+      if (result.operation !== "sharedUploadSource")
+        throw new Error("Invalid shared Source upload result.");
+      return result.source;
+    },
+    sharedSourcePick: async (
+      workspaceProjectId,
+      teamBackendId,
+      personalProjectId
+    ) => {
+      const result = await command({
+        operation: "sharedSourcePick",
+        workspaceProjectId,
+        teamBackendId,
+        personalProjectId
+      });
+      if (result.operation !== "sharedSourcePick")
+        throw new Error("Invalid shared Source selection result.");
+      return result.value;
+    },
+    sharedReadSource: async (
+      workspaceProjectId,
+      teamBackendId,
+      personalProjectId,
+      sourceId
+    ) => {
+      const result = await command({
+        operation: "sharedReadSource",
+        workspaceProjectId,
+        teamBackendId,
+        personalProjectId,
+        sourceId
+      });
+      if (result.operation !== "sharedReadSource")
+        throw new Error("Invalid shared Source content result.");
+      return result.content;
+    },
+    sharedDispatchWorkItem: async (
+      personalProjectId,
+      itemId,
+      agentId,
+      expectedProjectVersion,
+      expectedMemberVersion,
+      expectedWorkItemVersion
+    ) => {
+      const result = await command({
+        operation: "sharedDispatchWorkItem",
+        personalProjectId,
+        itemId,
+        agentId,
+        expectedProjectVersion,
+        expectedMemberVersion,
+        expectedWorkItemVersion
+      });
+      if (result.operation !== "sharedDispatchWorkItem")
+        throw new Error("Invalid shared Work Item dispatch result.");
+      return {
+        executionId: result.executionId,
+        reused: result.reused,
+        dispatchKey: result.dispatchKey,
+        progress: result.progress
+      };
+    },
+    sharedDispatches: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedDispatches",
+        personalProjectId
+      });
+      if (result.operation !== "sharedDispatches")
+        throw new Error("Invalid private shared dispatch list.");
+      return result.items;
+    },
+    sharedRefresh: async (workspaceProjectId, teamBackendId) => {
+      const result = await command({
+        operation: "sharedRefresh",
+        workspaceProjectId,
+        teamBackendId
+      });
+      if (
+        result.operation !== "sharedRefresh" ||
+        (result.state.project && result.state.project.id !== workspaceProjectId)
+      )
+        throw new Error("Invalid shared Project identity.");
+      return result.state;
+    },
+    sharedCreateWorkItem: async (workspaceProjectId, teamBackendId, value) => {
+      const result = await command({
+        operation: "sharedCreateWorkItem",
+        workspaceProjectId,
+        teamBackendId,
+        value
+      });
+      if (result.operation !== "sharedCreateWorkItem")
+        throw new Error("Invalid shared Work Item result.");
+      return result.outcome;
+    },
+    sharedPatchWorkItem: async (
+      workspaceProjectId,
+      teamBackendId,
+      itemId,
+      value
+    ) => {
+      const result = await command({
+        operation: "sharedPatchWorkItem",
+        workspaceProjectId,
+        teamBackendId,
+        itemId,
+        value
+      });
+      if (
+        result.operation !== "sharedPatchWorkItem" ||
+        (result.outcome.status === "ok" && result.outcome.item.id !== itemId)
+      )
+        throw new Error("Invalid shared Work Item identity.");
+      return result.outcome;
+    },
     workItemList: async (projectId) => {
       const result = await command({ operation: "workItemList", projectId });
       if (

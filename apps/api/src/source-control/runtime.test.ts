@@ -549,6 +549,7 @@ describe("source-control runtime", () => {
       executionId,
       executionGeneration: 2,
       provider: "github.com",
+      remoteIdentityHash: remotes.remotes[0]!.remoteIdentityHash,
       number: 7,
       url: "https://github.com/acme/repo/pull/7"
     });

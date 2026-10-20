@@ -21,6 +21,44 @@ const matrixCases: Array<{
   expected: "direct" | "native_review" | "step_up";
 }> = [
   {
+    intent: {
+      action: "workspace_project.leave",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      body: { expectedProjectVersion: 2, expectedMemberVersion: 3 }
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
+      action: "workspace_project.member_remove",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      targetUserId: uuid(3),
+      body: { expectedProjectVersion: 2, expectedMemberVersion: 3 }
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
+      action: "workspace_project.delete",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      body: { expectedProjectVersion: 2 }
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
+      action: "project_source.team_metadata.delete",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      sourceId: uuid(3),
+      body: { expectedProjectVersion: 2, expectedSourceVersion: 3 }
+    },
+    expected: "step_up"
+  },
+  {
     intent: { action: "team.create", body: { name: "Koed" } },
     expected: "direct"
   },

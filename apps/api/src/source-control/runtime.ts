@@ -358,6 +358,7 @@ export const createSourceControlRuntime = (options: {
     provider: string;
     number: number;
     url: string;
+    remoteIdentityHash: string;
   }) => Promise<void>;
 }): SourceControlRuntime => {
   const connectionsPath = resolve(
@@ -1096,7 +1097,8 @@ export const createSourceControlRuntime = (options: {
           executionGeneration: operation.executionGeneration,
           provider: new URL(result.reviewRequest.webUrl).hostname,
           number: result.reviewRequest.number,
-          url: result.reviewRequest.webUrl
+          url: result.reviewRequest.webUrl,
+          remoteIdentityHash: operation.remoteIdentityHash
         });
       }
       return result;

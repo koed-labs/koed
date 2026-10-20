@@ -29,7 +29,15 @@ const mapProject = (row: Row): Project => ({
   deletedAt: iso(row.deleted_at),
   createdAt: iso(row.created_at)!,
   updatedAt: iso(row.updated_at)!,
-  version: Number(row.version)
+  version: Number(row.version),
+  teamBackendId:
+    row.team_backend_id == null ? null : textValue(row.team_backend_id),
+  teamWorkspaceId:
+    row.team_workspace_id == null ? null : textValue(row.team_workspace_id),
+  workspaceProjectId:
+    row.workspace_project_id == null
+      ? null
+      : textValue(row.workspace_project_id)
 });
 
 export class ProjectNotFoundError extends Error {}

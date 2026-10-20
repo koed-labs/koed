@@ -865,6 +865,8 @@ describe("collaboration renderer commands", () => {
         input: {
           teamId: ids.team,
           expectedVersion: 1,
+          expectedTeamVersion: 1,
+          expectedOwnedWorkspaceProjects: [],
           actionGrant: actionGrant()
         }
       },
@@ -1120,7 +1122,9 @@ describe("collaboration renderer commands", () => {
         intent: "collaboration.leave_team",
         commandRequestId: ids.mutation,
         teamId: ids.team,
-        expectedVersion: 1
+        expectedVersion: 1,
+        expectedTeamVersion: 1,
+        expectedOwnedWorkspaceProjects: []
       },
       {
         intent: "collaboration.set_workspace_access",
@@ -1248,6 +1252,47 @@ describe("collaboration renderer commands", () => {
             body: { unsafe: true }
           }
         }
+      }).success
+    ).toBe(false);
+  });
+
+  it("requires the complete sorted owned Project selector for Team leave", () => {
+    const base = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.mutation,
+      command: "collaboration.leave_team" as const,
+      input: {
+        teamId: ids.team,
+        expectedVersion: 1,
+        expectedTeamVersion: 2,
+        expectedOwnedWorkspaceProjects: [
+          { id: ids.workspace, version: 4 },
+          { id: ids.team, version: 3 }
+        ],
+        actionGrant: actionGrant()
+      }
+    };
+    expect(collaborationRendererCommandSchema.safeParse(base).success).toBe(
+      false
+    );
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        ...base,
+        input: {
+          ...base.input,
+          expectedOwnedWorkspaceProjects: [
+            { id: ids.team, version: 3 },
+            { id: ids.workspace, version: 4 }
+          ]
+        }
+      }).success
+    ).toBe(true);
+    const missingSet = { ...base.input };
+    Reflect.deleteProperty(missingSet, "expectedOwnedWorkspaceProjects");
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        ...base,
+        input: missingSet
       }).success
     ).toBe(false);
   });

@@ -52,6 +52,7 @@ import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { HqProjectView } from "./project/HqProjectView.js";
+import { SharedProjectStore } from "./shared-project/shared-project-store.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 import { PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT } from "@koed/shared/personal-desktop";
 import {
@@ -244,6 +245,7 @@ export function HqApplication({
   const [blankLaunchPending, setBlankLaunchPending] = useState(false);
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [sharedRefreshSignal, setSharedRefreshSignal] = useState(0);
   const [artifactContext, setArtifactContext] = useState<string | null>(null);
   const [nowMemoryOpen, setNowMemoryOpen] = useState(false);
   const [nowMemoryHost, setNowMemoryHost] = useState<HTMLDivElement | null>(
@@ -255,6 +257,9 @@ export function HqApplication({
   const shellActions = useRef<HqShellActions>(null);
   const [projectsStore] = useState(() =>
     projectsApi ? new ProjectsStore(projectsApi) : null
+  );
+  const [sharedProjectStore] = useState(() =>
+    projectsApi ? new SharedProjectStore(projectsApi) : null
   );
   const [agentsStore] = useState(() =>
     agentsApi ? new AgentsStore(agentsApi) : null
@@ -288,11 +293,13 @@ export function HqApplication({
         const currentKey = `${current.connection.backendId ?? "local"}|${current.connection.connectedAt ?? ""}|${visibilityClient.currentRemoteUrl() ?? ""}`;
         if (currentKey !== visibilityProfileKey) return;
         if (update.authoritativeRecovery || update.kind === "connection") {
+          setSharedRefreshSignal((value) => value + 1);
           void projectsStore.refresh();
           void personalMemoryStore?.loadProjects({ silent: true });
           return;
         }
         if (update.kind !== "realtime") return;
+        setSharedRefreshSignal((value) => value + 1);
         const changed = update.realtimeUpdate;
         if (changed?.type === "project_changed") {
           projectsStore.projectChanged(
@@ -1609,6 +1616,11 @@ export function HqApplication({
               personalProjects={personalProjects}
               graphProjects={projects}
               projectsApi={projectsApi}
+              sharedProjectStore={sharedProjectStore}
+              deleteSharedProjectSource={
+                visibilityClient?.deleteWorkspaceProjectSource
+              }
+              sharedRefreshSignal={sharedRefreshSignal}
               curatedMemoryApi={window.koedDesktop?.curatedMemory}
               agentsApi={agentsApi}
               conversationsApi={managedConversations}

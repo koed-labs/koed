@@ -35,6 +35,7 @@ import {
   userSessions
 } from "./schema.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
+import { createWorkspaceProjectRepository } from "./workspace-project-repository.js";
 import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import { issueTeamLifecycleFreezeAuthority } from "./team-lifecycle-freeze-authority.js";
 
@@ -140,6 +141,7 @@ export interface ExecuteHighRiskActionGrantInput<
   approvedRequest?: { method: string; path: string; body: unknown };
   execute: (repositories: {
     team: ReturnType<typeof createTeamAccessRepository>;
+    workspaceProject: ReturnType<typeof createWorkspaceProjectRepository>;
     retention: ReturnType<typeof createRetentionLifecycleRepository>;
     sharedMemory: ReturnType<typeof createSharedMemoryRepository>;
     sync: ReturnType<typeof createCrossIdentitySyncRepository>;
@@ -462,12 +464,39 @@ interface VerifiedTeamFreezeParent {
   requestBody: Record<string, unknown>;
 }
 
+interface VerifiedProjectFreezeParent {
+  action:
+    | "workspace_project.leave"
+    | "workspace_project.member_remove"
+    | "workspace_project.delete"
+    | "project_source.team_metadata.delete";
+  actorUserId: string;
+  teamId: string;
+  projectId: string;
+  sourceId?: string;
+  targetId: string;
+  actionGrantId: string;
+  requestId: string;
+  requestHash: string;
+  approvalTier: CollaborationApprovalTier;
+  requestBody: Record<string, unknown>;
+}
+
+const isProjectFreezeParentAction = (
+  action: string
+): action is VerifiedProjectFreezeParent["action"] =>
+  action === "workspace_project.leave" ||
+  action === "workspace_project.member_remove" ||
+  action === "workspace_project.delete" ||
+  action === "project_source.team_metadata.delete";
+
 const buildScopedRepositories = (
   client: pg.PoolClient,
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider,
   teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider,
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider,
-  verifiedTeamFreezeParent?: VerifiedTeamFreezeParent
+  verifiedTeamFreezeParent?: VerifiedTeamFreezeParent,
+  verifiedProjectFreezeParent?: VerifiedProjectFreezeParent
 ) => {
   const savepointPool = createSavepointPool(client, "high_risk");
   const scopedSharedMemory = createSharedMemoryRepository(savepointPool, {
@@ -498,29 +527,131 @@ const buildScopedRepositories = (
     delegatedDeviceActionGrantExecution: true
   });
   return {
+    workspaceProject: createWorkspaceProjectRepository(savepointPool, {
+      freezeGrantForParent: async (transactionClient, input) => {
+        const verified = verifiedProjectFreezeParent;
+        if (
+          !verified ||
+          verified.action !== input.action ||
+          verified.actorUserId !== input.actorUserId ||
+          verified.teamId !== input.teamId ||
+          verified.projectId !== input.projectId ||
+          verified.targetId !== input.projectId ||
+          verified.approvalTier !== "step_up" ||
+          verified.requestBody.expectedProjectVersion == null ||
+          (input.action === "project_source.team_metadata.delete" &&
+            (verified.sourceId !== input.sourceId ||
+              verified.requestBody.expectedSourceVersion !==
+                input.sourceVersion)) ||
+          (input.action === "workspace_project.member_remove" &&
+            verified.requestBody.expectedMemberVersion == null)
+        ) {
+          throw new Error(
+            "Verified Workspace Project lifecycle parent mismatch"
+          );
+        }
+        const outerTx = await client.query<{ txid: string }>(
+          "select txid_current()::text as txid"
+        );
+        const nestedTx = await transactionClient.query<{ txid: string }>(
+          "select txid_current()::text as txid"
+        );
+        if (outerTx.rows[0]?.txid !== nestedTx.rows[0]?.txid)
+          throw new Error("Workspace Project freeze crossed transactions");
+        const token = issueTeamLifecycleFreezeAuthority({
+          transactionClient,
+          action: input.action,
+          outerActionGrantId: verified.actionGrantId,
+          outerRequestId: verified.requestId,
+          outerRequestHash: verified.requestHash,
+          approvalTier: "step_up",
+          actorUserId: input.actorUserId,
+          teamId: input.teamId,
+          targetUserId: input.targetUserId,
+          targetVersion: input.targetVersion,
+          teamWorkspaceId: input.workspaceId,
+          workspaceProjectId: input.projectId,
+          workspaceProjectSourceId: input.sourceId,
+          sourceVersion: input.sourceVersion,
+          shareGrantId: input.shareGrantId,
+          expectedGrantVersion: input.expectedGrantVersion
+        });
+        await scopedSharedMemory.freezeShareGrant(
+          { userId: input.actorUserId },
+          {
+            mutationId: randomUUID(),
+            shareGrantId: input.shareGrantId,
+            expectedGrantVersion: input.expectedGrantVersion,
+            backendParent: token
+          },
+          transactionClient
+        );
+      }
+    }),
     team: createTeamAccessRepository(savepointPool, {
       envelopeEncryptionProvider,
       freezeShareGrantForParent: async (transactionClient, input) => {
         const parent = input.parent;
         const verified = verifiedTeamFreezeParent;
         const expectedVersion = verified?.requestBody.expectedVersion;
+        let teamLeaveScopeValid = true;
+        let teamLeaveOwnedProjectId: string | null = null;
+        if (verified?.action === "team.leave") {
+          const claimed = verified.requestBody.expectedOwnedWorkspaceProjects;
+          const owned = Array.isArray(claimed)
+            ? (claimed as Array<{
+                id?: unknown;
+                version?: unknown;
+              }>)
+            : [];
+          const isOwnedStepUp =
+            owned.length > 0 &&
+            verified.approvalTier === "step_up" &&
+            Number.isSafeInteger(verified.requestBody.expectedTeamVersion);
+          if (parent.teamWorkspaceId && parent.workspaceProjectId) {
+            const project = await client.query<{ id: string; version: number }>(
+              `
+              select project.id,project.version
+                from workspace_projects project
+                join team_memberships actor
+                  on actor.id=project.owner_team_member_id
+               where project.id=$4 and project.team_id=$1 and project.workspace_id=$2
+                 and actor.user_id=$3 and project.lifecycle='active'`,
+              [
+                parent.teamId,
+                parent.teamWorkspaceId,
+                verified.actorUserId,
+                parent.workspaceProjectId
+              ]
+            );
+            const current = project.rows[0];
+            teamLeaveScopeValid =
+              isOwnedStepUp &&
+              Boolean(current) &&
+              owned.some(
+                (entry) =>
+                  entry.id === current?.id && entry.version === current?.version
+              );
+            if (teamLeaveScopeValid) teamLeaveOwnedProjectId = current!.id;
+          } else {
+            teamLeaveScopeValid =
+              parent.targetUserId === verified.actorUserId &&
+              parent.targetVersion === expectedVersion &&
+              ((owned.length === 0 &&
+                verified.approvalTier === "native_review") ||
+                isOwnedStepUp);
+          }
+        }
         if (
           !verified ||
           verified.action !== parent.action ||
           verified.actorUserId !== input.actorUserId ||
           verified.teamId !== parent.teamId ||
           !Number.isSafeInteger(expectedVersion) ||
-          expectedVersion !== parent.targetVersion ||
+          (verified.action !== "team.leave" &&
+            expectedVersion !== parent.targetVersion) ||
           (verified.action === "team.leave" &&
-            (verified.approvalTier !== "native_review" ||
-              verified.targetId !== parent.teamId ||
-              parent.targetUserId !== verified.actorUserId ||
-              parent.teamWorkspaceId !== undefined ||
-              (Array.isArray(
-                verified.requestBody.expectedOwnedWorkspaceProjects
-              ) &&
-                verified.requestBody.expectedOwnedWorkspaceProjects.length !==
-                  0))) ||
+            (verified.targetId !== parent.teamId || !teamLeaveScopeValid)) ||
           (verified.action === "team.member.disable" &&
             (verified.approvalTier !== "step_up" ||
               verified.targetId !== parent.targetUserId ||
@@ -555,6 +686,7 @@ const buildScopedRepositories = (
           targetUserId: parent.targetUserId,
           targetVersion: parent.targetVersion,
           teamWorkspaceId: parent.teamWorkspaceId ?? null,
+          workspaceProjectId: teamLeaveOwnedProjectId,
           shareGrantId: input.shareGrantId,
           expectedGrantVersion: input.expectedGrantVersion
         });
@@ -1467,6 +1599,9 @@ export const createHighRiskActionRepository = (
           const grant = row.grant;
           const confirmation = row.confirmation;
           let verifiedTeamFreezeParent: VerifiedTeamFreezeParent | undefined;
+          let verifiedProjectFreezeParent:
+            | VerifiedProjectFreezeParent
+            | undefined;
           if (isTeamFreezeParentAction(grant.action)) {
             const approved = input.approvedRequest;
             const approvedBody = approved?.body;
@@ -1507,6 +1642,68 @@ export const createHighRiskActionRepository = (
               actorUserId: grant.ownerUserId,
               teamId: grant.teamId,
               targetId: grant.targetId,
+              actionGrantId: grant.id,
+              requestId: confirmation.clientRequestId,
+              requestHash: grant.requestHash,
+              approvalTier: confirmation.approvalTier,
+              requestBody: approvedBody as Record<string, unknown>
+            };
+          }
+          if (isProjectFreezeParentAction(grant.action)) {
+            const approved = input.approvedRequest;
+            const approvedBody = approved?.body;
+            const projectId = grant.targetId;
+            const expectedPath = projectId
+              ? grant.action === "workspace_project.leave"
+                ? `/v1/workspace-projects/${projectId}/leave`
+                : grant.action === "workspace_project.delete"
+                  ? `/v1/workspace-projects/${projectId}/delete`
+                  : grant.action === "project_source.team_metadata.delete"
+                    ? (input.approvedRequest?.path ?? "")
+                    : typeof input.approvedRequest?.body === "object" &&
+                        input.approvedRequest.body !== null
+                      ? input.approvedRequest.path
+                      : ""
+              : "";
+            if (
+              !approved ||
+              approved.method !== "POST" ||
+              !grant.teamId ||
+              !projectId ||
+              !approved.path.startsWith(
+                `/v1/workspace-projects/${projectId}/`
+              ) ||
+              (grant.action === "project_source.team_metadata.delete" &&
+                !new RegExp(
+                  `^/v1/workspace-projects/${projectId}/sources/[0-9a-f-]{36}/delete$`,
+                  "i"
+                ).test(approved.path)) ||
+              (grant.action !== "workspace_project.member_remove" &&
+                approved.path !== expectedPath) ||
+              !approvedBody ||
+              typeof approvedBody !== "object" ||
+              Array.isArray(approvedBody) ||
+              highRiskActionGrantCanonicalHash(
+                HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+                approved
+              ) !== grant.requestHash
+            ) {
+              await client.query("rollback");
+              return null;
+            }
+            verifiedProjectFreezeParent = {
+              action: grant.action,
+              actorUserId: grant.ownerUserId,
+              teamId: grant.teamId,
+              projectId,
+              ...(grant.action === "project_source.team_metadata.delete"
+                ? {
+                    sourceId: approved.path.match(
+                      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/sources\/([0-9a-f-]{36})\/delete$/i
+                    )?.[1]
+                  }
+                : {}),
+              targetId: grant.targetId!,
               actionGrantId: grant.id,
               requestId: confirmation.clientRequestId,
               requestHash: grant.requestHash,
@@ -1555,7 +1752,8 @@ export const createHighRiskActionRepository = (
               options.envelopeEncryptionProvider,
               options.teamEnvelopeEncryptionProvider,
               options.ownerPrivateReplicaEnvelopeEncryptionProvider,
-              verifiedTeamFreezeParent
+              verifiedTeamFreezeParent,
+              verifiedProjectFreezeParent
             )
           );
           if (!receipt) {

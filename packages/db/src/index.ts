@@ -1,5 +1,18 @@
 export { createAuditRepository } from "./audit-repository.js";
 export {
+  createWorkspaceProjectRepository,
+  workspaceProjectCopyManifestHash,
+  WorkspaceProjectConflictError,
+  WorkspaceProjectUnavailableError,
+  type WorkspaceProjectRepository
+} from "./workspace-project-repository.js";
+export {
+  createPersonalWorkspaceProjectRepository,
+  PersonalWorkspaceProjectConflictError,
+  PersonalWorkspaceProjectUnavailableError,
+  type PersonalWorkspaceProjectRepository
+} from "./personal-workspace-project-repository.js";
+export {
   createSourceControlMergeRepository,
   type SourceControlMergeRepository,
   type MergeJournalEntry,

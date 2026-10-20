@@ -555,8 +555,10 @@ and waits for it before the Personal command reports completion. The Personal
 callers are still pending. A Team lifecycle freeze is a Bundled
 stage only of an exact allowlisted outer Team action and inherits that action's
 target, authority, request binding, and approval; callers cannot request the
-stage independently. Current Team parent actions use this freeze while the
-source owner's Desktop is offline; Workspace Project parents remain pending.
+stage independently. Current Team and Workspace Project parent actions use
+this freeze while the source owner's Desktop is offline. Only explicitly
+Project-bound Share Grants are frozen for Project leave, removal, or deletion;
+independent Workspace grants are not adopted by source similarity.
 When an affected browser Team lifecycle request needs that freeze, the
 existing browser route returns an explicit Action Grant requirement. The
 reviewed, exact one-use Action Grant path performs the freeze and parent
@@ -664,8 +666,6 @@ API. A Team-authoritative Project lifecycle operation must not claim success
 until the Team Backend has completed its required grant and access changes. A
 Personal command remains a local owner operation; when it affects a Team grant,
 it must wait for the exact owner-authorized freeze or revocation to complete
-before reporting success. The exact freeze route and HQ-202 Personal Project
-coordinator exist; Project Share Policy and the Workspace Project lifecycle do
-not. Existing code
-for personal forgetting, Workspace Access, or source access does not implement
-those pending Project workflows.
+before reporting success. The exact freeze route, HQ-202 Personal Project
+coordinator, and HQ-712 Workspace Project lifecycle paths exist. Project Share
+Policy, Deck/card collaboration, and Project Thread remain follow-up work.
