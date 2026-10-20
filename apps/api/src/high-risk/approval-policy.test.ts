@@ -248,6 +248,19 @@ const matrixCases: Array<{
     },
     expected: "native_review"
   },
+  ...(["prepare", "seal", "cancel"] as const).map((operation) => ({
+    intent: {
+      action: `shared_memory.source_admission.${operation}` as const,
+      source: capturedSource,
+      sourceDeploymentProtocolId: uuid(5),
+      sourceOwnerPrincipalId: uuid(6),
+      logicalMemoryId: uuid(3),
+      batchId: uuid(8),
+      expectedGeneration: 0,
+      expectedHoldVersion: 0
+    },
+    expected: "direct" as const
+  })),
   {
     intent: {
       action: "shared_memory.conversation_source_grant",
@@ -349,8 +362,11 @@ const matrixCases: Array<{
 
 describe("action approval policy", () => {
   it("defines one exhaustive action entry for every supported action", () => {
-    const schemaActions = highRiskActionGrantIntentSchema.options.map(
-      (option) => option.shape.action.value
+    const schemaActions = highRiskActionGrantIntentSchema.options.flatMap(
+      (option) =>
+        "value" in option.shape.action
+          ? option.shape.action.value
+          : option.shape.action.options
     );
     const policyActions = matrixCases.map(({ intent }) => intent.action);
     expect(Object.keys(highRiskActionDefinitions).sort()).toEqual(

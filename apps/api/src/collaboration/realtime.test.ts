@@ -154,6 +154,7 @@ const realtimeFamilyCases = [
   ["pending_share_lifecycle", "control", null],
   ["managed_conversation_changed", "control", null],
   ["work_item_changed", "control", null],
+  ["project_changed", "control", null],
   ["access_revoked", "access_revoked", null]
 ] as const satisfies ReadonlyArray<
   readonly [

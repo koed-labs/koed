@@ -20,6 +20,8 @@ import {
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
+  sourceAdmissionActionGrantBinding,
+  sharedMemorySourceRefSchema,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   pendingShareSchema,
@@ -58,6 +60,7 @@ import {
   readGrantRepresentationQuerySchema,
   revokeShareGrantSchema,
   freezeShareGrantSchema,
+  sharedMemoryAuthoritySchema,
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
   shareGrantParamsSchema,
@@ -252,7 +255,9 @@ type AuthenticatedSourceOwner =
 const reportActionGrantBindingFailure = (
   context: SharedMemoryRouteContext,
   authenticated: Extract<AuthenticatedSourceOwner, { kind: "device" }>,
-  binding: SharedMemoryActionGrantBinding
+  binding:
+    | SharedMemoryActionGrantBinding
+    | ReturnType<typeof sourceAdmissionActionGrantBinding>
 ): void => {
   try {
     context.reportDiagnostic?.({
@@ -270,7 +275,9 @@ const reportActionGrantBindingFailure = (
 const runHighRiskSharedMemoryWrite = async <TBody>(
   context: SharedMemoryRouteContext,
   authenticated: AuthenticatedSourceOwner,
-  binding: SharedMemoryActionGrantBinding,
+  binding:
+    | SharedMemoryActionGrantBinding
+    | ReturnType<typeof sourceAdmissionActionGrantBinding>,
   execute: (
     repository: SharedMemoryRepository
   ) => Promise<{ statusCode: number; body: TBody } | null>
@@ -717,6 +724,102 @@ export const registerSharedMemoryRoutes = (
   app: FastifyInstance,
   context: SharedMemoryRouteContext
 ): void => {
+  const sourceAdmissionParams = z
+    .object({ logicalMemoryId: z.uuid() })
+    .strict();
+  const sourceAdmissionBody = z
+    .object({
+      source: sharedMemorySourceRefSchema,
+      sourceDeploymentProtocolId: z.uuid(),
+      sourceOwnerPrincipalId: z.uuid(),
+      operation: z.enum(["prepare", "seal", "cancel"]),
+      batchId: z.uuid(),
+      expectedGeneration: z.number().int().safe().nonnegative(),
+      expectedHoldVersion: z.number().int().safe().nonnegative(),
+      authority: sharedMemoryAuthoritySchema
+    })
+    .strict();
+  app.get(
+    "/v1/shared-memory/sources/:logicalMemoryId/admission",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const { logicalMemoryId } = sourceAdmissionParams.parse(request.params);
+      const state = await context
+        .requireSharedMemoryRepository()
+        .getSourceAdmission({ userId: actor.id }, logicalMemoryId);
+      if (!state) throw forbidden();
+      return { admission: state };
+    }
+  );
+  app.get(
+    "/v1/shared-memory/sources/:logicalMemoryId/admission/grants",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const { logicalMemoryId } = sourceAdmissionParams.parse(request.params);
+      const admission = await context
+        .requireSharedMemoryRepository()
+        .getSourceAdmission({ userId: actor.id }, logicalMemoryId);
+      if (!admission) throw forbidden();
+      return {
+        grants: await context
+          .requireSharedMemoryRepository()
+          .listUnfrozenSourceGrants({ userId: actor.id }, logicalMemoryId)
+      };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/sources/:logicalMemoryId/admission",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const { logicalMemoryId } = sourceAdmissionParams.parse(request.params);
+      const input = sourceAdmissionBody.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      if (authenticated.kind !== "device") throw forbidden();
+      const binding = sourceAdmissionActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        source: input.source,
+        sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+        logicalMemoryId,
+        batchId: input.batchId,
+        expectedGeneration: input.expectedGeneration,
+        expectedHoldVersion: input.expectedHoldVersion,
+        operation: input.operation
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const state = await repository.changeSourceAdmission(
+              { userId: authenticated.actor.id },
+              {
+                logicalMemoryId,
+                batchId: input.batchId,
+                source: input.source,
+                sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+                sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+                deviceCredentialId: authenticated.auth.credential.id,
+                expectedGeneration: input.expectedGeneration,
+                expectedHoldVersion: input.expectedHoldVersion,
+                operation: input.operation
+              }
+            );
+            return { statusCode: 200, body: { admission: state } };
+          }
+        )
+      );
+      return result.body;
+    }
+  );
   app.put(
     "/v1/shared-memory/source-owner-policies/:logicalMemoryId",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },

@@ -324,6 +324,7 @@ export const getCapturedSessionSummaryWithClient = async (
         and s.visibility = 'personal'
         and s.invalidated_at is null
         and s.personal_deleted_at is null
+        and s.trashed_at is null
         and exists (
           select 1
           from users owner
@@ -919,6 +920,7 @@ export const createCapturedSessionRepository = (
           and owner_user_id = $1
           and visibility = 'personal'
           and invalidated_at is null
+          and trashed_at is null
         returning ${capturedSessionColumns}
       `,
       [actor.userId, sessionId, title]
@@ -951,6 +953,7 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and trashed_at is null
         returning ${capturedSessionColumns}
       `,
       [actor.userId, sessionId, project.id, project.name, project.path]
@@ -975,6 +978,7 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and trashed_at is null
         returning ${capturedSessionColumns}
       `,
       [actor.userId, sessionId]
@@ -1063,6 +1067,7 @@ export const createCapturedSessionRepository = (
           and s.visibility = 'personal'
           and s.invalidated_at is null
           and s.personal_deleted_at is null
+          and s.trashed_at is null
         group by s.id, lm.id, relationship.state, relationship.revoked_at,
                  relationship.source_cursor, relationship.last_synced_at
         order by latest_activity_at desc, s.id desc
@@ -1090,6 +1095,7 @@ export const createCapturedSessionRepository = (
           and session.visibility = 'personal'
           and session.invalidated_at is null
           and session.personal_deleted_at is null
+          and session.trashed_at is null
         where logical.id = $2
           and logical.owner_user_id = $1
           and logical.owner_principal_id = $1
@@ -1124,6 +1130,7 @@ export const createCapturedSessionRepository = (
           from sessions s
           join memory_events me on me.session_id = s.id
           where s.invalidated_at is null
+            and s.trashed_at is null
             and s.visibility = 'personal'
             and s.owner_user_id = $1
             and me.invalidated_at is null
@@ -1185,6 +1192,7 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
+          and trashed_at is null
           and (
             cwd = $2
             or metadata ->> 'projectId' = $2

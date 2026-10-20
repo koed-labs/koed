@@ -890,6 +890,7 @@ export {
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
+  sourceAdmissionActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
@@ -1854,3 +1855,4 @@ export {
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
 export * from "./work-item-contract.js";
+export * from "./project-contract.js";

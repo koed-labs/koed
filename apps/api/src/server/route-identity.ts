@@ -382,6 +382,116 @@ const managedConversationRunnerRoutes = [
 export const routeIdentityContracts = [
   route(
     "GET",
+    "/v1/projects",
+    "session_or_device_credential",
+    "projects",
+    "List owned Personal Projects.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects",
+    "session_or_device_credential",
+    "projects",
+    "Create an owned Personal Project.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/projects/{id}",
+    "session_or_device_credential",
+    "projects",
+    "Rename or change the folder of an owned Personal Project.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/projects/{id}",
+    "session_or_device_credential",
+    "projects",
+    "Begin owner-confirmed Personal Project deletion.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/delete-preview",
+    "session_or_device_credential",
+    "projects",
+    "Read the current exact active execution set before Project deletion.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/delete-progress",
+    "session_or_device_credential",
+    "projects",
+    "Advance a confirmed Personal Project deletion and stop its exact execution set.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/delete-cancel",
+    "session_or_device_credential",
+    "projects",
+    "Cancel a pending owner Project deletion and reconcile source holds.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/delete-status",
+    "session_or_device_credential",
+    "projects",
+    "Read the exact Project deletion phase and outstanding work.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/restore",
+    "session_or_device_credential",
+    "projects",
+    "Restore an exact Personal Project delete batch.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/restore-reconcile",
+    "session_or_device_credential",
+    "projects",
+    "Retry release of source admission holds after a local Project restore.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/hq",
+    "session_or_device_credential",
+    "projects",
+    "Read authoritative Personal Project HQ counts.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/projects/{id}/work-items",
     "session_or_device_credential",
     "projects",
@@ -1872,6 +1982,46 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "shared_memory",
     "Revoke a Shared Memory Share Grant.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants/{shareGrantId}/freeze",
+    "device_credential",
+    "shared_memory",
+    "Freeze one exact owner Share Grant after independent Native review.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/sources/{logicalMemoryId}/admission",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read owner-bound source admission generation and opaque hold status.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/sources/{logicalMemoryId}/admission",
+    "device_credential",
+    "shared_memory",
+    "Prepare, seal, or cancel an exact owner source admission hold.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/sources/{logicalMemoryId}/admission/grants",
+    "session_or_device_credential",
+    "shared_memory",
+    "List exact active unfrozen owner Share Grants for source deletion.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes

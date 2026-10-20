@@ -95,6 +95,50 @@ export interface SharedMemoryActionGrantBinding {
   requestHash: string;
 }
 
+export const sourceAdmissionActionGrantBinding = (input: {
+  referenceId: string;
+  source: SharedMemorySourceRef;
+  sourceDeploymentProtocolId: string;
+  sourceOwnerPrincipalId: string;
+  logicalMemoryId: string;
+  batchId: string;
+  expectedGeneration: number;
+  expectedHoldVersion: number;
+  operation: "prepare" | "seal" | "cancel";
+}): Omit<SharedMemoryActionGrantBinding, "teamId"> & { teamId: null } => {
+  const action = `shared_memory.source_admission.${input.operation}`;
+  const path = `/v1/shared-memory/sources/${input.logicalMemoryId}/admission`;
+  const body = {
+    source: input.source,
+    sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+    sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+    operation: input.operation,
+    batchId: input.batchId,
+    expectedGeneration: input.expectedGeneration,
+    expectedHoldVersion: input.expectedHoldVersion,
+    authority: authorityBody(input.referenceId)
+  };
+  return {
+    operationFamily: "share_grant_management",
+    action,
+    teamId: null,
+    targetId: input.logicalMemoryId,
+    method: "POST",
+    path,
+    body,
+    scopeHash: sharedMemoryGrantManagementScopeHash({
+      action,
+      teamId: null,
+      targetId: input.logicalMemoryId
+    }),
+    requestHash: sharedMemoryGrantManagementRequestHash({
+      method: "POST",
+      path,
+      body
+    })
+  };
+};
+
 export const sharedMemoryGrantManagementScopeHash = (input: {
   action: string;
   teamId: string | null;

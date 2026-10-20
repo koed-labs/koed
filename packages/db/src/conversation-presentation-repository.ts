@@ -79,6 +79,7 @@ export const createConversationPresentationRepository = (
        where s.owner_user_id = $1
          and s.visibility = 'personal'
          and s.personal_deleted_at is null
+         and s.trashed_at is null
          and s.id = any($2::uuid[])
        order by s.id`,
       [actor.userId, sessionIds]
@@ -100,6 +101,7 @@ export const createConversationPresentationRepository = (
            and owner_user_id = $2
            and visibility = 'personal'
            and personal_deleted_at is null
+           and trashed_at is null
          for update`,
         [input.sessionId, actor.userId]
       );

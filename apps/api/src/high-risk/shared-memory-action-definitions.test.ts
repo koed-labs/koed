@@ -148,6 +148,42 @@ const admit = (intent: HighRiskActionGrantIntent, repo = repository()) =>
     intent
   });
 
+describe("source-admission authority", () => {
+  it("does not mint Direct authority when exact source provenance is denied", async () => {
+    const repo = {
+      inspectSourceAdmissionProvenance: vi.fn(async () => false),
+      getSourceAdmission: vi.fn(async () => ({
+        generation: 0,
+        holdVersion: 0,
+        heldBatchId: null,
+        sealed: false,
+        activeUnfrozenGrants: 0
+      }))
+    };
+    const intent = {
+      action: "shared_memory.source_admission.prepare",
+      source: capturedSource,
+      sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: ids.actor,
+      logicalMemoryId: ids.logicalMemory,
+      batchId: randomUUID(),
+      expectedGeneration: 0,
+      expectedHoldVersion: 0
+    } as const satisfies HighRiskActionGrantIntent;
+    const result = await admitHighRiskActionGrant({
+      repository: repo as never,
+      userId: ids.actor,
+      deviceCredentialId: randomUUID(),
+      clientRequestId: ids.request,
+      hashSecret: (value) => value,
+      intent
+    });
+    expect(result).toBeNull();
+    expect(repo.inspectSourceAdmissionProvenance).toHaveBeenCalledOnce();
+    expect(repo.getSourceAdmission).not.toHaveBeenCalled();
+  });
+});
+
 const shareIntent = (
   maximumFidelity: "lcm_rollups" | "lcm_leaves" | "memory_events",
   includeCuratedMemory = false

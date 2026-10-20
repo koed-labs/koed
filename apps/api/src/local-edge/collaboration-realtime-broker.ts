@@ -3,7 +3,8 @@ import type {
   CollaborationRepository,
   CollaborationSubscriptionRecord,
   DbPool,
-  WorkItemRepository
+  WorkItemRepository,
+  ProjectApiRepository
 } from "@koed/db";
 import { collaborationSubscriptionPrincipalHash } from "@koed/db";
 import {
@@ -34,6 +35,7 @@ import { z } from "zod";
 import {
   materializePersonalRealtimeEvent,
   materializeWorkItemChangedEvent,
+  materializeProjectChangedEvent,
   type PersonalRealtimeMaterializationRepository
 } from "../collaboration/realtime.js";
 import {
@@ -353,7 +355,8 @@ const remoteEventSchema = z
         sharedSessionId: nullableUuidSchema,
         shareGrantId: nullableUuidSchema,
         logicalMemoryId: nullableUuidSchema,
-        workItemId: nullableUuidSchema.optional()
+        workItemId: nullableUuidSchema.optional(),
+        projectId: nullableUuidSchema.optional()
       })
       .strict()
       .superRefine((resource, context) => {
@@ -597,6 +600,10 @@ export interface CollaborationRealtimeBrokerOptions {
   requireCollaborationMaterializationRepository: () => PersonalRealtimeMaterializationRepository;
   requireWorkItemRepository: () => Pick<
     WorkItemRepository,
+    "getForRealtime"
+  > | null;
+  requireProjectRepository: () => Pick<
+    ProjectApiRepository,
     "getForRealtime"
   > | null;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
@@ -2142,7 +2149,9 @@ export const createCollaborationRealtimeBroker = (
         ...(event!.type === "work_item_changed" &&
         "workItemId" in event!.resource
           ? { workItemId: event!.resource.workItemId }
-          : {})
+          : event!.type === "project_changed" && "projectId" in event!.resource
+            ? { projectId: event!.resource.projectId }
+            : {})
       },
       update: event!.update
     };
@@ -2223,11 +2232,17 @@ export const createCollaborationRealtimeBroker = (
               event,
               options.requireWorkItemRepository()
             )
-          : await materializePersonalRealtimeEvent(
-              { userId: connection.binding.localOwnerUserId },
-              event,
-              options.requireCollaborationMaterializationRepository()
-            );
+          : event.family === "project_changed"
+            ? await materializeProjectChangedEvent(
+                { userId: connection.binding.localOwnerUserId },
+                event,
+                options.requireProjectRepository()
+              )
+            : await materializePersonalRealtimeEvent(
+                { userId: connection.binding.localOwnerUserId },
+                event,
+                options.requireCollaborationMaterializationRepository()
+              );
       if (materialized.action !== "deliver") {
         await sendPersonalControlAndStop(connection, "requires_snapshot");
         return;
@@ -2254,7 +2269,9 @@ export const createCollaborationRealtimeBroker = (
           shareGrantId: event.shareGrantId,
           ...(event.family === "work_item_changed"
             ? { workItemId: event.resourceId }
-            : {})
+            : event.family === "project_changed"
+              ? { projectId: event.resourceId }
+              : {})
         },
         update: materialized.update
       });

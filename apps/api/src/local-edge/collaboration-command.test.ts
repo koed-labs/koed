@@ -950,12 +950,16 @@ interface HarnessOptions {
   actionGrantControl?: CollaborationActionGrantControl;
   sharedMemoryControl?: Omit<
     CollaborationSharedMemoryControl,
-    "advanceContinuousPersonalNoteRevision"
+    | "advanceContinuousPersonalNoteRevision"
+    | "resolveProjectSourceAuthority"
+    | "projectSourceRequest"
   > &
     Partial<
       Pick<
         CollaborationSharedMemoryControl,
-        "advanceContinuousPersonalNoteRevision"
+        | "advanceContinuousPersonalNoteRevision"
+        | "resolveProjectSourceAuthority"
+        | "projectSourceRequest"
       >
     >;
 }
@@ -1040,6 +1044,12 @@ const createHarness = (options: HarnessOptions = {}) => {
   const sharedMemoryControl = options.sharedMemoryControl
     ? {
         advanceContinuousPersonalNoteRevision: async () => ({ queued: 0 }),
+        resolveProjectSourceAuthority: async () => {
+          throw new Error("Project source authority is not configured");
+        },
+        projectSourceRequest: async () => {
+          throw new Error("Project source request is not configured");
+        },
         ...options.sharedMemoryControl
       }
     : undefined;

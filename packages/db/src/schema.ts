@@ -213,6 +213,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "pending_share_lifecycle",
   "managed_conversation_changed",
   "work_item_changed",
+  "project_changed",
   "access_revoked"
 ]);
 export const collaborationStreamState = pgEnum("collaboration_stream_state", [
@@ -493,11 +494,15 @@ export const projects = pgTable(
     name: text("name").notNull(),
     folderPath: text("folder_path"),
     key: text("key").notNull(),
+    creationIdempotencyKey: text("creation_idempotency_key"),
+    creationPayloadHash: text("creation_payload_hash"),
     lifecycle: personalProjectLifecycle("lifecycle")
       .notNull()
       .default("active"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deleteBatchId: uuid("delete_batch_id"),
+    deletionPhase: text("deletion_phase"),
+    deletionGeneration: integer("deletion_generation").notNull().default(0),
     teamBackendId: text("team_backend_id"),
     teamWorkspaceId: uuid("team_workspace_id"),
     workspaceProjectId: uuid("workspace_project_id"),
@@ -508,12 +513,81 @@ export const projects = pgTable(
   (table) => [
     unique("projects_owner_id_unique").on(table.ownerUserId, table.id),
     unique("projects_owner_key_unique").on(table.ownerUserId, table.key),
+    unique("projects_owner_creation_idempotency_unique").on(
+      table.ownerUserId,
+      table.creationIdempotencyKey
+    ),
     check("projects_name_not_blank", sql`length(trim(${table.name})) > 0`),
     check("projects_key_not_blank", sql`length(trim(${table.key})) > 0`),
     check("projects_version_positive", sql`${table.version} > 0`),
     check(
+      "projects_deletion_generation_nonnegative",
+      sql`${table.deletionGeneration} >= 0`
+    ),
+    check(
+      "projects_deletion_phase_check",
+      sql`(${table.deletionPhase} is null and ${table.lifecycle} = 'active')
+        or (${table.deletionPhase} in ('preparing','freezing','stopping','ready')
+          and ${table.lifecycle} = 'active' and ${table.deleteBatchId} is not null)
+        or (${table.deletionPhase} = 'complete' and ${table.lifecycle} = 'deleted')`
+    ),
+    check(
       "projects_deleted_shape_check",
       sql`(${table.lifecycle} = 'active' and ${table.deletedAt} is null) or (${table.lifecycle} = 'deleted' and ${table.deletedAt} is not null)`
+    )
+  ]
+);
+
+// Local-only durable coordinator state. Team sees only the opaque batch and
+// exact logical source identity, never the Personal Project or folder.
+export const projectDeleteOperations = pgTable(
+  "project_delete_operations",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sourceManifest: jsonb("source_manifest").$type<unknown[]>().notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    executionManifest: jsonb("execution_manifest").$type<unknown[]>().notNull(),
+    executionSetHash: text("execution_set_hash").notNull(),
+    backendAcks: jsonb("backend_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    grantFreezeAcks: jsonb("grant_freeze_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    runtimeAcks: jsonb("runtime_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text("state").notNull().default("preparing"),
+    lastErrorCode: text("last_error_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_delete_operations_project_fk"
+    }).onDelete("restrict"),
+    unique("project_delete_operations_project_batch_unique").on(
+      table.projectId,
+      table.batchId
+    ),
+    index("project_delete_operations_owner_idx").on(
+      table.ownerUserId,
+      table.createdAt.desc()
+    ),
+    check(
+      "project_delete_operations_state_check",
+      sql`${table.state} in ('preparing','freezing','stopping','ready','complete','cancelled','needs_attention','restore_releasing','restored')`
+    ),
+    check(
+      "project_delete_operations_manifest_hash_check",
+      sql`length(${table.sourceManifestHash})=64 and length(${table.executionSetHash})=64`
     )
   ]
 );
@@ -543,6 +617,7 @@ export const projectWorkItems = pgTable(
     prState: text("pr_state"),
     dueOn: date("due_on"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deleteBatchId: uuid("delete_batch_id"),
     doneAt: timestamp("done_at", { withTimezone: true }),
     doneBy: uuid("done_by"),
     createdBy: uuid("created_by").notNull(),
@@ -1172,6 +1247,8 @@ export const sessions = pgTable(
     personalDeletedAt: timestamp("personal_deleted_at", {
       withTimezone: true
     }),
+    trashedAt: timestamp("trashed_at", { withTimezone: true }),
+    deleteBatchId: uuid("delete_batch_id"),
     personalDeletedByUserId: uuid("personal_deleted_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
@@ -1517,6 +1594,38 @@ export const sharedMemoryPublicationFences = pgTable(
     check(
       "shared_memory_publication_fences_version_check",
       sql`${table.publicationVersion} >= 0`
+    )
+  ]
+);
+
+// Team-side admission generation for one exact owner-owned source. This fences
+// new grants without pausing sync or changing an existing grant's publication.
+export const sharedMemorySourceAdmission = pgTable(
+  "shared_memory_source_admission",
+  {
+    logicalMemoryId: uuid("logical_memory_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    generation: bigint("generation", { mode: "number" }).notNull().default(0),
+    heldBatchId: uuid("held_batch_id"),
+    heldAt: timestamp("held_at", { withTimezone: true }),
+    sealedAt: timestamp("sealed_at", { withTimezone: true }),
+    holdVersion: integer("hold_version").notNull().default(0),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.logicalMemoryId, table.ownerUserId],
+      foreignColumns: [logicalMemories.id, logicalMemories.ownerUserId],
+      name: "shared_memory_source_admission_owner_fk"
+    }).onDelete("restrict"),
+    check(
+      "shared_memory_source_admission_generation_check",
+      sql`${table.generation} >= 0 and ${table.holdVersion} >= 0`
+    ),
+    check(
+      "shared_memory_source_admission_hold_shape_check",
+      sql`(${table.heldBatchId} is null and ${table.heldAt} is null and ${table.sealedAt} is null)
+      or (${table.heldBatchId} is not null and ${table.heldAt} is not null)`
     )
   ]
 );
@@ -6837,6 +6946,11 @@ export const sharedSourcePreviews = pgTable(
       .notNull()
       .default(1),
     previewRevision: integer("preview_revision").notNull().default(1),
+    sourceAdmissionGeneration: bigint("source_admission_generation", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
     previewHash: text("preview_hash").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
@@ -7260,6 +7374,11 @@ export const sharedMemoryCandidatePreviews = pgTable(
     id: id(),
     previewHash: text("preview_hash").notNull(),
     previewRevision: integer("preview_revision").notNull().default(1),
+    sourceAdmissionGeneration: bigint("source_admission_generation", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
     authoritySource: text("authority_source").notNull(),
     authorityReferenceId: uuid("authority_reference_id").notNull(),
     ownerUserId: uuid("owner_user_id")
@@ -7426,6 +7545,11 @@ export const pendingShareOperations = pgTable(
       .notNull()
       .default("preparing"),
     operationVersion: integer("operation_version").notNull().default(1),
+    sourceAdmissionGeneration: bigint("source_admission_generation", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
     attemptCount: integer("attempt_count").notNull().default(0),
     lastControlMutationId: uuid("last_control_mutation_id"),
     lastControlAction: text("last_control_action"),
@@ -9027,7 +9151,7 @@ export const projectLifecycleSchemaCapabilities = pgTable(
   (table) => [
     check(
       "project_lifecycle_schema_capabilities_state_check",
-      sql`(${table.capability} = 'workspace_projects'
+      sql`(${table.capability} in ('workspace_projects','project_sources','project_source_notes','project_decks','project_scheduled_jobs','project_hq_sections')
         and ((${table.state} = 'absent' and ${table.enabledAt} is null)
           or (${table.state} = 'enabled' and ${table.enabledAt} is not null)))`
     )

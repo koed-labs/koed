@@ -11,6 +11,7 @@ import {
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
+  sourceAdmissionActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemoryRepresentation,
@@ -34,6 +35,9 @@ type SharedMemoryAction =
   | "shared_memory.preview"
   | "shared_memory.revoke"
   | "shared_memory.grant.freeze"
+  | "shared_memory.source_admission.prepare"
+  | "shared_memory.source_admission.seal"
+  | "shared_memory.source_admission.cancel"
   | "shared_memory.conversation_source_grant"
   | "shared_memory.conversation_source_revoke"
   | "shared_memory.change_fidelity";
@@ -49,6 +53,8 @@ type SharedMemoryActionRepository = Pick<
   | "getSharedMemoryCandidatePreviewAdmission"
   | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryRevokeReview"
+  | "getSourceAdmission"
+  | "inspectSourceAdmissionProvenance"
   | "getSharedMemoryFidelityChangeReview"
   | "getTeamConversationSourceGrantReview"
 >;
@@ -57,6 +63,7 @@ interface SharedMemoryAdmissionInput {
   repository: SharedMemoryActionRepository;
   userId: string;
   clientRequestId: string;
+  deviceCredentialId?: string;
   intent: HighRiskActionGrantIntent;
 }
 
@@ -585,6 +592,65 @@ const freezeDefinition = {
   }
 };
 
+const sourceAdmissionDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (!input.intent.action.startsWith("shared_memory.source_admission."))
+      return null;
+    const intent = input.intent as Extract<
+      SharedMemoryActionIntent,
+      {
+        action:
+          | "shared_memory.source_admission.prepare"
+          | "shared_memory.source_admission.seal"
+          | "shared_memory.source_admission.cancel";
+      }
+    >;
+    if (
+      !input.deviceCredentialId ||
+      intent.source.logicalMemoryId !== intent.logicalMemoryId
+    )
+      return null;
+    const sourceOwned = await input.repository.inspectSourceAdmissionProvenance(
+      { userId: input.userId },
+      {
+        source: intent.source,
+        sourceDeploymentProtocolId: intent.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: intent.sourceOwnerPrincipalId,
+        deviceCredentialId: input.deviceCredentialId
+      }
+    );
+    if (!sourceOwned) return null;
+    const state = await input.repository.getSourceAdmission(
+      { userId: input.userId },
+      intent.logicalMemoryId
+    );
+    if (
+      !state ||
+      state.generation !== intent.expectedGeneration ||
+      state.holdVersion !== intent.expectedHoldVersion ||
+      (intent.action === "shared_memory.source_admission.prepare"
+        ? state.heldBatchId !== null
+        : state.heldBatchId !== intent.batchId)
+    )
+      return null;
+    return {
+      operation: sourceAdmissionActionGrantBinding({
+        referenceId: input.clientRequestId,
+        source: intent.source,
+        sourceDeploymentProtocolId: intent.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: intent.sourceOwnerPrincipalId,
+        logicalMemoryId: intent.logicalMemoryId,
+        batchId: intent.batchId,
+        expectedGeneration: intent.expectedGeneration,
+        expectedHoldVersion: intent.expectedHoldVersion,
+        operation: intent.action.split(".")[2] as "prepare" | "seal" | "cancel"
+      }),
+      policy: previewPolicy()
+    };
+  }
+};
+
 const fidelityChangeDefinition = {
   operationFamily: "share_grant_management" as const,
   async admit(input: SharedMemoryAdmissionInput) {
@@ -707,6 +773,9 @@ export const sharedMemoryActionDefinitions = {
   "shared_memory.preview": previewDefinition,
   "shared_memory.revoke": revokeDefinition,
   "shared_memory.grant.freeze": freezeDefinition,
+  "shared_memory.source_admission.prepare": sourceAdmissionDefinition,
+  "shared_memory.source_admission.seal": sourceAdmissionDefinition,
+  "shared_memory.source_admission.cancel": sourceAdmissionDefinition,
   "shared_memory.conversation_source_grant": conversationSourceGrantDefinition,
   "shared_memory.conversation_source_revoke":
     conversationSourceRevokeDefinition,

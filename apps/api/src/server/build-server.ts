@@ -18,6 +18,7 @@ import {
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
   createWorkItemRepository,
+  createProjectApiRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -41,6 +42,8 @@ import {
 } from "../auth/workos.js";
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
+import { registerProjectRoutes } from "../projects/routes.js";
+import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import {
   type CacheProvider,
   createRateLimitHandlers,
@@ -465,6 +468,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         })
       : null);
   const workItemRepository = pool ? createWorkItemRepository(pool) : null;
+  const projectApiRepository = pool
+    ? createProjectApiRepository(pool, {
+        configuredBackendIds: () =>
+          readLocalEdgeUpstreamRegistry(
+            localEdgeUpstreamBackendsPath
+          ).backends.map((backend) => backend.id)
+      })
+    : null;
   const retentionRepository =
     options.retentionRepository ??
     (pool
@@ -1610,6 +1621,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       auth: authHelpers,
       repository: collaborationRepository,
       workItemRepository,
+      projectRepository: projectApiRepository,
       materializationRepository: collaborationRealtimeMaterializationRepository,
       sharedMemoryRepository: repository,
       teamPresenceRepository: repository,
@@ -1703,6 +1715,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       requireCollaborationRepository,
       requireCollaborationMaterializationRepository: requireRepository,
       requireWorkItemRepository: () => workItemRepository,
+      requireProjectRepository: () => projectApiRepository,
       resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
       quarantineCrossIdentitySyncForBackend: async (
         ownerUserId,
@@ -1854,6 +1867,26 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerApiTokenRoutes(app, routeContext);
   registerWorkItemRoutes(app, {
     repository: workItemRepository,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerProjectRoutes(app, {
+    repository: projectApiRepository,
+    managedRepository: repository,
+    sourceCoordinator:
+      projectApiRepository &&
+      collaborationSharedMemoryControl &&
+      localSharedMemoryCandidatePreparation
+        ? createProjectSourceCoordinator({
+            repository: projectApiRepository,
+            sharedMemoryControl: collaborationSharedMemoryControl,
+            actionGrantControl: collaborationActionGrantControl,
+            resolveSourceIdentity:
+              localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
+          })
+        : null,
+    deploymentProfile: config.deploymentProfile,
     auth: authHelpers,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite

@@ -17,6 +17,7 @@ import type {
   DeviceCredentialAuthContext,
   ManagedConversationRepository,
   WorkItemRepository,
+  ProjectApiRepository,
   SharedMemoryRepository,
   TeamCollaborationMessageV2Record
 } from "@koed/db";
@@ -194,6 +195,7 @@ export interface CollaborationRealtimeServiceOptions {
   >;
   repository: CollaborationRepository | null;
   workItemRepository?: Pick<WorkItemRepository, "getForRealtime"> | null;
+  projectRepository?: Pick<ProjectApiRepository, "getForRealtime"> | null;
   materializationRepository:
     | (CollaborationRealtimeMaterializationRepository &
         Pick<
@@ -276,6 +278,7 @@ const requiredOperationFamiliesForEvent = (
     case "access_revoked":
       return [];
     case "work_item_changed":
+    case "project_changed":
       return ["personal_collaboration_read"];
   }
 };
@@ -748,6 +751,38 @@ export const materializeWorkItemChangedEvent = async (
   };
 };
 
+export const materializeProjectChangedEvent = async (
+  actor: ActorContext,
+  event: CollaborationOutboxEventRecord,
+  repository: Pick<ProjectApiRepository, "getForRealtime"> | null | undefined
+): Promise<EventMaterialization> => {
+  if (
+    event.family !== "project_changed" ||
+    event.scope !== "personal" ||
+    event.personalOwnerUserId !== actor.userId ||
+    event.actorPrincipalId !== actor.userId ||
+    event.teamId !== null ||
+    event.teamWorkspaceId !== null ||
+    event.threadId !== null ||
+    event.messageId !== null ||
+    event.shareGrantId !== null ||
+    event.logicalMemoryId !== null ||
+    event.resourceType !== "project" ||
+    !repository
+  )
+    return { action: "requires_snapshot" };
+  const project = await repository.getForRealtime(
+    actor.userId,
+    event.resourceId
+  );
+  if (!project || project.id !== event.resourceId)
+    return { action: "requires_snapshot" };
+  return {
+    action: "deliver",
+    update: { type: "project_changed", projectId: event.resourceId, project }
+  };
+};
+
 const displayName = (
   value: string | null | undefined,
   fallback: string
@@ -1129,7 +1164,9 @@ const validateRendererUpdate = (
       shareGrantId: event.shareGrantId,
       ...(family === "work_item_changed"
         ? { workItemId: event.resourceId }
-        : {})
+        : family === "project_changed"
+          ? { projectId: event.resourceId }
+          : {})
     },
     update
   });
@@ -1166,6 +1203,13 @@ const materializeEvent = async (
         client.actor,
         event,
         options.workItemRepository
+      );
+    }
+    case "project_changed": {
+      return materializeProjectChangedEvent(
+        client.actor,
+        event,
+        options.projectRepository
       );
     }
     case "personal_memory_changed":
@@ -1541,7 +1585,9 @@ const eventEnvelope = (input: {
       logicalMemoryId: grantScopedLogicalMemoryId,
       ...(input.event.family === "work_item_changed"
         ? { workItemId: input.event.resourceId }
-        : {})
+        : input.event.family === "project_changed"
+          ? { projectId: input.event.resourceId }
+          : {})
     },
     actor: { principalId: grantScopedActorPrincipalId },
     update: input.update

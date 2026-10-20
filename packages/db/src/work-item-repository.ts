@@ -199,7 +199,7 @@ const lockActiveProject = async (
   projectId: string
 ) => {
   const result = await client.query(
-    `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active'
+    `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
        and team_backend_id is null and team_workspace_id is null and workspace_project_id is null
        for share`,
     [projectId, ownerUserId]
@@ -311,7 +311,7 @@ export const createWorkItemRepository = (
     const result = await pool.query<Row>(
       `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
        and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
-       and wi.deleted_at is null and p.lifecycle='active' and p.team_backend_id is null
+       and wi.deleted_at is null and p.lifecycle='active' and p.deletion_phase is null and p.team_backend_id is null
        and p.team_workspace_id is null and p.workspace_project_id is null`,
       [itemId, ownerUserId]
     );
@@ -389,7 +389,7 @@ export const createWorkItemRepository = (
       const found = await client.query<Row>(
         `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
          and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
-         and p.lifecycle='active' and p.team_backend_id is null and p.team_workspace_id is null
+         and p.lifecycle='active' and p.deletion_phase is null and p.team_backend_id is null and p.team_workspace_id is null
          and p.workspace_project_id is null and wi.deleted_at is null for update of wi`,
         [itemId, ownerUserId]
       );
@@ -614,7 +614,7 @@ export const createWorkItemRepository = (
       const found = await client.query<Row>(
         `select wi.* from project_work_items wi join projects p on p.id=wi.project_id
          and p.owner_user_id=wi.owner_user_id where wi.id=$1 and wi.owner_user_id=$2
-         and p.lifecycle='active' and p.team_backend_id is null and p.team_workspace_id is null
+         and p.lifecycle='active' and p.deletion_phase is null and p.team_backend_id is null and p.team_workspace_id is null
          and p.workspace_project_id is null and wi.deleted_at is null for update of wi`,
         [itemId, ownerUserId]
       );

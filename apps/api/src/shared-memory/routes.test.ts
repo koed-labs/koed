@@ -479,6 +479,18 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async listUnfrozenSourceGrants() {
+      return [];
+    },
+    async inspectSourceAdmissionProvenance() {
+      return false;
+    },
+    async getSourceAdmission() {
+      return null;
+    },
+    async changeSourceAdmission() {
+      throw new Error("Source admission is not configured in this fixture");
+    },
     async createSharedMemoryCandidatePreview() {
       return null;
     },

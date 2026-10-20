@@ -724,6 +724,24 @@ const readStoredDesktopCredential: DesktopCredentialReader = (koedHome) => {
 };
 
 export interface CollaborationSharedMemoryControl {
+  resolveProjectSourceAuthority(input: {
+    backendId: string;
+    localOwnerUserId: string;
+  }): Promise<{
+    backend: LocalEdgeUpstreamBackend;
+    principalUserId: string;
+    upstreamDeviceCredentialId: string;
+    upstreamDeviceAuthorization: string;
+    localOwnerUserId: string;
+  }>;
+  projectSourceRequest(input: {
+    backendId: string;
+    localOwnerUserId: string;
+    method: "GET" | "POST";
+    path: string;
+    body?: Record<string, unknown>;
+    actionGrant?: string;
+  }): Promise<Record<string, unknown>>;
   advanceContinuousPersonalNoteRevision(input: {
     backendId: string;
     localOwnerUserId: string;
@@ -3479,6 +3497,51 @@ const dispatchResolved = async (
 export const createCollaborationSharedMemoryControl = (
   options: CollaborationSharedMemoryControlOptions
 ): CollaborationSharedMemoryControl => ({
+  async resolveProjectSourceAuthority(input) {
+    const readDesktop =
+      options.readDesktopCredential ?? readStoredDesktopCredential;
+    const desktop = readDesktop(options.koedHome);
+    if (!desktop || desktop.ownerUserId !== input.localOwnerUserId)
+      throw new ControlFailure("access_revoked");
+    const command = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.control_pending_share",
+      input: {
+        pendingShareId: randomUUID(),
+        mutationId: randomUUID(),
+        expectedOperationVersion: 1,
+        action: "retry"
+      }
+    });
+    if (command.command !== "collaboration.control_pending_share")
+      throw new ControlFailure("internal_error");
+    const authority = await resolveAuthority(options, command, {
+      upstreamBackendId: input.backendId,
+      localOwnerUserId: input.localOwnerUserId,
+      desktopCredentialKeyId: desktop.credentialKeyId
+    });
+    if (!supportsCandidateSourceAdmission(authority.backend))
+      throw new ControlFailure("protocol_mismatch");
+    return {
+      backend: authority.backend,
+      principalUserId: authority.upstreamUserId,
+      upstreamDeviceCredentialId: authority.upstreamDeviceCredentialId,
+      upstreamDeviceAuthorization: authority.upstreamAuthorization,
+      localOwnerUserId: authority.localOwnerUserId
+    };
+  },
+  async projectSourceRequest(input) {
+    const authority = await this.resolveProjectSourceAuthority(input);
+    return remoteRequest(
+      options,
+      {
+        backend: authority.backend,
+        upstreamAuthorization: authority.upstreamDeviceAuthorization
+      },
+      input
+    );
+  },
   async advanceContinuousPersonalNoteRevision(input) {
     const parsedInput = z
       .object({

@@ -996,6 +996,56 @@ export interface ContinuousPersonalNoteAdvancementResult {
 }
 
 export interface SharedMemoryRepository {
+  listUnfrozenSourceGrants(
+    actor: ActorContext,
+    logicalMemoryId: string
+  ): Promise<
+    Array<{
+      id: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      grantVersion: number;
+    }>
+  >;
+  inspectSourceAdmissionProvenance(
+    actor: ActorContext,
+    input: {
+      source: SharedMemorySourceRef;
+      sourceDeploymentProtocolId: string;
+      sourceOwnerPrincipalId: string;
+      deviceCredentialId: string;
+    }
+  ): Promise<boolean>;
+  getSourceAdmission(
+    actor: ActorContext,
+    logicalMemoryId: string
+  ): Promise<{
+    generation: number;
+    holdVersion: number;
+    heldBatchId: string | null;
+    sealed: boolean;
+    activeUnfrozenGrants: number;
+  } | null>;
+  changeSourceAdmission(
+    actor: ActorContext,
+    input: {
+      source: SharedMemorySourceRef;
+      sourceDeploymentProtocolId: string;
+      sourceOwnerPrincipalId: string;
+      deviceCredentialId: string;
+      logicalMemoryId: string;
+      batchId: string;
+      expectedGeneration: number;
+      expectedHoldVersion: number;
+      operation: "prepare" | "seal" | "cancel";
+    }
+  ): Promise<{
+    generation: number;
+    holdVersion: number;
+    heldBatchId: string | null;
+    sealed: boolean;
+    activeUnfrozenGrants: number;
+  }>;
   createSharedMemoryCandidatePreview(
     actor: ActorContext,
     input: {
@@ -1954,7 +2004,8 @@ const ensureCandidateSourceIdentity = async (
     sourceOwnerPrincipalId?: string;
     deviceCredentialId?: string;
     requireExternalBinding?: boolean;
-  }
+  },
+  mode: "candidate" | "restrictive_admission" = "candidate"
 ): Promise<{
   ownerPrincipalId: string;
   deploymentIdentityId: string;
@@ -2002,6 +2053,14 @@ const ensureCandidateSourceIdentity = async (
       "Candidate source provenance does not match its logical Memory"
     );
   }
+  if (
+    mode === "restrictive_admission" &&
+    input.source.kind !== "captured_session"
+  ) {
+    throw new SharedMemoryConflictError(
+      "Project source admission requires an explicit source adapter"
+    );
+  }
   const credential = await client.query<Row>(
     `select credential_key_id,upstream_backend_id,device_instance_id,
             lineage_id,credential_version,verifier_kind,verifier_hash,
@@ -2043,20 +2102,48 @@ const ensureCandidateSourceIdentity = async (
     );
   }
   const localIdentity = await client.query<Row>(
-    `select owner_principal_id
+    `select owner_principal_id,lifecycle,invalidated_at,purge_completed_at
        from logical_memories
       where id=$1 and owner_user_id=$2
         and origin_deployment_identity_id=$3 and source_kind=$4
-        and lifecycle='active' and invalidated_at is null
-        and purge_completed_at is null
+        and ($5::boolean or (lifecycle='active' and invalidated_at is null
+          and purge_completed_at is null))
       for update`,
     [
       input.source.logicalMemoryId,
       actor.userId,
       deployment.id,
-      input.source.kind
+      input.source.kind,
+      mode === "restrictive_admission"
     ]
   );
+  if (
+    mode === "restrictive_admission" &&
+    localIdentity.rows[0] &&
+    (localIdentity.rows[0].lifecycle !== "active" ||
+      localIdentity.rows[0].invalidated_at !== null ||
+      localIdentity.rows[0].purge_completed_at !== null)
+  ) {
+    if (input.source.kind !== "captured_session") {
+      throw new SharedMemoryConflictError(
+        "Project source admission requires an explicit source adapter"
+      );
+    }
+    const retained = await client.query(
+      `select 1 from captured_session_logical_memories
+        where logical_memory_id=$1 and source_session_id=$2
+          and owner_principal_id=$3`,
+      [
+        input.source.logicalMemoryId,
+        input.source.sessionId,
+        input.sourceOwnerPrincipalId
+      ]
+    );
+    if (!retained.rows[0])
+      throw new SharedMemoryConflictError(
+        "Retained source identity is unavailable"
+      );
+  }
   if (
     localIdentity.rows[0] &&
     !input.requireExternalBinding &&
@@ -10766,6 +10853,186 @@ export const createSharedMemoryRepository = (
   };
 
   const repository: SharedMemoryClientScopedRepository = {
+    async listUnfrozenSourceGrants(actor, logicalMemoryId) {
+      assertUuid(logicalMemoryId, "logicalMemoryId");
+      const result = await pool.query<Row>(
+        `select grant_row.id,grant_row.team_id,
+          grant_row.team_workspace_id,grant_row.grant_version
+        from team_memory_share_grants grant_row
+        join logical_memories memory on memory.id=grant_row.logical_memory_id
+         and memory.owner_user_id=grant_row.owner_user_id
+        where grant_row.logical_memory_id=$1 and grant_row.owner_user_id=$2
+          and grant_row.lifecycle='active' and grant_row.revoked_at is null
+          and grant_row.frozen_at is null
+        order by grant_row.id limit 10001`,
+        [logicalMemoryId, actor.userId]
+      );
+      if (result.rows.length > 10000)
+        throw new SharedMemoryConflictError(
+          "Source grant set exceeds lifecycle limit"
+        );
+      return result.rows.map((row) => ({
+        id: stringValue(row.id),
+        teamId: stringValue(row.team_id),
+        teamWorkspaceId: stringValue(row.team_workspace_id),
+        grantVersion: numberValue(row.grant_version)
+      }));
+    },
+    async inspectSourceAdmissionProvenance(actor, input) {
+      await withTransaction(pool, async (client) => {
+        await ensureCandidateSourceIdentity(
+          client,
+          actor,
+          input,
+          "restrictive_admission"
+        );
+      });
+      return true;
+    },
+    async getSourceAdmission(actor, logicalMemoryId) {
+      assertUuid(logicalMemoryId, "logicalMemoryId");
+      const result = await pool.query<Row>(
+        `select coalesce(a.generation,0) as generation,
+                coalesce(a.hold_version,0) as hold_version,
+                a.held_batch_id,a.sealed_at,
+                (select count(*)::integer from team_memory_share_grants grant_row
+                  where grant_row.logical_memory_id=memory.id
+                    and grant_row.owner_user_id=$2 and grant_row.lifecycle='active'
+                    and grant_row.revoked_at is null and grant_row.frozen_at is null
+                ) as active_unfrozen_grants
+           from logical_memories memory
+           left join shared_memory_source_admission a
+             on a.logical_memory_id=memory.id and a.owner_user_id=memory.owner_user_id
+          where memory.id=$1 and memory.owner_user_id=$2`,
+        [logicalMemoryId, actor.userId]
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            generation: numberValue(row.generation),
+            holdVersion: numberValue(row.hold_version),
+            heldBatchId: nullableString(row.held_batch_id),
+            sealed: row.sealed_at !== null,
+            activeUnfrozenGrants: numberValue(row.active_unfrozen_grants)
+          }
+        : null;
+    },
+    async changeSourceAdmission(actor, input) {
+      assertUuid(input.logicalMemoryId, "logicalMemoryId");
+      assertUuid(input.batchId, "batchId");
+      if (
+        !Number.isSafeInteger(input.expectedGeneration) ||
+        input.expectedGeneration < 0 ||
+        !Number.isSafeInteger(input.expectedHoldVersion) ||
+        input.expectedHoldVersion < 0
+      ) {
+        throw new SharedMemoryConflictError(
+          "Source admission version is invalid"
+        );
+      }
+      return withTransaction(pool, async (client) => {
+        if (input.source.logicalMemoryId !== input.logicalMemoryId)
+          throw new SharedMemoryConflictError(
+            "Source admission identity changed"
+          );
+        await ensureCandidateSourceIdentity(
+          client,
+          actor,
+          input,
+          "restrictive_admission"
+        );
+        await client.query(
+          `insert into shared_memory_source_admission (logical_memory_id,owner_user_id)
+           values ($1,$2) on conflict (logical_memory_id) do nothing`,
+          [input.logicalMemoryId, actor.userId]
+        );
+        const selected = await client.query<Row>(
+          `select * from shared_memory_source_admission
+            where logical_memory_id=$1 and owner_user_id=$2 for update`,
+          [input.logicalMemoryId, actor.userId]
+        );
+        const row = selected.rows[0];
+        if (!row) throw new SharedMemoryAuthorizationError();
+        const generation = numberValue(row.generation);
+        const holdVersion = numberValue(row.hold_version);
+        const heldBatchId = nullableString(row.held_batch_id);
+        if (
+          heldBatchId === input.batchId &&
+          ((input.operation === "prepare" && row.sealed_at === null) ||
+            (input.operation === "seal" && row.sealed_at !== null))
+        ) {
+          // Lost response replay is safe only for the same exact batch.
+        } else if (
+          generation !== input.expectedGeneration ||
+          holdVersion !== input.expectedHoldVersion
+        ) {
+          throw new SharedMemoryConflictError(
+            "Source admission version changed"
+          );
+        } else if (input.operation === "prepare") {
+          if (heldBatchId !== null)
+            throw new SharedMemoryConflictError(
+              "Source admission is held by another batch"
+            );
+          await client.query(
+            `update shared_memory_source_admission
+                set generation=generation+1,held_batch_id=$2,held_at=now(),
+                    sealed_at=null,hold_version=hold_version+1,updated_at=now()
+              where logical_memory_id=$1`,
+            [input.logicalMemoryId, input.batchId]
+          );
+        } else if (input.operation === "seal") {
+          if (heldBatchId !== input.batchId)
+            throw new SharedMemoryConflictError(
+              "Source admission batch changed"
+            );
+          const active = await client.query<{ count: number }>(
+            `select count(*)::integer as count from team_memory_share_grants
+              where logical_memory_id=$1 and owner_user_id=$2 and lifecycle='active'
+                and revoked_at is null and frozen_at is null`,
+            [input.logicalMemoryId, actor.userId]
+          );
+          if (active.rows[0]!.count !== 0)
+            throw new SharedMemoryConflictError(
+              "Active Share Grants remain unfrozen"
+            );
+          await client.query(
+            `update shared_memory_source_admission
+                set sealed_at=now(),hold_version=hold_version+1,updated_at=now()
+              where logical_memory_id=$1`,
+            [input.logicalMemoryId]
+          );
+        } else {
+          if (heldBatchId !== input.batchId)
+            throw new SharedMemoryConflictError(
+              "Source admission batch changed"
+            );
+          await client.query(
+            `update shared_memory_source_admission
+                set held_batch_id=null,held_at=null,sealed_at=null,
+                    hold_version=hold_version+1,updated_at=now()
+              where logical_memory_id=$1`,
+            [input.logicalMemoryId]
+          );
+        }
+        const current = await client.query<Row>(
+          `select generation,hold_version,held_batch_id,sealed_at,
+             (select count(*)::integer from team_memory_share_grants
+               where logical_memory_id=$1 and owner_user_id=$2 and lifecycle='active'
+                 and revoked_at is null and frozen_at is null) as active_unfrozen_grants
+             from shared_memory_source_admission where logical_memory_id=$1`,
+          [input.logicalMemoryId, actor.userId]
+        );
+        const state = current.rows[0]!;
+        return {
+          generation: numberValue(state.generation),
+          holdVersion: numberValue(state.hold_version),
+          heldBatchId: nullableString(state.held_batch_id),
+          sealed: state.sealed_at !== null,
+          activeUnfrozenGrants: numberValue(state.active_unfrozen_grants)
+        };
+      });
+    },
     async createSharedMemoryCandidatePreview(actor, input) {
       assertUuid(input.logicalMemoryId, "logicalMemoryId");
       assertUuid(input.teamId, "teamId");
