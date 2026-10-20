@@ -1,8 +1,12 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 
 // Fields a caller adds with with_citations, with_evidence or
 // include_evidence=true. The runtime only returns them when requested.
 const DETAIL_KEYS = [
+  "question_id",
+  "team_backend_id",
+  "citation_receipt_id",
   "structuredAnswer",
   "evidence",
   "citations",
@@ -11,6 +15,35 @@ const DETAIL_KEYS = [
   "expandedNodeIds",
   "visibilityLabels"
 ];
+export const citationAlias = (receiptId, ordinal) =>
+  `r${String(receiptId).replace(/-/g, "").toLowerCase()}c${ordinal + 1}`;
+
+export const withCitationAliases = (result) => {
+  if (!result || typeof result !== "object") return result;
+  const questionId = result.question_id;
+  if (
+    typeof questionId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(questionId) ||
+    !Array.isArray(result.citations)
+  )
+    return result;
+  const receiptId =
+    typeof result.citation_receipt_id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      result.citation_receipt_id
+    )
+      ? result.citation_receipt_id
+      : randomUUID();
+  return {
+    ...result,
+    citation_receipt_id: receiptId,
+    citations: result.citations.map((citation, ordinal) =>
+      citation && typeof citation === "object"
+        ? { ...citation, citationId: citationAlias(receiptId, ordinal) }
+        : citation
+    )
+  };
+};
 const MAX_REQUEST_LABEL = 300;
 
 // Stored text can quote attacker-influenced conversations. Escape it so it
@@ -48,6 +81,7 @@ export function formatMemoryAnswerCompletion(
   status = "completed",
   { includeDetails = true, request } = {}
 ) {
+  result = withCitationAliases(result);
   const label = requestLabel(request);
   if (status !== "completed")
     return [

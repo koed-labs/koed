@@ -11,6 +11,11 @@ import {
 } from "./encrypted-payload-repository.js";
 import { truncateDisplayText } from "./value-helpers.js";
 import { SharedMemoryAuthorizationError } from "./shared-memory-repository.js";
+import { createCuratedMemoryRepository } from "./curated-memory-repository.js";
+import {
+  activeCuratedMemoryEvidencePredicate,
+  memoryNodeHasForgottenSessionPredicate
+} from "./curated-memory-policy.js";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type {
   ActorContext,
@@ -130,6 +135,47 @@ export interface MemoryQuestionRepository {
     actor: MemoryQuestionActorContext,
     questionId: string
   ): Promise<MemoryQuestionDetailRecord | null>;
+  getMemoryQuestionForManagedCitation(
+    actor: MemoryQuestionActorContext,
+    questionId: string
+  ): Promise<(MemoryQuestionDetailRecord & { teamAuthorized: boolean }) | null>;
+  getManagedPersonalQuestionCitation(
+    actor: MemoryQuestionActorContext,
+    input: {
+      questionId: string;
+      ordinal: number;
+    }
+  ): Promise<{
+    questionId: string;
+    ordinal: number;
+    citation: unknown;
+    sourceType: "curated_memory" | "memory_node" | "memory_event" | "message";
+    sourceId: string;
+    sourceOwnerPrincipalId: string;
+    title: string;
+    summary: string | null;
+    kind: string | null;
+    provenance: string | null;
+    replaces: string | null;
+    messageLink: string | null;
+  } | null>;
+  getManagedTeamQuestionCitation(
+    actor: MemoryQuestionActorContext,
+    input: {
+      questionId: string;
+      ordinal: number;
+    }
+  ): Promise<{
+    questionId: string;
+    ordinal: number;
+    citation: unknown;
+    sourceType: string;
+    sourceId: string;
+    teamWorkspaceId: string;
+    sourceOwnerPrincipalId: string;
+    title: string;
+    summary: string | null;
+  } | null>;
 }
 
 export type CreateFinalMemoryQuestionInput = Parameters<
@@ -269,6 +315,30 @@ export const createMemoryQuestionRepository = (
   pool: pg.Pool,
   options: MemoryQuestionRepositoryOptions = {}
 ): MemoryQuestionRepository => {
+  const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider
+  });
+  const sourceText = (value: unknown): string | null =>
+    typeof value === "string" &&
+    value.trim() &&
+    !value.startsWith("[koed encrypted ")
+      ? value.trim()
+      : null;
+  const currentEncryptedField = async (
+    actor: MemoryQuestionActorContext,
+    sourceTable: "memory_nodes" | "memory_events" | "messages",
+    sourceId: string,
+    sourceColumn: string
+  ): Promise<unknown | null> => {
+    if (!options.envelopeEncryptionProvider) return null;
+    const decrypted = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+      pool,
+      actor,
+      options.envelopeEncryptionProvider,
+      { sourceTable, sourceId, sourceColumn }
+    );
+    return decrypted?.plaintext ?? null;
+  };
   const encryptedSearchBatchSize = Math.min(
     Math.max(options.encryptedMemoryQuestionSearchBatchSize ?? 500, 1),
     500
@@ -1377,6 +1447,331 @@ export const createMemoryQuestionRepository = (
             await hydrateQuestionRow(actor, result.rows[0])
           )
         : null;
+    },
+    async getMemoryQuestionForManagedCitation(actor, questionId) {
+      const result = await pool.query<MemoryQuestionDetailRow>(
+        `select id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, team_authorization, search_domain,
+                project_id, project_name, project_path, session_id, thread_id, thread_name, ask_thread_id, ask_turn_index,
+                query, answer_markdown, error_message, evidence, citations, retrieval, local_memory_worker, response,
+                status, created_at, updated_at, answered_at, attempt_count,
+                jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+           from memory_questions where id=$2 and owner_user_id=$1 and visibility='personal' limit 1`,
+        [actor.userId, questionId]
+      );
+      return result.rows[0]
+        ? {
+            ...mapMemoryQuestionDetail(
+              await hydrateQuestionRow(actor, result.rows[0])
+            ),
+            teamAuthorized: Boolean(result.rows[0].team_authorization)
+          }
+        : null;
+    },
+    async getManagedPersonalQuestionCitation(actor, input) {
+      const question = await repository.getMemoryQuestionForManagedCitation(
+        actor,
+        input.questionId
+      );
+      if (
+        !question ||
+        question.teamAuthorized ||
+        (question.retrievalScope as string) === "team" ||
+        question.teamWorkspaceId !== null ||
+        question.status !== "answered"
+      )
+        return null;
+      const citation = Array.isArray(question.citations)
+        ? question.citations[input.ordinal]
+        : undefined;
+      if (!citation || typeof citation !== "object" || Array.isArray(citation))
+        return null;
+      const source = citation as Record<string, unknown>;
+      const representation = sourceText(source.representation);
+      const sourceType =
+        sourceText(source.sourceType) ??
+        (representation === "curated_assertions"
+          ? "curated_memory"
+          : representation === "memory_events"
+            ? "memory_event"
+            : representation?.startsWith("lcm_")
+              ? "memory_node"
+              : null);
+      const sourceId = sourceText(source.sourceId) ?? sourceText(source.nodeId);
+      if (
+        !sourceId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          sourceId
+        ) ||
+        !["curated_memory", "memory_node", "memory_event", "message"].includes(
+          sourceType ?? ""
+        )
+      )
+        return null;
+      const base = {
+        questionId: question.id,
+        ordinal: input.ordinal,
+        citation,
+        sourceType: sourceType as
+          | "curated_memory"
+          | "memory_node"
+          | "memory_event"
+          | "message",
+        sourceId,
+        sourceOwnerPrincipalId: actor.userId,
+        kind: null as string | null,
+        provenance: null as string | null,
+        replaces: null as string | null,
+        messageLink: null as string | null
+      };
+      if (sourceType === "curated_memory") {
+        const active = await pool.query(
+          `select cma.id from curated_memory_assertions cma
+            where cma.id=$1 and cma.owner_user_id=$2 and cma.visibility='personal'
+              and cma.status='current' and cma.suppressed_at is null
+              and (cma.expires_at is null or cma.expires_at > now())
+              and ${activeCuratedMemoryEvidencePredicate("cma")}`,
+          [sourceId, actor.userId]
+        );
+        if (!active.rows[0]) return null;
+        const assertion =
+          await curatedMemoryRepository.getCuratedMemoryAssertion(
+            actor,
+            sourceId
+          );
+        if (
+          !assertion ||
+          assertion.status !== "current" ||
+          assertion.suppressedAt ||
+          (assertion.expiresAt && Date.parse(assertion.expiresAt) <= Date.now())
+        )
+          return null;
+        const chain = assertion.supersedesAssertionId
+          ? await curatedMemoryRepository.getCuratedMemoryReplacementChain(
+              actor,
+              sourceId
+            )
+          : [];
+        return {
+          ...base,
+          title: assertion.assertionText,
+          summary: assertion.assertionText,
+          kind: assertion.kind,
+          provenance: `Saved ${assertion.observedAt}`,
+          replaces: chain[0]?.assertionText ?? null
+        };
+      }
+      if (sourceType === "memory_node") {
+        const result = await pool.query<{
+          title: string | null;
+          summary_text: string;
+          id: string;
+        }>(
+          `select mn.id,mn.title,mn.summary_text from memory_nodes mn
+            where mn.id=$1 and mn.owner_user_id=$2 and mn.visibility='personal'
+              and mn.invalidated_at is null and mn.personal_deleted_at is null
+              and not ${memoryNodeHasForgottenSessionPredicate("mn")}
+              and (mn.session_id is null or exists (
+                select 1 from sessions s where s.id=mn.session_id and s.owner_user_id=$2
+                  and s.trashed_at is null and s.personal_deleted_at is null
+                  and s.delete_batch_id is null and s.forget_batch_id is null))`,
+          [sourceId, actor.userId]
+        );
+        const node = result.rows[0];
+        if (!node) return null;
+        const summary =
+          node.summary_text === "[koed encrypted memory node]"
+            ? sourceText(
+                await currentEncryptedField(
+                  actor,
+                  "memory_nodes",
+                  sourceId,
+                  "summary_text"
+                )
+              )
+            : sourceText(node.summary_text);
+        if (!summary) return null;
+        return {
+          ...base,
+          title: sourceText(node.title) ?? "Memory summary",
+          summary,
+          provenance: "Your memory summary"
+        };
+      }
+      if (sourceType === "memory_event") {
+        const result = await pool.query<{
+          id: string;
+          event_type: string;
+          payload: unknown;
+        }>(
+          `select me.id,me.event_type::text,me.payload from memory_events me
+            where me.id=$1 and me.owner_user_id=$2 and me.visibility='personal'
+              and me.invalidated_at is null and me.personal_deleted_at is null
+              and (me.session_id is null or exists (
+                select 1 from sessions s where s.id=me.session_id and s.owner_user_id=$2
+                  and s.trashed_at is null and s.personal_deleted_at is null
+                  and s.delete_batch_id is null and s.forget_batch_id is null))`,
+          [sourceId, actor.userId]
+        );
+        const event = result.rows[0];
+        if (!event) return null;
+        const rawPayload =
+          event.payload &&
+          typeof event.payload === "object" &&
+          !Array.isArray(event.payload)
+            ? (event.payload as Record<string, unknown>)
+            : {};
+        const decrypted =
+          rawPayload.contentEncrypted === true
+            ? await currentEncryptedField(
+                actor,
+                "memory_events",
+                sourceId,
+                "payload"
+              )
+            : rawPayload;
+        const payload =
+          decrypted &&
+          typeof decrypted === "object" &&
+          !Array.isArray(decrypted)
+            ? (decrypted as Record<string, unknown>)
+            : {};
+        const metadata =
+          payload.metadata &&
+          typeof payload.metadata === "object" &&
+          !Array.isArray(payload.metadata)
+            ? (payload.metadata as Record<string, unknown>)
+            : {};
+        const summary =
+          sourceText(payload.content) ?? sourceText(metadata.embeddingContent);
+        if (!summary) return null;
+        return {
+          ...base,
+          title: "Memory event",
+          summary,
+          provenance: `Your ${event.event_type.replaceAll("_", " ")} event`
+        };
+      }
+      const result = await pool.query<{
+        id: string;
+        content: string;
+        session_id: string;
+      }>(
+        `select m.id,m.content,m.session_id from messages m
+          join sessions s on s.id=m.session_id and s.owner_user_id=m.owner_user_id
+          where m.id=$1 and m.owner_user_id=$2 and m.visibility='personal'
+            and m.invalidated_at is null and s.trashed_at is null
+            and s.personal_deleted_at is null
+            and s.delete_batch_id is null and s.forget_batch_id is null`,
+        [sourceId, actor.userId]
+      );
+      const message = result.rows[0];
+      if (!message) return null;
+      const content =
+        message.content === "[koed encrypted message]"
+          ? sourceText(
+              await currentEncryptedField(
+                actor,
+                "messages",
+                sourceId,
+                "content"
+              )
+            )
+          : sourceText(message.content);
+      if (!content) return null;
+      return {
+        ...base,
+        title: "Chat message",
+        summary: content,
+        provenance: "Your chat",
+        messageLink: null
+      };
+    },
+    async getManagedTeamQuestionCitation(actor, input) {
+      if (!actor.allowTeam) throw new SharedMemoryAuthorizationError();
+      const question = await repository.getMemoryQuestionForManagedCitation(
+        actor,
+        input.questionId
+      );
+      if (
+        !question?.teamAuthorized ||
+        !question.teamWorkspaceId ||
+        question.status !== "answered"
+      )
+        return null;
+      const citation = Array.isArray(question.citations)
+        ? question.citations[input.ordinal]
+        : undefined;
+      if (!citation || typeof citation !== "object" || Array.isArray(citation))
+        return null;
+      const source = citation as Record<string, unknown>;
+      const sourceId =
+        typeof source.sourceId === "string" ? source.sourceId : null;
+      if (
+        !sourceId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          sourceId
+        )
+      )
+        return null;
+      const representation =
+        typeof source.representation === "string"
+          ? source.representation
+          : null;
+      const sourceType =
+        typeof source.sourceType === "string"
+          ? source.sourceType
+          : representation === "curated_assertions"
+            ? "curated_memory"
+            : representation === "memory_events"
+              ? "memory_event"
+              : representation?.startsWith("lcm_")
+                ? "memory_node"
+                : null;
+      if (
+        !sourceType ||
+        !["curated_memory", "memory_event", "memory_node"].includes(sourceType)
+      )
+        return null;
+      const provenance = await pool.query<{ owner_principal_id: string }>(
+        `select distinct g.owner_principal_id
+           from team_memory_semantic_items item
+           join team_memory_share_grants g on g.id=item.share_grant_id
+          where item.pseudonymous_source_id=$1 and item.team_workspace_id=$2
+            and g.team_workspace_id=$2 and g.lifecycle='active'
+            and g.owner_principal_id is not null`,
+        [sourceId, question.teamWorkspaceId]
+      );
+      if (provenance.rows.length !== 1) return null;
+      const evidence = Array.isArray(question.evidence)
+        ? (question.evidence.find((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry))
+              return false;
+            const item = entry as Record<string, unknown>;
+            const itemCitation =
+              item.citation &&
+              typeof item.citation === "object" &&
+              !Array.isArray(item.citation)
+                ? (item.citation as Record<string, unknown>)
+                : {};
+            return (
+              itemCitation.sourceId === sourceId || item.sourceId === sourceId
+            );
+          }) as Record<string, unknown> | undefined)
+        : undefined;
+      return {
+        questionId: question.id,
+        ordinal: input.ordinal,
+        citation,
+        sourceType,
+        sourceId,
+        teamWorkspaceId: question.teamWorkspaceId,
+        sourceOwnerPrincipalId: provenance.rows[0]!.owner_principal_id,
+        title: typeof source.title === "string" ? source.title : "Team memory",
+        summary:
+          typeof evidence?.summaryText === "string"
+            ? evidence.summaryText
+            : null
+      };
     }
   };
   return repository;

@@ -306,6 +306,10 @@ export const localEdgeTeamMemorySearchSchema = localEdgeTeamMemoryRecallSchema;
 
 export const localEdgeTeamMemoryAnswerSchema = localEdgeTeamMemoryRecallSchema;
 
+export const localEdgeTeamMemoryCitationSchema = localEdgeTeamMemoryBaseSchema
+  .extend({ question_id: z.uuid(), ordinal: z.number().int().min(0).max(255) })
+  .strict();
+
 export const localEdgeTeamMemoryQuestionSchema = localEdgeTeamMemoryBaseSchema
   .extend({ input: finalMemoryQuestionSchema })
   .strict()

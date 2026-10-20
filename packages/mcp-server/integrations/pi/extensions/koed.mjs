@@ -16,7 +16,10 @@ import {
   presentMemoryAnswerTask,
   collectMemoryAnswerTask
 } from "../memory-answer-task-presentation.mjs";
-import { formatMemoryAnswerCompletion } from "../memory-answer-presentation.mjs";
+import {
+  formatMemoryAnswerCompletion,
+  withCitationAliases
+} from "../memory-answer-presentation.mjs";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
 import { workItemCompletionRequest } from "../work-item-completion-request.mjs";
 
@@ -255,6 +258,11 @@ export default function koedExtension(pi) {
             delete input.delivery_mode;
             result = await callTool(name, input, ctx, combined, invocation);
           }
+          if (
+            name === "memory_answer" &&
+            params.delivery_mode !== "non_blocking"
+          )
+            result = withCitationAliases(result);
           return {
             content: [
               {
@@ -325,7 +333,10 @@ export default function koedExtension(pi) {
   register(
     "memory_answer",
     "Memory Answer",
-    "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory. Recall Koed memory evidence for answer synthesis. Keep task_id; continue independent work, then collect with memory_answer_result(wait=true) when needed. No automatic follow-up is delivered. Do not repeat a pending question, poll rapidly, invent prior constraints or claim dependent work is complete before collection. Cancel unnecessary recall with memory_answer_cancel. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team, use memory_workspaces, then pass team_workspace_id and team_backend_id. The open Desktop Workspace does not select scope.",
+    "Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory. Recall Koed memory evidence for answer synthesis. Keep task_id; continue independent work, then collect with memory_answer_result(wait=true) when needed. No automatic follow-up is delivered. Do not repeat a pending question, poll rapidly, invent prior constraints or claim dependent work is complete before collection. Cancel unnecessary recall with memory_answer_cancel. Personal Memory is the default; global without team_workspace_id searches Personal Memory only. For Team, use memory_workspaces, then pass team_workspace_id and team_backend_id. The open Desktop Workspace does not select scope." +
+      (process.env.KOED_MANAGED_CONVERSATION === "1"
+        ? " In this Desktop managed conversation, request response_detail=with_citations. Preserve each returned alias exactly and place [m:alias] after the claim it supports. Never invent or reuse an alias from another turn."
+        : ""),
     answerParameters
   );
   register(

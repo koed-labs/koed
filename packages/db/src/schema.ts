@@ -5524,6 +5524,74 @@ export const managedConversationRuntimeItems = pgTable(
   ]
 );
 
+/** Immutable citations admitted from a verified Koed recall tool result. */
+export const managedConversationTurnCitations = pgTable(
+  "managed_conversation_turn_citations",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    sourceGenerationId: uuid("source_generation_id"),
+    providerTurnId: text("provider_turn_id").notNull(),
+    toolCallId: text("tool_call_id").notNull(),
+    questionBackendId: text("question_backend_id").notNull(),
+    questionId: uuid("question_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    alias: text("alias").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    visibility: text("visibility").notNull(),
+    sourceOwnerNamespace: text("source_owner_namespace").notNull(),
+    sourceOwnerPrincipal: text("source_owner_principal").notNull(),
+    encryptedDetail: jsonb("encrypted_detail")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "managed_turn_citations_owner_execution_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.logicalSessionId],
+      foreignColumns: [sessions.ownerUserId, sessions.logicalSessionId],
+      name: "managed_turn_citations_owner_session_fk"
+    }).onDelete("cascade"),
+    unique("managed_conversation_turn_citations_alias_unique").on(
+      table.ownerUserId,
+      table.logicalSessionId,
+      table.providerTurnId,
+      table.alias
+    ),
+    unique("managed_conversation_turn_citations_source_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.executionGeneration,
+      table.providerTurnId,
+      table.toolCallId,
+      table.ordinal
+    ),
+    index("managed_conversation_turn_citations_turn_idx").on(
+      table.ownerUserId,
+      table.logicalSessionId,
+      table.providerTurnId
+    ),
+    check(
+      "managed_conversation_turn_citations_shape_check",
+      sql`${table.executionGeneration} > 0 and ${table.ordinal} >= 0 and length(${table.alias}) between 1 and 128 and length(${table.toolCallId}) between 1 and 512 and length(${table.providerTurnId}) between 1 and 512 and ${table.sourceType} in ('curated_memory','memory_node','memory_event','message') and ${table.visibility} in ('personal','team')`
+    )
+  ]
+);
+
 export const managedConversationExecutionCheckpoints = pgTable(
   "managed_conversation_execution_checkpoints",
   {

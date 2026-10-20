@@ -17,6 +17,7 @@ import {
   deviceCredentialParamsSchema,
   localEdgeRouteDecisionSchema,
   localEdgeTeamMemoryAnswerSchema,
+  localEdgeTeamMemoryCitationSchema,
   localEdgeTeamMemoryExpandSchema,
   localEdgeTeamMemoryQuestionSchema,
   localEdgeTeamMemorySearchSchema,
@@ -1057,6 +1058,24 @@ export const registerLocalEdgeRoutes = (
           upstreamBackendId: input.upstream_backend_id,
           method: "GET",
           path: `/v1/memory/nodes/${encodeURIComponent(input.node_id)}/expand?${query.toString()}`
+        },
+        localCredential
+      );
+    }
+  );
+
+  app.post(
+    "/v1/local-edge/team-memory/citations/detail",
+    { preHandler: memoryRecallRateLimit },
+    async (request, reply) => {
+      const localCredential = authorizeLocalTeamMemoryRequest(request);
+      const input = localEdgeTeamMemoryCitationSchema.parse(request.body);
+      return relayTeamMemoryRequest(
+        reply,
+        {
+          upstreamBackendId: input.upstream_backend_id,
+          method: "GET",
+          path: `/v1/memory/questions/${encodeURIComponent(input.question_id)}/citations/${input.ordinal}`
         },
         localCredential
       );

@@ -55,7 +55,13 @@ export function expandConversationDisplayEvents(
       content: segment.content,
       contentPreview: segment.content.slice(0, 16_384),
       invalidatedAt: event.invalidatedAt,
-      metadata: segment.kind === "message" ? {} : { toolName: segment.toolName }
+      metadata:
+        segment.kind === "message"
+          ? { providerTurnId: event.metadata.providerTurnId }
+          : {
+              toolName: segment.toolName,
+              providerTurnId: event.metadata.providerTurnId
+            }
     }));
   });
 }

@@ -1,4 +1,5 @@
-import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import { createPortal } from "react-dom";
 import type { ManagedConversationSettings } from "@koed/shared/ai-client-contract";
 import type { ManagedConversationFileRevision } from "@koed/shared/managed-conversation-files";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
@@ -41,7 +42,8 @@ import type {
   ManagedConversationDesktopApi,
   ManagedConversationIdentity,
   ManagedConversationLaunchOptions,
-  ManagedConversationRuntimeItem
+  ManagedConversationRuntimeItem,
+  ManagedConversationTurnCitation
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
@@ -63,6 +65,8 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { DesktopApi } from "../../../types.js";
 import { assignmentFrom } from "../../views/preferences/local-ai-client-settings-helpers.js";
 import { HqRuntimeItem } from "./HqRuntimeItem.js";
+import { CitedAnswer, CitationDetail } from "./Citations.js";
+import { citationAliasBatches } from "./citation-alias-batches.js";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
 import {
   hqVisibilityIdentity,
@@ -1042,7 +1046,9 @@ export function HqActiveConversation({
   contextLabel,
   onClearContext,
   inspectorOpen = false,
-  panelHostRef
+  panelHostRef,
+  onOpenCitationMessage,
+  focusEventId
 }: {
   api: ManagedConversationDesktopApi | null;
   privateProjectHq?: boolean;
@@ -1066,6 +1072,13 @@ export function HqActiveConversation({
   onClearContext?: () => void;
   inspectorOpen?: boolean;
   panelHostRef?: (node: HTMLDivElement | null) => void;
+  onOpenCitationMessage?: (target: {
+    messageId: string;
+    sessionId: string;
+    projectId: string;
+    threadId: string;
+  }) => Promise<boolean>;
+  focusEventId?: string | null;
 }) {
   const detailThread = draft?.thread ?? thread;
   const { detail, loadOlder, retry } = usePersonalMemoryDetail(
@@ -1268,6 +1281,99 @@ export function HqActiveConversation({
   useEffect(() => () => flushAutosave(), [identityKey]);
   const executionId =
     resumeStatus === "ready" ? (conversation?.executionId ?? null) : null;
+  // Invalidate private citation state during render, before an effect can clear
+  // it. The generation also rejects late replies after an A→B→A identity hop.
+  const citationScopeRef = useRef({
+    api,
+    store,
+    identityKey,
+    owner: visibilityOwnerId,
+    generation: 0
+  });
+  if (
+    citationScopeRef.current.api !== api ||
+    citationScopeRef.current.store !== store ||
+    citationScopeRef.current.identityKey !== identityKey ||
+    citationScopeRef.current.owner !== visibilityOwnerId
+  ) {
+    citationScopeRef.current = {
+      api,
+      store,
+      identityKey,
+      owner: visibilityOwnerId,
+      generation: citationScopeRef.current.generation + 1
+    };
+  }
+  const citationGeneration = citationScopeRef.current.generation;
+  const [citationState, setCitationState] = useState<{
+    generation: number;
+    byTurn: Record<string, ManagedConversationTurnCitation[]>;
+    byAlias: ManagedConversationTurnCitation[];
+  }>({ generation: citationGeneration, byTurn: {}, byAlias: [] });
+  const citationsByTurn =
+    citationState.generation === citationGeneration ? citationState.byTurn : {};
+  const citationsByAlias =
+    citationState.generation === citationGeneration
+      ? citationState.byAlias
+      : [];
+  const [citationDetailState, setCitationDetailState] = useState<{
+    generation: number;
+    citation: ManagedConversationTurnCitation | null;
+  }>({ generation: citationGeneration, citation: null });
+  const citationDetail =
+    citationDetailState.generation === citationGeneration
+      ? citationDetailState.citation
+      : null;
+  const [citationLoading, setCitationLoading] = useState(false);
+  const citationRequestSequence = useRef(0);
+  useEffect(() => {
+    citationRequestSequence.current++;
+    setCitationState({
+      generation: citationGeneration,
+      byTurn: {},
+      byAlias: []
+    });
+    setCitationDetailState({ generation: citationGeneration, citation: null });
+    setCitationLoading(false);
+  }, [citationGeneration]);
+  const openCitation = (citation: ManagedConversationTurnCitation) => {
+    if (!api?.citationDetail || !executionId) return;
+    const sequence = ++citationRequestSequence.current;
+    setCitationLoading(true);
+    setCitationDetailState({ generation: citationGeneration, citation: null });
+    const generation = citationGeneration;
+    void api
+      .citationDetail(executionId, citation.providerTurnId, citation.alias)
+      .then((result) => {
+        if (
+          citationScopeRef.current.generation === generation &&
+          citationRequestSequence.current === sequence
+        )
+          setCitationDetailState({ generation, citation: result.citation });
+      })
+      .catch(() => {
+        if (
+          citationScopeRef.current.generation === generation &&
+          citationRequestSequence.current === sequence
+        )
+          setCitationDetailState({
+            generation,
+            citation: {
+              ...citation,
+              detailAvailable: false,
+              summary: null,
+              title: "Memory source unavailable"
+            }
+          });
+      })
+      .finally(() => {
+        if (
+          citationScopeRef.current.generation === generation &&
+          citationRequestSequence.current === sequence
+        )
+          setCitationLoading(false);
+      });
+  };
   const recoveryReady = lifecycle?.recoveryStatus === "ready";
   useEffect(() => {
     if (!recoveredPending || !recoveryReady) return;
@@ -2102,6 +2208,133 @@ export function HqActiveConversation({
       event.actor === "agent" ||
       event.actor === "tool"
   );
+  const lastFocusLoadRef = useRef("");
+  const focusLoadCountRef = useRef({ key: "", count: 0 });
+  const [focusUnavailable, setFocusUnavailable] = useState(false);
+  useEffect(() => {
+    if (!focusEventId) return;
+    const focusKey = `${identityKey}\u0000${focusEventId}`;
+    if (focusLoadCountRef.current.key !== focusKey) {
+      focusLoadCountRef.current = { key: focusKey, count: 0 };
+      setFocusUnavailable(false);
+    }
+    const target = [
+      ...(scrollRef.current?.querySelectorAll<HTMLElement>(
+        "[data-message-id]"
+      ) ?? [])
+    ].find((element) => element.dataset.messageId === focusEventId);
+    if (target) {
+      setFocusUnavailable(false);
+      target.scrollIntoView({ block: "center" });
+      return;
+    }
+    if (detail?.status !== "ready") return;
+    if (!detail.hasOlder || focusLoadCountRef.current.count >= 20) {
+      setFocusUnavailable(true);
+      return;
+    }
+    const loadKey = `${identityKey}\u0000${focusEventId}\u0000${detail.events.length}`;
+    if (lastFocusLoadRef.current === loadKey) return;
+    lastFocusLoadRef.current = loadKey;
+    focusLoadCountRef.current.count++;
+    void loadOlder();
+  }, [
+    focusEventId,
+    identityKey,
+    detail?.events.length,
+    detail?.hasOlder,
+    detail?.status,
+    visibleEvents.length,
+    loadOlder
+  ]);
+  const citationTurnIds = [
+    ...new Set(
+      visibleEvents
+        .filter(
+          (event) => event.actor === "assistant" || event.actor === "agent"
+        )
+        .map((event) => event.metadata.providerTurnId)
+        .filter((value): value is string => typeof value === "string")
+    )
+  ];
+  const citationTurnKey = citationTurnIds.join("\u0000");
+  const citationCommandRevision = runtime?.latestCommand
+    ? `${runtime.latestCommand.id}\u0000${runtime.latestCommand.state}`
+    : "";
+  const completedCitationTags = [
+    ...new Set(
+      visibleEvents.flatMap((event) =>
+        event.actor === "assistant" || event.actor === "agent"
+          ? [
+              ...conversationEventText(event).matchAll(
+                /\[m:([A-Za-z0-9_-]+)\]/g
+              )
+            ].map((match) => match[1]!)
+          : []
+      )
+    )
+  ]
+    .sort()
+    .join("\u0000");
+  useEffect(() => {
+    if (
+      !api?.turnCitations ||
+      !executionId ||
+      (!citationTurnIds.length && !completedCitationTags)
+    )
+      return;
+    let cancelled = false;
+    const generation = citationGeneration;
+    const aliasBatches = citationAliasBatches(completedCitationTags);
+    const byTurn = Promise.all(
+      citationTurnIds.map(async (turnId) => {
+        try {
+          return [
+            turnId,
+            (await api.turnCitations!(executionId, turnId)).citations
+          ] as const;
+        } catch {
+          return [turnId, []] as const;
+        }
+      })
+    );
+    const byAlias = (async () => {
+      const cited: ManagedConversationTurnCitation[] = [];
+      for (const aliases of aliasBatches) {
+        if (cancelled || citationScopeRef.current.generation !== generation)
+          break;
+        try {
+          const result = await api.turnCitations!(
+            executionId,
+            "alias-lookup",
+            aliases
+          );
+          cited.push(...result.citations);
+        } catch {
+          // One unavailable batch must not hide verified aliases in other batches.
+        }
+      }
+      return cited;
+    })();
+    void Promise.all([byTurn, byAlias]).then(([entries, cited]) => {
+      if (!cancelled && citationScopeRef.current.generation === generation)
+        setCitationState({
+          generation,
+          byTurn: Object.fromEntries(entries),
+          byAlias: cited
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    api,
+    executionId,
+    citationTurnKey,
+    completedCitationTags,
+    citationCommandRevision,
+    citationGeneration
+  ]);
   const visibleOptimistic = optimistic.filter(
     (item) =>
       !visibleEvents.some(
@@ -2128,6 +2361,76 @@ export function HqActiveConversation({
     runtime?.items.length,
     active
   ]);
+  useEffect(() => {
+    if (!privateProjectHq || !inspectorOpen) return;
+    citationRequestSequence.current++;
+    setCitationDetailState({ generation: citationGeneration, citation: null });
+    setCitationLoading(false);
+  }, [privateProjectHq, inspectorOpen, citationGeneration]);
+  const citationPaneHost =
+    typeof document === "undefined"
+      ? null
+      : document.querySelector(".hq-main-panel");
+  const citationPane =
+    privateProjectHq && inspectorOpen ? null : (
+      <CitationDetail
+        citation={citationDetail}
+        loading={
+          citationDetailState.generation === citationGeneration &&
+          citationLoading
+        }
+        onOpenMessage={async (target) => {
+          const selected = citationDetail;
+          if (
+            !selected ||
+            !api?.citationDetail ||
+            !executionId ||
+            !onOpenCitationMessage
+          )
+            return false;
+          const generation = citationGeneration;
+          const sequence = ++citationRequestSequence.current;
+          try {
+            const fresh = (
+              await api.citationDetail(
+                executionId,
+                selected.providerTurnId,
+                selected.alias
+              )
+            ).citation;
+            if (
+              citationScopeRef.current.generation !== generation ||
+              citationRequestSequence.current !== sequence
+            )
+              return false;
+            if (
+              !fresh?.detailAvailable ||
+              fresh.visibility !== "personal" ||
+              fresh.sourceType !== "message" ||
+              fresh.sourceId !== selected.sourceId ||
+              fresh.alias !== selected.alias ||
+              !fresh.messageTarget ||
+              fresh.messageTarget.messageId !== target.messageId ||
+              fresh.messageTarget.sessionId !== target.sessionId ||
+              fresh.messageTarget.projectId !== target.projectId ||
+              fresh.messageTarget.threadId !== target.threadId
+            )
+              return false;
+            return await onOpenCitationMessage(target);
+          } catch {
+            return false;
+          }
+        }}
+        onClose={() => {
+          citationRequestSequence.current++;
+          setCitationDetailState({
+            generation: citationGeneration,
+            citation: null
+          });
+          setCitationLoading(false);
+        }}
+      />
+    );
   return (
     <div
       className={`hq-conversation ${isBlank ? "hq-conversation--blank" : "hq-conversation--active"}`}
@@ -2139,6 +2442,9 @@ export function HqActiveConversation({
           ref={panelHostRef}
         />
       ) : null}
+      {citationPaneHost
+        ? createPortal(citationPane, citationPaneHost)
+        : citationPane}
       {!isBlank ? (
         <div
           className="hq-conversation__scroll"
@@ -2151,6 +2457,9 @@ export function HqActiveConversation({
           }}
         >
           <div className="hq-conversation__thread">
+            {focusUnavailable ? (
+              <p role="status">Source message unavailable.</p>
+            ) : null}
             {detail?.hasOlder ? (
               <button type="button" onClick={() => void loadOlder()}>
                 Load older messages
@@ -2173,14 +2482,22 @@ export function HqActiveConversation({
                 <article
                   className={`hq-conversation__message ${user ? "hq-conversation__message--user" : "hq-conversation__message--assistant"}`}
                   key={event.id}
+                  data-message-id={event.id}
                 >
                   {!user ? <b>AI Client</b> : null}
                   {user ? (
                     <p className="hq-conversation__bubble">{message}</p>
                   ) : (
-                    <SecureMarkdown
+                    <CitedAnswer
                       source={message}
+                      citations={
+                        event.metadata.providerTurnId
+                          ? (citationsByTurn[event.metadata.providerTurnId] ??
+                            [])
+                          : citationsByAlias
+                      }
                       adapters={markdownAdapters}
+                      onOpen={openCitation}
                     />
                   )}
                   <div className="hq-conversation__actions">
@@ -2256,9 +2573,11 @@ export function HqActiveConversation({
                     key={item.id}
                   >
                     <b>AI Client</b>
-                    <SecureMarkdown
+                    <CitedAnswer
                       source={item.payload.text}
+                      citations={[]}
                       adapters={markdownAdapters}
+                      onOpen={openCitation}
                     />
                   </article>
                 ) : null

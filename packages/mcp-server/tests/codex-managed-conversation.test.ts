@@ -98,6 +98,13 @@ const writeManagedFakeAppServer = (
     primaryParentThreadId?: string;
     selectedReadPath?: string;
     providerRequestKind?: "command_approval" | "user_input";
+    mcpToolCalls?: Array<{
+      server: string;
+      tool: string;
+      status: string;
+      error: unknown;
+      result: unknown;
+    }>;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "managed-fake-app-server.mjs");
@@ -228,6 +235,8 @@ const completeTurn = (turn, status) => {
   send({ method: "item/completed", params: { threadId, turnId: turn.turnId, completedAtMs: turn.base + 100, item: { id: turn.userItemId, type: "userMessage", clientId: turn.clientUserMessageId, content: [{ type: "text", text: turn.prompt }] } } });
   send({ method: "item/completed", params: { threadId, turnId: turn.turnId, completedAtMs: turn.base + 200, item: { id: turn.reasoningId, type: "reasoning", summary: ["Inspect the source."], content: ["private reasoning"] } } });
   send({ method: "item/completed", params: { threadId, turnId: turn.turnId, completedAtMs: turn.base + 400, item: { id: turn.callId, type: "commandExecution", command: "printf managed", cwd: turn.cwd, commandActions: [], aggregatedOutput: "managed", exitCode: 0, durationMs: 100, status: "completed" } } });
+  for (const [index, call] of (options.mcpToolCalls ?? []).entries())
+    send({ method: "item/completed", params: { threadId, turnId: turn.turnId, completedAtMs: turn.base + 450 + index, item: { id: "mcp-" + index, type: "mcpToolCall", arguments: {}, ...call } } });
   send({ method: "item/completed", params: { threadId, turnId: turn.turnId, completedAtMs: turn.base + 500, item: { id: turn.messageId, type: "agentMessage", text: turn.answer, phase: "final_answer" } } });
   send({ method: "turn/completed", params: { threadId, turn: { id: turn.turnId, status, error: status === "completed" ? null : { message: status }, completedAt: (turn.base + 1000) / 1000, durationMs: 1000 } } });
   lifecycle("terminal:" + status);
@@ -1176,6 +1185,63 @@ describe("Codex managed conversation coordinator", () => {
             : undefined
         ).toBe(fs.statSync(transcriptPath).size);
       }
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("observes only successful Koed MCP completions with the real null-error shape", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-citation-callback-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const observed: string[] = [];
+    const memoryClient = new FakeMemoryClient();
+    const session = new CodexManagedConversationSession({
+      ...configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath, {
+          mcpToolCalls: [
+            {
+              server: "koed",
+              tool: "memory_answer",
+              status: "completed",
+              error: null,
+              result: {
+                structuredContent: { question_id: "question-1", citations: [] }
+              }
+            },
+            {
+              server: "other",
+              tool: "memory_answer",
+              status: "completed",
+              error: null,
+              result: {
+                structuredContent: { question_id: "question-2", citations: [] }
+              }
+            },
+            {
+              server: "koed",
+              tool: "memory_answer",
+              status: "failed",
+              error: { message: "failed" },
+              result: {
+                structuredContent: { question_id: "question-3", citations: [] }
+              }
+            }
+          ]
+        }),
+        directory
+      ),
+      onKoedToolCompleted: async (input) => {
+        observed.push(input.toolCallId);
+      }
+    });
+    try {
+      await session.runTurn("Recall", 3_000);
+      expect(observed).toEqual(["mcp-0"]);
+    } finally {
+      await session.closeAndWait();
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });

@@ -34,7 +34,61 @@ export type SecureMarkdownProps = {
   }) => void;
   oversizedFallback?: ReactNode;
   source: string;
+  citationReferences?: ReadonlyMap<
+    string,
+    { number: number; onOpen: () => void }
+  >;
 };
+
+type CitationMarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: CitationMarkdownNode[];
+};
+const citationToken = /\[m:([^\]\s]{0,128})\]?/g;
+const citationRemarkPlugin =
+  (references: ReadonlyMap<string, { number: number; onOpen: () => void }>) =>
+  () =>
+  (tree: CitationMarkdownNode) => {
+    const walk = (node: CitationMarkdownNode) => {
+      if (
+        !node.children ||
+        node.type === "link" ||
+        node.type === "linkReference"
+      )
+        return;
+      const output: CitationMarkdownNode[] = [];
+      for (const child of node.children) {
+        if (child.type !== "text" || typeof child.value !== "string") {
+          walk(child);
+          output.push(child);
+          continue;
+        }
+        let cursor = 0;
+        for (const match of child.value.matchAll(citationToken)) {
+          const start = match.index ?? 0;
+          if (start > cursor)
+            output.push({
+              type: "text",
+              value: child.value.slice(cursor, start)
+            });
+          const citation = references.get(match[1]!);
+          if (match[0].endsWith("]") && citation)
+            output.push({
+              type: "link",
+              url: `koed-citation:${match[1]}`,
+              children: [{ type: "text", value: String(citation.number) }]
+            });
+          cursor = start + match[0].length;
+        }
+        if (cursor < child.value.length)
+          output.push({ type: "text", value: child.value.slice(cursor) });
+      }
+      node.children = output;
+    };
+    walk(tree);
+  };
 
 export type MarkdownInputValidation =
   | {
@@ -224,7 +278,8 @@ export function SecureMarkdown({
   onActionError,
   onOversizedInput,
   oversizedFallback,
-  source
+  source,
+  citationReferences
 }: SecureMarkdownProps) {
   const validation = useMemo(
     () => validateMarkdownInput(source, maxInputBytes),
@@ -249,6 +304,21 @@ export function SecureMarkdown({
   const components = useMemo<Components>(
     () => ({
       a({ children, href }) {
+        if (href?.startsWith("koed-citation:") && citationReferences) {
+          const citation = citationReferences.get(
+            href.slice("koed-citation:".length)
+          );
+          return citation ? (
+            <button
+              type="button"
+              className="hq-citation-chip"
+              aria-label={`Open memory source ${citation.number}`}
+              onClick={citation.onOpen}
+            >
+              {children}
+            </button>
+          ) : null;
+        }
         const safeUrl = sanitizeMarkdownUrl(href, maxUrlLength);
         if (!safeUrl) return <span>{children}</span>;
 
@@ -298,7 +368,7 @@ export function SecureMarkdown({
         );
       }
     }),
-    [adapters, maxUrlLength, onActionError]
+    [adapters, citationReferences, maxUrlLength, onActionError]
   );
 
   if (!validation.ok) {
@@ -316,9 +386,18 @@ export function SecureMarkdown({
     <div className={["memory-markdown", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
         components={components}
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={
+          citationReferences
+            ? [remarkGfm, citationRemarkPlugin(citationReferences)]
+            : [remarkGfm]
+        }
         skipHtml
-        urlTransform={(url) => sanitizeMarkdownUrl(url, maxUrlLength) ?? ""}
+        urlTransform={(url) =>
+          url.startsWith("koed-citation:") &&
+          citationReferences?.has(url.slice("koed-citation:".length))
+            ? url
+            : (sanitizeMarkdownUrl(url, maxUrlLength) ?? "")
+        }
       >
         {source}
       </ReactMarkdown>

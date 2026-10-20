@@ -2547,6 +2547,187 @@ export const registerManagedConversationRoutes = (
   );
 
   app.get(
+    "/v1/managed-conversations/:executionId/turn-citations",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const query = z
+        .object({
+          providerTurnId: z.string().trim().min(1).max(512).optional(),
+          aliases: z.string().max(8192).optional()
+        })
+        .strict()
+        .refine(
+          (value) => Boolean(value.providerTurnId) !== Boolean(value.aliases)
+        )
+        .parse(request.query);
+      const aliases = query.aliases?.split(",");
+      if (
+        aliases &&
+        (aliases.length > 64 ||
+          aliases.some((value) => !/^r[0-9a-f]{32}c[1-9][0-9]*$/.test(value)))
+      )
+        throw Object.assign(new Error("Invalid citation aliases"), {
+          statusCode: 400
+        });
+      const proxied = await proxyManaged(
+        "GET",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/turn-citations`,
+        undefined,
+        {
+          query: new URLSearchParams(
+            query.providerTurnId
+              ? { providerTurnId: query.providerTurnId }
+              : { aliases: query.aliases! }
+          )
+        }
+      );
+      if (proxied) return proxied.payload;
+      const execution = await context
+        .requireRepository()
+        .getManagedConversationExecution({ userId: user.id }, executionId);
+      if (!execution)
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      const repository = context.requireRepository();
+      const listed = query.providerTurnId
+        ? await context
+            .requireRepository()
+            .listManagedConversationTurnCitations(
+              { userId: user.id },
+              { executionId, providerTurnId: query.providerTurnId }
+            )
+        : await context
+            .requireRepository()
+            .listManagedConversationCitationsByAliases(
+              { userId: user.id },
+              { executionId, aliases: aliases! }
+            );
+      const deployment = context.deploymentIdentity.inspect();
+      const citations = await Promise.all(
+        listed.map(async (citation) => {
+          const unavailable = {
+            ...citation,
+            detailAvailable: false,
+            title:
+              citation.visibility === "team"
+                ? "Team memory"
+                : "Memory source unavailable",
+            summary: null
+          };
+          if (
+            citation.visibility !== "personal" ||
+            !deployment.deploymentId ||
+            deployment.health !== "healthy"
+          )
+            return unavailable;
+          const locator =
+            await repository.getManagedConversationCitationLocator(
+              { userId: user.id },
+              {
+                executionId,
+                providerTurnId: citation.providerTurnId,
+                alias: citation.alias
+              }
+            );
+          if (
+            !locator ||
+            locator.visibility !== "personal" ||
+            locator.backendId !== deployment.deploymentId
+          )
+            return unavailable;
+          let current;
+          try {
+            current = await repository.getManagedPersonalQuestionCitation(
+              { userId: user.id, allowTeam: false },
+              { questionId: locator.questionId, ordinal: locator.ordinal }
+            );
+          } catch {
+            return unavailable;
+          }
+          return current &&
+            current.sourceType === locator.sourceType &&
+            current.sourceId === locator.sourceId &&
+            current.sourceOwnerPrincipalId === locator.sourceOwnerPrincipalId
+            ? { ...citation, title: current.title, summary: null }
+            : unavailable;
+        })
+      );
+      return {
+        citations
+      };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/:executionId/turn-citations/:alias",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const params = z
+        .object({
+          executionId: z.string().uuid(),
+          alias: z
+            .string()
+            .regex(/^r[0-9a-f]{32}c[1-9][0-9]*$/)
+            .max(128)
+        })
+        .strict()
+        .parse(request.params);
+      const query = z
+        .object({ providerTurnId: z.string().trim().min(1).max(512) })
+        .strict()
+        .parse(request.query);
+      const path = `/v1/managed-conversations/${encodeURIComponent(params.executionId)}/turn-citations/${encodeURIComponent(params.alias)}`;
+      const proxied = await proxyManaged("GET", path, undefined, {
+        query: new URLSearchParams({ providerTurnId: query.providerTurnId })
+      });
+      if (proxied) return proxied.payload;
+      const repository = context.requireRepository();
+      const execution = await repository.getManagedConversationExecution(
+        { userId: user.id },
+        params.executionId
+      );
+      if (!execution)
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      const listed = await repository.listManagedConversationTurnCitations(
+        { userId: user.id },
+        {
+          executionId: params.executionId,
+          providerTurnId: query.providerTurnId
+        }
+      );
+      const citation = listed.find((entry) => entry.alias === params.alias);
+      if (!citation)
+        throw Object.assign(new Error("Citation not found"), {
+          statusCode: 404
+        });
+      return {
+        citation: {
+          ...citation,
+          detailAvailable: false,
+          title: "Memory source",
+          summary: null
+        },
+        sourceLocator: await repository.getManagedConversationCitationLocator(
+          { userId: user.id },
+          {
+            executionId: params.executionId,
+            providerTurnId: query.providerTurnId,
+            alias: params.alias
+          }
+        )
+      };
+    }
+  );
+
+  app.get(
     "/v1/managed-conversations/:executionId/usage",
     { preHandler: managedConversationReadRateLimit },
     async (request) => {

@@ -78,6 +78,11 @@ export {
 } from "./connection.js";
 export { createConversationItemRepository } from "./conversation-item-repository.js";
 export {
+  createManagedConversationCitationRepository,
+  type ManagedConversationCitationRepository,
+  type ManagedConversationTurnCitation
+} from "./managed-conversation-citation-repository.js";
+export {
   createConversationSourceJournalRepository,
   type AcceptConversationSourceReplicaSegmentInput,
   type AppendConversationSourceSegmentInput,

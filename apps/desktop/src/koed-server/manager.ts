@@ -58,6 +58,7 @@ import {
   managedTerminalServerFrameSchema,
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   readDesktopLocalCredentialAuthorization,
+  readLocalEdgeClientCredentialAuthorization,
   resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
@@ -3522,6 +3523,159 @@ export const createKoedServerManager = ({
         vcsDriver: executionCheckout?.vcsDriver === "git" ? "git" : null,
         latestCommand,
         items: payload.items
+      });
+    }
+
+    if (request.operation === "turn_citations") {
+      const query = request.aliases?.length
+        ? `aliases=${encodeURIComponent(request.aliases.join(","))}`
+        : `providerTurnId=${encodeURIComponent(request.providerTurnId)}`;
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(request.executionId)}/turn-citations?${query}`,
+            apiOrigin
+          ),
+          init: { method: "GET" }
+        }),
+        256 * 1024
+      );
+      return parseManagedConversationResult({
+        operation: "turn_citations",
+        executionId: request.executionId,
+        providerTurnId: request.providerTurnId,
+        citations: payload.citations
+      });
+    }
+
+    if (request.operation === "citation_detail") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(request.executionId)}/turn-citations/${encodeURIComponent(request.alias)}?providerTurnId=${encodeURIComponent(request.providerTurnId)}`,
+            apiOrigin
+          ),
+          init: { method: "GET" }
+        }),
+        256 * 1024
+      );
+      let citation = objectValue(payload.citation);
+      const locator = objectValue(payload.sourceLocator);
+      if (citation && locator) {
+        citation = {
+          ...citation,
+          detailAvailable: false,
+          title: "Memory source unavailable",
+          summary: null
+        };
+        const backendId = locator?.backendId;
+        const questionId = locator?.questionId;
+        const ordinal = locator?.ordinal;
+        if (
+          locator &&
+          typeof backendId === "string" &&
+          typeof questionId === "string" &&
+          typeof ordinal === "number"
+        ) {
+          try {
+            let detail: Record<string, unknown> | null = null;
+            if (locator.visibility === "team") {
+              const credential = readLocalEdgeClientCredentialAuthorization(
+                resolveKoedHome(environment),
+                backendId
+              );
+              if (
+                !credential?.operationFamilies.includes("team_workspace_read")
+              )
+                throw new Error("Team citation authority unavailable");
+              const access = await personalMemoryAccess();
+              const relayed = await fetchBoundedJsonObject(
+                personalMemoryFetch,
+                new URL(
+                  "/v1/local-edge/team-memory/citations/detail",
+                  access.apiOrigin
+                ),
+                {
+                  method: "POST",
+                  redirect: "error",
+                  headers: {
+                    accept: "application/json",
+                    "content-type": "application/json",
+                    authorization: credential.authorization
+                  },
+                  body: JSON.stringify({
+                    upstream_backend_id: backendId,
+                    question_id: questionId,
+                    ordinal
+                  })
+                },
+                { timeoutMs: 15_000, maxBytes: 256 * 1024 }
+              );
+              detail = objectValue(relayed.payload.detail);
+            } else if (locator.visibility === "personal") {
+              const current = await authenticatedPersonalMemoryRequest(
+                ({ apiOrigin }) => ({
+                  url: new URL(
+                    `/v1/memory/questions/${encodeURIComponent(questionId)}/managed-citations/${ordinal}`,
+                    apiOrigin
+                  ),
+                  init: { method: "GET" }
+                }),
+                256 * 1024
+              );
+              detail = objectValue(current.detail);
+            }
+            const namespace =
+              locator.visibility === "team"
+                ? `${backendId}:${detail?.teamWorkspaceId ?? ""}`
+                : detail?.sourceDeploymentId;
+            if (
+              detail?.questionId === questionId &&
+              detail?.ordinal === ordinal &&
+              detail?.sourceType === locator.sourceType &&
+              detail?.sourceId === locator.sourceId &&
+              namespace === locator.sourceNamespace &&
+              detail?.sourceOwnerPrincipalId === locator.sourceOwnerPrincipalId
+            ) {
+              citation = {
+                ...citation,
+                detailAvailable: true,
+                title:
+                  typeof detail.title === "string" ? detail.title : "Memory",
+                summary:
+                  typeof detail.summary === "string" ? detail.summary : null,
+                kind: typeof detail.kind === "string" ? detail.kind : null,
+                provenance:
+                  typeof detail.provenance === "string"
+                    ? detail.provenance
+                    : null,
+                replaces:
+                  typeof detail.replaces === "string" ? detail.replaces : null,
+                messageLink:
+                  locator.visibility === "personal" &&
+                  typeof detail.messageLink === "string"
+                    ? detail.messageLink
+                    : null,
+                messageTarget:
+                  locator.visibility === "personal" &&
+                  detail.messageTarget &&
+                  typeof detail.messageTarget === "object" &&
+                  !Array.isArray(detail.messageTarget)
+                    ? detail.messageTarget
+                    : null
+              };
+            }
+          } catch {
+            /* Current source authority denied or unavailable: keep the source closed. */
+          }
+        }
+      }
+      return parseManagedConversationResult({
+        operation: "citation_detail",
+        executionId: request.executionId,
+        providerTurnId: request.providerTurnId,
+        alias: request.alias,
+        citation: citation ?? null
       });
     }
 

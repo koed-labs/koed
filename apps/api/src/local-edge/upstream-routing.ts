@@ -546,6 +546,10 @@ export const assertUpstreamOperationPathAllowed = (
       pathname === "/v1/managed-conversations" ||
       pathname === "/v1/managed-conversations/target-devices" ||
       /^\/v1\/managed-conversations\/[^/]+$/.test(pathname) ||
+      (method === "GET" &&
+        /^\/v1\/managed-conversations\/[^/]+\/turn-citations(?:\/[^/]+)?$/.test(
+          pathname
+        )) ||
       /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks|runtime|interrupt|stop)$/.test(
         pathname
       ) ||

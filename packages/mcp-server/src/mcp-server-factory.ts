@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
+import {
+  formatMemoryAnswerCompletion,
+  withCitationAliases
+} from "../integrations/pi/memory-answer-presentation.mjs";
 import { splitMemoryAnswerDeliveryInput } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import {
   memoryAnswerTaskInputSchema,
@@ -352,6 +355,7 @@ export const createKoedMcpServer = async (
           );
           await markRuntimeAvailable();
           if (toolName === "memory_answer" && response.status !== "pending") {
+            const citedResponse = withCitationAliases(response);
             const answerInput = input as Record<string, unknown>;
             const detailed =
               answerInput.include_evidence === true ||
@@ -362,12 +366,16 @@ export const createKoedMcpServer = async (
               content: [
                 {
                   type: "text" as const,
-                  text: formatMemoryAnswerCompletion(response, "completed", {
-                    includeDetails: detailed
-                  })
+                  text: formatMemoryAnswerCompletion(
+                    citedResponse,
+                    "completed",
+                    {
+                      includeDetails: detailed
+                    }
+                  )
                 }
               ],
-              ...(detailed ? { structuredContent: response } : {}),
+              ...(detailed ? { structuredContent: citedResponse } : {}),
               // Clients do not show _meta to the model. Observers such as the
               // benchmark bridge still need retrieval counts for compact recall.
               ...(retrieval && typeof retrieval === "object"

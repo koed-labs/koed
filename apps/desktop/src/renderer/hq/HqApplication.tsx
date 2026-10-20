@@ -53,6 +53,11 @@ import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { HqProjectView } from "./project/HqProjectView.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
+import { PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT } from "@koed/shared/personal-desktop";
+import {
+  resolveHqCitationMessageTarget,
+  type HqCitationMessageTarget
+} from "./conversation/hq-citation-message-target.js";
 
 const subscribeEmpty = () => () => undefined;
 const emptySnapshot = () => null;
@@ -111,6 +116,12 @@ export function HqApplication({
     project?: DesktopProject;
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
+  const [citationFocus, setCitationFocus] = useState<{
+    projectId: string;
+    sessionId: string;
+    eventId: string;
+    generation: number;
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatDeleteRequest, setChatDeleteRequest] =
     useState<ChatDeleteRequest | null>(null);
@@ -376,6 +387,31 @@ export function HqApplication({
     firstClassLoaded,
     personalProjects
   ]);
+  const citationNavigationRef = useRef({
+    generation: 0,
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey,
+    api: personalMemoryApi,
+    store: personalMemoryStore
+  });
+  if (
+    citationNavigationRef.current.ownerId !== visibilityOwnerId ||
+    citationNavigationRef.current.profileKey !== visibilityProfileKey ||
+    citationNavigationRef.current.api !== personalMemoryApi ||
+    citationNavigationRef.current.store !== personalMemoryStore
+  ) {
+    citationNavigationRef.current = {
+      generation: citationNavigationRef.current.generation + 1,
+      ownerId: visibilityOwnerId,
+      profileKey: visibilityProfileKey,
+      api: personalMemoryApi,
+      store: personalMemoryStore
+    };
+  }
+  const citationProjectsRef = useRef(projects);
+  citationProjectsRef.current = projects;
+  const citationBlockedRef = useRef(blockedConversationSessions);
+  citationBlockedRef.current = blockedConversationSessions;
   const route =
     selection.route.kind === "project" && projectsStore
       ? selection.route
@@ -429,6 +465,7 @@ export function HqApplication({
   ]);
   const selectRoute = (next: HqRoute) => {
     routeEpoch.current++;
+    setCitationFocus(null);
     setInventoryTarget(null);
     setBlankOpen(false);
     setBlankLaunchPending(false);
@@ -438,8 +475,55 @@ export function HqApplication({
       project:
         next.kind === "home"
           ? undefined
-          : projects.find(({ id }) => id === next.projectId)
+          : citationProjectsRef.current.find(({ id }) => id === next.projectId)
     });
+  };
+  const openCitationMessage = async (
+    target: HqCitationMessageTarget
+  ): Promise<boolean> => {
+    const authority = citationNavigationRef.current;
+    const api = authority.api;
+    if (!authority.ownerId || !authority.profileKey || !api || !authority.store)
+      return false;
+    const initialRoute = resolveHqCitationMessageTarget(
+      target,
+      citationProjectsRef.current,
+      citationBlockedRef.current
+    );
+    if (!initialRoute) return false;
+    const navigationEpoch = routeEpoch.current;
+    try {
+      const events = await api.loadEventPage({
+        projectId: target.projectId,
+        threadId: target.threadId,
+        limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT,
+        eventIds: [target.messageId]
+      });
+      if (
+        citationNavigationRef.current !== authority ||
+        routeEpoch.current !== navigationEpoch ||
+        events.length !== 1 ||
+        events[0]?.id !== target.messageId ||
+        events[0].invalidatedAt
+      )
+        return false;
+      const currentRoute = resolveHqCitationMessageTarget(
+        target,
+        citationProjectsRef.current,
+        citationBlockedRef.current
+      );
+      if (!currentRoute) return false;
+      selectRoute(currentRoute);
+      setCitationFocus({
+        projectId: target.projectId,
+        sessionId: target.sessionId,
+        eventId: target.messageId,
+        generation: authority.generation
+      });
+      return true;
+    } catch {
+      return false;
+    }
   };
   const openChatDeleteRequest = (
     projectId: string,
@@ -1451,6 +1535,15 @@ export function HqApplication({
               store={personalMemoryStore}
               project={project}
               thread={conversationThread}
+              onOpenCitationMessage={openCitationMessage}
+              focusEventId={
+                citationFocus?.generation ===
+                  citationNavigationRef.current.generation &&
+                citationFocus.projectId === route.projectId &&
+                citationFocus.sessionId === route.sessionId
+                  ? citationFocus.eventId
+                  : null
+              }
               draft={draft}
               inventoryOnly={Boolean(
                 inventoryThread && !conversation && !draft

@@ -58,6 +58,7 @@ import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-r
 import { createManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
 import { createWorkItemRepository } from "./work-item-repository.js";
+import { createManagedConversationCitationRepository } from "./managed-conversation-citation-repository.js";
 import { createManagedTerminalRepository } from "./managed-terminal-repository.js";
 import { createDevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
@@ -4086,6 +4087,9 @@ export const createMemorySourceRepository = (
       workItemRepository.completeForManagedExecutionLease(input),
     hasActiveManagedWorkItem: (input) =>
       workItemRepository.hasActiveManagedWorkItem(input),
+    ...createManagedConversationCitationRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
     ...createManagedTerminalRepository(pool),
     ...createDevelopmentWorkspaceSnapshotRepository(pool),
     ...createManagedConversationForkRepository(pool),

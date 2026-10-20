@@ -213,6 +213,53 @@ export const createManagedConversationPreloadApi = (
       }
       return result;
     },
+    turnCitations: async (
+      executionId: string,
+      providerTurnId: string,
+      aliases?: string[]
+    ) => {
+      const request = parseManagedConversationRequest({
+        operation: "turn_citations",
+        executionId,
+        providerTurnId,
+        ...(aliases ? { aliases } : {})
+      });
+      const result = correlated(
+        "turn_citations",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (
+        result.executionId !== executionId ||
+        result.providerTurnId !== providerTurnId
+      )
+        throw new Error("Invalid Managed Conversation citation correlation.");
+      return result;
+    },
+    citationDetail: async (
+      executionId: string,
+      providerTurnId: string,
+      alias: string
+    ) => {
+      const request = parseManagedConversationRequest({
+        operation: "citation_detail",
+        executionId,
+        providerTurnId,
+        alias
+      });
+      const result = correlated(
+        "citation_detail",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (
+        result.executionId !== executionId ||
+        result.providerTurnId !== providerTurnId ||
+        result.alias !== alias
+      )
+        throw new Error(
+          "Invalid Managed Conversation citation detail correlation."
+        );
+      return result;
+    },
     respond: async (input) => {
       const request = parseManagedConversationRequest({
         operation: "runtime_respond",

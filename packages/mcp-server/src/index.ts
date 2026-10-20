@@ -1257,6 +1257,34 @@ export class MemoryApiClient {
     );
   }
 
+  async teamMemoryCitation(
+    upstreamBackendId: string,
+    questionId: string,
+    ordinal: number,
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/team-memory/citations/detail",
+      {
+        upstream_backend_id: upstreamBackendId,
+        question_id: questionId,
+        ordinal
+      },
+      { authorization }
+    );
+  }
+
+  async personalMemoryCitation(
+    questionId: string,
+    ordinal: number
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/memory/questions/${encodeURIComponent(questionId)}/managed-citations/${ordinal}`
+    );
+  }
+
   async teamWorkspaceContexts(
     upstreamBackendId: string,
     authorization: string,

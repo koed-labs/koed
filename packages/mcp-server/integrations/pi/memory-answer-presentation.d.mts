@@ -12,3 +12,9 @@ export declare function formatMemoryAnswerCompletion(
     request?: { taskId: string; query: string };
   }
 ): string;
+
+export declare function citationAlias(
+  receiptId: string,
+  ordinal: number
+): string;
+export declare function withCitationAliases<T>(result: T): T;

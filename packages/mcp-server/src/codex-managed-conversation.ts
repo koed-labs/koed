@@ -61,6 +61,19 @@ export interface CodexManagedConversationConfig {
   projectId?: string;
   executionGeneration?: number;
   aiClientInstanceId?: string;
+  onMemoryAnswerToolCompleted?: (input: {
+    providerTurnId: string;
+    toolCallId: string;
+    questionId: string;
+    citations: unknown[];
+  }) => Promise<void>;
+  onKoedToolCompleted?: (input: {
+    providerTurnId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    result: unknown;
+  }) => Promise<void>;
   onStartupTiming?: (timing: CodexConversationStartupTiming) => void;
   transcriptReadMaxBytes?: number;
   requestTimeoutMs?: number;
@@ -1454,6 +1467,49 @@ export class CodexManagedConversationSession {
     }
     await this.persistEvent(event);
     const params = asRecord(event.params);
+    if (event.method === "item/completed") {
+      const item = asRecord(params.item);
+      const result = asRecord(item.result);
+      const structured = asRecord(result.structuredContent);
+      const details = Object.keys(structured).length ? structured : result;
+      if (
+        item.type === "mcpToolCall" &&
+        item.server === "koed" &&
+        typeof params.turnId === "string" &&
+        typeof item.id === "string" &&
+        typeof item.tool === "string" &&
+        item.status === "completed" &&
+        (item.error === null || item.error === undefined) &&
+        Object.keys(result).length > 0
+      ) {
+        await this.config.onKoedToolCompleted?.({
+          providerTurnId: params.turnId,
+          toolCallId: item.id,
+          toolName: item.tool,
+          arguments: item.arguments,
+          result: item.result
+        });
+      }
+      if (
+        item.type === "mcpToolCall" &&
+        item.server === "koed" &&
+        (item.tool === "memory_answer" ||
+          item.tool === "memory_answer_result") &&
+        typeof params.turnId === "string" &&
+        typeof item.id === "string" &&
+        typeof details.question_id === "string" &&
+        Array.isArray(details.citations) &&
+        item.status === "completed" &&
+        (item.error === null || item.error === undefined)
+      ) {
+        await this.config.onMemoryAnswerToolCompleted?.({
+          providerTurnId: params.turnId,
+          toolCallId: item.id,
+          questionId: details.question_id,
+          citations: details.citations
+        });
+      }
+    }
     if (
       event.method === "item/completed" &&
       typeof params.threadId === "string" &&

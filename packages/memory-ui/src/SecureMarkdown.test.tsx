@@ -108,6 +108,29 @@ describe("SecureMarkdown rendering", () => {
     expect((globalThis as { pwned?: boolean }).pwned).toBeUndefined();
   });
 
+  it("keeps rich Markdown intact while rendering only verified citation aliases", async () => {
+    const onOpen = vi.fn();
+    await render(
+      "**Plan** [m:qknownc1]\n\n- First [m:forged-id]\n- Second [m:partial",
+      {
+        citationReferences: new Map([["qknownc1", { number: 1, onOpen }]])
+      }
+    );
+    expect(container.querySelector("strong")?.textContent).toBe("Plan");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(container.querySelectorAll(".hq-citation-chip")).toHaveLength(1);
+    expect(container.textContent).not.toContain("forged-id");
+    expect(container.textContent).not.toContain("partial");
+    await act(async () =>
+      (
+        container.querySelector(".hq-citation-chip") as HTMLButtonElement
+      ).click()
+    );
+    expect(onOpen).toHaveBeenCalledOnce();
+    await render("[m:unknown-only]", { citationReferences: new Map() });
+    expect(container.textContent).toBe("");
+  });
+
   it("routes allowed links through the external-platform adapter", async () => {
     await render("[Koed](https://example.com/docs)");
     const link = container.querySelector('[role="link"]');

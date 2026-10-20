@@ -10,6 +10,9 @@ export const managedKoedMcpServer = (environment: NodeJS.ProcessEnv) => {
     args: [fileURLToPath(new URL("./cli.js", import.meta.url))],
     env: {
       KOED_HOME: koedHome,
+      ...(environment.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
+        ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
+        : {}),
       ...(environment.ELECTRON_RUN_AS_NODE === "1"
         ? { ELECTRON_RUN_AS_NODE: "1" }
         : {})

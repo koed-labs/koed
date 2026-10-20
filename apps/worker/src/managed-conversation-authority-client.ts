@@ -40,6 +40,7 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "failManagedConversationCommand"
   | "failManagedConversationFileOperation"
   | "putManagedConversationRuntimeItem"
+  | "recordManagedConversationToolCitations"
   | "getManagedConversationRuntimeItem"
   | "resolveManagedConversationRuntimeItem"
   | "cancelManagedConversationRuntimeItems"
@@ -589,6 +590,24 @@ export const createManagedConversationAuthorityClient = (options: {
       ) as unknown as ManagedConversationRuntimeItemRecord;
     },
 
+    async recordManagedConversationToolCitations(_actor, input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/turn-citations",
+        input
+      );
+      if (!Array.isArray(payload.citations))
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed citation response is invalid"
+        );
+      return payload.citations as Awaited<
+        ReturnType<
+          MemorySourceRepository["recordManagedConversationToolCitations"]
+        >
+      >;
+    },
+
     async getManagedConversationRuntimeItem(_actor, itemId) {
       try {
         const payload = await request(
@@ -753,7 +772,10 @@ export const createManagedConversationAuthorityClient = (options: {
                 expectedSourceGenerationId: input.expectedSourceGenerationId
               }
             : {}),
-          sourceGenerationId: input.sourceGenerationId
+          sourceGenerationId: input.sourceGenerationId,
+          ...(input.providerTurnId
+            ? { providerTurnId: input.providerTurnId }
+            : {})
         }
       );
       return object(

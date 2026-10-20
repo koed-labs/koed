@@ -28,6 +28,13 @@ export interface PiManagedConversationConfig {
   requestTimeoutMs?: number;
   startupTimeoutMs?: number;
   onTextDelta?: (delta: string, turnId: string) => void;
+  onKoedToolCompleted?: (input: {
+    providerTurnId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    result: unknown;
+  }) => Promise<void>;
   onResumeIdentity?: (identity: PiManagedConversationIdentity) => Promise<void>;
   onUiRequest: (
     request: Record<string, unknown>,
@@ -77,6 +84,8 @@ export class PiManagedConversationSession {
         canceled: boolean;
         providerFailed: boolean;
         turnId: string;
+        koedCalls: Map<string, { toolName: string; arguments: unknown }>;
+        pendingCompletion: Promise<void>;
       }
     | undefined;
 
@@ -239,6 +248,12 @@ export class PiManagedConversationSession {
       ...piRpcEnvironment(this.config.env),
       ...(this.config.env.KOED_HOME
         ? { KOED_HOME: this.config.env.KOED_HOME }
+        : {}),
+      ...(this.config.env.KOED_MANAGED_CONVERSATION === "1"
+        ? { KOED_MANAGED_CONVERSATION: "1" }
+        : {}),
+      ...(this.config.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
+        ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
         : {}),
       KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode,
       // This session presents only the turn it prompted. A deferred completion
@@ -424,7 +439,9 @@ export class PiManagedConversationSession {
         text: "",
         canceled: false,
         providerFailed: false,
-        turnId: randomUUID()
+        turnId: randomUUID(),
+        koedCalls: new Map(),
+        pendingCompletion: Promise.resolve()
       };
       this.active = active;
     });
@@ -533,12 +550,58 @@ export class PiManagedConversationSession {
       if (message.role === "assistant" && message.stopReason === "error") {
         this.active.providerFailed = true;
       }
+    } else if (event.type === "tool_execution_start" && this.active) {
+      if (
+        typeof event.toolCallId === "string" &&
+        typeof event.toolName === "string"
+      ) {
+        const toolName = event.toolName.startsWith("mcp__koed__")
+          ? event.toolName.slice("mcp__koed__".length)
+          : event.toolName;
+        if (
+          [
+            "memory_answer",
+            "memory_answer_result",
+            "work_item_complete"
+          ].includes(toolName)
+        )
+          this.active.koedCalls.set(event.toolCallId, {
+            toolName,
+            arguments: event.args
+          });
+      }
+    } else if (event.type === "tool_execution_end" && this.active) {
+      if (typeof event.toolCallId === "string") {
+        const call = this.active.koedCalls.get(event.toolCallId);
+        if (call) {
+          this.active.koedCalls.delete(event.toolCallId);
+          const active = this.active;
+          const native = object(event.result);
+          active.pendingCompletion = active.pendingCompletion.then(() =>
+            this.config.onKoedToolCompleted?.({
+              providerTurnId: active.turnId,
+              toolCallId: event.toolCallId as string,
+              toolName: call.toolName,
+              arguments: call.arguments,
+              result: {
+                ...native,
+                structuredContent: native.details,
+                isError: event.isError === true || native.isError === true
+              }
+            })
+          );
+        }
+      }
     } else if (event.type === "agent_settled") {
-      if (this.active?.canceled)
-        this.active.reject(new Error("Pi managed turn canceled."));
-      else if (this.active?.providerFailed)
-        this.active.reject(new PiManagedConversationProviderError());
-      else this.active?.resolve();
+      const active = this.active;
+      if (!active) return;
+      void active.pendingCompletion.then(() => {
+        if (active.canceled)
+          active.reject(new Error("Pi managed turn canceled."));
+        else if (active.providerFailed)
+          active.reject(new PiManagedConversationProviderError());
+        else active.resolve();
+      }, active.reject);
     } else if (
       event.type === "extension_ui_request" &&
       typeof event.id === "string"

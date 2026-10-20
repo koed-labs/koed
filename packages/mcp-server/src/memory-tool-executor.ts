@@ -647,7 +647,13 @@ export class MemoryToolExecutor {
     if (recordedQuestion) {
       execution.onQuestionRecorded?.(recordedQuestion);
     }
-    return toolAnswerResponse(answer, requestedResponseDetail);
+    return {
+      ...toolAnswerResponse(answer, requestedResponseDetail),
+      ...(recordedQuestion ? { question_id: recordedQuestion.id } : {}),
+      ...(input.team_backend_id
+        ? { team_backend_id: input.team_backend_id }
+        : {})
+    };
   }
 
   private async recordTokenUsage(

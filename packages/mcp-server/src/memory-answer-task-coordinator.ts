@@ -142,7 +142,18 @@ export class MemoryAnswerTaskCoordinator implements MemoryAnswerTaskApi {
     const backend = await this.locate(taskId);
     const response = await backend.api.getMemoryAnswerTask(taskId);
     this.remember(response.task, backend);
-    return response;
+    return backend.id.startsWith("upstream:") && response.task.result
+      ? {
+          ...response,
+          task: {
+            ...response.task,
+            result: {
+              ...response.task.result,
+              team_backend_id: backend.id.slice("upstream:".length)
+            }
+          }
+        }
+      : response;
   }
 
   async claimMemoryAnswerTask(

@@ -487,6 +487,7 @@ export interface ManagedConversationRepository {
       runnerId: string;
       expectedSourceGenerationId?: string;
       sourceGenerationId: string;
+      providerTurnId?: string;
     }
   ): Promise<ManagedConversationExecutionRecord>;
   setManagedConversationExecutionState(
@@ -4147,6 +4148,21 @@ export const createManagedConversationRepository = (
             409
           );
         }
+        if (input.providerTurnId)
+          await client.query(
+            `update managed_conversation_turn_citations
+              set source_generation_id = $3
+            where owner_user_id = $1 and execution_id = $2
+              and execution_generation = $4 and provider_turn_id = $5
+              and source_generation_id is null`,
+            [
+              actor.userId,
+              input.executionId,
+              input.sourceGenerationId,
+              input.executionGeneration,
+              input.providerTurnId
+            ]
+          );
         if (execution.source_generation_id === input.sourceGenerationId) {
           await client.query("commit");
           return mapExecution(execution);

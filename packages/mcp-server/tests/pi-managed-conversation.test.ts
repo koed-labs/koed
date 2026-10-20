@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import fs from "node:fs";
@@ -430,6 +431,60 @@ describe("Pi managed RPC conversation", () => {
       expect.any(String)
     );
     await f.session.closeAndWait();
+  });
+  it("captures native Pi memory and completion tool results before a turn settles", async () => {
+    const f = fixture();
+    const onKoedToolCompleted = vi.fn(async () => undefined);
+    const session = new PiManagedConversationSession({
+      ...f.config,
+      onKoedToolCompleted
+    });
+    await session.start();
+    const prompt = session.prompt("Use memory");
+    f.emit({
+      type: "tool_execution_start",
+      toolCallId: "pi-memory-1",
+      toolName: "memory_answer",
+      args: { response_detail: "with_citations" }
+    });
+    f.emit({
+      type: "tool_execution_end",
+      toolCallId: "pi-memory-1",
+      toolName: "memory_answer",
+      result: {
+        details: {
+          question_id: randomUUID(),
+          citation_receipt_id: randomUUID(),
+          citations: []
+        }
+      }
+    });
+    f.emit({
+      type: "tool_execution_start",
+      toolCallId: "pi-complete-1",
+      toolName: "work_item_complete",
+      args: {}
+    });
+    f.emit({
+      type: "tool_execution_end",
+      toolCallId: "pi-complete-1",
+      toolName: "work_item_complete",
+      result: { details: { status: "requested" } }
+    });
+    f.emit({ type: "agent_settled" });
+    await prompt;
+    expect(onKoedToolCompleted).toHaveBeenCalledTimes(2);
+    expect(onKoedToolCompleted.mock.calls[0]![0]).toMatchObject({
+      toolName: "memory_answer",
+      toolCallId: "pi-memory-1",
+      result: { structuredContent: { citations: [] }, isError: false }
+    });
+    expect(onKoedToolCompleted.mock.calls[1]![0]).toMatchObject({
+      toolName: "work_item_complete",
+      toolCallId: "pi-complete-1",
+      result: { structuredContent: { status: "requested" }, isError: false }
+    });
+    await session.closeAndWait();
   });
   it("correlates extension UI replies to the native request", async () => {
     const f = fixture();

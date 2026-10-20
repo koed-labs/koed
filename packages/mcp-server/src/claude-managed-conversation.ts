@@ -142,6 +142,13 @@ export interface ClaudeManagedConversationConfig {
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
   onTextDelta?: (delta: string, turnId: string) => void;
+  onKoedToolCompleted?: (input: {
+    providerTurnId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    result: unknown;
+  }) => Promise<void>;
 }
 
 export interface ClaudeManagedConversationIdentity {
@@ -1186,9 +1193,57 @@ export class ClaudeManagedConversationSession {
     this.activeQuery = stream;
     const providerEvents: SDKMessage[] = [];
     const turnId = randomUUID();
+    const koedCalls = new Map<
+      string,
+      { toolName: string; arguments: unknown }
+    >();
     let result: SDKResultMessage | undefined;
     try {
       for await (const message of stream) {
+        if (message.type === "assistant") {
+          const blocks = (message.message as { content?: unknown }).content;
+          if (Array.isArray(blocks))
+            for (const value of blocks) {
+              const block = value as Record<string, unknown>;
+              if (
+                block.type === "tool_use" &&
+                typeof block.id === "string" &&
+                typeof block.name === "string" &&
+                block.name.startsWith("mcp__koed__")
+              )
+                koedCalls.set(block.id, {
+                  toolName: block.name.slice("mcp__koed__".length),
+                  arguments: block.input
+                });
+            }
+        } else if (message.type === "user") {
+          const blocks = (message.message as { content?: unknown }).content;
+          if (Array.isArray(blocks))
+            for (const value of blocks) {
+              const block = value as Record<string, unknown>;
+              if (
+                block.type !== "tool_result" ||
+                typeof block.tool_use_id !== "string"
+              )
+                continue;
+              const call = koedCalls.get(block.tool_use_id);
+              if (!call) continue;
+              koedCalls.delete(block.tool_use_id);
+              await this.config.onKoedToolCompleted?.({
+                providerTurnId: turnId,
+                toolCallId: block.tool_use_id,
+                toolName: call.toolName,
+                arguments: call.arguments,
+                result: {
+                  isError: block.is_error === true,
+                  content:
+                    typeof block.content === "string"
+                      ? [{ type: "text", text: block.content }]
+                      : block.content
+                }
+              });
+            }
+        }
         if (
           "session_id" in message &&
           typeof message.session_id === "string" &&

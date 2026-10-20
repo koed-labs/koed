@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import type { MemoryQuestionActorContext } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -261,6 +262,97 @@ export const registerQuestionRoutes = (
             }
       );
       return { question };
+    }
+  );
+
+  app.get(
+    "/v1/memory/questions/:questionId/managed-citations/:ordinal",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const user = await authenticateApiToken(request);
+      const params = z
+        .object({
+          questionId: z.uuid(),
+          ordinal: z.coerce.number().int().min(0).max(255)
+        })
+        .strict()
+        .parse(request.params);
+      const identity = context.deploymentIdentity.inspect();
+      if (!identity.deploymentId || identity.health !== "healthy")
+        return reply.status(404).send({ error: "Citation unavailable" });
+      const repository = requireRepository();
+      const detail = await repository.getManagedPersonalQuestionCitation(
+        { userId: user.id, allowTeam: false },
+        params
+      );
+      if (!detail)
+        return reply.status(404).send({ error: "Citation unavailable" });
+      let messageTarget:
+        | {
+            messageId: string;
+            sessionId: string;
+            projectId: string;
+            threadId: string;
+          }
+        | undefined;
+      if (detail.sourceType === "message") {
+        const event = await repository.getLcmGraphEvent(
+          { userId: user.id },
+          detail.sourceId,
+          { includeContent: false, includeRaw: false }
+        );
+        if (
+          event?.id === detail.sourceId &&
+          event.metadata?.sourceTable === "messages" &&
+          event.visibility === "personal" &&
+          !event.invalidatedAt &&
+          event.sessionId &&
+          event.projectId &&
+          event.threadId
+        ) {
+          messageTarget = {
+            messageId: event.id,
+            sessionId: event.sessionId,
+            projectId: event.projectId,
+            threadId: event.threadId
+          };
+        }
+      }
+      return {
+        detail: {
+          ...detail,
+          sourceDeploymentId: identity.deploymentId,
+          ...(messageTarget ? { messageTarget } : {})
+        }
+      };
+    }
+  );
+
+  app.get(
+    "/v1/memory/questions/:questionId/citations/:ordinal",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const user = await authenticateSessionOrDeviceCredential(
+        request,
+        "team_workspace_read",
+        {
+          apiTokenError: "Current Team credential required for citation detail"
+        }
+      );
+      const params = z
+        .object({
+          questionId: z.uuid(),
+          ordinal: z.coerce.number().int().min(0).max(255)
+        })
+        .strict()
+        .parse(request.params);
+      const detail = await requireRepository().getManagedTeamQuestionCitation(
+        { userId: user.id, allowTeam: true },
+        params
+      );
+      return detail
+        ? { detail }
+        : reply.status(404).send({ error: "Citation unavailable" });
     }
   );
 

@@ -146,6 +146,87 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
+  it("records bounded citation attestations over runner HTTP only for a current command lease", async () => {
+    const leaseToken = randomUUID();
+    const sourceId = randomUUID();
+    const receiptId = randomUUID();
+    let expired = false;
+    const recordCitations = vi.fn(async () => []);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 2,
+          runnerId: ids.other,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        renewManagedConversationCommandLease: vi.fn(
+          async (input: { leaseToken: string }) =>
+            !expired && input.leaseToken === leaseToken
+        ),
+        recordManagedConversationToolCitations: recordCitations
+      }
+    });
+    const address = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const payload = {
+      executionId: ids.execution,
+      executionGeneration: 2,
+      commandId: ids.command,
+      leaseToken,
+      providerTurnId: "turn-1",
+      toolCallId: "call-1",
+      questionId: randomUUID(),
+      receiptId,
+      observedCitations: [
+        {
+          sourceType: "memory_node",
+          sourceId,
+          citationId: `r${receiptId.replaceAll("-", "")}c1`
+        }
+      ],
+      verifiedPersonalSources: [
+        {
+          sourceType: "memory_node",
+          sourceId,
+          sourceDeploymentId: ids.deployment,
+          sourceOwnerPrincipalId: ids.user,
+          title: "Current source",
+          summary: "Current evidence"
+        }
+      ]
+    };
+    const post = async (body: unknown) => {
+      const response = await fetch(
+        new URL("/v1/managed-conversation-runner/turn-citations", address),
+        {
+          method: "POST",
+          headers: { ...runnerHeaders, "content-type": "application/json" },
+          body: JSON.stringify(body)
+        }
+      );
+      return response.status;
+    };
+    try {
+      expect(await post(payload)).toBe(200);
+      expect(recordCitations).toHaveBeenCalledTimes(1);
+      expect(await post({ ...payload, executionGeneration: 1 })).toBe(409);
+      expect(await post({ ...payload, leaseToken: randomUUID() })).toBe(409);
+      expired = true;
+      expect(await post(payload)).toBe(409);
+      expect(
+        await post({
+          ...payload,
+          verifiedPersonalSources: payload.verifiedPersonalSources,
+          inventedAuthority: { ownerUserId: ids.other }
+        })
+      ).toBe(400);
+      expect(recordCitations).toHaveBeenCalledTimes(1);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("lists and records checkpoints only for the assigned execution runner", async () => {
     const digest = "a".repeat(64);
     const objectId = "b".repeat(40);

@@ -172,6 +172,40 @@ export type ManagedConversationRuntimeRequest = {
   executionId: string;
 };
 
+export type ManagedConversationTurnCitationsRequest = {
+  operation: "turn_citations";
+  executionId: string;
+  providerTurnId: string;
+  aliases?: string[];
+};
+export type ManagedConversationCitationDetailRequest = {
+  operation: "citation_detail";
+  executionId: string;
+  providerTurnId: string;
+  alias: string;
+};
+
+export type ManagedConversationTurnCitation = {
+  alias: string;
+  providerTurnId: string;
+  sourceType: "curated_memory" | "memory_node" | "memory_event" | "message";
+  sourceId: string;
+  visibility: "personal" | "team";
+  detailAvailable: boolean;
+  title: string;
+  summary: string | null;
+  kind?: string | null;
+  provenance?: string | null;
+  replaces?: string | null;
+  messageLink?: string | null;
+  messageTarget?: {
+    messageId: string;
+    sessionId: string;
+    projectId: string;
+    threadId: string;
+  } | null;
+};
+
 export type ManagedConversationRuntimeResponseRequest = {
   operation: "runtime_respond";
   executionId: string;
@@ -249,6 +283,8 @@ export type ManagedConversationRequest =
   | ManagedConversationTargetsRequest
   | ManagedConversationUsageRequest
   | ManagedConversationRuntimeRequest
+  | ManagedConversationTurnCitationsRequest
+  | ManagedConversationCitationDetailRequest
   | ManagedConversationRuntimeResponseRequest
   | ManagedConversationControlRequest
   | ManagedConversationTransferStatusRequest
@@ -479,6 +515,19 @@ export type ManagedConversationResult =
         updatedAt: string;
       } | null;
       items: ManagedConversationRuntimeItem[];
+    }
+  | {
+      operation: "turn_citations";
+      executionId: string;
+      providerTurnId: string;
+      citations: ManagedConversationTurnCitation[];
+    }
+  | {
+      operation: "citation_detail";
+      executionId: string;
+      providerTurnId: string;
+      alias: string;
+      citation: ManagedConversationTurnCitation | null;
     }
   | { operation: "runtime_respond"; accepted: true; itemId: string }
   | {
@@ -777,6 +826,43 @@ export const parseManagedConversationRequest = (
     return {
       operation: "runtime",
       executionId: identifier(input.executionId, "Managed execution id")
+    };
+  }
+  if (input.operation === "turn_citations") {
+    exactKeys(
+      input,
+      ["operation", "executionId", "providerTurnId", "aliases"],
+      "Managed citation read"
+    );
+    if (
+      input.aliases !== undefined &&
+      (!Array.isArray(input.aliases) ||
+        input.aliases.length > 64 ||
+        input.aliases.some(
+          (value) =>
+            typeof value !== "string" ||
+            !/^r[0-9a-f]{32}c[1-9][0-9]*$/.test(value)
+        ))
+    )
+      throw new TypeError("Managed citation aliases are invalid.");
+    return {
+      operation: "turn_citations",
+      executionId: uuid(input.executionId, "Managed execution id"),
+      providerTurnId: identifier(input.providerTurnId, "Provider turn id"),
+      ...(input.aliases ? { aliases: input.aliases as string[] } : {})
+    };
+  }
+  if (input.operation === "citation_detail") {
+    exactKeys(
+      input,
+      ["operation", "executionId", "providerTurnId", "alias"],
+      "Managed citation detail read"
+    );
+    return {
+      operation: "citation_detail",
+      executionId: uuid(input.executionId, "Managed execution id"),
+      providerTurnId: identifier(input.providerTurnId, "Provider turn id"),
+      alias: identifier(input.alias, "Citation alias")
     };
   }
   if (input.operation === "runtime_respond") {
@@ -1980,6 +2066,141 @@ export const parseManagedConversationResult = (
       items: result.items.map(parseRuntimeItem)
     };
   }
+  if (result.operation === "turn_citations") {
+    exactKeys(
+      result,
+      ["operation", "executionId", "providerTurnId", "citations"],
+      "Managed citation result"
+    );
+    if (!Array.isArray(result.citations) || result.citations.length > 64)
+      throw new TypeError("Managed citation result is invalid.");
+    return {
+      operation: "turn_citations",
+      executionId: uuid(result.executionId, "Managed execution id"),
+      providerTurnId: identifier(result.providerTurnId, "Provider turn id"),
+      citations: result.citations.map((entry) => {
+        const citation = record(entry, "Managed citation");
+        exactKeys(
+          citation,
+          [
+            "alias",
+            "providerTurnId",
+            "sourceType",
+            "sourceId",
+            "visibility",
+            "detailAvailable",
+            "title",
+            "summary",
+            "kind",
+            "provenance",
+            "replaces",
+            "messageLink",
+            "messageTarget"
+          ],
+          "Managed citation"
+        );
+        if (
+          ![
+            "curated_memory",
+            "memory_node",
+            "memory_event",
+            "message"
+          ].includes(String(citation.sourceType)) ||
+          !["personal", "team"].includes(String(citation.visibility)) ||
+          typeof citation.detailAvailable !== "boolean" ||
+          (citation.summary !== null && typeof citation.summary !== "string") ||
+          [
+            citation.kind,
+            citation.provenance,
+            citation.replaces,
+            citation.messageLink
+          ].some(
+            (value) =>
+              value !== undefined && value !== null && typeof value !== "string"
+          )
+        )
+          throw new TypeError("Managed citation is invalid.");
+        return {
+          alias: identifier(citation.alias, "Citation alias"),
+          providerTurnId: identifier(
+            citation.providerTurnId,
+            "Provider turn id"
+          ),
+          sourceType:
+            citation.sourceType as ManagedConversationTurnCitation["sourceType"],
+          sourceId: identifier(citation.sourceId, "Citation source id"),
+          visibility:
+            citation.visibility as ManagedConversationTurnCitation["visibility"],
+          detailAvailable: citation.detailAvailable,
+          title: identifier(citation.title, "Citation title"),
+          summary: citation.summary as string | null,
+          ...(citation.kind !== undefined
+            ? { kind: citation.kind as string | null }
+            : {}),
+          ...(citation.provenance !== undefined
+            ? { provenance: citation.provenance as string | null }
+            : {}),
+          ...(citation.replaces !== undefined
+            ? { replaces: citation.replaces as string | null }
+            : {}),
+          ...(citation.messageLink !== undefined
+            ? { messageLink: citation.messageLink as string | null }
+            : {}),
+          ...(citation.messageTarget !== undefined
+            ? {
+                messageTarget:
+                  citation.messageTarget === null
+                    ? null
+                    : {
+                        messageId: identifier(
+                          record(citation.messageTarget, "Message target")
+                            .messageId,
+                          "Message id"
+                        ),
+                        sessionId: identifier(
+                          record(citation.messageTarget, "Message target")
+                            .sessionId,
+                          "Session id"
+                        ),
+                        projectId: identifier(
+                          record(citation.messageTarget, "Message target")
+                            .projectId,
+                          "Project id"
+                        ),
+                        threadId: identifier(
+                          record(citation.messageTarget, "Message target")
+                            .threadId,
+                          "Thread id"
+                        )
+                      }
+              }
+            : {})
+        };
+      })
+    };
+  }
+  if (result.operation === "citation_detail") {
+    exactKeys(
+      result,
+      ["operation", "executionId", "providerTurnId", "alias", "citation"],
+      "Managed citation detail result"
+    );
+    const parsed = parseManagedConversationResult({
+      operation: "turn_citations",
+      executionId: result.executionId,
+      providerTurnId: result.providerTurnId,
+      citations: result.citation === null ? [] : [result.citation]
+    });
+    if (parsed.operation !== "turn_citations")
+      throw new TypeError("Managed citation detail is invalid.");
+    return {
+      operation: "citation_detail",
+      executionId: parsed.executionId,
+      providerTurnId: parsed.providerTurnId,
+      alias: identifier(result.alias, "Citation alias"),
+      citation: parsed.citations[0] ?? null
+    };
+  }
   if (result.operation === "runtime_respond") {
     exactKeys(
       result,
@@ -2313,6 +2534,20 @@ export interface ManagedConversationDesktopApi {
   runtime: (
     executionId: string
   ) => Promise<Extract<ManagedConversationResult, { operation: "runtime" }>>;
+  turnCitations?: (
+    executionId: string,
+    providerTurnId: string,
+    aliases?: string[]
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "turn_citations" }>
+  >;
+  citationDetail?: (
+    executionId: string,
+    providerTurnId: string,
+    alias: string
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "citation_detail" }>
+  >;
   respond: (
     input: Omit<ManagedConversationRuntimeResponseRequest, "operation">
   ) => Promise<

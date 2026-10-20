@@ -25,6 +25,7 @@ import type { HighRiskActionRepository } from "./high-risk-action-repository.js"
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { ManagedConversationRepository } from "./managed-conversation-repository.js";
 import type { WorkItemRepository } from "./work-item-repository.js";
+import type { ManagedConversationCitationRepository } from "./managed-conversation-citation-repository.js";
 import type { ManagedTerminalRepository } from "./managed-terminal-repository.js";
 import type { DevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import type { ManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
@@ -1999,6 +2000,7 @@ export interface MemorySourceRepository
       WorkItemRepository,
       "completeForManagedExecutionLease" | "hasActiveManagedWorkItem"
     >,
+    ManagedConversationCitationRepository,
     ManagedTerminalRepository,
     ManagedConversationForkRepository,
     ManagedConversationTransferRepository,

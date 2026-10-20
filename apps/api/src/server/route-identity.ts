@@ -304,6 +304,11 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "POST",
+    "/v1/managed-conversation-runner/turn-citations",
+    "Record citation aliases from a trusted completed memory tool call under the active command lease."
+  ],
+  [
+    "POST",
     "/v1/managed-conversation-runner/executions/{executionId}/lease",
     "Renew an assigned execution lease."
   ],
@@ -606,6 +611,16 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "projects",
     "List Work Items in an owned active Personal Project."
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/work-items/{itemId}/dispatch",
+    "session_or_device_credential",
+    "projects",
+    "Dispatch an owned Work Item to a managed Project execution.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "GET",
@@ -2820,6 +2835,26 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/managed-conversations/{executionId}/turn-citations",
+    "session_or_api_token",
+    "personal_memory",
+    "List encrypted durable citation aliases for one managed provider turn.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/turn-citations/{alias}",
+    "session_or_api_token",
+    "personal_memory",
+    "Resolve a citation locator for a fresh authorized source detail read.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/managed-conversations/{executionId}/usage",
     "session_or_api_token",
     "personal_memory",
@@ -3164,6 +3199,36 @@ export const routeIdentityContracts = [
     "Expand one Team Workspace Memory node through the typed local-edge Team Memory boundary.",
     "future_request_time",
     "not_implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/memory/questions/{questionId}/managed-citations/{ordinal}",
+    "session_or_api_token",
+    "local_synthesis",
+    "Read one currently available Personal question citation.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/memory/questions/{questionId}/citations/{ordinal}",
+    "session_or_device_credential",
+    "local_synthesis",
+    "Read one currently authorized Team question citation.",
+    "request_time_team_workspace",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/team-memory/citations/detail",
+    "local_edge_client_credential",
+    "future_remote",
+    "Read one currently authorized Team citation through a fixed upstream path.",
+    "future_request_time",
+    "implemented",
     localEdgeDeploymentModes
   ),
   route(

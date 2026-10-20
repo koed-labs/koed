@@ -735,6 +735,9 @@ export const registerDesktopCommandHandlers = (
             targets: "Koed could not load Personal Devices.",
             usage: "Koed could not load managed Conversation usage.",
             runtime: "Koed could not load managed Conversation activity.",
+            turn_citations:
+              "Koed could not load Conversation memory citations.",
+            citation_detail: "Koed could not open this memory source.",
             runtime_respond:
               "Koed could not answer the managed Conversation request.",
             interrupt: "Koed could not interrupt the active Codex turn.",

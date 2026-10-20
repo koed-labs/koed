@@ -36,7 +36,13 @@ const hq203Empty =
 const hq208Capture =
   new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
 const hq204Capture =
-  new URLSearchParams(window.location.search).get("hq204Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
+  new URLSearchParams(window.location.search).get("hq306Capture") === "yes";
+const hq306Capture =
+  new URLSearchParams(window.location.search).get("hq306Capture") === "yes";
+const hq306Race =
+  new URLSearchParams(window.location.search).get("hq306Race") === "yes";
+const hq306Trace = { aliasLookups: 0, detailOpens: 0, raceComplete: false };
 const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
 const hq209Capture =
@@ -214,6 +220,29 @@ const hq207OtherExecutionId = "00000000-0000-4000-8000-000000002083";
 const hq207TerminalExecutionId = "00000000-0000-4000-8000-000000002084";
 const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
 const hq204SessionId = "00000000-0000-4000-8000-000000002045";
+const hq306Citations = [
+  {
+    alias: "r11111111111141118111111111111111c1",
+    providerTurnId: "hq306-turn-1",
+    sourceType: "curated_memory" as const,
+    sourceId: "00000000-0000-4000-8000-000000003061",
+    visibility: "personal" as const,
+    detailAvailable: true,
+    title: "Chat · Plan my week",
+    summary: null
+  },
+  {
+    alias: "r22222222222242228222222222222222c1",
+    providerTurnId: "hq306-turn-1",
+    sourceType: "memory_node" as const,
+    sourceId: "00000000-0000-4000-8000-000000003062",
+    visibility: "personal" as const,
+    detailAvailable: true,
+    title: "Deck outline.md",
+    summary: null
+  }
+];
+const hq306Answer = `Here's a draft. Nothing before 9am, as you prefer [m:${hq306Citations[0]!.alias}].\n\n- **Mon** · deep work on koed-main, 9:30–12:30\n- **Tue** · investor calls from 10:00\n- **Wed** · sync with Mark, 11:00\n- **Thu** · deck review with Sam, 14:00 (lead with the memory story [m:${hq306Citations[1]!.alias}])\n- **Fri** · weekly review, 16:30\n\nWant me to send the invites?`;
 let hq204Started = false;
 const hq204Trace = {
   reserve: 0,
@@ -645,18 +674,31 @@ const hq104ManagedConversations = {
     executionState: "running",
     executionLastErrorCode: null,
     latestCommand:
-      executionId === hq104Identity.executionId && hq104SentMessageId
+      hq306Race && executionId === hq204ExecutionId
         ? {
-            id: "hq104-prompt-command",
+            id: "hq306-race-command",
             sequence: 1,
             executionGeneration: 1,
             commandKind: "prompt",
-            clientUserMessageId: hq104SentMessageId,
-            state: "completed",
+            clientUserMessageId: null,
+            state: hq306Trace.raceComplete ? "completed" : "dispatching",
             lastErrorCode: null,
-            updatedAt: FIXTURE_TIME
+            updatedAt: hq306Trace.raceComplete
+              ? "2026-10-19T09:00:01.000Z"
+              : FIXTURE_TIME
           }
-        : null,
+        : executionId === hq104Identity.executionId && hq104SentMessageId
+          ? {
+              id: "hq104-prompt-command",
+              sequence: 1,
+              executionGeneration: 1,
+              commandKind: "prompt",
+              clientUserMessageId: hq104SentMessageId,
+              state: "completed",
+              lastErrorCode: null,
+              updatedAt: FIXTURE_TIME
+            }
+          : null,
     items: hq108Executions.some(
       (execution) => execution.executionId === executionId
     )
@@ -722,6 +764,72 @@ const hq104ManagedConversations = {
 
 const hq204ManagedConversations = {
   ...hq104ManagedConversations,
+  ...(hq306Capture
+    ? {
+        turnCitations: async (
+          executionId: string,
+          providerTurnId: string,
+          aliases?: string[]
+        ) => {
+          if (aliases?.length) {
+            hq306Trace.aliasLookups++;
+            if (hq306Race && hq306Trace.aliasLookups === 1) {
+              window.setTimeout(() => {
+                hq306Trace.raceComplete = true;
+              }, 100);
+              return {
+                operation: "turn_citations" as const,
+                executionId,
+                providerTurnId,
+                citations: []
+              };
+            }
+          }
+          return {
+            operation: "turn_citations" as const,
+            executionId,
+            providerTurnId,
+            citations: hq306Citations.filter((citation) =>
+              aliases?.includes(citation.alias)
+            )
+          };
+        },
+        citationDetail: async (
+          executionId: string,
+          providerTurnId: string,
+          alias: string
+        ) => {
+          hq306Trace.detailOpens++;
+          return {
+            operation: "citation_detail" as const,
+            executionId,
+            providerTurnId,
+            alias,
+            citation: hq306Citations.find(
+              (citation) => citation.alias === alias
+            )
+              ? {
+                  ...hq306Citations.find(
+                    (citation) => citation.alias === alias
+                  )!,
+                  title:
+                    alias === hq306Citations[0]!.alias
+                      ? "Never book meetings before 9am."
+                      : "Deck outline",
+                  kind:
+                    alias === hq306Citations[0]!.alias ? "preference" : null,
+                  provenance:
+                    alias === hq306Citations[0]!.alias
+                      ? "Chat · Plan my week · You · 9d ago"
+                      : "Your memory summary",
+                  replaces: null,
+                  messageLink: null
+                }
+              : null
+          };
+        }
+      }
+    : {}),
   inspect: async (executionId: string) => {
     hq204Trace.inspect += 1;
     return {
@@ -1162,7 +1270,26 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
     threads: Array.from({ length: 7 }, (_, index) =>
       sidebarConversation("hq103-loose", "Chats", 90 + index + 1)
     )
-  }
+  },
+  ...(hq306Capture
+    ? [
+        {
+          eventCount: 2,
+          id: hq204ProjectId,
+          name: "New empty Project",
+          path: null,
+          threads: [
+            {
+              ...sidebarConversation(hq204ProjectId, "New empty Project", 204),
+              id: "hq204-fixture-thread",
+              sessionId: hq204SessionId,
+              personalProjectId: hq204ProjectId,
+              name: "Plan next week"
+            }
+          ]
+        }
+      ]
+    : [])
 ];
 
 const sidebarProjectMetadata: PersonalDesktopProjectMetadata[] =
@@ -1740,24 +1867,40 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
             invalidatedAt: null,
             metadata: {}
           },
-          ...(hq207Capture
+          ...(hq306Capture
             ? [
                 {
-                  id: "hq207-plan-answer",
+                  id: "hq306-captured-assistant",
                   actor: "assistant" as const,
                   eventType: "message" as const,
                   timestamp: FIXTURE_TIME,
                   sourceEventTime: FIXTURE_TIME,
                   sourceSequence: 2,
-                  content:
-                    "For Plan.md, review the goals and choose the next task.",
-                  contentPreview:
-                    "For Plan.md, review the goals and choose the next task.",
+                  content: hq306Answer,
+                  contentPreview: "Here's a draft. Nothing before 9am",
                   invalidatedAt: null,
+                  // Claude/Pi captured history need not carry worker turn IDs.
                   metadata: {}
                 }
               ]
-            : [])
+            : hq207Capture
+              ? [
+                  {
+                    id: "hq207-plan-answer",
+                    actor: "assistant" as const,
+                    eventType: "message" as const,
+                    timestamp: FIXTURE_TIME,
+                    sourceEventTime: FIXTURE_TIME,
+                    sourceSequence: 2,
+                    content:
+                      "For Plan.md, review the goals and choose the next task.",
+                    contentPreview:
+                      "For Plan.md, review the goals and choose the next task.",
+                    invalidatedAt: null,
+                    metadata: {}
+                  }
+                ]
+              : [])
         ]
       : threadId === "hq103-loose-conversation-91"
         ? [
@@ -1998,7 +2141,7 @@ export function HqValidationApp() {
     }
     fixture.reset();
     hq104SentPrompt = "";
-    hq204Started = false;
+    hq204Started = hq306Capture;
     Object.assign(hq204Trace, {
       reserve: 0,
       reserveByProject: {},
@@ -2006,12 +2149,20 @@ export function HqValidationApp() {
       inspect: 0,
       resume: 0,
       send: 0,
-      firstPrompt: "",
+      firstPrompt: hq306Capture
+        ? "Plan next week around the investor meetings"
+        : "",
       nextPrompt: ""
     });
     (
       window as Window & { __koedHq204Trace?: typeof hq204Trace }
     ).__koedHq204Trace = hq204Trace;
+    hq306Trace.aliasLookups = 0;
+    hq306Trace.detailOpens = 0;
+    hq306Trace.raceComplete = false;
+    (
+      window as Window & { __koedHq306Trace?: typeof hq306Trace }
+    ).__koedHq306Trace = hq306Trace;
     hq104SentMessageId = "";
     hq104Recovery.clear();
     resumedFixtureIdentities.clear();
@@ -2033,6 +2184,8 @@ export function HqValidationApp() {
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
       restoreDesktop();
+      delete (window as Window & { __koedHq306Trace?: typeof hq306Trace })
+        .__koedHq306Trace;
       delete window.__koedHqFixture;
       delete (
         window as Window & {

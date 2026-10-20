@@ -63,6 +63,7 @@ import {
   managedConversationTargetReadinessEvidenceDigest,
   managedConversationTargetReadinessIsFresh,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
+  readLocalEdgeClientCredentialAuthorization,
   verifyManagedConversationForkManifest,
   verifyManagedConversationHandoffCertificate,
   verifyManagedConversationHandoffSourceAttestation,
@@ -540,6 +541,15 @@ const promptFileMentionsFrom = (
 
 export const createManagedConversationService = (options: {
   repository: MemorySourceRepository;
+  onKoedToolCompleted?: (input: {
+    execution: ManagedConversationExecutionRecord;
+    command: { id: string; leaseToken: string };
+    providerTurnId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    result: unknown;
+  }) => Promise<void>;
   apiUrl: string;
   apiToken: string;
   localOwnerUserId: string;
@@ -571,6 +581,10 @@ export const createManagedConversationService = (options: {
   logger: Logger;
 }): ManagedConversationService => {
   const runnerId = randomUUID();
+  const activeToolCommands = new Map<
+    string,
+    ClaimedManagedConversationCommand
+  >();
   const runtimeSessions = new ManagedConversationRuntimeRegistry();
   const claudeCaptureStatePath = resolve(
     options.koedHome,
@@ -1426,6 +1440,212 @@ export const createManagedConversationService = (options: {
     execution: ManagedConversationExecutionRecord
   ): string => resolveCodexHome(codexEnvironmentForExecution(execution));
 
+  const recordCompletedMemoryTool = async (
+    execution: ManagedConversationExecutionRecord,
+    tool: {
+      providerTurnId: string;
+      toolCallId: string;
+      toolName: string;
+      result: unknown;
+    },
+    command: { id: string; leaseToken: string }
+  ): Promise<void> => {
+    if (
+      tool.toolName !== "memory_answer" &&
+      tool.toolName !== "memory_answer_result"
+    )
+      return;
+    const envelope = record(tool.result);
+    if (envelope.isError === true) return;
+    let details = record(envelope.structuredContent);
+    if (!Object.keys(details).length) details = envelope;
+    if (typeof details.question_id !== "string") {
+      const piDetails = record(envelope.details);
+      details = Object.keys(record(piDetails.value)).length
+        ? record(piDetails.value)
+        : piDetails;
+    }
+    if (
+      typeof details.question_id !== "string" ||
+      !Array.isArray(details.citations)
+    ) {
+      const blocks = Array.isArray(envelope.content) ? envelope.content : [];
+      for (const block of blocks) {
+        const text = record(block).text;
+        if (typeof text !== "string") continue;
+        const tagged = text.match(
+          /<koed-memory-answer-details>\s*([\s\S]*?)\s*<\/koed-memory-answer-details>/
+        );
+        if (!tagged) continue;
+        try {
+          details = record(JSON.parse(tagged[1]!));
+        } catch {
+          /* fail closed */
+        }
+        break;
+      }
+    }
+    if (
+      typeof details.question_id !== "string" ||
+      typeof details.citation_receipt_id !== "string" ||
+      !Array.isArray(details.citations)
+    )
+      return;
+    const teamBackendId =
+      typeof details.team_backend_id === "string"
+        ? details.team_backend_id
+        : null;
+    let verifiedTeamSources:
+      | Array<{
+          sourceType: string;
+          sourceId: string;
+          teamWorkspaceId: string;
+          sourceOwnerPrincipalId: string;
+        }>
+      | undefined;
+    let verifiedPersonalSources:
+      | Array<{
+          sourceType: string;
+          sourceId: string;
+          sourceDeploymentId: string;
+          sourceOwnerPrincipalId: string;
+          title: string;
+          summary: string | null;
+        }>
+      | undefined;
+    if (teamBackendId) {
+      const credential = readLocalEdgeClientCredentialAuthorization(
+        options.koedHome,
+        teamBackendId
+      );
+      if (!credential?.operationFamilies.includes("team_workspace_read"))
+        throw new Error("Managed citation Team credential is unavailable");
+      verifiedTeamSources = [];
+      for (const [ordinal, observed] of details.citations.entries()) {
+        const canonical = record(
+          (
+            await memoryClient.teamMemoryCitation(
+              teamBackendId,
+              details.question_id,
+              ordinal,
+              credential.authorization
+            )
+          ).detail
+        );
+        const observedRecord = record(observed);
+        const { citationId: _alias, ...observedSource } = observedRecord;
+        void _alias;
+        if (
+          JSON.stringify(observedSource) !==
+            JSON.stringify(canonical.citation) ||
+          observedRecord.citationId !==
+            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
+        )
+          throw new Error(
+            "Managed citation Team tool result does not match current source"
+          );
+        if (
+          typeof canonical.sourceType !== "string" ||
+          typeof canonical.sourceId !== "string" ||
+          typeof canonical.teamWorkspaceId !== "string" ||
+          typeof canonical.sourceOwnerPrincipalId !== "string"
+        )
+          throw new Error("Managed citation Team provenance unavailable");
+        verifiedTeamSources.push({
+          sourceType: canonical.sourceType,
+          sourceId: canonical.sourceId,
+          teamWorkspaceId: canonical.teamWorkspaceId,
+          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId
+        });
+      }
+    }
+    if (!teamBackendId) {
+      verifiedPersonalSources = [];
+      for (const [ordinal, observed] of details.citations.entries()) {
+        const canonical = record(
+          (
+            await memoryClient.personalMemoryCitation(
+              details.question_id,
+              ordinal
+            )
+          ).detail
+        );
+        const observedRecord = record(observed);
+        const { citationId: _alias, ...observedSource } = observedRecord;
+        void _alias;
+        if (
+          JSON.stringify(observedSource) !==
+            JSON.stringify(canonical.citation) ||
+          observedRecord.citationId !==
+            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
+        )
+          throw new Error(
+            "Managed citation Personal tool result does not match current source"
+          );
+        if (
+          typeof canonical.sourceType !== "string" ||
+          typeof canonical.sourceId !== "string" ||
+          typeof canonical.sourceDeploymentId !== "string" ||
+          typeof canonical.sourceOwnerPrincipalId !== "string"
+        )
+          throw new Error("Managed citation Personal provenance unavailable");
+        verifiedPersonalSources.push({
+          sourceType: canonical.sourceType,
+          sourceId: canonical.sourceId,
+          sourceDeploymentId: canonical.sourceDeploymentId,
+          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId,
+          title:
+            typeof canonical.title === "string" ? canonical.title : "Memory",
+          summary:
+            typeof canonical.summary === "string" ? canonical.summary : null
+        });
+      }
+    }
+    await options.repository.recordManagedConversationToolCitations(
+      { userId: execution.ownerUserId },
+      {
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration,
+        commandId: command.id,
+        leaseToken: command.leaseToken,
+        providerTurnId: tool.providerTurnId,
+        toolCallId: tool.toolCallId,
+        questionId: details.question_id,
+        receiptId: details.citation_receipt_id,
+        observedCitations: details.citations,
+        ...(teamBackendId && verifiedTeamSources
+          ? { questionBackendId: teamBackendId, verifiedTeamSources }
+          : {}),
+        ...(!teamBackendId && verifiedPersonalSources
+          ? { verifiedPersonalSources }
+          : {})
+      }
+    );
+  };
+
+  const completedKoedTool = async (
+    execution: ManagedConversationExecutionRecord,
+    tool: {
+      providerTurnId: string;
+      toolCallId: string;
+      toolName: string;
+      arguments: unknown;
+      result: unknown;
+    }
+  ): Promise<void> => {
+    const command = activeToolCommands.get(execution.id);
+    if (!command?.leaseToken) return;
+    await options.onKoedToolCompleted?.({
+      execution,
+      command: { id: command.id, leaseToken: command.leaseToken },
+      ...tool
+    });
+    await recordCompletedMemoryTool(execution, tool, {
+      id: command.id,
+      leaseToken: command.leaseToken
+    });
+  };
+
   const createSession = (
     execution: ManagedConversationExecutionRecord,
     binding: ManagedConversationRuntimeBindingRecord,
@@ -1479,6 +1699,7 @@ export const createManagedConversationService = (options: {
       projectId: execution.projectId,
       executionGeneration: execution.executionGeneration,
       aiClientInstanceId: execution.aiClientInstanceId,
+      onKoedToolCompleted: (tool) => completedKoedTool(execution, tool),
       appServer: {
         appServerBinary:
           runtimeEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??
@@ -1491,7 +1712,7 @@ export const createManagedConversationService = (options: {
         env: runtimeEnvironment,
         clientName: "koed-server-managed-conversation",
         baseInstructions:
-          "You are Codex, an AI coding agent working with the user in the selected Project.",
+          "You are Codex, an AI coding agent working with the user in the selected Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn.",
         approvalPolicy: permission.approvalPolicy,
         sandboxMode: permission.sandboxMode,
         approvalsReviewer: permission.approvalsReviewer,
@@ -1681,6 +1902,7 @@ export const createManagedConversationService = (options: {
     return new ClaudeManagedConversationSession({
       cwd: override?.projectPath ?? binding.projectPath,
       model: execution.model,
+      onKoedToolCompleted: (tool) => completedKoedTool(execution, tool),
       ...(execution.reasoningEffort
         ? { reasoningEffort: execution.reasoningEffort }
         : {}),
@@ -1799,7 +2021,7 @@ export const createManagedConversationService = (options: {
         type: "preset",
         preset: "claude_code",
         append:
-          "You are Claude Code working with the user in the selected Koed Project."
+          "You are Claude Code working with the user in the selected Koed Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn."
       },
       maxTurns: 100,
       ...(override?.resumeSessionId
@@ -1840,11 +2062,16 @@ export const createManagedConversationService = (options: {
     return new PiManagedConversationSession({
       cwd: binding.projectPath,
       model: execution.model,
+      onKoedToolCompleted: (tool) => completedKoedTool(execution, tool),
       ...(execution.reasoningEffort
         ? { reasoningEffort: execution.reasoningEffort }
         : {}),
       permissionMode: execution.permissionMode,
-      env: { ...clientEnvironmentFor(execution), KOED_HOME: options.koedHome },
+      env: {
+        ...clientEnvironmentFor(execution),
+        KOED_HOME: options.koedHome,
+        KOED_MANAGED_CONVERSATION: "1"
+      },
       sessionDirectory,
       ...(fork
         ? {
@@ -3970,21 +4197,27 @@ export const createManagedConversationService = (options: {
         "ManagedConversationProviderMismatchError"
       );
     }
-    return runWithManagedConversationLease({
-      session,
-      heartbeatMs: commandHeartbeatMs,
-      renew: () =>
-        options.repository.renewManagedConversationCommandLease({
-          commandId: command.id,
-          leaseToken: command.leaseToken!,
-          runnerId,
-          executionId: command.executionId,
-          leaseMs: commandLeaseMs
-        }),
-      close: (ownedSession) => ownedSession.closeAndWait(),
-      operation,
-      leaseLostError: () => new ManagedConversationLeaseLostError()
-    });
+    activeToolCommands.set(command.executionId, command);
+    try {
+      return await runWithManagedConversationLease({
+        session,
+        heartbeatMs: commandHeartbeatMs,
+        renew: () =>
+          options.repository.renewManagedConversationCommandLease({
+            commandId: command.id,
+            leaseToken: command.leaseToken!,
+            runnerId,
+            executionId: command.executionId,
+            leaseMs: commandLeaseMs
+          }),
+        close: (ownedSession) => ownedSession.closeAndWait(),
+        operation,
+        leaseLostError: () => new ManagedConversationLeaseLostError()
+      });
+    } finally {
+      if (activeToolCommands.get(command.executionId) === command)
+        activeToolCommands.delete(command.executionId);
+    }
   };
 
   const withLease = async <T>(
@@ -5185,7 +5418,8 @@ export const createManagedConversationService = (options: {
                       command.execution.sourceGenerationId
                   }
                 : {}),
-              sourceGenerationId
+              sourceGenerationId,
+              providerTurnId: result.turnId
             }
           );
           await options.repository.bindManagedConversationLocalRuntime(
@@ -5297,7 +5531,8 @@ export const createManagedConversationService = (options: {
                     command.execution.sourceGenerationId
                 }
               : {}),
-            sourceGenerationId: captured.sourceGenerationId
+            sourceGenerationId: captured.sourceGenerationId,
+            providerTurnId: result.turnId
           }
         );
         await options.repository.bindManagedConversationLocalRuntime(
@@ -5402,7 +5637,8 @@ export const createManagedConversationService = (options: {
                 expectedSourceGenerationId: command.execution.sourceGenerationId
               }
             : {}),
-          sourceGenerationId
+          sourceGenerationId,
+          providerTurnId: result.turnId
         }
       );
       await options.repository.bindManagedConversationLocalRuntime(

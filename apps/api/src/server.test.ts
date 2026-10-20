@@ -7,6 +7,7 @@ import {
   sign
 } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9349,6 +9350,114 @@ describe("account and access flows", () => {
       expect(upstreamCalls).toHaveLength(4);
     } finally {
       await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reads remote Team citation details over the fixed relay and denies them after revocation", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-citation-remote-"));
+    process.env.KOED_HOME = koedHome;
+    const localClient = storeLocalEdgeClientCredential(koedHome, {
+      backendId: "team-vps",
+      secret: "citation-client-secret",
+      operationFamilies: ["team_workspace_read"]
+    });
+    const authorization = `Koed-Device ${localClient.credentialKeyId}:citation-client-secret`;
+    const questionId = randomUUID();
+    const sourceId = randomUUID();
+    const workspaceId = randomUUID();
+    const principalId = randomUUID();
+    let revoked = false;
+    const remoteCalls: Array<{
+      path: string;
+      authorization: string | undefined;
+    }> = [];
+    const remote = createHttpServer((request, response) => {
+      remoteCalls.push({
+        path: request.url ?? "",
+        authorization: request.headers.authorization
+      });
+      response.setHeader("content-type", "application/json");
+      if (revoked) {
+        response.writeHead(403);
+        response.end(JSON.stringify({ error: "Team source access revoked" }));
+        return;
+      }
+      response.writeHead(200);
+      response.end(
+        JSON.stringify({
+          detail: {
+            questionId,
+            ordinal: 0,
+            citation: { sourceType: "memory_node", sourceId },
+            sourceType: "memory_node",
+            sourceId,
+            teamWorkspaceId: workspaceId,
+            sourceOwnerPrincipalId: principalId,
+            title: "Shared decision",
+            summary: "Current Team source"
+          }
+        })
+      );
+    });
+    await new Promise<void>((resolve) =>
+      remote.listen(0, "127.0.0.1", resolve)
+    );
+    const address = remote.address();
+    if (!address || typeof address === "string")
+      throw new Error("Remote test server address unavailable");
+    const upstreamBackendsPath = writeUpstreamRegistryFixture({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      routePolicy: { teamWorkspaceRead: "enabled" }
+    });
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      upstreamBackendsPath,
+      resolveUpstreamAuthorization: () =>
+        "Koed-Device upstream-key:upstream-secret"
+    });
+    const payload = {
+      upstream_backend_id: "team-vps",
+      question_id: questionId,
+      ordinal: 0
+    };
+    try {
+      const first = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/team-memory/citations/detail",
+        headers: { authorization },
+        payload
+      });
+      expect(first.statusCode).toBe(200);
+      expect(
+        jsonBody<{ detail: { sourceOwnerPrincipalId: string } }>(first).detail
+          .sourceOwnerPrincipalId
+      ).toBe(principalId);
+      revoked = true;
+      const second = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/team-memory/citations/detail",
+        headers: { authorization },
+        payload
+      });
+      expect(second.statusCode).toBe(403);
+      expect(remoteCalls).toHaveLength(2);
+      expect(
+        remoteCalls.every((call) =>
+          call.path.endsWith(`/v1/memory/questions/${questionId}/citations/0`)
+        )
+      ).toBe(true);
+      expect(
+        remoteCalls.every(
+          (call) =>
+            call.authorization === "Koed-Device upstream-key:upstream-secret"
+        )
+      ).toBe(true);
+    } finally {
+      await app.close();
+      await new Promise<void>((resolve, reject) =>
+        remote.close((error) => (error ? reject(error) : resolve()))
+      );
       rmSync(koedHome, { recursive: true, force: true });
     }
   });

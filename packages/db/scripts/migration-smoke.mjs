@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0062_square_zarek";
-const expectedLatestMigrationIndex = 62;
+const expectedLatestMigrationTag = "0063_mushy_champions";
+const expectedLatestMigrationIndex = 63;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -849,6 +849,27 @@ const assertLatestSchema = async (pool) => {
       ["is_project_hq", "boolean", "NO"],
       ["hq_private_path", "text", "YES"]
     ],
+    managed_conversation_turn_citations: [
+      ["id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["logical_session_id", "uuid", "NO"],
+      ["execution_id", "uuid", "NO"],
+      ["execution_generation", "integer", "NO"],
+      ["source_generation_id", "uuid", "YES"],
+      ["provider_turn_id", "text", "NO"],
+      ["tool_call_id", "text", "NO"],
+      ["question_backend_id", "text", "NO"],
+      ["question_id", "uuid", "NO"],
+      ["ordinal", "integer", "NO"],
+      ["alias", "text", "NO"],
+      ["source_type", "text", "NO"],
+      ["source_id", "text", "NO"],
+      ["visibility", "text", "NO"],
+      ["source_owner_namespace", "text", "NO"],
+      ["source_owner_principal", "text", "NO"],
+      ["encrypted_detail", "jsonb", "NO"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
     sessions: [["forget_batch_id", "uuid", "YES"]],
     chat_delete_operations: [
       ["batch_id", "uuid", "NO"],
@@ -1060,6 +1081,47 @@ const assertLatestSchema = async (pool) => {
       "managed_conversation_executions",
       "managed_conversation_executions_hq_path_check",
       "c"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_conversation_turn_citations_pkey",
+      "p"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_conversation_turn_citations_alias_unique",
+      "u"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_conversation_turn_citations_source_unique",
+      "u"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_conversation_turn_citations_shape_check",
+      "c"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_conversation_turn_citations_owner_user_id_users_id_fk",
+      "f",
+      "users",
+      "c"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_turn_citations_owner_execution_fk",
+      "f",
+      "managed_conversation_executions",
+      "c"
+    ],
+    [
+      "managed_conversation_turn_citations",
+      "managed_turn_citations_owner_session_fk",
+      "f",
+      "sessions",
+      "c"
     ]
   ].map(([table, name, ...contract]) => [
     table,
@@ -1151,6 +1213,16 @@ const assertLatestSchema = async (pool) => {
       "project_hq_conversations_owner_execution_fk",
       "(owner_user_id, managed_execution_id)",
       "managed_conversation_executions(owner_user_id, id)"
+    ],
+    [
+      "managed_turn_citations_owner_execution_fk",
+      "(owner_user_id, execution_id)",
+      "managed_conversation_executions(owner_user_id, id)"
+    ],
+    [
+      "managed_turn_citations_owner_session_fk",
+      "(owner_user_id, logical_session_id)",
+      "sessions(owner_user_id, logical_session_id)"
     ]
   ]) {
     const constraint = constraints.rows.find((row) => row.conname === name);
@@ -1205,6 +1277,19 @@ const assertLatestSchema = async (pool) => {
   )
     throw new Error(
       "Work Item cursor pagination index is missing or has the wrong key order"
+    );
+  const citationTurnIndex = await pool.query(
+    `select indexdef from pg_indexes where schemaname='public'
+     and tablename='managed_conversation_turn_citations'
+       and indexname='managed_conversation_turn_citations_turn_idx'`
+  );
+  if (
+    !/\(owner_user_id, logical_session_id, provider_turn_id\)/.test(
+      citationTurnIndex.rows[0]?.indexdef ?? ""
+    )
+  )
+    throw new Error(
+      "Managed citation turn lookup index is missing or reordered"
     );
   const chiefIndex = await pool.query(
     `select indexdef from pg_indexes where schemaname='public'
@@ -1661,6 +1746,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preCitationFolder = await createMigrationSlice(journal, 62, {
+    folderPrefix: "koed-pre-managed-citations-"
+  });
+  temporaryFolders.add(preCitationFolder);
+  const preCitationRecords = await migrationRecords(
+    preCitationFolder,
+    journal.entries.slice(0, 63)
+  );
   const preChatMoveFolder = await createMigrationSlice(journal, 61, {
     folderPrefix: "koed-pre-chat-move-"
   });
@@ -3293,6 +3386,239 @@ try {
       await assertMigrationLedger(pool, fullRecords);
       if ((await schemaFingerprint(pool)) !== stable)
         throw new Error("0062 migration rerun changed schema");
+    });
+  });
+
+  await runScenario("managed-citations-0063-upgrade-and-custody", async () => {
+    const target = await createDisposableDatabase("managed_citations_upgrade");
+    const ownerId = randomUUID();
+    const otherOwnerId = randomUUID();
+    const logicalSessionId = randomUUID();
+    const otherLogicalSessionId = randomUUID();
+    const executionId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preCitationFolder });
+      await assertMigrationLedger(pool, preCitationRecords);
+      const before = await pool.query(
+        "select to_regclass('public.managed_conversation_turn_citations')::text as citations"
+      );
+      if (before.rows[0]?.citations !== null)
+        throw new Error("Managed citations table existed before 0063");
+      await pool.query(`insert into users(id,email) values($1,$2),($3,$4)`, [
+        ownerId,
+        `${ownerId}@example.test`,
+        otherOwnerId,
+        `${otherOwnerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into sessions(id,owner_user_id,logical_session_id,source_runtime,capture_method)
+         values($1,$2,$3,'codex','transcript'),($4,$5,$6,'codex','transcript')`,
+        [
+          randomUUID(),
+          ownerId,
+          logicalSessionId,
+          randomUUID(),
+          otherOwnerId,
+          otherLogicalSessionId
+        ]
+      );
+      await pool.query(
+        `insert into managed_conversation_executions
+         (id,owner_user_id,project_id,state,logical_session_id,provider_thread_id,
+          fencing_token_hash,runner_deployment_id,runner_device_id,
+          ai_client_instance_id,model,permission_mode,runner_kind)
+         values($1,$2,'migration-citations','running',$3,'provider-thread',$4,$5,$6,
+                'codex.default','gpt-test','supervised','local_device')`,
+        [
+          executionId,
+          ownerId,
+          logicalSessionId,
+          "a".repeat(64),
+          randomUUID(),
+          randomUUID()
+        ]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      await assertCurrentSchema(pool);
+      const retained = await pool.query(
+        `select e.owner_user_id,e.logical_session_id,
+           (select count(*)::integer from managed_conversation_turn_citations) as citations
+         from managed_conversation_executions e where e.id=$1`,
+        [executionId]
+      );
+      if (
+        !isDeepStrictEqual(retained.rows, [
+          {
+            owner_user_id: ownerId,
+            logical_session_id: logicalSessionId,
+            citations: 0
+          }
+        ])
+      )
+        throw new Error(
+          "0063 changed retained execution or prepopulated citations"
+        );
+
+      const citationId = randomUUID();
+      const questionId = randomUUID();
+      const sourceId = randomUUID();
+      const plaintextMarker = `citation-private-${randomUUID()}`;
+      const routingIdentity = {
+        logicalSessionId,
+        executionGeneration: 1,
+        providerTurnId: "turn-1",
+        toolCallId: "call-1",
+        questionBackendId: "personal",
+        questionId,
+        ordinal: 0,
+        alias: "rfixturec1",
+        sourceType: "memory_node",
+        sourceId,
+        visibility: "personal",
+        sourceOwnerNamespace: "local",
+        sourceOwnerPrincipal: ownerId
+      };
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 63).toString("base64")
+      );
+      const envelope = await provider.encrypt({
+        plaintext: JSON.stringify({ title: plaintextMarker }),
+        scope: {
+          tenantId: ownerId,
+          objectClass: "managed_conversation_turn_citation"
+        },
+        provenance: {
+          rowFamily: "managed_conversation_turn_citations",
+          sourceId: citationId
+        },
+        ciphertextLocation:
+          "managed_conversation_turn_citations.encrypted_detail",
+        aad: {
+          ownerUserId: ownerId,
+          executionId,
+          citationId,
+          routingIdentityJson: JSON.stringify(routingIdentity)
+        }
+      });
+      const citationInsert = `insert into managed_conversation_turn_citations
+        (id,owner_user_id,logical_session_id,execution_id,execution_generation,
+         provider_turn_id,tool_call_id,question_backend_id,question_id,ordinal,
+         alias,source_type,source_id,visibility,source_owner_namespace,
+         source_owner_principal,encrypted_detail)
+        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)`;
+      const citationValues = [
+        citationId,
+        ownerId,
+        logicalSessionId,
+        executionId,
+        1,
+        "turn-1",
+        "call-1",
+        "personal",
+        questionId,
+        0,
+        "rfixturec1",
+        "memory_node",
+        sourceId,
+        "personal",
+        "local",
+        ownerId,
+        JSON.stringify(envelope)
+      ];
+      await pool.query(citationInsert, citationValues);
+      const stored = await pool.query(
+        `select encrypted_detail::text as encrypted_detail,
+           source_generation_id,owner_user_id,logical_session_id,execution_id
+         from managed_conversation_turn_citations where id=$1`,
+        [citationId]
+      );
+      if (
+        stored.rows.length !== 1 ||
+        stored.rows[0].encrypted_detail.includes(plaintextMarker) ||
+        stored.rows[0].source_generation_id !== null ||
+        stored.rows[0].owner_user_id !== ownerId ||
+        stored.rows[0].logical_session_id !== logicalSessionId ||
+        stored.rows[0].execution_id !== executionId
+      )
+        throw new Error(
+          "0063 citation custody persisted plaintext or wrong identity"
+        );
+      await expectSqlState(
+        pool,
+        citationInsert,
+        "23503",
+        "Citation must match its execution owner",
+        [
+          randomUUID(),
+          otherOwnerId,
+          otherLogicalSessionId,
+          ...citationValues.slice(3)
+        ]
+      );
+      const wrongSessionValues = [...citationValues];
+      wrongSessionValues[0] = randomUUID();
+      wrongSessionValues[2] = otherLogicalSessionId;
+      wrongSessionValues[6] = "call-wrong-session";
+      wrongSessionValues[10] = "rwrongsessionc1";
+      await expectSqlState(
+        pool,
+        citationInsert,
+        "23503",
+        "Citation must match its Session owner",
+        wrongSessionValues
+      );
+      await expectSqlState(
+        pool,
+        citationInsert,
+        "23505",
+        "Citation alias must be unique within its owner, Session, and turn",
+        [
+          randomUUID(),
+          ...citationValues.slice(1, 6),
+          "call-2",
+          ...citationValues.slice(7)
+        ]
+      );
+      await expectSqlState(
+        pool,
+        citationInsert,
+        "23505",
+        "Citation tool ordinal must be unique within its owner, execution, and turn",
+        [
+          randomUUID(),
+          ...citationValues.slice(1, 10),
+          "rfixturec2",
+          ...citationValues.slice(11)
+        ]
+      );
+      await expectSqlState(
+        pool,
+        citationInsert,
+        "23514",
+        "Citation generation must be positive",
+        [
+          randomUUID(),
+          ...citationValues.slice(1, 4),
+          0,
+          ...citationValues.slice(5)
+        ]
+      );
+      const stable = await schemaFingerprint(pool);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if ((await schemaFingerprint(pool)) !== stable)
+        throw new Error("0063 migration rerun changed schema");
+      await pool.query(
+        "delete from sessions where logical_session_id=$1 and owner_user_id=$2",
+        [logicalSessionId, ownerId]
+      );
+      const afterPurge = await pool.query(
+        "select count(*)::integer as count from managed_conversation_turn_citations where id=$1",
+        [citationId]
+      );
+      if (afterPurge.rows[0]?.count !== 0)
+        throw new Error("0063 Session purge stranded managed citation");
     });
   });
 

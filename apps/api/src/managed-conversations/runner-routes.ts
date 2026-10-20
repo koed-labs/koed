@@ -203,6 +203,63 @@ const putRuntimeItemSchema = z
   })
   .strict();
 
+const recordTurnCitationsSchema = z
+  .object({
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    commandId: uuid,
+    leaseToken: z.string().min(16).max(512),
+    providerTurnId: z.string().trim().min(1).max(512),
+    toolCallId: z.string().trim().min(1).max(512),
+    questionId: uuid,
+    receiptId: uuid,
+    observedCitations: z.array(z.unknown()).max(64),
+    questionBackendId: z
+      .string()
+      .min(1)
+      .max(160)
+      .regex(/^[A-Za-z0-9._:-]+$/)
+      .optional(),
+    verifiedTeamSources: z
+      .array(
+        z
+          .object({
+            sourceType: z.enum([
+              "curated_memory",
+              "memory_node",
+              "memory_event"
+            ]),
+            sourceId: z.string().min(1).max(512),
+            teamWorkspaceId: uuid,
+            sourceOwnerPrincipalId: uuid
+          })
+          .strict()
+      )
+      .max(64)
+      .optional(),
+    verifiedPersonalSources: z
+      .array(
+        z
+          .object({
+            sourceType: z.enum([
+              "curated_memory",
+              "memory_node",
+              "memory_event",
+              "message"
+            ]),
+            sourceId: z.string().min(1).max(512),
+            sourceDeploymentId: uuid,
+            sourceOwnerPrincipalId: uuid,
+            title: z.string().max(500),
+            summary: z.string().max(16_000).nullable()
+          })
+          .strict()
+      )
+      .max(64)
+      .optional()
+  })
+  .strict();
+
 const resolveRuntimeItemSchema = z
   .object({
     executionGeneration: z.number().int().safe().positive(),
@@ -291,7 +348,8 @@ const bindSourceGenerationSchema = z
     executionGeneration: z.number().int().safe().positive(),
     runnerId: boundedRunnerId,
     expectedSourceGenerationId: uuid.optional(),
-    sourceGenerationId: uuid
+    sourceGenerationId: uuid,
+    providerTurnId: z.string().trim().min(1).max(512).optional()
   })
   .strict();
 
@@ -1082,6 +1140,49 @@ export const registerManagedConversationRunnerRoutes = (
         item: await context
           .requireRepository()
           .putManagedConversationRuntimeItem({ userId: auth.userId }, input)
+      };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/turn-citations",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const input = recordTurnCitationsSchema.parse(request.body);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        input.executionId
+      );
+      if (execution.executionGeneration !== input.executionGeneration)
+        throw Object.assign(
+          new Error("Managed citation generation conflicted"),
+          { statusCode: 409 }
+        );
+      if (
+        !execution.runnerId ||
+        !(await context
+          .requireRepository()
+          .renewManagedConversationCommandLease({
+            commandId: input.commandId,
+            leaseToken: input.leaseToken,
+            executionId: execution.id,
+            runnerId: execution.runnerId,
+            leaseMs: 180_000
+          }))
+      )
+        throw Object.assign(
+          new Error("Managed citation command lease is unavailable"),
+          { statusCode: 409 }
+        );
+      return {
+        citations: await context
+          .requireRepository()
+          .recordManagedConversationToolCitations(
+            { userId: auth.userId },
+            input
+          )
       };
     }
   );

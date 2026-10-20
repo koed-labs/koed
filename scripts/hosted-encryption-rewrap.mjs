@@ -11,7 +11,7 @@ import { loadRootEnv } from "./api-token-bootstrap-lib.mjs";
 
 const usage = `Usage: pnpm hosted:encryption-rewrap [options]
 
-Rewrap encrypted-field and Shared Memory representation DEKs with the configured
+Rewrap encrypted-field, Managed Conversation citation, and Shared Memory representation DEKs with the configured
 Team/general and owner-private envelope providers.
 
 Options:
@@ -221,6 +221,29 @@ try {
       afterId
     })
   );
+  const citationFields =
+    args.teamId ||
+    (args.sourceTable &&
+      args.sourceTable !== "managed_conversation_turn_citations") ||
+    (args.sourceColumn && args.sourceColumn !== "encrypted_detail")
+      ? { ...emptyAggregate(), done: true }
+      : await runBatches(async (afterId) => {
+          const batch = await repository.rewrapManagedConversationCitationBatch(
+            provider,
+            {
+              ownerUserId: args.ownerUserId,
+              batchSize: args.batchSize,
+              force: args.force,
+              dryRun: args.dryRun,
+              afterId
+            }
+          );
+          return {
+            ...batch,
+            wouldRewrapRows: args.dryRun ? batch.processedRows : 0,
+            failedRows: 0
+          };
+        });
   const teamRepresentations =
     args.ownerUserId || args.sourceTable || args.sourceColumn
       ? { ...emptyAggregate(), done: true }
@@ -236,6 +259,7 @@ try {
   const aggregates = {
     teamGeneralFields,
     ownerPrivateFields,
+    citationFields,
     teamRepresentations
   };
   const totals = Object.values(aggregates).reduce(
