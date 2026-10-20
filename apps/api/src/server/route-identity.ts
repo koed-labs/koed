@@ -499,6 +499,56 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/agents/bootstrap-context",
+    "session_or_device_credential",
+    "projects",
+    "Read the authenticated User's conversations setting and enabled AI Client instances for Chief bootstrap.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/agents",
+    "session_or_device_credential",
+    "projects",
+    "List owner-owned Agents.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/agents/chief:ensure",
+    "session_or_device_credential",
+    "projects",
+    "Create the owner's default Chief of Staff from a configured AI Client instance.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/agents",
+    "session_or_device_credential",
+    "projects",
+    "Create an owner-owned Agent.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/agents/{id}",
+    "session_or_device_credential",
+    "projects",
+    "Update an owner-owned Agent.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/projects/{id}/activity",
     "session_or_device_credential",
     "projects",

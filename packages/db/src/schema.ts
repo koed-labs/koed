@@ -12700,6 +12700,64 @@ export const aiClientInstances = pgTable(
   ]
 );
 
+/** Owner-owned personas. Runtime capability is checked again when work starts. */
+export const agents = pgTable(
+  "agents",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    role: text("role"),
+    look: jsonb("look")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    aiClientInstanceId: text("ai_client_instance_id").notNull(),
+    defaultPermissionMode: text("default_permission_mode")
+      .notNull()
+      .default("supervised"),
+    defaultModel: text("default_model"),
+    isChiefOfStaff: boolean("is_chief_of_staff").notNull().default(false),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.aiClientInstanceId],
+      foreignColumns: [
+        aiClientInstances.ownerUserId,
+        aiClientInstances.instanceId
+      ],
+      name: "agents_owner_instance_fk"
+    }).onDelete("restrict"),
+    uniqueIndex("agents_one_chief_per_owner_idx")
+      .on(table.ownerUserId)
+      .where(sql`${table.isChiefOfStaff} = true`),
+    index("agents_owner_created_idx").on(table.ownerUserId, table.createdAt),
+    check(
+      "agents_name_check",
+      sql`length(trim(${table.name})) between 1 and 120`
+    ),
+    check(
+      "agents_role_check",
+      sql`${table.role} is null or length(trim(${table.role})) between 1 and 240`
+    ),
+    check(
+      "agents_look_check",
+      sql`jsonb_typeof(${table.look}) = 'object' and octet_length(${table.look}::text) <= 4096`
+    ),
+    check(
+      "agents_permission_mode_check",
+      sql`${table.defaultPermissionMode} in ('supervised', 'auto_edit', 'auto', 'full_access')`
+    ),
+    check(
+      "agents_model_check",
+      sql`${table.defaultModel} is null or length(trim(${table.defaultModel})) between 1 and 512`
+    )
+  ]
+);
+
 export const aiClientCapabilitySnapshots = pgTable(
   "ai_client_capability_snapshots",
   {
