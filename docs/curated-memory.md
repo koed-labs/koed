@@ -173,6 +173,36 @@ Direct Curated Memory search routes are diagnostic/API surfaces:
 - `POST /v1/memory/curated/search`
 - `GET /v1/memory/curated/assertions/:assertionId`
 
+The owner-facing assertion list and detail routes accept a browser session or
+Personal API Token. The list accepts exact `project_id`, `scope` (`project`,
+`me`, `unscoped`), `kind`, `status`, and an ISO `since` instant with an offset.
+Callers compute the start of the User's local day and pass that instant for
+"Learned today"; the backend does not guess the User's time zone. A legacy
+`unscoped` assertion has no inferred Project. Current rows with expired or
+inactive direct evidence are omitted. List and detail include a `replaces`
+chain of owner-readable predecessor text, author, and creation time; a
+suppressed, expired, unavailable, or cross-owner predecessor stops the chain.
+
+The browser session owner may `POST .../:assertionId/unsuppress` with the exact
+`suppression_token` returned by the assertion. It is an opaque token derived
+from the exact microsecond suppression instant; the `suppressedAt` ISO field is
+for display. The token is stable across database connection time zones.
+Undo requires the same User and suppression, a window shorter than seven days,
+active evidence, no superseding assertion, and no active chat Forget snapshot
+owning that suppression. It cannot restore a deleted source or move a frozen
+Share Grant beyond its pinned closure. Team recall still applies the existing
+published closure and current authorization checks.
+Undo rejects a suppressed conflicting assertion because suppression does not
+retain its prior conflict status; it must not become canonical current Memory.
+
+The browser session owner may `PATCH .../:assertionId` with `scope` (`me` or
+`project`), a `project_id` for Project scope, and `expected_version` to
+classify an unscoped assertion. The API prepares the HQ-301 durable operation;
+the trusted local edge withdraws affected Team representations and semantic
+rows and records exact acknowledgements before the Personal classification
+commits. An unavailable Team backend or Personal commit returns a retryable
+`202` operation. A Personal API Token does not gain Team operation authority.
+
 ## Protected Storage
 
 In protected deployment profiles (`private_vps`, `team_self_hosted`, and

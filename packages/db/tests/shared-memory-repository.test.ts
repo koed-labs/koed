@@ -12456,7 +12456,7 @@ describeDb("Shared Memory repository", () => {
           await transactional.reconcileCuratedGrantRepresentations(owner);
         }
       });
-      await curated.suppressCuratedMemoryAssertion(
+      const firstSuppression = await curated.suppressCuratedMemoryAssertion(
         actor(fixture.ownerUserId),
         firstId,
         { reason: "source owner suppression" }
@@ -12566,7 +12566,11 @@ describeDb("Shared Memory repository", () => {
           client.release();
         }
       };
-      await restore(false);
+      await curated.unsuppressCuratedMemoryAssertion(
+        actor(fixture.ownerUserId),
+        firstId,
+        { suppressionToken: firstSuppression!.suppressionToken! }
+      );
       expect((await read())?.items).toHaveLength(2);
       expect(await search()).toHaveLength(2);
       await curated.suppressCuratedMemoryAssertion(

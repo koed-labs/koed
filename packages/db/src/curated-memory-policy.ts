@@ -388,7 +388,9 @@ export const createCuratedMemoryPolicyMethods = ({
   onCuratedMemoryChanged
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
-  "suppressCuratedMemoryAssertion" | "reconcileCuratedMemoryLifecycle"
+  | "suppressCuratedMemoryAssertion"
+  | "unsuppressCuratedMemoryAssertion"
+  | "reconcileCuratedMemoryLifecycle"
 > => ({
   async suppressCuratedMemoryAssertion(actor, assertionId, input) {
     const client = await pool.connect();
@@ -466,6 +468,93 @@ export const createCuratedMemoryPolicyMethods = ({
       client.release();
     }
     return hydrated;
+  },
+
+  async unsuppressCuratedMemoryAssertion(actor, assertionId, input) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `select id from curated_memory_assertions
+          where id=$1 and owner_user_id=$2 and visibility='personal' for update`,
+        [assertionId, actor.userId]
+      );
+      const existing = await getAssertionByIdWithClient(
+        client,
+        actor,
+        envelopeEncryptionProvider,
+        assertionId
+      );
+      if (!existing) {
+        await client.query("commit");
+        return null;
+      }
+      // The database timestamp and owner are authoritative. This conditional
+      // update also serializes Undo against a second suppression or source loss.
+      const result = await client.query<{ id: string }>(
+        `update curated_memory_assertions cma
+            set status='current', suppressed_at=null,
+                suppressed_by_user_id=null, suppression_reason=null,
+                updated_at=now()
+          where cma.id=$1 and cma.owner_user_id=$2
+            and cma.visibility='personal' and cma.status='suppressed'
+            and cma.suppressed_by_user_id=$2
+            and ((extract(epoch from cma.suppressed_at) * 1000000)::bigint)::text=$3
+            and cma.suppressed_at > now() - interval '7 days'
+            and cma.suppressed_at <= now()
+            and cma.superseded_by_assertion_id is null
+            and cma.conflict_with_assertion_id is null
+            and (cma.expires_at is null or cma.expires_at > now())
+            and ${activeCuratedMemoryEvidencePredicate("cma")}
+            and not exists (
+              select 1 from chat_forget_operations forget,
+                jsonb_to_recordset(forget.assertion_snapshots)
+                  as snapshot(id uuid, "suppressedAt" timestamptz)
+              where forget.owner_user_id=$2 and forget.state='complete'
+                and snapshot.id=cma.id
+                and snapshot."suppressedAt"=cma.suppressed_at
+            )
+          returning cma.id`,
+        [assertionId, actor.userId, input.suppressionToken]
+      );
+      if (!result.rows[0]) {
+        throw Object.assign(new Error("Curated Memory Undo is unavailable"), {
+          statusCode: 409
+        });
+      }
+      if (protectedCuratedMemoryPayloadsRequired()) {
+        await persistCuratedMemoryPayload(
+          client,
+          actor,
+          envelopeEncryptionProvider,
+          {
+            sourceTable: "curated_memory_assertions",
+            sourceId: assertionId,
+            plaintext: {
+              assertionText: existing.assertionText,
+              normalizedAssertion: existing.normalizedAssertion,
+              tags: existing.tags,
+              metadata: existing.metadata,
+              suppressionReason: null
+            }
+          }
+        );
+      }
+      await onCuratedMemoryChanged?.(actor, client, [assertionId]);
+      const restored = await getAssertionByIdWithClient(
+        client,
+        actor,
+        envelopeEncryptionProvider,
+        assertionId
+      );
+      await client.query("commit");
+      return restored;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async reconcileCuratedMemoryLifecycle(actor) {

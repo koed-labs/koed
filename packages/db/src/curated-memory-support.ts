@@ -226,6 +226,7 @@ export type AssertionRow = {
   created_at: Date;
   updated_at: Date;
   suppressed_at: Date | null;
+  suppressed_at_token: string | null;
   suppression_reason: string | null;
   last_reconciled_at: Date | null;
   reconciliation_status: string;
@@ -500,6 +501,7 @@ export const mapAssertion = (
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
   suppressedAt: iso(row.suppressed_at),
+  suppressionToken: row.suppressed_at_token,
   suppressionReason: row.suppression_reason,
   lastReconciledAt: iso(row.last_reconciled_at),
   reconciliationStatus: row.reconciliation_status,
@@ -535,6 +537,8 @@ export const assertionSelect = `
   cma.created_at,
   cma.updated_at,
   cma.suppressed_at,
+  ((extract(epoch from cma.suppressed_at) * 1000000)::bigint)::text
+    as suppressed_at_token,
   cma.suppression_reason,
   cma.last_reconciled_at,
   cma.reconciliation_status

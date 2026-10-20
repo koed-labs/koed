@@ -1385,9 +1385,9 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/memory/curated/assertions",
-    "api_token",
+    "session_or_api_token",
     "personal_memory",
-    "List Curated Memory assertions for the authenticated API Token owner."
+    "List the owner's Curated Memory assertions with classification filters."
   ),
   route(
     "POST",
@@ -1399,9 +1399,23 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/memory/curated/assertions/{assertionId}",
-    "api_token",
+    "session_or_api_token",
     "personal_memory",
-    "Read a Curated Memory assertion for the authenticated API Token owner."
+    "Read an owned Curated Memory assertion and its replacement chain."
+  ),
+  route(
+    "POST",
+    "/v1/memory/curated/assertions/{assertionId}/unsuppress",
+    "session",
+    "personal_memory",
+    "Undo the owner's recent Curated Memory suppression."
+  ),
+  route(
+    "PATCH",
+    "/v1/memory/curated/assertions/{assertionId}",
+    "session",
+    "personal_memory",
+    "Classify an unscoped assertion after acknowledged Team withdrawal."
   ),
   route(
     "POST",

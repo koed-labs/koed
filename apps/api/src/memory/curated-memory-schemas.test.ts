@@ -2,11 +2,40 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import {
+  curatedMemoryClassificationSchema,
+  curatedMemoryListQuerySchema,
   curatedMemoryProposalSchema,
   curatedMemoryReviewResultSchema
 } from "./curated-memory-schemas.js";
 
 describe("Curated Memory API contracts", () => {
+  it("accepts panel filters and rejects an incomplete Project classification", () => {
+    expect(
+      curatedMemoryListQuerySchema.parse({
+        project_id: randomUUID(),
+        scope: "project",
+        kind: "decision",
+        since: "2026-10-20T00:00:00+02:00",
+        status: "current"
+      })
+    ).toMatchObject({
+      scope: "project",
+      kind: "decision",
+      since: "2026-10-20T00:00:00+02:00"
+    });
+    expect(() =>
+      curatedMemoryClassificationSchema.parse({
+        scope: "project",
+        expected_version: 1
+      })
+    ).toThrow();
+    expect(
+      curatedMemoryClassificationSchema.parse({
+        scope: "me",
+        expected_version: 2
+      })
+    ).toEqual({ scope: "me", expected_version: 2 });
+  });
   const evidenceRevisions = Array.from(
     { length: CURATED_MEMORY_REVIEW_MAX_EVIDENCE + 1 },
     () => ({

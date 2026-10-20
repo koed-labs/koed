@@ -2123,7 +2123,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
-  registerCuratedMemoryRoutes(app, routeContext);
+  registerCuratedMemoryRoutes(
+    app,
+    routeContext,
+    curatedClassificationCoordinator
+  );
   registerConversationSourceJournalRoutes(
     app,
     routeContext,

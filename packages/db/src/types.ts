@@ -1812,6 +1812,7 @@ export interface CuratedMemoryAssertionRecord {
   createdAt: string;
   updatedAt: string;
   suppressedAt: string | null;
+  suppressionToken: string | null;
   suppressionReason: string | null;
   lastReconciledAt: string | null;
   reconciliationStatus: string;
@@ -1943,6 +1944,10 @@ export interface CuratedMemoryProposalInput {
 
 export interface CuratedMemoryListInput {
   status?: CuratedMemoryAssertionStatus;
+  projectId?: string;
+  scope?: CuratedMemoryScope;
+  kind?: CuratedMemoryKind;
+  since?: string;
   topicId?: string;
   sessionId?: string;
   includeSources?: boolean;
@@ -2002,6 +2007,9 @@ export interface MemorySourceRepository
     Pick<
       CuratedMemoryRepository,
       | "prepareLegacyCuratedActivationBatch"
+      | "prepareCuratedClassification"
+      | "getCuratedMemoryReplacementChain"
+      | "unsuppressCuratedMemoryAssertion"
       | "deferCuratedClassificationRetry"
       | "listPendingCuratedClassificationWork"
       | "recordCuratedClassificationAck"

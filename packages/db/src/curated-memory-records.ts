@@ -56,6 +56,7 @@ export const createCuratedMemoryRecordMethods = ({
   | "exportCuratedMemoryRecords"
   | "listCuratedMemoryAssertions"
   | "getCuratedMemoryAssertion"
+  | "getCuratedMemoryReplacementChain"
 > => ({
   async createCuratedMemoryProposal(actor, input) {
     const proposedClaim = input.proposedClaim.trim();
@@ -893,6 +894,15 @@ export const createCuratedMemoryRecordMethods = ({
           and ($2::text is null or cma.status = $2::curated_memory_assertion_status)
           and ($3::uuid is null or cma.topic_id = $3)
           and ($5::uuid is null or ${sessionExactCuratedAssertionSql("$1", "$5")})
+          and ($6::uuid is null or cma.project_id = $6)
+          and ($7::text is null or cma.scope = $7::curated_memory_scope)
+          and ($8::text is null or cma.kind = $8::curated_memory_kind)
+          and ($9::timestamptz is null or cma.created_at >= $9)
+          and (cma.status <> 'current' or (
+            cma.suppressed_at is null
+            and (cma.expires_at is null or cma.expires_at > now())
+            and ${activeCuratedMemoryEvidencePredicate("cma")}
+          ))
         order by
           case when $5::uuid is not null then cma.observed_at end asc,
           case when $5::uuid is not null then cma.id end asc,
@@ -904,7 +914,11 @@ export const createCuratedMemoryRecordMethods = ({
         input.status ?? null,
         input.topicId ?? null,
         positiveLimit(input.limit),
-        input.sessionId ?? null
+        input.sessionId ?? null,
+        input.projectId ?? null,
+        input.scope ?? null,
+        input.kind ?? null,
+        input.since ?? null
       ]
     );
     const sourceMap = input.includeSources
@@ -937,5 +951,53 @@ export const createCuratedMemoryRecordMethods = ({
       envelopeEncryptionProvider,
       assertionId
     );
+  },
+
+  async getCuratedMemoryReplacementChain(actor, assertionId) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const chain = [];
+      const visited = new Set<string>([assertionId]);
+      let current = await getAssertionByIdWithClient(
+        client,
+        actor,
+        envelopeEncryptionProvider,
+        assertionId
+      );
+      while (current?.supersedesAssertionId) {
+        const priorId = current.supersedesAssertionId;
+        if (visited.has(priorId) || chain.length >= 50) break;
+        visited.add(priorId);
+        const readable = await client.query<{ id: string }>(
+          `select cma.id from curated_memory_assertions cma
+          where cma.id=$1 and cma.owner_user_id=$2
+            and cma.visibility='personal'
+            and cma.status='superseded'
+            and cma.suppressed_at is null
+            and (cma.expires_at is null or cma.expires_at > now())
+            and ${activeCuratedMemoryEvidencePredicate("cma")}
+          for share of cma`,
+          [priorId, actor.userId]
+        );
+        if (!readable.rows[0]) break;
+        const prior = await getAssertionByIdWithClient(
+          client,
+          actor,
+          envelopeEncryptionProvider,
+          priorId
+        );
+        if (!prior) break;
+        chain.push(prior);
+        current = prior;
+      }
+      await client.query("commit");
+      return chain;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 });

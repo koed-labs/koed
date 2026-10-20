@@ -436,8 +436,23 @@ describe("route identity contract", () => {
     expect(
       openApiPaths["/v1/memory/curated/assertions/{assertionId}"]?.get
     ).toMatchObject({
-      security: [{ bearerApiToken: [] }],
-      "x-koed-identity": "api_token",
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-domain": "personal_memory"
+    });
+    expect(
+      openApiPaths["/v1/memory/curated/assertions/{assertionId}"]?.patch
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }],
+      "x-koed-identity": "session",
+      "x-koed-domain": "personal_memory"
+    });
+    expect(
+      openApiPaths["/v1/memory/curated/assertions/{assertionId}/unsuppress"]
+        ?.post
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }],
+      "x-koed-identity": "session",
       "x-koed-domain": "personal_memory"
     });
     expect(

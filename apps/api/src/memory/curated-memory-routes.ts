@@ -1,9 +1,28 @@
 import type { FastifyInstance } from "fastify";
-import type { CuratedMemorySourceRole } from "@koed/db";
+import type { CuratedMemorySourceRole, MemorySourceRepository } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
+import type { CuratedClassificationCoordinator } from "./curated-classification-coordinator.js";
+
+const replacementChain = async (
+  repo: MemorySourceRepository,
+  actor: { userId: string },
+  assertionId: string
+) =>
+  (await repo.getCuratedMemoryReplacementChain(actor, assertionId)).map(
+    (item) => ({
+      id: item.id,
+      text: item.assertionText,
+      author:
+        item.authorKind && item.authorRef
+          ? { kind: item.authorKind, ref: item.authorRef }
+          : null,
+      at: item.createdAt
+    })
+  );
 import {
   curatedMemoryAssertionParamsSchema,
   curatedMemoryClaimSchema,
+  curatedMemoryClassificationSchema,
   curatedMemoryListQuerySchema,
   curatedMemoryProposalQuerySchema,
   curatedMemoryProposalParamsSchema,
@@ -11,12 +30,14 @@ import {
   curatedMemoryReviewResultSchema,
   curatedMemoryReconcileSchema,
   curatedMemorySearchQuerySchema,
-  curatedMemorySuppressSchema
+  curatedMemorySuppressSchema,
+  curatedMemoryUnsuppressSchema
 } from "./curated-memory-schemas.js";
 
 export const registerCuratedMemoryRoutes = (
   app: FastifyInstance,
-  context: ApiRouteContext
+  context: ApiRouteContext,
+  classificationCoordinator?: CuratedClassificationCoordinator | null
 ) => {
   const {
     requireRepository,
@@ -268,18 +289,32 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
+      const user = await context.auth.authenticate(request);
       const query = curatedMemoryListQuerySchema.parse(request.query);
       const assertions = await repo.listCuratedMemoryAssertions(
         { userId: user.id },
         {
           status: query.status,
+          projectId: query.project_id,
+          scope: query.scope,
+          kind: query.kind,
+          since: query.since,
           topicId: query.topic_id,
           includeSources: query.include_sources,
           limit: query.limit
         }
       );
-      return { assertions, count: assertions.length };
+      const withReplacements = await Promise.all(
+        assertions.map(async (assertion) => ({
+          ...assertion,
+          replaces: await replacementChain(
+            repo,
+            { userId: user.id },
+            assertion.id
+          )
+        }))
+      );
+      return { assertions: withReplacements, count: withReplacements.length };
     }
   );
 
@@ -310,14 +345,23 @@ export const registerCuratedMemoryRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
+      const user = await context.auth.authenticate(request);
       const params = curatedMemoryAssertionParamsSchema.parse(request.params);
       const assertion = await repo.getCuratedMemoryAssertion(
         { userId: user.id },
         params.assertionId
       );
       return assertion
-        ? { assertion }
+        ? {
+            assertion: {
+              ...assertion,
+              replaces: await replacementChain(
+                repo,
+                { userId: user.id },
+                assertion.id
+              )
+            }
+          }
         : reply.status(404).send({ error: "Curated Memory not found" });
     }
   );
@@ -341,6 +385,88 @@ export const registerCuratedMemoryRoutes = (
       return assertion
         ? { assertion }
         : reply.status(404).send({ error: "Curated Memory not found" });
+    }
+  );
+
+  app.post(
+    "/v1/memory/curated/assertions/:assertionId/unsuppress",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await context.auth.authenticateSession(request);
+      const { assertionId } = curatedMemoryAssertionParamsSchema.parse(
+        request.params
+      );
+      const { suppression_token } = curatedMemoryUnsuppressSchema.parse(
+        request.body
+      );
+      const assertion = await repo.unsuppressCuratedMemoryAssertion(
+        { userId: user.id },
+        assertionId,
+        { suppressionToken: suppression_token }
+      );
+      return assertion
+        ? { assertion }
+        : reply.status(404).send({ error: "Curated Memory not found" });
+    }
+  );
+
+  app.patch(
+    "/v1/memory/curated/assertions/:assertionId",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await context.auth.authenticateSession(request);
+      const { assertionId } = curatedMemoryAssertionParamsSchema.parse(
+        request.params
+      );
+      const input = curatedMemoryClassificationSchema.parse(request.body);
+      const assertion = await repo.getCuratedMemoryAssertion(
+        { userId: user.id },
+        assertionId
+      );
+      if (!assertion)
+        return reply.status(404).send({ error: "Curated Memory not found" });
+      if (assertion.scope !== "unscoped") {
+        return reply.status(409).send({
+          error: "Only unscoped Curated Memory can be classified here"
+        });
+      }
+      const operation = await repo.prepareCuratedClassification(
+        { userId: user.id },
+        {
+          assertionId,
+          expectedVersion: input.expected_version,
+          scope: input.scope,
+          projectId: input.scope === "project" ? input.project_id : null
+        }
+      );
+      try {
+        const advanced = classificationCoordinator
+          ? await classificationCoordinator.advance(operation)
+          : operation.manifest.length === 0
+            ? await repo.commitCuratedClassification(
+                { userId: user.id },
+                operation.id
+              )
+            : operation;
+        if (advanced.state === "complete") {
+          return {
+            assertion: await repo.getCuratedMemoryAssertion(
+              { userId: user.id },
+              assertionId
+            ),
+            operation: advanced
+          };
+        }
+        return reply.status(202).send({ operation: advanced });
+      } catch (error) {
+        app.log.warn(
+          { err: error, operationId: operation.id },
+          "Curated classification will retry"
+        );
+        return reply.status(202).send({ operation });
+      }
     }
   );
 

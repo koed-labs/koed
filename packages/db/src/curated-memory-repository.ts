@@ -133,6 +133,10 @@ export interface CuratedMemoryRepository {
     actor: ActorContext,
     assertionId: string
   ): Promise<CuratedMemoryAssertionRecord | null>;
+  getCuratedMemoryReplacementChain(
+    actor: ActorContext,
+    assertionId: string
+  ): Promise<CuratedMemoryAssertionRecord[]>;
   searchCuratedMemoryAssertions(
     actor: ActorContext,
     input: CuratedMemorySearchInput
@@ -145,6 +149,11 @@ export interface CuratedMemoryRepository {
     actor: ActorContext,
     assertionId: string,
     input: { reason?: string | null; status?: "suppressed" }
+  ): Promise<CuratedMemoryAssertionRecord | null>;
+  unsuppressCuratedMemoryAssertion(
+    actor: ActorContext,
+    assertionId: string,
+    input: { suppressionToken: string }
   ): Promise<CuratedMemoryAssertionRecord | null>;
   reconcileCuratedMemorySources(
     actor: ActorContext,

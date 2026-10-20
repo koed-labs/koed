@@ -155,8 +155,29 @@ export const curatedMemoryListQuerySchema = z.object({
     .enum(["current", "superseded", "conflicting", "suppressed"])
     .optional(),
   topic_id: z.string().uuid().optional(),
+  project_id: z.string().uuid().optional(),
+  scope: z.enum(["project", "me", "unscoped"]).optional(),
+  kind: z.enum(["decision", "fact", "learning", "preference"]).optional(),
+  since: z.string().datetime({ offset: true }).optional(),
   include_sources: queryBooleanSchema.default(false),
   limit: z.coerce.number().int().positive().max(250).default(50)
+});
+
+export const curatedMemoryClassificationSchema = z.discriminatedUnion("scope", [
+  z.object({
+    scope: z.literal("project"),
+    project_id: z.string().uuid(),
+    expected_version: z.number().int().positive()
+  }),
+  z.object({
+    scope: z.literal("me"),
+    expected_version: z.number().int().positive()
+  })
+]);
+
+export const curatedMemoryUnsuppressSchema = z.object({
+  // Undo is tied to the suppression the owner saw, not just its assertion ID.
+  suppression_token: z.string().regex(/^\d{1,20}$/)
 });
 
 export const curatedMemorySearchQuerySchema = z
