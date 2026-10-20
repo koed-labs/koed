@@ -293,7 +293,7 @@ describe("managed memory action capture boundary", () => {
   });
 
   it("creates a reviewed correction only from the exact captured User item", async () => {
-    const prompt = "Correct citation 1 to new wording";
+    const prompt = "Correct latest citation 1 to new wording";
     const correctionAction = {
       ...action(prompt, "correct"),
       request: {

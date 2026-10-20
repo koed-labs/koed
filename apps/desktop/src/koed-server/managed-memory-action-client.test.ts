@@ -26,13 +26,13 @@ const authority: ProjectsAuthority = {
 
 describe("durable memory action Desktop boundary", () => {
   it("uses exact owner-bound paths and sends no renderer token or authority fields", async () => {
-    const send = vi.fn(
-      async (..._args: [string, RequestInit, ProjectsAuthority]) => ({
-        operation: "undo",
-        executionId,
-        action
-      })
-    );
+    const send = vi.fn<
+      (
+        path: string,
+        init: RequestInit,
+        bound: ProjectsAuthority
+      ) => Promise<Record<string, unknown>>
+    >(async () => ({ operation: "undo", executionId, action }));
     const client = createManagedMemoryActionClient(send, async () => authority);
     expect(await client({ operation: "undo", executionId, actionId })).toEqual({
       operation: "undo",
