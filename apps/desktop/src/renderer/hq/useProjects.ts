@@ -132,11 +132,19 @@ export class ProjectsStore {
     }
     const version = this.#versions.get(projectId);
     if (version !== undefined && project.version <= version) return;
-    this.#versions.set(projectId, project.version);
-    const projects = this.#snapshot.projects.filter(
-      ({ id }) => id !== projectId
+    const index = this.#snapshot.projects.findIndex(
+      ({ id }) => id === projectId
     );
-    if (project.lifecycle === "active") projects.push(project);
+    // A new row's PostgreSQL timestamp can have more precision than its JSON
+    // representation. Let the server place it in the authoritative list.
+    if (project.lifecycle === "active" && index === -1) {
+      void this.refresh();
+      return;
+    }
+    this.#versions.set(projectId, project.version);
+    const projects = [...this.#snapshot.projects];
+    if (project.lifecycle === "active") projects[index] = project;
+    else if (index !== -1) projects.splice(index, 1);
     this.#set({ ...this.#snapshot, projects });
   }
 }

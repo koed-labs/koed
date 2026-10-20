@@ -134,6 +134,46 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
     expect(new Set(projects.rows.map((row) => row.key)).size).toBe(2);
   });
 
+  it("publishes one owner Project invalidation for creation and each first Session assignment", async () => {
+    const first = await fixture();
+    const created = await repository.associateVerifiedCapturedSession(first);
+    const second = await fixture({
+      owner: first.ownerUserId,
+      localProjectId: first.localProjectId
+    });
+    const reused = await repository.associateVerifiedCapturedSession(second);
+    await repository.associateVerifiedCapturedSession(first);
+    await repository.associateVerifiedCapturedSession(second);
+    expect(reused.projectId).toBe(created.projectId);
+    const events = await pool.query<{
+      family: string;
+      scope: string;
+      personal_owner_user_id: string;
+      resource_type: string;
+      resource_id: string;
+    }>(
+      `select family,scope,personal_owner_user_id,resource_type,resource_id
+         from collaboration_outbox where personal_owner_user_id=$1 order by cursor`,
+      [first.ownerUserId]
+    );
+    expect(events.rows).toEqual([
+      {
+        family: "project_changed",
+        scope: "personal",
+        personal_owner_user_id: first.ownerUserId,
+        resource_type: "project",
+        resource_id: created.projectId
+      },
+      {
+        family: "project_changed",
+        scope: "personal",
+        personal_owner_user_id: first.ownerUserId,
+        resource_type: "project",
+        resource_id: created.projectId
+      }
+    ]);
+  });
+
   it("projects graph threads by the exact effective owner-owned Personal Project ID", async () => {
     const automatic = await fixture();
     const personalProjectId = (

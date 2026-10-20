@@ -12,6 +12,9 @@ writes retain their separate authorization path. Personal API Tokens cannot
 authorize Project operations. The graph thread read exposes the nullable
 effective Personal Project ID from the captured Session's verified assignment;
 the Desktop keeps that ID separate from local discovery and execution IDs.
+The capture association commits an owner-scoped Project change event with a
+new Project or first Session assignment. HQ refreshes both the Project list
+and captured graph after that event or an authoritative reconnect.
 
 ## Purpose
 

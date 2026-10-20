@@ -51,7 +51,8 @@ describe("ProjectsStore", () => {
       .fn()
       .mockReturnValueOnce(stale.promise)
       .mockResolvedValueOnce([updated])
-      .mockResolvedValue([]);
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([project(id, 4)]);
     const store = new ProjectsStore({ list, hq: vi.fn() });
     store.setOwner("owner", "profile-a");
     store.projectChanged("owner", "profile-a", id, updated);
@@ -70,7 +71,9 @@ describe("ProjectsStore", () => {
     store.projectChanged("owner", "profile-a", id, updated);
     expect(store.current().projects).toEqual([]);
     store.projectChanged("owner", "profile-a", id, project(id, 4));
-    expect(store.current().projects).toEqual([project(id, 4)]);
+    await vi.waitFor(() =>
+      expect(store.current().projects).toEqual([project(id, 4)])
+    );
     store.projectChanged("owner", "profile-b", id, updated);
     expect(store.current().projects).toEqual([project(id, 4)]);
   });
@@ -88,5 +91,30 @@ describe("ProjectsStore", () => {
     store.projectChanged("owner", "profile-a", id, updated);
     await store.refresh();
     expect(store.current().projects).toEqual([updated]);
+  });
+
+  it("keeps rename position and relists new rows in server microsecond order", async () => {
+    const first = project(randomUUID());
+    const second = project(randomUUID());
+    const created = project(randomUUID());
+    const renamed = { ...second, name: "Renamed", version: 2 };
+    const later = deferred<ReturnType<typeof project>[]>();
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce([first, second])
+      .mockReturnValueOnce(later.promise);
+    const store = new ProjectsStore({ list, hq: vi.fn() });
+    store.setOwner("owner", "profile-a");
+    await vi.waitFor(() => expect(store.current().loaded).toBe(true));
+    store.projectChanged("owner", "profile-a", second.id, renamed);
+    expect(store.current().projects).toEqual([first, renamed]);
+    store.projectChanged("owner", "profile-a", created.id, created);
+    expect(store.current().projects).toEqual([first, renamed]);
+    // All JSON timestamps tie; the API knows the original PostgreSQL order.
+    later.resolve([created, first, renamed]);
+    await vi.waitFor(() =>
+      expect(store.current().projects).toEqual([created, first, renamed])
+    );
+    expect(list).toHaveBeenCalledTimes(2);
   });
 });

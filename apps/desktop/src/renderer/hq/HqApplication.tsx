@@ -123,19 +123,28 @@ export function HqApplication({
         if (currentKey !== visibilityProfileKey) return;
         if (update.authoritativeRecovery || update.kind === "connection") {
           void projectsStore.refresh();
+          void personalMemoryStore?.loadProjects({ silent: true });
           return;
         }
         if (update.kind !== "realtime") return;
         const changed = update.realtimeUpdate;
-        if (changed?.type === "project_changed")
+        if (changed?.type === "project_changed") {
           projectsStore.projectChanged(
             visibilityOwnerId,
             visibilityProfileKey,
             changed.projectId,
             changed.project
           );
+          void personalMemoryStore?.loadProjects({ silent: true });
+        }
       }),
-    [projectsStore, visibilityClient, visibilityOwnerId, visibilityProfileKey]
+    [
+      projectsStore,
+      visibilityClient,
+      visibilityOwnerId,
+      visibilityProfileKey,
+      personalMemoryStore
+    ]
   );
   const personalProjectsSnapshot = useSyncExternalStore(
     projectsStore?.subscribe ?? subscribeEmpty,

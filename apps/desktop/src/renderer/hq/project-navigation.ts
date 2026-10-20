@@ -37,9 +37,13 @@ export function visibleHqProjects(
       );
       if (thread.conversationTrashedAt || capturedThread?.conversationTrashedAt)
         return [];
-      const personalId = capturedThread
-        ? capturedThread.personalProjectId
-        : thread.personalProjectId;
+      const personalId =
+        capturedThread?.personalProjectId !== undefined
+          ? capturedThread.personalProjectId
+          : thread.personalProjectId === undefined &&
+              project.contextKind === "independent"
+            ? null
+            : thread.personalProjectId;
       if (personalId && !active.has(personalId)) return [];
       return [{ ...thread, personalProjectId: personalId }];
     })

@@ -106,4 +106,35 @@ describe("HQ Project navigation authority", () => {
       )
     ).toEqual([current.sessionId]);
   });
+
+  it("keeps an independent pending Chat loose until capture without guessing Project drafts", () => {
+    const pending = { ...thread(21, null), personalProjectId: undefined };
+    const independent = {
+      ...graph([pending]),
+      id: "technical-independent",
+      contextKind: "independent" as const,
+      threads: [{ ...pending, projectId: "technical-independent" }]
+    };
+    const visible = visibleHqProjects([], [], [independent, graph([pending])]);
+    expect(projectNavigation([], visible).loose).toMatchObject([
+      {
+        technicalProjectId: "technical-independent",
+        thread: { personalProjectId: null, sessionId: pending.sessionId }
+      }
+    ]);
+    expect(visible[1]?.threads[0]?.personalProjectId).toBeUndefined();
+    expect(
+      projectNavigation([], visibleHqProjects([], [independent], [independent]))
+        .loose
+    ).toHaveLength(1);
+
+    const trashed = {
+      ...independent,
+      threads: [{ ...independent.threads[0]!, conversationTrashedAt: now }]
+    };
+    expect(
+      projectNavigation([], visibleHqProjects([], [trashed], [independent]))
+        .loose
+    ).toEqual([]);
+  });
 });
