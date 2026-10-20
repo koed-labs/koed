@@ -49,3 +49,5 @@ rechecks current Workspace and source grants. A revoked or unavailable Team
 source keeps its alias but reveals no retained Team text or private chat link.
 The renderer clears detail on owner, store, API, or chat identity changes and
 rejects late responses from an earlier selection.
+
+If current source verification or citation storage fails during capture, Koed logs a source-free warning and lets the provider turn complete. Unrecorded aliases have no detail and are dropped by the renderer. Capture still waits for a successful durable insert before completing its callback; it never turns an unverifiable source into an authorized citation.

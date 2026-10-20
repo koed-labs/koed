@@ -53,6 +53,8 @@ describe("Managed Conversation runtime coordinator", () => {
       id: "00000000-0000-4000-8000-000000000006"
     }));
     const enqueueConversationSourceArtifactReplication = vi.fn(async () => 2);
+    const completeForManagedExecutionLease = vi.fn(async () => ({}) as never);
+    const putManagedConversationRuntimeItem = vi.fn(async () => ({}) as never);
     let created = 0;
     const createService = vi.fn((input: unknown) => {
       void input;
@@ -73,7 +75,9 @@ describe("Managed Conversation runtime coordinator", () => {
     const coordinator = createManagedConversationRuntimeCoordinator({
       localRepository: {
         getConversationSourceArtifactByGeneration,
-        enqueueConversationSourceArtifactReplication
+        enqueueConversationSourceArtifactReplication,
+        completeForManagedExecutionLease,
+        putManagedConversationRuntimeItem
       } as never,
       localOwnerUserId: "00000000-0000-4000-8000-000000000001",
       apiUrl: "http://127.0.0.1:3300",
@@ -92,6 +96,33 @@ describe("Managed Conversation runtime coordinator", () => {
     coordinator.start();
     await timeout(started[0]!.promise);
     expect(createService).toHaveBeenCalledOnce();
+    const localServiceOptions = createService.mock.calls[0]?.[0] as {
+      onKoedToolCompleted?: (event: unknown) => Promise<void>;
+    };
+    expect(localServiceOptions.onKoedToolCompleted).toBeTypeOf("function");
+    await localServiceOptions.onKoedToolCompleted?.({
+      execution: {
+        id: "00000000-0000-4000-8000-000000000007",
+        ownerUserId: "00000000-0000-4000-8000-000000000001",
+        executionGeneration: 1
+      },
+      command: {
+        id: "00000000-0000-4000-8000-000000000008",
+        leaseToken: "00000000-0000-4000-8000-000000000009"
+      },
+      providerTurnId: "provider-turn-1",
+      toolCallId: "koed-call-1",
+      toolName: "work_item_complete",
+      arguments: {},
+      result: { structuredContent: { status: "requested" } }
+    });
+    expect(completeForManagedExecutionLease).toHaveBeenCalledWith({
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      executionId: "00000000-0000-4000-8000-000000000007",
+      commandId: "00000000-0000-4000-8000-000000000008",
+      leaseToken: "00000000-0000-4000-8000-000000000009"
+    });
+    expect(putManagedConversationRuntimeItem).toHaveBeenCalledOnce();
 
     authority = {
       backendId: "00000000-0000-4000-8000-000000000004",
@@ -117,7 +148,9 @@ describe("Managed Conversation runtime coordinator", () => {
       sourcePublishControl: {
         ensure(input: { sourceGenerationId: string }): Promise<void>;
       };
+      onKoedToolCompleted?: (event: unknown) => Promise<void>;
     };
+    expect(remoteServiceOptions.onKoedToolCompleted).toBeUndefined();
     await remoteServiceOptions.sourcePublishControl.ensure({
       sourceGenerationId
     });

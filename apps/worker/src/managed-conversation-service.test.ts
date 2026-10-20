@@ -29,9 +29,11 @@ import {
   assertManagedConversationExecutionOwner,
   createManagedConversationService,
   managedCodexRuntimeEnvironment,
+  managedWorkItemCompletionEnvironment,
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
+  persistManagedCitationAfterObserver,
   managedConversationOriginSourceGeneration,
   reconcileBlockedManagedConversationSource,
   shouldPublishManagedConversationSource,
@@ -238,6 +240,107 @@ describe("Managed Codex runtime environment", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("managed Work Item child environment", () => {
+  const execution = {
+    ownerUserId: "owner-1",
+    executionId: "execution-1",
+    executionGeneration: 7
+  };
+  const inherited = {
+    KOED_MANAGED_WORK_ITEM_COMPLETION: "1",
+    KEEP_THIS: "present"
+  };
+
+  it("sets the flag only for the exact current owner, execution, and generation", () => {
+    expect(
+      managedWorkItemCompletionEnvironment({
+        env: inherited,
+        execution,
+        eligible: execution
+      })
+    ).toEqual(inherited);
+    for (const eligible of [
+      undefined,
+      { ...execution, ownerUserId: "other-owner" },
+      { ...execution, executionId: "other-execution" },
+      { ...execution, executionGeneration: 6 }
+    ])
+      expect(
+        managedWorkItemCompletionEnvironment({
+          env: inherited,
+          execution,
+          eligible
+        })
+      ).toEqual({ KEEP_THIS: "present" });
+  });
+
+  it("strips an inherited flag from ordinary and auxiliary environments", () => {
+    expect(managedWorkItemCompletionEnvironment({ env: inherited })).toEqual({
+      KEEP_THIS: "present"
+    });
+    expect(inherited.KOED_MANAGED_WORK_ITEM_COMPLETION).toBe("1");
+  });
+});
+
+describe("managed citation persistence after provider tool observation", () => {
+  it("awaits successful persistence before completing the provider callback", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persisted = vi.fn(() => pending);
+    const warned = vi.fn();
+    let completed = false;
+    const completion = persistManagedCitationAfterObserver(
+      persisted,
+      warned
+    ).then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    expect(persisted).toHaveBeenCalledOnce();
+    release();
+    await completion;
+    expect(completed).toBe(true);
+    expect(warned).not.toHaveBeenCalled();
+  });
+
+  it("allows provider completion after canonical rejection or mismatch without recording a mapping", async () => {
+    for (const failure of [
+      new MemoryApiError("Citation unavailable", { status: 404 }),
+      new Error(
+        "Managed citation Personal tool result does not match current source"
+      )
+    ]) {
+      const recordMapping = vi.fn();
+      const warned = vi.fn();
+      const canonicalLookup = vi.fn().mockRejectedValue(failure);
+      await expect(
+        persistManagedCitationAfterObserver(async () => {
+          await canonicalLookup();
+          recordMapping();
+        }, warned)
+      ).resolves.toBeUndefined();
+      expect(recordMapping).not.toHaveBeenCalled();
+      expect(warned).toHaveBeenCalledOnce();
+      expect(warned.mock.calls[0]![0]).toMatch(
+        /^ManagedConversation(?:MemoryApi404Error|Failure)$/
+      );
+    }
+  });
+
+  it("does not fail the provider callback when a repository insertion rejects", async () => {
+    const warned = vi.fn();
+    await expect(
+      persistManagedCitationAfterObserver(async () => {
+        throw new Error("private citation insert failure");
+      }, warned)
+    ).resolves.toBeUndefined();
+    expect(warned).toHaveBeenCalledWith("ManagedConversationFailure");
   });
 });
 

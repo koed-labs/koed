@@ -29,6 +29,11 @@ const memoryScopeReportPath = resolve(
   "hq-304",
   "browser-report.json"
 );
+const memoryCitationReportPath = resolve(
+  scratchDir,
+  "hq-306",
+  "browser-report.json"
+);
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
@@ -38,6 +43,7 @@ await rm(chatLifecycleReportPath, { force: true });
 await rm(chatMoveReportPath, { force: true });
 await rm(dispatchReportPath, { force: true });
 await rm(memoryScopeReportPath, { force: true });
+await rm(memoryCitationReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -51,7 +57,8 @@ try {
         KOED_HQ_USER_DATA_DIR: userDataPath,
         KOED_HQ205_DELEGATED_S09: "1",
         KOED_HQ207_DELEGATED_S01_S11: "1",
-        KOED_HQ304_DELEGATED_S18: "1"
+        KOED_HQ304_DELEGATED_S18: "1",
+        KOED_HQ306_DELEGATED_S07: "1"
       },
       stdio: "inherit"
     });
@@ -287,6 +294,46 @@ try {
       }
     } finally {
       await rm(memoryProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const citationProfile = await mkdtemp(
+      resolve(scratchDir, "hq306-electron-profile-")
+    );
+    try {
+      const citationHq = spawnSync(
+        electronPath,
+        ["scripts/validate-hq306.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ306_USER_DATA_DIR: citationProfile },
+          stdio: "inherit",
+          timeout: 60_000
+        }
+      );
+      if (citationHq.error) throw citationHq.error;
+      process.exitCode = citationHq.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(
+          await readFile(memoryCitationReportPath, "utf8")
+        );
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ306.native", owner: "HQ-306", status: "pass" }
+        );
+        assert.deepEqual(report.assertions, [
+          { id: "S07.1", owner: "HQ-306", status: "pass" }
+        ]);
+        assert.equal(
+          report.assertion,
+          "Memory number in reply opens next to chat; citation still resolves after reload"
+        );
+        process.stdout.write(
+          "PASS S07.1 [HQ-306]: citation opens beside chat and resolves after reload.\n"
+        );
+      }
+    } finally {
+      await rm(citationProfile, { recursive: true, force: true });
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {

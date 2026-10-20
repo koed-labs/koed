@@ -114,6 +114,30 @@ const maximumSourceSegments = 1_000_000;
 const maximumSourceBytes = 512 * 1024 * 1024;
 const targetReadinessTtlMs = 5 * 60_000;
 const maximumPromptFileContextBytes = 4 * 1024 * 1024;
+const managedWorkItemCompletionFlag = "KOED_MANAGED_WORK_ITEM_COMPLETION";
+
+type ManagedWorkItemCompletionIdentity = {
+  ownerUserId: string;
+  executionId: string;
+  executionGeneration: number;
+};
+
+export const managedWorkItemCompletionEnvironment = (input: {
+  env: NodeJS.ProcessEnv;
+  execution?: ManagedWorkItemCompletionIdentity;
+  eligible?: ManagedWorkItemCompletionIdentity;
+}): NodeJS.ProcessEnv => {
+  const env = { ...input.env };
+  delete env[managedWorkItemCompletionFlag];
+  if (
+    input.execution &&
+    input.eligible?.ownerUserId === input.execution.ownerUserId &&
+    input.eligible.executionId === input.execution.executionId &&
+    input.eligible.executionGeneration === input.execution.executionGeneration
+  )
+    env[managedWorkItemCompletionFlag] = "1";
+  return env;
+};
 
 const sha256 = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
@@ -358,10 +382,12 @@ export const managedCodexRuntimeEnvironment = (input: {
     instanceId: input.execution.aiClientInstanceId,
     env: input.env
   });
-  return environmentForLocalAiClientInstance({
-    instance,
-    driverId: "codex",
-    env: input.env
+  return managedWorkItemCompletionEnvironment({
+    env: environmentForLocalAiClientInstance({
+      instance,
+      driverId: "codex",
+      env: input.env
+    })
   });
 };
 
@@ -419,6 +445,17 @@ export const managedConversationFailureCode = (error: unknown): string => {
 };
 
 const errorCode = managedConversationFailureCode;
+
+export const persistManagedCitationAfterObserver = async (
+  persist: () => Promise<void>,
+  onFailure: (failureCode: string) => void
+): Promise<void> => {
+  try {
+    await persist();
+  } catch (error) {
+    onFailure(errorCode(error));
+  }
+};
 
 const managedConversationError = (name: string, cause?: unknown): Error => {
   const error = new Error(name, cause === undefined ? undefined : { cause });
@@ -586,6 +623,23 @@ export const createManagedConversationService = (options: {
     ClaimedManagedConversationCommand
   >();
   const runtimeSessions = new ManagedConversationRuntimeRegistry();
+  const eligibleWorkItemExecutions = new Map<
+    string,
+    ManagedWorkItemCompletionIdentity
+  >();
+  const childEnvironmentFor = (
+    execution: ManagedConversationExecutionRecord,
+    env: NodeJS.ProcessEnv
+  ): NodeJS.ProcessEnv =>
+    managedWorkItemCompletionEnvironment({
+      env,
+      execution: {
+        ownerUserId: execution.ownerUserId,
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration
+      },
+      eligible: eligibleWorkItemExecutions.get(execution.id)
+    });
   const claudeCaptureStatePath = resolve(
     options.koedHome,
     "state",
@@ -1407,10 +1461,12 @@ export const createManagedConversationService = (options: {
       return {
         instanceId: instance.instanceId,
         configIdentityHash: localAiClientInstanceConfigIdentity(instance),
-        environment: environmentForLocalAiClientInstance({
-          instance,
-          driverId: provider,
-          env: process.env
+        environment: managedWorkItemCompletionEnvironment({
+          env: environmentForLocalAiClientInstance({
+            instance,
+            driverId: provider,
+            env: process.env
+          })
         })
       };
     } catch {
@@ -1434,7 +1490,10 @@ export const createManagedConversationService = (options: {
   const codexEnvironmentForExecution = (
     execution: ManagedConversationExecutionRecord
   ): NodeJS.ProcessEnv =>
-    managedCodexRuntimeEnvironment({ execution, env: process.env });
+    childEnvironmentFor(
+      execution,
+      managedCodexRuntimeEnvironment({ execution, env: process.env })
+    );
 
   const codexHomeForExecution = (
     execution: ManagedConversationExecutionRecord
@@ -1635,15 +1694,35 @@ export const createManagedConversationService = (options: {
   ): Promise<void> => {
     const command = activeToolCommands.get(execution.id);
     if (!command?.leaseToken) return;
+    const leaseToken = command.leaseToken;
     await options.onKoedToolCompleted?.({
       execution,
-      command: { id: command.id, leaseToken: command.leaseToken },
+      command: { id: command.id, leaseToken },
       ...tool
     });
-    await recordCompletedMemoryTool(execution, tool, {
-      id: command.id,
-      leaseToken: command.leaseToken
-    });
+    await persistManagedCitationAfterObserver(
+      () =>
+        recordCompletedMemoryTool(execution, tool, {
+          id: command.id,
+          leaseToken
+        }),
+      (failureCode) =>
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.citation_persistence_failed",
+              category: "managed_conversation"
+            },
+            execution_id: execution.id,
+            execution_generation: execution.executionGeneration,
+            command_id: command.id,
+            provider_turn_id: tool.providerTurnId,
+            tool_call_id: tool.toolCallId,
+            error_name: failureCode
+          },
+          "managed Conversation citation persistence failed"
+        )
+    );
   };
 
   const createSession = (
@@ -1877,11 +1956,14 @@ export const createManagedConversationService = (options: {
       instanceId: execution.aiClientInstanceId,
       env: process.env
     });
-    const runtimeEnvironment = environmentForLocalAiClientInstance({
-      instance,
-      driverId: "claude",
-      env: process.env
-    });
+    const runtimeEnvironment = childEnvironmentFor(
+      execution,
+      environmentForLocalAiClientInstance({
+        instance,
+        driverId: "claude",
+        env: process.env
+      })
+    );
     const permission = requireSupportedAiClientPermissionMode({
       driverId: "claude",
       mode: execution.permissionMode
@@ -2068,7 +2150,7 @@ export const createManagedConversationService = (options: {
         : {}),
       permissionMode: execution.permissionMode,
       env: {
-        ...clientEnvironmentFor(execution),
+        ...childEnvironmentFor(execution, clientEnvironmentFor(execution)),
         KOED_HOME: options.koedHome,
         KOED_MANAGED_CONVERSATION: "1"
       },
@@ -5019,6 +5101,25 @@ export const createManagedConversationService = (options: {
       });
     }
     assertManagedConversationExecutionOwner(command.execution);
+    const workItemIdentity: ManagedWorkItemCompletionIdentity = {
+      ownerUserId: command.ownerUserId,
+      executionId: command.executionId,
+      executionGeneration: command.executionGeneration
+    };
+    eligibleWorkItemExecutions.delete(command.executionId);
+    if (
+      options.onKoedToolCompleted &&
+      typeof options.repository.hasActiveManagedWorkItem === "function" &&
+      (await options.repository
+        .hasActiveManagedWorkItem(workItemIdentity)
+        .catch(() => false))
+    ) {
+      if (eligibleWorkItemExecutions.size >= 32)
+        eligibleWorkItemExecutions.delete(
+          eligibleWorkItemExecutions.keys().next().value!
+        );
+      eligibleWorkItemExecutions.set(command.executionId, workItemIdentity);
+    }
     const provider = command.execution.provider as ManagedConversationProvider;
     const current = runtimeSessions.get(provider, command.executionId);
     let configuration: ReturnType<typeof clientConfigurationForOwner> | null =
@@ -7288,7 +7389,13 @@ export const createManagedConversationService = (options: {
     });
     for (const command of claims) {
       try {
-        await withCommandHeartbeat(command, () => runCommand(command));
+        await withCommandHeartbeat(command, async () => {
+          try {
+            await runCommand(command);
+          } finally {
+            eligibleWorkItemExecutions.delete(command.executionId);
+          }
+        });
         completed += 1;
       } catch (error) {
         if (

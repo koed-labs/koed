@@ -22,6 +22,7 @@ import {
   createManagedConversationService,
   type ManagedConversationService
 } from "./managed-conversation-service.js";
+import { createWorkItemCompletionObserver } from "./work-item-completion.js";
 
 type ServiceOptions = Parameters<typeof createManagedConversationService>[0];
 
@@ -91,6 +92,14 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   let reconcilePromise: Promise<void> | null = null;
   let stopped = false;
   const watchers: FSWatcher[] = [];
+  const observeLocalWorkItemCompletion = createWorkItemCompletionObserver(
+    options.localRepository
+  );
+  const onLocalKoedToolCompleted: NonNullable<
+    ServiceOptions["onKoedToolCompleted"]
+  > = async (event) => {
+    await observeLocalWorkItemCompletion(event);
+  };
 
   const defaultResolveAuthority =
     (): ManagedConversationAuthorityConfiguration => {
@@ -315,6 +324,9 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       deploymentId: options.deploymentId,
       koedHome: options.koedHome,
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      // Work Items and their command leases are local. The remote authority
+      // repository cannot verify or complete a local dispatch.
+      ...(!authority ? { onKoedToolCompleted: onLocalKoedToolCompleted } : {}),
       ...(sourceRestoreControl ? { sourceRestoreControl } : {}),
       ...(sourcePublishControl ? { sourcePublishControl } : {}),
       commandWakePool: options.commandWakePool,

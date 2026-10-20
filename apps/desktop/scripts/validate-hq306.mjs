@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import process from "node:process";
@@ -8,6 +8,7 @@ import { app, BrowserWindow } from "electron";
 const root = resolve(import.meta.dirname, "../../..");
 const scratch = resolve(root, "scratch");
 const output = resolve(scratch, "hq-306", "screenshots");
+const reportPath = resolve(scratch, "hq-306", "browser-report.json");
 const profile = process.env.KOED_HQ306_USER_DATA_DIR;
 assert.ok(profile, "Set an isolated HQ-306 Electron profile.");
 assert.equal(dirname(resolve(profile)), scratch);
@@ -16,6 +17,7 @@ app.setPath("userData", profile);
 async function run() {
   let window;
   try {
+    await rm(reportPath, { force: true });
     await app.whenReady();
     window = new BrowserWindow({
       show: false,
@@ -78,6 +80,13 @@ async function run() {
       );
       assert.ok(
         metrics.chips.every((chip) => chip.color === "rgb(255, 255, 255)")
+      );
+      assert.ok(
+        metrics.chips.every(
+          (chip) =>
+            chip.background ===
+            (dark ? "rgb(242, 181, 68)" : "rgb(201, 138, 4)")
+        )
       );
       assert.equal(metrics.fromMemory, true);
       assert.ok(
@@ -201,6 +210,37 @@ async function run() {
     );
     process.stdout.write(
       "live command completion: empty alias lookup resolved on completion\n"
+    );
+    await writeFile(
+      reportPath,
+      JSON.stringify(
+        {
+          id: "HQ306.native",
+          owner: "HQ-306",
+          status: "pass",
+          assertions: [{ id: "S07.1", owner: "HQ-306", status: "pass" }],
+          assertion:
+            "Memory number in reply opens next to chat; citation still resolves after reload",
+          checks: [
+            "real HQ Project and ordinary Conversation views",
+            "light and dark 17px numbered memory chips and From memory row",
+            "397px source detail beside reply and composer",
+            "close restores ordinary Conversation width",
+            "durable captured-history alias lookup after reload",
+            "initially empty lookup resolves after live command completion"
+          ],
+          screenshots: [
+            "hq306-light.png",
+            "hq306-dark.png",
+            "hq306-detail-light.png",
+            "hq306-detail-dark.png",
+            "hq306-ordinary-detail-light.png",
+            "hq306-ordinary-detail-dark.png"
+          ]
+        },
+        null,
+        2
+      ) + "\n"
     );
   } finally {
     window?.destroy();
