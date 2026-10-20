@@ -41,13 +41,17 @@ const hq208Capture =
   new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
 const hq307Capture =
   new URLSearchParams(window.location.search).get("hq307Capture") === "yes";
+const hq308Capture =
+  new URLSearchParams(window.location.search).get("hq308Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
-  hq307Capture;
+  hq307Capture ||
+  hq308Capture;
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
-  hq307Capture;
+  hq307Capture ||
+  hq308Capture;
 const hq306Race =
   new URLSearchParams(window.location.search).get("hq306Race") === "yes";
 const hq306Trace = { aliasLookups: 0, detailOpens: 0, raceComplete: false };
@@ -71,7 +75,8 @@ const hq207Capture =
   hq209Capture ||
   hq403Capture ||
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
-  new URLSearchParams(window.location.search).get("hq305Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
+  hq308Capture;
 const hq304Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
 const hq305Capture =
@@ -1212,6 +1217,88 @@ const hq207ManagedConversations = {
                 }
               ]
             : []
+    };
+  }
+} as ManagedConversationDesktopApi;
+
+const hq308Trace = { detailOpens: 0, turnReads: 0 };
+const hq308TurnId = "hq308-latest-turn";
+const hq308Citations = [
+  {
+    ...hq306Citations[0]!,
+    providerTurnId: hq308TurnId,
+    title: "Clock skew on staging"
+  },
+  {
+    ...hq306Citations[1]!,
+    providerTurnId: hq308TurnId,
+    title: "Release checklist"
+  }
+];
+const hq308ManagedConversations = {
+  ...hq207ManagedConversations,
+  list: async () => ({
+    operation: "list" as const,
+    complete: true,
+    executions: [
+      {
+        executionId: hq204ExecutionId,
+        projectId: hq204ProjectId,
+        sessionId: hq204SessionId,
+        threadId: "hq204-fixture-thread",
+        state: "running"
+      }
+    ]
+  }),
+  runtime: async (executionId: string) => ({
+    ...(await hq207ManagedConversations.runtime(executionId)),
+    items: [
+      {
+        id: "hq308-question",
+        executionGeneration: 1,
+        providerTurnId: hq308TurnId,
+        providerItemId: "hq308-question",
+        itemKind: "user_input" as const,
+        presentation: {
+          mode: "expanded" as const,
+          renderer: "user_input" as const,
+          policyKey: "hq308-fixture",
+          policyRevision: 1,
+          reason: "Agent question"
+        },
+        state: "pending" as const,
+        payload: {
+          questions: [{ id: "staging", question: "Skip two staging tests?" }]
+        },
+        revision: 1,
+        createdAt: FIXTURE_TIME,
+        updatedAt: FIXTURE_TIME,
+        answered: false
+      }
+    ]
+  }),
+  turnCitations: async (executionId: string, providerTurnId: string) => {
+    hq308Trace.turnReads++;
+    return {
+      operation: "turn_citations" as const,
+      executionId,
+      providerTurnId,
+      citations: providerTurnId === hq308TurnId ? hq308Citations : []
+    };
+  },
+  citationDetail: async (
+    executionId: string,
+    providerTurnId: string,
+    alias: string
+  ) => {
+    hq308Trace.detailOpens++;
+    return {
+      operation: "citation_detail" as const,
+      executionId,
+      providerTurnId,
+      alias,
+      citation:
+        hq308Citations.find((citation) => citation.alias === alias) ?? null
     };
   }
 } as ManagedConversationDesktopApi;
@@ -2394,6 +2481,13 @@ export function HqValidationApp() {
         window as Window & { __koedHq307Trace?: typeof hq307Trace }
       ).__koedHq307Trace = hq307Trace;
     }
+    if (hq308Capture) {
+      hq308Trace.detailOpens = 0;
+      hq308Trace.turnReads = 0;
+      (
+        window as Window & { __koedHq308Trace?: typeof hq308Trace }
+      ).__koedHq308Trace = hq308Trace;
+    }
     if (hq305Capture) {
       hq305Trace.pages = 0;
       hq305Trace.since.length = 0;
@@ -2455,11 +2549,13 @@ export function HqValidationApp() {
       personalMemoryApi={sidebarPersonalMemoryApi}
       projectsApi={sidebarProjectsApi}
       managedConversations={
-        hq207Capture
-          ? hq207ManagedConversations
-          : hq204Capture
-            ? hq204ManagedConversations
-            : hq104ManagedConversations
+        hq308Capture
+          ? hq308ManagedConversations
+          : hq207Capture
+            ? hq207ManagedConversations
+            : hq204Capture
+              ? hq204ManagedConversations
+              : hq104ManagedConversations
       }
       statusReadyOverride
       teamCollaborationEnabled

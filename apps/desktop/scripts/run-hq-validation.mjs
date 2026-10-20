@@ -65,7 +65,8 @@ try {
         KOED_HQ207_DELEGATED_S01_S11: "1",
         KOED_HQ304_DELEGATED_S18: "1",
         KOED_HQ306_DELEGATED_S07: "1",
-        KOED_HQ307_DELEGATED_S18: "1"
+        KOED_HQ307_DELEGATED_S18: "1",
+        KOED_HQ308_DELEGATED_S19: "1"
       },
       stdio: "inherit"
     });
@@ -395,7 +396,7 @@ try {
           { id: "HQ305.native", owner: "HQ-305", status: "pass" }
         );
         process.stdout.write(
-          "PASS HQ305.native [HQ-305]: today's Project memory, detail, exact Forget/Undo, and external refresh; S19.1 memory chips remain owned by HQ-308.\n"
+          "PASS HQ305.native [HQ-305]: today's Project memory, detail, exact Forget/Undo, and external refresh.\n"
         );
       }
     } finally {
@@ -437,6 +438,40 @@ try {
       }
     } finally {
       await rm(actionProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-308", "HQ308.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq308-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq308.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ308_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ308.native", owner: "HQ-308", status: "pass" }
+        );
+        assert.ok(
+          report.checks.includes(
+            "chips start the secondary line below row titles"
+          )
+        );
+        process.stdout.write(
+          "PASS S19.1 [HQ-308]: Now and Project Needs you Why chips, Working now count, reauthorized right-column source details, v50 placement and desktop light/dark.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
     }
   }
 } finally {

@@ -17,6 +17,7 @@ export type NowNeed = {
   projectId?: string;
   sessionId?: string;
   executionId?: string;
+  runtimeItemId?: string;
   threadId?: string;
   createdAt: string;
 };
@@ -73,6 +74,7 @@ export function nowNeedsFromRuntime(
         projectId: draft.conversation.projectId,
         sessionId: draft.conversation.capturedSessionId ?? executionId,
         executionId,
+        runtimeItemId: item.id,
         threadId: draft.conversation.threadId,
         createdAt: item.createdAt
       });
@@ -107,6 +109,7 @@ export function nowNeedsFromExecutionInventory(
           projectId: execution.projectId,
           sessionId: execution.sessionId ?? undefined,
           executionId: execution.executionId,
+          runtimeItemId: item.id,
           threadId: execution.threadId ?? undefined,
           createdAt: item.createdAt
         }))

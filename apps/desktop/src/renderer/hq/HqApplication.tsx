@@ -245,6 +245,10 @@ export function HqApplication({
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [artifactContext, setArtifactContext] = useState<string | null>(null);
+  const [nowMemoryOpen, setNowMemoryOpen] = useState(false);
+  const [nowMemoryHost, setNowMemoryHost] = useState<HTMLDivElement | null>(
+    null
+  );
   const [closeInspectorSignal, setCloseInspectorSignal] = useState(0);
   const [sourcesPanelHost, setSourcesPanelHost] =
     useState<HTMLDivElement | null>(null);
@@ -418,15 +422,19 @@ export function HqApplication({
       : reconcileHqRoute(selection.route, selection.project, projects);
   const routeRef = useRef(route);
   routeRef.current = route;
+  useEffect(() => {
+    if (route.kind !== "home") setNowMemoryOpen(false);
+  }, [route.kind]);
   const routeEpoch = useRef(0);
   const contextAvailable =
-    route.kind === "project" &&
-    (projectsStore
-      ? personalProjects.some(({ id }) => id === route.projectId)
-      : projects.some(
-          (item) =>
-            item.id === route.projectId && item.contextKind === "project"
-        ));
+    (route.kind === "project" &&
+      (projectsStore
+        ? personalProjects.some(({ id }) => id === route.projectId)
+        : projects.some(
+            (item) =>
+              item.id === route.projectId && item.contextKind === "project"
+          ))) ||
+    (route.kind === "home" && nowMemoryOpen);
   const resolveBlankProject = useCallback(() => {
     if (!onResolveIndependent) return;
     if (!snapshot?.projectsLoaded) {
@@ -1307,7 +1315,13 @@ export function HqApplication({
       <HqShell
         actionsRef={shellActions}
         contextAvailable={contextAvailable}
-        contextContent={projectHqContent}
+        contextContent={
+          route.kind === "home" && nowMemoryOpen ? (
+            <div className="hq-now-memory-host" ref={setNowMemoryHost} />
+          ) : (
+            projectHqContent
+          )
+        }
         title={title}
         route={route}
         sidebar={({ compact }) => (
@@ -1467,6 +1481,14 @@ export function HqApplication({
                     projectsStore ? personalProjects : undefined
                   }
                   api={managedConversations}
+                  ownerId={visibilityOwnerId}
+                  profileKey={visibilityProfileKey}
+                  memoryPanelHost={nowMemoryHost}
+                  onMemoryPanelOpenChange={(open) => {
+                    setNowMemoryOpen(open);
+                    if (open) shellActions.current?.showContext();
+                  }}
+                  onOpenCitationMessage={openCitationMessage}
                   lifecycle={managedConversationLifecycle}
                   approvals={approvals}
                   blockedConversationSessions={blockedConversationSessions}
@@ -1498,6 +1520,14 @@ export function HqApplication({
               projects={projects}
               personalProjects={projectsStore ? personalProjects : undefined}
               api={managedConversations}
+              ownerId={visibilityOwnerId}
+              profileKey={visibilityProfileKey}
+              memoryPanelHost={nowMemoryHost}
+              onMemoryPanelOpenChange={(open) => {
+                setNowMemoryOpen(open);
+                if (open) shellActions.current?.showContext();
+              }}
+              onOpenCitationMessage={openCitationMessage}
               lifecycle={managedConversationLifecycle}
               approvals={approvals}
               blockedConversationSessions={blockedConversationSessions}
@@ -1542,10 +1572,14 @@ export function HqApplication({
                   : []
               }
               panelHost={sourcesPanelHost}
-              onSourcesOpenChange={setSourcesOpen}
+              onSourcesOpenChange={(open) => {
+                setSourcesOpen(open);
+                if (open) shellActions.current?.showContext();
+              }}
               onContextChange={setArtifactContext}
               closeSignal={closeInspectorSignal}
               onSelectConversation={openNowNeed}
+              onOpenCitationMessage={openCitationMessage}
               onOpenPrivateHq={() => {
                 setCloseInspectorSignal((value) => value + 1);
                 setSourcesOpen(false);

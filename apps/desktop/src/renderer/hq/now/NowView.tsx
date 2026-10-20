@@ -31,6 +31,8 @@ import {
 } from "./now-model.js";
 import type { NowNeed } from "./now-model.js";
 import { readNowPreferences, writeNowPreferences } from "./now-preferences.js";
+import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
+import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
 import "./now.css";
 
 export function NowView({
@@ -43,6 +45,11 @@ export function NowView({
   projectsReady = false,
   projectsLoading = false,
   projectsError = false,
+  ownerId,
+  profileKey,
+  memoryPanelHost,
+  onMemoryPanelOpenChange,
+  onOpenCitationMessage,
   onSelectProject,
   onSelectConversation
 }: {
@@ -55,14 +62,27 @@ export function NowView({
   projectsReady?: boolean;
   projectsLoading?: boolean;
   projectsError?: boolean;
+  ownerId?: string | null;
+  profileKey?: string | null;
+  memoryPanelHost?: HTMLElement | null;
+  onMemoryPanelOpenChange?: (open: boolean) => void;
+  onOpenCitationMessage?: (
+    target: NonNullable<
+      import("../../../ipc/managed-conversation-protocol.js").ManagedConversationTurnCitation["messageTarget"]
+    >
+  ) => Promise<boolean>;
   onSelectProject: (id: string) => void;
   onSelectConversation: (need: NowNeed) => void;
 }) {
   const [preferences, setPreferences] = useState(readNowPreferences);
   const [moreNeeds, setMoreNeeds] = useState(false);
   const [moreProjects, setMoreProjects] = useState(false);
+  const [memoryPanelRow, setMemoryPanelRow] = useState<string | null>(null);
   const [runtimeItems, setRuntimeItems] = useState<
     ReadonlyMap<string, readonly ManagedConversationRuntimeItem[]>
+  >(new Map());
+  const [runtimeGenerations, setRuntimeGenerations] = useState<
+    ReadonlyMap<string, number>
   >(new Map());
   const [executions, setExecutions] = useState<
     readonly ManagedConversationListEntry[]
@@ -74,9 +94,18 @@ export function NowView({
   const [refreshKey, setRefreshKey] = useState(0);
   const [sourceApi, setSourceApi] =
     useState<ManagedConversationDesktopApi | null>(null);
+  const [sourceOwnerId, setSourceOwnerId] = useState<string | null>(null);
+  const [sourceProfileKey, setSourceProfileKey] = useState<string | null>(null);
   const [approvalClock, setApprovalClock] = useState(0);
   const drafts = lifecycle?.drafts;
   const draftIdentityKey = [...(drafts?.keys() ?? [])].sort().join("\u0000");
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible")
+        setRefreshKey((value) => value + 1);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     const nextExpiry = approvals
       .filter(
@@ -98,9 +127,12 @@ export function NowView({
     if (!api || !list) {
       setExecutions([]);
       setRuntimeItems(new Map());
+      setRuntimeGenerations(new Map());
       setComplete(false);
       setInventoryTruncated(false);
       setSourceApi(null);
+      setSourceOwnerId(null);
+      setSourceProfileKey(null);
       setLoading(false);
       setRuntimeError("Managed Conversations are unavailable.");
       return;
@@ -120,6 +152,7 @@ export function NowView({
           string,
           readonly ManagedConversationRuntimeItem[]
         >();
+        const nextGenerations = new Map<string, number>();
         let failed = false;
         for (let offset = 0; offset < ids.length; offset += 8) {
           if (!active) return;
@@ -129,17 +162,24 @@ export function NowView({
           );
           if (!active) return;
           results.forEach((result, index) => {
-            if (result.status === "fulfilled")
+            if (result.status === "fulfilled") {
               next.set(batch[index]!, result.value.items);
-            else failed = true;
+              nextGenerations.set(
+                batch[index]!,
+                result.value.executionGeneration
+              );
+            } else failed = true;
           });
         }
         if (!active) return;
         setExecutions(inspectable.executions);
         setSourceApi(api);
+        setSourceOwnerId(ownerId ?? null);
+        setSourceProfileKey(profileKey ?? null);
         setComplete(listed.complete && !failed && !inspectable.unknownState);
         setInventoryTruncated(!listed.complete);
         setRuntimeItems(next);
+        setRuntimeGenerations(nextGenerations);
         setRuntimeError(
           failed
             ? "Some Conversation requests could not be loaded."
@@ -151,9 +191,12 @@ export function NowView({
         if (!active) return;
         setExecutions([]);
         setSourceApi(api);
+        setSourceOwnerId(ownerId ?? null);
+        setSourceProfileKey(profileKey ?? null);
         setComplete(false);
         setInventoryTruncated(false);
         setRuntimeItems(new Map());
+        setRuntimeGenerations(new Map());
         setRuntimeError("Needs you could not load. Try refreshing.");
       } finally {
         if (active) setLoading(false);
@@ -162,11 +205,21 @@ export function NowView({
     return () => {
       active = false;
     };
-  }, [api, draftIdentityKey, refreshKey]);
-  const sourceCurrent = sourceApi === api;
+  }, [api, ownerId, profileKey, draftIdentityKey, refreshKey]);
+  const sourceCurrent =
+    sourceApi === api &&
+    sourceOwnerId === (ownerId ?? null) &&
+    sourceProfileKey === (profileKey ?? null);
+  useEffect(() => {
+    setMemoryPanelRow(null);
+    onMemoryPanelOpenChange?.(false);
+  }, [ownerId, profileKey, api]);
   const visibleRuntime = sourceCurrent
     ? runtimeItems
     : new Map<string, readonly ManagedConversationRuntimeItem[]>();
+  const visibleGenerations = sourceCurrent
+    ? runtimeGenerations
+    : new Map<string, number>();
   const visibleExecutions = sourceCurrent ? executions : [];
   const scopedDrafts = new Map(
     [...(drafts ?? new Map())].filter(([id]) =>
@@ -268,25 +321,57 @@ export function NowView({
                 item.projectId &&
                 item.sessionId &&
                 item.threadId ? (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="hq-now__row"
-                    onClick={() => onSelectConversation(item)}
-                  >
-                    <span className="hq-now__need-icon" aria-hidden="true">
+                  <div key={item.id} className="hq-now__memory-row">
+                    <button
+                      type="button"
+                      className="hq-now__row"
+                      onClick={() => onSelectConversation(item)}
+                    >
+                      <span className="hq-now__need-icon" aria-hidden="true">
+                        {item.kind === "question" ? (
+                          <CircleHelp />
+                        ) : (
+                          <ShieldAlert />
+                        )}
+                      </span>
+                      <span className="hq-now__row-copy">
+                        <strong>{item.title}</strong>
+                      </span>
+                      <span aria-hidden="true">›</span>
+                    </button>
+                    <div className="hq-execution-memory__secondary">
                       {item.kind === "question" ? (
-                        <CircleHelp />
-                      ) : (
-                        <ShieldAlert />
-                      )}
-                    </span>
-                    <span className="hq-now__row-copy">
-                      <strong>{item.title}</strong>
+                        <ExecutionMemoryChips
+                          api={api}
+                          ownerId={ownerId}
+                          profileKey={profileKey}
+                          projectId={item.projectId}
+                          executionId={item.executionId}
+                          executionGeneration={visibleGenerations.get(
+                            item.executionId
+                          )}
+                          providerTurnId={latestRuntimeTurn(
+                            visibleRuntime.get(item.executionId) ?? [],
+                            item.runtimeItemId,
+                            visibleGenerations.get(item.executionId)
+                          )}
+                          variant="why"
+                          panelHost={memoryPanelHost}
+                          panelActive={memoryPanelRow === item.id}
+                          onPanelOpen={() => {
+                            setMemoryPanelRow(item.id);
+                            onMemoryPanelOpenChange?.(true);
+                          }}
+                          onPanelClose={() => {
+                            setMemoryPanelRow(null);
+                            onMemoryPanelOpenChange?.(false);
+                          }}
+                          onOpenMessage={onOpenCitationMessage}
+                        />
+                      ) : null}
                       <small>{item.context}</small>
-                    </span>
-                    <span aria-hidden="true">›</span>
-                  </button>
+                    </div>
+                  </div>
                 ) : (
                   <div key={item.id} className="hq-now__row">
                     <span className="hq-now__need-icon" aria-hidden="true">

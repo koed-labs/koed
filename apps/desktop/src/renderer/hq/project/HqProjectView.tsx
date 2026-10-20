@@ -33,6 +33,8 @@ import { nowInspectableExecutions, type NowNeed } from "../now/now-model.js";
 import { HqProjectSources } from "./HqProjectSources.js";
 import { HqLearnedToday } from "./HqLearnedToday.js";
 import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
+import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
+import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
 import {
   parseWorkItemInput,
   projectWorkItemSections,
@@ -55,6 +57,7 @@ type Inventory = {
   hasRepoSource: boolean;
   executions: ManagedConversationListEntry[];
   runtime: Map<string, readonly ManagedConversationRuntimeItem[]>;
+  runtimeGenerations: Map<string, number>;
   error: string;
   complete: boolean;
 };
@@ -70,6 +73,7 @@ const emptyInventory = (): Inventory => ({
   hasRepoSource: false,
   executions: [],
   runtime: new Map(),
+  runtimeGenerations: new Map(),
   error: "",
   complete: false
 });
@@ -120,6 +124,7 @@ export function HqProjectView({
   closeSignal,
   onSelectConversation,
   onOpenPrivateHq,
+  onOpenCitationMessage,
   blockedConversationSessions
 }: {
   project: Project;
@@ -139,6 +144,11 @@ export function HqProjectView({
   closeSignal?: number;
   onSelectConversation: (need: NowNeed) => void;
   onOpenPrivateHq?: () => void;
+  onOpenCitationMessage?: (
+    target: NonNullable<
+      import("../../../ipc/managed-conversation-protocol.js").ManagedConversationTurnCitation["messageTarget"]
+    >
+  ) => Promise<boolean>;
   blockedConversationSessions?: ReadonlySet<string>;
 }) {
   const [inventory, setInventory] = useState<Inventory>(emptyInventory);
@@ -237,6 +247,7 @@ export function HqProjectView({
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sendFor, setSendFor] = useState<string | null>(null);
   const [briefFor, setBriefFor] = useState<string | null>(null);
+  const [memoryPanelRow, setMemoryPanelRow] = useState<string | null>(null);
   const intent = useRef({
     projectId: project.id,
     ownerId,
@@ -280,6 +291,7 @@ export function HqProjectView({
   useEffect(() => {
     setBriefFor(null);
     setSendFor(null);
+    setMemoryPanelRow(null);
   }, [closeSignal]);
   useEffect(() => {
     setDraft("");
@@ -288,6 +300,7 @@ export function HqProjectView({
     setAgents([]);
     setSendFor(null);
     setBriefFor(null);
+    setMemoryPanelRow(null);
     setFolded({
       need: false,
       doing: false,
@@ -404,6 +417,7 @@ export function HqProjectView({
         string,
         readonly ManagedConversationRuntimeItem[]
       >();
+      const runtimeGenerations = new Map<string, number>();
       let runtimeFailed = false;
       for (let offset = 0; offset < executions.length; offset += 8) {
         const batch = executions.slice(offset, offset + 8);
@@ -412,9 +426,13 @@ export function HqProjectView({
         );
         if (!live || intent.current.generation !== generation) return;
         results.forEach((result, index) => {
-          if (result.status === "fulfilled")
+          if (result.status === "fulfilled") {
             runtime.set(batch[index]!.executionId, result.value.items);
-          else runtimeFailed = true;
+            runtimeGenerations.set(
+              batch[index]!.executionId,
+              result.value.executionGeneration
+            );
+          } else runtimeFailed = true;
         });
       }
       if (!live || intent.current.generation !== generation) return;
@@ -433,6 +451,7 @@ export function HqProjectView({
           sourcesResult.value.some((source) => source.kind === "repo"),
         executions,
         runtime,
+        runtimeGenerations,
         complete: Boolean(
           listed.status === "fulfilled" &&
           listed.value?.complete &&
@@ -500,6 +519,7 @@ export function HqProjectView({
                 sessionId: execution.sessionId ?? undefined,
                 threadId: execution.threadId ?? undefined,
                 executionId: execution.executionId,
+                runtimeItemId: item.id,
                 createdAt: item.createdAt
               })
             )
@@ -791,6 +811,7 @@ export function HqProjectView({
     </span>
   );
   const openWorkItem = (item: WorkItem) => {
+    setMemoryPanelRow(null);
     setMemoryOpen(false);
     setSourceCloseSignal((value) => value + 1);
     setBriefFor(item.id);
@@ -814,6 +835,19 @@ export function HqProjectView({
       executionId: execution.executionId,
       createdAt: item.updatedAt
     });
+  };
+  const openMemoryPanel = (rowKey: string) => {
+    setMemoryPanelRow(rowKey);
+    setMemoryOpen(false);
+    setBriefFor(null);
+    setSourceCloseSignal((value) => value + 1);
+    onSourcesOpenChange?.(true);
+    onContextChange?.("Memory sources");
+  };
+  const closeMemoryPanel = () => {
+    setMemoryPanelRow(null);
+    onSourcesOpenChange?.(false);
+    onContextChange?.(null);
   };
   const selectedBrief =
     visibleInventory.workItems.find((item) => item.id === briefFor) ?? null;
@@ -885,10 +919,11 @@ export function HqProjectView({
           panelHost={panelHost}
           onOpenChange={(value) => {
             if (value) {
+              setMemoryPanelRow(null);
               setMemoryOpen(false);
               setBriefFor(null);
               onSourcesOpenChange?.(true);
-            } else if (!memoryOpen && !briefFor) {
+            } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
               onSourcesOpenChange?.(false);
             }
           }}
@@ -906,6 +941,7 @@ export function HqProjectView({
               setMemorySelection(null);
               setSourceCloseSignal((value) => value + 1);
               setMemoryOpen(true);
+              setMemoryPanelRow(null);
               setBriefFor(null);
               onSourcesOpenChange?.(true);
               onContextChange?.("What Koed knows");
@@ -1059,98 +1095,214 @@ export function HqProjectView({
                           <span className="hq-project-view__avatar">
                             <Folder size={15} />
                           </span>
-                          <button
-                            type="button"
-                            className="hq-project-view__work-item-text hq-project-view__brief-trigger"
-                            onClick={() => openWorkItem(item)}
-                          >
-                            <b>{item.title}</b>
-                            <small>
-                              {item.executionId
-                                ? "Agent working"
-                                : "In progress"}
-                            </small>
-                          </button>
+                          <span className="hq-project-view__work-item-text">
+                            <button
+                              type="button"
+                              className="hq-project-view__brief-trigger"
+                              onClick={() => openWorkItem(item)}
+                            >
+                              <b>{item.title}</b>
+                            </button>
+                            <span className="hq-execution-memory__secondary">
+                              {item.executionId ? (
+                                <ExecutionMemoryChips
+                                  api={conversationsApi}
+                                  ownerId={ownerId}
+                                  profileKey={profileKey}
+                                  projectId={project.id}
+                                  executionId={item.executionId}
+                                  executionGeneration={visibleInventory.runtimeGenerations.get(
+                                    item.executionId
+                                  )}
+                                  providerTurnId={latestRuntimeTurn(
+                                    visibleInventory.runtime.get(
+                                      item.executionId
+                                    ) ?? [],
+                                    undefined,
+                                    visibleInventory.runtimeGenerations.get(
+                                      item.executionId
+                                    )
+                                  )}
+                                  variant="count"
+                                  panelHost={panelHost}
+                                  panelActive={
+                                    memoryPanelRow === `work:${item.id}`
+                                  }
+                                  onPanelOpen={() =>
+                                    openMemoryPanel(`work:${item.id}`)
+                                  }
+                                  onPanelClose={closeMemoryPanel}
+                                  onOpenMessage={onOpenCitationMessage}
+                                />
+                              ) : null}
+                              <small>
+                                {item.executionId
+                                  ? "Agent working"
+                                  : "In progress"}
+                              </small>
+                            </span>
+                          </span>
                           {sendControl(item)}
                         </div>
                       ))}
                   {runtimeVisible.map((item) =>
                     kind === "need" ? (
-                      <button
-                        type="button"
-                        className="hq-project-view__row"
+                      <div
+                        className="hq-project-view__memory-row"
                         key={(item as NowNeed).id}
-                        disabled={!canOpen(item)}
-                        onClick={() => open(item as NowNeed)}
                       >
-                        <span className="hq-project-view__avatar">!</span>
-                        <span>
-                          <b>{(item as NowNeed).title}</b>
+                        <button
+                          type="button"
+                          className="hq-project-view__row"
+                          disabled={!canOpen(item)}
+                          onClick={() => open(item as NowNeed)}
+                        >
+                          <span className="hq-project-view__avatar">!</span>
+                          <span>
+                            <b>{(item as NowNeed).title}</b>
+                          </span>
+                          <em>Review</em>
+                        </button>
+                        <div className="hq-execution-memory__secondary">
+                          {(item as NowNeed).kind === "question" &&
+                          (item as NowNeed).executionId ? (
+                            <ExecutionMemoryChips
+                              api={conversationsApi}
+                              ownerId={ownerId}
+                              profileKey={profileKey}
+                              projectId={project.id}
+                              executionId={(item as NowNeed).executionId!}
+                              executionGeneration={visibleInventory.runtimeGenerations.get(
+                                (item as NowNeed).executionId!
+                              )}
+                              providerTurnId={latestRuntimeTurn(
+                                visibleInventory.runtime.get(
+                                  (item as NowNeed).executionId!
+                                ) ?? [],
+                                (item as NowNeed).runtimeItemId,
+                                visibleInventory.runtimeGenerations.get(
+                                  (item as NowNeed).executionId!
+                                )
+                              )}
+                              variant="why"
+                              panelHost={panelHost}
+                              panelActive={
+                                memoryPanelRow === (item as NowNeed).id
+                              }
+                              onPanelOpen={() =>
+                                openMemoryPanel((item as NowNeed).id)
+                              }
+                              onPanelClose={closeMemoryPanel}
+                              onOpenMessage={onOpenCitationMessage}
+                            />
+                          ) : null}
                           <small>
                             {(item as NowNeed).kind === "question"
                               ? "Question"
                               : "Approval"}{" "}
                             · Open Conversation to respond
                           </small>
-                        </span>
-                        <em>Review</em>
-                      </button>
+                        </div>
+                      </div>
                     ) : (
-                      <button
-                        type="button"
-                        className="hq-project-view__row"
+                      <div
+                        className="hq-project-view__memory-row"
                         key={(item as ManagedConversationListEntry).executionId}
-                        disabled={!canOpen(item)}
-                        onClick={() =>
-                          open({
-                            id: `execution:${(item as ManagedConversationListEntry).executionId}`,
-                            kind: "question",
-                            title: "Active Conversation",
-                            context: project.name,
-                            projectId: (item as ManagedConversationListEntry)
-                              .projectId,
-                            sessionId:
-                              (item as ManagedConversationListEntry)
-                                .sessionId ?? undefined,
-                            threadId:
-                              (item as ManagedConversationListEntry).threadId ??
-                              undefined,
-                            executionId: (item as ManagedConversationListEntry)
-                              .executionId,
-                            createdAt: ""
-                          })
-                        }
                       >
-                        <span className="hq-project-view__avatar">
-                          <Folder size={15} />
-                        </span>
-                        <span>
-                          <b>
-                            {(item as ManagedConversationListEntry).sessionId
-                              ? graphProjects
-                                  .flatMap((entry) => entry.threads)
-                                  .find(
-                                    (thread) =>
-                                      thread.sessionId ===
-                                      (item as ManagedConversationListEntry)
-                                        .sessionId
-                                  )?.name || "Conversation in progress"
-                              : (item as ManagedConversationListEntry).state ===
-                                  "starting"
-                                ? "Conversation starting"
-                                : "Conversation in progress"}
-                          </b>
+                        <button
+                          type="button"
+                          className="hq-project-view__row"
+                          disabled={!canOpen(item)}
+                          onClick={() =>
+                            open({
+                              id: `execution:${(item as ManagedConversationListEntry).executionId}`,
+                              kind: "question",
+                              title: "Active Conversation",
+                              context: project.name,
+                              projectId: (item as ManagedConversationListEntry)
+                                .projectId,
+                              sessionId:
+                                (item as ManagedConversationListEntry)
+                                  .sessionId ?? undefined,
+                              threadId:
+                                (item as ManagedConversationListEntry)
+                                  .threadId ?? undefined,
+                              executionId: (
+                                item as ManagedConversationListEntry
+                              ).executionId,
+                              createdAt: ""
+                            })
+                          }
+                        >
+                          <span className="hq-project-view__avatar">
+                            <Folder size={15} />
+                          </span>
+                          <span>
+                            <b>
+                              {(item as ManagedConversationListEntry).sessionId
+                                ? graphProjects
+                                    .flatMap((entry) => entry.threads)
+                                    .find(
+                                      (thread) =>
+                                        thread.sessionId ===
+                                        (item as ManagedConversationListEntry)
+                                          .sessionId
+                                    )?.name || "Conversation in progress"
+                                : (item as ManagedConversationListEntry)
+                                      .state === "starting"
+                                  ? "Conversation starting"
+                                  : "Conversation in progress"}
+                            </b>
+                          </span>
+                          <span
+                            className="hq-project-view__running"
+                            aria-label="Active"
+                          />
+                        </button>
+                        <div className="hq-execution-memory__secondary">
+                          <ExecutionMemoryChips
+                            api={conversationsApi}
+                            ownerId={ownerId}
+                            profileKey={profileKey}
+                            projectId={project.id}
+                            executionId={
+                              (item as ManagedConversationListEntry).executionId
+                            }
+                            executionGeneration={visibleInventory.runtimeGenerations.get(
+                              (item as ManagedConversationListEntry).executionId
+                            )}
+                            providerTurnId={latestRuntimeTurn(
+                              visibleInventory.runtime.get(
+                                (item as ManagedConversationListEntry)
+                                  .executionId
+                              ) ?? [],
+                              undefined,
+                              visibleInventory.runtimeGenerations.get(
+                                (item as ManagedConversationListEntry)
+                                  .executionId
+                              )
+                            )}
+                            variant="count"
+                            panelHost={panelHost}
+                            panelActive={
+                              memoryPanelRow ===
+                              `execution:${(item as ManagedConversationListEntry).executionId}`
+                            }
+                            onPanelOpen={() =>
+                              openMemoryPanel(
+                                `execution:${(item as ManagedConversationListEntry).executionId}`
+                              )
+                            }
+                            onPanelClose={closeMemoryPanel}
+                            onOpenMessage={onOpenCitationMessage}
+                          />
                           <small>
                             {(
                               item as ManagedConversationListEntry
                             ).state.replaceAll("_", " ")}
                           </small>
-                        </span>
-                        <span
-                          className="hq-project-view__running"
-                          aria-label="Active"
-                        />
-                      </button>
+                        </div>
+                      </div>
                     )
                   )}
                   {!total ? (

@@ -128,6 +128,7 @@ const delegatedProjectHq = process.env.KOED_HQ207_DELEGATED_S01_S11 === "1";
 const delegatedMemoryScope = process.env.KOED_HQ304_DELEGATED_S18 === "1";
 const delegatedMemoryCitations = process.env.KOED_HQ306_DELEGATED_S07 === "1";
 const delegatedMemoryActions = process.env.KOED_HQ307_DELEGATED_S18 === "1";
+const delegatedRowMemoryChips = process.env.KOED_HQ308_DELEGATED_S19 === "1";
 const unitSkipReason =
   "This ID belongs to its owning unit suite, not the Electron browser harness.";
 const integrationSkipReason =
@@ -996,6 +997,12 @@ const reportSkippedCases = () => {
     if (delegatedMemoryActions && entry.id === "S18.1") {
       process.stdout.write(
         "DELEGATED S18.1 [HQ-307]: dedicated native Memory actions proof runs after this harness.\n"
+      );
+      continue;
+    }
+    if (delegatedRowMemoryChips && entry.id === "S19.1") {
+      process.stdout.write(
+        "DELEGATED S19.1 [HQ-308]: dedicated native execution memory-chip proof runs after this harness.\n"
       );
       continue;
     }
@@ -2700,7 +2707,7 @@ const runValidation = async () => {
     assert.equal(hq208Created.dialogClosed, true);
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

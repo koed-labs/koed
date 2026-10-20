@@ -23,6 +23,7 @@ export type HqShellActions = {
   dismissOverlays: () => void;
   toggleSidebar: () => void;
   toggleContext: () => void;
+  showContext: () => void;
 };
 export type HqSidebarLayout = { compact: boolean };
 
@@ -347,6 +348,7 @@ export function HqShell({
   useImperativeHandle(actionsRef, () => ({
     toggleSidebar,
     toggleContext,
+    showContext,
     dismissOverlays: () => {
       setMobileSidebarOpen(false);
       setMobileContextOpen(false);
