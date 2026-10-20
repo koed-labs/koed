@@ -330,6 +330,13 @@
       "when": 1792163119519,
       "tag": "0046_project_scoped_recall",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792458683834,
+      "tag": "0047_personal_project_model",
+      "breakpoints": true
     }
   ]
 }

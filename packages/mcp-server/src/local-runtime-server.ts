@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { resolveCaptureFolderObservation } from "./capture-repository-context.js";
 import {
   chmodSync,
   mkdirSync,
@@ -9,7 +10,10 @@ import {
 } from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { watchKoedLocalWork } from "@koed/shared";
+import {
+  personalFolderReferenceSchema,
+  watchKoedLocalWork
+} from "@koed/shared";
 import { z } from "zod";
 import {
   resolveCodexTranscriptWatcherConfig,
@@ -208,6 +212,8 @@ const desktopAskRequestSchema = z
   .object({
     input: z
       .object({
+        namedProjectId: z.uuid().optional(),
+        folderSelection: personalFolderReferenceSchema.optional(),
         askThreadId: z.string().uuid().optional(),
         idempotencyKey: z.string().trim().min(1).max(500),
         query: z.string().trim().min(1).max(32_000)
@@ -694,6 +700,23 @@ export const startLocalAiRuntime = async ({
       });
       try {
         const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/capture/folder-context"
+        ) {
+          const input = z
+            .object({
+              sourceKind: z.literal("pi"),
+              externalSessionId: z.string().min(1).max(1024),
+              cwd: z.string().min(1).max(8192),
+              newConversation: z.boolean()
+            })
+            .strict()
+            .parse(await readJsonBody(request));
+          await resolveCaptureFolderObservation({ ...input, env: environment });
+          json(response, 200, { ok: true });
+          return;
+        }
         if (request.method === "GET" && requestUrl.pathname === "/ready") {
           json(response, 200, {
             ok: true,

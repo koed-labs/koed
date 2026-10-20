@@ -1,6 +1,10 @@
 import { codexIdePromptUserText } from "@koed/core";
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import {
+  personalSourceSelectionSql,
+  projectPersonalSelectionQuery
+} from "./personal-selection-sql.js";
+import {
   approvalConversationItemSql,
   semanticMemoryEventEligibleSql,
   sessionExactCuratedAssertionSql
@@ -262,6 +266,15 @@ export const createCuratedMemoryRecordMethods = ({
   },
 
   async resolveCuratedMemoryProposalEvidence(actor, input) {
+    const projected = projectPersonalSelectionQuery(actor.userId, {
+      ...input,
+      searchDomain: input.sessionId
+        ? "session"
+        : input.projectId
+          ? "project"
+          : "global"
+    });
+    input = projected.input;
     const exactQuote = input.exactQuote?.trim() || null;
     if (!input.sessionId && !exactQuote) {
       throw Object.assign(
@@ -290,19 +303,19 @@ export const createCuratedMemoryRecordMethods = ({
           and ci.visibility = 'personal'
           and ci.personal_deleted_at is null
           and ci.memory_excluded_at is null
+          and ${personalSourceSelectionSql("s", "$4")}
           and not ${approvalConversationItemSql("ci")}
           and (ci.source_event_type in ('user_message', 'UserPromptSubmit')
             or ci.metadata ->> 'transcriptType' = 'user_message')
           and ($2::uuid is null or ci.session_id = $2)
-          and ($3::text is null or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $3))
         order by coalesce(ci.event_time, ci.observed_at, ci.created_at) desc, ci.id desc
-        limit $4
+        limit $3
       `,
       [
         actor.userId,
         input.sessionId ?? null,
-        input.projectId ?? null,
-        normalizedQuote ? null : 1
+        normalizedQuote ? null : 1,
+        JSON.stringify(projected.selection)
       ]
     );
     const matchingConversationItemIds: string[] = [];
@@ -382,9 +395,9 @@ export const createCuratedMemoryRecordMethods = ({
           and me.visibility = 'personal'
           and me.invalidated_at is null
           and me.personal_deleted_at is null
+          and ${personalSourceSelectionSql("source_session", "$4")}
           and ${semanticMemoryEventEligibleSql("me")}
           and ($2::uuid is null or me.session_id = $2)
-          and ($3::text is null or repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $3))
           and (
             me.payload ->> 'actor' = 'user'
             or (
@@ -393,13 +406,13 @@ export const createCuratedMemoryRecordMethods = ({
             )
           )
         order by me.captured_at desc, me.id desc
-        limit $4
+        limit $3
       `,
       [
         actor.userId,
         input.sessionId ?? null,
-        input.projectId ?? null,
-        normalizedQuote ? null : 1
+        normalizedQuote ? null : 1,
+        JSON.stringify(projected.selection)
       ]
     );
     const matchingMemoryEventIds: string[] = [];

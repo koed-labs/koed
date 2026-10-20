@@ -1,4 +1,15 @@
+import {
+  personalModelSchemaInstalled,
+  assertPersonalLegacyWriteSupported
+} from "./personal-model-boundary.js";
+import { preserveRoutedCaptureTarget } from "./personal-capture-target-routing.js";
+import {
+  personalSourceSelectionSql,
+  projectPersonalInspectionQuery,
+  type PersonalSelectionQuery
+} from "./personal-selection-sql.js";
 import { projectFromRepositoryIdentity } from "./session-project.js";
+import { recordFolderObservation } from "./folder-assignment.js";
 import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
@@ -9,6 +20,10 @@ import {
 } from "./project-routing-repository.js";
 import {
   repositoryAssignmentSchema,
+  type PersonalFolderAssignment,
+  type PersonalFolderObservation,
+  personalFolderContextSchema,
+  type PersonalFolderContext,
   type RepositoryAssignment
 } from "@koed/shared";
 import { basename } from "node:path";
@@ -35,6 +50,7 @@ import type {
 } from "./types.js";
 
 export interface CapturedSessionRepository {
+  listPersonalFolders(actor: ActorContext): Promise<PersonalFolderContext[]>;
   createCapturedSession(
     actor: ActorContext,
     input: {
@@ -58,25 +74,30 @@ export interface CapturedSessionRepository {
       metadata?: Record<string, unknown>;
       detectedProjects?: PersonalProjectReference[];
       repositoryIdentity?: RepositoryIdentity;
+      folderObservation?: PersonalFolderObservation;
+      currentFolderObservation?: PersonalFolderObservation;
       // Internal verified PDS import, never accepted from a capture API request.
       replicatedRepositoryAssignment?: RepositoryAssignment;
     }
   ): Promise<CapturedSessionRecord>;
   getCapturedSession(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    input?: PersonalSelectionQuery
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionSummaries(
     actor: ActorContext,
-    input?: { limit?: number }
+    input?: PersonalSelectionQuery & { limit?: number }
   ): Promise<CapturedSessionSummaryRecord[]>;
   getCapturedSessionSummary(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    input?: PersonalSelectionQuery
   ): Promise<CapturedSessionSummaryRecord | null>;
   getCapturedSessionSummaryByLogicalMemoryId(
     actor: ActorContext,
-    logicalMemoryId: string
+    logicalMemoryId: string,
+    input?: PersonalSelectionQuery
   ): Promise<CapturedSessionSummaryRecord | null>;
   updateCapturedSessionTitle(
     actor: ActorContext,
@@ -103,7 +124,7 @@ export interface CapturedSessionRepository {
   ): Promise<CapturedSessionTitleCandidate[]>;
   getLatestCapturedSessionForProject(
     actor: ActorContext,
-    input: { projectId: string }
+    input: PersonalSelectionQuery & { projectId: string }
   ): Promise<CapturedSessionRecord | null>;
   updateCapturedSessionGeneratedTitle(
     actor: ActorContext,
@@ -114,6 +135,8 @@ export interface CapturedSessionRepository {
 
 export interface CapturedSessionRepositoryOptions {
   transactionClient?: pg.PoolClient;
+  /** Internal verified transport uses its logical binding, never provider-ID convergence. */
+  verifiedSourceIdentityOnly?: boolean;
 }
 
 export interface CapturedSessionSummaryRecord {
@@ -149,6 +172,7 @@ type CapturedSessionRow = RepositoryAssignmentRow & {
   capture_method: CaptureMethod;
   model: string | null;
   cwd: string | null;
+  folder_assignment: PersonalFolderAssignment;
   source_kind: string | null;
   source_adapter_version: string | null;
   source_fingerprint: string | null;
@@ -293,8 +317,10 @@ const mapCapturedSessionSummary = (
 export const getCapturedSessionSummaryWithClient = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
-  sessionId: string
+  sessionId: string,
+  input: PersonalSelectionQuery = {}
 ): Promise<CapturedSessionSummaryRecord | null> => {
+  const { selection } = projectPersonalInspectionQuery(actor.userId, input);
   const result = await client.query<CapturedSessionSummaryRow>(
     `
       select
@@ -360,6 +386,7 @@ export const getCapturedSessionSummaryWithClient = async (
         and s.visibility = 'personal'
         and s.invalidated_at is null
         and s.personal_deleted_at is null
+        and ${personalSourceSelectionSql("s", "$3", { inspection: true, includeUnassigned: true })}
         and exists (
           select 1
           from users owner
@@ -370,7 +397,7 @@ export const getCapturedSessionSummaryWithClient = async (
       group by s.id, lm.id, relationship.state, relationship.revoked_at,
                relationship.source_cursor, relationship.last_synced_at
     `,
-    [actor.userId, sessionId]
+    [actor.userId, sessionId, JSON.stringify(selection)]
   );
   return result.rows[0] ? mapCapturedSessionSummary(result.rows[0]) : null;
 };
@@ -411,6 +438,7 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
     captureMethod: row.capture_method,
     model: row.model,
     cwd: row.cwd,
+    folderAssignment: row.folder_assignment,
     sourceKind: row.source_kind,
     sourceAdapterVersion: row.source_adapter_version,
     sourceFingerprint: row.source_fingerprint,
@@ -542,7 +570,7 @@ const hasExplicitDetectedProjectIdentity = (input: {
 const capturedSessionColumns = `
   id, logical_session_id, owner_user_id, visibility, external_session_id, external_thread_id,
   forked_from_external_thread_id,
-  source_runtime, capture_method, model, cwd,
+  source_runtime, capture_method, model, cwd, folder_assignment,
   source_kind, source_adapter_version, source_fingerprint,
   captured_project, import_observed_at, metadata,
   captured_project_provenance,
@@ -557,6 +585,20 @@ export const createCapturedSessionRepository = (
   pool: pg.Pool,
   options: CapturedSessionRepositoryOptions = {}
 ): CapturedSessionRepository => ({
+  async listPersonalFolders(actor) {
+    const result = await pool.query<{ context: unknown }>(
+      `select distinct (case when folder_assignment->'correction'->>'state'='corrected'
+        then folder_assignment->'correction'->'value' else folder_assignment->'original' end)->'value' as context
+       from sessions where owner_user_id=$1 and visibility='personal'
+         and invalidated_at is null and personal_deleted_at is null
+         and (case when folder_assignment->'correction'->>'state'='corrected'
+           then folder_assignment->'correction'->'value' else folder_assignment->'original' end)->>'state'='known'`,
+      [actor.userId]
+    );
+    return result.rows
+      .map((row) => personalFolderContextSchema.parse(row.context))
+      .filter((folder) => folder.reference.ownerUserId === actor.userId);
+  },
   async createCapturedSession(actor, input) {
     const ownsTransaction = !options.transactionClient;
     const client = options.transactionClient ?? (await pool.connect());
@@ -565,7 +607,8 @@ export const createCapturedSessionRepository = (
         await client.query("begin");
       }
       await lockProjectRouting(client, actor.userId, true);
-      if (input.externalSessionId) {
+      const modelInstalled = await personalModelSchemaInstalled(client);
+      if (input.externalSessionId && !options.verifiedSourceIdentityOnly) {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [`captured-session:${actor.userId}:${input.externalSessionId}`]
@@ -583,6 +626,17 @@ export const createCapturedSessionRepository = (
       const repositoryIdentity = input.repositoryIdentity
         ? repositoryIdentitySchema.parse(input.repositoryIdentity)
         : undefined;
+      if (
+        modelInstalled &&
+        !options.verifiedSourceIdentityOnly &&
+        repositoryIdentity?.kind === "local_project"
+      )
+        throw Object.assign(
+          new Error(
+            "Named Projects cannot establish source context. Capture recorded Git or Folder evidence."
+          ),
+          { statusCode: 410, code: "personal_legacy_write_retired" }
+        );
       const metadata = { ...(input.metadata ?? {}) };
       const forkedFromExternalThreadId =
         input.forkedFromExternalThreadId ??
@@ -607,7 +661,7 @@ export const createCapturedSessionRepository = (
               ? "ambiguous"
               : "no_signal"
       };
-      if (input.externalSessionId) {
+      if (input.externalSessionId && !options.verifiedSourceIdentityOnly) {
         const converged = await client.query<CapturedSessionRow>(
           `
             update sessions
@@ -724,11 +778,20 @@ export const createCapturedSessionRepository = (
               { statusCode: 409 }
             );
           }
+          await recordFolderObservation(
+            client,
+            convergedRow,
+            input.folderObservation,
+            Boolean(input.importObservedAt),
+            input.currentFolderObservation,
+            options.verifiedSourceIdentityOnly
+          );
           await recordRepositoryObservation(
             client,
             convergedRow,
             repositoryIdentity,
-            input.cwd
+            input.cwd,
+            options.verifiedSourceIdentityOnly
           );
           await ensureCapturedSessionLogicalMemory(
             client,
@@ -740,6 +803,56 @@ export const createCapturedSessionRepository = (
           }
           return mapCapturedSession(convergedRow);
         }
+      }
+      if (
+        modelInstalled &&
+        input.externalSessionId &&
+        !options.verifiedSourceIdentityOnly
+      ) {
+        // Legacy native replacement can retain recorded source facts, but it
+        // must not revive a deletion or guess how an independent Capture Target
+        // transfers to a new Session. Its implicit policy key must also remain
+        // exact, and a Session-bound policy cannot be dropped on replacement.
+        // Serialize a legacy replacement with policy edits without taking a
+        // global policy lock for ordinary fresh captures. Routing precedes the
+        // policy lock, preserving routing-before-policy lock order.
+        await client.query(
+          `select pg_advisory_xact_lock(hashtextextended($1,0)) where exists (
+            select 1 from sessions where owner_user_id=$2 and external_session_id=$3
+              and visibility='personal' and (invalidated_at is not null or personal_deleted_at is not null)
+          )`,
+          [
+            `capture-policy:${actor.userId}`,
+            actor.userId,
+            input.externalSessionId
+          ]
+        );
+        const removed = await client.query(
+          `select 1 from sessions s where owner_user_id=$1 and external_session_id=$2 and visibility='personal'
+          and (personal_deleted_at is not null or (invalidated_at is not null and (
+            invalidation_reason is not null or project_override_id is not null
+            or coalesce(s.automatic_project_id,s.cwd) is distinct from $3::text
+            or exists (
+              select 1 from personal_capture_target_bindings b
+              where b.owner_user_id=s.owner_user_id and b.session_id=s.id
+            ) or exists (
+              select 1 from capture_policies policy where policy.owner_user_id=s.owner_user_id
+                and policy.target_type='thread' and policy.thread_id=s.id::text
+            )
+          ))) limit 1`,
+          [
+            actor.userId,
+            input.externalSessionId,
+            automaticProject?.id ?? input.cwd ?? null
+          ]
+        );
+        if (removed.rows.length)
+          throw Object.assign(
+            new Error(
+              "This Conversation was removed. Start a new Conversation to capture new activity."
+            ),
+            { statusCode: 409, code: "captured_session_removed" }
+          );
       }
       const result = await client.query<CapturedSessionRow>(
         `
@@ -783,6 +896,7 @@ export const createCapturedSessionRepository = (
             from sessions parent
             where parent.owner_user_id = $1
               and parent.visibility = 'personal'
+              and ${options.verifiedSourceIdentityOnly ? "false" : "true"}
               and (
                 parent.external_thread_id = $14
                 or parent.external_session_id = $14
@@ -951,21 +1065,35 @@ export const createCapturedSessionRepository = (
           { statusCode: 409, code: "captured_session_thread_conflict" }
         );
       }
+      await recordFolderObservation(
+        client,
+        row,
+        input.folderObservation,
+        Boolean(input.importObservedAt),
+        input.currentFolderObservation,
+        options.verifiedSourceIdentityOnly
+      );
       await recordRepositoryObservation(
         client,
         row,
         repositoryIdentity,
-        input.cwd
+        input.cwd,
+        options.verifiedSourceIdentityOnly
       );
       if (
         row.capture_inserted &&
         !row.repository_assignment_inherited &&
         !replicatedAssignment
       ) {
-        const routed = await client.query<CapturedSessionRow>(
-          `
+        if (modelInstalled) {
+          await preserveRoutedCaptureTarget(client, actor.userId, row.id);
+        } else {
+          // Staged legacy data is seeded before migration 69. This branch is
+          // unreachable after a migrated server passes its startup gate.
+          const routed = await client.query<CapturedSessionRow>(
+            `
           update sessions s set repository_override_identity=r.target_identity,
-            repository_assignment_version=s.repository_assignment_version+1,
+            repository_assignment_version=s.repository_assignment_version+1,repository_assignment_revision_id=null,
             project_override_id=r.target_project_id,project_override_name=r.target_name,project_override_path=r.target_path,
             project_override_at=now(),project_override_by_user_id=$2,updated_at=now()
           from personal_project_routes r where s.id=$1 and s.owner_user_id=$2
@@ -976,9 +1104,10 @@ export const createCapturedSessionRepository = (
             .map((column) => `s.${column.trim()}`)
             .join(",")}
         `,
-          [row.id, actor.userId]
-        );
-        if (routed.rows[0]) Object.assign(row, routed.rows[0]);
+            [row.id, actor.userId]
+          );
+          if (routed.rows[0]) Object.assign(row, routed.rows[0]);
+        }
       }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
@@ -1024,6 +1153,7 @@ export const createCapturedSessionRepository = (
   },
 
   async moveCapturedSessionToProject(actor, sessionId, input) {
+    await assertPersonalLegacyWriteSupported(pool);
     if (
       !input.repositoryIdentity ||
       !Number.isSafeInteger(input.expectedAssignmentVersion) ||
@@ -1041,7 +1171,7 @@ export const createCapturedSessionRepository = (
         update sessions
         set
           repository_override_identity = $6::jsonb,
-          repository_assignment_version = repository_assignment_version + 1,
+          repository_assignment_version = repository_assignment_version + 1,repository_assignment_revision_id=null,
           project_override_id = $3,
           project_override_name = $4,
           project_override_path = $5,
@@ -1078,6 +1208,7 @@ export const createCapturedSessionRepository = (
     sessionId,
     expectedAssignmentVersion
   ) {
+    await assertPersonalLegacyWriteSupported(pool);
     if (
       !Number.isSafeInteger(expectedAssignmentVersion) ||
       expectedAssignmentVersion! < 1
@@ -1091,7 +1222,7 @@ export const createCapturedSessionRepository = (
         update sessions
         set
           repository_override_identity = null,
-          repository_assignment_version = repository_assignment_version + 1,
+          repository_assignment_version = repository_assignment_version + 1,repository_assignment_revision_id=null,
           project_override_id = null,
           project_override_name = null,
           project_override_path = null,
@@ -1111,7 +1242,8 @@ export const createCapturedSessionRepository = (
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async getCapturedSession(actor, sessionId) {
+  async getCapturedSession(actor, sessionId, input = {}) {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
     const result = await pool.query<CapturedSessionRow>(
       `
         select ${capturedSessionColumns}
@@ -1120,13 +1252,16 @@ export const createCapturedSessionRepository = (
           and owner_user_id = $1
           and visibility = 'personal'
           and invalidated_at is null
+          and personal_deleted_at is null
+          and ${personalSourceSelectionSql("sessions", "$3", { inspection: true, includeUnassigned: true })}
       `,
-      [actor.userId, sessionId]
+      [actor.userId, sessionId, JSON.stringify(selection)]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
   async listCapturedSessionSummaries(actor, input = {}) {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
     const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
     const result = await pool.query<CapturedSessionSummaryRow>(
       `
@@ -1192,21 +1327,27 @@ export const createCapturedSessionRepository = (
           and s.visibility = 'personal'
           and s.invalidated_at is null
           and s.personal_deleted_at is null
+          and ${personalSourceSelectionSql("s", "$3", { inspection: true, includeUnassigned: true })}
         group by s.id, lm.id, relationship.state, relationship.revoked_at,
                  relationship.source_cursor, relationship.last_synced_at
         order by latest_activity_at desc, s.id desc
         limit $2
       `,
-      [actor.userId, limit]
+      [actor.userId, limit, JSON.stringify(selection)]
     );
     return result.rows.map(mapCapturedSessionSummary);
   },
 
-  async getCapturedSessionSummary(actor, sessionId) {
-    return getCapturedSessionSummaryWithClient(pool, actor, sessionId);
+  async getCapturedSessionSummary(actor, sessionId, input = {}) {
+    return getCapturedSessionSummaryWithClient(pool, actor, sessionId, input);
   },
 
-  async getCapturedSessionSummaryByLogicalMemoryId(actor, logicalMemoryId) {
+  async getCapturedSessionSummaryByLogicalMemoryId(
+    actor,
+    logicalMemoryId,
+    input = {}
+  ) {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
     const result = await pool.query<{ local_session_id: string }>(
       `select local_memory.local_session_id
          from logical_memories logical
@@ -1219,19 +1360,21 @@ export const createCapturedSessionRepository = (
           and session.visibility = 'personal'
           and session.invalidated_at is null
           and session.personal_deleted_at is null
+          and ${personalSourceSelectionSql("session", "$3", { inspection: true, includeUnassigned: true })}
         where logical.id = $2
           and logical.owner_user_id = $1
           and logical.owner_principal_id = $1
           and logical.source_kind = 'captured_session'
           and logical.lifecycle in ('active', 'stale')
         limit 1`,
-      [actor.userId, logicalMemoryId]
+      [actor.userId, logicalMemoryId, JSON.stringify(selection)]
     );
     return result.rows[0]
       ? getCapturedSessionSummaryWithClient(
           pool,
           actor,
-          result.rows[0].local_session_id
+          result.rows[0].local_session_id,
+          input
         )
       : null;
   },
@@ -1306,6 +1449,7 @@ export const createCapturedSessionRepository = (
   },
 
   async getLatestCapturedSessionForProject(actor, input) {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
     const result = await pool.query<CapturedSessionRow>(
       `
         select ${capturedSessionColumns}
@@ -1314,11 +1458,11 @@ export const createCapturedSessionRepository = (
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
-          and repository_scope_matches(coalesce(repository_override_identity, repository_automatic_identity), $2)
+          and ${personalSourceSelectionSql("sessions", "$2", { inspection: true, includeUnassigned: true })}
         order by created_at desc, id desc
         limit 1
       `,
-      [actor.userId, input.projectId]
+      [actor.userId, JSON.stringify(selection)]
     );
     const row = result.rows[0];
     return row ? mapCapturedSession(row) : null;

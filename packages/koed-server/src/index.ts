@@ -193,6 +193,12 @@ export type {
 } from "./git-project-probe.js";
 
 export { resolveRepositoryIdentity } from "./repository-identity.js";
+export {
+  observeCaptureFolder,
+  pinSourceFolderObservation,
+  readSourceFolderObservation,
+  readCurrentSourceFolderObservation
+} from "./folder-context.js";
 
 export {
   listPendingRepositoryChanges,

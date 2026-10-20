@@ -1,3 +1,10 @@
+import type { PdsConfigurationCapabilityRecord } from "@koed/shared";
+import type { PdsClosureSource } from "@koed/db";
+import {
+  PdsRelayClient,
+  requirePdsConfigurationCapability,
+  createPdsRepositoryAssignmentFromSourceContext
+} from "@koed/shared";
 import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
 import { createPdsRepositoryAssignment } from "@koed/shared";
 import { spawnSync } from "node:child_process";
@@ -328,13 +335,78 @@ const isAiClientSourceRuntime = (
   value === "claude-code" ||
   value === "pi";
 
+const sourceRepositoryAssignment = (
+  source: PdsClosureSource,
+  secret: PdsRuntimeSecret
+) =>
+  source.sourceContext
+    ? createPdsRepositoryAssignmentFromSourceContext(
+        source.sourceContext.context,
+        secret.groupSecrets.currentEpoch,
+        secret.groupSecrets.projectAliasKey,
+        {
+          capturedCwd: source.capturedCwd,
+          branchObservation: source.branchObservation
+        }
+      )
+    : createPdsRepositoryAssignment(
+        source.repositoryAssignment ?? {
+          state: "historical_unresolved",
+          version: 1,
+          automatic: null,
+          override: null,
+          effective: null
+        },
+        secret.groupSecrets.currentEpoch,
+        secret.groupSecrets.projectAliasKey,
+        {
+          capturedCwd: source.capturedCwd,
+          branchObservation: source.branchObservation
+        }
+      );
 const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
   const runtime = runtimeFor(secret);
   const signingKey = pdsEd25519PrivateKey(
     secret.device.signingPrivateSeed,
     runtime.serving.signingPublicKey
   );
+  let sourceCapabilities: PdsConfigurationCapabilityRecord[] = [];
+  const prepareSourceContextPublication = async () => {
+    const relay = new PdsRelayClient({
+      baseUrl: secret.relayUrl,
+      identity: {
+        certificate: secret.certificate,
+        deviceId: secret.device.id,
+        signingKeyId: secret.device.signingKeyId,
+        signingPublicKey: runtime.serving.signingPublicKey,
+        signingPrivateSeed: secret.device.signingPrivateSeed
+      }
+    });
+    sourceCapabilities = await relay.configurationCapabilities();
+    requireSourceContextRecipients();
+  };
+  const requireSourceContextRecipients = () => {
+    requirePdsConfigurationCapability({
+      groupId: secret.groupId,
+      authorityHead: secret.authority.head,
+      currentEpoch: secret.groupSecrets.currentEpoch,
+      authorityPublicKey: secret.authority.publicKey,
+      authorityKeyId: secret.authority.keyId,
+      activeCertificates: secret.recipientCertificates,
+      records: sourceCapabilities,
+      feature: "source_context_v1",
+      intendedRecipientDeviceIds: runtime.recipients
+        .filter((member) => member.deviceId !== secret.device.id)
+        .map((member) => member.deviceId)
+    });
+  };
   return {
+    sourceContextVersion: "1",
+    prepareSourceContextPublication,
+    configurationAuthority: {
+      epoch: runtime.epoch,
+      head: runtime.authorityHead
+    },
     deviceSigningPrivateKeyRef: "desktop-secure-runtime",
     deviceKemPrivateKeyRef: "desktop-secure-runtime",
     groupSecretSetRef: "desktop-secure-runtime",
@@ -352,24 +424,14 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         signingKey
       );
     },
-    buildClosedSessionPackage(input) {
+    async buildClosedSessionPackage(input) {
+      if (input.source.sourceContext) requireSourceContextRecipients();
       const manifest = createPdsSessionManifest({
         profileTransition: input.closedProfileTransition ?? null,
-        repositoryAssignment: createPdsRepositoryAssignment(
-          input.source.repositoryAssignment ?? {
-            state: "historical_unresolved",
-            version: 1,
-            automatic: null,
-            override: null,
-            effective: null
-          },
-          secret.groupSecrets.currentEpoch,
-          secret.groupSecrets.projectAliasKey,
-          {
-            capturedCwd: input.source.capturedCwd,
-            branchObservation: input.source.branchObservation
-          }
-        ),
+        ...(input.source.sourceContext
+          ? { sourceContext: input.source.sourceContext }
+          : {}),
+        repositoryAssignment: sourceRepositoryAssignment(input.source, secret),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,
@@ -413,7 +475,8 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         deletionFloorToken: manifest.deletionFloorToken
       });
     },
-    buildCompletedTurnCheckpointPackage(input) {
+    async buildCompletedTurnCheckpointPackage(input) {
+      if (input.source.sourceContext) requireSourceContextRecipients();
       const sourceRuntime = input.source.sourceRuntime;
       if (!isAiClientSourceRuntime(sourceRuntime)) {
         throw new TypeError("PDS checkpoint source runtime is invalid");
@@ -436,21 +499,10 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
       };
       const manifest = createPdsSessionCheckpointManifest({
         profileTransition: input.profileTransition,
-        repositoryAssignment: createPdsRepositoryAssignment(
-          input.source.repositoryAssignment ?? {
-            state: "historical_unresolved",
-            version: 1,
-            automatic: null,
-            override: null,
-            effective: null
-          },
-          secret.groupSecrets.currentEpoch,
-          secret.groupSecrets.projectAliasKey,
-          {
-            capturedCwd: input.source.capturedCwd,
-            branchObservation: input.source.branchObservation
-          }
-        ),
+        ...(input.source.sourceContext
+          ? { sourceContext: input.source.sourceContext }
+          : {}),
+        repositoryAssignment: sourceRepositoryAssignment(input.source, secret),
         runtime,
         originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,

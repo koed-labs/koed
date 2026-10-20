@@ -1,3 +1,5 @@
+import { recordCaptureFolderContext } from "./runtime-client.mjs";
+import { resolveInstalledKoedHome } from "./koed-home.mjs";
 import fs from "node:fs";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL, URL } from "node:url";
@@ -26,6 +28,18 @@ async function main() {
       : sdk.SessionManager.create(cwd, config.sessionDirectory, {
           id: config.sessionId
         });
+  await recordCaptureFolderContext(
+    resolveInstalledKoedHome(
+      process.env,
+      new URL("./extensions/koed.mjs", import.meta.url).href
+    ),
+    {
+      sourceKind: "pi",
+      externalSessionId: sessionManager.getSessionId(),
+      cwd,
+      newConversation: !config.resumeSessionPath
+    }
+  ).catch(() => undefined);
   const createRuntime = async ({
     cwd: targetCwd,
     sessionManager: manager,

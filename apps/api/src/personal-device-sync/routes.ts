@@ -1727,7 +1727,16 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       if (!keyContext)
         throw pdsError("PDS secure key context is unavailable", 503);
+      if (keyContext.sourceContextVersion === "1")
+        await keyContext.prepareSourceContextPublication?.();
       const closure = await repo().closePdsSourceSession({
+        ...(keyContext.sourceContextVersion === "1"
+          ? {
+              includeSourceContext: true,
+              expectedEpoch: keyContext.configurationAuthority?.epoch,
+              expectedAuthorityHead: keyContext.configurationAuthority?.head
+            }
+          : {}),
         userId: user.id,
         groupId: input.groupId,
         sessionId: input.sessionId,

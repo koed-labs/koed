@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -71,7 +71,9 @@ describe("managed terminal runtime", () => {
   });
 
   it("runs in the exact checkout, keeps secrets out of the shell, replays output, and fences input", async () => {
-    const root = await mkdtemp(resolve(tmpdir(), "koed-terminal-runtime-"));
+    const root = await realpath(
+      await mkdtemp(resolve(tmpdir(), "koed-terminal-runtime-"))
+    );
     roots.push(root);
     const projectPath = resolve(root, "project");
     await mkdir(projectPath);

@@ -1,4 +1,9 @@
-import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
+import {
+  resolveCaptureRepositoryIdentity,
+  resolveCaptureFolderObservation,
+  recordedCaptureFolderObservation,
+  currentCaptureFolderObservation
+} from "./capture-repository-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -610,6 +615,18 @@ export class CodexManagedConversationSession {
         captureMethod: "api",
         model: this.config.appServer.model,
         cwd: thread.cwd ?? this.config.appServer.cwd,
+        folderObservation: await resolveCaptureFolderObservation({
+          sourceKind: "codex",
+          externalSessionId: thread.id,
+          newConversation: !resumeTarget,
+          cwd: thread.cwd ?? this.config.appServer.cwd,
+          env: this.config.appServer.env
+        }),
+        currentFolderObservation: currentCaptureFolderObservation({
+          sourceKind: "codex",
+          externalSessionId: thread.id,
+          env: this.config.appServer.env
+        }),
         repositoryIdentity: await resolveCaptureRepositoryIdentity({
           cwd: thread.cwd ?? this.config.appServer.cwd,
           env: this.config.appServer.env
@@ -1117,6 +1134,16 @@ export class CodexManagedConversationSession {
             client: this.config.memoryClient,
             sourceSession: {
               externalSessionId: source.thread.id,
+              folderObservation: recordedCaptureFolderObservation({
+                sourceKind: "codex",
+                externalSessionId: source.thread.id,
+                env: this.config.appServer.env
+              }),
+              currentFolderObservation: currentCaptureFolderObservation({
+                sourceKind: "codex",
+                externalSessionId: source.thread.id,
+                env: this.config.appServer.env
+              }),
               sourceRuntime: "codex",
               captureMethod: "api",
               model: this.config.appServer.model,
@@ -1558,6 +1585,18 @@ export class CodexManagedConversationSession {
       captureMethod: "api",
       model: this.config.appServer.model,
       cwd: thread.cwd ?? this.config.appServer.cwd,
+      folderObservation: await resolveCaptureFolderObservation({
+        sourceKind: "codex",
+        externalSessionId: thread.id,
+        newConversation: false,
+        cwd: thread.cwd ?? this.config.appServer.cwd,
+        env: this.config.appServer.env
+      }),
+      currentFolderObservation: currentCaptureFolderObservation({
+        sourceKind: "codex",
+        externalSessionId: thread.id,
+        env: this.config.appServer.env
+      }),
       repositoryIdentity: await resolveCaptureRepositoryIdentity({
         cwd: thread.cwd ?? this.config.appServer.cwd,
         env: this.config.appServer.env

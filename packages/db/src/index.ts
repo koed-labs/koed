@@ -459,3 +459,9 @@ export { updateSessionRepositoryOverride } from "./repository-assignment.js";
 export * from "./repository-review-repository.js";
 
 export { createPersonalProjectSelectionRepository } from "./personal-project-selection-repository.js";
+
+export * from "./personal-membership-repository.js";
+
+export type { PersonalConfigurationRepository } from "./personal-configuration-repository.js";
+
+export { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";

@@ -57,7 +57,14 @@ describeDb("durable Memory Answer task repository", () => {
           origin: "mcp",
           invocationKey,
           maxQueued: 16,
-          request: { input: { query: secret }, caller: { cwd: "/private" } }
+          request: {
+            input: {
+              query: secret,
+              search_domain: "global",
+              repository_context: null
+            },
+            caller: { cwd: "/private" }
+          }
         })
       )
     );
@@ -99,7 +106,13 @@ describeDb("durable Memory Answer task repository", () => {
     const accepted = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       maxQueued: 16,
-      request: { input: { query: "personal question" } }
+      request: {
+        input: {
+          query: "personal question",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
     });
     expect(
       await tasks.claimMemoryAnswerTask(
@@ -140,7 +153,14 @@ describeDb("durable Memory Answer task repository", () => {
       origin: "mcp",
       invocationKey: randomUUID(),
       maxQueued: 16,
-      request: { input: { query: "lease test" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "lease test",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
     const first = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `first-${randomUUID()}`,
@@ -205,7 +225,14 @@ describeDb("durable Memory Answer task repository", () => {
       origin: "mcp",
       invocationKey: randomUUID(),
       maxQueued: 16,
-      request: { input: { query: "result" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "result",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
     const completedClaim = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `complete-${randomUUID()}`,
@@ -230,7 +257,14 @@ describeDb("durable Memory Answer task repository", () => {
       origin: "mcp",
       invocationKey: randomUUID(),
       maxQueued: 16,
-      request: { input: { query: "error" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "error",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
     const failedClaim = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `fail-${randomUUID()}`,
@@ -284,7 +318,13 @@ describeDb("durable Memory Answer task repository", () => {
     const accepted = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       maxQueued: 16,
-      request: { input: { query: "atomic question" } }
+      request: {
+        input: {
+          query: "atomic question",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
     });
     const claim = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `worker-${randomUUID()}`,
@@ -339,7 +379,13 @@ describeDb("durable Memory Answer task repository", () => {
     const accepted = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       maxQueued: 16,
-      request: { input: { query: "slow question" } }
+      request: {
+        input: {
+          query: "slow question",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
     });
     const claim = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `worker-${randomUUID()}`,
@@ -397,7 +443,14 @@ describeDb("durable Memory Answer task repository", () => {
       origin: "mcp",
       invocationKey,
       maxQueued: 1,
-      request: { input: { query: "first" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "first",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
 
     await expect(
@@ -405,7 +458,14 @@ describeDb("durable Memory Answer task repository", () => {
         origin: "mcp",
         invocationKey: randomUUID(),
         maxQueued: 1,
-        request: { input: { query: "second" }, caller: { cwd: "/work" } }
+        request: {
+          input: {
+            query: "second",
+            search_domain: "global",
+            repository_context: null
+          },
+          caller: { cwd: "/work" }
+        }
       })
     ).rejects.toMatchObject({
       name: "MemoryAnswerTaskQueueFullError",
@@ -416,7 +476,14 @@ describeDb("durable Memory Answer task repository", () => {
         origin: "mcp",
         invocationKey,
         maxQueued: 1,
-        request: { input: { query: "duplicate" }, caller: { cwd: "/work" } }
+        request: {
+          input: {
+            query: "duplicate",
+            search_domain: "global",
+            repository_context: null
+          },
+          caller: { cwd: "/work" }
+        }
       })
     ).resolves.toMatchObject({ id: first.id });
   });
@@ -430,7 +497,14 @@ describeDb("durable Memory Answer task repository", () => {
       origin: "mcp",
       invocationKey: randomUUID(),
       maxQueued: 16,
-      request: { input: { query: "decrypt" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "decrypt",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
     await pool.query(
       `delete from encrypted_field_payloads
@@ -463,7 +537,14 @@ describeDb("durable Memory Answer task repository", () => {
       invocationKey: randomUUID(),
       maxQueued: 16,
       maxAttempts: 1,
-      request: { input: { query: "expire" }, caller: { cwd: "/work" } }
+      request: {
+        input: {
+          query: "expire",
+          search_domain: "global",
+          repository_context: null
+        },
+        caller: { cwd: "/work" }
+      }
     });
     await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `first-${randomUUID()}`,
@@ -501,7 +582,13 @@ describeDb("durable Memory Answer task repository", () => {
         origin: "mcp",
         maxQueued: 32,
         maxAttempts: 1,
-        request: { input: { query: `expired ${i}` } }
+        request: {
+          input: {
+            query: `expired ${i}`,
+            search_domain: "global",
+            repository_context: null
+          }
+        }
       });
     }
     await pool.query(
@@ -545,7 +632,13 @@ describeDb("durable Memory Answer task repository", () => {
         await tasks.acceptMemoryAnswerTask(actor, {
           origin: "mcp",
           maxQueued: 16,
-          request: { input: { query: `question ${i}` } }
+          request: {
+            input: {
+              query: `question ${i}`,
+              search_domain: "global",
+              repository_context: null
+            }
+          }
         })
       );
     }
@@ -725,7 +818,13 @@ describeDb("durable Memory Answer task repository", () => {
     const recovered = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       maxQueued: 1,
-      request: { input: { query: "new personal work" } }
+      request: {
+        input: {
+          query: "new personal work",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
     });
     expect(recovered.status).toBe("accepted");
     await expect(
@@ -771,7 +870,15 @@ describeDb("durable Memory Answer task repository", () => {
       leaseOwner: "first-worker",
       leaseMs: 1000
     });
-    expect(first.task?.request).toEqual(request);
+    expect(first.task?.request).toMatchObject({
+      ...request,
+      requestVersion: 1,
+      selection: {
+        version: 0,
+        ownerUserId: actor.userId,
+        target: { kind: "legacy_project", repository: context }
+      }
+    });
     await pool.query(
       "update memory_answer_tasks set lease_until=now()-interval '1 second' where id=$1",
       [accepted.id]
@@ -781,7 +888,7 @@ describeDb("durable Memory Answer task repository", () => {
       leaseOwner: "restarted-worker",
       leaseMs: 60000
     });
-    expect(second.task?.request).toEqual(request);
+    expect(second.task?.request).toEqual(first.task?.request);
     const result = {
       markdown: "The pinned repository uses the cobalt checklist."
     };
@@ -863,7 +970,16 @@ describeDb("durable Memory Answer task repository", () => {
         leaseOwner: "original",
         leaseMs: 1000
       });
-      expect(first.task?.request).toEqual(request);
+      expect(first.task?.request).toMatchObject({
+        ...request,
+        requestVersion: 1,
+        selection: {
+          version: 0,
+          ownerUserId: actor.userId,
+          target: { kind: "global" },
+          callerRepositoryContext: context
+        }
+      });
       await pool.query(
         "update memory_answer_tasks set lease_until=now()-interval '1 second' where id=$1",
         [accepted.id]
@@ -873,7 +989,7 @@ describeDb("durable Memory Answer task repository", () => {
         leaseOwner: "restarted",
         leaseMs: 60000
       });
-      expect(retry.task?.request).toEqual(request);
+      expect(retry.task?.request).toEqual(first.task?.request);
       await expect(
         tasks.acceptMemoryAnswerTask(actor, {
           origin: "mcp",

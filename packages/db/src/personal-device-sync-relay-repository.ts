@@ -1,3 +1,4 @@
+import { createPdsConfigurationCapabilityRepository } from "./pds-configuration-capability-repository.js";
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
@@ -280,6 +281,7 @@ const pendingRelayRecipients = async (
 };
 
 export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
+  ...createPdsConfigurationCapabilityRepository(pool, assertCurrentRelayAuth),
   async authenticatePdsRelayRequest(input: {
     certificate: string;
     proof: PdsRelayRequestProof;

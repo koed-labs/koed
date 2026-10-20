@@ -4,24 +4,24 @@ import {
   listPendingRepositoryChanges,
   listProjectMetadata,
   discoverProjectMetadata,
-  listNamedProjects,
-  createNamedProject,
   setProjectRepositoryAnchor,
   type KoedServerPaths
 } from "@koed-labs/server";
 import {
   repositoryChangeSchema,
+  personalNamedProjectSchema,
+  personalProjectCommandSchema,
+  personalMembershipSyncCommandSchema,
+  personalMembershipSyncCommandResultSchema,
+  personalSourceContextCommandSchema,
+  personalSourceContextCommandResultSchema,
+  personalProjectCommandResultSchema,
   repositoryReviewCommandSchema,
   repositoryReviewCommandResultSchema,
   repositoryReviewSchema,
   repositoryIdentityMatches,
-  repositoryScopeId,
-  repositoryAssignmentSchema,
-  personalDesktopProjectMoveDataSchema,
-  personalDesktopSessionProjectDataSchema,
   personalDesktopProjectsDataSchema,
-  personalDesktopProjectMetadataDataSchema,
-  type PersonalDesktopRequest
+  personalDesktopProjectMetadataDataSchema
 } from "@koed/shared";
 import {
   createProjectSelectionCommand,
@@ -30,7 +30,7 @@ import {
 } from "./project-selection-command.js";
 import { PersonalMemoryBoundaryError } from "./personal-memory-boundary.js";
 
-type ProjectCommandsDeps = {
+export type ProjectCommandsDeps = {
   paths: KoedServerPaths;
   personalRequest(
     path: string,
@@ -75,6 +75,13 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   };
   const repositoryReviewCommand = async (raw: unknown) => {
     const input = repositoryReviewCommandSchema.parse(raw);
+    if (input.operation === "apply")
+      throw Object.assign(
+        new Error(
+          "Repository reassignment is retired. Use the versioned source-context correction controls."
+        ),
+        { code: "unsupported_operation", retryable: false }
+      );
     const paths = deps.paths;
     const local = (listProjectMetadata(paths).projects ?? []).find(
       (project) => project.localProjectId === input.localProjectId
@@ -157,10 +164,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               action: input.operation,
-              expectedRevision: input.expectedRevision,
-              ...(input.operation === "apply"
-                ? { sessionIds: input.sessionIds }
-                : {})
+              expectedRevision: input.expectedRevision
             })
           }
         )
@@ -178,120 +182,184 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     }
   };
 
-  const resolvePersonalProjectTarget = async (targetProjectId: string) => {
-    const named = listNamedProjects(deps.paths).find(
-      (project) => repositoryScopeId(project.repository) === targetProjectId
-    );
-    if (named)
-      return {
-        id: targetProjectId,
-        name: named.name,
-        path: null,
-        repositoryIdentity: named.repository
-      };
-    const graphProjects = (await deps.listProjects()).projects;
-    const local = deps
-      .localProjects()
-      .find(
-        (project) =>
-          project.localProjectId === targetProjectId ||
-          (project.repository &&
-            project.repository.kind !== "unresolved" &&
-            repositoryScopeId(project.repository) === targetProjectId)
-      );
-    const graph = graphProjects.find(
-      (project) => project.id === targetProjectId
-    );
-    const repositoryIdentity =
-      local?.repository ??
-      graph?.threads.find((thread) => thread.repositoryAssignment?.effective)
-        ?.repositoryAssignment?.effective;
-    if (
-      targetProjectId === "unassigned" ||
-      !repositoryIdentity ||
-      repositoryIdentity.kind === "unresolved" ||
-      (!local && !graph)
-    )
-      throw new PersonalMemoryBoundaryError("not_found", false);
-    return {
-      id: targetProjectId,
-      name: local?.displayName ?? graph!.name,
-      path: local ? (local.path.projectRoot ?? local.path.cwd) : graph!.path,
-      repositoryIdentity
-    };
-  };
-
   const createPersonalProject = async (input: { name: string }) => {
     await deps.requireAccess();
-    const project = createNamedProject(deps.paths, input.name);
-    return { projectId: repositoryScopeId(project.repository) };
-  };
-
-  const movePersonalProject = async (input: {
-    sourceProjectId: string;
-    targetProjectId: string;
-  }) => {
-    const project = await resolvePersonalProjectTarget(input.targetProjectId);
-    const result = await deps.personalRequest(
-      "/v1/memory/graph/projects/move",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sourceProjectId: input.sourceProjectId,
-          project
-        })
-      }
-    );
-    return personalDesktopProjectMoveDataSchema.parse({
-      projectId: result.projectId,
-      movedCount: result.movedCount
+    const payload = await deps.personalRequest("/v1/personal/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
     });
+    return {
+      projectId: personalNamedProjectSchema.parse(payload.project).projectId
+    };
   };
-
-  const assignPersonalSessionProject = async (
-    input: Extract<
-      PersonalDesktopRequest,
-      { operation: "personal.sessions.assign_project" }
-    >["input"]
-  ) => {
-    const target =
-      input.action === "move"
-        ? await resolvePersonalProjectTarget(input.targetProjectId)
-        : null;
-    const payload = await deps.personalRequest(
-      `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/project`,
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(
-          input.action === "reset"
-            ? { action: "reset", expectedVersion: input.expectedVersion }
-            : {
-                action: "move",
-                expectedVersion: input.expectedVersion,
-                project: target
+  const manageMembershipSync = async (raw: unknown) => {
+    const input = personalMembershipSyncCommandSchema.parse(raw);
+    const base = `/v1/personal/projects/${encodeURIComponent(input.projectId)}/sync`;
+    const payload =
+      input.action === "list"
+        ? await deps.personalRequest(
+            input.afterEntityId
+              ? `${base}?afterEntityId=${encodeURIComponent(input.afterEntityId)}`
+              : base
+          )
+        : input.action === "preview"
+          ? await deps.personalRequest(`${base}/reviews`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(input.review)
+            })
+          : await deps.personalRequest(
+              `${base}/reviews/${encodeURIComponent(input.reviewId)}/apply`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ expectedVersion: input.expectedVersion })
               }
-        )
+            );
+    const result = personalMembershipSyncCommandResultSchema.parse(payload);
+    if (
+      result.state.project.projectId !== input.projectId ||
+      (result.preview &&
+        result.preview.projectIdentity !== result.state.projectIdentity) ||
+      (input.action === "preview" &&
+        (!result.preview ||
+          result.preview.entityId !== input.review.entityId ||
+          result.preview.expectedVersion !== input.review.expectedVersion)) ||
+      (input.action === "apply" && result.preview?.reviewId !== input.reviewId)
+    )
+      throw new Error(
+        "Project sync response does not match the reviewed Project."
+      );
+    return result;
+  };
+  const manageSourceContext = async (raw: unknown) => {
+    const input = personalSourceContextCommandSchema.parse(raw);
+    const base = `/v1/personal/sessions/${encodeURIComponent(input.sessionId)}/source-context`;
+    const payload =
+      input.action === "get"
+        ? await deps.personalRequest(base)
+        : input.action === "preview"
+          ? await deps.personalRequest(`${base}/reviews`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(input.correction)
+            })
+          : await deps.personalRequest(
+              `${base}/reviews/${encodeURIComponent(input.reviewId)}/apply`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ expectedVersion: input.expectedVersion })
+              }
+            );
+    const result = personalSourceContextCommandResultSchema.parse(payload);
+    if (
+      result.context.sessionId !== input.sessionId ||
+      (result.preview &&
+        (result.preview.before.sessionId !== input.sessionId ||
+          result.preview.after.sessionId !== input.sessionId)) ||
+      (input.action === "apply" && result.preview?.reviewId !== input.reviewId)
+    )
+      throw new Error(
+        "Source context response belongs to another Conversation or review."
+      );
+    return result;
+  };
+  const managePersonalProject = async (raw: unknown) => {
+    const input = personalProjectCommandSchema.parse(raw);
+    const { projectId, expectedVersion } = input;
+    const base = `/v1/personal/projects/${encodeURIComponent(projectId)}`;
+    let path = base;
+    let method: "PATCH" | "POST" | "DELETE";
+    const body: Record<string, unknown> = { expectedVersion };
+    switch (input.action) {
+      case "explain_session":
+        method = "POST";
+        path = `${base}/memberships/explain`;
+        body.sessionId = input.sessionId;
+        break;
+      case "exclude_session":
+        method = "POST";
+        path = `${base}/exclusions`;
+        body.sessionId = input.sessionId;
+        break;
+      case "add_back":
+        method = "POST";
+        path = `${base}/exclusions/${encodeURIComponent(input.exclusionId)}/restore`;
+        body.sessionId = input.sessionId;
+        body.expectedExclusionRevisionId = input.expectedExclusionRevisionId;
+        break;
+      case "rename":
+        method = "PATCH";
+        body.name = input.name;
+        break;
+      case "delete":
+        method = "DELETE";
+        break;
+      case "add_session":
+        method = "POST";
+        path = `${base}/memberships`;
+        body.sessionId = input.sessionId;
+        break;
+      case "remove_inclusion":
+        method = "DELETE";
+        path = `${base}/memberships/${encodeURIComponent(input.inclusionId)}`;
+        break;
+      case "preview_folder":
+        method = "POST";
+        path = `${base}/rules/preview`;
+        body.folder = input.folder;
+        break;
+      case "add_folder":
+        method = "POST";
+        path = `${base}/rules`;
+        body.folder = input.folder;
+        break;
+      case "preview_repository":
+        method = "POST";
+        path = `${base}/rules/preview`;
+        body.repository = input.repository;
+        break;
+      case "add_repository":
+        method = "POST";
+        path = `${base}/rules`;
+        body.repository = input.repository;
+        break;
+      case "remove_rule":
+        method = "DELETE";
+        path = `${base}/rules/${encodeURIComponent(input.inclusionId)}`;
+        break;
+      default: {
+        const unsupported: never = input;
+        throw new Error(
+          `Unsupported Project operation: ${String(unsupported)}`
+        );
       }
-    );
-    const session = z.record(z.string(), z.unknown()).parse(payload.session);
-    const assignment = repositoryAssignmentSchema.parse(
-      session.repositoryAssignment
-    );
-    return personalDesktopSessionProjectDataSchema.parse({
-      projectId:
-        assignment.effective && assignment.effective.kind !== "unresolved"
-          ? repositoryScopeId(assignment.effective)
-          : null
+    }
+    const payload = await deps.personalRequest(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
     });
+    return personalProjectCommandResultSchema.parse(payload);
+  };
+
+  const rejectLegacyProjectAssignment = async (
+    input: unknown
+  ): Promise<never> => {
+    void input;
+    throw new PersonalMemoryBoundaryError("unsupported_operation", false);
   };
 
   return {
     review: repositoryReviewCommand,
     create: createPersonalProject,
-    move: movePersonalProject,
-    assign: assignPersonalSessionProject,
+    manage: managePersonalProject,
+    manageSourceContext,
+    manageMembershipSync,
+    move: rejectLegacyProjectAssignment,
+    assign: rejectLegacyProjectAssignment,
     lookupAssociatedSelection,
     selection: createProjectSelectionCommand({
       paths: deps.paths,

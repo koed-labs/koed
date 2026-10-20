@@ -1,3 +1,4 @@
+import { resolveCaptureFolderObservation } from "./capture-repository-context.js";
 import {
   createHash,
   createHmac,
@@ -1097,6 +1098,16 @@ export class ClaudeManagedConversationSession {
         );
       }
       return { identity: this.identity };
+    }
+    const captureEnvironment = this.config.env ?? process.env;
+    if (captureEnvironment.KOED_HOME?.trim()) {
+      await resolveCaptureFolderObservation({
+        cwd: this.cwd,
+        env: captureEnvironment,
+        sourceKind: "claude-code",
+        externalSessionId: this.sessionId,
+        newConversation: !this.resumed
+      });
     }
     this.started = true;
     if (initialPrompt === undefined) {

@@ -60,7 +60,6 @@ import {
   personalDesktopProjectsDataSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
-  repositoryScopeId,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionPresentationDataSchema,
   type CollaborationRendererEvent,
@@ -72,7 +71,6 @@ import {
 import {
   discoverProjectMetadata,
   listProjectMetadata,
-  listNamedProjects,
   loadRepoEnv,
   resolveKoedHome,
   resolveKoedServerConfig,
@@ -239,6 +237,8 @@ export interface KoedServerManagerOptions {
   localAiRuntimeClient?: {
     askDesktop(
       input: {
+        namedProjectId?: string;
+        folderSelection?: import("@koed/shared").PersonalFolderReference;
         askThreadId?: string;
         idempotencyKey: string;
         query: string;
@@ -481,6 +481,8 @@ const readLocalAppCredential = (
 };
 
 const personalMemoryErrorMessage = (code: PersonalMemoryErrorCode): string => {
+  if (code === "unsupported_operation")
+    return "Project assignment is retired. Use Add to Project or the source-context correction controls.";
   if (code === "not_ready") return "Local Personal Memory is not ready.";
   if (code === "not_found") return "The Personal Memory item was not found.";
   if (code === "conflict") {
@@ -766,6 +768,12 @@ const personalProjectsData = (
           name: thread.name,
           sessionId: thread.sessionId,
           logicalMemoryId: thread.logicalMemoryId,
+          namedProjectId: thread.namedProjectId,
+          folderSelection: thread.folderSelection,
+          sourceThreadId: thread.sourceThreadId,
+          sourceProject: thread.sourceProject,
+          membershipReasons: thread.membershipReasons,
+          sourceReferences: thread.sourceReferences,
           sourceAiClient: thread.sourceAiClient,
           originDevice:
             typeof thread.originDeviceId === "string"
@@ -818,6 +826,10 @@ const personalProjectsData = (
       });
       return {
         id: project.id,
+        namedProject: project.namedProject,
+        inclusionRules: project.inclusionRules,
+        directInclusions: project.directInclusions,
+        folder: project.folder,
         name: project.name,
         path: project.path,
         eventCount: visibleThreads.reduce(
@@ -1667,6 +1679,8 @@ export const createKoedServerManager = ({
 
   const callLocalDesktopAsk = async (
     input: {
+      namedProjectId?: string;
+      folderSelection?: import("@koed/shared").PersonalFolderReference;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;
@@ -2913,25 +2927,18 @@ export const createKoedServerManager = ({
     const byId = new Map(
       projects.projects.map((project) => [project.id, project])
     );
-    for (const named of listNamedProjects(
-      resolveKoedServerPaths(environment)
-    )) {
-      const id = repositoryScopeId(named.repository);
-      const existing = byId.get(id);
-      byId.set(id, {
-        id,
-        name: named.name,
-        repository: named.repository,
-        path: null,
-        eventCount: existing?.eventCount ?? 0,
-        threads:
-          existing?.threads.map((thread) => ({
-            ...thread,
-            projectName: named.name,
-            projectPath: null
-          })) ?? []
-      });
-    }
+    const named = personalProjectsData(
+      await repositoryReviewJson("/v1/personal/projects/inventory"),
+      false,
+      readPersonalDeviceNames(resolveKoedHome(environment))
+    );
+    for (const project of named.projects) byId.set(project.id, project);
+    const folders = personalProjectsData(
+      await repositoryReviewJson("/v1/personal/folders/inventory"),
+      false,
+      readPersonalDeviceNames(resolveKoedHome(environment))
+    );
+    for (const project of folders.projects) byId.set(project.id, project);
     return personalDesktopProjectsDataSchema.parse({
       projects: [...byId.values()]
     });
@@ -4262,10 +4269,27 @@ export const createKoedServerManager = ({
               const payload = await authenticatedPersonalMemoryRequest(
                 ({ apiOrigin }) => {
                   const url = new URL(
-                    `/v1/memory/graph/events/${encodeURIComponent(eventId)}`,
+                    input.namedProjectId
+                      ? `/v1/personal/projects/${encodeURIComponent(input.namedProjectId)}/events/${encodeURIComponent(eventId)}`
+                      : `/v1/memory/graph/events/${encodeURIComponent(eventId)}`,
                     apiOrigin
                   );
+                  if (input.sessionId)
+                    url.searchParams.set("sessionId", input.sessionId);
                   url.searchParams.set("includeContent", "true");
+                  if (input.folderSelection)
+                    url.searchParams.set(
+                      "personalSelection",
+                      JSON.stringify({
+                        version: 1,
+                        ownerUserId: input.folderSelection.ownerUserId,
+                        target: {
+                          kind: "folder",
+                          folder: input.folderSelection
+                        },
+                        callerRepositoryContext: null
+                      })
+                    );
                   url.searchParams.set("includeRaw", "false");
                   return { url, init: { method: "GET" } };
                 },
@@ -4274,7 +4298,9 @@ export const createKoedServerManager = ({
               const event = objectValue(payload.event);
               if (
                 !event ||
-                event.projectId !== input.projectId ||
+                (input.namedProjectId || input.folderSelection
+                  ? event.sessionId !== input.sessionId
+                  : event.projectId !== input.projectId) ||
                 event.threadId !== input.threadId
               ) {
                 throw new PersonalMemoryBoundaryError(
@@ -4302,8 +4328,26 @@ export const createKoedServerManager = ({
     return personalEventsData(
       await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => {
-          const url = new URL("/v1/memory/graph/events", apiOrigin);
-          url.searchParams.set("projectId", input.projectId);
+          const url = new URL(
+            input.namedProjectId
+              ? `/v1/personal/projects/${encodeURIComponent(input.namedProjectId)}/events`
+              : "/v1/memory/graph/events",
+            apiOrigin
+          );
+          if (!input.namedProjectId && !input.folderSelection)
+            url.searchParams.set("projectId", input.projectId);
+          if (input.folderSelection)
+            url.searchParams.set(
+              "personalSelection",
+              JSON.stringify({
+                version: 1,
+                ownerUserId: input.folderSelection.ownerUserId,
+                target: { kind: "folder", folder: input.folderSelection },
+                callerRepositoryContext: null
+              })
+            );
+          if (input.sessionId)
+            url.searchParams.set("sessionId", input.sessionId);
           url.searchParams.set("threadId", input.threadId);
           url.searchParams.set("limit", String(input.limit));
           url.searchParams.set("includeContent", "true");
@@ -4704,6 +4748,12 @@ export const createKoedServerManager = ({
 
   const dispatchPersonalMemory = (request: PersonalDesktopRequest) => {
     switch (request.operation) {
+      case "personal.projects.sync":
+        return projectCommands.manageMembershipSync(request.input);
+      case "personal.sources.manage":
+        return projectCommands.manageSourceContext(request.input);
+      case "personal.projects.manage":
+        return projectCommands.manage(request.input);
       case "personal.projects.create":
         return projectCommands.create(request.input);
       case "personal.projects.move":
@@ -4774,7 +4824,16 @@ export const createKoedServerManager = ({
           message:
             cause instanceof LocalApiRateLimitError
               ? cause.message
-              : personalMemoryErrorMessage(boundaryError.code),
+              : boundaryError.code === "conflict" &&
+                  request.operation === "personal.projects.sync"
+                ? "Project membership or its source changed. Review the current revisions again."
+                : boundaryError.code === "conflict" &&
+                    request.operation === "personal.sources.manage"
+                  ? "Source context or Project membership changed. Preview the correction again."
+                  : boundaryError.code === "conflict" &&
+                      request.operation === "personal.projects.manage"
+                    ? "The Project changed. Reload it and try again."
+                    : personalMemoryErrorMessage(boundaryError.code),
           retryable: boundaryError.retryable
         }
       });

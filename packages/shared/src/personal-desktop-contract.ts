@@ -1,9 +1,44 @@
+import {
+  personalMembershipSyncCommandSchema,
+  personalMembershipSyncCommandResultSchema
+} from "./personal-membership-review-contract.js";
+export {
+  personalMembershipSyncCommandSchema,
+  personalMembershipSyncCommandResultSchema
+} from "./personal-membership-review-contract.js";
+import {
+  personalSourceContextCommandSchema,
+  personalSourceContextCommandResultSchema
+} from "./personal-source-correction-contract.js";
+export {
+  personalSourceContextCommandSchema,
+  personalSourceContextCommandResultSchema
+} from "./personal-source-correction-contract.js";
+export { personalRecallTargetsEqual } from "./personal-selection-contract.js";
+export { personalFolderScopeId } from "./personal-source-contract.js";
+import {
+  personalNamedProjectSchema,
+  personalDirectMembershipSchema,
+  personalProjectRuleSchema,
+  personalProjectCommandSchema,
+  personalProjectCommandResultSchema
+} from "./personal-project-contract.js";
+import {
+  personalFolderScopeId,
+  personalFolderContextSchema,
+  personalFolderReferenceSchema
+} from "./personal-source-contract.js";
+import { personalMembershipReasonSchema } from "./personal-membership-contract.js";
+export {
+  personalProjectCommandSchema,
+  personalProjectCommandResultSchema
+} from "./personal-project-contract.js";
 import { z } from "zod";
 import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 10;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 24;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -197,7 +232,7 @@ export const approvalReviewTranscriptDisplayFromText = (
   });
 };
 
-const identifierSchema = z.string().trim().min(1).max(512);
+const identifierSchema = z.string().trim().min(1).max(1024);
 const projectNameSchema = z.string().trim().min(1).max(160);
 const localProjectPathSchema = z.string().trim().min(1).max(4_096);
 const timestampSchema = z.string().max(64).datetime({ offset: true });
@@ -213,12 +248,36 @@ export const personalConversationPresentationSchema = z
   })
   .strict();
 
+/** Local source bindings retained when inventory groups records into one Conversation. */
+export const personalConversationSourceReferenceSchema = z
+  .object({
+    sessionId: z.uuid(),
+    logicalSessionId: z.uuid(),
+    logicalMemoryId: z.uuid().nullable()
+  })
+  .strict();
+
 export const personalDesktopProjectThreadSchema = z
   .object({
     id: identifierSchema,
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
     logicalMemoryId: z.uuid().nullable().optional(),
+    namedProjectId: z.uuid().optional(),
+    folderSelection: personalFolderReferenceSchema.optional(),
+    sourceThreadId: identifierSchema.optional(),
+    sourceProject: z
+      .object({
+        id: identifierSchema,
+        name: projectNameSchema,
+        path: localProjectPathSchema.nullable()
+      })
+      .strict()
+      .optional(),
+    membershipReasons: z.array(personalMembershipReasonSchema).optional(),
+    sourceReferences: z
+      .array(personalConversationSourceReferenceSchema)
+      .optional(),
     originDevice: z
       .object({ id: identifierSchema, name: z.string().max(80) })
       .nullable()
@@ -245,6 +304,10 @@ export const personalDesktopProjectThreadSchema = z
 
 export const personalDesktopProjectSchema = z
   .object({
+    namedProject: personalNamedProjectSchema.optional(),
+    inclusionRules: z.array(personalProjectRuleSchema).optional(),
+    directInclusions: z.array(personalDirectMembershipSchema).optional(),
+    folder: personalFolderContextSchema.optional(),
     id: identifierSchema,
     name: projectNameSchema,
     repository: repositoryIdentitySchema.optional(),
@@ -419,6 +482,9 @@ export const personalDesktopChangeSchema = z.discriminatedUnion("type", [
 
 export const personalDesktopEventPageInputSchema = z
   .object({
+    namedProjectId: z.uuid().optional(),
+    folderSelection: personalFolderReferenceSchema.optional(),
+    sessionId: z.uuid().optional(),
     projectId: identifierSchema,
     threadId: identifierSchema,
     limit: z.union([
@@ -430,6 +496,26 @@ export const personalDesktopEventPageInputSchema = z
   })
   .strict()
   .superRefine((input, context) => {
+    if (
+      input.folderSelection &&
+      (!input.sessionId ||
+        input.namedProjectId ||
+        input.projectId !== personalFolderScopeId(input.folderSelection))
+    )
+      context.addIssue({
+        code: "custom",
+        message:
+          "Folder inspection requires its Folder and Conversation identity"
+      });
+    if (
+      input.namedProjectId &&
+      (!input.sessionId || input.namedProjectId !== input.projectId)
+    )
+      context.addIssue({
+        code: "custom",
+        message:
+          "Named Project inspection requires its Project and Conversation identity"
+      });
     if (input.cursor && input.eventIds) {
       context.addIssue({
         code: "custom",
@@ -480,6 +566,7 @@ export const personalDesktopSessionTitleInputSchema = z
 export const personalDesktopProjectCreateInputSchema = z
   .object({ name: z.string().trim().min(1).max(160) })
   .strict();
+
 export const personalDesktopProjectMoveInputSchema = z
   .object({
     sourceProjectId: identifierSchema,
@@ -529,6 +616,8 @@ export const personalDesktopAskThreadInputSchema = z
 
 export const personalDesktopAskSubmitInputSchema = z
   .object({
+    namedProjectId: z.uuid().optional(),
+    folderSelection: personalFolderReferenceSchema.optional(),
     askThreadId: z.uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(500),
     query: z.string().trim().min(1).max(32_000)
@@ -594,6 +683,7 @@ export const personalDesktopNoteUpdateInputSchema = z
     idempotencyKey: z.string().trim().min(1).max(500)
   })
   .strict();
+
 export const personalDesktopSessionPresentationInputSchema = z
   .object({
     sessionId: z.uuid(),
@@ -612,6 +702,27 @@ export const personalDesktopSessionPresentationInputSchema = z
   );
 
 export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.sync"),
+      input: personalMembershipSyncCommandSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sources.manage"),
+      input: personalSourceContextCommandSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.manage"),
+      input: personalProjectCommandSchema
+    })
+    .strict(),
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
@@ -772,6 +883,7 @@ export const personalDesktopProjectMoveDataSchema = z
     movedCount: z.number().int().safe().positive()
   })
   .strict();
+
 export const personalDesktopProjectCreateDataSchema = z
   .object({ projectId: identifierSchema })
   .strict();
@@ -821,6 +933,7 @@ export const personalDesktopSessionPresentationDataSchema = z
 export const personalDesktopErrorSchema = z
   .object({
     code: z.enum([
+      "unsupported_operation",
       "not_ready",
       "not_found",
       "conflict",
@@ -847,6 +960,33 @@ const failedResult = <Operation extends string>(operation: Operation) =>
     .strict();
 
 export const personalDesktopResultSchema = z.union([
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.sync"),
+      ok: z.literal(true),
+      data: personalMembershipSyncCommandResultSchema
+    })
+    .strict(),
+  failedResult("personal.projects.sync"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sources.manage"),
+      ok: z.literal(true),
+      data: personalSourceContextCommandResultSchema
+    })
+    .strict(),
+  failedResult("personal.sources.manage"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.manage"),
+      ok: z.literal(true),
+      data: personalProjectCommandResultSchema
+    })
+    .strict(),
+  failedResult("personal.projects.manage"),
   z
     .object({
       ...resultBase,
@@ -1153,6 +1293,15 @@ export const conversationToolKindAndLabel = (
 };
 
 export interface PersonalDesktopApi {
+  manageMembershipSync?: (
+    input: z.infer<typeof personalMembershipSyncCommandSchema>
+  ) => Promise<z.infer<typeof personalMembershipSyncCommandResultSchema>>;
+  manageSourceContext?: (
+    input: z.infer<typeof personalSourceContextCommandSchema>
+  ) => Promise<z.infer<typeof personalSourceContextCommandResultSchema>>;
+  manageProject?: (
+    input: z.infer<typeof personalProjectCommandSchema>
+  ) => Promise<z.infer<typeof personalProjectCommandResultSchema>>;
   createProject?: (
     input: z.infer<typeof personalDesktopProjectCreateInputSchema>
   ) => Promise<z.infer<typeof personalDesktopProjectCreateDataSchema>>;

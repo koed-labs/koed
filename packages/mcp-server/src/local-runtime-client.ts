@@ -346,6 +346,8 @@ export class LocalAiRuntimeClient {
 
   async askDesktop(
     input: {
+      namedProjectId?: string;
+      folderSelection?: import("@koed/shared").PersonalFolderReference;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;

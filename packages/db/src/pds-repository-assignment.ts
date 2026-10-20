@@ -27,6 +27,14 @@ export const applyPdsRepositoryAssignmentSnapshot = async (
   );
   const row = result.rows[0];
   if (!row) throw new Error("PDS assignment Session is unavailable");
+  // Old signed packages remain readable but cannot erase a causal context or an audited local correction.
+  const protectedContext = await client.query(
+    `select 1 from personal_source_bindings where owner_user_id=$1 and local_session_id=$2 and context_version=1
+    union all select 1 from personal_source_context_changes c join sessions s on s.owner_user_id=c.owner_user_id and s.logical_session_id=c.logical_session_id
+    where s.owner_user_id=$1 and s.id=$2 and c.axis='git' limit 1`,
+    [ownerUserId, sessionId]
+  );
+  if (protectedContext.rowCount) return false;
   const previous = pdsRepositoryAssignmentSchema.safeParse(
     row.metadata?.pds?.repositoryAssignment
   );
@@ -64,7 +72,7 @@ export const applyPdsRepositoryAssignmentSnapshot = async (
     incoming.override === null;
   if (!unchangedAutomatic && !cutover) return false;
   await client.query(
-    "update sessions set repository_assignment_state=$3,repository_assignment_version=$4,repository_automatic_identity=$5,repository_override_identity=$6,updated_at=now() where id=$1 and owner_user_id=$2",
+    "update sessions set repository_assignment_state=$3,repository_assignment_version=$4,repository_assignment_revision_id=null,repository_automatic_identity=$5,repository_override_identity=$6,updated_at=now() where id=$1 and owner_user_id=$2",
     [
       sessionId,
       ownerUserId,

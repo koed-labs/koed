@@ -10,6 +10,9 @@ import type {
 import type { PdsClosureSource } from "@koed/db";
 
 export interface PdsSecureSourceKeyContext {
+  sourceContextVersion?: "1";
+  prepareSourceContextPublication?(): Promise<void>;
+  configurationAuthority?: { epoch: string; head: string };
   signProjectSelection?(
     input: Pick<
       PdsProjectSelectionRevision,

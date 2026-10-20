@@ -305,7 +305,8 @@ export const registerRecallRoutes = (
         parentNodeIds: input.parent_node_ids,
         strictLimit: input.strict_limit,
         repositoryContext: input.repository_context,
-        maxSearchPasses: input.max_search_passes
+        maxSearchPasses: input.max_search_passes,
+        personalSelection: input.personal_selection
       });
       const indexProof = retrievalIndexProof(
         await resolveRetrievalCapability({

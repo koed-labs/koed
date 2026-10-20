@@ -1,6 +1,15 @@
+import { createPdsConfigurationRuntime } from "./personal-device-sync-configuration.js";
+import {
+  PERSONAL_CONFIGURATION_PROTOCOL,
+  personalConfigurationRecordSchema,
+  verifyPersonalConfigurationRecord,
+  personalConfigurationRecordHash,
+  personalConfigurationPackageId
+} from "@koed/shared";
 import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
 import {
   verifyPdsRepositoryAssignmentWithKeyHistory,
+  PdsConfigurationCompatibilityError,
   type RepositoryAssignment
 } from "@koed/shared";
 import {
@@ -543,6 +552,19 @@ const createPdsWorkerRuntimeFromSecret = (
             identity: relayIdentity(secret.certificate)
           })
         : null;
+    const configuration = input.repository.personalConfiguration
+      ? createPdsConfigurationRuntime({
+          repository: input.repository.personalConfiguration,
+          runtime,
+          signingKey,
+          relay: () => relay,
+          encryption: input.envelopeEncryptionProvider,
+          userId: secret.userId,
+          groupId: secret.groupId,
+          originDeploymentId: secret.device.originDeploymentId,
+          activeCertificates: secret.recipientCertificates
+        })
+      : null;
     let peerRoutes = new Map<string, string>();
     const peerCertificate = new Map(
       secret.recipientCertificates.map((certificate) => [
@@ -634,6 +656,9 @@ const createPdsWorkerRuntimeFromSecret = (
             authorityKeyId: secret.authority.keyId,
             activeCertificates: secret.recipientCertificates
           }) ?? new Map<string, string>();
+      },
+      async reconcilePersonalConfiguration() {
+        return (await configuration?.reconcile()) ?? 0;
       },
       async reconcileProjectSelections() {
         const journal = input.repository.personalProjectSelections;
@@ -1273,6 +1298,13 @@ const createPdsWorkerRuntimeFromSecret = (
         ) {
           throw new Error("PdsCryptoIdentityError");
         }
+        if (stored.requiresSourceContext) {
+          if (!configuration)
+            throw new PdsConfigurationCompatibilityError("source_context_v1", [
+              secret.device.id
+            ]);
+          await configuration.requireSourceContextRecipients();
+        }
         if (await deliverDirect(pkg)) {
           return { state: "acked" as const };
         }
@@ -1684,6 +1716,50 @@ const createPdsWorkerRuntimeFromSecret = (
           typeof plaintextRecord.revision === "object" &&
           plaintextRecord.revision !== null &&
           (plaintextRecord.revision as Record<string, unknown>).protocol ===
+            PERSONAL_CONFIGURATION_PROTOCOL
+        ) {
+          if (!configuration)
+            throw new PdsConfigurationCompatibilityError("source_context_v1", [
+              secret.device.id
+            ]);
+          const author = servingRuntime.serving;
+          const verified = verifyPersonalConfigurationRecord(
+            personalConfigurationRecordSchema.parse(plaintextRecord),
+            {
+              groupId: secret.groupId,
+              deviceId: author.deviceId,
+              signingKeyId: author.signingKeyId,
+              publicKey: author.signingPublicKey
+            }
+          );
+          const hash = personalConfigurationRecordHash(verified);
+          if (
+            work.groupId !== secret.groupId ||
+            personalConfigurationPackageId(hash, pkg.header.transportId) !==
+              work.packageId ||
+            pkg.header.packageId !== work.packageId ||
+            work.sourceManifestHash !== hash ||
+            pkg.header.sourceManifestHash !== hash ||
+            pkg.header.originDeviceId !== author.deviceId ||
+            pkg.header.servingSigningKeyId !== author.signingKeyId
+          )
+            throw new TypeError("PdsCryptoConfigurationTransportIdentityError");
+          await configuration.retainVerified(verified);
+          downloaded.set(work.inboxId, {
+            pkg,
+            transport,
+            client: sourceClient
+          });
+          return {
+            kind: "configuration" as const,
+            userId: secret.userId,
+            originDeviceId: author.deviceId
+          };
+        }
+        if (
+          typeof plaintextRecord.revision === "object" &&
+          plaintextRecord.revision !== null &&
+          (plaintextRecord.revision as Record<string, unknown>).protocol ===
             PDS_PROJECT_SELECTION_PROTOCOL
         ) {
           const verified = (() => {
@@ -1880,6 +1956,16 @@ const createPdsWorkerRuntimeFromSecret = (
           inboxId: work.inboxId,
           packageId: manifest.packageId,
           sourceManifestHash: pkg.header.sourceManifestHash,
+          sourceLogicalSessionId: isPdsSessionCheckpointManifest(manifest)
+            ? manifest.sourceSession.logicalSessionId
+            : manifest.closedSession.logicalSessionId,
+          ...(manifest.sourceContext
+            ? {
+                sourceContextHash: createHash("sha256")
+                  .update(canonicalizePdsJson(manifest.sourceContext))
+                  .digest("base64url")
+              }
+            : {}),
           originDeploymentId: manifest.originDeploymentId,
           originDeviceId: manifest.originDeviceId,
           sourceSequence: manifest.sourceSequence,
@@ -1948,7 +2034,8 @@ const createPdsWorkerRuntimeFromSecret = (
           secret.userId,
           secret.groupId,
           manifest,
-          repositoryAssignment
+          repositoryAssignment,
+          retained.retainedPackageId
         );
         downloaded.set(work.inboxId, {
           pkg,
@@ -1968,7 +2055,11 @@ const createPdsWorkerRuntimeFromSecret = (
           observedAt: new Date(),
           sourceItemIds: session.itemIds,
           closedProfileTransition: manifest.profileTransition,
-          pdsRepositoryAssignment: manifest.repositoryAssignment
+          pdsRepositoryAssignment: manifest.repositoryAssignment,
+          sourceLogicalSessionId: manifest.closedSession.logicalSessionId,
+          ...(manifest.sourceContext
+            ? { sourceContext: manifest.sourceContext }
+            : {})
         };
       }
     };
@@ -2041,6 +2132,9 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
     async refreshPeerRoutes() {
       await requiredRuntime().refreshPeerRoutes?.();
     },
+    async reconcilePersonalConfiguration() {
+      return (await requiredRuntime().reconcilePersonalConfiguration?.()) ?? 0;
+    },
     async reconcileProjectSelections() {
       return (await requiredRuntime().reconcileProjectSelections?.()) ?? 0;
     },
@@ -2075,9 +2169,12 @@ export const materializePdsSession = async (
   userId: string,
   groupId: string,
   manifest: PdsSessionManifest,
-  repositoryAssignment: RepositoryAssignment
+  repositoryAssignment: RepositoryAssignment,
+  retainedPackageId?: string
 ): Promise<{ id: string; itemIds: string[] }> => {
   const existing = await repository.getPdsClosedReplicaSource({
+    originDeploymentId: manifest.originDeploymentId,
+    originDeviceId: manifest.originDeviceId,
     logicalSessionId: manifest.closedSession.logicalSessionId,
     externalSessionId: manifest.closedSession.externalSessionId,
     userId,
@@ -2087,30 +2184,54 @@ export const materializePdsSession = async (
   });
   if (existing) return existing;
   const identity = manifest.sourceFingerprint ?? manifest.sourceClosureHash;
-  const session = await repository.createCapturedSession(
-    { userId },
-    {
-      replicatedRepositoryAssignment: repositoryAssignment,
-      cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
-      // Signed logical and provider identities converge across Personal devices.
-      idempotencyKey: `pds-session:${groupId}:${identity}`,
-      logicalSessionId: manifest.closedSession.logicalSessionId,
-      externalSessionId: manifest.closedSession.externalSessionId,
-      forkedFromExternalThreadId:
-        manifest.closedSession.forkedFromExternalThreadId ?? undefined,
-      sourceHash: `pds:${identity}`,
-      sourceRuntime: "codex",
-      captureMethod: "transcript",
-      metadata: {
-        pds: {
-          repositoryAssignment: manifest.repositoryAssignment,
-          groupId,
-          originDeploymentId: manifest.originDeploymentId,
-          sourceSequence: manifest.sourceSequence
-        }
+  if (
+    manifest.sourceContext &&
+    (!retainedPackageId || !repository.createVerifiedPdsSourceSession)
+  )
+    throw new PdsConfigurationCompatibilityError("source_context_v1", [
+      manifest.originDeviceId
+    ]);
+  const sessionInput = {
+    replicatedRepositoryAssignment: repositoryAssignment,
+    cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
+    externalSessionId: manifest.closedSession.externalSessionId,
+    forkedFromExternalThreadId:
+      manifest.closedSession.forkedFromExternalThreadId ?? undefined,
+    sourceCreatedAt: manifest.closedSession.sourceCreatedAt,
+    sourceRuntime: "codex" as const,
+    captureMethod: "transcript" as const,
+    metadata: {
+      pds: {
+        repositoryAssignment: manifest.repositoryAssignment,
+        groupId,
+        originDeploymentId: manifest.originDeploymentId,
+        originDeviceId: manifest.originDeviceId,
+        sourceSequence: manifest.sourceSequence
       }
     }
-  );
+  };
+  const session =
+    retainedPackageId && repository.createVerifiedPdsSourceSession
+      ? await repository.createVerifiedPdsSourceSession({
+          userId,
+          groupId,
+          retainedPackageId,
+          sourceLogicalSessionId: manifest.closedSession.logicalSessionId,
+          ...(manifest.sourceContext
+            ? { sourceContext: manifest.sourceContext }
+            : {}),
+          deferSourceContextProjection: true,
+          session: sessionInput
+        })
+      : await repository.createCapturedSession(
+          { userId },
+          {
+            ...sessionInput,
+            idempotencyKey: `pds-session:${groupId}:${identity}`,
+            logicalSessionId: manifest.closedSession.logicalSessionId,
+            sourceHash: `pds:${identity}`
+          }
+        );
   const sourceItems = manifest.rawClosure.records.map((raw, index) => {
     const payload = parseCanonicalPdsJson(
       Buffer.from(raw.payload, "base64url").toString("utf8")
@@ -2210,6 +2331,10 @@ export const pdsCheckpointMaterializationSource = (
   const source = manifest.sourceSession;
   return {
     sourceSession: {
+      sourceLogicalSessionId: source.logicalSessionId,
+      ...(manifest.sourceContext
+        ? { sourceContext: manifest.sourceContext }
+        : {}),
       replicatedRepositoryAssignment: repositoryAssignment,
       cwd: manifest.repositoryAssignment.capturedCwd ?? undefined,
       pdsRepositoryAssignment: manifest.repositoryAssignment,

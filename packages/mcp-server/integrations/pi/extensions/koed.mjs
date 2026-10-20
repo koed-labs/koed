@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { resolveInstalledKoedHome } from "../koed-home.mjs";
 import {
   callLocalRuntimeTool,
+  recordCaptureFolderContext,
   createRuntimeTaskPort
 } from "../runtime-client.mjs";
 import {
@@ -351,13 +352,28 @@ export default function koedExtension(pi) {
     "Propose curated Personal Memory backed by evidence.",
     intakeParameters
   );
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();
     try {
+      // Resumed or unrecognized history cannot acquire today's directory identity.
+      const entries = ctx.sessionManager.getEntries?.();
+      await recordCaptureFolderContext(koedHome, {
+        sourceKind: "pi",
+        externalSessionId: ctx.sessionManager.getSessionId(),
+        cwd: ctx.cwd,
+        newConversation:
+          event.reason === "new" &&
+          Array.isArray(entries) &&
+          !entries.some((entry) => entry.type === "message")
+      });
+    } catch {
+      /* Missing source-time provenance remains unresolved. */
+    }
+    try {
       signalWatcher(ctx, "session_start");
     } catch {
-      /* correctness comes from filesystem discovery */
+      /* Filesystem discovery still performs catch-up. */
     }
   });
   pi.on("agent_settled", (_event, ctx) => {

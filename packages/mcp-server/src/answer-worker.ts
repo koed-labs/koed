@@ -9,6 +9,7 @@ import {
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   type RepositoryIdentity,
+  type PersonalSelectionSnapshot,
   planRepositorySearch,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
@@ -516,6 +517,7 @@ export interface MemoryAnswerRetrievalClient {
       searchDomain?: string;
       sessionId?: string;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
       teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;

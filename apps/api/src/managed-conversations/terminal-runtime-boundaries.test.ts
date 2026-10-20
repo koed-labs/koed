@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemorySourceRepository } from "@koed/db";
@@ -29,7 +29,9 @@ afterEach(async () => {
 });
 
 const fixture = async () => {
-  const root = await mkdtemp(join(tmpdir(), "koed-terminal-boundaries-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "koed-terminal-boundaries-"))
+  );
   const deploymentId = randomUUID();
   const deviceId = randomUUID();
   const records = new Map<string, ManagedTerminalRecord>();

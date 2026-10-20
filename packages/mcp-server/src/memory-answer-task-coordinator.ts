@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   isTeamMemoryAnswerTaskCapability,
+  personalSelectionFromTaskRequest,
   requirePortableTeamRepositoryContext,
   readLocalEdgeClientCredentialAuthorization,
   readLocalEdgeUpstreamRegistry,
@@ -312,6 +313,11 @@ class ScopedTeamRetrievalClient implements MemoryAnswerRetrievalClient {
     nodeId: string,
     input: Parameters<MemoryAnswerRetrievalClient["expand"]>[1] = {}
   ) {
+    if (input?.personalSelection)
+      throw unavailable(
+        "Personal selections are not supported for Team Memory",
+        400
+      );
     return this.client.teamMemoryExpand(
       this.backendId,
       nodeId,
@@ -427,6 +433,36 @@ export const createMemoryAnswerTaskCoordinator = (
   return new MemoryAnswerTaskCoordinator({
     backends,
     resolveStart: async (request) => {
+      const selection = personalSelectionFromTaskRequest({
+        ...request.request,
+        input: request.request.input
+      });
+      if (
+        selection?.version === 1 &&
+        (selection.target.kind === "project" ||
+          selection.target.kind === "folder")
+      ) {
+        const raw = request.request.input as Record<string, unknown>;
+        const pinned = memoryAnswerInputSchema.parse({
+          ...raw,
+          repository_context: undefined
+        });
+        if (pinned.team_workspace_id || pinned.team_backend_id)
+          throw unavailable(
+            "Personal selections cannot route to Team Memory",
+            400
+          );
+        return {
+          backendId: "personal",
+          input: {
+            ...request,
+            request: {
+              ...request.request,
+              input: { ...pinned, repository_context: null }
+            }
+          }
+        };
+      }
       const input = memoryAnswerInputSchema.parse(request.request.input);
       const caller = request.request.caller as { cwd?: string } | undefined;
       const projectRoot =

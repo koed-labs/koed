@@ -369,24 +369,21 @@ describe("PersonalMemoryWorkspace", () => {
     vi.restoreAllMocks();
   });
 
-  const namedIdentity = {
-    kind: "local_project" as const,
-    key: "project_created",
-    originatingDeviceId: "device",
-    reason: "manual" as const,
-    root: null,
-    branch: null,
-    checkoutId: null,
-    selectedRemote: null,
-    anchorDisplay: null
-  };
   const createdProject: PersonalDesktopProject = {
-    id: repositoryScopeId(namedIdentity),
+    id: "00000000-0000-4000-8000-000000000800",
     name: "Manual Project",
-    repository: namedIdentity,
     path: null,
     eventCount: 0,
-    threads: []
+    threads: [],
+    namedProject: {
+      projectId: "00000000-0000-4000-8000-000000000800",
+      name: "Manual Project",
+      version: 1,
+      headRevisionId: "00000000-0000-4000-8000-000000000801",
+      deletedAt: null,
+      createdAt: "2026-10-20T00:00:00.000Z",
+      updatedAt: "2026-10-20T00:00:00.000Z"
+    }
   };
   const submitCreation = async (name = "Manual Project") => {
     await act(async () =>
@@ -403,6 +400,56 @@ describe("PersonalMemoryWorkspace", () => {
         .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
     );
   };
+
+  it("keeps empty backend Projects visible without source-move prompts", async () => {
+    const id = "00000000-0000-4000-8000-000000000091",
+      stamp = "2026-10-19T12:00:00.000Z";
+    const named: PersonalDesktopProject = {
+      id,
+      name: "New Release",
+      path: null,
+      eventCount: 0,
+      threads: [],
+      namedProject: {
+        projectId: id,
+        name: "New Release",
+        version: 1,
+        headRevisionId: "00000000-0000-4000-8000-000000000092",
+        deletedAt: null,
+        createdAt: stamp,
+        updatedAt: stamp
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({ listProjects: async () => [named] })
+    );
+    const manageProject =
+      vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>();
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          manageProject={manageProject}
+          route={{ kind: "project", projectId: id }}
+          store={store}
+          onNavigate={() => undefined}
+        />
+      )
+    );
+    expect(container.textContent).toContain("New Release");
+    expect(container.textContent).toContain("No Conversations in this Project");
+    expect(container.textContent).toContain("Open Project setup");
+    expect(container.textContent).not.toContain("Ask this Project");
+    expect(container.textContent).not.toContain("Ask this Folder");
+    expect(
+      container.querySelector('[aria-label="Project actions"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Set up Project"]')?.textContent
+    ).toBe("");
+    expect(container.textContent).not.toContain("Move existing Conversations");
+    expect(container.querySelector('[aria-label="Move Project"]')).toBeNull();
+    expect(document.querySelector(".personal-project-transfer")).toBeNull();
+  });
 
   it("filters folders without navigating, keeps unmatched history accessible, and restores saved filters", async () => {
     const one = thread(1, {
@@ -711,264 +758,40 @@ describe("PersonalMemoryWorkspace", () => {
     ).toBe("Manual Project");
   });
 
-  it("creates a destination for unresolved history, moves explicitly, then resets to unresolved", async () => {
-    const id = createdProject.id;
-    const registered: PersonalDesktopProject[] = [];
-    const historical = thread(1, {
-      projectId: "unassigned",
-      projectName: "Unresolved history",
-      capturedCwd: "/recorded/alpha-one",
-      repositoryAssignment: {
-        state: "historical_unresolved",
-        version: 1,
-        automatic: null,
-        override: null,
-        effective: null
-      }
-    });
-    let current = historical;
-    const assignSessionProject = vi.fn<
-      PersonalDesktopApi["assignSessionProject"]
-    >(async (input) => {
-      current =
-        input.action === "move"
-          ? {
-              ...historical,
-              projectId: id,
-              projectName: createdProject.name,
-              projectAssignmentSource: "user_override",
-              repositoryAssignment: {
-                state: "historical_unresolved",
-                version: 2,
-                automatic: null,
-                override: namedIdentity,
-                effective: namedIdentity
-              }
-            }
-          : {
-              ...historical,
-              repositoryAssignment: {
-                ...historical.repositoryAssignment!,
-                version: 3
-              }
-            };
-      return { projectId: current.projectId };
-    });
-    const store = new PersonalMemoryStore(
-      api({
-        listProjects: async () => [
-          {
-            ...project([current]),
-            id: current.projectId,
-            name: current.projectName
-          },
-          ...registered.filter((entry) => entry.id !== current.projectId)
-        ]
-      })
-    );
-    const onCreateProject = vi.fn(async () => {
-      registered.push(createdProject);
-      return (await store.loadProjects()).projectsById.get(id)!;
-    });
-    await act(async () =>
-      root.render(
-        <Harness
-          initialRoute={{ kind: "session", projectId: "unassigned", sessionId }}
-        >
-          {({ route, onNavigate }) => (
-            <PersonalMemoryWorkspace
-              assignSessionProject={assignSessionProject}
-              onCreateProject={onCreateProject}
-              onNavigate={onNavigate}
-              onSessionProjectAssigned={({ projectId }) =>
-                onNavigate({
-                  kind: "session",
-                  projectId: projectId!,
-                  sessionId
-                })
-              }
-              route={route}
-              store={store}
-            />
-          )}
-        </Harness>
-      )
-    );
-    expect(
-      container.querySelector(
-        '.personal-session-header-actions [aria-label="Move Conversation"]'
-      )
-    ).not.toBeNull();
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
-        .click()
-    );
-    const captureDetails = document.querySelector<HTMLDetailsElement>(
-      ".personal-assignment-capture-details"
-    )!;
-    expect(captureDetails.open).toBe(false);
-    expect(captureDetails.textContent).toContain("/recorded/alpha-one");
-    expect(
-      document
-        .querySelector(
-          '.personal-session-assignment-dialog button[type="submit"]'
-        )
-        ?.hasAttribute("disabled")
-    ).toBe(true);
-    await act(async () =>
-      document
-        .querySelector<HTMLButtonElement>(
-          '.personal-session-assignment-dialog .personal-project-destination-row [aria-label="Create Project"]'
-        )!
-        .click()
-    );
-    await submitCreation();
-    expect(assignSessionProject).not.toHaveBeenCalled();
-    expect(current.repositoryAssignment?.effective).toBeNull();
-    expect(
-      document.querySelector<HTMLSelectElement>(
-        'select[name="targetProjectId"]'
-      )?.value
-    ).toBe(id);
-    await act(async () =>
-      document
-        .querySelector(".personal-session-assignment-dialog form")!
-        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
-    );
-    expect(assignSessionProject).toHaveBeenLastCalledWith({
-      action: "move",
-      sessionId,
-      targetProjectId: id,
-      expectedVersion: 1
-    });
-    expect(store.current().projectsById.get(id)?.threads).toHaveLength(1);
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
-        .click()
-    );
-    await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore")!
-        .click()
-    );
-    expect(assignSessionProject).toHaveBeenCalledTimes(1);
-    expect(
-      document.querySelector(".personal-assignment-restore-target")?.textContent
-    ).toContain("Unresolved history");
-    await act(async () =>
-      document
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Back to Move Conversation"]'
-        )!
-        .click()
-    );
-    expect(
-      document.querySelector<HTMLDetailsElement>(
-        ".personal-assignment-capture-details"
-      )?.open
-    ).toBe(false);
-    expect(
-      document.querySelector(".personal-assignment-capture-details")
-        ?.textContent
-    ).toContain("/recorded/alpha-one");
-    expect(
-      document.querySelector(".personal-session-assignment-dialog")?.textContent
-    ).not.toContain(namedIdentity.key!);
-    await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore")!
-        .click()
-    );
-    await act(async () =>
-      [
-        ...document.querySelectorAll(
-          ".personal-session-assignment-dialog button"
-        )
-      ]
-        .find((button) => button.textContent === "Restore")!
-        .dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    );
-    expect(assignSessionProject).toHaveBeenLastCalledWith({
-      action: "reset",
-      sessionId,
-      expectedVersion: 2
-    });
-    expect(
-      store.current().projectsById.get("unassigned")?.threads
-    ).toHaveLength(1);
-    expect(store.current().projectsById.get(id)?.threads).toEqual([]);
-  });
-
-  it("moves a whole Project from its right header action after creating a destination", async () => {
+  it("hides retired source assignment controls even when an old client exposes them", async () => {
     const source = project([thread(1)]);
-    const registered: PersonalDesktopProject[] = [];
-    let moved = false;
+    const assign = vi.fn<PersonalDesktopApi["assignSessionProject"]>(
+      async () => ({ projectId: source.id })
+    );
+    const move = vi.fn<NonNullable<PersonalDesktopApi["moveProject"]>>(
+      async () => ({ projectId: createdProject.id, movedCount: 1 })
+    );
     const store = new PersonalMemoryStore(
-      api({
-        listProjects: async () => (moved ? registered : [source, ...registered])
-      })
+      api({ listProjects: async () => [source, createdProject] })
     );
-    const onCreateProject = vi.fn(async () => {
-      registered.push(createdProject);
-      return (await store.loadProjects()).projectsById.get(createdProject.id)!;
-    });
-    const moveProject = vi.fn<NonNullable<PersonalDesktopApi["moveProject"]>>(
-      async () => {
-        moved = true;
-        return { projectId: createdProject.id, movedCount: 501 };
-      }
-    );
-    const onNavigate = vi.fn();
     await act(async () =>
       root.render(
         <PersonalMemoryWorkspace
-          moveProject={moveProject}
-          onCreateProject={onCreateProject}
-          onNavigate={onNavigate}
+          assignSessionProject={assign}
+          moveProject={move}
+          onNavigate={vi.fn()}
           route={{ kind: "project", projectId: source.id }}
           store={store}
         />
       )
     );
-    expect(
-      container.querySelector(
-        '.personal-project-detail-actions [aria-label="Move Project"]'
-      )
-    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Move Project"]')).toBeNull();
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>('[aria-label="Move Project"]')!
+        .querySelector<HTMLButtonElement>(".personal-session-row-select")!
         .click()
     );
-    await act(async () =>
-      document
-        .querySelector<HTMLButtonElement>(
-          '.personal-project-move-dialog [aria-label="Create Project"]'
-        )!
-        .click()
-    );
-    await submitCreation();
-    expect(moveProject).not.toHaveBeenCalled();
+    expect(document.querySelector(".personal-project-move-dialog")).toBeNull();
     expect(
-      document.querySelector<HTMLSelectElement>(
-        ".personal-project-move-dialog select"
-      )?.value
-    ).toBe(createdProject.id);
-    await act(async () =>
-      document
-        .querySelector(".personal-project-move-dialog form")!
-        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
-    );
-    expect(moveProject).toHaveBeenCalledWith({
-      sourceProjectId: source.id,
-      targetProjectId: createdProject.id
-    });
-    expect(onNavigate).toHaveBeenCalledWith({
-      kind: "project",
-      projectId: createdProject.id
-    });
+      document.querySelector(".personal-conversation-move-dialog")
+    ).toBeNull();
+    expect(assign).not.toHaveBeenCalled();
+    expect(move).not.toHaveBeenCalled();
   });
 
   it("clears execution context attachments when navigating to another Conversation", async () => {
@@ -1640,200 +1463,35 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toBeNull();
   });
 
-  it("opens Move from the Conversation menu, restores focus on cancel, and moves without opening the Conversation", async () => {
-    const selected = thread(1);
-    const source = project([selected]);
-    const target = { ...createdProject, name: "Destination" };
-    let moved = false;
-    const assignSessionProject = vi.fn(async () => {
-      moved = true;
-      return { projectId: target.id };
-    });
-    const store = new PersonalMemoryStore(
-      api({
-        listProjects: async () =>
-          moved
-            ? [
-                { ...source, threads: [] },
-                {
-                  ...target,
-                  threads: [
-                    {
-                      ...selected,
-                      projectId: target.id,
-                      projectName: target.name
-                    }
-                  ]
-                }
-              ]
-            : [source, target]
-      })
+  it("omits retired Move actions from Conversation menus", async () => {
+    const source = project([thread(1)]);
+    const assign = vi.fn<PersonalDesktopApi["assignSessionProject"]>(
+      async () => ({ projectId: source.id })
     );
-    const onAssigned = vi.fn();
-    const onNavigate = vi.fn();
-    await act(async () => {
+    const store = new PersonalMemoryStore(
+      api({ listProjects: async () => [source] })
+    );
+    await act(async () =>
       root.render(
         <PersonalMemoryWorkspace
-          assignSessionProject={assignSessionProject}
-          onSessionProjectAssigned={onAssigned}
-          onNavigate={onNavigate}
+          assignSessionProject={assign}
+          onNavigate={vi.fn()}
           route={{ kind: "project", projectId: source.id }}
           store={store}
         />
-      );
-    });
-    const menu = container.querySelector<HTMLDetailsElement>(
-      ".personal-session-actions"
-    )!;
-    const trigger = menu.querySelector<HTMLElement>("summary")!;
-    const openMove = async () => {
-      await act(async () => trigger.click());
-      await vi.waitFor(() => expect(menu.open).toBe(true));
-      const move = menu.querySelector<HTMLButtonElement>(
-        '[role="menuitem"][aria-label="Move Conversation"]'
-      )!;
-      expect(move.textContent).toBe("Move");
-      await act(async () => move.click());
-      await vi.waitFor(() =>
-        expect(
-          document.querySelector(".personal-session-assignment-dialog")
-        ).not.toBeNull()
-      );
-      expect(menu.open).toBe(false);
-    };
-    await openMove();
-    expect(assignSessionProject).not.toHaveBeenCalled();
-    await act(async () => {
-      [
-        ...document.querySelectorAll<HTMLButtonElement>(
-          ".personal-session-assignment-dialog button"
-        )
-      ]
-        .find((button) => button.textContent === "Cancel")!
-        .click();
-    });
-    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
-    await openMove();
-    const select = document.querySelector<HTMLSelectElement>(
-      '.personal-session-assignment-dialog select[name="targetProjectId"]'
-    )!;
-    await act(async () => {
-      select.value = target.id;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(select.value).toBe(target.id);
+      )
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLElement>(".personal-session-actions summary")!
+        .click()
+    );
     expect(
-      document.querySelector<HTMLButtonElement>(
-        '.personal-session-assignment-dialog button[type="submit"]'
-      )?.disabled
+      [...container.querySelectorAll('[role="menuitem"]')].some((button) =>
+        button.textContent?.includes("Move")
+      )
     ).toBe(false);
-    await act(async () => {
-      document
-        .querySelector(".personal-session-assignment-dialog form")!
-        .dispatchEvent(
-          new Event("submit", { bubbles: true, cancelable: true })
-        );
-    });
-    expect(assignSessionProject).toHaveBeenCalledWith({
-      action: "move",
-      sessionId,
-      targetProjectId: target.id,
-      expectedVersion: 1
-    });
-    expect(onAssigned).toHaveBeenCalledWith({
-      projectId: target.id,
-      sessionId
-    });
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(store.current().projectsById.get(target.id)?.threads).toHaveLength(
-      1
-    );
-  });
-
-  it("fences a stale Project move response after the selected session changes", async () => {
-    let resolveMove:
-      | ((value: { projectId: string | null }) => void)
-      | undefined;
-    const assignSessionProject = vi.fn(
-      () =>
-        new Promise<{ projectId: string | null }>((resolve) => {
-          resolveMove = resolve;
-        })
-    );
-    const source = project([thread(1)]);
-    const target = {
-      ...project([]),
-      id: "project-2",
-      name: "Destination Project",
-      eventCount: 1
-    };
-    const store = new PersonalMemoryStore(
-      api({
-        listProjects: vi.fn(async () => [source, target]),
-        loadEventPage: vi.fn(async () => [event(1)])
-      })
-    );
-    const onAssigned = vi.fn();
-
-    await act(async () => {
-      root.render(
-        <Harness
-          initialRoute={{
-            kind: "session",
-            projectId: source.id,
-            sessionId
-          }}
-        >
-          {({ onNavigate, route }) => (
-            <PersonalMemoryWorkspace
-              assignSessionProject={assignSessionProject}
-              onNavigate={onNavigate}
-              onSessionProjectAssigned={onAssigned}
-              route={route}
-              store={store}
-            />
-          )}
-        </Harness>
-      );
-    });
-    const manage = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Move Conversation"]'
-    );
-    expect(manage?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
-    expect(container.textContent).not.toContain("Move to Project:");
-    expect(container.textContent).not.toContain("Move to another Project");
-
-    await act(async () => manage?.click());
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Move to Project")
-    );
-    const form = document.querySelector(
-      ".personal-session-assignment-dialog form"
-    );
-    await act(async () => {
-      const select = form?.querySelector<HTMLSelectElement>("select");
-      if (select) {
-        select.value = target.id;
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    });
-    await act(async () => {
-      form?.dispatchEvent(
-        new Event("submit", { bubbles: true, cancelable: true })
-      );
-    });
-    expect(assignSessionProject).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      root.render(
-        <PersonalMemoryWorkspace
-          onNavigate={vi.fn()}
-          route={{ kind: "projects" }}
-          store={store}
-        />
-      );
-    });
-    await act(async () => resolveMove?.({ projectId: "project-2" }));
-    expect(onAssigned).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("passes only authorized destinations to sharing and keeps mapping advisory", async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  validateMemoryAnswerTaskRequest,
+  pinMemoryAnswerTaskSelection,
   validateMemoryAnswerTaskCompletion
 } from "./memory-answer-task-request.js";
 import type pg from "pg";
@@ -439,7 +439,11 @@ export const createMemoryAnswerTaskRepository = (
         throw new MemoryAnswerTaskAuthorizationError();
       if (input.teamWorkspaceId && !actor.allowTeam)
         throw new MemoryAnswerTeamAuthorityError();
-      validateMemoryAnswerTaskRequest(input.request, input.teamWorkspaceId);
+      const pinnedRequest = pinMemoryAnswerTaskSelection(
+        input.request,
+        actor.userId,
+        input.teamWorkspaceId
+      );
       const taskId = randomUUID();
       const maxAttempts = Math.min(positiveInteger(input.maxAttempts, 3), 10);
       const retentionMs = Math.min(
@@ -518,7 +522,7 @@ export const createMemoryAnswerTaskRepository = (
           actor,
           row.id,
           "request_snapshot",
-          input.request
+          pinnedRequest
         );
         const task = await hydrateTask(client, actor, row);
         await client.query("commit");

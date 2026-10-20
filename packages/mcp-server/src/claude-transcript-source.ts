@@ -3,6 +3,10 @@ import {
   unresolvedHistoricalRepositoryIdentity
 } from "./historical-repository-context.js";
 import type { RepositoryIdentity } from "@koed/shared";
+import {
+  recordedCaptureFolderObservation,
+  currentCaptureFolderObservation
+} from "./capture-repository-context.js";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
@@ -169,6 +173,7 @@ const completeSegment = (
 };
 
 export const journalClaudeTranscript = async (input: {
+  env?: NodeJS.ProcessEnv;
   client: MemoryApiClient;
   signal: ClaudeTranscriptWatcherSignal;
   repositoryIdentity?: RepositoryIdentity;
@@ -204,6 +209,16 @@ export const journalClaudeTranscript = async (input: {
     const response = await input.client.ensureConversationSourceArtifact({
       sourceSession: {
         externalSessionId: input.signal.sourceSessionId,
+        folderObservation: recordedCaptureFolderObservation({
+          sourceKind: "claude-code",
+          externalSessionId: input.signal.sourceSessionId,
+          env: input.env ?? process.env
+        }),
+        currentFolderObservation: currentCaptureFolderObservation({
+          sourceKind: "claude-code",
+          externalSessionId: input.signal.sourceSessionId,
+          env: input.env ?? process.env
+        }),
         sourceRuntime: "claude-code",
         captureMethod: "api",
         cwd: input.signal.cwd,
@@ -406,6 +421,7 @@ export const registerClaudeHistoricalTranscriptSources = async (
       component.componentId
     );
     const artifact = await journalClaudeTranscript({
+      env,
       client,
       signal,
       repositoryIdentity,

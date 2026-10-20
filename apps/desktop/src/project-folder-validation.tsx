@@ -166,7 +166,6 @@ export function ProjectFolderValidation() {
       projectAssociation={onAssociation}
       setRepositoryAnchor={onSetAnchor}
       reviewRepository={onReview}
-      moveProject={async () => ({ movedCount: 0, projectId: project.id })}
       revealLocalProject={async (localProjectId) => {
         trace.push({ reveal: localProjectId });
       }}

@@ -1,4 +1,5 @@
 export type PersonalMemoryErrorCode =
+  | "unsupported_operation"
   | "not_ready"
   | "not_found"
   | "conflict"

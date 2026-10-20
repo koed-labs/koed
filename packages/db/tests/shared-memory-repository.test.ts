@@ -1,3 +1,17 @@
+import { createMemorySourceRepository } from "../src/repository.js";
+import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
+import { preparePersonalSourceContextSnapshot } from "../src/personal-source-context-export.js";
+import { createPersonalConfigurationRecordRepository } from "../src/personal-configuration-record-repository.js";
+import {
+  PERSONAL_CONFIGURATION_PROTOCOL,
+  personalSourceContextSnapshotSchema,
+  encodePdsPersonalSourceContextSnapshot,
+  encodePdsPersonalMembershipEntitySnapshot,
+  evaluatePersonalMembershipRevisions,
+  signPersonalConfigurationRecord,
+  canonicalizePdsJson
+} from "@koed/shared";
+import { createPersonalSourceCorrectionRepository } from "../src/personal-source-correction-repository.js";
 import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -7705,13 +7719,22 @@ describeDb("Shared Memory repository", () => {
     const semanticVersion = "team-semantic-v1:scope-test";
     const queryVector = [1, ...Array.from({ length: 383 }, () => 0)];
     for (const item of semanticItems) {
+      // Keep the rollup in the initial global pool deterministically. Equal
+      // scores used random candidate IDs to break ties, making pool overlap
+      // (and therefore the exact deduplicated count) depend on UUID ordering.
+      const similarity =
+        item.shareGrantId === rollupGrant.shareGrantId ? 1 : 0.999;
       await repository.storeSharedMemorySemanticEmbedding({
         semanticItemId: item.semanticItemId,
         contentHash: item.contentHash,
         model: semanticModel,
         dimensions: 384,
         version: semanticVersion,
-        vector: queryVector
+        vector: [
+          similarity,
+          Math.sqrt(1 - similarity * similarity),
+          ...Array.from({ length: 382 }, () => 0)
+        ]
       });
     }
     const decryptsBeforeScoreScan = decryptSpy.mock.calls.length;
@@ -8929,6 +8952,44 @@ describeDb("Shared Memory repository", () => {
     const second = await share(secondFixture);
     expect(first.repositorySnapshot?.fingerprint).toBe("gr_original");
     expect(second.repositorySnapshot?.fingerprint).toBe("gr_reassigned");
+    const snapshotRows = () =>
+      pool.query<{ row: unknown }>(
+        "select to_jsonb(g) as row from team_memory_share_grants g where id=any($1::uuid[]) order by id",
+        [[first.id, second.id]]
+      );
+    const snapshotsBeforeCorrection = await snapshotRows();
+    const sourceContext = createPersonalSourceCorrectionRepository(pool),
+      sourceActor = actor(fixture.ownerUserId);
+    for (const axis of ["git", "folder"] as const) {
+      const current = (
+        await sourceContext.getPersonalSourceContext(
+          sourceActor,
+          source.localSessionId
+        )
+      ).context;
+      const expectedVersion =
+        axis === "git" ? current.git.revision : current.folder.revision;
+      const review = await sourceContext.previewPersonalSourceCorrection(
+        sourceActor,
+        source.localSessionId,
+        { axis, action: "unresolved", expectedVersion }
+      );
+      await sourceContext.applyPersonalSourceCorrection(
+        sourceActor,
+        source.localSessionId,
+        review.preview.reviewId,
+        { expectedVersion }
+      );
+    }
+    let correctedContext = (
+      await sourceContext.getPersonalSourceContext(
+        sourceActor,
+        source.localSessionId
+      )
+    ).context;
+    expect(correctedContext.git.correction.state).toBe("corrected");
+    expect(correctedContext.folder.correction.state).toBe("corrected");
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
     const client = await pool.connect();
     try {
       await client.query("begin");
@@ -8982,7 +9043,264 @@ describeDb("Shared Memory repository", () => {
       client.release();
     }
 
+    const devices = personalSourceDeviceFixture();
+    await devices.initialize(pool, devices.origin, fixture.ownerUserId);
+    const bindingClient = await pool.connect();
+    let verifiedSnapshot;
+    try {
+      await bindingClient.query("begin");
+      verifiedSnapshot = await preparePersonalSourceContextSnapshot(
+        bindingClient,
+        {
+          ownerUserId: fixture.ownerUserId,
+          localSessionId: source.localSessionId,
+          originatingDeploymentId: devices.origin.deploymentId,
+          originatingDeviceId: devices.origin.deviceId
+        }
+      );
+      await bindingClient.query("commit");
+    } catch (error) {
+      await bindingClient.query("rollback");
+      throw error;
+    } finally {
+      bindingClient.release();
+    }
+    const correctionId = randomUUID();
+    const correctedGit = {
+      ...verifiedSnapshot.context.git,
+      revision: verifiedSnapshot.context.git.revision + 1,
+      correction: { state: "original" as const }
+    };
+    const correctionSnapshot = personalSourceContextSnapshotSchema.parse({
+      ...verifiedSnapshot,
+      context: { ...verifiedSnapshot.context, git: correctedGit },
+      git: {
+        head: correctionId,
+        revisions: [
+          ...verifiedSnapshot.git.revisions,
+          {
+            revisionId: correctionId,
+            replaces: [verifiedSnapshot.git.head],
+            assignment: correctedGit
+          }
+        ]
+      }
+    });
+    const signedCorrection = signPersonalConfigurationRecord(
+      {
+        protocol: PERSONAL_CONFIGURATION_PROTOCOL,
+        groupId: devices.groupId,
+        authorDeviceId: devices.receiver.deviceId,
+        authorSigningKeyId: devices.receiver.signingKeyId,
+        payload: {
+          kind: "source_context",
+          snapshot: encodePdsPersonalSourceContextSnapshot(correctionSnapshot)
+        }
+      },
+      devices.receiver.signing.privateKey
+    );
+    const configurationEncryption =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 115).toString("base64")
+      );
+    const appliedCorrection = await createPersonalConfigurationRecordRepository(
+      pool
+    ).retainPersonalConfiguration({
+      userId: fixture.ownerUserId,
+      groupId: devices.groupId,
+      record: signedCorrection,
+      direction: "inbound",
+      expectedEpoch: devices.epoch,
+      expectedAuthorityHead: devices.authorityHead,
+      encryptedEnvelope: await configurationEncryption.encrypt({
+        plaintext: canonicalizePdsJson(signedCorrection),
+        scope: { tenantId: fixture.ownerUserId },
+        provenance: { rowFamily: "personal_configuration_records" },
+        ciphertextLocation: "fixture"
+      })
+    });
+    expect(appliedCorrection.applied).toBe(true);
+    correctedContext = (
+      await sourceContext.getPersonalSourceContext(
+        sourceActor,
+        source.localSessionId
+      )
+    ).context;
+    expect(correctedContext.sync?.git.frontier).toEqual([correctionId]);
+    expect(correctedContext.git.correction).toEqual({ state: "original" });
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
+
+    const personal = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: configurationEncryption
+    });
+    const grouping = await personal.createNamedPersonalProject(sourceActor, {
+      name: "Personal snapshot grouping"
+    });
+    const membershipScope = {
+      userId: fixture.ownerUserId,
+      groupId: devices.groupId,
+      authorDeviceId: devices.origin.deviceId,
+      authorSigningKeyId: devices.origin.signingKeyId,
+      originatingDeploymentId: devices.origin.deploymentId,
+      expectedEpoch: devices.epoch,
+      expectedAuthorityHead: devices.authorityHead
+    };
+    await personal.personalConfiguration!.listPersonalConfigurationCatalogSnapshots(
+      membershipScope
+    );
+    const included = await personal.addPersonalProjectSession(
+      sourceActor,
+      grouping.projectId,
+      {
+        sessionId: source.localSessionId,
+        expectedVersion: grouping.version
+      }
+    );
+    const organizationRule = await personal.addPersonalProjectRepositoryRule(
+      sourceActor,
+      grouping.projectId,
+      {
+        expectedVersion: included.project.version,
+        repository: {
+          kind: "portable_repository",
+          key: "gr_team_snapshot_rule",
+          root: "/fixture/team-rule",
+          branch: "main",
+          reason: "origin",
+          checkoutId: "team-rule-checkout",
+          originatingDeviceId: devices.origin.deviceId,
+          selectedRemote: "origin",
+          anchorDisplay: "example.test/team-rule"
+        }
+      }
+    );
+    const excludedFromGrouping = await personal.excludePersonalProjectSession(
+      sourceActor,
+      grouping.projectId,
+      {
+        sessionId: source.localSessionId,
+        expectedVersion: organizationRule.project.version
+      }
+    );
+    expect(excludedFromGrouping.explanation.included).toBe(false);
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
+    const exclusion = excludedFromGrouping.explanation.exclusion!;
+    await personal.restorePersonalProjectSession(
+      sourceActor,
+      grouping.projectId,
+      {
+        sessionId: source.localSessionId,
+        expectedVersion: excludedFromGrouping.project.version,
+        exclusionId: exclusion.exclusionId,
+        expectedExclusionRevisionId: exclusion.headRevisionId
+      }
+    );
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
+    const catalogPage =
+      await personal.personalConfiguration!.listPersonalConfigurationCatalogSnapshots(
+        membershipScope
+      );
+    const retainedCatalog = catalogPage.snapshots.find(
+      (value) => value.project.projectId === grouping.projectId
+    )!;
+    const peerRevisionId = randomUUID();
+    const renamedCatalog = {
+      ...retainedCatalog,
+      revisions: [
+        ...retainedCatalog.revisions,
+        {
+          version: 1 as const,
+          project: retainedCatalog.project,
+          entityId: retainedCatalog.entityId,
+          revisionId: peerRevisionId,
+          authorDeviceId: devices.receiver.deviceId,
+          replaces: evaluatePersonalMembershipRevisions(
+            retainedCatalog.revisions
+          ).heads,
+          operation: {
+            kind: "set_project" as const,
+            name: "Peer renamed grouping"
+          }
+        }
+      ]
+    };
+    const signedMembership = signPersonalConfigurationRecord(
+      {
+        protocol: PERSONAL_CONFIGURATION_PROTOCOL,
+        groupId: devices.groupId,
+        authorDeviceId: devices.receiver.deviceId,
+        authorSigningKeyId: devices.receiver.signingKeyId,
+        payload: {
+          kind: "project_membership",
+          snapshot: encodePdsPersonalMembershipEntitySnapshot(renamedCatalog)
+        }
+      },
+      devices.receiver.signing.privateKey
+    );
+    expect(
+      (
+        await personal.personalConfiguration!.retainPersonalConfiguration({
+          userId: fixture.ownerUserId,
+          groupId: devices.groupId,
+          record: signedMembership,
+          direction: "inbound",
+          localDevice: {
+            deviceId: devices.origin.deviceId,
+            signingKeyId: devices.origin.signingKeyId,
+            originatingDeploymentId: devices.origin.deploymentId
+          },
+          expectedEpoch: devices.epoch,
+          expectedAuthorityHead: devices.authorityHead,
+          encryptedEnvelope: await configurationEncryption.encrypt({
+            plaintext: canonicalizePdsJson(signedMembership),
+            scope: { tenantId: fixture.ownerUserId },
+            provenance: { rowFamily: "personal_configuration_records" },
+            ciphertextLocation: "fixture"
+          })
+        })
+      ).applied
+    ).toBe(true);
+    const afterRename = await personal.getPersonalMembershipSyncState(
+      sourceActor,
+      grouping.projectId
+    );
+    expect(afterRename.project.name).toBe("Peer renamed grouping");
+    const removed = await personal.removePersonalProjectInclusion(
+      sourceActor,
+      grouping.projectId,
+      included.membership.inclusionId,
+      { expectedVersion: afterRename.project.version }
+    );
+    const removedRule = await personal.removePersonalProjectRule(
+      sourceActor,
+      grouping.projectId,
+      organizationRule.rule.inclusionId,
+      { expectedVersion: removed.project.version }
+    );
+    await personal.deleteNamedPersonalProject(sourceActor, grouping.projectId, {
+      expectedVersion: removedRule.project.version
+    });
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
+    expect(
+      (
+        await sourceContext.getPersonalSourceContext(
+          sourceActor,
+          source.localSessionId
+        )
+      ).context
+    ).toEqual(correctedContext);
+
     await ensureSourceRevision(fixture, source, 2, "continued-capture");
+    expect(
+      (
+        await sourceContext.getPersonalSourceContext(
+          sourceActor,
+          source.localSessionId
+        )
+      ).context
+    ).toEqual(correctedContext);
+    expect((await snapshotRows()).rows).toEqual(snapshotsBeforeCorrection.rows);
+
     await repository.advanceContinuousGrantRepresentations({
       remoteReplicaId: source.remoteReplicaId,
       sourceRevision: 2

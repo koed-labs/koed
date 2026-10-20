@@ -1,5 +1,16 @@
+import type { PersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import type { PersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
+import type { PersonalConfigurationRepository } from "./personal-configuration-repository.js";
+import type { PersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import type { PersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
+import type { PersonalMembershipRepository } from "./personal-membership-repository.js";
+import type { PersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import type { RepositoryReviewRepository } from "./repository-review-repository.js";
-import type { RepositoryAssignment } from "@koed/shared";
+import type {
+  RepositoryAssignment,
+  PersonalFolderAssignment,
+  PersonalSelectionSnapshot
+} from "@koed/shared";
 import type { ProjectRoutingRepository } from "./project-routing-repository.js";
 import type {
   LcmSourceItem,
@@ -690,6 +701,7 @@ export interface CapturePolicyRecord {
 }
 
 export interface EffectiveCapturePolicy {
+  captureTarget?: import("@koed/shared").PersonalCaptureTargetBinding;
   captureState: CaptureState;
   visibility: Visibility;
   paused: boolean;
@@ -1198,6 +1210,11 @@ export interface LcmGraphEvent {
 }
 
 export interface LcmGraphThread {
+  sourceReferences?: Array<{
+    sessionId: string;
+    logicalSessionId: string;
+    logicalMemoryId: string | null;
+  }>;
   repositoryAssignment?: RepositoryAssignment;
   logicalMemoryId?: string | null;
   id: string;
@@ -1306,6 +1323,7 @@ export interface PersonalProjectReference {
 }
 
 export interface CapturedSessionRecord {
+  folderAssignment?: PersonalFolderAssignment;
   repositoryAssignment?: RepositoryAssignment;
   id: string;
   logicalSessionId: string;
@@ -1929,6 +1947,7 @@ export interface CuratedMemorySearchInput {
   searchDomain?: MemoryQuestionSearchDomain;
   sessionId?: string;
   projectId?: string;
+  personalSelection?: PersonalSelectionSnapshot;
   limit?: number;
   currentOnly?: boolean;
   sourceAfter?: string;
@@ -1953,6 +1972,12 @@ export interface MemorySourceRepository
     RepositoryReviewRepository,
     ProjectRoutingRepository,
     CapturedSessionRepository,
+    PersonalMembershipRepository,
+    PersonalMembershipReviewRepository,
+    PersonalSelectionConsumerRepository,
+    PersonalProjectRuleRepository,
+    PersonalProjectExclusionRepository,
+    PersonalSourceCorrectionRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,
     ConversationItemRepository,
@@ -1980,6 +2005,7 @@ export interface MemorySourceRepository
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   personalProjectSelections: PersonalProjectSelectionRepository;
+  personalConfiguration?: PersonalConfigurationRepository;
   countUsers(): Promise<number>;
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
@@ -2570,13 +2596,18 @@ export interface MemorySourceRepository
     input: UpsertCapturePolicyInput
   ): Promise<CapturePolicyRecord>;
   deleteCapturePolicy(actor: ActorContext, policyId: string): Promise<boolean>;
-  getLcmGraphOverview(actor: ActorContext): Promise<LcmGraphOverview>;
+  getLcmGraphOverview(
+    actor: ActorContext,
+    input?: import("./personal-selection-sql.js").PersonalSelectionQuery
+  ): Promise<LcmGraphOverview>;
   listLcmGraphNodes(
     actor: ActorContext,
     input?: {
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
+      sessionId?: string;
       threadId?: string;
       nodeIds?: string[];
       includeInvalidated?: boolean;
@@ -2586,7 +2617,13 @@ export interface MemorySourceRepository
   getLcmGraphNode(
     actor: ActorContext,
     nodeId: string,
-    input?: { includeInvalidated?: boolean }
+    input?: {
+      includeInvalidated?: boolean;
+      personalSelection?: PersonalSelectionSnapshot;
+      projectId?: string;
+      sessionId?: string;
+      threadId?: string;
+    }
   ): Promise<LcmGraphNodeDetail | null>;
   updateLcmGraphNode(
     actor: ActorContext,
@@ -2601,6 +2638,8 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
+      sessionId?: string;
       threadId?: string;
       cursorTimestamp?: string;
       cursorSourceSequence?: number;
@@ -2615,19 +2654,27 @@ export interface MemorySourceRepository
   listLcmGraphThreads(
     actor: ActorContext,
     input?: {
+      sessionIds?: string[];
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
+      sessionId?: string;
       threadId?: string;
       includeInvalidated?: boolean;
       limit?: number;
       offset?: number;
+      groupBySession?: boolean;
     }
   ): Promise<LcmGraphProjectThreads[]>;
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
     input?: {
+      personalSelection?: PersonalSelectionSnapshot;
+      projectId?: string;
+      sessionId?: string;
+      threadId?: string;
       includeInvalidated?: boolean;
       includeContent?: boolean;
       includeRaw?: boolean;

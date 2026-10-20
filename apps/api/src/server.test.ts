@@ -1,4 +1,9 @@
-import type { RepositoryIdentity } from "@koed/shared";
+import { personalSelectionConsumerStartSchema } from "@koed/shared";
+import type {
+  RepositoryIdentity,
+  PersonalProjectRule,
+  PersonalSelectionConsumerSelection
+} from "@koed/shared";
 import {
   createHash,
   createPrivateKey,
@@ -1197,6 +1202,8 @@ const createFakeRepository = () => {
   };
 
   const repository = {
+    listPersonalProjectRules: async () => [],
+    listPersonalProjectMembershipReasons: async () => [],
     health: async () => true,
     getLocalSyncDeployment: async () => null,
     getConversationProjectionBacklog: async () => ({
@@ -7169,7 +7176,7 @@ describe("api health", () => {
     expect(invalidSecond.statusCode).toBe(429);
   });
 
-  it("uses injected rate-limit and cache providers", async () => {
+  it("uses injected rate limits and bypasses stale graph caches for live Personal selection", async () => {
     const cacheReads: string[] = [];
     const cacheWrites: string[] = [];
     const rateLimitKeys: string[] = [];
@@ -7239,12 +7246,12 @@ describe("api health", () => {
     );
     expect(
       cacheReads.some((key) => key.startsWith("koed:graph:overview:"))
-    ).toBe(true);
+    ).toBe(false);
     expect(
       cacheWrites.some((key) => key.startsWith("koed:graph:overview:"))
-    ).toBe(true);
-    expect(threadCacheReadsBeforeTeam).toBe(1);
-    expect(threadCacheWritesBeforeTeam).toBe(1);
+    ).toBe(false);
+    expect(threadCacheReadsBeforeTeam).toBe(0);
+    expect(threadCacheWritesBeforeTeam).toBe(0);
     expect(
       cacheReads.filter((key) => key.startsWith("koed:graph:threads:")).length
     ).toBe(threadCacheReadsBeforeTeam);
@@ -15353,6 +15360,967 @@ describe("account and access flows", () => {
       expect(response.json()).toMatchObject({
         error: "Invalid request payload"
       });
+    }
+  });
+
+  it("authorizes independent source correction previews and applies only reviewed versions", async () => {
+    const repository = createFakeRepository(),
+      sessionId = "00000000-0000-4000-8000-000000000073",
+      reviewId = "00000000-0000-4000-8000-000000000075";
+    const context = {
+      sessionId,
+      logicalSessionId: sessionId,
+      git: {
+        revision: 1,
+        original: {
+          state: "unresolved" as const,
+          reason: "historical_unresolved" as const
+        },
+        correction: { state: "original" as const }
+      },
+      folder: {
+        revision: 1,
+        original: {
+          state: "unresolved" as const,
+          reason: "historical_unresolved" as const
+        },
+        correction: { state: "original" as const }
+      }
+    };
+    const get = vi.fn<NonNullable<typeof repository.getPersonalSourceContext>>(
+        async () => ({ context })
+      ),
+      preview = vi.fn<
+        NonNullable<typeof repository.previewPersonalSourceCorrection>
+      >(async () => ({
+        context,
+        preview: {
+          reviewId,
+          axis: "git",
+          expectedVersion: 1,
+          before: context,
+          after: context,
+          projects: []
+        }
+      })),
+      apply = vi.fn<
+        NonNullable<typeof repository.applyPersonalSourceCorrection>
+      >(async () => ({
+        context,
+        preview: {
+          reviewId,
+          axis: "git",
+          expectedVersion: 1,
+          before: context,
+          after: context,
+          projects: []
+        }
+      }));
+    repository.getPersonalSourceContext = get;
+    repository.previewPersonalSourceCorrection = preview;
+    repository.applyPersonalSourceCorrection = apply;
+    const app = await buildServer({ repository });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "source-context-route@example.test",
+          password: "password123"
+        }
+      });
+      const ownerUserId = jsonBody<{ user: { id: string } }>(registered).user
+          .id,
+        headers = browserSessionHeaders(cookieHeader(registered)),
+        base = `/v1/personal/sessions/${sessionId}/source-context`;
+      expect((await app.inject({ method: "GET", url: base })).statusCode).toBe(
+        401
+      );
+      expect(get).not.toHaveBeenCalled();
+      expect(
+        (await app.inject({ method: "GET", url: base, headers })).statusCode
+      ).toBe(200);
+      expect(get).toHaveBeenCalledWith({ userId: ownerUserId }, sessionId);
+      for (const axis of ["git", "folder"] as const)
+        for (const action of ["unresolved", "reset"] as const) {
+          const payload = { axis, action, expectedVersion: 1 };
+          expect(
+            (
+              await app.inject({
+                method: "POST",
+                url: `${base}/reviews`,
+                headers,
+                payload
+              })
+            ).statusCode
+          ).toBe(200);
+          expect(preview).toHaveBeenLastCalledWith(
+            { userId: ownerUserId },
+            sessionId,
+            payload
+          );
+        }
+      const calls = preview.mock.calls.length;
+      for (const invalid of [
+        { axis: "git", action: "set", expectedVersion: 1, projectId: reviewId },
+        {
+          axis: "folder",
+          action: "reset",
+          expectedVersion: 1,
+          ownerUserId: "foreign"
+        },
+        { axis: "git", action: "reset", expectedVersion: 0 },
+        {
+          axis: "folder",
+          action: "unresolved",
+          expectedVersion: 1,
+          patch: { folder_assignment: {} }
+        }
+      ])
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url: `${base}/reviews`,
+              headers,
+              payload: invalid
+            })
+          ).statusCode
+        ).toBe(400);
+      expect(preview).toHaveBeenCalledTimes(calls);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `${base}/reviews/${reviewId}/apply`,
+            headers,
+            payload: { expectedVersion: 1 }
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(apply).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        sessionId,
+        reviewId,
+        { expectedVersion: 1 }
+      );
+      for (const payload of [
+        {},
+        { expectedVersion: 1, patch: {} },
+        { expectedVersion: 1, axis: "folder" }
+      ])
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url: `${base}/reviews/${reviewId}/apply`,
+              headers,
+              payload
+            })
+          ).statusCode
+        ).toBe(400);
+      expect(apply).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+  it("authorizes and strictly validates Project explanation, exclusion and reviewed Add back", async () => {
+    const repository = createFakeRepository(),
+      projectId = "00000000-0000-4000-8000-000000000071",
+      sessionId = "00000000-0000-4000-8000-000000000073",
+      exclusionId = "00000000-0000-4000-8000-000000000075",
+      revisionId = "00000000-0000-4000-8000-000000000076";
+    const result = {
+      project: {
+        projectId,
+        name: "Release",
+        version: 4,
+        headRevisionId: revisionId,
+        deletedAt: null,
+        createdAt: "2026-10-19T12:00:00.000Z",
+        updatedAt: "2026-10-19T12:00:00.000Z"
+      },
+      explanation: {
+        sessionId,
+        logicalSessionId: sessionId,
+        reasons: [],
+        exclusion: null,
+        included: false
+      }
+    };
+    const explain = vi.fn<
+        NonNullable<typeof repository.explainPersonalProjectSession>
+      >(async () => result),
+      exclude = vi.fn<
+        NonNullable<typeof repository.excludePersonalProjectSession>
+      >(async () => result),
+      restore = vi.fn<
+        NonNullable<typeof repository.restorePersonalProjectSession>
+      >(async () => ({
+        ...result,
+        membership: {
+          inclusionId: exclusionId,
+          projectId,
+          logicalSessionId: sessionId,
+          sourceReference: null,
+          version: 1,
+          headRevisionId: revisionId,
+          removedAt: null
+        }
+      }));
+    repository.explainPersonalProjectSession = explain;
+    repository.excludePersonalProjectSession = exclude;
+    repository.restorePersonalProjectSession = restore;
+    const app = await buildServer({ repository });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "exclusion-route@example.test",
+          password: "password123"
+        }
+      });
+      const ownerUserId = jsonBody<{ user: { id: string } }>(registered).user
+          .id,
+        headers = browserSessionHeaders(cookieHeader(registered));
+      for (const [suffix, operation, extra] of [
+        ["memberships/explain", explain, {}],
+        ["exclusions", exclude, {}],
+        [
+          `exclusions/${exclusionId}/restore`,
+          restore,
+          { expectedExclusionRevisionId: revisionId }
+        ]
+      ] as const) {
+        const url = `/v1/personal/projects/${projectId}/${suffix}`,
+          payload = { expectedVersion: 4, sessionId, ...extra };
+        const unauthenticated = await app.inject({
+          method: "POST",
+          url,
+          payload
+        });
+        expect(unauthenticated.statusCode).toBe(401);
+        expect(operation).not.toHaveBeenCalled();
+        for (const invalid of [
+          { ...payload, ownerUserId: "foreign" },
+          { ...payload, personalSelection: { kind: "global" } },
+          { ...payload, expectedVersion: 0 }
+        ]) {
+          expect(
+            (
+              await app.inject({
+                method: "POST",
+                url,
+                headers,
+                payload: invalid
+              })
+            ).statusCode
+          ).toBe(400);
+        }
+        expect(operation).not.toHaveBeenCalled();
+        const result = await app.inject({
+          method: "POST",
+          url,
+          headers,
+          payload
+        });
+        expect(result.statusCode).toBe(200);
+        expect(operation).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          projectId,
+          { ...payload, ...(operation === restore ? { exclusionId } : {}) }
+        );
+      }
+      const missingRevision = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${projectId}/exclusions/${exclusionId}/restore`,
+        headers,
+        payload: { expectedVersion: 4, sessionId }
+      });
+      expect(missingRevision.statusCode).toBe(400);
+      expect(restore).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+  it("serves named Project inventory with independent source context and versioned operations", async () => {
+    const repository = createFakeRepository();
+    let ownerUserId = "";
+    const project = {
+      projectId: "00000000-0000-4000-8000-000000000071",
+      name: "Release",
+      version: 1,
+      headRevisionId: "00000000-0000-4000-8000-000000000072",
+      deletedAt: null,
+      createdAt: "2026-10-19T10:00:00.000Z",
+      updatedAt: "2026-10-19T10:00:00.000Z"
+    };
+    const sessionId = "00000000-0000-4000-8000-000000000073",
+      logicalSessionId = "00000000-0000-4000-8000-000000000074";
+    const membership = {
+      projectId: project.projectId,
+      inclusionId: "00000000-0000-4000-8000-000000000075",
+      logicalSessionId,
+      sourceReference: null,
+      version: 1,
+      headRevisionId: "00000000-0000-4000-8000-000000000076",
+      removedAt: null
+    };
+    repository.listNamedPersonalProjects = async (actor) =>
+      actor.userId === ownerUserId ? [project] : [];
+    repository.listPersonalProjectMemberships = async () => [membership];
+    const anchor = {
+      kind: "portable_repository" as const,
+      key: "gr_project_rule",
+      root: "/work/source",
+      branch: "main",
+      reason: "origin" as const,
+      checkoutId: "checkout_fixture",
+      originatingDeviceId: "device_fixture",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/source"
+    };
+    const rule = {
+      inclusionId: "00000000-0000-4000-8000-000000000079",
+      projectId: project.projectId,
+      target: { kind: "repository" as const, repository: anchor },
+      version: 1,
+      headRevisionId: "00000000-0000-4000-8000-000000000080",
+      removedAt: null
+    };
+    let folderRule: PersonalProjectRule | undefined;
+    repository.listPersonalProjectRules = async (actor) =>
+      actor.userId === ownerUserId
+        ? [rule, ...(folderRule ? [folderRule] : [])]
+        : [];
+    repository.listPersonalProjectMembershipReasons = async (
+      actor,
+      pid,
+      ids
+    ) =>
+      actor.userId === ownerUserId && pid === project.projectId
+        ? ids.map((id) => ({
+            sessionId: id,
+            logicalSessionId:
+              id === sessionId
+                ? logicalSessionId
+                : "00000000-0000-4000-8000-000000000078",
+            reasons: [
+              ...(id === sessionId
+                ? [
+                    {
+                      inclusionId: membership.inclusionId,
+                      revisionId: membership.headRevisionId,
+                      kind: "session" as const
+                    }
+                  ]
+                : []),
+              {
+                inclusionId: rule.inclusionId,
+                revisionId: rule.headRevisionId,
+                kind: "repository" as const
+              },
+              ...(folderRule
+                ? [
+                    {
+                      inclusionId: folderRule.inclusionId,
+                      revisionId: folderRule.headRevisionId,
+                      kind: "folder" as const
+                    }
+                  ]
+                : [])
+            ]
+          }))
+        : [];
+    const addRule = vi.fn<
+      NonNullable<typeof repository.addPersonalProjectRepositoryRule>
+    >(async () => ({ project: { ...project, version: 2 }, rule }));
+    const removeRule = vi.fn<
+      NonNullable<typeof repository.removePersonalProjectRule>
+    >(async () => ({
+      project: { ...project, version: 3 },
+      rule: { ...rule, version: 2, removedAt: project.updatedAt }
+    }));
+    repository.addPersonalProjectRepositoryRule = addRule;
+    repository.removePersonalProjectRule = removeRule;
+    const graph = vi.fn<NonNullable<typeof repository.listLcmGraphThreads>>(
+      async () => [
+        {
+          id: "git-source",
+          name: "Recorded Git",
+          path: "/work/source",
+          eventCount: 1,
+          threads: [
+            {
+              id: "provider-thread",
+              name: "Decision",
+              sessionId,
+              logicalMemoryId: null,
+              sourceAiClient: "codex",
+              projectId: "git-source",
+              projectName: "Recorded Git",
+              projectPath: "/work/source",
+              projectAssignmentSource: "detected",
+              capturedProjectProvenance: { capturedCwd: "/work/source/api" },
+              repositoryAssignment: {
+                state: "recorded",
+                version: 1,
+                automatic: anchor,
+                override: null,
+                effective: anchor
+              },
+              sourceReferences: [
+                { sessionId, logicalSessionId, logicalMemoryId: null }
+              ],
+              eventCount: 1,
+              invalidatedCount: 0,
+              latestAt: project.updatedAt,
+              sample: "Decision",
+              threadKind: "conversation",
+              parentThreadId: null,
+              parentSessionId: null
+            }
+          ]
+        }
+      ]
+    );
+    repository.listLcmGraphThreads = graph;
+    const selectedSources = [{ sessionId, logicalSessionId }];
+    let enumerated: PersonalSelectionConsumerSelection;
+    repository.startPersonalSelectionEnumeration = async (actor, input) => {
+      const { target } = personalSelectionConsumerStartSchema.parse(input);
+      enumerated = {
+        version: 1,
+        ownerUserId: actor.userId,
+        target
+      };
+      return {
+        version: 1,
+        snapshotVersion: randomUUID(),
+        selection: enumerated,
+        entries: selectedSources.map((source) => ({
+          source: {
+            localSessionId: source.sessionId,
+            localLogicalSessionId: source.logicalSessionId,
+            portable: null,
+            identityState: "local_only",
+            contextVersion: { git: 1, folder: 1 }
+          },
+          reason:
+            target.kind === "project"
+              ? {
+                  kind: "session",
+                  inclusionId: membership.inclusionId,
+                  revisionId: membership.headRevisionId
+                }
+              : { kind: "selection", targetKind: "folder" },
+          projectVersion: target.kind === "project" ? project.version : null
+        })),
+        nextCursor: null,
+        changeCursor: randomUUID(),
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      };
+    };
+    repository.reconcilePersonalSelectionChanges = async () => ({
+      version: 1,
+      selection: enumerated,
+      events: [],
+      nextCursor: null,
+      changeCursor: randomUUID(),
+      reconciliationRequired: false,
+      expiresAt: "2099-01-01T00:00:00.000Z"
+    });
+
+    const events = vi.fn<NonNullable<typeof repository.listLcmGraphEvents>>(
+      async () => []
+    );
+    repository.listLcmGraphEvents = events;
+    const add = vi.fn<NonNullable<typeof repository.addPersonalProjectSession>>(
+      async () => ({ project: { ...project, version: 2 }, membership })
+    );
+    repository.addPersonalProjectSession = add;
+    const create = vi.fn<
+      NonNullable<typeof repository.createNamedPersonalProject>
+    >(async () => project);
+    repository.createNamedPersonalProject = create;
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "named-project-inventory@example.test",
+          password: "password123"
+        }
+      });
+      ownerUserId = jsonBody<{ user: { id: string } }>(registered).user.id;
+      const headers = browserSessionHeaders(cookieHeader(registered));
+      const result = await app.inject({
+        method: "GET",
+        url: "/v1/personal/projects/inventory",
+        headers
+      });
+      expect(result.statusCode).toBe(200);
+      expect(jsonBody<{ projects: unknown[] }>(result).projects).toEqual([
+        expect.objectContaining({
+          id: project.projectId,
+          namedProject: project,
+          path: null,
+          threads: [
+            expect.objectContaining({
+              id: logicalSessionId,
+              sourceThreadId: "provider-thread",
+              projectId: project.projectId,
+              namedProjectId: project.projectId,
+              sourceProject: {
+                id: "git-source",
+                name: "Recorded Git",
+                path: "/work/source"
+              },
+              membershipReasons: [
+                {
+                  inclusionId: membership.inclusionId,
+                  revisionId: membership.headRevisionId,
+                  kind: "session"
+                },
+                {
+                  inclusionId: rule.inclusionId,
+                  revisionId: rule.headRevisionId,
+                  kind: "repository"
+                }
+              ]
+            })
+          ]
+        })
+      ]);
+      expect(graph).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          groupBySession: true,
+          personalSelection: {
+            version: 1,
+            ownerUserId,
+            target: {
+              kind: "project",
+              project: { ownerUserId, projectId: project.projectId }
+            },
+            callerRepositoryContext: null
+          }
+        })
+      );
+      const folder = {
+        reference: {
+          ownerUserId,
+          folderId: "exact_folder",
+          originatingDeploymentId: "deployment_fixture",
+          originatingDeviceId: "device_fixture",
+          originatingProfileId: "profile_fixture",
+          directoryIncarnationId: "incarnation_fixture"
+        },
+        normalizedPath: "/work/source/api",
+        capturedPath: "/work/source/api"
+      };
+      repository.listPersonalFolders = async (actor) =>
+        actor.userId === ownerUserId ? [folder] : [];
+      const folderInventory = await app.inject({
+        method: "GET",
+        url: "/v1/personal/folders/inventory",
+        headers
+      });
+      expect(folderInventory.statusCode).toBe(200);
+      expect(
+        jsonBody<{ projects: unknown[] }>(folderInventory).projects
+      ).toEqual([
+        expect.objectContaining({
+          folder,
+          path: folder.normalizedPath,
+          threads: [
+            expect.objectContaining({
+              id: logicalSessionId,
+              sourceThreadId: "provider-thread",
+              folderSelection: folder.reference,
+              sourceProject: {
+                id: "git-source",
+                name: "Recorded Git",
+                path: "/work/source"
+              },
+              presentation: null
+            })
+          ]
+        })
+      ]);
+      expect(graph).toHaveBeenLastCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          personalSelection: {
+            version: 1,
+            ownerUserId,
+            target: { kind: "folder", folder: folder.reference },
+            callerRepositoryContext: null
+          }
+        })
+      );
+      const previewed = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${project.projectId}/rules/preview`,
+        headers,
+        payload: { repository: anchor, expectedVersion: 1 }
+      });
+      expect(previewed.statusCode).toBe(200);
+      expect(jsonBody<{ preview: unknown }>(previewed).preview).toEqual({
+        target: rule.target,
+        conversations: [{ logicalSessionId, sessionId, name: "Decision" }]
+      });
+      expect(graph).toHaveBeenLastCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          personalSelection: {
+            version: 1,
+            ownerUserId,
+            target: rule.target,
+            callerRepositoryContext: null
+          }
+        })
+      );
+      const graphCalls = graph.mock.calls.length;
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/personal/projects/${project.projectId}/rules/preview`,
+            headers,
+            payload: { repository: anchor, expectedVersion: 99 }
+          })
+        ).statusCode
+      ).toBe(409);
+      expect(graph).toHaveBeenCalledTimes(graphCalls);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/personal/projects/${project.projectId}/rules`,
+            headers,
+            payload: {
+              repository: { ...anchor, kind: "local_project" },
+              expectedVersion: 1
+            }
+          })
+        ).statusCode
+      ).toBe(400);
+      expect(addRule).not.toHaveBeenCalled();
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/personal/projects/${project.projectId}/rules`,
+            headers,
+            payload: { repository: anchor, expectedVersion: 1 }
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(addRule).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        project.projectId,
+        { repository: anchor, expectedVersion: 1 }
+      );
+      expect(
+        (
+          await app.inject({
+            method: "DELETE",
+            url: `/v1/personal/projects/${project.projectId}/rules/${rule.inclusionId}`,
+            headers,
+            payload: { expectedVersion: 2 }
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(removeRule).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        project.projectId,
+        rule.inclusionId,
+        { expectedVersion: 2 }
+      );
+      const contextReader = vi.fn<
+        NonNullable<typeof repository.getPersonalProjectFolderRuleContext>
+      >(async (actor, pid, ref) => {
+        if (ref.ownerUserId !== actor.userId)
+          throw Object.assign(new Error("Folder belongs to another owner"), {
+            statusCode: 403
+          });
+        return pid === project.projectId &&
+          ref.folderId === folder.reference.folderId
+          ? folder
+          : null;
+      });
+      repository.getPersonalProjectFolderRuleContext = contextReader;
+      const addFolderRule = vi.fn<
+        NonNullable<typeof repository.addPersonalProjectFolderRule>
+      >(async () => {
+        folderRule = {
+          inclusionId: "00000000-0000-4000-8000-000000000086",
+          projectId: project.projectId,
+          target: { kind: "folder", folder: folder.reference },
+          folderContext: folder,
+          version: 1,
+          headRevisionId: "00000000-0000-4000-8000-000000000087",
+          removedAt: null
+        };
+        return { project: { ...project, version: 2 }, rule: folderRule };
+      });
+      repository.addPersonalProjectFolderRule = addFolderRule;
+      const folderPreview = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${project.projectId}/rules/preview`,
+        headers,
+        payload: { folder: folder.reference, expectedVersion: 1 }
+      });
+      expect(folderPreview.statusCode).toBe(200);
+      expect(jsonBody<{ preview: unknown }>(folderPreview).preview).toEqual({
+        target: { kind: "folder", folder: folder.reference },
+        folderContext: folder,
+        conversations: [{ sessionId, logicalSessionId, name: "Decision" }]
+      });
+      expect(graph).toHaveBeenLastCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          personalSelection: {
+            version: 1,
+            ownerUserId,
+            target: { kind: "folder", folder: folder.reference },
+            callerRepositoryContext: null
+          }
+        })
+      );
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/personal/projects/${project.projectId}/rules`,
+            headers,
+            payload: { folder: folder.reference, expectedVersion: 1 }
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(addFolderRule).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        project.projectId,
+        { folder: folder.reference, expectedVersion: 1 }
+      );
+      const withReasons = await app.inject({
+        method: "GET",
+        url: "/v1/personal/projects/inventory",
+        headers
+      });
+      const returned = jsonBody<{
+        projects: Array<{
+          threads: Array<{ membershipReasons: Array<{ kind: string }> }>;
+        }>;
+      }>(withReasons).projects[0]!.threads[0]!;
+      expect(
+        returned.membershipReasons.map((reason) => reason.kind).sort()
+      ).toEqual(["folder", "repository", "session"]);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/v1/personal/projects/${project.projectId}/rules/preview`,
+            headers,
+            payload: {
+              folder: {
+                ...folder.reference,
+                ownerUserId: "00000000-0000-4000-8000-000000000088"
+              },
+              expectedVersion: 1
+            }
+          })
+        ).statusCode
+      ).toBe(403);
+      folderRule = undefined;
+      const firstGraphResult = graph.mock.results[0];
+      if (firstGraphResult?.type !== "return")
+        throw new Error("Graph inventory did not return");
+      const rawGroups = await firstGraphResult.value;
+      const parent = rawGroups[0]!.threads[0]!;
+      const childSession = "00000000-0000-4000-8000-000000000077",
+        childLogical = "00000000-0000-4000-8000-000000000078";
+      selectedSources.push({
+        sessionId: childSession,
+        logicalSessionId: childLogical
+      });
+      graph.mockResolvedValueOnce([
+        {
+          ...rawGroups[0]!,
+          threads: [
+            parent,
+            {
+              ...parent,
+              id: "child-provider",
+              sessionId: childSession,
+              sourceReferences: [
+                {
+                  sessionId: childSession,
+                  logicalSessionId: childLogical,
+                  logicalMemoryId: null
+                }
+              ],
+              threadKind: "subagent",
+              parentSessionId: sessionId,
+              parentThreadId: parent.id
+            }
+          ]
+        }
+      ]);
+      const linked = await app.inject({
+        method: "GET",
+        url: "/v1/personal/projects/inventory",
+        headers
+      });
+      expect(
+        jsonBody<{
+          projects: Array<{
+            threads: Array<{ id: string; parentThreadId: string | null }>;
+          }>;
+        }>(linked).projects[0]!.threads.find(
+          (thread) => thread.id === childLogical
+        )?.parentThreadId
+      ).toBe(logicalSessionId);
+      const page = await app.inject({
+        method: "GET",
+        url: `/v1/personal/projects/${project.projectId}/events?sessionId=${sessionId}&threadId=provider-thread&limit=50`,
+        headers
+      });
+      expect(page.statusCode).toBe(200);
+      expect(events.mock.calls[0]?.[0]).toEqual({ userId: ownerUserId });
+      expect(events.mock.calls[0]?.[1]).toMatchObject({
+        sessionId,
+        threadId: "provider-thread",
+        personalSelection: {
+          target: {
+            kind: "project",
+            project: { ownerUserId, projectId: project.projectId }
+          }
+        }
+      });
+      const added = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${project.projectId}/memberships`,
+        headers,
+        payload: { sessionId, expectedVersion: 1 }
+      });
+      expect(added.statusCode).toBe(200);
+      expect(add).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        project.projectId,
+        { sessionId, expectedVersion: 1 }
+      );
+      const nested = await app.inject({
+        method: "POST",
+        url: "/v1/personal/projects",
+        headers,
+        payload: { name: "Nested", parentProjectId: project.projectId }
+      });
+      expect(nested.statusCode).toBe(400);
+      expect(create).not.toHaveBeenCalled();
+      const invalid = await app.inject({
+        method: "GET",
+        url: `/v1/personal/projects/${project.projectId}/events?sessionId=${sessionId}&personalSelection=%7B`,
+        headers
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(events).toHaveBeenCalledTimes(1);
+      repository.listPersonalProjectMembershipReasons = async () => [];
+      const revoked = await app.inject({
+        method: "GET",
+        url: "/v1/personal/projects/inventory",
+        headers
+      });
+      expect(
+        jsonBody<{ projects: Array<{ threads: unknown[] }> }>(revoked)
+          .projects[0]!.threads
+      ).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forwards Personal inspection selections to graph readers on every request", async () => {
+    const repository = createFakeRepository();
+    const seen: Array<{ kind: string; input: unknown }> = [];
+    repository.listLcmGraphThreads = async (_actor, input) => {
+      seen.push({ kind: "threads", input });
+      return [];
+    };
+    repository.listLcmGraphNodes = async (_actor, input) => {
+      seen.push({ kind: "nodes", input });
+      return [];
+    };
+    repository.getLcmGraphNode = async (_actor, _id, input) => {
+      seen.push({ kind: "node", input });
+      return null;
+    };
+    repository.getLcmGraphEvent = async (_actor, _id, input) => {
+      seen.push({ kind: "event", input });
+      return null;
+    };
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "inspection-selection@example.com",
+          password: "password123"
+        }
+      });
+      const ownerUserId = jsonBody<{ user: { id: string } }>(registered).user
+        .id;
+      const personalSelection = {
+        version: 0,
+        ownerUserId,
+        target: { kind: "global" },
+        callerRepositoryContext: null
+      };
+      const query = `?personalSelection=${encodeURIComponent(JSON.stringify(personalSelection))}`;
+      const headers = browserSessionHeaders(cookieHeader(registered));
+      for (const path of [
+        "threads",
+        "threads",
+        "nodes",
+        `nodes/${randomUUID()}`,
+        `events/${randomUUID()}`
+      ]) {
+        const result = await app.inject({
+          method: "GET",
+          url: `/v1/memory/graph/${path}${query}`,
+          headers
+        });
+        expect([200, 404]).toContain(result.statusCode);
+      }
+      expect(seen.map((row) => row.kind)).toEqual([
+        "threads",
+        "threads",
+        "nodes",
+        "node",
+        "event"
+      ]);
+      for (const row of seen)
+        expect(row.input).toMatchObject({ personalSelection });
+      const before = seen.length;
+      const malformed = await app.inject({
+        method: "GET",
+        url: "/v1/memory/graph/nodes?personalSelection=%7B",
+        headers
+      });
+      expect(malformed.statusCode).toBe(400);
+      expect(seen).toHaveLength(before);
+    } finally {
+      await app.close();
     }
   });
 

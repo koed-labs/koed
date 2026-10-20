@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { snapshotPinnedPersonalSelection } from "@koed/shared";
 import {
   AnswerExecutionCapacity,
   BlockingAnswerAdmission
@@ -59,6 +60,111 @@ const taskApi = (
 });
 
 describe("MemoryAnswerTaskScheduler", () => {
+  it.each([
+    { requestVersion: 2 },
+    { requestVersion: 1, selection: { version: 99 } },
+    { requestVersion: 1 },
+    { caller: {} }
+  ])(
+    "settles unsupported request contracts without execution or retry: %j",
+    async (change) => {
+      const running = {
+        ...view(),
+        status: "running" as const,
+        attemptCount: 1,
+        fenceGeneration: 1,
+        leaseOwner: "fixture-worker",
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        request: {
+          input: {
+            query: "decision",
+            search_domain: "global",
+            repository_context: null
+          },
+          caller: { cwd: "/worker" },
+          ...change
+        }
+      };
+      let available = true;
+      const api = taskApi(running, {
+        claimMemoryAnswerTask: vi.fn(async () => {
+          if (!available) return { task: null, reconciled: [] };
+          available = false;
+          return { task: running, reconciled: [] };
+        }),
+        failMemoryAnswerTask: vi.fn(async () => ({
+          task: view({ ...running, status: "failed" })
+        }))
+      });
+      const execute = vi.fn(async () => ({ finalQuestion: {}, result: {} }));
+      const scheduler = new MemoryAnswerTaskScheduler(api, {
+        executeMemoryAnswerTask: execute
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(api.failMemoryAnswerTask).toHaveBeenCalledWith(
+            running.id,
+            expect.objectContaining({
+              error_code: "personal_selection_incompatible",
+              retry: false
+            })
+          )
+        );
+        expect(execute).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(scheduler.diagnostics.active).toBe(0));
+      } finally {
+        await scheduler.close();
+      }
+    }
+  );
+
+  it("carries the accepted selection through a replacement worker without directory discovery", async () => {
+    const input = {
+      query: "decision",
+      search_domain: "global",
+      repository_context: null
+    };
+    const selection = snapshotPinnedPersonalSelection(
+      "00000000-0000-4000-8000-000000000001",
+      input
+    );
+    const running = {
+      ...view(),
+      status: "running" as const,
+      attemptCount: 2,
+      fenceGeneration: 2,
+      leaseOwner: "replacement-worker",
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      request: {
+        requestVersion: 1,
+        selection,
+        input,
+        caller: { cwd: "/accepted-context" }
+      }
+    };
+    let available = true;
+    const api = taskApi(running, {
+      claimMemoryAnswerTask: vi.fn(async () => {
+        if (!available) return { task: null, reconciled: [] };
+        available = false;
+        return { task: running, reconciled: [] };
+      })
+    });
+    const execute = vi.fn<MemoryAnswerTaskExecutor["executeMemoryAnswerTask"]>(
+      async () => ({ finalQuestion: {}, result: {} })
+    );
+    const scheduler = new MemoryAnswerTaskScheduler(api, {
+      executeMemoryAnswerTask: execute
+    });
+    try {
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      expect(execute.mock.calls[0]?.[0]).toEqual(input);
+      expect(execute.mock.calls[0]?.[1]).toEqual({ cwd: "/accepted-context" });
+      expect(execute.mock.calls[0]?.[5]?.personalSelection).toEqual(selection);
+    } finally {
+      await scheduler.close();
+    }
+  });
   it.each([false, true, "workspace"] as const)(
     "refreshes Team execution tokens without changing authority (changed=%s)",
     async (changed) => {

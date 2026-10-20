@@ -41,6 +41,7 @@ describeDb("PDS cumulative checkpoint receiver", () => {
     "historical",
     "local_override",
     "device_local",
+    "legacy_named",
     "offline_profile_transition"
   ] as const)(
     "defers gaps, preserves %s assignments, and quarantines a divergent suffix",
@@ -90,6 +91,17 @@ describeDb("PDS cumulative checkpoint receiver", () => {
         kind: "device_local_repository",
         key: "dl_pds_a"
       };
+      const legacyNamed: RepositoryIdentity = {
+        kind: "local_project",
+        key: `project_${randomUUID()}`,
+        root: null,
+        branch: null,
+        reason: "manual",
+        checkoutId: null,
+        originatingDeviceId: "legacy_source_profile",
+        selectedRemote: null,
+        anchorDisplay: null
+      };
       const sourceAssignment: RepositoryAssignment = {
         state: historical ? "historical_unresolved" : "recorded",
         version: 1,
@@ -98,12 +110,15 @@ describeDb("PDS cumulative checkpoint receiver", () => {
           : mode === "device_local"
             ? localIdentity
             : a,
-        override: null,
-        effective: historical
-          ? null
-          : mode === "device_local"
-            ? localIdentity
-            : a
+        override: mode === "legacy_named" ? legacyNamed : null,
+        effective:
+          mode === "legacy_named"
+            ? legacyNamed
+            : historical
+              ? null
+              : mode === "device_local"
+                ? localIdentity
+                : a
       };
       const projectKey = Buffer.alloc(32, 9).toString("base64url");
       const sourceSession = {
@@ -450,7 +465,7 @@ describeDb("PDS cumulative checkpoint receiver", () => {
               override: null,
               effective: a
             }
-          : mode === "device_local"
+          : mode === "device_local" || mode === "legacy_named"
             ? { ...sourceAssignment, version: 2 }
             : { ...sourceAssignment, version: 2, override: b, effective: b };
         sourceSession.replicatedRepositoryAssignment = nextAssignment;
@@ -491,10 +506,38 @@ describeDb("PDS cumulative checkpoint receiver", () => {
             ? null
             : mode === "local_override"
               ? c
-              : mode === "device_local"
-                ? localIdentity
-                : b
+              : mode === "legacy_named"
+                ? legacyNamed
+                : mode === "device_local"
+                  ? localIdentity
+                  : b
         );
+        if (mode === "legacy_named") {
+          // Old assignment evidence is readable without becoming current
+          // Personal Project organization or a verified Git correction.
+          expect(await memory.listNamedPersonalProjects({ userId })).toEqual(
+            []
+          );
+          const context = (
+            await memory.getPersonalSourceContext({ userId }, localSessionId)
+          ).context;
+          expect(context.git.original).toMatchObject({
+            state: "known",
+            value: a
+          });
+          expect(context.git.correction).toMatchObject({
+            state: "corrected",
+            value: { state: "unresolved" }
+          });
+          expect(
+            (
+              await pool.query<{ count: number }>(
+                "select count(*)::integer count from personal_capture_target_bindings where owner_user_id=$1",
+                [userId]
+              )
+            ).rows[0]?.count
+          ).toBe(0);
+        }
         if (mode === "device_local")
           expect(
             await memory.getLatestCapturedSessionForProject(

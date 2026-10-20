@@ -6,6 +6,12 @@ export type DesktopThreadGroup = {
   id: string;
   name: string;
   sessionId?: string | null;
+  namedProjectId?: string;
+  folderSelection?: PersonalDesktopProjectThread["folderSelection"];
+  sourceThreadId?: string;
+  sourceProject?: PersonalDesktopProjectThread["sourceProject"];
+  membershipReasons?: PersonalDesktopProjectThread["membershipReasons"];
+  sourceReferences?: PersonalDesktopProjectThread["sourceReferences"];
   sourceAiClient?: "codex" | "codex-cli" | "claude-code" | "pi" | null;
   projectId: string;
   projectName: string;
@@ -24,6 +30,10 @@ export type DesktopThreadGroup = {
 };
 
 export type DesktopProjectGroup = {
+  namedProject?: import("@koed/shared").PersonalNamedProject;
+  inclusionRules?: import("@koed/shared").PersonalProjectRule[];
+  directInclusions?: import("@koed/shared").PersonalDirectMembership[];
+  folder?: import("@koed/shared").PersonalFolderContext;
   id: string;
   name: string;
   repository?: RepositoryIdentity;
@@ -198,16 +208,31 @@ export const mergeProjectSources = (
       : null;
   for (const source of graphProjects) {
     const identity =
-      source.repository ??
-      source.threads.find((thread) => thread.repositoryAssignment?.effective)
-        ?.repositoryAssignment?.effective;
-    // Graph groups are main-owned explicit context. Paths never establish
-    // affinity; recorded effective identity is authoritative when present.
-    const id = keyFor(identity) ?? source.id;
+      source.namedProject || source.folder
+        ? undefined
+        : (source.repository ??
+          source.threads.find(
+            (thread) => thread.repositoryAssignment?.effective
+          )?.repositoryAssignment?.effective);
+    // Named Project identity is independent from members' Git assignments.
+    // Source context groups use recorded identity; paths never establish affinity.
+    const legacyNamedSource = identity?.kind === "local_project";
+    const id = legacyNamedSource
+      ? "unassigned"
+      : (keyFor(identity) ?? source.id);
+    const sourceThreads = legacyNamedSource
+      ? source.threads.map((thread) => ({
+          ...thread,
+          projectId: "unassigned",
+          projectName: "Unresolved history",
+          projectPath: null,
+          projectAssignmentSource: null
+        }))
+      : source.threads;
     const current = groups.get(id);
     if (current) {
       current.threads.push(
-        ...(source.threads as PersonalDesktopProjectThread[])
+        ...(sourceThreads as PersonalDesktopProjectThread[])
       );
       current.eventCount += source.eventCount;
     } else
@@ -215,15 +240,19 @@ export const mergeProjectSources = (
         ...enrichProject(
           {
             ...source,
+            threads: sourceThreads,
             id,
             name: id === "unassigned" ? "Unresolved history" : source.name
           },
           null
         ),
-        repository: identity ?? undefined
+        repository: legacyNamedSource ? undefined : (identity ?? undefined)
       });
   }
   for (const metadata of metadataProjects) {
+    // A local sidecar name is not an owned native Project
+    // or a source Git identity for the currently signed-in User.
+    if (metadata.repository?.kind === "local_project") continue;
     const id = keyFor(metadata.repository) ?? metadata.localProjectId;
     const checkout = {
       localProjectId: metadata.localProjectId,

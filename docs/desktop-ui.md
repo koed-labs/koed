@@ -115,6 +115,105 @@ bounded, explained raw-text fallback so no captured content is silently lost.
 
 ![Personal source changes](assets/desktop-ui/personal-formatting-diffs.png)
 
+## Named Project setup
+
+A named Project has a compact header with its name, Conversation count, an
+icon-only setup button, and a three-dot Project actions menu. Both buttons use
+the same standard header size. **Edit** opens the Edit Project dialog with a red Remove Project button;
+**Sync** opens sync details when that capability is available. Sync details
+retains its conflict and pending-source review controls. The header does not
+infer a successful sync from the presence of local data.
+
+Project setup is closed by default. Its transfer card opens in a centered modal
+dialog over the application window, independently of the detail column width.
+It leaves the underlying Conversation list and empty-state text in place.
+Closing the dialog returns focus to the setup button; closing Edit or Sync
+returns focus to Project actions. Setup cannot close during a membership write.
+
+The transfer card replaces the separate Git Anchor and Folder inclusion dialogs.
+Its left pane browses recorded Git Anchors or exact Folders. A row's caret drills
+from a Git Anchor to its recorded Folders and then to Conversations. Breadcrumbs
+return to earlier levels. Folders are joined through actual source bindings,
+not equal directory paths; matching paths on different devices remain distinct.
+Conversations without a recorded Folder remain reachable under Other Conversations.
+
+Checkboxes select items separately from navigation. The right arrow stages Git
+Anchor rules, exact-Folder rules, or direct Conversation inclusions. Selecting a
+Folder beneath a Git Anchor still creates an independent exact-Folder rule;
+the browsing filter does not add a Git restriction to that rule. Existing and
+future matching Conversations follow inclusion rules, while direct inclusion
+applies to one Conversation. At the right pane's root, the left arrow stages
+removal of selected inclusion reasons; overlapping reasons remain intact.
+
+The right pane has All, Git Anchors, and Folders selectors and matching caret
+navigation. Included Git Anchors drill into recorded Folders, then effective
+Project Conversations. The Folders selector also exposes Folders covered by Git
+Anchor rules. Derived Folder groups are navigation only. Selecting a Conversation
+inside a rule and pressing the left arrow stages a Project exclusion, keeping the
+parent rule. That exclusion blocks every inclusion reason for that Conversation
+in this Project. Existing exclusions remain absent from this drill-down; Add back
+continues to require the existing membership review.
+
+Cancel, the close button, and Escape discard the draft. Confirm saves it and
+closes on success. The setup title is available to assistive technology but hidden
+visually; the header contains only the close button. Row carets have no visible
+border, and included rows omit Rule and Direct badges.
+
+Both panes have a fixed height and scroll independently. Selecting rows and
+refreshing inventory preserves scroll position; navigating to a different source
+level resets only the pane being navigated. Narrow windows stack the panes and keep each
+list independently scrollable. There is no separate list or explanatory footer
+beneath the lists; the card footer contains Cancel and Confirm. Asking remains
+on the Ask page.
+
+Confirm starts with the Project version captured when setup opened. Each write
+uses the version returned by the preceding successful write and stops at the
+first failure without replay or rebasing. Partial success is reported and
+inventory is refreshed. After any failure, Confirm is disabled until the User
+closes and reopens setup. Cancel does not reverse writes already saved by a
+partially successful Confirm. Source context, Capture Policy, and Team sharing
+are independent of these controls.
+
+## Conversation Project and source cards
+
+The Conversation dropdown uses plain icon-and-text menu rows for **Add to Project**
+and **Correct source context**. **Create Project** uses an outlined button in the
+checklist card.
+
+**Add to Project** opens a checklist of named Projects for the selected
+Conversation. Each checked row reflects reviewed effective membership. A caret
+shows all current inclusion reasons and keeps the separate direct-inclusion
+controls available. Folder reasons identify their device and profile.
+
+Checking an ordinary Project stages a direct inclusion. Unchecking a direct-only
+membership stages removal of its direct inclusions. Unchecking membership through
+a Git Anchor or Folder stages an exclusion for this Conversation, retaining the
+rules. An excluded Conversation first opens its membership review; Add back
+stages clearing that exact exclusion revision and a direct inclusion. Pending or
+conflicting synchronized exclusions retain their Sync review requirement.
+
+Cancel, close, and Escape discard the draft. Confirm rechecks every affected
+Project against its reviewed opening version before writing. Each subsequent
+write uses the returned version, and the first failure stops the batch. Partial
+success is reported; reopening is required before another save. Inventory
+refreshes cannot silently replace draft versions or exclusion revisions. Creating
+a new Project remains a separate explicit action in its own dialog.
+
+**Correct source context** opens the Compare card. Git Anchor and Folder tabs
+select one attribution axis at a time. The current value and recorded original
+sit beside the proposed correction. Targets retain exact source identities;
+Folder labels distinguish their device and profile. Synchronized conflict
+candidates remain available, and pending source context blocks correction.
+
+Review changes obtains an authoritative before/after preview and Project impact.
+The primary action then becomes Confirm, which applies that review ID and source
+revision and closes on success. Changing either the axis or target clears the
+preview. A stale review requires a fresh preview; there is no automatic retry.
+Cancel, close, and Escape discard the proposed correction without applying it.
+Direct Project inclusions and existing exclusions are unaffected by correction.
+Both cards scroll their content within the window while keeping their Cancel and
+primary action footer visible.
+
 ## Core Workflows
 
 ### Start Or Resume A Managed Conversation

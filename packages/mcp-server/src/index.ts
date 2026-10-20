@@ -8,6 +8,8 @@ import {
 } from "./answer-worker.js";
 import {
   memoryAnswerTaskClaimResponseSchema,
+  type PersonalSelectionSnapshot,
+  personalSelectionCompatibilityError,
   repositoryRecallContextSchema,
   memoryAnswerTaskResponseSchema,
   memoryAnswerTaskHeartbeatResponseSchema,
@@ -537,6 +539,17 @@ export class MemoryApiError extends Error {
     this.rateLimitSource = rateLimitSourceFrom(options.rateLimitSource);
   }
 }
+
+const rejectPersonalTeamSelection = (input: Record<string, unknown>): void => {
+  if (
+    ["personal_selection", "personalSelection", "recall_target"].some(
+      (key) => input[key] !== undefined
+    )
+  )
+    throw personalSelectionCompatibilityError(
+      "Personal selections are not supported for Team Memory"
+    );
+};
 
 export class MemoryApiClient {
   readonly config: McpServerConfig;
@@ -1141,6 +1154,7 @@ export class MemoryApiClient {
       searchDomain?: string;
       sessionId?: string;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
       teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
@@ -1148,7 +1162,13 @@ export class MemoryApiClient {
       authorizationBoundary?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
+    if (input.teamWorkspaceId && input.personalSelection)
+      rejectPersonalTeamSelection({
+        personalSelection: input.personalSelection
+      });
     const params = new URLSearchParams();
+    if (input.personalSelection)
+      params.set("personal_selection", JSON.stringify(input.personalSelection));
     if (input.searchDomain) {
       params.set("search_domain", input.searchDomain);
     }
@@ -1248,6 +1268,7 @@ export class MemoryApiClient {
     input: Record<string, unknown>,
     authorization: string
   ): Promise<Record<string, unknown>> {
+    rejectPersonalTeamSelection(input);
     return this.request(
       "POST",
       "/v1/local-edge/team-memory/search",
@@ -1264,6 +1285,7 @@ export class MemoryApiClient {
     input: Record<string, unknown>,
     authorization: string
   ): Promise<Record<string, unknown>> {
+    rejectPersonalTeamSelection(input);
     return this.request(
       "POST",
       "/v1/local-edge/team-memory/answer",
@@ -1299,6 +1321,7 @@ export class MemoryApiClient {
     input: Record<string, unknown>,
     authorization: string
   ): Promise<Record<string, unknown>> {
+    rejectPersonalTeamSelection(input);
     return this.request(
       "POST",
       "/v1/local-edge/team-memory/expand",

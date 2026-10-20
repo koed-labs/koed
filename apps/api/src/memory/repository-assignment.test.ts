@@ -191,7 +191,7 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       })
     );
   });
-  it("moves a whole owner Project, retains future routing, and keeps the rule private", async () => {
+  it("rejects retired bulk assignment for every owner without routing future capture", async () => {
     const actor = { userId: ownerId };
     const source: RepositoryIdentity = {
       kind: "non_git_project",
@@ -234,7 +234,7 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       payload,
       headers: { "x-fixture-owner": "other" }
     });
-    expect(denied.statusCode).toBe(404);
+    expect(denied.statusCode).toBe(410);
     expect(
       (await repo.getCapturedSession(actor, first.id))?.repositoryAssignment
         ?.version
@@ -244,15 +244,14 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       url: "/v1/memory/graph/projects/move",
       payload
     });
-    expect(moved.statusCode, moved.body).toBe(200);
-    expect(moved.json()).toEqual({
-      movedCount: 2,
-      projectId: repositoryScopeId(destination)
+    expect(moved.statusCode, moved.body).toBe(410);
+    expect(moved.json()).toMatchObject({
+      code: "personal_legacy_write_retired"
     });
     const url = `/v1/memory/graph/projects/resolve?${new URLSearchParams({ projectId: payload.sourceProjectId })}`;
     expect(
       (await app.inject({ method: "GET", url })).json().project
-    ).toMatchObject({ repositoryIdentity: destination });
+    ).toBeNull();
     expect(
       (
         await app.inject({
@@ -268,10 +267,10 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
     });
     expect(later.repositoryAssignment).toMatchObject({
       automatic: source,
-      effective: destination
+      effective: source
     });
   });
-  it("returns the same effective groups as recall and rejects stale or other-owner moves", async () => {
+  it("keeps source groups readable while rejecting retired move and reset requests", async () => {
     const identity = (name: string): RepositoryIdentity => ({
       kind: "portable_repository",
       key: `gr_${name}`,
@@ -308,18 +307,15 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       headers: { "x-fixture-owner": "other" },
       payload: move
     });
-    expect(forbidden.statusCode).toBe(404);
+    expect(forbidden.statusCode).toBe(410);
     const moved = await app.inject({ method: "PATCH", url, payload: move });
-    expect(moved.statusCode, moved.body).toBe(200);
-    const assignment = (
-      moved.json().session as {
-        repositoryAssignment: { effective: unknown; version: number };
-      }
-    ).repositoryAssignment;
-    expect(assignment).toMatchObject({ effective: b, version: 2 });
+    expect(moved.statusCode, moved.body).toBe(410);
+    expect(moved.json()).toMatchObject({
+      code: "personal_legacy_write_retired"
+    });
     expect(
       (await app.inject({ method: "PATCH", url, payload: move })).statusCode
-    ).toBe(409);
+    ).toBe(410);
     const graph = await app.inject({
       method: "GET",
       url: "/v1/memory/graph/threads"
@@ -333,10 +329,12 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
         }>;
       }
     ).projects;
-    expect(projects[0]?.id).toBe(repositoryScopeId(b));
-    expect(projects[0]?.threads[0]?.repositoryAssignment).toMatchObject({
-      version: 2,
-      effective: b,
+    const original = projects.find(
+      (project) => project.id === repositoryScopeId(a)
+    );
+    expect(original?.threads[0]?.repositoryAssignment).toMatchObject({
+      version: 1,
+      effective: a,
       automatic: a
     });
     const reset = await app.inject({
@@ -344,13 +342,12 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       url,
       payload: { action: "reset", expectedVersion: 2 }
     });
-    expect(reset.statusCode, reset.body).toBe(200);
+    expect(reset.statusCode, reset.body).toBe(410);
     expect(
-      (reset.json().session as { repositoryAssignment: unknown })
-        .repositoryAssignment
-    ).toMatchObject({ version: 3, effective: a, override: null });
+      (await repo.getCapturedSession(actor, session.id))?.repositoryAssignment
+    ).toMatchObject({ version: 1, effective: a, override: null });
   });
-  it("exposes owner-scoped fixed reviews, applies once, and rejects later or stale selections", async () => {
+  it("exposes owner-scoped read-only reviews and rejects every retired application", async () => {
     const a: RepositoryIdentity = {
       kind: "portable_repository",
       key: "gr_review_a",
@@ -418,30 +415,30 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       url,
       payload: { ...action, sessionIds: [captured.id, late.id] }
     });
-    expect(expanded.statusCode).toBe(400);
+    expect(expanded.statusCode).toBe(410);
     const stale = await app.inject({
       method: "POST",
       url,
       payload: { ...action, expectedRevision: event.revision + 1 }
     });
-    expect(stale.statusCode).toBe(409);
+    expect(stale.statusCode).toBe(410);
     const apply = await app.inject({ method: "POST", url, payload: action });
-    expect(apply.statusCode, apply.body).toBe(200);
+    expect(apply.statusCode, apply.body).toBe(410);
     expect(
       (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
         ?.version
-    ).toBe(2);
+    ).toBe(1);
     expect(
       (await repo.getCapturedSession(actor, late.id))?.repositoryAssignment
         ?.version
     ).toBe(1);
     expect(
       (await app.inject({ method: "POST", url, payload: action })).statusCode
-    ).toBe(200);
+    ).toBe(410);
     expect(
       (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
         ?.version
-    ).toBe(2);
+    ).toBe(1);
     const other = await app.inject({
       method: "GET",
       url,

@@ -438,7 +438,7 @@ describe("authorized Team Workspace discovery", () => {
     const teamWorkspaceContexts = vi.fn();
     const teamMemoryAnswer = vi.fn();
     const client = {
-      accessCheck: vi.fn(async () => ({})),
+      accessCheck: vi.fn(async () => ({ user: { id: randomUUID() } })),
       listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
       teamWorkspaceContexts,
       teamMemoryAnswer

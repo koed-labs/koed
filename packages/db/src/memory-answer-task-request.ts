@@ -1,8 +1,13 @@
 import {
+  authorizedPersonalSelectionSnapshot,
+  personalSelectionFromTaskRequest,
+  snapshotPinnedPersonalSelection,
   repositoryIdentitySchema,
+  personalSelectionLegacyScope,
   repositoryRecallContextSchema,
   repositoryScopeId,
-  requirePortableTeamRepositoryContext
+  requirePortableTeamRepositoryContext,
+  type PersonalSelectionSnapshot
 } from "@koed/shared";
 import type { CreateFinalMemoryQuestionInput } from "./memory-question-repository.js";
 
@@ -20,13 +25,41 @@ const inputFrom = (request: unknown): Record<string, unknown> | null => {
 };
 const projectScope = (
   snapshot: Record<string, unknown>,
-  teamWorkspaceId: string | null | undefined
+  teamWorkspaceId: string | null | undefined,
+  selection?: PersonalSelectionSnapshot
 ) =>
-  repositoryScopeId(
-    teamWorkspaceId
-      ? requirePortableTeamRepositoryContext(snapshot.repository_context)
-      : repositoryRecallContextSchema.parse(snapshot.repository_context)
-  );
+  !teamWorkspaceId &&
+  selection?.version === 1 &&
+  (selection.target.kind === "project" || selection.target.kind === "folder")
+    ? personalSelectionLegacyScope(selection).projectId!
+    : repositoryScopeId(
+        teamWorkspaceId
+          ? requirePortableTeamRepositoryContext(snapshot.repository_context)
+          : repositoryRecallContextSchema.parse(snapshot.repository_context)
+      );
+
+/** The database binds the encrypted request to its authenticated owner before acceptance. */
+export const pinMemoryAnswerTaskSelection = (
+  request: Record<string, unknown>,
+  ownerUserId: string,
+  teamWorkspaceId?: string
+): Record<string, unknown> => {
+  validateMemoryAnswerTaskRequest(request, teamWorkspaceId);
+  if (teamWorkspaceId) {
+    if (request.selection !== undefined || request.requestVersion !== undefined)
+      throw new Error(
+        "Personal selection contracts are not supported for Team tasks"
+      );
+    return request;
+  }
+  const input = inputFrom(request);
+  if (!input) throw new Error("Memory Answer requires a pinned input");
+  const supplied = personalSelectionFromTaskRequest({ ...request, input });
+  const selection = supplied
+    ? authorizedPersonalSelectionSnapshot(supplied, ownerUserId)
+    : snapshotPinnedPersonalSelection(ownerUserId, input);
+  return { ...request, requestVersion: 1, selection };
+};
 
 /** Validate pinned routing before a request enters the durable queue. */
 export const validateMemoryAnswerTaskRequest = (
@@ -35,9 +68,13 @@ export const validateMemoryAnswerTaskRequest = (
 ) => {
   const snapshot = inputFrom(request);
   if (!snapshot) return;
+  const selection =
+    request && typeof request === "object" && !Array.isArray(request)
+      ? personalSelectionFromTaskRequest({ ...request, input: snapshot })
+      : undefined;
   if (
     snapshot.search_domain === "project" &&
-    snapshot.project_id !== projectScope(snapshot, teamWorkspaceId)
+    snapshot.project_id !== projectScope(snapshot, teamWorkspaceId, selection)
   )
     throw new Error(
       "Project task target must match its pinned repository context"
@@ -68,6 +105,7 @@ export const validateMemoryAnswerTaskCompletion = (
     | "projectId"
   >
 ) => {
+  validateMemoryAnswerTaskRequest(request, teamWorkspaceId ?? undefined);
   if (
     (question.teamWorkspaceId ?? null) !== teamWorkspaceId ||
     (question.retrievalScope ?? "personal") !== "personal"
@@ -88,7 +126,13 @@ export const validateMemoryAnswerTaskCompletion = (
     throw new Error("Final Memory Question search scope does not match task");
   const project =
     snapshot.search_domain === "project"
-      ? projectScope(snapshot, teamWorkspaceId)
+      ? projectScope(
+          snapshot,
+          teamWorkspaceId,
+          request && typeof request === "object" && !Array.isArray(request)
+            ? personalSelectionFromTaskRequest({ ...request, input: snapshot })
+            : undefined
+        )
       : snapshot.project_id;
   if ((project ?? null) !== (question.projectId ?? null))
     throw new Error("Final Memory Question project does not match task");

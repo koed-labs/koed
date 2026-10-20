@@ -1,0 +1,470 @@
+import { randomUUID } from "node:crypto";
+import type pg from "pg";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  type PersonalGitContext,
+  type PersonalFolderObservation
+} from "@koed/shared";
+import {
+  createDbPool,
+  createMemorySourceRepository,
+  runDbMigrations
+} from "../src/index.js";
+const databaseUrl = process.env.P1_SELECTION_CONSUMER_DATABASE_URL;
+const encryption = createLocalTestKeyEnvelopeEncryptionProvider(
+  Buffer.alloc(32, 122).toString("base64")
+);
+describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
+  let pool: pg.Pool;
+  beforeAll(async () => {
+    pool = createDbPool({ connectionString: databaseUrl });
+    await runDbMigrations(pool);
+  }, 60_000);
+  afterAll(async () => {
+    await pool?.end();
+  });
+  afterEach(() => vi.restoreAllMocks());
+  const user = async () => ({
+    userId: (
+      await createMemorySourceRepository(pool).createUser({
+        email: `consumer-${randomUUID()}@example.test`
+      })
+    ).id
+  });
+  it("takes a bounded baseline, detects stale pages, reconciles missed source/membership/context edits, and preserves owner checks across restart and expiry", async () => {
+    let repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const actor = await user(),
+      other = await user();
+    const git: PersonalGitContext = {
+      kind: "portable_repository",
+      key: `gr_${randomUUID()}`,
+      root: "/private/consumer",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "capture-checkout",
+      originatingDeviceId: "capture-device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/consumer"
+    };
+    const folder: PersonalFolderObservation = {
+      identity: {
+        folderId: randomUUID(),
+        originatingDeploymentId: "capture-deployment",
+        originatingDeviceId: "capture-device",
+        originatingProfileId: "capture-profile",
+        directoryIncarnationId: randomUUID()
+      },
+      normalizedPath: "/private/consumer/folder",
+      capturedPath: "/private/consumer/folder",
+      observedAt: new Date().toISOString()
+    };
+    const project = await repo.createNamedPersonalProject(actor, {
+      name: "Consumer selection"
+    });
+    const target = {
+      kind: "project" as const,
+      project: { ownerUserId: actor.userId, projectId: project.projectId }
+    };
+    const empty = await repo.startPersonalSelectionEnumeration(actor, {
+      target
+    });
+    expect(empty.entries).toEqual([]);
+    const sessions: Awaited<ReturnType<typeof repo.createCapturedSession>>[] =
+      [];
+    for (let i = 0; i < 102; i++)
+      sessions.push(
+        await repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity: git,
+          folderObservation: folder
+        })
+      );
+    const first = sessions[0]!;
+    let version = project.version;
+    const included = await repo.addPersonalProjectSession(
+      actor,
+      project.projectId,
+      { sessionId: first.id, expectedVersion: version }
+    );
+    version = included.project.version;
+    const byGit = await repo.addPersonalProjectRepositoryRule(
+      actor,
+      project.projectId,
+      { repository: git, expectedVersion: version }
+    );
+    version = byGit.project.version;
+    const byFolder = await repo.addPersonalProjectFolderRule(
+      actor,
+      project.projectId,
+      {
+        folder: { ownerUserId: actor.userId, ...folder.identity },
+        expectedVersion: version
+      }
+    );
+    version = byFolder.project.version;
+    const event = async (sessionId: string, content: string) =>
+      repo.createMemoryEvent(actor, {
+        sessionId,
+        projectId: "legacy",
+        visibility: "personal",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        content,
+        idempotencyKey: randomUUID()
+      });
+    const started = await repo.startPersonalSelectionEnumeration(actor, {
+      target
+    });
+    expect(started.entries).toHaveLength(100);
+    expect(started.nextCursor).not.toBeNull();
+    expect(started.changeCursor).toBeNull();
+    await expect(
+      repo.continuePersonalSelectionEnumeration(other, {
+        cursor: started.nextCursor!
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      repo.reconcilePersonalSelectionChanges(other, {
+        cursor: empty.changeCursor!
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    const secret = `PRIVATE_CONSUMER_CONTENT_${randomUUID()}`;
+    await event(first.id, secret);
+    await expect(
+      repo.continuePersonalSelectionEnumeration(actor, {
+        cursor: started.nextCursor!
+      })
+    ).rejects.toMatchObject({
+      code: "selection_enumeration_stale",
+      statusCode: 409
+    });
+    const baseline = async () => {
+      let page = await repo.startPersonalSelectionEnumeration(actor, {
+        target
+      });
+      const entries = [...page.entries],
+        snapshot = page.snapshotVersion;
+      while (page.nextCursor) {
+        page = await repo.continuePersonalSelectionEnumeration(actor, {
+          cursor: page.nextCursor
+        });
+        expect(page.snapshotVersion).toBe(snapshot);
+        expect(page.entries.length).toBeLessThanOrEqual(100);
+        entries.push(...page.entries);
+      }
+      expect(page.changeCursor).not.toBeNull();
+      return { entries, cursor: page.changeCursor! };
+    };
+    let historyCursor = empty.changeCursor!,
+      historyPages = 0;
+    const historyIds: string[] = [];
+    for (;;) {
+      const history = await repo.reconcilePersonalSelectionChanges(actor, {
+        cursor: historyCursor
+      });
+      historyPages++;
+      expect(history.events.length).toBeLessThanOrEqual(100);
+      historyIds.push(...history.events.map((e) => e.eventId));
+      if (history.nextCursor) {
+        historyCursor = history.nextCursor;
+        continue;
+      }
+      break;
+    }
+    expect(historyPages).toBeGreaterThan(1);
+    expect(new Set(historyIds).size).toBe(historyIds.length);
+    const current = await baseline();
+    expect(
+      new Set(current.entries.map((e) => e.source.localSessionId)).size
+    ).toBe(102);
+    expect(
+      current.entries
+        .filter((e) => e.source.localSessionId === first.id)
+        .map((e) => e.reason.kind)
+        .sort()
+    ).toEqual(["folder", "repository", "session"]);
+    expect(
+      current.entries.every(
+        (e) =>
+          e.source.identityState === "local_only" && e.source.portable === null
+      )
+    ).toBe(true);
+    expect(JSON.stringify(current)).not.toContain(secret);
+    const gitPage = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "repository", repository: git }
+    });
+    expect(gitPage.entries.length).toBe(100);
+    expect(gitPage.entries.every((e) => e.reason.kind === "selection")).toBe(
+      true
+    );
+    const folderPage = await repo.startPersonalSelectionEnumeration(actor, {
+      target: {
+        kind: "folder",
+        folder: { ownerUserId: actor.userId, ...folder.identity }
+      }
+    });
+    expect(folderPage.entries.length).toBe(100);
+    const local = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "local_session", sessionId: first.id }
+    });
+    expect(local.entries.map((e) => e.source.localSessionId)).toEqual([
+      first.id
+    ]);
+    await expect(
+      repo.startPersonalSelectionEnumeration(other, {
+        target: { kind: "local_session", sessionId: first.id }
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    const alternateGit = { ...git, key: `gr_${randomUUID()}` };
+    const equalPath = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: alternateGit,
+      folderObservation: {
+        ...folder,
+        identity: { ...folder.identity, directoryIncarnationId: randomUUID() }
+      }
+    });
+    const foreignFolderSource = async (path: string) =>
+      repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: { ...git, key: `gr_${randomUUID()}` },
+        folderObservation: {
+          ...folder,
+          identity: {
+            ...folder.identity,
+            folderId: randomUUID(),
+            directoryIncarnationId: randomUUID()
+          },
+          normalizedPath: path,
+          capturedPath: path
+        }
+      });
+    const parent = await foreignFolderSource("/private/consumer"),
+      child = await foreignFolderSource("/private/consumer/folder/child");
+    const excluded = await repo.excludePersonalProjectSession(
+      actor,
+      project.projectId,
+      { sessionId: first.id, expectedVersion: version }
+    );
+    version = excluded.project.version;
+    await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: git,
+      folderObservation: folder
+    });
+    await event(sessions[1]!.id, `LATER_TURN_${randomUUID()}`);
+    const correction = await repo.previewPersonalSourceCorrection(
+      actor,
+      sessions[2]!.id,
+      {
+        axis: "git",
+        action: "set",
+        repository: alternateGit,
+        expectedVersion: 1
+      }
+    );
+    await repo.applyPersonalSourceCorrection(
+      actor,
+      sessions[2]!.id,
+      correction.preview.reviewId,
+      { expectedVersion: 1 }
+    );
+    await repo.removePersonalProjectRule(
+      actor,
+      project.projectId,
+      byFolder.rule.inclusionId,
+      { expectedVersion: version }
+    );
+    await pool.end();
+    pool = createDbPool({ connectionString: databaseUrl });
+    repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const kinds = new Set<string>();
+    let cursor = current.cursor,
+      windows = 0;
+    for (;;) {
+      const changes = await repo.reconcilePersonalSelectionChanges(actor, {
+        cursor
+      });
+      windows++;
+      for (const e of changes.events) {
+        expect(Object.keys(e).sort()).toEqual(["eventId", "kind"]);
+        kinds.add(e.kind);
+      }
+      expect(JSON.stringify(changes)).not.toContain(secret);
+      if (changes.nextCursor) {
+        cursor = changes.nextCursor;
+        continue;
+      }
+      cursor = changes.changeCursor!;
+      break;
+    }
+    expect(windows).toBeGreaterThan(0);
+    expect(kinds).toEqual(new Set(["source", "membership", "source_context"]));
+    const reconciled = await baseline();
+    const ids = new Set(reconciled.entries.map((e) => e.source.localSessionId));
+    expect(ids.size).toBe(101);
+    expect(ids.has(first.id)).toBe(false);
+    expect(ids.has(sessions[2]!.id)).toBe(false);
+    expect(ids.has(equalPath.id)).toBe(false);
+    expect(
+      (await repo.reconcilePersonalSelectionChanges(actor, { cursor })).events
+    ).toEqual([]);
+    let exactFolder = await repo.startPersonalSelectionEnumeration(actor, {
+      target: {
+        kind: "folder",
+        folder: { ownerUserId: actor.userId, ...folder.identity }
+      }
+    });
+    const exactFolderIds = new Set(
+      exactFolder.entries.map((e) => e.source.localSessionId)
+    );
+    while (exactFolder.nextCursor) {
+      exactFolder = await repo.continuePersonalSelectionEnumeration(actor, {
+        cursor: exactFolder.nextCursor
+      });
+      for (const entry of exactFolder.entries)
+        exactFolderIds.add(entry.source.localSessionId);
+    }
+    expect(exactFolderIds.size).toBe(103);
+    expect(exactFolderIds.has(equalPath.id)).toBe(false);
+    expect(exactFolderIds.has(parent.id)).toBe(false);
+    expect(exactFolderIds.has(child.id)).toBe(false);
+    // Exact Folder matching ignores equal strings on another directory incarnation.
+    const exact = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "local_session", sessionId: equalPath.id }
+    });
+    expect(exact.entries).toHaveLength(1);
+    await expect(
+      pool.query(
+        "update personal_selection_cursors set owner_user_id=$1 where cursor_id=$2",
+        [other.userId, reconciled.cursor]
+      )
+    ).rejects.toThrow();
+    await pool.query(
+      "update sessions set invalidated_at=now(),invalidation_reason='fixture_source_removed' where owner_user_id=$1 and id=$2",
+      [actor.userId, sessions[3]!.id]
+    );
+    const removal = await repo.reconcilePersonalSelectionChanges(actor, {
+      cursor: reconciled.cursor
+    });
+    expect(removal.events.some((event) => event.kind === "source")).toBe(true);
+    const afterRemoval = await baseline();
+    expect(
+      new Set(afterRemoval.entries.map((entry) => entry.source.localSessionId))
+        .size
+    ).toBe(100);
+    expect(
+      afterRemoval.entries.some(
+        (entry) => entry.source.localSessionId === sessions[3]!.id
+      )
+    ).toBe(false);
+    await expect(
+      repo.startPersonalSelectionEnumeration(actor, {
+        target: { kind: "local_session", sessionId: sessions[3]!.id }
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 25 * 60 * 60 * 1000);
+    await expect(
+      repo.reconcilePersonalSelectionChanges(actor, {
+        cursor: reconciled.cursor
+      })
+    ).rejects.toMatchObject({
+      code: "selection_cursor_expired",
+      statusCode: 410
+    });
+    await expect(
+      repo.continuePersonalSelectionEnumeration(actor, {
+        cursor: started.nextCursor!
+      })
+    ).rejects.toMatchObject({ statusCode: 410 });
+    vi.restoreAllMocks();
+    const latest = await repo.getPersonalMembershipSyncState(
+      actor,
+      project.projectId
+    );
+    await repo.deleteNamedPersonalProject(actor, project.projectId, {
+      expectedVersion: latest.project.version
+    });
+    expect(
+      (
+        await repo.reconcilePersonalSelectionChanges(actor, {
+          cursor: reconciled.cursor
+        })
+      ).reconciliationRequired
+    ).toBe(true);
+    await expect(
+      repo.startPersonalSelectionEnumeration(actor, { target })
+    ).rejects.toMatchObject({ code: "selection_unavailable", statusCode: 404 });
+  }, 60_000);
+  it("does not skip a lower allocated journal ID that commits after a completed change window, including rolled-back savepoints", async () => {
+    const repo = createMemorySourceRepository(pool),
+      actor = await user();
+    const session = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const baseline = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "local_session", sessionId: session.id }
+    });
+    const a = await pool.connect(),
+      b = await pool.connect();
+    try {
+      await a.query("begin");
+      await a.query("savepoint discarded");
+      await a.query(
+        "insert into personal_selection_changes(owner_user_id,kind) values($1,'availability')",
+        [actor.userId]
+      );
+      await a.query("rollback to savepoint discarded");
+      const slow = await a.query<{ id: string }>(
+        "insert into personal_selection_changes(owner_user_id,kind) values($1,'source') returning change_id::text id",
+        [actor.userId]
+      );
+      await b.query("begin");
+      const fast = await b.query<{ id: string }>(
+        "insert into personal_selection_changes(owner_user_id,kind) values($1,'membership') returning change_id::text id",
+        [actor.userId]
+      );
+      await b.query("commit");
+      const first = await repo.reconcilePersonalSelectionChanges(actor, {
+        cursor: baseline.changeCursor!
+      });
+      expect(first.events).toEqual([
+        { eventId: fast.rows[0]!.id, kind: "membership" }
+      ]);
+      await a.query("commit");
+      const second = await repo.reconcilePersonalSelectionChanges(actor, {
+        cursor: first.changeCursor!
+      });
+      expect(second.events).toEqual([
+        { eventId: slow.rows[0]!.id, kind: "source" }
+      ]);
+      expect(BigInt(slow.rows[0]!.id) < BigInt(fast.rows[0]!.id)).toBe(true);
+      expect(
+        (
+          await repo.reconcilePersonalSelectionChanges(actor, {
+            cursor: second.changeCursor!
+          })
+        ).events
+      ).toEqual([]);
+    } finally {
+      await a.query("rollback");
+      await b.query("rollback");
+      a.release();
+      b.release();
+    }
+  });
+});

@@ -4,7 +4,10 @@ import { semanticMemoryEventEligibleSql } from "./approval-activity-sql.js";
 // Only metadata is read here. All fields are owner-bound; source text remains behind
 // the existing candidate authorization and decrypt path. Branch observations cannot
 // be copied from a reassignment target or inferred across conflicting captures.
-export const globalRepositoryContextJoinSql = (): string => `
+export const globalRepositoryContextJoinSql = (
+  sourceAfter = "$12",
+  sourceBefore = "$13"
+): string => `
  left join lateral (
   with recursive repo_nodes(id,seen) as (
    select n.id,array[n.id] from memory_nodes n
@@ -45,6 +48,6 @@ export const globalRepositoryContextJoinSql = (): string => `
   )), '[]'::jsonb) as contexts
   from repo_refs reference
    left join sessions s on s.id=reference.session_id and s.owner_user_id=$1 and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
-  where ($12::timestamptz is null or reference.source_time >= $12) and ($13::timestamptz is null or reference.source_time < $13)
+  where (${sourceAfter}::timestamptz is null or reference.source_time >= ${sourceAfter}) and (${sourceBefore}::timestamptz is null or reference.source_time < ${sourceBefore})
  ) repo_context on true
 `;

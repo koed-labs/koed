@@ -72,9 +72,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0046_project_scoped_recall";
+const expectedLatestMigrationTag = "0047_personal_project_model";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 46;
+const expectedLatestMigrationIndex = 47;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -174,6 +174,7 @@ const assertAlphaMigrationContract = async () => {
     journal.entries[42]?.tag !== "0042_owner_scoped_projection_identity" ||
     journal.entries[43]?.tag !== expectedRemoteMcpOAuthTag ||
     journal.entries[44]?.tag !== expectedTeamAuthorityTag ||
+    journal.entries[46]?.tag !== "0046_project_scoped_recall" ||
     journal.entries.at(-1)?.idx !== expectedLatestMigrationIndex ||
     journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
   ) {
@@ -722,6 +723,26 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
 
 const assertLatestSchema = async (pool) => {
   const columnsByTable = {
+    personal_model_activations: [
+      ["owner_user_id", "uuid", "NO"],
+      ["upgrade_id", "uuid", "NO"],
+      ["contract_version", "integer", "NO"]
+    ],
+    personal_capture_target_routes: [
+      ["owner_user_id", "uuid", "NO"],
+      ["source_scope", "text", "NO"],
+      ["target_id", "text", "NO"],
+      ["evidence", "jsonb", "NO"]
+    ],
+    personal_legacy_source_assignments: [
+      ["owner_user_id", "uuid", "NO"],
+      ["session_id", "uuid", "NO"],
+      ["evidence", "jsonb", "NO"]
+    ],
+    personal_capture_target_bindings: [
+      ["origin", "text", "NO"],
+      ["route_source_scope", "text", "YES"]
+    ],
     remote_mcp_oauth_clients: [
       ["id", "uuid", "NO"],
       ["metadata", "jsonb", "NO"],

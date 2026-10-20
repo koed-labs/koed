@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import {
+  observeCaptureFolder,
+  pinSourceFolderObservation,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
 import { isConversationDirectory } from "./conversation-directory.js";
 
 import { signalCodexTranscriptWatcher } from "./codex-transcript-watcher-signal.js";
@@ -18,6 +23,7 @@ export const captureHookEnvironment = (
 };
 
 export interface CaptureHookMetadata {
+  sessionStartSource?: string;
   hookEventName?: string;
   sourceSessionId?: string;
   transcriptPath?: string;
@@ -37,6 +43,9 @@ const readRoutingMetadata = async (): Promise<CaptureHookMetadata> => {
   try {
     const payload = JSON.parse(encoded) as Record<string, unknown>;
     return {
+      ...(typeof payload.source === "string"
+        ? { sessionStartSource: payload.source }
+        : {}),
       ...(typeof payload.hook_event_name === "string"
         ? { hookEventName: payload.hook_event_name }
         : {}),
@@ -129,6 +138,31 @@ export const signalCaptureHook = (
   });
 };
 
+export const recordCaptureHookFolder = async (
+  environment: NodeJS.ProcessEnv,
+  metadata: CaptureHookMetadata,
+  args: string[]
+): Promise<void> => {
+  if (metadata.sourceSessionId) {
+    const paths = resolveKoedServerPaths(environment);
+    const sourceFlag = args.indexOf("--source");
+    const sourceKind =
+      args.includes("--source=claude") || args[sourceFlag + 1] === "claude"
+        ? ("claude-code" as const)
+        : ("codex" as const);
+    const observation = metadata.cwd
+      ? await observeCaptureFolder(paths, metadata.cwd, environment)
+      : undefined;
+    pinSourceFolderObservation(
+      paths,
+      { sourceKind, externalSessionId: metadata.sourceSessionId },
+      observation,
+      metadata.hookEventName === "SessionStart" &&
+        metadata.sessionStartSource === "startup"
+    );
+  }
+};
+
 const main = async (): Promise<void> => {
   const metadata = await readRoutingMetadata();
   const args = process.argv.slice(2);
@@ -150,7 +184,9 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  signalCaptureHook(captureHookEnvironment(), metadata, args);
+  const environment = captureHookEnvironment();
+  await recordCaptureHookFolder(environment, metadata, args);
+  signalCaptureHook(environment, metadata, args);
 };
 
 if (

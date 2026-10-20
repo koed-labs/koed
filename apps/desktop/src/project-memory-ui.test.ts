@@ -488,3 +488,56 @@ describe("project memory UI view model", () => {
     expect(gate.isCurrent(secondRequest)).toBe(true);
   });
 });
+
+it("keeps retired named source assignments in unresolved history and uses only the owned native Project catalog", () => {
+  const legacy: RepositoryIdentity = {
+    kind: "local_project",
+    key: "project_old",
+    root: null,
+    branch: null,
+    reason: "manual",
+    checkoutId: null,
+    originatingDeviceId: "old_profile",
+    selectedRemote: null,
+    anchorDisplay: null
+  };
+  const old = graphProject({
+    id: "project_old",
+    name: "Old name",
+    repository: legacy
+  });
+  const native = graphProject({
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "Native Project",
+    threads: [],
+    namedProject: {
+      projectId: "00000000-0000-4000-8000-000000000001",
+      name: "Native Project",
+      version: 1,
+      headRevisionId: "00000000-0000-4000-8000-000000000002",
+      deletedAt: null,
+      createdAt: "2026-10-20T00:00:00.000Z",
+      updatedAt: "2026-10-20T00:00:00.000Z"
+    }
+  });
+  const result = mergeProjectSources(
+    [old, native],
+    [metadata({ repository: legacy })]
+  );
+  expect(result).toHaveLength(2);
+  expect(result.some((project) => project.id === "project_old")).toBe(false);
+  expect(result.find((project) => project.id === "unassigned")).toMatchObject({
+    name: "Unresolved history",
+    repository: undefined,
+    threads: [
+      {
+        id: "thread-1",
+        projectId: "unassigned",
+        projectName: "Unresolved history"
+      }
+    ]
+  });
+  expect(
+    result.find((project) => project.id === native.id)?.namedProject?.name
+  ).toBe("Native Project");
+});

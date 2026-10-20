@@ -2,8 +2,18 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { createMemoryEngine } from "@koed/core";
 import {
+  personalMemoryNodeSelectionSql,
+  personalCuratedMemorySelectionSql
+} from "../src/personal-derived-selection-sql.js";
+import {
+  authorizedPersonalRawEvidence,
+  resolvePersonalSourceSelection
+} from "../src/personal-selection-sql.js";
+import {
   createPdsRepositoryAssignment,
   repositoryScopeId,
+  snapshotPinnedPersonalSelection,
+  personalGitContextSchema,
   type RepositoryIdentity
 } from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -28,6 +38,48 @@ const identity = (
   anchorDisplay: `example.test/team/${key}`
 });
 
+type RecallRepository = ReturnType<typeof createMemorySourceRepository>;
+const correctGit = async (
+  repo: RecallRepository,
+  actor: { userId: string },
+  sessionId: string,
+  input: Parameters<RecallRepository["moveCapturedSessionToProject"]>[2]
+) => {
+  const expectedVersion = input.expectedAssignmentVersion!;
+  const review = await repo.previewPersonalSourceCorrection(actor, sessionId, {
+    axis: "git",
+    action: "set",
+    repository: personalGitContextSchema.parse(input.repositoryIdentity),
+    expectedVersion
+  });
+  await repo.applyPersonalSourceCorrection(
+    actor,
+    sessionId,
+    review.preview.reviewId,
+    { expectedVersion }
+  );
+  return repo.getCapturedSession(actor, sessionId);
+};
+const resetGit = async (
+  repo: RecallRepository,
+  actor: { userId: string },
+  sessionId: string,
+  expectedVersion: number
+) => {
+  const review = await repo.previewPersonalSourceCorrection(actor, sessionId, {
+    axis: "git",
+    action: "reset",
+    expectedVersion
+  });
+  await repo.applyPersonalSourceCorrection(
+    actor,
+    sessionId,
+    review.preview.reviewId,
+    { expectedVersion }
+  );
+  return repo.getCapturedSession(actor, sessionId);
+};
+
 describe.skipIf(!databaseUrl)(
   "effective repository recall in PostgreSQL",
   () => {
@@ -40,6 +92,712 @@ describe.skipIf(!databaseUrl)(
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
       await pool?.end();
+    });
+    it("applies one owner selection before inventory limits and graph expansion", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const actor = {
+        userId: (
+          await repo.createUser({
+            email: `inventory-${randomUUID()}@example.test`
+          })
+        ).id
+      };
+      const foreign = {
+        userId: (
+          await repo.createUser({
+            email: `inventory-foreign-${randomUUID()}@example.test`
+          })
+        ).id
+      };
+      const a = identity(`inventory_a_${randomUUID()}`),
+        b = identity(`inventory_b_${randomUUID()}`);
+      const threadId = randomUUID();
+      const capture = async (
+        owner: typeof actor,
+        repositoryIdentity: RepositoryIdentity,
+        thread = randomUUID()
+      ) => {
+        const session = await repo.createCapturedSession(owner, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity,
+          cwd: repositoryIdentity.root!,
+          metadata: { threadName: "Inventory Conversation" }
+        });
+        await pool.query(
+          "update sessions set external_session_id=$2 where id=$1",
+          [session.id, thread]
+        );
+        const event = await repo.createMemoryEvent(owner, {
+          projectId: "legacy-inventory",
+          sessionId: session.id,
+          actor: "user",
+          visibility: "personal",
+          eventType: "captured",
+          rawEventType: "user_message",
+          content: `inventory ${session.id}`,
+          idempotencyKey: randomUUID()
+        });
+        const node = await repo.createMemoryNode(owner, {
+          visibility: "personal",
+          summaryText: `inventory summary ${session.id}`,
+          sourceHash: randomUUID()
+        });
+        await pool.query(
+          "update memory_nodes set source_event_count=1,lcm_algorithm_version='fixture-leaf' where id=$1",
+          [node.id]
+        );
+        await pool.query(
+          "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,0)",
+          [node.id, event.id]
+        );
+        return { session, event, node };
+      };
+      const first = await capture(actor, a, threadId);
+      const second = await capture(actor, a, threadId);
+      const denied = await capture(actor, b);
+      const foreignSource = await capture(foreign, a);
+      const personalSelection = snapshotPinnedPersonalSelection(actor.userId, {
+        search_domain: "project",
+        project_id: repositoryScopeId(a),
+        repository_context: a
+      });
+      const selected = { personalSelection };
+      const foreignSelection = {
+        personalSelection: snapshotPinnedPersonalSelection(foreign.userId, {
+          search_domain: "global",
+          repository_context: null
+        })
+      };
+      await expect(
+        repo.listLcmGraphThreads(actor, foreignSelection)
+      ).rejects.toThrow();
+      await expect(
+        repo.listLcmGraphNodes(actor, foreignSelection)
+      ).rejects.toThrow();
+      await expect(
+        repo.getCapturedSession(actor, first.session.id, foreignSelection)
+      ).rejects.toThrow();
+      const expectedSessions = [first.session.id, second.session.id].sort();
+      const threads = await repo.listLcmGraphThreads(actor, {
+        ...selected,
+        limit: 1
+      });
+      expect(threads).toHaveLength(1);
+      expect(threads[0]!.threads).toHaveLength(1);
+      expect(
+        threads[0]!.threads[0]!.sourceReferences?.map(
+          (ref) => ref.sessionId
+        ).sort()
+      ).toEqual(expectedSessions);
+      expect(
+        threads[0]!.threads[0]!.sourceReferences?.every(
+          (ref) => ref.logicalSessionId
+        )
+      ).toBe(true);
+      expect(
+        await repo.listLcmGraphThreads(actor, {
+          ...selected,
+          offset: 1,
+          limit: 1
+        })
+      ).toEqual([]);
+      const events = await repo.listLcmGraphEvents(actor, {
+        ...selected,
+        canonicalCapturedSessionEventsOnly: true,
+        limit: 1
+      });
+      expect(events).toHaveLength(1);
+      expect(expectedSessions).toContain(events[0]!.sessionId);
+      const nodes = await repo.listLcmGraphNodes(actor, {
+        ...selected,
+        limit: 1
+      });
+      expect(nodes).toHaveLength(1);
+      expect([first.node.id, second.node.id]).toContain(nodes[0]!.id);
+      expect(
+        await repo.getLcmGraphNode(actor, denied.node.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.getLcmGraphNode(actor, foreignSource.node.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.getLcmGraphEvent(actor, denied.event.id, {
+          ...selected,
+          includeRaw: true
+        })
+      ).toBeNull();
+      expect(
+        await repo.getLcmGraphEvent(actor, foreignSource.event.id, {
+          ...selected,
+          includeRaw: true
+        })
+      ).toBeNull();
+      expect(
+        await repo.getCapturedSession(actor, denied.session.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.getCapturedSessionSummary(actor, denied.session.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.listCapturedSessionSummaries(actor, {
+          ...selected,
+          limit: 1
+        })
+      ).toHaveLength(1);
+      expect(
+        (await repo.listVisibleMemoryNodes(actor, undefined, selected))
+          .map((node) => node.id)
+          .sort()
+      ).toEqual([first.node.id, second.node.id].sort());
+      expect(
+        await repo.getVisibleMemoryNode(actor, denied.node.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.listMemoryBrowserItems(actor, {
+          ...selected,
+          query: "inventory",
+          limit: 1
+        })
+      ).toHaveLength(1);
+      await pool.query(
+        "update memory_nodes set source_items_json=$2 where id=$1",
+        [
+          first.node.id,
+          JSON.stringify([
+            {
+              kind: "memory_event",
+              sourceId: first.event.id,
+              text: "STALE_RETAINED_SECRET",
+              position: 0
+            }
+          ])
+        ]
+      );
+      const detail = await repo.getLcmGraphNode(actor, first.node.id, selected);
+      expect(JSON.stringify(detail?.sourceItems)).not.toContain(
+        "STALE_RETAINED_SECRET"
+      );
+      expect(JSON.stringify(detail?.sourceItems)).toContain(
+        `inventory ${first.session.id}`
+      );
+      const overview = await repo.getLcmGraphOverview(actor, selected);
+      expect(overview).toMatchObject({ capturedEvents: 2, leafNodes: 2 });
+      const raw = await authorizedPersonalRawEvidence(
+        pool,
+        resolvePersonalSourceSelection(actor.userId, selected),
+        [first, second, denied, foreignSource].map((value) => ({
+          source_type: "memory_event",
+          source_id: value.event.id
+        })),
+        null,
+        null
+      );
+      expect([...raw].sort()).toEqual(
+        [first, second].map((value) => `memory_event:${value.event.id}`).sort()
+      );
+      const unknown = { projectId: `unknown-${randomUUID()}` };
+      expect(await repo.listLcmGraphThreads(actor, unknown)).toEqual([]);
+      expect(await repo.listLcmGraphNodes(actor, unknown)).toEqual([]);
+      expect(
+        await repo.getLcmGraphNode(actor, first.node.id, unknown)
+      ).toBeNull();
+      expect(
+        await repo.getCapturedSession(actor, first.session.id, unknown)
+      ).toBeNull();
+      expect(await repo.getLcmGraphOverview(actor, unknown)).toMatchObject({
+        capturedEvents: 0,
+        leafNodes: 0,
+        rollupNodes: 0
+      });
+      await pool.query(
+        "update sessions set personal_deleted_at=now() where id=any($1::uuid[])",
+        [expectedSessions]
+      );
+      expect(await repo.listLcmGraphThreads(actor, selected)).toEqual([]);
+      expect(await repo.listLcmGraphNodes(actor, selected)).toEqual([]);
+      expect(
+        await repo.getCapturedSession(actor, first.session.id, selected)
+      ).toBeNull();
+      expect(
+        await repo.getLcmGraphNode(actor, first.node.id, selected)
+      ).toBeNull();
+      // Owner history is explicit and still obeys the exact selected target.
+      expect(
+        await repo.getLcmGraphNode(actor, first.node.id, {
+          ...selected,
+          includeInvalidated: true
+        })
+      ).not.toBeNull();
+      expect(
+        await repo.getLcmGraphNode(actor, denied.node.id, {
+          ...selected,
+          includeInvalidated: true
+        })
+      ).toBeNull();
+    });
+    it("checks all recursive sources, keeps safe raw expansion, and rejects retained deleted text", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `derived-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id };
+      const a = identity(`derived_a_${randomUUID()}`),
+        b = identity(`derived_b_${randomUUID()}`);
+      const capture = async (
+        repositoryIdentity: RepositoryIdentity,
+        content: string
+      ) => {
+        const session = await repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          cwd: repositoryIdentity.root!,
+          repositoryIdentity
+        });
+        const event = await repo.createMemoryEvent(actor, {
+          sessionId: session.id,
+          projectId: "legacy",
+          actor: "user",
+          visibility: "personal",
+          eventType: "captured",
+          rawEventType: "user_message",
+          content,
+          idempotencyKey: randomUUID()
+        });
+        const node = await repo.createMemoryNode(actor, {
+          visibility: "personal",
+          summaryText: `Summary ${content}`,
+          sourceHash: randomUUID()
+        });
+        await pool.query(
+          "update memory_nodes set source_event_count=1,lcm_algorithm_version='fixture-leaf' where id=$1",
+          [node.id]
+        );
+        await pool.query(
+          "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,0)",
+          [node.id, event.id]
+        );
+        return { session, event, node };
+      };
+      const first = await capture(a, "SAFE_ALPHA_EVIDENCE");
+      const second = await capture(b, "SECRET_BRAVO_EVIDENCE");
+      const root = await repo.createMemoryNode(actor, {
+        visibility: "personal",
+        summaryText: "MIXED_SUMMARY_SECRET_BRAVO_EVIDENCE",
+        sourceHash: randomUUID()
+      });
+      await pool.query(
+        "update memory_nodes set kind='rollup',source_event_count=2,source_items_json=$2 where id=$1",
+        [
+          root.id,
+          JSON.stringify([
+            {
+              kind: "lcm_child",
+              nodeId: second.node.id,
+              text: "RETAINED_SECRET_BRAVO",
+              position: 0
+            }
+          ])
+        ]
+      );
+      await pool.query(
+        "insert into memory_node_children(parent_memory_node_id,child_memory_node_id,child_order) values($1,$2,0),($1,$3,1)",
+        [root.id, first.node.id, second.node.id]
+      );
+      const selected = snapshotPinnedPersonalSelection(actor.userId, {
+        search_domain: "project",
+        project_id: repositoryScopeId(a),
+        repository_context: a
+      });
+      const selectedScope = resolvePersonalSourceSelection(actor.userId, {
+        personalSelection: selected
+      });
+      const globalScope = resolvePersonalSourceSelection(actor.userId, {
+        searchDomain: "global"
+      });
+      const permitted = async (
+        id: string,
+        selection: typeof selectedScope,
+        after: string | null = null,
+        before: string | null = null
+      ) =>
+        (
+          await pool.query<{ allowed: boolean }>(
+            `select ${personalMemoryNodeSelectionSql("n.id", "$2", "$3", "$4")} as allowed from memory_nodes n where n.id=$1`,
+            [id, JSON.stringify(selection), after, before]
+          )
+        ).rows[0]!.allowed;
+      expect(await permitted(first.node.id, selectedScope)).toBe(true);
+      expect(await permitted(second.node.id, selectedScope)).toBe(false);
+      expect(await permitted(root.id, selectedScope)).toBe(false);
+      expect(await permitted(root.id, globalScope)).toBe(true);
+      expect(
+        await permitted(root.id, globalScope, "2040-01-01T00:00:00.000Z")
+      ).toBe(false);
+      const bounded = await pool.query<{ id: string }>(
+        `select n.id from memory_nodes n where n.id=any($1::uuid[]) and ${personalMemoryNodeSelectionSql("n.id", "$2", "$3", "$4")} order by n.created_at desc limit 1`,
+        [
+          [first.node.id, second.node.id, root.id],
+          JSON.stringify(selectedScope),
+          null,
+          null
+        ]
+      );
+      expect(bounded.rows.map((row) => row.id)).toEqual([first.node.id]);
+      const expanded = await repo.expandMemoryNode(root.id, actor, {
+        searchDomain: "global",
+        personalSelection: selected
+      });
+      expect(expanded.sources.map((source) => source.id)).toEqual([
+        first.event.id
+      ]);
+      expect(JSON.stringify(expanded)).toContain("SAFE_ALPHA_EVIDENCE");
+      expect(JSON.stringify(expanded)).not.toContain("BRAVO");
+      expect(
+        expanded.sourceItems.some((item) => item.nodeId === first.node.id)
+      ).toBe(true);
+
+      await pool.query(
+        "update memory_events set include_in_embedding=false where id=$1",
+        [first.event.id]
+      );
+      expect(await permitted(first.node.id, selectedScope)).toBe(true);
+      await pool.query(
+        "update memory_events set include_in_embedding=true,include_in_lcm=false where id=$1",
+        [first.event.id]
+      );
+      expect(await permitted(first.node.id, selectedScope)).toBe(false);
+      await pool.query(
+        "update memory_events set include_in_lcm=true where id=$1",
+        [first.event.id]
+      );
+
+      const safeRoot = await repo.createMemoryNode(actor, {
+        visibility: "personal",
+        summaryText: "ALPHA decision only",
+        sourceHash: randomUUID()
+      });
+      await pool.query(
+        "update memory_nodes set kind='rollup',source_event_count=1 where id=$1",
+        [safeRoot.id]
+      );
+      await pool.query(
+        "insert into memory_node_children(parent_memory_node_id,child_memory_node_id,child_order) values($1,$2,0)",
+        [safeRoot.id, first.node.id]
+      );
+      for (const [nodeId, body] of [
+        [root.id, "ALPHA decision SECRET_BRAVO_EVIDENCE"],
+        [safeRoot.id, "ALPHA decision only"]
+      ]) {
+        await repo.updateLcmNodeSummary({
+          nodeId: nodeId!,
+          summaryText: body!,
+          summaryModel: "fixture-client",
+          summaryTokenEstimate: 8,
+          summaryPromptVersion: "fixture",
+          summaryStructuredJson: {
+            schema_version: "lcm-semantic-summary-v1",
+            title: "Alpha decision",
+            summary_text: body!,
+            lexical_anchors: []
+          },
+          summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+        });
+        const source = await repo.getEmbeddableSource("memory_node", nodeId!);
+        expect(source).not.toBeNull();
+        const vector = Array.from({ length: 1024 }, (_, index) =>
+          index === 0
+            ? nodeId === root.id
+              ? 1
+              : 0.8
+            : index === 1 && nodeId !== root.id
+              ? 0.6
+              : 0
+        );
+        await repo.upsertSourceEmbedding({
+          source: source!,
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          version: "qwen3-0.6b",
+          vector,
+          modelArtifactHash: "a".repeat(64),
+          tokenizer: "qwen3-embedding-0.6b-gguf",
+          inputTransform: "qwen3-retrieval-document-v1",
+          pooling: "last",
+          normalization: "l2"
+        });
+      }
+      const searchSummaries = async (personalSelection?: typeof selected) => {
+        const previousUrl = process.env.EMBEDDING_SERVICE_URL;
+        const previousLimit = process.env.MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT;
+        vi.stubEnv("EMBEDDING_SERVICE_URL", "http://derived.fixture");
+        vi.stubEnv("MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT", "1");
+        const mock = vi.spyOn(globalThis, "fetch").mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({
+                model: "qwen3-0.6b",
+                dimensions: 1024,
+                vectors: [
+                  Array.from({ length: 1024 }, (_, index) =>
+                    index === 0 ? 1 : 0
+                  )
+                ]
+              }),
+              { status: 200 }
+            )
+        );
+        try {
+          return await createMemoryEngine(repo).searchMemory({
+            requesterContext: actor,
+            query: "ALPHA decision",
+            scope: "personal",
+            searchDomain: "global",
+            personalSelection,
+            retrievalStage: "rollup_search",
+            limit: 1
+          });
+        } finally {
+          mock.mockRestore();
+          vi.stubEnv("EMBEDDING_SERVICE_URL", previousUrl);
+          vi.stubEnv("MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT", previousLimit);
+        }
+      };
+      expect((await searchSummaries()).results[0]?.sourceId).toBe(root.id);
+      const scopedSummaries = await searchSummaries(selected);
+      expect(scopedSummaries.results.map((row) => row.sourceId)).toEqual([
+        safeRoot.id
+      ]);
+      expect(JSON.stringify(scopedSummaries)).not.toContain("BRAVO");
+
+      const proposal = await repo.createCuratedMemoryProposal(actor, {
+        proposedClaim: "Mixed Alpha Bravo claim",
+        evidenceMemoryEventIds: [first.event.id, second.event.id]
+      });
+      const curated = await repo.processCuratedMemoryProposal(actor, {
+        proposalId: proposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: "MIXED_CURATED_SECRET_BRAVO",
+          sources: [
+            {
+              sourceType: "memory_event",
+              sourceRole: "primary_evidence",
+              memoryEventId: first.event.id
+            },
+            {
+              sourceType: "memory_event",
+              sourceRole: "supporting_evidence",
+              memoryEventId: second.event.id
+            }
+          ]
+        }
+      });
+      expect(
+        (
+          await repo.searchCuratedMemoryAssertions(actor, {
+            query: "MIXED_CURATED",
+            personalSelection: selected
+          })
+        ).map((row) => row.id)
+      ).not.toContain(curated.assertionId);
+      expect(
+        (
+          await repo.searchCuratedMemoryAssertions(actor, {
+            query: "MIXED_CURATED",
+            searchDomain: "global"
+          })
+        ).map((row) => row.id)
+      ).toContain(curated.assertionId);
+      expect(
+        (
+          await repo.expandMemoryNode(curated.assertionId!, actor, {
+            personalSelection: selected
+          })
+        )?.sources.map((source) => source.id)
+      ).toEqual([first.event.id]);
+      const assertionAllowed = async () =>
+        (
+          await pool.query<{ allowed: boolean }>(
+            `select ${personalCuratedMemorySelectionSql("cma", "$2", "$3", "$4")} as allowed from curated_memory_assertions cma where cma.id=$1`,
+            [curated.assertionId, JSON.stringify(globalScope), null, null]
+          )
+        ).rows[0]!.allowed;
+      expect(await assertionAllowed()).toBe(true);
+      const pureProposal = await repo.createCuratedMemoryProposal(actor, {
+        proposedClaim: "PURE_ALPHA_CLAIM",
+        evidenceMemoryEventIds: [first.event.id]
+      });
+      const pure = await repo.processCuratedMemoryProposal(actor, {
+        proposalId: pureProposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: "PURE_ALPHA_CLAIM",
+          sources: [
+            {
+              sourceType: "memory_event",
+              sourceRole: "primary_evidence",
+              memoryEventId: first.event.id
+            }
+          ]
+        }
+      });
+      const auxiliary = await repo.createMemoryNode(actor, {
+        visibility: "personal",
+        summaryText: "AUXILIARY_SECRET_BRAVO",
+        sourceHash: randomUUID()
+      });
+      await pool.query(
+        "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,0),($1,$3,1)",
+        [auxiliary.id, first.event.id, second.event.id]
+      );
+      await repo.reconcileCuratedMemorySources(actor);
+      expect(
+        (
+          await pool.query(
+            "select id from curated_memory_sources where assertion_id=$1 and lcm_node_id=$2 and source_role='derived_summary'",
+            [pure.assertionId, auxiliary.id]
+          )
+        ).rowCount
+      ).toBe(1);
+      const pureSelected = await repo.searchCuratedMemoryAssertions(actor, {
+        query: "PURE_ALPHA_CLAIM",
+        personalSelection: selected
+      });
+      expect(pureSelected.map((row) => row.id)).toContain(pure.assertionId);
+      expect(
+        pureSelected
+          .find((row) => row.id === pure.assertionId)
+          ?.sources.some((source) => source.lcmNodeId === auxiliary.id)
+      ).toBe(false);
+      // Keep the parent and its snapshots deliberately intact to test source checks independently of cleanup.
+      await pool.query(
+        "update memory_events set personal_deleted_at=now() where id=$1",
+        [second.event.id]
+      );
+      expect(await permitted(root.id, globalScope)).toBe(false);
+      expect(
+        (await searchSummaries()).results.map((row) => row.sourceId)
+      ).toEqual([safeRoot.id]);
+      expect(await assertionAllowed()).toBe(false);
+      const pureAfterDeletion = await repo.searchCuratedMemoryAssertions(
+        actor,
+        { query: "PURE_ALPHA_CLAIM" }
+      );
+      expect(pureAfterDeletion.map((row) => row.id)).toContain(
+        pure.assertionId
+      );
+      expect(
+        pureAfterDeletion
+          .find((row) => row.id === pure.assertionId)
+          ?.sources.some((source) => source.lcmNodeId === auxiliary.id)
+      ).toBe(false);
+      expect(
+        (
+          await repo.searchCuratedMemoryAssertions(actor, {
+            query: "MIXED_CURATED"
+          })
+        ).map((row) => row.id)
+      ).not.toContain(curated.assertionId);
+      const retained = await repo.expandMemoryNode(root.id, actor);
+      expect(retained.sources.map((source) => source.id)).toEqual([
+        first.event.id
+      ]);
+      expect(JSON.stringify(retained)).not.toContain("BRAVO");
+      await pool.query(
+        "delete from memory_node_children where parent_memory_node_id=$1 and child_memory_node_id=$2",
+        [root.id, second.node.id]
+      );
+      expect(await permitted(root.id, globalScope)).toBe(false);
+      expect(
+        (await searchSummaries()).results.map((row) => row.sourceId)
+      ).toEqual([safeRoot.id]);
+      const outsider = await repo.createUser({
+        email: `derived-outsider-${randomUUID()}@example.test`
+      });
+      await expect(
+        repo.expandMemoryNode(
+          root.id,
+          { userId: outsider.id },
+          { personalSelection: selected }
+        )
+      ).rejects.toThrow("another owner");
+      await pool.query(
+        "insert into memory_node_children(parent_memory_node_id,child_memory_node_id,child_order) values($1,$2,0)",
+        [first.node.id, root.id]
+      );
+      expect(await permitted(root.id, globalScope)).toBe(false);
+      expect(
+        JSON.stringify(await repo.expandMemoryNode(root.id, actor))
+      ).not.toContain("BRAVO");
+    });
+    it("expands current message records and never revives retained message snapshots", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `message-expansion-${randomUUID()}@example.test`
+      });
+      const actor = { userId: owner.id };
+      const context = identity(`message_${randomUUID()}`);
+      const session = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        cwd: context.root!,
+        repositoryIdentity: context
+      });
+      const message = (
+        await pool.query<{ id: string }>(
+          "insert into messages(session_id,owner_user_id,visibility,role,content,source_runtime,capture_method) values($1,$2,'personal','user','CURRENT_MESSAGE_BODY','codex','transcript') returning id",
+          [session.id, owner.id]
+        )
+      ).rows[0]!;
+      const node = await repo.createMemoryNode(actor, {
+        visibility: "personal",
+        summaryText: "Message summary",
+        sourceHash: randomUUID()
+      });
+      await pool.query(
+        "update memory_nodes set source_event_count=1,lcm_algorithm_version='fixture-leaf',source_items_json=$2 where id=$1",
+        [
+          node.id,
+          JSON.stringify([
+            {
+              kind: "message",
+              sourceId: message.id,
+              text: "STALE_MESSAGE_SNAPSHOT",
+              payload: { sessionId: session.id },
+              position: 0
+            }
+          ])
+        ]
+      );
+      await pool.query(
+        "insert into memory_node_sources(memory_node_id,message_id,source_order) values($1,$2,0)",
+        [node.id, message.id]
+      );
+      const selection = snapshotPinnedPersonalSelection(actor.userId, {
+        search_domain: "project",
+        project_id: repositoryScopeId(context),
+        repository_context: context
+      });
+      const expanded = await repo.expandMemoryNode(node.id, actor, {
+        personalSelection: selection
+      });
+      expect(expanded.sourceItems).toContainEqual(
+        expect.objectContaining({
+          kind: "message",
+          sourceId: message.id,
+          text: "CURRENT_MESSAGE_BODY"
+        })
+      );
+      expect(JSON.stringify(expanded)).not.toContain("STALE_MESSAGE_SNAPSHOT");
+      await pool.query(
+        "update messages set recall_eligible=false where id=$1",
+        [message.id]
+      );
+      expect(
+        (
+          await repo.expandMemoryNode(node.id, actor, {
+            personalSelection: selection
+          })
+        ).sourceItems
+      ).toEqual([]);
     });
     it("enforces equality, device provenance and unresolved overrides in the shared SQL boundary", async () => {
       const a = identity("a");
@@ -78,7 +836,7 @@ describe.skipIf(!databaseUrl)(
       );
     });
 
-    it("moves a whole fallback Project beyond the Desktop page limit into a rootless identity", async () => {
+    it("rejects retired bulk replacement beyond the Desktop page limit without changing source facts", async () => {
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `named-project-${randomUUID()}@example.test`
@@ -145,21 +903,22 @@ describe.skipIf(!databaseUrl)(
         path: null,
         repositoryIdentity: named
       };
-      expect(
-        await repo.moveProjectConversations(actor, {
+      const facts = () =>
+        pool.query(
+          "select id,repository_automatic_identity,repository_override_identity,repository_assignment_version from sessions where owner_user_id=$1 order by id",
+          [owner.id]
+        );
+      const before = (await facts()).rows;
+      await expect(
+        repo.moveProjectConversations(actor, {
           sourceProjectId: repositoryScopeId(source),
           project
         })
-      ).toEqual({ movedCount: 503, projectId: project.id });
-      const counts = await pool.query<{ count: number }>(
-        "select count(*)::int as count from sessions where owner_user_id=$1 and repository_scope_matches(repository_override_identity,$2)",
-        [owner.id, project.id]
-      );
-      expect(counts.rows[0]?.count).toBe(503);
-      expect(
-        (await repo.listLcmGraphThreads(actor, { projectId: project.id }))[0]
-          ?.path
-      ).toBeNull();
+      ).rejects.toMatchObject({
+        statusCode: 410,
+        code: "personal_legacy_write_retired"
+      });
+      expect((await facts()).rows).toEqual(before);
       expect(
         (await repo.getCapturedSession({ userId: other.id }, otherSession.id))
           ?.repositoryAssignment?.effective
@@ -167,17 +926,10 @@ describe.skipIf(!databaseUrl)(
       expect(
         (await repo.getCapturedSession(actor, captured.id))
           ?.repositoryAssignment
-      ).toMatchObject({ automatic: source, effective: named, version: 2 });
-      expect(
-        (
-          await repo.getLatestCapturedSessionForProject(actor, {
-            projectId: project.id
-          })
-        )?.repositoryAssignment?.effective
-      ).toEqual(named);
+      ).toMatchObject({ automatic: source, effective: source, version: 1 });
       expect(
         await repo.getLatestCapturedSessionForProject(actor, {
-          projectId: repositoryScopeId(source)
+          projectId: project.id
         })
       ).toBeNull();
       expect(
@@ -187,24 +939,17 @@ describe.skipIf(!databaseUrl)(
           ])
         ).rowCount
       ).toBe(1);
-      expect(
-        await repo.moveProjectConversations(actor, {
-          sourceProjectId: repositoryScopeId(source),
-          project
-        })
-      ).toEqual({ movedCount: 0, projectId: project.id });
-      expect(
-        (await repo.resetCapturedSessionProject(actor, captured.id, 2))
-          ?.repositoryAssignment
-      ).toMatchObject({ effective: source, version: 3 });
+      await expect(
+        repo.resetCapturedSessionProject(actor, captured.id, 1)
+      ).rejects.toMatchObject({ statusCode: 410 });
       const later = await repo.createCapturedSession(actor, {
         externalSessionId: randomUUID(),
         repositoryIdentity: source
       });
       expect(later.repositoryAssignment).toMatchObject({
         automatic: source,
-        effective: named,
-        version: 2
+        effective: source,
+        version: 1
       });
       const localScope = repositoryScopeId(named);
       expect(
@@ -217,7 +962,7 @@ describe.skipIf(!databaseUrl)(
       ).toBe(false);
     }, 30_000);
 
-    it("serializes a Project move with concurrent capture so no new Conversation escapes its route", async () => {
+    it("rejects a retired bulk move while concurrent captures keep their actual source", async () => {
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `project-routing-race-${randomUUID()}@example.test`
@@ -241,107 +986,78 @@ describe.skipIf(!databaseUrl)(
           repositoryIdentity: target
         }
       });
-      const completed = await Promise.all(captures);
-      await move;
+      const [completed] = await Promise.all([
+        Promise.all(captures),
+        expect(move).rejects.toMatchObject({
+          statusCode: 410,
+          code: "personal_legacy_write_retired"
+        })
+      ]);
       for (const session of completed)
         expect(
           (await repo.getCapturedSession(actor, session.id))
             ?.repositoryAssignment
-        ).toMatchObject({ automatic: source, effective: target });
+        ).toMatchObject({ automatic: source, effective: source });
     });
 
-    it("flattens future routing and preserves explicit resets and unresolved history", async () => {
+    it("does not redirect recall or assign unresolved history through retired routing", async () => {
       const repo = createMemorySourceRepository(pool);
-      const owner = await repo.createUser({
-        email: `project-routes-${randomUUID()}@example.test`
-      });
-      const actor = { userId: owner.id },
-        source = identity(randomUUID());
-      const named = (name: string): RepositoryIdentity => ({
-        kind: "local_project",
-        key: name,
-        reason: "manual",
-        root: null,
-        branch: null,
-        checkoutId: null,
-        selectedRemote: null,
-        anchorDisplay: null,
-        originatingDeviceId: "fixture"
-      });
-      const b = named("project_b"),
-        c = named("project_c");
-      const target = (value: RepositoryIdentity) => ({
-        id: repositoryScopeId(value),
-        name: value.key!,
-        path: value.root,
-        repositoryIdentity: value
-      });
-      await repo.createCapturedSession(actor, { repositoryIdentity: source });
-      await repo.moveProjectConversations(actor, {
-        sourceProjectId: repositoryScopeId(source),
-        project: target(b)
-      });
-      await repo.createCapturedSession(actor, {
+      const actor = {
+        userId: (
+          await repo.createUser({
+            email: `retired-routing-${randomUUID()}@example.test`
+          })
+        ).id
+      };
+      const source = identity(randomUUID()),
+        target = identity(randomUUID());
+      const captured = await repo.createCapturedSession(actor, {
         externalSessionId: randomUUID(),
         repositoryIdentity: source
       });
-      expect(
-        await repo.moveProjectConversations(actor, {
-          sourceProjectId: repositoryScopeId(b),
-          project: target(c)
-        })
-      ).toMatchObject({ movedCount: 2, projectId: repositoryScopeId(c) });
-      expect(
-        await repo.resolveProjectRouting(actor, repositoryScopeId(source))
-      ).toMatchObject({ repositoryIdentity: c });
       await expect(
         repo.moveProjectConversations(actor, {
-          sourceProjectId: repositoryScopeId(c),
-          project: target(source)
+          sourceProjectId: repositoryScopeId(source),
+          project: {
+            id: repositoryScopeId(target),
+            name: "Retired target",
+            path: target.root,
+            repositoryIdentity: target
+          }
         })
-      ).rejects.toMatchObject({ statusCode: 409 });
-      const next = await repo.createCapturedSession(actor, {
-        externalSessionId: randomUUID(),
-        repositoryIdentity: source
-      });
-      expect(next.repositoryAssignment).toMatchObject({
-        automatic: source,
-        effective: c
-      });
-      await repo.resetCapturedSessionProject(actor, next.id, 2);
+      ).rejects.toMatchObject({ statusCode: 410 });
+      expect(
+        await repo.resolveProjectRouting(actor, repositoryScopeId(source))
+      ).toBeNull();
       const continued = await repo.createCapturedSession(actor, {
-        externalSessionId: next.externalSessionId!,
-        repositoryIdentity: source
+        externalSessionId: captured.externalSessionId!,
+        repositoryIdentity: target
       });
-      expect(continued.repositoryAssignment).toMatchObject({
-        override: null,
-        effective: source,
-        version: 3
-      });
+      expect(continued.repositoryAssignment?.effective).toEqual(source);
       const old = await repo.createCapturedSession(actor, {
-        externalSessionId: randomUUID()
+        externalSessionId: randomUUID(),
+        importObservedAt: new Date().toISOString()
       });
-      await pool.query(
-        "update sessions set repository_assignment_state='historical_unresolved', repository_automatic_identity=null where id=$1",
-        [old.id]
-      );
       const historical = await repo.createCapturedSession(actor, {
         externalSessionId: old.externalSessionId!,
         repositoryIdentity: source
       });
       expect(historical.repositoryAssignment?.effective).toBeNull();
-      await repo.moveProjectConversations(actor, {
-        sourceProjectId: "unassigned",
-        project: target(c)
-      });
+      await expect(
+        repo.moveProjectConversations(actor, {
+          sourceProjectId: "unassigned",
+          project: {
+            id: repositoryScopeId(target),
+            name: "Retired target",
+            path: target.root,
+            repositoryIdentity: target
+          }
+        })
+      ).rejects.toMatchObject({ statusCode: 410 });
       expect(await repo.resolveProjectRouting(actor, "unassigned")).toBeNull();
-      expect(
-        (await repo.resetCapturedSessionProject(actor, old.id, 2))
-          ?.repositoryAssignment?.effective
-      ).toBeNull();
     });
 
-    it("rolls back a whole Project move if any member cannot advance its version", async () => {
+    it("rejects retired replacement even when a source has exhausted its assignment version", async () => {
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `atomic-project-${randomUUID()}@example.test`
@@ -505,7 +1221,7 @@ describe.skipIf(!databaseUrl)(
             projectId: scope
           })
         ).map((entry) => entry.id)
-      ).toContain(curated.assertionId);
+      ).not.toContain(curated.assertionId);
       const expanded = await repo.expandMemoryNode(
         curated.assertionId!,
         actor,
@@ -565,27 +1281,94 @@ describe.skipIf(!databaseUrl)(
         JSON.stringify(search.metadata)
       ).toBe(true);
       expect(JSON.stringify(search)).not.toContain(other.event.id);
-      const moved = await repo.moveCapturedSessionToProject(
-        actor,
-        first.session.id,
-        {
-          id: repositoryScopeId(b),
-          name: "Project B",
-          path: b.root,
-          repositoryIdentity: b,
-          expectedAssignmentVersion: 1
-        }
-      );
-      expect(moved?.repositoryAssignment?.effective).toEqual(b);
+      const pinnedSelection = snapshotPinnedPersonalSelection(actor.userId, {
+        search_domain: "project",
+        project_id: scope,
+        repository_context: a
+      });
+      const broadened = await createMemoryEngine(repo).searchMemory({
+        requesterContext: actor,
+        query: "cobalt copper",
+        scope: "personal",
+        searchDomain: "global",
+        personalSelection: pinnedSelection,
+        retrievalStage: "raw_fallback_search",
+        limit: 10
+      });
       expect(
-        await repo.moveCapturedSessionToProject(actor, first.session.id, {
+        broadened.results.some(
+          (entry) =>
+            entry.sourceId === first.event.id ||
+            entry.sourceId === clone.event.id
+        )
+      ).toBe(true);
+      expect(JSON.stringify(broadened)).not.toContain(other.event.id);
+      const previousRawLimit =
+        process.env.MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT;
+      vi.stubEnv("MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT", "1");
+      try {
+        const bounded = await createMemoryEngine(repo).searchMemory({
+          requesterContext: actor,
+          query: "cobalt copper",
+          scope: "personal",
+          searchDomain: "global",
+          personalSelection: pinnedSelection,
+          retrievalStage: "raw_fallback_search",
+          limit: 1
+        });
+        expect(bounded.results).toHaveLength(1);
+        expect([first.event.id, clone.event.id]).toContain(
+          bounded.results[0]?.sourceId
+        );
+      } finally {
+        vi.stubEnv("MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT", previousRawLimit);
+      }
+      await expect(
+        createMemoryEngine(repo).searchMemory({
+          requesterContext: { userId: randomUUID() },
+          query: "cobalt copper",
+          scope: "personal",
+          searchDomain: "global",
+          personalSelection: pinnedSelection,
+          retrievalStage: "raw_fallback_search",
+          limit: 10
+        })
+      ).rejects.toThrow("another owner");
+      const moved = await correctGit(repo, actor, first.session.id, {
+        id: repositoryScopeId(b),
+        name: "Project B",
+        path: b.root,
+        repositoryIdentity: b,
+        expectedAssignmentVersion: 1
+      });
+      expect(moved?.repositoryAssignment?.effective).toEqual(b);
+      const authorizedAfterMove = await authorizedPersonalRawEvidence(
+        pool,
+        resolvePersonalSourceSelection(actor.userId, {
+          personalSelection: pinnedSelection
+        }),
+        [first.event, clone.event].map((event) => ({
+          source_type: "memory_event",
+          source_id: event.id
+        })),
+        null,
+        null
+      );
+      expect(authorizedAfterMove.has(`memory_event:${first.event.id}`)).toBe(
+        false
+      );
+      expect(authorizedAfterMove.has(`memory_event:${clone.event.id}`)).toBe(
+        true
+      );
+      await expect(
+        correctGit(repo, actor, first.session.id, {
           id: scope,
           name: "Stale move",
           path: a.root,
           repositoryIdentity: a,
           expectedAssignmentVersion: 1
         })
-      ).toBeNull();
+      ).rejects.toMatchObject({ statusCode: 409 });
       expect(
         (await repo.listLcmGraphNodes(actor, { projectId: scope })).map(
           (node) => node.id
@@ -599,11 +1382,7 @@ describe.skipIf(!databaseUrl)(
           })
         ).sources
       ).toEqual([]);
-      const reset = await repo.resetCapturedSessionProject(
-        actor,
-        first.session.id,
-        2
-      );
+      const reset = await resetGit(repo, actor, first.session.id, 2);
       expect(reset?.repositoryAssignment?.effective).toEqual(a);
       expect(
         (
@@ -613,20 +1392,16 @@ describe.skipIf(!databaseUrl)(
       const outsider = await repo.createUser({
         email: `scope-outsider-${randomUUID()}@example.test`
       });
-      expect(
-        await repo.moveCapturedSessionToProject(
-          { userId: outsider.id },
-          first.session.id,
-          {
-            id: repositoryScopeId(b),
-            name: "Unauthorized",
-            path: b.root,
-            repositoryIdentity: b,
-            expectedAssignmentVersion: 3
-          }
-        )
-      ).toBeNull();
-      await repo.moveCapturedSessionToProject(actor, first.session.id, {
+      await expect(
+        correctGit(repo, { userId: outsider.id }, first.session.id, {
+          id: repositoryScopeId(b),
+          name: "Unauthorized",
+          path: b.root,
+          repositoryIdentity: b,
+          expectedAssignmentVersion: 3
+        })
+      ).rejects.toMatchObject({ statusCode: 404 });
+      await correctGit(repo, actor, first.session.id, {
         id: repositoryScopeId(b),
         name: "Project B",
         path: b.root,
@@ -823,7 +1598,7 @@ describe.skipIf(!databaseUrl)(
         overlapped.results.filter((row) => row.sourceId === overlap.event.id)
       ).toHaveLength(1);
       expect(overlapped.metadata.hydrationCount).toBeLessThanOrEqual(3);
-      await repo.moveCapturedSessionToProject(actor, overlap.session.id, {
+      await correctGit(repo, actor, overlap.session.id, {
         id: repositoryScopeId(b)!,
         name: "Moved Project",
         path: b.root,
@@ -844,7 +1619,7 @@ describe.skipIf(!databaseUrl)(
         label: b.anchorDisplay,
         branch: null
       });
-      await repo.resetCapturedSessionProject(actor, overlap.session.id, 2);
+      await resetGit(repo, actor, overlap.session.id, 2);
       const outOfWindow = await createMemoryEngine(repo).searchMemory({
         requesterContext: actor,
         query: "release checklist rationale",

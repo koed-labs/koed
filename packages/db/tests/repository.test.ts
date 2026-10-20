@@ -12178,20 +12178,14 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       text: "A concise synchronized semantic summary.\n\nLexical anchors:\n- synchronized semantic summary"
     });
+    // Imported bytes do not authorize recall before the target is ready.
     await expect(
       encryptedRepo.expandMemoryNode(
         applied.summaryNodeIds[0]!,
         { userId: owner.id },
         { searchDomain: "global" }
       )
-    ).resolves.toMatchObject({
-      sources: [
-        expect.objectContaining({
-          id: applied.eventIds[0],
-          content: "Synchronized canonical memory"
-        })
-      ]
-    });
+    ).resolves.toMatchObject({ sources: [], sourceItems: [] });
     await expect(
       encryptedRepo.createLcmNodes(
         { userId: owner.id },
@@ -12265,6 +12259,21 @@ describeDb("memory repository visibility", () => {
       packageId,
       staleAfterSeconds: 3_600
     });
+    await expect(
+      encryptedRepo.expandMemoryNode(
+        applied.summaryNodeIds[0]!,
+        { userId: owner.id },
+        { searchDomain: "global" }
+      )
+    ).resolves.toMatchObject({
+      sources: [
+        expect.objectContaining({
+          id: applied.eventIds[0],
+          content: "Synchronized canonical memory"
+        })
+      ]
+    });
+
     await pool.query(
       `insert into sync_inbox_entries
          (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
@@ -31190,7 +31199,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("keeps Personal Project assignment mutable without changing capture or Team authority", async () => {
+  it("changes independent Project membership without changing recorded Git, capture, or Team authority", async () => {
     const owner = await repo.createUser({
       email: `project-assignment-owner-${randomUUID()}@example.com`
     });
@@ -31271,15 +31280,16 @@ describeDb("memory repository visibility", () => {
       version: "qwen3-0.6b",
       vector: assignmentVector
     });
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "qwen3-0.6b",
-          dimensions: 1024,
-          vectors: [assignmentVector]
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            model: "qwen3-0.6b",
+            dimensions: 1024,
+            vectors: [assignmentVector]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
     );
     await insertValidSharedMemoryGrant({
       ownerUserId: owner.id,
@@ -31288,17 +31298,27 @@ describeDb("memory repository visibility", () => {
       teamWorkspaceId: teamWorkspace!.id
     });
 
-    const moved = await repo.moveCapturedSessionToProject(
+    const grouping = await repo.createNamedPersonalProject(
       { userId: owner.id },
-      captured.id,
+      { name: "Project B" }
+    );
+    const included = await repo.addPersonalProjectSession(
+      { userId: owner.id },
+      grouping.projectId,
       {
-        id: projectScope("project-b"),
-        name: "Project B",
-        path: "/checkout/project-b",
-        repositoryIdentity: fixtureRepositoryIdentity("project-b"),
-        expectedAssignmentVersion: 1
+        sessionId: captured.id,
+        expectedVersion: grouping.version
       }
     );
+    const selection = {
+      version: 1 as const,
+      ownerUserId: owner.id,
+      target: {
+        kind: "project" as const,
+        project: { ownerUserId: owner.id, projectId: grouping.projectId }
+      },
+      callerRepositoryContext: null
+    };
     const redetected = await repo.createCapturedSession(
       { userId: owner.id },
       {
@@ -31312,20 +31332,19 @@ describeDb("memory repository visibility", () => {
         repositoryIdentity: fixtureRepositoryIdentity("project-c")
       }
     );
-    const rejectedOtherOwner = await repo.moveCapturedSessionToProject(
-      { userId: member.id },
-      captured.id,
-      {
-        id: projectScope("project-c"),
-        name: "Project C",
-        path: null,
-        repositoryIdentity: fixtureRepositoryIdentity("project-c"),
-        expectedAssignmentVersion: 2
-      }
-    );
+    await expect(
+      repo.addPersonalProjectSession(
+        { userId: member.id },
+        grouping.projectId,
+        {
+          sessionId: captured.id,
+          expectedVersion: included.project.version
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 404 });
     const personalProjects = await repo.listLcmGraphThreads(
       { userId: owner.id },
-      { projectId: projectScope("project-b"), limit: 20 }
+      { personalSelection: selection, limit: 20 }
     );
     const teamProjects = await repo.listLcmGraphThreads(
       { userId: member.id },
@@ -31337,7 +31356,8 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      projectId: projectScope("project-b"),
+      projectId: grouping.projectId,
+      personalSelection: selection,
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -31352,11 +31372,24 @@ describeDb("memory repository visibility", () => {
       strictLimit: false,
       limit: 1
     });
-    const reset = await repo.resetCapturedSessionProject(
+    await repo.removePersonalProjectInclusion(
       { userId: owner.id },
-      captured.id,
-      2
+      grouping.projectId,
+      included.membership.inclusionId,
+      {
+        expectedVersion: included.project.version
+      }
     );
+    const reset = await repo.getCapturedSession(
+      { userId: owner.id },
+      captured.id
+    );
+    expect(
+      await repo.listLcmGraphThreads(
+        { userId: owner.id },
+        { personalSelection: selection }
+      )
+    ).toEqual([]);
     const ambiguous = await repo.createCapturedSession(
       { userId: owner.id },
       {
@@ -31375,27 +31408,21 @@ describeDb("memory repository visibility", () => {
         effective: fixtureRepositoryIdentity("project-a")
       }
     });
-    expect(moved).toMatchObject({
-      project: { id: projectScope("project-b") },
-      projectOverride: { id: projectScope("project-b") },
-      projectAssignmentSource: "user_override"
-    });
     expect(redetected).toMatchObject({
       id: captured.id,
       automaticProject: { id: projectScope("project-a") },
-      project: { id: projectScope("project-b") },
-      projectAssignmentSource: "user_override",
+      project: { id: projectScope("project-a") },
+      projectAssignmentSource: "detected",
       capturedProjectProvenance: captured.capturedProjectProvenance
     });
-    expect(rejectedOtherOwner).toBeNull();
     expect(personalProjects).toEqual([
       expect.objectContaining({
-        id: projectScope("project-b"),
+        id: projectScope("project-a"),
         eventCount: 1,
         threads: [
           expect.objectContaining({
             sessionId: captured.id,
-            projectAssignmentSource: "user_override"
+            projectAssignmentSource: "detected"
           })
         ]
       })
@@ -31403,7 +31430,13 @@ describeDb("memory repository visibility", () => {
     expect(movedRecall.results).toEqual([
       expect.objectContaining({ sourceId: event.id })
     ]);
-    expect(oldProjectRecall.results).toHaveLength(0);
+    expect(oldProjectRecall.results.map((result) => result.sourceId)).toEqual([
+      event.id
+    ]);
+    expect(redetected.repositoryAssignment?.effective).toEqual(
+      fixtureRepositoryIdentity("project-a")
+    );
+    expect(redetected.projectOverride).toBeNull();
     expect(teamProjects).toEqual([]);
     expect(reset).toMatchObject({
       automaticProject: { id: projectScope("project-a") },
@@ -35593,7 +35626,7 @@ describeDb("memory repository visibility", () => {
     ).resolves.toEqual([]);
   });
 
-  it("excludes protected Curated Memory when only a deleted source is in the time window", async () => {
+  it("withholds protected Curated Memory after a contributing source is deleted", async () => {
     const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
     process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
     try {
@@ -35669,17 +35702,22 @@ describeDb("memory repository visibility", () => {
           }
         }
       );
-      await pool.query(
-        "update memory_events set personal_deleted_at = now() where id = $1",
-        [recentDeletedEvent.id]
-      );
-
       await expect(
         protectedRepo.searchCuratedMemoryAssertions(
           { userId: owner.id },
           { query: sentinel }
         )
       ).resolves.toMatchObject([{ id: processed.assertionId }]);
+      await pool.query(
+        "update memory_events set personal_deleted_at = now() where id = $1",
+        [recentDeletedEvent.id]
+      );
+      await expect(
+        protectedRepo.searchCuratedMemoryAssertions(
+          { userId: owner.id },
+          { query: sentinel }
+        )
+      ).resolves.toEqual([]);
       await expect(
         protectedRepo.searchCuratedMemoryAssertions(
           { userId: owner.id },
@@ -36267,7 +36305,22 @@ describeDb("memory repository visibility", () => {
           projectId: projectScope("curated-project-active")
         }
       )
-    ).resolves.toMatchObject([{ id: processed.assertionId }]);
+    ).resolves.toEqual([]);
+    // A mixed assertion body cannot be reconstructed from the surviving role.
+    // Its still-authorized raw evidence remains available through expansion.
+    const expanded = await repo.expandMemoryNode(
+      processed.assertionId!,
+      { userId: owner.id },
+      {
+        searchDomain: "project",
+        projectId: projectScope("curated-project-active")
+      }
+    );
+    expect(
+      (expanded.sourceItems ?? []).flatMap((item) =>
+        "sourceId" in item ? [item.sourceId] : []
+      )
+    ).toEqual([activeOutOfScope.id]);
   });
 
   it("cannot satisfy session scope with excluded evidence while another source keeps the assertion active", async () => {
@@ -36361,7 +36414,19 @@ describeDb("memory repository visibility", () => {
           sessionId: sessions[0]!.id
         }
       )
-    ).resolves.toMatchObject([{ id: processed.assertionId }]);
+    ).resolves.toEqual([]);
+    // A mixed assertion body cannot be reconstructed from the surviving role.
+    // Its still-authorized raw evidence remains available through expansion.
+    const expanded = await repo.expandMemoryNode(
+      processed.assertionId!,
+      { userId: owner.id },
+      { searchDomain: "session", sessionId: sessions[0]!.id }
+    );
+    expect(
+      (expanded.sourceItems ?? []).flatMap((item) =>
+        "sourceId" in item ? [item.sourceId] : []
+      )
+    ).toEqual([items[0]!.id]);
   });
 
   it("uses source event time rather than ingestion time for Curated Memory recall", async () => {

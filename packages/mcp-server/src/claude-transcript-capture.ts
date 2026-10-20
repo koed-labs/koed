@@ -95,6 +95,7 @@ export const processClaudeTranscriptSignal = async (
         : await transcriptIndex(component.transcriptPath, state.activatedAt);
     if (cursor === 0 && index.activationTimestamp === null) continue;
     const artifact = await journalClaudeTranscript({
+      env,
       client,
       signal,
       repositoryIdentity,

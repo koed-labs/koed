@@ -17,6 +17,45 @@ import {
 } from "../src/memory-answer-task-coordinator.js";
 import { MemoryApiClient } from "../src/index.js";
 
+it.each(["personal_selection", "personalSelection", "recall_target"])(
+  "rejects %s before forwarding Personal metadata to Team Memory",
+  async (key) => {
+    const client = new MemoryApiClient({
+      apiUrl: "https://unavailable.fixture"
+    });
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected network request"));
+    const input = {
+      [key]: {
+        version: 0,
+        ownerUserId: "00000000-0000-4000-8000-000000000001",
+        target: { kind: "global" },
+        callerRepositoryContext: null
+      }
+    };
+    try {
+      await expect(
+        client.teamMemorySearch("team", input, "fixture-authorization")
+      ).rejects.toThrow("Personal selections are not supported");
+      await expect(
+        client.teamMemoryAnswer("team", input, "fixture-authorization")
+      ).rejects.toThrow("Personal selections are not supported");
+      await expect(
+        client.teamMemoryExpand(
+          "team",
+          "00000000-0000-4000-8000-000000000002",
+          input,
+          "fixture-authorization"
+        )
+      ).rejects.toThrow("Personal selections are not supported");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  }
+);
+
 const task = (team = false): MemoryAnswerTask => ({
   id: randomUUID(),
   teamWorkspaceId: team ? randomUUID() : null,
@@ -359,6 +398,62 @@ describe("Memory Answer task coordinator", () => {
         }
       })
     ).toBe(false);
+  });
+
+  it("keeps an accepted named Project on Personal recall without resolving the caller checkout", async () => {
+    const client = new MemoryApiClient({ apiUrl: "https://koed.example" });
+    const accepted = task();
+    const accept = vi
+      .spyOn(client, "acceptMemoryAnswerTask")
+      .mockResolvedValue({ task: accepted });
+    const routing = vi
+      .spyOn(client, "resolveProjectRouting")
+      .mockRejectedValue(new Error("Checkout discovery must not run"));
+    const adapter = createMemoryAnswerTaskCoordinator(client, {
+      KOED_HOME: "/fixture/no-enrollment"
+    });
+    const ownerUserId = randomUUID(),
+      projectId = randomUUID();
+    const request = {
+      ...acceptInput(),
+      request: {
+        requestVersion: 1,
+        selection: {
+          version: 1,
+          ownerUserId,
+          target: { kind: "project", project: { ownerUserId, projectId } },
+          callerRepositoryContext: null
+        },
+        input: {
+          query: "Synthetic decision",
+          search_domain: "project",
+          project_id: projectId,
+          repository_context: null
+        },
+        caller: { cwd: "/unrelated/checkout" }
+      }
+    };
+    await expect(adapter.acceptMemoryAnswerTask(request)).resolves.toEqual({
+      task: accepted
+    });
+    expect(accept.mock.calls[0]?.[0]?.request).toMatchObject({
+      selection: request.request.selection,
+      input: {
+        search_domain: "project",
+        project_id: projectId,
+        repository_context: null
+      }
+    });
+    expect(routing).not.toHaveBeenCalled();
+    await expect(
+      adapter.acceptMemoryAnswerTask({
+        ...request,
+        request: {
+          ...request.request,
+          input: { ...request.request.input, team_workspace_id: randomUUID() }
+        }
+      })
+    ).rejects.toThrow("Personal selections cannot route to Team Memory");
   });
 
   it("claims only Personal work without explicit headless Team consent", async () => {

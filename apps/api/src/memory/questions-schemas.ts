@@ -1,3 +1,4 @@
+import { personalFolderReferenceSchema } from "@koed/shared";
 import { z } from "zod";
 import {
   memoryQuestionRetrievalScopeSchema,
@@ -69,6 +70,8 @@ export const memoryQuestionParamsSchema = z.object({
 
 export const desktopAskCreateSchema = z
   .object({
+    named_project_id: z.uuid().optional(),
+    folder_selection: personalFolderReferenceSchema.optional(),
     ask_thread_id: z.string().uuid().optional(),
     idempotency_key: z.string().trim().min(1).max(500),
     query: z.string().trim().min(1).max(32_000)

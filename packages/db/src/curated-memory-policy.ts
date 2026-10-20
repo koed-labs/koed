@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { contributingCuratedMemorySourceSql } from "./curated-memory-source-roles.js";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
@@ -75,12 +76,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_node_session.owner_user_id = ${assertionAlias}.owner_user_id
     and ${prefix}_node_session.personal_deleted_at is null
   where ${prefix}_cms.assertion_id = ${assertionAlias}.id
-    and ${prefix}_cms.source_role in (
-      'primary_evidence',
-      'supporting_evidence',
-      'superseding_evidence',
-      'conflicting_evidence'
-    )
+    and ${contributingCuratedMemorySourceSql(`${prefix}_cms`)}
     and coalesce(${prefix}_ci.id, ${prefix}_me.id, ${prefix}_mn.id) is not null
 `;
 

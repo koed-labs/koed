@@ -544,7 +544,8 @@ export const loadSources = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
   provider: EnvelopeEncryptionProvider | undefined,
-  assertionIds: string[]
+  assertionIds: string[],
+  authorizedSourceIds?: string[]
 ): Promise<Map<string, CuratedMemorySourceRecord[]>> => {
   if (assertionIds.length === 0) {
     return new Map();
@@ -554,9 +555,10 @@ export const loadSources = async (
       select *
       from curated_memory_sources
       where assertion_id = any($1::uuid[])
+        and ($2::uuid[] is null or id=any($2::uuid[]))
       order by created_at asc, id asc
     `,
-    [assertionIds]
+    [assertionIds, authorizedSourceIds ?? null]
   );
   const sources = new Map<string, CuratedMemorySourceRecord[]>();
   for (const row of rows.rows) {

@@ -1,5 +1,10 @@
 # Personal Repository Recall
 
+This document describes the branch's current implementation.
+The agreed [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
+replaces named Project reassignment with umbrella membership and independent
+Git and Folder filters. That change is not implemented yet.
+
 ## Team Project snapshots
 
 Ticket 14 adds a Share Grant repository snapshot for Team Project matching.
@@ -284,11 +289,33 @@ return 409; missing or other-owner sessions return 404. Capture observations do
 not overwrite this state. Reset restores the original automatic identity, or
 unresolved history when no automatic identity was recorded.
 
-The Desktop Personal contract is version 10. Graph thread responses carry the
-assignment state and version through the API and main process so subsequent edits
-use fresh versions. Successful moves invalidate graph caches and reload the
-Project index. A move changes grouping and subsequent Project recall immediately;
-it does not change retained capture source bytes or existing Team snapshots.
+The Desktop Personal contract is version 16. Graph thread responses carry source
+assignment state and version through the API and main process. New named Projects
+use the database catalog and independent direct membership described in
+[the Personal selection contract](personal-selection-contract.md#named-projects-and-direct-membership).
+Adding or removing membership leaves recorded source context, Capture Policy,
+and Team snapshots intact. Named Project inventory and Ask requests carry the
+selected Project identity separately from recorded Git context.
+
+Review membership shows every direct, Git Anchor, and Folder inclusion reason.
+Removing a direct inclusion preserves matching rules. Exclude blocks all inclusion
+reasons in that Project. Git, Folder, Global, and other Project selections remain
+independent. Add back requires the reviewed Project version and exclusion revision.
+It clears the exclusion and records a direct inclusion in one transaction.
+The database retains each exclusion and its clear revision.
+
+Correct source context provides independent Git and Folder controls. Each control
+supports a recorded context, explicit unresolved state, or reset to the original.
+The preview shows the resulting source filters and Project inclusion reasons.
+Apply requires the reviewed source version and unchanged Project effects.
+A correction preserves original facts, direct inclusions, logical identity, and
+existing Team repository snapshots. The database retains an audit revision.
+
+The legacy Move and reset routes remain compatibility paths until the upgrade
+and retirement tickets complete. New named Project creation and inclusion controls
+do not use them. Legacy source corrections use the assignment version the User
+inspected. Inventory reads check current sources rather than reusing a cached
+source decision.
 
 Renderer code imports the browser-safe `@koed/shared/repository-recall` entry point.
 The server entry point includes Node dependencies and must not enter the renderer bundle.
@@ -464,3 +491,23 @@ recovery, stronger foreign evidence, overlapping pools, historical unknown evide
 owner isolation and mixed summary lineage. Existing worker evidence-selection
 regressions cover parent summaries and partial children. Durable task tests verify
 known and unknown Global context through encrypted worker replacement.
+
+Exact Folder selection is independent of Git recall. Desktop contract version 12
+carries the originating Folder reference through inventory, timeline inspection,
+and Ask. Folder rows preserve each Conversation's recorded Git provenance. The
+source capture, unresolved-history behavior, and current acceptance status are
+documented in [the Personal selection contract](personal-selection-contract.md#exact-folder-capture-and-selection).
+
+Named Projects can include a selected Git Anchor through a retained inclusion
+rule. Matching existing and future Conversations join dynamically. Direct
+inclusion remains an independent reason, and Git recall keeps its own selected
+anchor boundary. Desktop provides an authorized preview before adding the rule
+and separate removal controls. See [Git Anchor inclusion rules](personal-selection-contract.md#git-anchor-inclusion-rules)
+for storage, authorization, and validation details.
+
+A named Project can also include one exact originating Folder. The rule retains
+its complete Folder reference and recorded path provenance. It includes current
+and future matching Conversations independently from Git, while keeping parent,
+child, other-device, other-profile, and replacement-directory contexts separate.
+See [exact Folder inclusion rules](personal-selection-contract.md#exact-folder-inclusion-rules)
+for the authorization and validation contract.

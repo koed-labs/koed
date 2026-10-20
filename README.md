@@ -39,6 +39,8 @@ middle.
   evidence with citations, so you can see where each answer came from.
 - **Local first.** Postgres, pgvector, and the models run natively under
   `KOED_HOME`. No Docker and no cloud account.
+- **Organize without losing the source.** Include a Conversation in several
+  Projects. Recall its recorded Git Anchor or exact Folder independently.
 - **See everything Koed knows.** Koed Desktop lets you browse every Project,
   session, and conversation in your memory.
 - **You decide what is remembered.** Capture Policies, Capture Pause, and a
@@ -122,6 +124,13 @@ its link into **Devices → Add device** in Koed Desktop. For more, see
 | Teams      | [Team collaboration](docs/team-collaboration.md) · [Shared memory owner workflow](docs/shared-memory-owner-workflow.md)                                                                                                               |
 | Operations | [Security](docs/security.md) · [Backup and restore](docs/backup-restore.md) · [Upgrades](docs/upgrades.md) · [Observability](docs/observability.md)                                                                                   |
 | Project    | [Glossary (`CONTEXT.md`)](CONTEXT.md) · [ADRs](docs/adr/) · [Release versioning](docs/release-versioning.md) · [Commercial feature boundary](docs/commercial-feature-boundary.md)                                                     |
+
+Personal Projects support direct inclusion, Git Anchor and exact Folder rules,
+and Project-only exclusions. **Add to Project** keeps recorded source context
+and Capture Targets independent. Projects are available directly; no existing-Project
+upgrade or activation step is required. See the
+[Personal selection contract](docs/personal-selection-contract.md) and
+[local validation record](docs/personal-project-validation.md).
 
 ## Security
 

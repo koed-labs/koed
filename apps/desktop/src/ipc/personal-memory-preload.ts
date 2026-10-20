@@ -2,6 +2,9 @@ import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalDesktopChangeSchema,
   personalDesktopProjectCreateInputSchema,
+  personalProjectCommandSchema,
+  personalMembershipSyncCommandSchema,
+  personalSourceContextCommandSchema,
   personalDesktopProjectMoveInputSchema,
   personalDesktopAskListInputSchema,
   personalDesktopAskSubmitInputSchema,
@@ -61,6 +64,55 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    manageMembershipSync: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["manageMembershipSync"]>
+      >[0]
+    ) => {
+      const input = personalMembershipSyncCommandSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.sync",
+          input
+        })
+      );
+      if (result.operation !== "personal.projects.sync")
+        throw new Error("Invalid Project sync result.");
+      return result.data;
+    },
+    manageSourceContext: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["manageSourceContext"]>
+      >[0]
+    ) => {
+      const input = personalSourceContextCommandSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sources.manage",
+          input
+        })
+      );
+      if (result.operation !== "personal.sources.manage")
+        throw new Error("Invalid source context result.");
+      return result.data;
+    },
+    manageProject: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["manageProject"]>>[0]
+    ) => {
+      const input = personalProjectCommandSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.manage",
+          input
+        })
+      );
+      if (result.operation !== "personal.projects.manage")
+        throw new Error("Invalid Personal Project result.");
+      return result.data;
+    },
     listRecentConversations: async (
       value: Parameters<
         NonNullable<PersonalDesktopApi["listRecentConversations"]>

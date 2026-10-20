@@ -299,7 +299,14 @@ describe("Memory Answer task repository", () => {
         origin: "mcp",
         invocationKey: "adapter:call-1",
         maxQueued: 16,
-        request: { input: { query: secretQuery }, caller: { cwd: "/private" } }
+        request: {
+          input: {
+            query: secretQuery,
+            search_domain: "global",
+            repository_context: null
+          },
+          caller: { cwd: "/private" }
+        }
       }
     );
 

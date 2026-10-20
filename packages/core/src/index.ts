@@ -1,5 +1,6 @@
 import { getEncoding, type Tiktoken } from "js-tiktoken";
 import { z } from "zod";
+import type { PersonalSelectionSnapshot } from "@koed/shared";
 
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
@@ -475,6 +476,7 @@ export interface SearchMemoryInput {
   sessionId?: string;
   projectId?: string;
   repositoryContext?: unknown;
+  personalSelection?: PersonalSelectionSnapshot;
   maxSearchPasses?: 1 | 2;
   limit?: number;
   recentDays?: number;
@@ -667,6 +669,7 @@ export interface MemoryEngineRepository {
       sessionId?: string;
       projectId?: string;
       repositoryContext?: unknown;
+      personalSelection?: PersonalSelectionSnapshot;
       maxSearchPasses?: 1 | 2;
       limit?: number;
       recentDays?: number;
@@ -699,6 +702,7 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;

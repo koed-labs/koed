@@ -579,9 +579,19 @@ exit 1
     temporaryDirectories.push(root);
     executable(root);
 
-    expect(() =>
-      resolveClaudeCodeExecutable({ HOME: root, PATH: "/nonexistent" })
-    ).toThrow("Claude Code was not found");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    let resolved: string | undefined;
+    try {
+      resolved = resolveClaudeCodeExecutable({
+        HOME: root,
+        PATH: "/nonexistent"
+      });
+    } catch (error) {
+      expect(String(error)).toContain("Claude Code was not found");
+    }
+    // A system installation is allowed even with an empty PATH. The Project
+    // executable must never become an implicit fallback.
+    expect(resolved).not.toBe(fs.realpathSync(path.join(root, "claude")));
   });
 
   it("passes only the bounded environment and removes provider credentials", () => {

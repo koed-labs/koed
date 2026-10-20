@@ -103,6 +103,18 @@ _Avoid_: LLM provider, synthesis service, model provider
 Recalled memory evidence plus citation and retrieval metadata handed to an AI client for synthesis.
 _Avoid_: Answer, summary, search result
 
+**Folder**:
+A local directory context associated with Conversations. Folder selection is
+independent of Git Anchor selection and named Project membership. It matches
+only that Folder, not its subfolders. Original Folder context remains recorded
+until an explicit correction changes the matching assignment.
+_Avoid_: Team Workspace, shared filesystem access
+
+**Git Anchor**:
+The selected repository identity used to associate Conversations across matching
+clones and worktrees. It grants no Team or Workspace Access.
+_Avoid_: Project membership, all remote aliases, sharing permission
+
 **Koed**:
 The Apache-2.0-licensed Koed distribution for operator-managed memory
 infrastructure.
@@ -194,7 +206,11 @@ _Avoid_: Agent status, read receipt, exact activity log
 **Project**:
 A local AI-client or code context such as a repository, working directory,
 filepath, ref, branch, or cwd, or a named local grouping of Conversations
-created by the User. A named Project does not require a folder.
+created by the User. A named Project does not require a folder. It includes
+Conversations directly or through Git Anchor and Folder rules. Those rules
+include existing and future matching Conversations. Membership preserves the
+Conversations' Git and Folder context and does not move Memory. A Conversation
+can belong to several named Projects. Named Projects do not contain other Projects.
 _Avoid_: Workspace, stable shared memory ID
 
 **Projection**:
@@ -211,8 +227,9 @@ The caller's choice of which visible memory classes recall may search.
 _Avoid_: Visibility, search domain, access level
 
 **Search Domain**:
-The boundary that limits recall to one session, the current Project or resolved
-Workspace context, or all visible memory.
+The boundary that limits recall to a Conversation, named Project, Git Anchor,
+Folder, resolved Workspace context, or all visible Memory. A named Project
+selection does not replace the independent Git and Folder selections.
 _Avoid_: Retrieval scope, visibility, access level
 
 **Access Suspension**:
@@ -352,6 +369,14 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A local **API Token** or **Remote MCP Grant** authorizes the **Local AI Runtime** to work against its configured backend without conferring **Team Membership** or **Workspace Access**
 - A **Remote MCP Grant** may delegate Team recall only within the owning **User's** current **Team Membership**, **Workspace Access**, and active **Share Grants**
 - A **Project** may provide local context for zero or more **Conversations**
+- A named **Project** groups **Conversations** through explicit inclusion,
+  **Git Anchor** rules, and **Folder** rules
+- Named **Project** membership preserves source context, ownership, and the
+  logical lifespan of **Memory**
+- A **Conversation** retains its original recorded **Git Anchor** and **Folder**
+  context until an explicit correction changes its matching assignment
+- **Recall** through a **Git Anchor** or **Folder** does not automatically
+  include unrelated members of a named **Project**
 - An **AI Client** produces one or more **Conversations**
 - A **Supported AI Client Integration** requires one **Transcript Watcher** for automatic capture correctness
 - A **Supported AI Client Integration** uses one **Supported Capture Hook** for low-latency signals and completion evidence
@@ -378,6 +403,15 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   **Team** in one **Workspace**; the first implemented source is a
   **Captured Session**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
+- Continuous sharing of a **Folder**, **Git Anchor**, or named **Project**
+  includes existing and future matching **Conversations** and their later turns
+- Continuous sharing of one **Conversation** includes only that Conversation
+  and its later turns
+- Pausing sharing preserves access to already shared **Memory** and stops new
+  publication. Resuming catches up with currently eligible members and content
+- Stopping sharing revokes the access supplied by that sharing action and
+  preserves **Personal Memory** and independently authorized sharing
+- A sharing pause is independent from a **Capture Pause**
 - Removing a **User** from a **Team** or **Workspace** removes future access but
   does not delete retained **Team-shared Memory**
 - A **Share Grant** revocation, **Workspace Archive**, **Access Suspension**,
@@ -423,6 +457,9 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 > **Dev:** "Does sharing a session move it into Team ownership?"
 > **Domain expert:** "No — **Team-shared Memory** remains user-owned and is recallable through a **Share Grant**."
 
+> **Dev:** "If I add a Koed Conversation to Test project, can repository recall still find it?"
+> **Domain expert:** "Yes. Named Project membership preserves its Git Anchor and Folder context."
+
 > **Dev:** "If I share personal memory into my Team identity, is that a fork?"
 > **Domain expert:** "No — use **Cross-Identity Sync** when the same logical memory lifespan should continue across identities."
 
@@ -438,8 +475,15 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - "visibility" and "scope" are easy to conflate; resolved: **Personal Memory** describes stored memory visibility, while **Retrieval Scope** describes a recall request.
 - "global" can sound like all stored memory; resolved: a global **Search Domain** still only searches memory visible under the selected **Retrieval Scope**.
 - "project" and "workspace" are easy to conflate; resolved: **Project** is
-  local AI-client/code context, while **Workspace** is the stable shared ID for
-  memories.
+  local AI-client/code context or a named umbrella grouping, while **Workspace**
+  is the stable shared ID for memories.
+- "Project" also labels repository context in existing capture and recall
+  language. A named grouping, **Git Anchor**, and **Folder** are distinct
+  selections. Their Capture Policy interaction remains unresolved.
+- Folder selection means exact Folder matching. Renamed directories, replaced
+  checkouts, and equal paths on different devices do not prove the same context.
+- Removing membership from a shared Project and excluding a Conversation from
+  all sharing to one Workspace need distinct, explicit meanings.
 - "team memory" can sound like the Team owns the memory; resolved:
   **Team-shared Memory** remains owned by the originating **User** and is
   accessed through a **Share Grant**.

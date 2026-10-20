@@ -7,10 +7,14 @@ import {
 } from "@koed/core";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
+import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";
+import { projectPersonalSelectionQuery } from "./personal-selection-sql.js";
 import {
-  activeCuratedMemoryEvidencePredicate,
-  curatedMemoryActiveEvidenceRowsSql
-} from "./curated-memory-policy.js";
+  authorizedPersonalDerivedEvidence,
+  authorizedPersonalCuratedSourceIds,
+  personalCuratedMemorySelectionSql,
+  personalCuratedSourceSelectionSql
+} from "./personal-derived-selection-sql.js";
 import {
   assertionSelect,
   hydrateAssertionRow,
@@ -44,171 +48,86 @@ export const createCuratedMemoryRecallMethods = ({
         ? terms.map((term) => `%${term}%`)
         : [`%${input.query.trim().toLowerCase()}%`];
     const currentOnly = input.currentOnly ?? true;
-    const temporalEvidenceSql = curatedMemoryActiveEvidenceRowsSql(
-      "cma",
-      "temporal"
-    );
-    const scopedEvidenceSql = curatedMemoryActiveEvidenceRowsSql(
-      "cma",
-      "scoped"
-    );
-    if (protectedCuratedMemoryPayloadsRequired()) {
+    const projected = projectPersonalSelectionQuery(actor.userId, input);
+    input = projected.input;
+    const protectedPayloads = protectedCuratedMemoryPayloadsRequired();
+    if (protectedPayloads)
       requireEncryptionProvider(envelopeEncryptionProvider);
-      const candidates = await pool.query<AssertionRow>(
-        `
-          select ${assertionSelect}
-          from curated_memory_assertions cma
-          left join curated_memory_topics cmt on cmt.id = cma.topic_id
-          where cma.owner_user_id = $1
-            and cma.visibility = 'personal'
-            and cma.suppressed_at is null
-            and ($2::boolean = false or cma.status = 'current')
-            and (cma.expires_at is null or cma.expires_at > now())
-            and ${activeCuratedMemoryEvidencePredicate("cma")}
-            and (
-              ($6::timestamptz is null and $7::timestamptz is null)
-              or exists (
-                select 1
-                from (${temporalEvidenceSql}) temporal_source
-                where temporal_source.source_event_time >= coalesce($6::timestamptz, '-infinity'::timestamptz)
-                  and temporal_source.source_event_time < coalesce($7::timestamptz, 'infinity'::timestamptz)
-              )
-            )
-            and (
-              $3::text = 'global'
-              or (
-                $3::text = 'session'
-                and exists (
-                  select 1
-                  from (${scopedEvidenceSql}) scoped_source
-                  where scoped_source.source_session_id = $4::uuid
-                )
-              )
-              or (
-                $3::text = 'project'
-                and exists (
-                  select 1
-                  from (${scopedEvidenceSql}) scoped_source
-                  where repository_scope_matches(scoped_source.source_repository_identity, $5)
-                )
-              )
-            )
-          order by
-            cma.updated_at desc,
-            cma.id desc
-          limit 500
-        `,
-        [
-          actor.userId,
-          currentOnly,
-          input.searchDomain ?? "global",
-          input.sessionId ?? null,
-          input.projectId ?? null,
-          input.sourceAfter ?? null,
-          input.sourceBefore ?? null
-        ]
-      );
-      const hydrated = await Promise.all(
-        candidates.rows.map((row) =>
-          hydrateAssertionRow(pool, actor, envelopeEncryptionProvider, row)
-        )
-      );
-      const queryTerms =
-        terms.length > 0
-          ? terms
-          : [input.query.trim().toLowerCase()].filter(Boolean);
-      const matching = hydrated
-        .filter((row) => {
-          const searchable = [
-            row.assertion_text,
-            row.topic_title ?? "",
-            ...(row.tags ?? [])
-          ].map((value) => value.toLowerCase());
-          return queryTerms.some((term) =>
-            searchable.some((value) => value.includes(term))
-          );
-        })
-        .slice(0, positiveLimit(input.limit, 10));
-      const sourceMap = await loadSources(
-        pool,
-        actor,
-        envelopeEncryptionProvider,
-        matching.map((row) => row.id)
-      );
-      return matching.map((row) => mapAssertion(row, sourceMap.get(row.id)));
-    }
-    const result = await pool.query<AssertionRow>(
+    const candidates = await pool.query<AssertionRow>(
       `
-        select ${assertionSelect}
-        from curated_memory_assertions cma
-        left join curated_memory_topics cmt on cmt.id = cma.topic_id
-        where cma.owner_user_id = $1
-          and cma.visibility = 'personal'
-          and cma.suppressed_at is null
-          and ($2::boolean = false or cma.status = 'current')
-          and (cma.expires_at is null or cma.expires_at > now())
-          and ${activeCuratedMemoryEvidencePredicate("cma")}
-          and (
-            lower(cma.assertion_text) like any($3::text[])
-            or lower(coalesce(cmt.title, '')) like any($3::text[])
-            or exists (
-              select 1
-              from unnest(cma.tags) as tag
-              where lower(tag) like any($3::text[])
-            )
-          )
-          and (
-            ($8::timestamptz is null and $9::timestamptz is null)
-            or exists (
-              select 1
-              from (${temporalEvidenceSql}) temporal_source
-              where temporal_source.source_event_time >= coalesce($8::timestamptz, '-infinity'::timestamptz)
-                and temporal_source.source_event_time < coalesce($9::timestamptz, 'infinity'::timestamptz)
-            )
-          )
-          and (
-            $4::text = 'global'
-            or (
-              $4::text = 'session'
-              and exists (
-                select 1
-                from (${scopedEvidenceSql}) scoped_source
-                where scoped_source.source_session_id = $5::uuid
-              )
-            )
-            or (
-              $4::text = 'project'
-              and exists (
-                select 1
-                from (${scopedEvidenceSql}) scoped_source
-                where repository_scope_matches(scoped_source.source_repository_identity, $6)
-              )
-            )
-          )
-        order by
-          cma.updated_at desc,
-          cma.id desc
-        limit $7
-      `,
+      select ${assertionSelect}
+      from curated_memory_assertions cma
+      left join curated_memory_topics cmt on cmt.id=cma.topic_id
+      where cma.owner_user_id=$1 and cma.visibility='personal'
+        and cma.suppressed_at is null and ($2::boolean=false or cma.status='current')
+        and (cma.expires_at is null or cma.expires_at>now())
+        and ${personalCuratedMemorySelectionSql("cma", "$5", "$6", "$7")}
+        and ($8::boolean or lower(cma.assertion_text) like any($3::text[])
+          or lower(coalesce(cmt.title,'')) like any($3::text[])
+          or exists(select 1 from unnest(cma.tags) tag where lower(tag) like any($3::text[])))
+      order by cma.updated_at desc,cma.id desc
+      limit case when $8::boolean then 500 else $4 end
+    `,
       [
         actor.userId,
         currentOnly,
         patterns,
-        input.searchDomain ?? "global",
-        input.sessionId ?? null,
-        input.projectId ?? null,
         positiveLimit(input.limit, 10),
+        JSON.stringify(projected.selection),
         input.sourceAfter ?? null,
-        input.sourceBefore ?? null
+        input.sourceBefore ?? null,
+        protectedPayloads
       ]
+    );
+    const authorized = await authorizedPersonalDerivedEvidence(
+      pool,
+      projected.selection,
+      candidates.rows.map((row) => ({
+        source_type: "curated_memory",
+        source_id: row.id
+      })),
+      input.sourceAfter ? new Date(input.sourceAfter) : null,
+      input.sourceBefore ? new Date(input.sourceBefore) : null,
+      !currentOnly
+    );
+    const hydrated = await Promise.all(
+      candidates.rows
+        .filter((row) => authorized.has(`curated_memory:${row.id}`))
+        .map((row) =>
+          hydrateAssertionRow(pool, actor, envelopeEncryptionProvider, row)
+        )
+    );
+    const queryTerms = terms.length
+      ? terms
+      : [input.query.trim().toLowerCase()].filter(Boolean);
+    const matching = hydrated
+      .filter(
+        (row) =>
+          !protectedPayloads ||
+          queryTerms.some((term) =>
+            [
+              row.assertion_text,
+              row.topic_title ?? "",
+              ...(row.tags ?? [])
+            ].some((value) => value.toLowerCase().includes(term))
+          )
+      )
+      .slice(0, positiveLimit(input.limit, 10));
+    const selectedSourceIds = await authorizedPersonalCuratedSourceIds(
+      pool,
+      projected.selection,
+      matching.map((row) => row.id),
+      input.sourceAfter ? new Date(input.sourceAfter) : null,
+      input.sourceBefore ? new Date(input.sourceBefore) : null
     );
     const sourceMap = await loadSources(
       pool,
       actor,
       envelopeEncryptionProvider,
-      result.rows.map((row) => row.id)
+      matching.map((row) => row.id),
+      selectedSourceIds
     );
-    return result.rows.map((row) => mapAssertion(row, sourceMap.get(row.id)));
+    return matching.map((row) => mapAssertion(row, sourceMap.get(row.id)));
   },
 
   async expandCuratedMemoryRetrieval(actor, assertionId, input = {}) {
@@ -249,6 +168,8 @@ export const createCuratedMemoryRecallMethods = ({
       lcm_visibility: Visibility | null;
       lcm_created_at: Date | null;
     };
+    const projected = projectPersonalSelectionQuery(actor.userId, input);
+    input = projected.input;
     const result = await pool.query<EvidenceRow>(
       `
         select
@@ -267,20 +188,20 @@ export const createCuratedMemoryRecallMethods = ({
           ci.event_time as ci_event_time,
           ci.observed_at as ci_observed_at,
           cms.memory_event_id,
-          me.owner_user_id as me_owner_user_id,
-          me.visibility as me_visibility,
-          me.event_type as me_event_type,
-          me.session_id as me_session_id,
-          me.turn_id as me_turn_id,
-          me.payload as me_payload,
-          me.created_at as me_created_at,
-          me.captured_at as me_captured_at,
-          me.source_event_time as me_source_event_time,
+          source_ev.owner_user_id as me_owner_user_id,
+          source_ev.visibility as me_visibility,
+          source_ev.event_type as me_event_type,
+          source_ev.session_id as me_session_id,
+          source_ev.turn_id as me_turn_id,
+          source_ev.payload as me_payload,
+          source_ev.created_at as me_created_at,
+          source_ev.captured_at as me_captured_at,
+          source_ev.source_event_time as me_source_event_time,
           cms.lcm_node_id,
-          mn.owner_user_id as lcm_owner_user_id,
-          mn.summary_text as lcm_summary_text,
-          mn.visibility as lcm_visibility,
-          mn.created_at as lcm_created_at
+          linked_node.owner_user_id as lcm_owner_user_id,
+          linked_node.summary_text as lcm_summary_text,
+          linked_node.visibility as lcm_visibility,
+          linked_node.created_at as lcm_created_at
         from curated_memory_assertions cma
         left join curated_memory_sources cms on cms.assertion_id = cma.id
         left join conversation_items ci
@@ -289,26 +210,19 @@ export const createCuratedMemoryRecallMethods = ({
           and ci.visibility = 'personal'
           and ci.personal_deleted_at is null
           and ci.memory_excluded_at is null
-        left join memory_events me
-          on me.id = cms.memory_event_id
-          and me.owner_user_id = cma.owner_user_id
-          and me.visibility = 'personal'
-          and me.invalidated_at is null
-          and me.personal_deleted_at is null
-        left join memory_nodes mn
-          on mn.id = cms.lcm_node_id
-          and mn.owner_user_id = cma.owner_user_id
-          and mn.visibility = 'personal'
-          and mn.invalidated_at is null
-          and mn.personal_deleted_at is null
-        left join lateral (
-          select ev.session_id from memory_node_sources src
-          join memory_events ev on ev.id = src.memory_event_id
-          where src.memory_node_id = mn.id and ev.owner_user_id = $2
-            and ev.invalidated_at is null and ev.personal_deleted_at is null
-          order by src.source_order asc limit 1
-        ) node_source on true
-        left join sessions source_session on source_session.id = coalesce(ci.session_id, me.session_id, mn.session_id, node_source.session_id)
+        left join memory_events source_ev
+          on source_ev.id = cms.memory_event_id
+          and source_ev.owner_user_id = cma.owner_user_id
+          and source_ev.visibility = 'personal'
+          and source_ev.invalidated_at is null
+          and source_ev.personal_deleted_at is null
+        left join memory_nodes linked_node
+          on linked_node.id = cms.lcm_node_id
+          and linked_node.owner_user_id = cma.owner_user_id
+          and linked_node.visibility = 'personal'
+          and linked_node.invalidated_at is null
+          and linked_node.personal_deleted_at is null
+        left join sessions source_session on source_session.id=coalesce(ci.session_id,source_ev.session_id)
         where cma.id = $1
           and cma.owner_user_id = $2
           and cma.visibility = 'personal'
@@ -316,26 +230,13 @@ export const createCuratedMemoryRecallMethods = ({
           and cma.suppressed_at is null
           and (cma.expires_at is null or cma.expires_at > now())
           and ${activeCuratedMemoryEvidencePredicate("cma")}
-          and ($3::text = 'global' or ($3::text = 'session' and source_session.id = $4::uuid)
-            or ($3::text = 'project' and repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $5)))
-          and ($3::text = 'global' or mn.id is null or not exists (
-            select 1 from memory_node_sources boundary_src
-            join memory_events boundary_ev on boundary_ev.id = boundary_src.memory_event_id
-            left join sessions boundary_session on boundary_session.id = boundary_ev.session_id
-            where boundary_src.memory_node_id = mn.id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
-              and not (($3::text = 'session' and boundary_ev.session_id = $4::uuid)
-                or ($3::text = 'project' and repository_scope_matches(coalesce(boundary_session.repository_override_identity, boundary_session.repository_automatic_identity), $5)))
-          ))
-          and ($6::timestamptz is null or coalesce(ci.event_time, ci.observed_at, me.captured_at, mn.created_at) >= $6)
-          and ($7::timestamptz is null or coalesce(ci.event_time, ci.observed_at, me.captured_at, mn.created_at) < $7)
+          and ${personalCuratedSourceSelectionSql("cms", "$3", "$4", "$5")}
         order by cms.created_at asc, cms.id asc
       `,
       [
         assertionId,
         actor.userId,
-        input.searchDomain ?? "global",
-        input.sessionId ?? null,
-        input.projectId ?? null,
+        JSON.stringify(projected.selection),
         input.sourceAfter ?? null,
         input.sourceBefore ?? null
       ]

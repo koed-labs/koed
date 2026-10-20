@@ -15,6 +15,7 @@ export interface PdsWorkerSecureRuntime {
   waitForWake?(signal?: AbortSignal): Promise<void>;
   reconcileArtifacts?(): Promise<number>;
   reconcileProjectSelections?(): Promise<number>;
+  reconcilePersonalConfiguration?(): Promise<number>;
   publish(input: {
     workerId: string;
     outboxId: string;
@@ -76,6 +77,8 @@ export interface PdsWorkerSecureRuntime {
           | import("@koed/shared").PdsClosedProfileTransition
           | null;
         pdsRepositoryAssignment?: import("@koed/shared").PdsRepositoryAssignment;
+        sourceLogicalSessionId?: string;
+        sourceContext?: unknown;
       }
     | {
         kind: "checkpoint";
@@ -93,7 +96,16 @@ export interface PdsWorkerSecureRuntime {
         originDeviceId: string;
         artifactState: "ready" | "incompatible";
       }
-    | { kind: "project_selection"; userId: string; originDeviceId: string }
+    | {
+        kind: "project_selection";
+        userId: string;
+        originDeviceId: string;
+      }
+    | {
+        kind: "configuration";
+        userId: string;
+        originDeviceId: string;
+      }
   >;
 }
 
@@ -216,6 +228,19 @@ export const createPdsLocalSyncService = (input: {
       }
       await input.secureRuntime.pollLifecycle?.();
       await refreshPeerRoutesIfDue();
+      try {
+        const configurations =
+          (await input.secureRuntime.reconcilePersonalConfiguration?.()) ?? 0;
+        needsDrain ||= configurations >= 50;
+      } catch (error) {
+        input.logger.warn(
+          {
+            err: error,
+            event: { name: "worker.pds.configuration.pending", category: "pds" }
+          },
+          "Personal configuration reconciliation is pending"
+        );
+      }
       const selections =
         (await input.secureRuntime.reconcileProjectSelections?.()) ?? 0;
       needsDrain ||= selections >= 10;
@@ -446,7 +471,8 @@ export const createPdsLocalSyncService = (input: {
           });
           if (
             materialized.kind === "artifact" ||
-            materialized.kind === "project_selection"
+            materialized.kind === "project_selection" ||
+            materialized.kind === "configuration"
           ) {
             await input.secureRuntime.acknowledge?.({
               inboxId: entry.id,

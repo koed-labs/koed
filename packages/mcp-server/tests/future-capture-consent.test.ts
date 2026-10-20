@@ -15,7 +15,9 @@ afterEach(() => {
 
 describe("headless future capture consent", () => {
   it("uploads only post-baseline Pi bytes without changing the source session", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-consent-"));
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-consent-"))
+    );
     directories.push(root);
     const transcriptPath = path.join(root, "session.jsonl");
     const cwd = "/tmp/project";

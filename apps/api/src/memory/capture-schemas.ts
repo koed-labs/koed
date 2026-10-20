@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { repositoryIdentitySchema } from "@koed/shared";
+import {
+  repositoryIdentitySchema,
+  personalFolderObservationSchema
+} from "@koed/shared";
 import { metadataSchema, visibilitySchema } from "./common-schemas.js";
 
 const captureStateSchema = z.enum(["enabled", "disabled", "ask"]);
@@ -35,6 +38,8 @@ export const createMcpSessionSchema = z.object({
   sourceHash: z.string().min(1).optional(),
   metadata: metadataSchema,
   repositoryIdentity: repositoryIdentitySchema.optional(),
+  folderObservation: personalFolderObservationSchema.optional(),
+  currentFolderObservation: personalFolderObservationSchema.optional(),
   detectedProjects: z.array(personalProjectReferenceSchema).max(20).optional()
 });
 

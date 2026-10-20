@@ -142,6 +142,36 @@ export const pdsPeerRoutes = pgTable(
     index("pds_peer_route_expiry_idx").on(table.groupId, table.expiresAt)
   ]
 );
+/** Signed configuration protocol flags. No source or organization payload enters relay metadata. */
+export const pdsConfigurationCapabilities = pgTable(
+  "pds_configuration_capabilities",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    canonicalAdvertisement: text("canonical_advertisement").notNull(),
+    canonicalRequestProof: text("canonical_request_proof").notNull(),
+    advertisedAt: timestamp("advertised_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("pds_configuration_capability_device_unique").on(
+      table.groupId,
+      table.deviceId
+    ),
+    index("pds_configuration_capability_expiry_idx").on(
+      table.groupId,
+      table.expiresAt
+    )
+  ]
+);
+
 export const pdsRelayRequestNonces = pgTable(
   "pds_relay_request_nonces",
   {

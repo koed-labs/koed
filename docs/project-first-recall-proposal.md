@@ -2,6 +2,11 @@
 
 Proposed future behavior. Implementation is deferred.
 
+The agreed [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
+separates named Projects from Git and Folder filters. Its explicit selection
+boundary takes precedence over any implied widening through Project membership
+in this older proposal. Broader relevance-based widening remains a separate proposal.
+
 Koed can prioritize Personal Memory and authorized Team-shared Memory associated
 with the current Git Project, then widen recall when the question needs more
 context. A Project is the current repository or code context. A Workspace is a

@@ -37,7 +37,7 @@ async function run() {
     evaluate(`(() => {
     const card=document.querySelector('.personal-project-details-card'),rect=card.getBoundingClientRect();
     const header=document.querySelector('.personal-project-header'),move=header.querySelector('[aria-label="Move Project"]'),create=header.querySelector('.personal-new-conversation');
-    return {width:innerWidth,headerHeight:header.getBoundingClientRect().height,moveHeight:move.getBoundingClientRect().height,newHeight:create.getBoundingClientRect().height,
+    return {width:innerWidth,headerHeight:header.getBoundingClientRect().height,retiredMoveVisible:!!move,newHeight:create.getBoundingClientRect().height,
       overflow:card.scrollWidth>card.clientWidth,pageOverflow:document.documentElement.scrollWidth>innerWidth,
       fits:rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight,
       folderSelector:!!card.querySelector('[aria-label="Repository checkout"]')};
@@ -240,7 +240,8 @@ async function run() {
       layouts.every(
         (entry) =>
           entry.headerHeight === 96 &&
-          entry.moveHeight === entry.newHeight &&
+          !entry.retiredMoveVisible &&
+          entry.newHeight > 0 &&
           !entry.overflow &&
           !entry.pageOverflow &&
           entry.fits &&

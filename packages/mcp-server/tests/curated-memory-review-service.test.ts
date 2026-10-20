@@ -247,6 +247,7 @@ describe("Curated Memory review service", () => {
     const workerConfig = resolveCuratedMemoryReviewConfig(
       {
         TEST_CURATED_RUNTIME: "preserved",
+        KOED_HOME: directory,
         KOED_CLAUDE_CODE_EXECUTABLE: claudeExecutable
       },
       {

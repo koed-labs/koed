@@ -1,9 +1,11 @@
+import { ProjectOrganization } from "./ProjectOrganization.js";
+import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
+import { ConversationProjectsDialog } from "./ProjectMembershipActions.js";
 import { projectConversationFolders } from "../../../project-conversation-folders.js";
 import { projectRowPresentation } from "../../../project-row-presentation.js";
 import { ProjectGroupIcon } from "./ProjectGroupIcon.js";
 import { useProjectFolderFilter } from "./use-project-folder-filter.js";
-import { CreateProjectDialog, MoveProjectDialog } from "./ProjectActions.js";
-import { MoveConversationDialog } from "./MoveConversationDialog.js";
+import { CreateProjectDialog } from "./ProjectActions.js";
 import { ProjectHeader } from "./ProjectHeader.js";
 import { ProjectRepo } from "./ProjectRepo.js";
 import type { RendererPlatform } from "../../services/platform.js";
@@ -138,6 +140,9 @@ export type PersonalMemoryInspectorEvent = {
 };
 
 export type PersonalMemoryWorkspaceProps = {
+  manageMembershipSync?: PersonalDesktopApi["manageMembershipSync"];
+  manageProject?: PersonalDesktopApi["manageProject"];
+  manageSourceContext?: PersonalDesktopApi["manageSourceContext"];
   authorizeManagedConversationTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
   assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   updateSessionPresentation?: PersonalDesktopApi["updateSessionPresentation"];
@@ -725,7 +730,7 @@ const launchReady = (
   );
 
 function ProjectDetail({
-  moveAction,
+  organization,
   renderConversationMove,
   localAiClients,
   error,
@@ -773,7 +778,7 @@ function ProjectDetail({
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
-  moveAction?: ReactNode;
+  organization?: ReactNode;
   renderConversationMove?: (thread: PersonalDesktopProjectThread) => ReactNode;
 }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -1071,35 +1076,38 @@ function ProjectDetail({
   }
   return (
     <section className="personal-project-detail">
-      <ProjectHeader
-        key={project.id}
-        project={project}
-        folderFilter={{
-          folders: folderModel.folders,
-          hiddenFolderIds: folderFilter.hiddenFolderIds,
-          loading: folderFilter.loading,
-          onChange: folderFilter.change
-        }}
-        onSetAnchor={onSetRepositoryAnchor}
-        onReview={onReviewRepository}
-        onAssociation={onProjectAssociation}
-        onChanged={async () => onRetry()}
-        onOpenRepository={onOpenRepository}
-        onRevealLocalProject={onRevealLocalProject}
-      >
-        <div className="personal-project-detail-actions">
-          {moveAction}
-          <button
-            className="personal-new-conversation personal-new-conversation-standalone"
-            type="button"
-            disabled={!managedConversations || !project.path || !launchOptions}
-            aria-expanded={launchOpen}
-            onClick={() => setLaunchOpen((open) => !open)}
-          >
-            New
-          </button>
-        </div>
-      </ProjectHeader>
+      {organization ?? (
+        <ProjectHeader
+          key={project.id}
+          project={project}
+          folderFilter={{
+            folders: folderModel.folders,
+            hiddenFolderIds: folderFilter.hiddenFolderIds,
+            loading: folderFilter.loading,
+            onChange: folderFilter.change
+          }}
+          onSetAnchor={onSetRepositoryAnchor}
+          onReview={onReviewRepository}
+          onAssociation={onProjectAssociation}
+          onChanged={async () => onRetry()}
+          onOpenRepository={onOpenRepository}
+          onRevealLocalProject={onRevealLocalProject}
+        >
+          <div className="personal-project-detail-actions">
+            <button
+              className="personal-new-conversation personal-new-conversation-standalone"
+              type="button"
+              disabled={
+                !managedConversations || !project.path || !launchOptions
+              }
+              aria-expanded={launchOpen}
+              onClick={() => setLaunchOpen((open) => !open)}
+            >
+              New
+            </button>
+          </div>
+        </ProjectHeader>
+      )}
       {launchError ? (
         <p className="personal-managed-error" role="alert">
           {launchError}
@@ -1170,14 +1178,20 @@ function ProjectDetail({
               <h2>
                 {hasFolderFilter && project.threads.length
                   ? "No Conversations match the folder filter"
-                  : "No Captured Sessions yet"}
+                  : project.namedProject
+                    ? "No Conversations in this Project"
+                    : "No Captured Sessions yet"}
               </h2>
               <p>
                 {hasFolderFilter && project.threads.length
                   ? "Select Show all to restore the list."
-                  : project.path
-                    ? "Sessions appear after the Supported Capture Hook records activity in this Project."
-                    : "Move existing Conversations or a Project into this Project to get started."}
+                  : project.namedProject
+                    ? organization
+                      ? "Open Project setup to choose sources and include Conversations here."
+                      : "Open a Conversation and use Add to Project to include it here."
+                    : project.path
+                      ? "Sessions appear after the Supported Capture Hook records activity in this Project."
+                      : "Move existing Conversations or a Project into this Project to get started."}
               </p>
             </div>
           </div>
@@ -3363,7 +3377,8 @@ function ShareAffordance({
 }
 
 function SessionDetail({
-  assignSessionProject,
+  manageProject,
+  manageSourceContext,
   onCreateProject,
   authorizeManagedConversationTransfer,
   candidates,
@@ -3373,7 +3388,6 @@ function SessionDetail({
   managedConversations,
   managedProject,
   markdownAdapters,
-  onAssigned,
   onInspectEvent,
   onOpenRepository,
   onShare,
@@ -3388,6 +3402,8 @@ function SessionDetail({
   managedDraft,
   onRetryManagedConversation
 }: {
+  manageProject?: PersonalDesktopApi["manageProject"];
+  manageSourceContext?: PersonalDesktopApi["manageSourceContext"];
   assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
@@ -3556,14 +3572,23 @@ function SessionDetail({
             suggestions={suggestions}
             thread={thread}
           />
-          <MoveConversationDialog
-            assign={assignSessionProject}
-            onCreateProject={onCreateProject}
-            onAssigned={onAssigned}
-            projects={projects}
-            store={store}
-            thread={thread}
-          />
+          {manageSourceContext ? (
+            <SourceContextCorrectionDialog
+              thread={thread}
+              projects={projects}
+              manage={manageSourceContext}
+              store={store}
+            />
+          ) : null}
+          {manageProject ? (
+            <ConversationProjectsDialog
+              thread={thread}
+              projects={projects}
+              manage={manageProject}
+              store={store}
+              create={onCreateProject}
+            />
+          ) : null}
         </div>
       </header>
       <div className="personal-conversation-host">
@@ -3594,9 +3619,10 @@ function SessionDetail({
 }
 
 export function PersonalMemoryWorkspace({
-  assignSessionProject,
+  manageMembershipSync,
+  manageProject,
+  manageSourceContext,
   onCreateProject,
-  moveProject,
   updateSessionPresentation,
   authorizeManagedConversationTransfer,
   managedConversationRevision = 0,
@@ -3609,7 +3635,6 @@ export function PersonalMemoryWorkspace({
   markdownAdapters,
   onInspectEvent,
   onNavigate,
-  onSessionProjectAssigned,
   onShareToWorkspace,
   openExternal,
   revealLocalProject,
@@ -3711,6 +3736,7 @@ export function PersonalMemoryWorkspace({
     () =>
       projects.filter(
         (project) =>
+          Boolean(project.namedProject) ||
           project.repository?.kind === "local_project" ||
           project.threads.length > 0 ||
           project.eventCount > 0
@@ -3816,9 +3842,10 @@ export function PersonalMemoryWorkspace({
         <main className="personal-memory-detail-pane">
           {effectiveRoute === "session" && selectedProject && selectedThread ? (
             <SessionDetail
+              manageProject={manageProject}
+              manageSourceContext={manageSourceContext}
               onCreateProject={onCreateProject}
               key={selectedThread.id}
-              assignSessionProject={assignSessionProject}
               authorizeManagedConversationTransfer={
                 authorizeManagedConversationTransfer
               }
@@ -3831,7 +3858,6 @@ export function PersonalMemoryWorkspace({
               managedConversations={managedConversations}
               managedProject={managedProject}
               markdownAdapters={markdownAdapters}
-              onAssigned={onSessionProjectAssigned}
               onInspectEvent={onInspectEvent}
               onOpenRepository={onOpenRepository}
               onShare={onShareToWorkspace}
@@ -3857,32 +3883,40 @@ export function PersonalMemoryWorkspace({
           ) : (
             <ProjectDetail
               renderConversationMove={
-                assignSessionProject
+                manageProject
                   ? (thread) => (
-                      <MoveConversationDialog
-                        assign={assignSessionProject}
-                        onCreateProject={onCreateProject}
-                        onAssigned={onSessionProjectAssigned}
-                        projects={visibleProjects}
-                        store={store}
-                        thread={thread}
-                        triggerVariant="menuitem"
-                      />
+                      <>
+                        {manageSourceContext ? (
+                          <SourceContextCorrectionDialog
+                            thread={thread}
+                            projects={visibleProjects}
+                            manage={manageSourceContext}
+                            store={store}
+                            menuitem
+                          />
+                        ) : null}
+                        <ConversationProjectsDialog
+                          thread={thread}
+                          projects={visibleProjects}
+                          manage={manageProject}
+                          store={store}
+                          create={onCreateProject}
+                          menuitem
+                        />
+                      </>
                     )
                   : undefined
               }
-              moveAction={
-                selectedProject && moveProject ? (
-                  <MoveProjectDialog
+              organization={
+                selectedProject?.namedProject && manageProject ? (
+                  <ProjectOrganization
                     key={selectedProject.id}
                     project={selectedProject}
-                    projects={visibleProjects}
-                    move={moveProject}
-                    create={onCreateProject}
+                    projects={projects}
+                    manage={manageProject}
+                    sync={manageMembershipSync}
                     store={store}
-                    onMoved={(projectId) =>
-                      onNavigate({ kind: "project", projectId })
-                    }
+                    onDeleted={() => onNavigate({ kind: "projects" })}
                   />
                 ) : undefined
               }

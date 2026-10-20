@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import {
+  CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
+  personalSelectionSnapshotSchema
+} from "@koed/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
@@ -154,14 +157,29 @@ export const curatedMemoryListQuerySchema = z.object({
 
 export const curatedMemorySearchQuerySchema = z
   .object({
+    recall_target: z.never().optional(),
+    personalSelection: z.never().optional(),
     query: z.string().trim().min(1).max(4000),
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     project_id: z.string().trim().min(1).optional(),
+    personal_selection: personalSelectionSnapshotSchema.optional(),
+    source_after: z.coerce.date().optional(),
+    source_before: z.coerce.date().optional(),
     current_only: queryBooleanSchema.default(true),
     limit: z.coerce.number().int().positive().max(50).default(10)
   })
   .superRefine((input, context) => {
+    if (
+      input.source_after &&
+      input.source_before &&
+      input.source_after >= input.source_before
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["source_after"],
+        message: "source_after must be earlier than source_before"
+      });
     if (input.search_domain === "session" && !input.session_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

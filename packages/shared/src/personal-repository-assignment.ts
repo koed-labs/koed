@@ -1,3 +1,4 @@
+import { personalSourceContextSchema } from "./personal-source-contract.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
@@ -125,6 +126,57 @@ export const createPdsRepositoryAssignment = (
         : null
   });
 };
+/** V5/V6 retain a narrow Git projection for internal legacy adapters. Named groupings never enter it. */
+export const createPdsRepositoryAssignmentFromSourceContext = (
+  raw: unknown,
+  epoch: string,
+  key: string,
+  provenance: {
+    capturedCwd?: string | null;
+    branchObservation?: string | null;
+  } = {}
+) => {
+  const context = personalSourceContextSchema.parse(raw),
+    git = context.git;
+  const automatic = git.original.state === "known" ? git.original.value : null;
+  const fact =
+    git.correction.state === "corrected" ? git.correction.value : null;
+  const override =
+    fact?.state === "known"
+      ? fact.value
+      : fact
+        ? {
+            kind: "unresolved" as const,
+            key: null,
+            root: null,
+            branch: null,
+            reason: "selection_missing" as const,
+            checkoutId: null,
+            originatingDeviceId: context.source.originatingDeviceId,
+            selectedRemote: null,
+            anchorDisplay: null
+          }
+        : null;
+  return createPdsRepositoryAssignment(
+    createRepositoryAssignment({
+      state: automatic ? "recorded" : "historical_unresolved",
+      version: git.revision,
+      automatic,
+      override
+    }),
+    epoch,
+    key,
+    {
+      capturedCwd: provenance.capturedCwd ?? null,
+      branchObservation: automatic
+        ? provenance.branchObservation !== undefined
+          ? provenance.branchObservation
+          : automatic.branch
+        : null
+    }
+  );
+};
+
 /** Call only after package/device authorization. The caller supplies a verified epoch key. */
 export const verifyPdsRepositoryAssignment = (
   value: unknown,

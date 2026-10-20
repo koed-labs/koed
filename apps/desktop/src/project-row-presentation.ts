@@ -118,6 +118,22 @@ export function projectRowPresentation(
       conversationCount
     };
   }
+  if (project.folder)
+    return {
+      kind: "folder",
+      sourceLabel: "Folder",
+      context: project.folder.normalizedPath,
+      contextKind: "folder",
+      conversationCount
+    };
+  if (project.namedProject)
+    return {
+      kind: "project",
+      sourceLabel: "Named Project",
+      context: null,
+      contextKind: null,
+      conversationCount
+    };
   if (project.repository?.kind === "local_project") {
     return {
       kind: "project",

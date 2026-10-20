@@ -115,6 +115,8 @@ export const registerQuestionRoutes = (
         { userId: user.id },
         {
           askThreadId: input.ask_thread_id,
+          namedProjectId: input.named_project_id,
+          folderSelection: input.folder_selection,
           idempotencyKey: input.idempotency_key,
           query: input.query
         }

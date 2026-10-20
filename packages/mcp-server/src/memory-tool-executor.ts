@@ -4,6 +4,13 @@ import {
 } from "./repository-recall-context.js";
 import path from "node:path";
 import {
+  assertPersonalSelectionInput,
+  authorizedPersonalSelectionSnapshot,
+  snapshotPinnedPersonalSelection,
+  personalFolderScopeId,
+  type PersonalSelectionSnapshot
+} from "@koed/shared";
+import {
   answerWithMemoryWorker,
   type MemoryAnswerConversationTurn,
   type MemoryAnswerRetrievalClient,
@@ -92,12 +99,15 @@ export interface TrustedMemoryAnswerExecutionOptions {
   requireQuestionPersistence?: boolean;
   onProgress?: (status: string) => void;
   origin: "desktop_ask" | "mcp_memory_answer";
+  personalSelection?: PersonalSelectionSnapshot;
   pendingQuestionId?: string;
   taskContext?: MemoryAnswerTaskExecutionContext;
   onFinalQuestionPrepared?: (question: Record<string, unknown>) => void;
 }
 
 export interface DesktopAskExecutionInput {
+  namedProjectId?: string;
+  folderSelection?: import("@koed/shared").PersonalFolderReference;
   askThreadId?: string;
   idempotencyKey: string;
   query: string;
@@ -221,6 +231,8 @@ export class MemoryToolExecutor {
     const pending = desktopAskQuestionFromResponse(
       await this.client.createPendingDesktopAsk({
         ask_thread_id: input.askThreadId,
+        named_project_id: input.namedProjectId,
+        folder_selection: input.folderSelection,
         idempotency_key: input.idempotencyKey,
         query: input.query
       })
@@ -228,12 +240,31 @@ export class MemoryToolExecutor {
     if (pending.status !== "pending") {
       return { question: displaySafeDesktopAskQuestion(pending) };
     }
-    const conversationContext = input.askThreadId
-      ? boundedDesktopAskConversationContext(
-          await this.client.getDesktopAskThread(pending.askThreadId)
-        )
-      : [];
+    const conversationContext =
+      !input.namedProjectId && !input.folderSelection && input.askThreadId
+        ? boundedDesktopAskConversationContext(
+            await this.client.getDesktopAskThread(pending.askThreadId)
+          )
+        : [];
     try {
+      const ownerUserId =
+        input.namedProjectId || input.folderSelection
+          ? (await this.client.accessCheck()).user.id
+          : undefined;
+      const personalSelection: PersonalSelectionSnapshot | undefined =
+        (input.namedProjectId || input.folderSelection) && ownerUserId
+          ? {
+              version: 1,
+              ownerUserId,
+              target: input.folderSelection
+                ? { kind: "folder", folder: input.folderSelection }
+                : {
+                    kind: "project",
+                    project: { ownerUserId, projectId: input.namedProjectId! }
+                  },
+              callerRepositoryContext: null
+            }
+          : undefined;
       await this.executeMemoryAnswer(
         {
           include_evidence: false,
@@ -241,11 +272,23 @@ export class MemoryToolExecutor {
           query: pending.query,
           response_detail: "answer_only",
           retrieval_hints: {},
-          search_domain: "global"
+          search_domain:
+            input.namedProjectId || input.folderSelection
+              ? "project"
+              : "global",
+          ...(input.namedProjectId || input.folderSelection
+            ? {
+                project_id: input.folderSelection
+                  ? personalFolderScopeId(input.folderSelection)
+                  : input.namedProjectId,
+                repository_context: null
+              }
+            : {})
         },
         caller,
         {
           origin: "desktop_ask",
+          personalSelection,
           conversationContext,
           pendingQuestionId: pending.id
         },
@@ -377,12 +420,22 @@ export class MemoryToolExecutor {
     finalQuestion: Record<string, unknown>;
     result: Record<string, unknown>;
   }> {
-    input = memoryAnswerInputSchema.parse(input);
+    const nonRepositorySelection =
+      context?.personalSelection?.version === 1 &&
+      (context.personalSelection.target.kind === "project" ||
+        context.personalSelection.target.kind === "folder");
+    input = memoryAnswerInputSchema.parse(
+      nonRepositorySelection
+        ? { ...input, repository_context: undefined }
+        : input
+    );
+    if (nonRepositorySelection) input = { ...input, repository_context: null };
     const authority = context?.getExecutionAuthority() ?? {
       scope: "personal" as const
     };
     if (
       authority.scope === "personal" &&
+      !nonRepositorySelection &&
       !this.personalMemoryAnswerEligible(input, caller)
     ) {
       throw Object.assign(
@@ -438,11 +491,18 @@ export class MemoryToolExecutor {
       throw new Error("Desktop Ask requires a durable pending question");
     }
     const taskAuthority = execution.taskContext?.getExecutionAuthority();
+    const acceptedSelection =
+      execution.taskContext?.personalSelection ?? execution.personalSelection;
+    const nonRepositorySelection =
+      acceptedSelection?.version === 1 &&
+      (acceptedSelection.target.kind === "project" ||
+        acceptedSelection.target.kind === "folder");
     if (
       taskAuthority?.scope !== "team" &&
       (input.team_workspace_id ||
         input.team_backend_id ||
         (!taskAuthority &&
+          !nonRepositorySelection &&
           resolveProjectTeamWorkspaceRoute({
             projectRoot:
               input.search_domain === "project"
@@ -461,6 +521,7 @@ export class MemoryToolExecutor {
       );
     }
     if (
+      !nonRepositorySelection &&
       !input.team_workspace_id &&
       taskAuthority?.scope !== "team" &&
       (input.search_domain === "project" || input.search_domain === "global")
@@ -475,7 +536,7 @@ export class MemoryToolExecutor {
             "Accepted memory task is missing pinned repository context"
           ),
           {
-            memoryAnswerTaskErrorCode: "invalid_project_scope",
+            memoryAnswerTaskErrorCode: "personal_selection_incompatible",
             retryable: false
           }
         );
@@ -498,7 +559,19 @@ export class MemoryToolExecutor {
     void include_evidence;
     void response_detail;
     void team_backend_id;
-    const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
+    const access = await this.client.accessCheck();
+    const retrievalScope = defaultAnswerScope(access);
+    const personalSelection =
+      taskAuthority?.scope === "team"
+        ? undefined
+        : acceptedSelection
+          ? authorizedPersonalSelectionSnapshot(
+              acceptedSelection,
+              access.user.id
+            )
+          : snapshotPinnedPersonalSelection(access.user.id, input);
+    if (personalSelection)
+      assertPersonalSelectionInput(personalSelection, input);
     const workerConfig = await resolveLocalMemoryAgentConfig({
       client: this.client,
       flowKey: "mcp_memory_answer",
@@ -512,6 +585,7 @@ export class MemoryToolExecutor {
       ...config,
       cwd:
         execution.taskContext ||
+        nonRepositorySelection ||
         this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
           ? config.cwd
           : caller.cwd
@@ -564,7 +638,7 @@ export class MemoryToolExecutor {
                 team_workspace_id: authority.teamWorkspaceId,
                 authorization_boundary: authority.authorizationBoundary
               }
-            : searchInput
+            : { ...searchInput, personal_selection: personalSelection }
         );
         execution.onProgress?.("retrieval search completed");
         return result;
@@ -579,7 +653,7 @@ export class MemoryToolExecutor {
                 teamWorkspaceId: authority.teamWorkspaceId,
                 authorizationBoundary: authority.authorizationBoundary
               }
-            : expandInput
+            : { ...expandInput, personalSelection }
         );
         execution.onProgress?.("memory expansion completed");
         return result;

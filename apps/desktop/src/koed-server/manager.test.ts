@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -14,8 +15,9 @@ import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   RemoteRequestTimeoutError,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
-  repositoryScopeId,
+  personalFolderScopeId,
   type RepositoryIdentity,
+  type PersonalProjectCommand,
   createPdsApplicationSecretStore,
   storeDesktopLocalCredential
 } from "@koed/shared";
@@ -262,7 +264,7 @@ describe("Koed server desktop manager", () => {
     }
   });
 
-  it("creates folderless Projects and derives individual and whole-Project moves from their local identities", async () => {
+  it("creates backend Projects and adds membership without source moves or local named writes", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-named-desktop-"));
     try {
       mkdirSync(resolve(koedHome, "config"));
@@ -270,38 +272,174 @@ describe("Koed server desktop manager", () => {
         resolve(koedHome, "config/local-app-credential.json"),
         JSON.stringify({ apiToken: "main_only_token" })
       );
-      const personalMemoryFetch = vi
-        .fn<typeof fetch>()
-        .mockImplementation(async (url, init) => {
-          if (String(url).includes("/projects/move")) {
-            const body = JSON.parse(String(init?.body)) as {
-              project: { id: string };
-            };
-            return new Response(
-              JSON.stringify({ movedCount: 503, projectId: body.project.id })
-            );
-          }
-          if (init?.method === "PATCH") {
-            const body = JSON.parse(String(init.body)) as {
-              project: { id: string; repositoryIdentity: RepositoryIdentity };
-            };
-            return new Response(
-              JSON.stringify({
-                session: {
-                  project: { id: body.project.id },
-                  repositoryAssignment: {
-                    state: "historical_unresolved",
-                    version: 2,
-                    automatic: null,
-                    override: body.project.repositoryIdentity,
-                    effective: body.project.repositoryIdentity
-                  }
+      const project = {
+        projectId: "00000000-0000-4000-8000-000000000061",
+        name: "Planning",
+        version: 1,
+        headRevisionId: "00000000-0000-4000-8000-000000000062",
+        deletedAt: null,
+        createdAt: "2026-10-19T12:00:00.000Z",
+        updatedAt: "2026-10-19T12:00:00.000Z"
+      };
+      const membership = {
+        inclusionId: "00000000-0000-4000-8000-000000000063",
+        projectId: project.projectId,
+        logicalSessionId: "00000000-0000-4000-8000-000000000064",
+        sourceReference: null,
+        version: 1,
+        headRevisionId: "00000000-0000-4000-8000-000000000065",
+        removedAt: null
+      };
+      const repository: RepositoryIdentity = {
+        kind: "portable_repository",
+        key: "gr_rule_fixture",
+        root: "/work/source",
+        branch: "main",
+        reason: "origin",
+        checkoutId: "checkout",
+        originatingDeviceId: "device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/source"
+      };
+      const rule = {
+        inclusionId: "00000000-0000-4000-8000-000000000068",
+        projectId: project.projectId,
+        target: { kind: "repository", repository },
+        version: 1,
+        headRevisionId: "00000000-0000-4000-8000-000000000069",
+        removedAt: null
+      };
+      const folderContext = {
+        reference: {
+          ownerUserId: "00000000-0000-4000-8000-000000000085",
+          folderId: "folder_fixture",
+          originatingDeploymentId: "deployment",
+          originatingDeviceId: "device",
+          originatingProfileId: "profile",
+          directoryIncarnationId: "incarnation"
+        },
+        normalizedPath: "/work/source/sub",
+        capturedPath: "/work/source/sub/."
+      };
+      const folderRule = {
+        ...rule,
+        inclusionId: "00000000-0000-4000-8000-000000000071",
+        target: { kind: "folder", folder: folderContext.reference },
+        folderContext
+      };
+      const sourceContext = {
+        sessionId: "00000000-0000-4000-8000-000000000066",
+        logicalSessionId: membership.logicalSessionId,
+        git: {
+          revision: 1,
+          original: { state: "unresolved", reason: "historical_unresolved" },
+          correction: { state: "original" }
+        },
+        folder: {
+          revision: 1,
+          original: { state: "unresolved", reason: "historical_unresolved" },
+          correction: { state: "original" }
+        }
+      };
+      const sourceReview = {
+        reviewId: membership.inclusionId,
+        axis: "git",
+        expectedVersion: 1,
+        before: sourceContext,
+        after: sourceContext,
+        projects: []
+      };
+      const personalMemoryFetch = vi.fn<typeof fetch>(async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        const body = init?.body
+          ? (JSON.parse(String(init.body)) as { folder?: unknown })
+          : {};
+        const selectedRule = body.folder ? folderRule : rule;
+        if (path.includes("/source-context"))
+          return new Response(
+            JSON.stringify({
+              context: sourceContext,
+              ...(path.endsWith("/source-context")
+                ? {}
+                : { preview: sourceReview })
+            })
+          );
+        if (path === "/v1/personal/projects" && init?.method === "POST")
+          return new Response(JSON.stringify({ project }));
+        if (path.endsWith("/rules/preview"))
+          return new Response(
+            JSON.stringify({
+              project,
+              preview: {
+                target: selectedRule.target,
+                ...(body.folder ? { folderContext } : {}),
+                conversations: []
+              }
+            })
+          );
+        if (path.endsWith("/rules"))
+          return new Response(
+            JSON.stringify({
+              project: { ...project, version: 2 },
+              rule: selectedRule
+            })
+          );
+        if (path.endsWith(`/rules/${rule.inclusionId}`))
+          return new Response(
+            JSON.stringify({
+              project: { ...project, version: 3 },
+              rule: { ...rule, version: 2, removedAt: project.updatedAt }
+            })
+          );
+        if (path.endsWith(`/rules/${folderRule.inclusionId}`))
+          return new Response(
+            JSON.stringify({
+              project: { ...project, version: 3 },
+              rule: { ...folderRule, version: 2, removedAt: project.updatedAt }
+            })
+          );
+        if (path.endsWith("/inventory"))
+          return new Response(
+            JSON.stringify({
+              projects: [
+                {
+                  id: project.projectId,
+                  name: project.name,
+                  namedProject: project,
+                  inclusionRules: [rule],
+                  directInclusions: [membership],
+                  path: null,
+                  eventCount: 0,
+                  threads: []
                 }
-              })
-            );
-          }
+              ]
+            })
+          );
+        if (
+          path.endsWith("/memberships/explain") ||
+          path.endsWith("/exclusions") ||
+          path.endsWith("/restore")
+        )
+          return new Response(
+            JSON.stringify({
+              project,
+              explanation: {
+                sessionId: "00000000-0000-4000-8000-000000000066",
+                logicalSessionId: membership.logicalSessionId,
+                reasons: [],
+                exclusion: null,
+                included: false
+              }
+            })
+          );
+        if (path.endsWith("/memberships"))
+          return new Response(
+            JSON.stringify({ project: { ...project, version: 2 }, membership })
+          );
+        if (path === "/v1/memory/graph/threads")
           return new Response(JSON.stringify({ projects: [] }));
-        });
+        throw new Error(`Unexpected write ${path}`);
+      });
       const manager = createKoedServerManager({
         repoRoot: "/repo",
         cliPath: "/repo/cli.js",
@@ -325,18 +463,13 @@ describe("Koed server desktop manager", () => {
         openExternal: async () => undefined,
         personalMemoryFetch
       });
-      const created = await manager.personalMemory({
-        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-        operation: "personal.projects.create",
-        input: { name: "  Planning  " }
-      });
-      expect(created).toMatchObject({
-        ok: true,
-        data: { projectId: expect.stringContaining('"kind":"local_project"') }
-      });
-      if (!created.ok || created.operation !== "personal.projects.create")
-        throw new Error("creation failed");
-      const targetProjectId = created.data.projectId;
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.create",
+          input: { name: "  Planning  " }
+        })
+      ).toMatchObject({ ok: true, data: { projectId: project.projectId } });
       expect(
         await manager.personalMemory({
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -348,57 +481,408 @@ describe("Koed server desktop manager", () => {
         data: {
           projects: [
             {
-              id: targetProjectId,
+              id: project.projectId,
+              namedProject: project,
+              directInclusions: [membership],
               name: "Planning",
-              repository: { kind: "local_project", reason: "manual" },
               path: null,
               threads: []
             }
           ]
         }
       });
+      const sessionId = "00000000-0000-4000-8000-000000000066";
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.manage",
+          input: {
+            action: "add_session",
+            projectId: project.projectId,
+            sessionId,
+            expectedVersion: 1
+          }
+        })
+      ).toMatchObject({
+        ok: true,
+        data: { project: { version: 2 }, membership }
+      });
+      expect(
+        personalMemoryFetch.mock.calls.some(
+          ([url, init]) =>
+            String(url).endsWith(`/${project.projectId}/memberships`) &&
+            init?.body === JSON.stringify({ expectedVersion: 1, sessionId })
+        )
+      ).toBe(true);
+      for (const command of [
+        {
+          input: { action: "get" as const, sessionId },
+          suffix: "",
+          method: "GET",
+          body: undefined
+        },
+        {
+          input: {
+            action: "preview" as const,
+            sessionId,
+            correction: {
+              axis: "folder" as const,
+              action: "set" as const,
+              expectedVersion: 1,
+              folder: folderContext.reference
+            }
+          },
+          suffix: "/reviews",
+          method: "POST",
+          body: {
+            axis: "folder",
+            action: "set",
+            expectedVersion: 1,
+            folder: folderContext.reference
+          }
+        },
+        {
+          input: {
+            action: "apply" as const,
+            sessionId,
+            reviewId: sourceReview.reviewId,
+            expectedVersion: 1
+          },
+          suffix: `/reviews/${sourceReview.reviewId}/apply`,
+          method: "POST",
+          body: { expectedVersion: 1 }
+        }
+      ]) {
+        const before = personalMemoryFetch.mock.calls.length;
+        expect(
+          await manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.sources.manage",
+            input: command.input
+          })
+        ).toMatchObject({ ok: true });
+        const [url, init] = personalMemoryFetch.mock.calls[before]!;
+        expect(new URL(String(url)).pathname).toBe(
+          `/v1/personal/sessions/${sessionId}/source-context${command.suffix}`
+        );
+        expect(init?.method ?? "GET").toBe(command.method);
+        expect(init?.body ? JSON.parse(String(init.body)) : undefined).toEqual(
+          command.body
+        );
+      }
+      const commands: Array<{
+        input: PersonalProjectCommand;
+        suffix: string;
+        method: "POST" | "DELETE";
+      }> = [
+        {
+          input: {
+            action: "explain_session",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            sessionId
+          },
+          suffix: "/memberships/explain",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "exclude_session",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            sessionId
+          },
+          suffix: "/exclusions",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "add_back",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            sessionId,
+            exclusionId: membership.inclusionId,
+            expectedExclusionRevisionId: membership.headRevisionId
+          },
+          suffix: `/exclusions/${membership.inclusionId}/restore`,
+          method: "POST"
+        },
+        {
+          input: {
+            action: "preview_repository",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            repository
+          },
+          suffix: "/rules/preview",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "add_repository",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            repository
+          },
+          suffix: "/rules",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "remove_rule",
+            projectId: project.projectId,
+            expectedVersion: 2,
+            inclusionId: rule.inclusionId
+          },
+          suffix: `/rules/${rule.inclusionId}`,
+          method: "DELETE"
+        },
+        {
+          input: {
+            action: "preview_folder",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            folder: folderContext.reference
+          },
+          suffix: "/rules/preview",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "add_folder",
+            projectId: project.projectId,
+            expectedVersion: 1,
+            folder: folderContext.reference
+          },
+          suffix: "/rules",
+          method: "POST"
+        },
+        {
+          input: {
+            action: "remove_rule",
+            projectId: project.projectId,
+            expectedVersion: 2,
+            inclusionId: folderRule.inclusionId
+          },
+          suffix: `/rules/${folderRule.inclusionId}`,
+          method: "DELETE"
+        }
+      ];
+      for (const { input, suffix, method } of commands) {
+        const before = personalMemoryFetch.mock.calls.length;
+        expect(
+          await manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.projects.manage",
+            input
+          })
+        ).toMatchObject({ ok: true });
+        const [url, init] = personalMemoryFetch.mock.calls[before]!;
+        expect(new URL(String(url)).pathname).toBe(
+          `/v1/personal/projects/${project.projectId}${suffix}`
+        );
+        expect(init?.method).toBe(method);
+        expect(JSON.parse(String(init?.body))).toEqual({
+          expectedVersion: input.expectedVersion,
+          ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
+          ...(input.action === "add_back"
+            ? { expectedExclusionRevisionId: input.expectedExclusionRevisionId }
+            : {}),
+          ...("repository" in input
+            ? { repository: input.repository }
+            : "folder" in input
+              ? { folder: input.folder }
+              : {})
+        });
+      }
+      expect(
+        personalMemoryFetch.mock.calls.some(
+          ([url, init]) =>
+            new URL(String(url)).pathname ===
+              `/v1/personal/projects/${project.projectId}` &&
+            init?.method === "DELETE"
+        )
+      ).toBe(false);
       expect(
         await manager.personalMemory({
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
           operation: "personal.sessions.assign_project",
           input: {
             action: "move",
-            targetProjectId,
-            sessionId: "11111111-1111-4111-8111-111111111111",
+            targetProjectId: project.projectId,
+            sessionId,
             expectedVersion: 1
           }
         })
-      ).toMatchObject({ ok: true, data: { projectId: targetProjectId } });
+      ).toMatchObject({ ok: false });
       expect(
         await manager.personalMemory({
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
           operation: "personal.projects.move",
-          input: { sourceProjectId: "unassigned", targetProjectId }
+          input: {
+            sourceProjectId: "git-source",
+            targetProjectId: project.projectId
+          }
         })
-      ).toMatchObject({
-        ok: true,
-        data: { projectId: targetProjectId, movedCount: 503 }
-      });
-      const moveBody = JSON.parse(
-        String(personalMemoryFetch.mock.calls.at(-1)?.[1]?.body)
-      ) as {
-        project: { path: unknown; repositoryIdentity: RepositoryIdentity };
-      };
-      expect(moveBody.project).toMatchObject({
-        path: null,
-        repositoryIdentity: {
-          kind: "local_project",
-          root: null,
-          checkoutId: null
-        }
-      });
+      ).toMatchObject({ ok: false });
       expect(
-        readFileSync(resolve(koedHome, "config/projects.json"), "utf8")
-      ).not.toContain("/repo");
+        personalMemoryFetch.mock.calls.some(
+          ([url]) =>
+            String(url).includes("/projects/move") ||
+            String(url).includes(`/sessions/${sessionId}/project`)
+        )
+      ).toBe(false);
+      const local = resolve(koedHome, "config/projects.json");
+      if (existsSync(local))
+        expect(readFileSync(local, "utf8")).not.toContain("Planning");
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }
   });
+
+  it.each(["named", "folder"])(
+    "loads %s timelines through the source and Conversation boundary",
+    async (kind) => {
+      const koedHome = mkdtempSync(resolve(tmpdir(), "koed-named-timeline-"));
+      try {
+        mkdirSync(resolve(koedHome, "config"));
+        writeFileSync(
+          resolve(koedHome, "config/local-app-credential.json"),
+          JSON.stringify({ apiToken: "personal_token" })
+        );
+        const folderSelection = {
+          ownerUserId: "00000000-0000-4000-8000-000000000085",
+          folderId: "folder_fixture",
+          originatingDeploymentId: "deployment_fixture",
+          originatingDeviceId: "device_fixture",
+          originatingProfileId: "profile_fixture",
+          directoryIncarnationId: "incarnation_fixture"
+        };
+        const projectId =
+            kind === "named"
+              ? "00000000-0000-4000-8000-000000000081"
+              : personalFolderScopeId(folderSelection),
+          sessionId = "00000000-0000-4000-8000-000000000082",
+          eventId = "00000000-0000-4000-8000-000000000083";
+        const event = {
+          id: eventId,
+          sessionId,
+          projectId: "original-git",
+          threadId: "provider-thread",
+          actor: "user",
+          eventType: "message",
+          timestamp: "2026-10-19T12:00:00.000Z",
+          sourceEventTime: null,
+          sourceSequence: 1,
+          content: "Scoped decision",
+          contentPreview: "Scoped decision",
+          invalidatedAt: null,
+          metadata: {}
+        };
+        let wrongSession = false;
+        const personalMemoryFetch = vi.fn<typeof fetch>(
+          async (url) =>
+            new Response(
+              JSON.stringify(
+                new URL(String(url)).pathname.endsWith(eventId)
+                  ? {
+                      event: {
+                        ...event,
+                        sessionId: wrongSession
+                          ? "00000000-0000-4000-8000-000000000084"
+                          : sessionId
+                      }
+                    }
+                  : { events: [event] }
+              )
+            )
+        );
+        const manager = createKoedServerManager({
+          repoRoot: "/repo",
+          cliPath: "/repo/cli.js",
+          environment: { KOED_HOME: koedHome },
+          createCliInvocation: (args) => ({
+            command: "/node",
+            args: ["/repo/cli.js", ...args],
+            env: { KOED_HOME: koedHome }
+          }),
+          existsSync: () => true,
+          execFile: (_command, _args, _options, callback) =>
+            callback(
+              null,
+              JSON.stringify({
+                ok: true,
+                api: { state: "healthy", url: "http://localhost:4170" }
+              }),
+              ""
+            ),
+          spawn: () => childProcess() as never,
+          openExternal: async () => undefined,
+          personalMemoryFetch
+        });
+        const input = {
+          projectId,
+          ...(kind === "named"
+            ? { namedProjectId: projectId }
+            : { folderSelection }),
+          sessionId,
+          threadId: "provider-thread",
+          limit: 50 as const
+        };
+        expect(
+          await manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.events.load_page",
+            input
+          })
+        ).toMatchObject({
+          ok: true,
+          data: { events: [{ id: eventId, content: "Scoped decision" }] }
+        });
+        const pageUrl = new URL(String(personalMemoryFetch.mock.calls[0]![0]));
+        expect(pageUrl.pathname).toBe(
+          kind === "named"
+            ? `/v1/personal/projects/${projectId}/events`
+            : "/v1/memory/graph/events"
+        );
+        expect(pageUrl.searchParams.get("sessionId")).toBe(sessionId);
+        expect(pageUrl.searchParams.has("projectId")).toBe(false);
+        if (kind === "folder")
+          expect(
+            JSON.parse(pageUrl.searchParams.get("personalSelection")!)
+          ).toMatchObject({
+            target: { kind: "folder", folder: folderSelection }
+          });
+        expect(
+          await manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.events.load_page",
+            input: { ...input, eventIds: [eventId] }
+          })
+        ).toMatchObject({ ok: true });
+        const detailUrl = new URL(
+          String(personalMemoryFetch.mock.calls[1]![0])
+        );
+        expect(detailUrl.pathname).toBe(
+          kind === "named"
+            ? `/v1/personal/projects/${projectId}/events/${eventId}`
+            : `/v1/memory/graph/events/${eventId}`
+        );
+        expect(detailUrl.searchParams.get("sessionId")).toBe(sessionId);
+        wrongSession = true;
+        expect(
+          await manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.events.load_page",
+            input: { ...input, eventIds: [eventId] }
+          })
+        ).toMatchObject({ ok: false, error: { code: "invalid_response" } });
+      } finally {
+        rmSync(koedHome, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("submits Personal Ask through the fixed local runtime operation", async () => {
     const question = {
       id: "11111111-1111-4111-8111-111111111111",
@@ -742,6 +1226,20 @@ describe("Koed server desktop manager", () => {
                     id: "thread-1",
                     name: "Studio session",
                     sessionId: "00000000-0000-4000-8000-000000000001",
+                    sourceReferences: [
+                      {
+                        sessionId: "00000000-0000-4000-8000-000000000001",
+                        logicalSessionId:
+                          "00000000-0000-4000-8000-000000000002",
+                        logicalMemoryId: null
+                      },
+                      {
+                        sessionId: "00000000-0000-4000-8000-000000000003",
+                        logicalSessionId:
+                          "00000000-0000-4000-8000-000000000004",
+                        logicalMemoryId: null
+                      }
+                    ],
                     originDeviceId: "AAAAAAAAAAAAAAAAAAAAAA",
                     sourceAiClient: "codex",
                     projectId: "project",
@@ -783,7 +1281,21 @@ describe("Koed server desktop manager", () => {
         projects: [
           {
             threads: [
-              { originDevice: { id: "AAAAAAAAAAAAAAAAAAAAAA", name: "Studio" } }
+              {
+                originDevice: { id: "AAAAAAAAAAAAAAAAAAAAAA", name: "Studio" },
+                sourceReferences: [
+                  {
+                    sessionId: "00000000-0000-4000-8000-000000000001",
+                    logicalSessionId: "00000000-0000-4000-8000-000000000002",
+                    logicalMemoryId: null
+                  },
+                  {
+                    sessionId: "00000000-0000-4000-8000-000000000003",
+                    logicalSessionId: "00000000-0000-4000-8000-000000000004",
+                    logicalMemoryId: null
+                  }
+                ]
+              }
             ]
           }
         ]
@@ -1687,94 +2199,102 @@ describe("Koed server desktop manager", () => {
   });
 
   it("runs JSON koed-server commands", async () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const manager = createKoedServerManager({
-      repoRoot: "/repo",
-      cliPath: "/repo/packages/koed-server/dist/cli.js",
-      environment: { PDS_DESKTOP_SECRET_STORAGE: "application_managed" },
-      createCliInvocation: (args) => ({
-        command: "/node",
-        args: ["/repo/packages/koed-server/dist/cli.js", ...args],
-        env: { KOED_REPO_ROOT: "/repo" }
-      }),
-      existsSync: () => true,
-      execFile: (command, args, _options, callback) => {
-        calls.push({ command, args });
-        callback(
-          null,
-          JSON.stringify(
-            args[1] === "status"
-              ? healthyLocalServiceStatus()
-              : { ok: true, state: "healthy" }
-          ),
-          ""
-        );
-      },
-      spawn: () => childProcess() as never,
-      openExternal: async () => undefined
-    });
-
-    await expect(manager.handlers.status!()).resolves.toMatchObject({
-      ok: true,
-      state: "healthy",
-      personalDeviceSync: {
-        state: "healthy",
-        message: "Application-managed local device storage is available."
-      }
-    });
-    expect(calls.slice(0, 2)).toEqual(
-      expect.arrayContaining([
-        {
-          command: "/node",
-          args: ["/repo/packages/koed-server/dist/cli.js", "status", "--json"]
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-json-commands-"));
+    try {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/packages/koed-server/dist/cli.js",
+        environment: {
+          KOED_HOME: koedHome,
+          PDS_DESKTOP_SECRET_STORAGE: "application_managed"
         },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/packages/koed-server/dist/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        }),
+        existsSync: () => true,
+        execFile: (command, args, _options, callback) => {
+          calls.push({ command, args });
+          callback(
+            null,
+            JSON.stringify(
+              args[1] === "status"
+                ? healthyLocalServiceStatus()
+                : { ok: true, state: "healthy" }
+            ),
+            ""
+          );
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+
+      await expect(manager.handlers.status!()).resolves.toMatchObject({
+        ok: true,
+        state: "healthy",
+        personalDeviceSync: {
+          state: "healthy",
+          message: "Application-managed local device storage is available."
+        }
+      });
+      expect(calls.slice(0, 2)).toEqual(
+        expect.arrayContaining([
+          {
+            command: "/node",
+            args: ["/repo/packages/koed-server/dist/cli.js", "status", "--json"]
+          },
+          {
+            command: "/node",
+            args: [
+              "/repo/packages/koed-server/dist/cli.js",
+              "package",
+              "status",
+              "--json"
+            ]
+          }
+        ])
+      );
+
+      await expect(manager.handlers.project_list!()).resolves.toMatchObject({
+        ok: true
+      });
+      expect(calls[2]).toEqual({
+        command: "/node",
+        args: [
+          "/repo/packages/koed-server/dist/cli.js",
+          "project",
+          "list",
+          "--json"
+        ]
+      });
+
+      await expect(
+        manager.handlers.personal_sync_revoke!({
+          deviceId: "device_redacted",
+          groupId: "group_redacted"
+        })
+      ).resolves.toMatchObject({ ok: true });
+      expect(calls.slice(3)).toEqual([
         {
           command: "/node",
           args: [
             "/repo/packages/koed-server/dist/cli.js",
-            "package",
-            "status",
+            "personal-sync",
+            "device",
+            "revoke",
+            "--group-id",
+            "group_redacted",
+            "--device-id",
+            "device_redacted",
             "--json"
           ]
         }
-      ])
-    );
-
-    await expect(manager.handlers.project_list!()).resolves.toMatchObject({
-      ok: true
-    });
-    expect(calls[2]).toEqual({
-      command: "/node",
-      args: [
-        "/repo/packages/koed-server/dist/cli.js",
-        "project",
-        "list",
-        "--json"
-      ]
-    });
-
-    await expect(
-      manager.handlers.personal_sync_revoke!({
-        deviceId: "device_redacted",
-        groupId: "group_redacted"
-      })
-    ).resolves.toMatchObject({ ok: true });
-    expect(calls.slice(3)).toEqual([
-      {
-        command: "/node",
-        args: [
-          "/repo/packages/koed-server/dist/cli.js",
-          "personal-sync",
-          "device",
-          "revoke",
-          "--group-id",
-          "group_redacted",
-          "--device-id",
-          "device_redacted",
-          "--json"
-        ]
-      }
-    ]);
+      ]);
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("runs redacted Personal Sync controls through main-process CLI", async () => {
@@ -1878,11 +2398,12 @@ describe("Koed server desktop manager", () => {
         );
         return new Response(null, { status: 401 });
       })
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ projects: [] }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ projects: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          })
       );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -1928,7 +2449,7 @@ describe("Koed server desktop manager", () => {
     });
     expect(manager.handlers).not.toHaveProperty("explorer_credential");
     expect(calls.some((args) => args.includes("api-token:create"))).toBe(false);
-    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(4);
     expect(
       new Headers(personalMemoryFetch.mock.calls[0]?.[1]?.headers).get(
         "authorization"
@@ -2079,7 +2600,13 @@ describe("Koed server desktop manager", () => {
         nextCursor: null
       }
     });
-    const recentUrl = new URL(String(personalMemoryFetch.mock.calls[1]?.[0]));
+    const recentUrl = new URL(
+      String(
+        personalMemoryFetch.mock.calls.find(
+          ([url]) => new URL(String(url)).searchParams.get("limit") === "51"
+        )?.[0]
+      )
+    );
     expect(recentUrl.searchParams.get("limit")).toBe("51");
     expect(recentUrl.searchParams.get("offset")).toBe("0");
     const rows = Array.from({ length: 123 }, (_, index) =>
@@ -2521,7 +3048,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
 
     expect(statusCalls).toBe(1);
-    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(6);
   });
 
   it("sends exact presentation mutations and reports stale versions safely", async () => {
@@ -2607,11 +3134,12 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const personalMemoryFetch = vi
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error("stale local origin"))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ projects: [] }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ projects: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          })
       );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -2655,7 +3183,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     ).resolves.toMatchObject({ ok: true });
 
     expect(statusCalls).toBe(2);
-    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(4);
     expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toContain(":4170/");
     expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toContain(":4180/");
   });
@@ -2789,75 +3317,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     );
   });
 
-  it("assigns unresolved history to an empty Project from the main-owned local catalog", async () => {
-    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
-    mkdirSync(resolve(koedHome, "config"), { recursive: true });
-    writeFileSync(
-      resolve(koedHome, "config/local-app-credential.json"),
-      JSON.stringify({ apiToken: "main_only_token" })
+  it("rejects legacy Project assignments before local discovery or API calls", async () => {
+    const base = fileURLToPath(
+      new URL("../../../../scratch/p1-17/", import.meta.url)
     );
-    const targetIdentity: RepositoryIdentity = {
-      kind: "portable_repository",
-      key: "gr_project_two",
-      root: "/work/project-two",
-      branch: "main",
-      reason: "origin",
-      checkoutId: "checkout_two",
-      originatingDeviceId: "pms_test",
-      selectedRemote: "origin",
-      anchorDisplay: "example.test/team/two"
-    };
-    const targetId = repositoryScopeId(targetIdentity);
-    const assignment = {
-      state: "historical_unresolved",
-      version: 2,
-      automatic: null,
-      override: targetIdentity,
-      effective: targetIdentity
-    };
-    writeFileSync(
-      resolve(koedHome, "config/projects.json"),
-      JSON.stringify({
-        schemaVersion: 3,
-        updatedAt: "2026-10-14T00:00:00.000Z",
-        deviceSaltId: "pms_test",
-        projects: [
-          {
-            schemaVersion: 1,
-            discoveredAt: "2026-10-14T00:00:00.000Z",
-            lastSeenAt: "2026-10-14T00:00:00.000Z",
-            localProjectId: "lp_two",
-            displayName: "Project Two",
-            path: {
-              cwd: "/work/project-two",
-              projectRoot: "/work/project-two"
-            },
-            packages: [],
-            repository: targetIdentity
-          }
-        ]
-      })
-    );
-    const personalMemoryFetch = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            projects: []
-          })
-        )
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            session: {
-              project: { id: targetId },
-              repositoryAssignment: assignment,
-              apiToken: "must-strip"
-            }
-          })
-        )
-      );
+    mkdirSync(base, { recursive: true });
+    const koedHome = mkdtempSync(resolve(base, "retired-main-"));
+    const personalMemoryFetch = vi.fn<typeof fetch>();
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -2882,46 +3348,35 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       openExternal: async () => undefined,
       personalMemoryFetch
     });
-    const sessionId = "11111111-1111-4111-8111-111111111111";
-
-    const result = await manager.personalMemory({
-      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-      operation: "personal.sessions.assign_project",
-      input: {
-        action: "move",
-        sessionId,
-        targetProjectId: targetId,
-        expectedVersion: 1
+    try {
+      for (const request of [
+        {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.assign_project",
+          input: {
+            action: "move",
+            sessionId: "11111111-1111-4111-8111-111111111111",
+            targetProjectId: "retired",
+            expectedVersion: 1
+          }
+        },
+        {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.move",
+          input: { sourceProjectId: "git-source", targetProjectId: "retired" }
+        }
+      ] as const) {
+        const result = await manager.personalMemory(request);
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "unsupported_operation", retryable: false }
+        });
+        expect(JSON.stringify(result)).toContain("Use Add to Project");
       }
-    });
-
-    expect(result).toEqual({
-      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-      operation: "personal.sessions.assign_project",
-      ok: true,
-      data: { projectId: targetId }
-    });
-    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
-      "http://localhost:4170/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false"
-    );
-    expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toBe(
-      `http://localhost:4170/v1/memory/graph/sessions/${sessionId}/project`
-    );
-    expect(
-      JSON.parse(String(personalMemoryFetch.mock.calls[1]?.[1]?.body))
-    ).toEqual({
-      action: "move",
-      expectedVersion: 1,
-      project: {
-        id: targetId,
-        name: "Project Two",
-        path: "/work/project-two",
-        repositoryIdentity: targetIdentity
-      }
-    });
-    expect(JSON.stringify(result)).not.toMatch(
-      /main_only_token|must-strip|remote\.example/
-    );
+      expect(personalMemoryFetch).not.toHaveBeenCalled();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("updates a Captured Session title through the fixed owner-scoped route", async () => {

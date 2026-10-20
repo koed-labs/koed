@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   repositoryIdentitySchema,
+  personalSelectionSnapshotSchema,
   memoryRetrievalExactHintsSchema
 } from "@koed/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
@@ -17,6 +18,9 @@ export const searchMemorySchema = z
     session_id: z.string().uuid().optional(),
     project_id: z.string().min(1).optional(),
     repository_context: repositoryIdentitySchema.nullable().optional(),
+    personal_selection: personalSelectionSnapshotSchema.optional(),
+    recall_target: z.never().optional(),
+    personalSelection: z.never().optional(),
     max_search_passes: z.union([z.literal(1), z.literal(2)]).optional(),
     team_workspace_id: z.string().uuid().optional(),
     authorization_boundary: z.string().min(1).max(32768).optional(),
@@ -40,6 +44,12 @@ export const searchMemorySchema = z
     strict_limit: queryBooleanSchema.optional()
   })
   .superRefine((input, context) => {
+    if (input.personal_selection && input.team_workspace_id)
+      context.addIssue({
+        code: "custom",
+        path: ["personal_selection"],
+        message: "Personal selection cannot be used for Team recall"
+      });
     if (input.authorization_boundary && !input.team_workspace_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

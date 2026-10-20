@@ -1,3 +1,4 @@
+import { assertPersonalLegacyWriteSupported } from "./personal-model-boundary.js";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
@@ -171,6 +172,8 @@ export const createRepositoryReviewRepository = (pool: pg.Pool) => ({
     rawAction: unknown
   ) {
     const action = repositoryReviewActionSchema.parse(rawAction);
+    if (action.action === "apply")
+      await assertPersonalLegacyWriteSupported(pool);
     return transaction(pool, async (client) => {
       let row =
         (
@@ -264,7 +267,7 @@ export const createRepositoryReviewRepository = (pool: pg.Pool) => ({
           );
         const target = event.target_identity;
         await client.query(
-          `update sessions set repository_override_identity=$3,repository_assignment_version=repository_assignment_version+1,project_override_id=$4,project_override_name=$5,project_override_path=$6,project_override_at=now(),project_override_by_user_id=$1,updated_at=now() where owner_user_id=$1 and id=any($2::uuid[])`,
+          `update sessions set repository_override_identity=$3,repository_assignment_version=repository_assignment_version+1,repository_assignment_revision_id=null,project_override_id=$4,project_override_name=$5,project_override_path=$6,project_override_at=now(),project_override_by_user_id=$1,updated_at=now() where owner_user_id=$1 and id=any($2::uuid[])`,
           [
             actor.userId,
             selected,

@@ -1,3 +1,8 @@
+import { personalOwnerIdSchema } from "@koed/shared";
+import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
+import { createPersonalConfigurationRepository } from "./personal-configuration-repository.js";
+import { createPersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
 import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
@@ -9,6 +14,23 @@ import {
   planRepositorySearch
 } from "@koed/shared";
 import { globalRepositoryContextJoinSql } from "./global-repository-context-sql.js";
+import {
+  authorizedPersonalRawEvidence,
+  personalSourceSelectionSql,
+  projectPersonalSelectionQuery,
+  projectPersonalInspectionQuery
+} from "./personal-selection-sql.js";
+import {
+  authorizedPersonalDerivedEvidence,
+  personalMemoryNodeSelectionSql,
+  personalMemoryNodeHasSelectedSourcesSql,
+  personalCuratedMemorySelectionSql,
+  personalNodeLineageSql
+} from "./personal-derived-selection-sql.js";
+import {
+  loadPersonalExpansionChildren,
+  loadPersonalExpansionMessages
+} from "./personal-expansion-sources.js";
 import {
   canonicalGlobalCandidateKey,
   classifyRepositoryEvidence
@@ -25,6 +47,9 @@ import {
   approvalConversationItemSql,
   semanticMemoryEventEligibleSql
 } from "./approval-activity-sql.js";
+import { createPersonalMembershipRepository } from "./personal-membership-repository.js";
+import { createPersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
+import { createPersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
 import {
@@ -408,6 +433,7 @@ const mapLcmGraphThreadRow = (row: {
   source_ai_client: SourceAiClient | null;
   origin_device_id?: string | null;
   logical_memory_id?: string | null;
+  source_references?: LcmGraphThread["sourceReferences"];
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -438,6 +464,7 @@ const mapLcmGraphThreadRow = (row: {
     name,
     sessionId: row.session_id,
     logicalMemoryId: row.logical_memory_id ?? null,
+    sourceReferences: row.source_references,
     sourceAiClient: row.source_ai_client,
     originDeviceId: row.origin_device_id ?? null,
     projectId: row.project_id,
@@ -4074,6 +4101,12 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createCapturedSessionRepository(pool),
+    ...createPersonalMembershipRepository(pool),
+    ...createPersonalMembershipReviewRepository(pool),
+    ...createPersonalSelectionConsumerRepository(pool),
+    ...createPersonalProjectRuleRepository(pool),
+    ...createPersonalProjectExclusionRepository(pool),
+    ...createPersonalSourceCorrectionRepository(pool),
     ...createProjectRoutingRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
@@ -4104,6 +4137,7 @@ export const createMemorySourceRepository = (
     }),
     ...createPersonalDeviceSyncRepository(pool),
     personalProjectSelections: createPersonalProjectSelectionRepository(pool),
+    personalConfiguration: createPersonalConfigurationRepository(pool),
     ...createPersonalDeviceArtifactRepository(pool, {
       getEmbeddableSource: (sourceType, sourceId) =>
         repository.getEmbeddableSource(sourceType, sourceId)
@@ -6680,7 +6714,10 @@ export const createMemorySourceRepository = (
       return result;
     },
 
-    async getLcmGraphOverview(actor) {
+    async getLcmGraphOverview(actor, input = {}) {
+      const { selection } = projectPersonalInspectionQuery(actor.userId, input);
+      const activeRead = { inspection: true, includeUnassigned: true };
+      const historyRead = { ...activeRead, includeInvalidated: true };
       const [embeddingStatus, counts, embeddings] = await Promise.all([
         this.getLocalEmbeddingStatus(),
         pool.query<{
@@ -6693,30 +6730,33 @@ export const createMemorySourceRepository = (
         }>(
           `
           with visible_nodes as (
-            select *
+            select mn.*, ${personalMemoryNodeSelectionSql("mn.id", "$2", "null", "null", activeRead)} as selection_active
             from memory_nodes mn
             where mn.visibility = 'personal'
               and mn.owner_user_id = $1
+              and ${personalMemoryNodeSelectionSql("mn.id", "$2", "null", "null", historyRead)}
           ),
           visible_events as (
-            select *
+            select me.*, ${personalSourceSelectionSql("s", "$2", activeRead)} and me.personal_deleted_at is null as selection_active
             from memory_events me
+            left join sessions s on s.id=me.session_id
             where me.visibility = 'personal'
               and me.owner_user_id = $1
+              and ${personalSourceSelectionSql("s", "$2", historyRead)}
               and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
           )
           select
-            (select count(*) from visible_events where invalidated_at is null)::text as captured_events,
-            (select count(*) from visible_nodes where kind = 'leaf' and invalidated_at is null)::text as leaf_nodes,
-            (select count(*) from visible_nodes where kind = 'rollup' and invalidated_at is null)::text as rollup_nodes,
-            (select count(*) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null)::text as pending_summaries,
-            (select min(created_at) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null) as oldest_pending_summary_created_at,
+            (select count(*) from visible_events where invalidated_at is null and selection_active)::text as captured_events,
+            (select count(*) from visible_nodes where kind = 'leaf' and invalidated_at is null and selection_active)::text as leaf_nodes,
+            (select count(*) from visible_nodes where kind = 'rollup' and invalidated_at is null and selection_active)::text as rollup_nodes,
+            (select count(*) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null and selection_active)::text as pending_summaries,
+            (select min(created_at) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null and selection_active) as oldest_pending_summary_created_at,
             (
               (select count(*) from visible_events where invalidated_at is not null)
               + (select count(*) from visible_nodes where invalidated_at is not null)
             )::text as invalidated_records
         `,
-          [actor.userId]
+          [actor.userId, JSON.stringify(selection)]
         ),
         pool.query<{
           total: string;
@@ -6736,28 +6776,31 @@ export const createMemorySourceRepository = (
               exists (
                 select 1 from memory_nodes mn
                 where mn.id = me.memory_node_id
-                  and (
-                    mn.visibility = 'personal' and mn.owner_user_id = $1
-                  )
+                  and mn.visibility = 'personal' and mn.owner_user_id = $1
+                  and ${personalMemoryNodeSelectionSql("mn.id", "$2", "null", "null")}
               )
               or exists (
-                select 1 from memory_events ev
+                select 1 from memory_events ev left join sessions s on s.id=ev.session_id
                 where ev.id = me.memory_event_id
                   and coalesce(ev.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
                   and (
                     ev.visibility = 'personal' and ev.owner_user_id = $1
                   )
+                  and ev.invalidated_at is null and ev.personal_deleted_at is null
+                  and ${personalSourceSelectionSql("s", "$2")}
               )
               or exists (
-                select 1 from messages msg
+                select 1 from messages msg left join sessions s on s.id=msg.session_id
                 where msg.id = me.message_id
                   and (
                     msg.visibility = 'personal' and msg.owner_user_id = $1
                   )
+                  and msg.invalidated_at is null and msg.recall_eligible=true
+                  and ${personalSourceSelectionSql("s", "$2")}
               )
             )
         `,
-          [actor.userId]
+          [actor.userId, JSON.stringify(selection)]
         )
       ]);
       const row = counts.rows[0]!;
@@ -6796,6 +6839,13 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphNodes(actor, input = {}) {
+      const projected = projectPersonalInspectionQuery(actor.userId, input);
+      input = projected.input;
+      const readOptions = {
+        includeInvalidated: input.includeInvalidated ?? false,
+        includeUnassigned: true,
+        inspection: true
+      };
       const nodeIds = input.nodeIds?.filter(Boolean) ?? [];
       const limit = nodeIds.length
         ? Math.min(nodeIds.length, 500)
@@ -6833,11 +6883,7 @@ export const createMemorySourceRepository = (
         where mn.kind in ('leaf', 'rollup')
           and ($2::boolean = true or mn.invalidated_at is null)
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
-          and (
-            $4::text is null
-            or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-          )
+          and ${personalMemoryNodeSelectionSql("mn.id", "$4", "null", "null", readOptions)}
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
@@ -6852,23 +6898,38 @@ export const createMemorySourceRepository = (
           actor.userId,
           input.includeInvalidated ?? false,
           input.visibility ?? null,
-          input.projectId ?? null,
+          JSON.stringify(projected.selection),
           input.threadId ?? null,
           input.query?.trim() || null,
           nodeIds.length ? nodeIds : null,
           limit
         ]
       );
+      const authorized = await authorizedPersonalDerivedEvidence(
+        pool,
+        projected.selection,
+        result.rows.map((row) => ({
+          source_type: "memory_node",
+          source_id: row.id
+        })),
+        null,
+        null,
+        false,
+        false,
+        readOptions
+      );
       const hydratedRows = await hydrateRepositoryMemoryNodeRows(
         pool,
-        result.rows
+        result.rows.filter(
+          (row) => authorized.get(`memory_node:${row.id}`) === true
+        )
       );
       return hydratedRows.map(mapLcmGraphNode);
     },
 
     async getLcmGraphNode(actor, nodeId, input = {}) {
       const nodes = await this.listLcmGraphNodes(actor, {
-        includeInvalidated: input.includeInvalidated,
+        ...input,
         nodeIds: [nodeId],
         limit: 1
       });
@@ -6876,15 +6937,7 @@ export const createMemorySourceRepository = (
       if (!node) {
         return null;
       }
-      const [fullNode, childRows, parentRows, sourceRows] = await Promise.all([
-        pool.query<{
-          id: string;
-          owner_user_id: string | null;
-          source_items_json: LcmSourceItem[];
-        }>(
-          "select id, owner_user_id, source_items_json from memory_nodes where id = $1",
-          [nodeId]
-        ),
+      const [childRows, parentRows, sourceRows] = await Promise.all([
         pool.query<{ child_memory_node_id: string }>(
           `
           select child_memory_node_id
@@ -6903,28 +6956,36 @@ export const createMemorySourceRepository = (
         `,
           [nodeId]
         ),
-        pool.query<{ memory_event_id: string }>(
+        pool.query<{ source_id: string }>(
           `
-          select memory_event_id
+          select coalesce(memory_event_id,message_id,tool_event_id)::text as source_id
           from memory_node_sources
-          where memory_node_id = $1 and memory_event_id is not null
+          where memory_node_id = $1
           order by source_order asc
         `,
           [nodeId]
         )
       ]);
-      const visibleNodes = await this.listLcmGraphNodes(actor, {
-        includeInvalidated: true,
-        limit: 500
-      });
+      const relatedIds = [
+        ...childRows.rows.map((row) => row.child_memory_node_id),
+        ...parentRows.rows.map((row) => row.parent_memory_node_id)
+      ];
+      const visibleNodes = relatedIds.length
+        ? await this.listLcmGraphNodes(actor, {
+            ...input,
+            nodeIds: relatedIds,
+            limit: 500
+          })
+        : [];
       const visibleNodeById = new Map(
         visibleNodes.map((item) => [item.id, item])
       );
       const [sources] = await Promise.all([
         Promise.all(
           sourceRows.rows.map((row) =>
-            this.getLcmGraphEvent(actor, row.memory_event_id, {
-              includeInvalidated: true,
+            this.getLcmGraphEvent(actor, row.source_id, {
+              ...input,
+              includeContent: true,
               includeRaw: false
             })
           )
@@ -6936,14 +6997,44 @@ export const createMemorySourceRepository = (
       const parentNodes = parentRows.rows
         .map((row) => visibleNodeById.get(row.parent_memory_node_id))
         .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
-      const hydratedFullNode = fullNode.rows[0]
-        ? await hydrateRepositoryMemoryNodeRow(pool, fullNode.rows[0])
-        : null;
+      const visibleSources = sources.filter(
+        (candidate): candidate is LcmGraphEvent => Boolean(candidate)
+      );
+      // Stored source snapshots are never authority for current source text.
+      const sourceItems: LcmSourceItem[] = [
+        ...childNodes.map(
+          (child, position): LcmSourceItem => ({
+            kind: "lcm_child",
+            nodeId: child.id,
+            text: child.summaryText,
+            position
+          })
+        ),
+        ...visibleSources.map(
+          (source, position): LcmSourceItem => ({
+            kind:
+              source.metadata.sourceTable === "messages"
+                ? "message"
+                : source.metadata.sourceTable === "tool_events"
+                  ? "tool_event"
+                  : "memory_event",
+            sourceTable:
+              source.metadata.sourceTable === "messages"
+                ? "messages"
+                : source.metadata.sourceTable === "tool_events"
+                  ? "tool_events"
+                  : "memory_events",
+            sourceId: source.id,
+            visibility: source.visibility,
+            text: source.content ?? source.contentPreview,
+            createdAt: source.capturedAt,
+            position
+          })
+        )
+      ];
       return {
         ...node,
-        sourceItems: Array.isArray(hydratedFullNode?.source_items_json)
-          ? hydratedFullNode.source_items_json
-          : [],
+        sourceItems,
         childNodes,
         parentNodes,
         sources: sources.filter((candidate): candidate is LcmGraphEvent =>
@@ -7042,12 +7133,20 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphEvents(actor, input = {}) {
+      const projected = projectPersonalInspectionQuery(actor.userId, input);
+      input = projected.input;
+      const readOptions = {
+        includeInvalidated: input.includeInvalidated ?? false,
+        includeUnassigned: true,
+        inspection: true
+      };
+
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
         `
         with cursor_order as (
           select coalesce(
-            $9::bigint,
+            $8::bigint,
             (
               select cursor_event.source_sequence
               from (
@@ -7088,7 +7187,7 @@ export const createMemorySourceRepository = (
                   and ${approvalConversationItemSql("ci")}
                   and ${ownerVisibleApprovalPresentationSql("ci")}
               ) cursor_event
-              where cursor_event.id = $10::uuid
+              where cursor_event.id = $9::uuid
               limit 1
             )
           ) as source_sequence
@@ -7138,30 +7237,26 @@ export const createMemorySourceRepository = (
           where ($2::boolean = true or me.invalidated_at is null)
             and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
             and (
-              $6::uuid is not null
+              $5::uuid is not null
               or me.session_id is null
-              or $12::boolean = true
+              or $11::boolean = true
             )
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+            and ${personalSourceSelectionSql("s", "$12", readOptions)}
+            and ($4::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $4)
+            and ($5::uuid is null or me.id = $5)
+            and ($6::text is null or me.payload ->> 'content' ilike '%' || $6 || '%' or me.id::text = $6)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
-            and ($6::uuid is null or me.id = $6)
-            and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
-            and (
-              $8::timestamptz is null
-              or coalesce(me.source_event_time, me.captured_at) < $8::timestamptz
+              $7::timestamptz is null
+              or coalesce(me.source_event_time, me.captured_at) < $7::timestamptz
               or (
-                coalesce(me.source_event_time, me.captured_at) = $8::timestamptz
+                coalesce(me.source_event_time, me.captured_at) = $7::timestamptz
                 and (
                   (
                     co.source_sequence is null
                     and me.source_sequence is null
-                    and $10::uuid is not null
-                    and me.id < $10::uuid
+                    and $9::uuid is not null
+                    and me.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7171,8 +7266,8 @@ export const createMemorySourceRepository = (
                   or (
                     co.source_sequence is not null
                     and me.source_sequence = co.source_sequence
-                    and $10::uuid is not null
-                    and me.id < $10::uuid
+                    and $9::uuid is not null
+                    and me.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7275,22 +7370,18 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = msg.session_id
           where ($2::boolean = true or msg.invalidated_at is null)
-            and $12::boolean = false
+            and $11::boolean = false
             and msg.role <> 'tool'
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
+            and ${personalSourceSelectionSql("s", "$12", readOptions)}
+            and ($4::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $4)
+            and ($5::uuid is null or msg.id = $5)
+            and ($6::text is null or msg.content ilike '%' || $6 || '%' or msg.id::text = $6)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
-            and ($6::uuid is null or msg.id = $6)
-            and ($7::text is null or msg.content ilike '%' || $7 || '%' or msg.id::text = $7)
-            and (
-              $8::timestamptz is null
-              or coalesce(msg.source_event_time, msg.captured_at) < $8::timestamptz
+              $7::timestamptz is null
+              or coalesce(msg.source_event_time, msg.captured_at) < $7::timestamptz
               or (
-                coalesce(msg.source_event_time, msg.captured_at) = $8::timestamptz
+                coalesce(msg.source_event_time, msg.captured_at) = $7::timestamptz
                 and (
                   (
                     co.source_sequence is null
@@ -7301,8 +7392,8 @@ export const createMemorySourceRepository = (
                         else null::bigint
                       end
                     ) is null
-                    and $10::uuid is not null
-                    and msg.id < $10::uuid
+                    and $9::uuid is not null
+                    and msg.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7330,8 +7421,8 @@ export const createMemorySourceRepository = (
                         else null::bigint
                       end
                     ) = co.source_sequence
-                    and $10::uuid is not null
-                    and msg.id < $10::uuid
+                    and $9::uuid is not null
+                    and msg.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7417,27 +7508,23 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = te.session_id
           where ($2::boolean = true or te.invalidated_at is null)
-            and $12::boolean = false
+            and $11::boolean = false
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
+            and ${personalSourceSelectionSql("s", "$12", readOptions)}
+            and ($4::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $4)
+            and ($5::uuid is null or te.id = $5)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
-            and ($6::uuid is null or te.id = $6)
-            and (
-              $7::text is null
-              or te.tool_name ilike '%' || $7 || '%'
-              or te.tool_input::text ilike '%' || $7 || '%'
-              or te.tool_response::text ilike '%' || $7 || '%'
-              or te.id::text = $7
+              $6::text is null
+              or te.tool_name ilike '%' || $6 || '%'
+              or te.tool_input::text ilike '%' || $6 || '%'
+              or te.tool_response::text ilike '%' || $6 || '%'
+              or te.id::text = $6
             )
             and (
-              $8::timestamptz is null
-              or coalesce(te.source_event_time, te.captured_at) < $8::timestamptz
+              $7::timestamptz is null
+              or coalesce(te.source_event_time, te.captured_at) < $7::timestamptz
               or (
-                coalesce(te.source_event_time, te.captured_at) = $8::timestamptz
+                coalesce(te.source_event_time, te.captured_at) = $7::timestamptz
                 and (
                   (
                     co.source_sequence is null
@@ -7448,8 +7535,8 @@ export const createMemorySourceRepository = (
                         else null::bigint
                       end
                     ) is null
-                    and $10::uuid is not null
-                    and te.id < $10::uuid
+                    and $9::uuid is not null
+                    and te.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7477,8 +7564,8 @@ export const createMemorySourceRepository = (
                         else null::bigint
                       end
                     ) = co.source_sequence
-                    and $10::uuid is not null
-                    and te.id < $10::uuid
+                    and $9::uuid is not null
+                    and te.id < $9::uuid
                   )
                   or (
                     co.source_sequence is not null
@@ -7562,29 +7649,25 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = ci.session_id
           where ci.visibility = 'personal'
-            and $12::boolean = false
+            and $11::boolean = false
             and ci.owner_user_id = $1
             and ci.personal_deleted_at is null
             and ${approvalConversationItemSql("ci")}
             and ${ownerVisibleApprovalPresentationSql("ci")}
             and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
+            and ${personalSourceSelectionSql("s", "$12", readOptions)}
+            and ($4::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $4)
+            and ($5::uuid is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid = $5)
+            and ($6::text is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid::text = $6)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $5)
-            and ($6::uuid is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid = $6)
-            and ($7::text is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid::text = $7)
-            and (
-              $8::timestamptz is null
-              or coalesce(ci.event_time, ci.observed_at) < $8::timestamptz
+              $7::timestamptz is null
+              or coalesce(ci.event_time, ci.observed_at) < $7::timestamptz
               or (
-                coalesce(ci.event_time, ci.observed_at) = $8::timestamptz
+                coalesce(ci.event_time, ci.observed_at) = $7::timestamptz
                 and (
-                  (co.source_sequence is null and ci.source_sequence is null and $10::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $10::uuid)
+                  (co.source_sequence is null and ci.source_sequence is null and $9::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $9::uuid)
                   or (co.source_sequence is not null and ci.source_sequence is not null and ci.source_sequence < co.source_sequence)
-                  or (co.source_sequence is not null and ci.source_sequence = co.source_sequence and $10::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $10::uuid)
+                  or (co.source_sequence is not null and ci.source_sequence = co.source_sequence and $9::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $9::uuid)
                   or (co.source_sequence is not null and ci.source_sequence is null)
                 )
               )
@@ -7597,18 +7680,18 @@ export const createMemorySourceRepository = (
         left join lateral (
           select array_agg(mns.memory_node_id::text order by mns.source_order) as linked_node_ids
           from memory_node_sources mns
-          where mns.memory_event_id = ve.id
+          where (mns.memory_event_id = ve.id
             or mns.message_id = ve.id
-            or mns.tool_event_id = ve.id
+            or mns.tool_event_id = ve.id)
+            and ${personalMemoryNodeSelectionSql("mns.memory_node_id", "$12", "null", "null", readOptions)}
         ) linked_node_ids on true
         order by ve.order_at desc, ve.source_sequence desc nulls last, ve.id desc
-        limit $11
+        limit $10
 	      `,
         [
           actor.userId,
           input.includeInvalidated ?? false,
           input.visibility ?? null,
-          input.projectId ?? null,
           input.threadId ?? null,
           input.eventId ?? null,
           input.query?.trim() || null,
@@ -7616,7 +7699,8 @@ export const createMemorySourceRepository = (
           input.cursorSourceSequence ?? null,
           input.cursorId ?? null,
           limit,
-          input.canonicalCapturedSessionEventsOnly ?? false
+          input.canonicalCapturedSessionEventsOnly ?? false,
+          JSON.stringify(projected.selection)
         ]
       );
       const hydratedRows = await Promise.all(
@@ -7772,6 +7856,18 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphThreads(actor, input = {}) {
+      const sessionIds = input.sessionIds
+        ? personalOwnerIdSchema.array().min(1).max(100).parse(input.sessionIds)
+        : null;
+      const projected = projectPersonalInspectionQuery(actor.userId, input);
+      input = projected.input;
+      const readOptions = {
+        includeInvalidated: input.includeInvalidated ?? false,
+        includeUnassigned: true,
+        inspection: true,
+        sessionIdsParameter: "$10"
+      };
+
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const offset = Math.max(input.offset ?? 0, 0);
       const result = await pool.query<
@@ -7839,18 +7935,14 @@ export const createMemorySourceRepository = (
           where ($2::boolean = true or me.invalidated_at is null)
             and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+            and ${personalSourceSelectionSql("s", "$8", readOptions)}
+            and ($4::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $4)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
-            and (
-              $6::text is null
-              or me.payload ->> 'content' ilike '%' || $6 || '%'
-              or me.id::text = $6
-              or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
+              $5::text is null
+              or me.payload ->> 'content' ilike '%' || $5 || '%'
+              or me.id::text = $5
+              or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $5 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $5 || '%'
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
@@ -7904,17 +7996,13 @@ export const createMemorySourceRepository = (
             and btrim(coalesce(s.metadata ->> 'threadName', '')) <> ''
             and s.metadata ->> 'threadName' <> coalesce(s.external_session_id, '')
             and s.metadata ->> 'threadName' <> s.id::text
+            and ${personalSourceSelectionSql("s", "$8", readOptions)}
+            and ($4::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $4)
             and (
-              $4::text is null
-              or ($4 = 'unassigned' and repository_scope_id(coalesce(s.repository_override_identity, s.repository_automatic_identity)) is null)
-              or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $4)
-            )
-            and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
-            and (
-              $6::text is null
-              or s.id::text = $6
-              or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or ${effectiveProjectNameSql("s")} ilike '%' || $6 || '%'
+              $5::text is null
+              or s.id::text = $5
+              or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $5 || '%'
+              or ${effectiveProjectNameSql("s")} ilike '%' || $5 || '%'
             )
             and s.visibility = 'personal'
             and s.owner_user_id = $1
@@ -7928,6 +8016,7 @@ export const createMemorySourceRepository = (
             (array_agg(captured_project_provenance order by order_at desc, source_sequence desc nulls last, id desc))[1] as captured_project_provenance,
             (array_agg(repository_assignment order by order_at desc, source_sequence desc nulls last, id desc))[1] as repository_assignment,
             thread_id,
+            array_agg(distinct session_id) filter (where session_id is not null) as source_session_ids,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
             (array_agg(source_ai_client order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null and source_ai_client is not null))[1] as source_ai_client,
@@ -7942,12 +8031,12 @@ export const createMemorySourceRepository = (
             ) as latest_at,
             coalesce((array_agg(content order by order_at desc, source_sequence desc nulls last, id desc) filter (where content is not null))[1], '') as sample
           from visible_thread_rows
-          group by project_id, thread_id
+          group by project_id, thread_id, case when $9::boolean then session_id end
           order by coalesce(
             max(event_order_at) filter (where row_kind = 'event'),
             max(order_at)
-          ) desc, thread_id desc
-          limit $7 offset $8
+          ) desc, thread_id desc, (array_agg(session_id order by id))[1] desc nulls last
+          limit $6 offset $7
         )
         , replica_origins as (
           select distinct on (replica.local_session_id)
@@ -7964,23 +8053,37 @@ export const createMemorySourceRepository = (
           order by replica.local_session_id, observation.observed_at, observation.id
         )
         select ranked_threads.*, replica_origins.origin_device_id,
-          local_memory.logical_memory_id
+          local_memory.logical_memory_id,
+          coalesce(source_bindings.source_references, '[]'::jsonb) as source_references
         from ranked_threads
+        left join lateral (
+          select jsonb_agg(jsonb_build_object(
+            'sessionId', binding.id, 'logicalSessionId', binding.logical_session_id,
+            'logicalMemoryId', logical_binding.logical_memory_id
+          ) order by binding.id) as source_references
+          from sessions binding
+          left join local_captured_session_logical_memories logical_binding
+            on logical_binding.local_session_id=binding.id and logical_binding.owner_user_id=$1
+          where binding.id=any(ranked_threads.source_session_ids::uuid[])
+            and ${personalSourceSelectionSql("binding", "$8", readOptions)}
+        ) source_bindings on true
         left join replica_origins on replica_origins.local_session_id=ranked_threads.session_id
         left join local_captured_session_logical_memories local_memory
           on local_memory.local_session_id=ranked_threads.session_id
           and local_memory.owner_user_id=$1
-        order by latest_at desc, thread_id desc
+        order by latest_at desc, thread_id desc, session_id desc nulls last
       `,
         [
           actor.userId,
           input.includeInvalidated ?? false,
           input.visibility ?? null,
-          input.projectId ?? null,
           input.threadId ?? null,
           input.query?.trim() || null,
           limit,
-          offset
+          offset,
+          JSON.stringify(projected.selection),
+          input.groupBySession ?? false,
+          sessionIds
         ]
       );
 
@@ -8005,6 +8108,7 @@ export const createMemorySourceRepository = (
           name: thread.name,
           sessionId: thread.sessionId,
           logicalMemoryId: thread.logicalMemoryId,
+          sourceReferences: thread.sourceReferences,
           sourceAiClient: thread.sourceAiClient,
           originDeviceId: thread.originDeviceId,
           projectId: thread.projectId,
@@ -8029,6 +8133,7 @@ export const createMemorySourceRepository = (
 
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const events = await this.listLcmGraphEvents(actor, {
+        ...input,
         eventId,
         includeInvalidated: input.includeInvalidated,
         includeContent: input.includeContent,
@@ -8045,8 +8150,8 @@ export const createMemorySourceRepository = (
                     event.rawContent ??
                     (
                       await pool.query<{ content: string | null }>(
-                        "select payload ->> 'content' as content from memory_events where id = $1",
-                        [eventId]
+                        "select payload ->> 'content' as content from memory_events where id = $1 and owner_user_id=$2 and visibility='personal'",
+                        [eventId, actor.userId]
                       )
                     ).rows[0]?.content ??
                     ""
@@ -11019,6 +11124,14 @@ export const createMemorySourceRepository = (
     },
 
     async searchMemoryNodes(actor, input) {
+      const projected = projectPersonalSelectionQuery(actor.userId, input);
+      input = projected.input;
+      const personalSourceSelection = projected.selection;
+      if (input.personalSelection)
+        input = {
+          ...input,
+          repositoryContext: input.personalSelection.callerRepositoryContext
+        };
       const visibility = input.scope;
       const searchDomain = input.searchDomain ?? "global";
       if (searchDomain === "session" && !input.sessionId) {
@@ -11047,6 +11160,9 @@ export const createMemorySourceRepository = (
       const visibleParentNodeIds = requestedParentNodeIds.length
         ? (
             await this.listLcmGraphNodes(actor, {
+              personalSelection: input.personalSelection,
+              projectId: input.projectId,
+              sessionId: input.sessionId,
               nodeIds: requestedParentNodeIds,
               limit: requestedParentNodeIds.length
             })
@@ -11285,8 +11401,93 @@ export const createMemorySourceRepository = (
         rows: VectorRow[]
       ): Promise<VectorRow[]> => {
         hydrationCount += rows.length;
+        const authorizedRaw = await authorizedPersonalRawEvidence(
+          pool,
+          personalSourceSelection,
+          rows,
+          sourceAfter,
+          sourceBefore
+        );
+        if (
+          rows.some(
+            (row) =>
+              row.source_type === "memory_event" ||
+              row.source_type === "message"
+          )
+        )
+          databaseReads += 1;
+        const authorizedDerived = await authorizedPersonalDerivedEvidence(
+          pool,
+          personalSourceSelection,
+          rows,
+          sourceAfter,
+          sourceBefore,
+          false,
+          true
+        );
+        if (
+          rows.some(
+            (row) =>
+              row.source_type === "memory_node" ||
+              row.source_type === "curated_memory"
+          )
+        )
+          databaseReads += 1;
         const hydratedRows = await Promise.all(
           rows.map(async (row) => {
+            if (
+              (row.source_type === "memory_event" ||
+                row.source_type === "message") &&
+              !authorizedRaw.has(`${row.source_type}:${row.source_id}`)
+            )
+              return null;
+            if (
+              (row.source_type === "memory_node" ||
+                row.source_type === "curated_memory") &&
+              !authorizedDerived.has(`${row.source_type}:${row.source_id}`)
+            )
+              return null;
+            if (
+              row.source_type === "memory_node" &&
+              authorizedDerived.get(`memory_node:${row.source_id}`) === false
+            ) {
+              const expanded = await this.expandMemoryNode(
+                row.source_id,
+                actor,
+                {
+                  searchDomain,
+                  sessionId: input.sessionId,
+                  projectId: input.projectId,
+                  personalSelection: input.personalSelection,
+                  sourceAfter: sourceAfter?.toISOString(),
+                  sourceBefore: sourceBefore?.toISOString()
+                }
+              );
+              databaseReads += 4 + Number(expanded.sources.length > 0);
+              const outline = filteredNodeSourceText(
+                expanded.sourceItems
+                  .filter(
+                    (item) =>
+                      item.kind === "memory_event" ||
+                      item.kind === "message" ||
+                      item.kind === "conversation_item"
+                  )
+                  .map((item) => ({
+                    createdAt: item.createdAt,
+                    text: item.text
+                  }))
+              );
+              if (!outline) return null;
+              hydrationBytes += measuredByteLength(outline);
+              return {
+                ...row,
+                summary_text: outline,
+                summary_structured_json: null,
+                lexical_anchors: null,
+                lcm_summary_model: null,
+                lcm_summary_pending: true
+              };
+            }
             let hydrated = row;
             if (
               row.summary_text === ENCRYPTED_EMBEDDING_SOURCE_TEXT ||
@@ -11439,7 +11640,7 @@ export const createMemorySourceRepository = (
                   end as source_type,
                   coalesce(me.memory_node_id, me.memory_event_id, me.message_id, me.curated_memory_assertion_id) as source_id,
                   me.owner_user_id,
-                  $11::text as retrieval_stage,
+                  $8::text as retrieval_stage,
                   coalesce(
                     (
                       select array_agg(parent.parent_memory_node_id::text order by parent.parent_memory_node_id::text)
@@ -11451,103 +11652,12 @@ export const createMemorySourceRepository = (
                       where parent.child_memory_node_id = me.memory_node_id
                         and parent_node.visibility = 'personal'
                         and parent_node.owner_user_id = $1
+                        and ${personalMemoryNodeSelectionSql("parent_node.id", "$14", "$9", "$10")}
                     ),
                     array[]::text[]
                   ) as parent_node_ids,
-                  case
-                    when me.memory_node_id is not null
-                      and (
-                        $8::text <> 'global'
-                        or $12::timestamptz is not null
-                        or $13::timestamptz is not null
-                      )
-                    then exists (
-                      select 1
-                      from memory_node_sources boundary_mns
-                      left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
-                      left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null and boundary_msg.recall_eligible = true
-                      left join sessions boundary_session on boundary_session.id = coalesce(boundary_ev.session_id, boundary_msg.session_id)
-                      where boundary_mns.memory_node_id = me.memory_node_id
-                        and not (
-                          (
-                            $8::text = 'global'
-                            or (
-                              $8::text = 'session'
-                              and (boundary_ev.session_id = $9::uuid or boundary_msg.session_id = $9::uuid)
-                            )
-                            or (
-                              $8::text = 'project'
-                              and (
-                                repository_scope_matches(coalesce(boundary_session.repository_override_identity, boundary_session.repository_automatic_identity), $10)
-                              )
-                            )
-                          )
-                          and (
-                            ($12::timestamptz is null and $13::timestamptz is null)
-                            or (
-                              coalesce(boundary_ev.captured_at, boundary_msg.captured_at) is not null
-                              and ($12::timestamptz is null or coalesce(boundary_ev.captured_at, boundary_msg.captured_at) >= $12::timestamptz)
-                              and ($13::timestamptz is null or coalesce(boundary_ev.captured_at, boundary_msg.captured_at) < $13::timestamptz)
-                            )
-                          )
-                        )
-                    )
-                    else false
-                  end as has_out_of_window_sources,
-                  case
-                    when me.memory_node_id is not null
-                      and (
-                        $8::text <> 'global'
-                        or $12::timestamptz is not null
-                        or $13::timestamptz is not null
-                      )
-                    then (
-                      select json_agg(
-                        json_build_object(
-                          'createdAt', to_char(source_row.source_created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-                          'text', source_row.source_text,
-                          'projectName', source_row.project_name,
-                          'projectPath', source_row.project_path
-                        )
-                        order by source_row.source_created_at asc, source_row.source_id asc
-                      )
-                      from (
-                        select
-                          coalesce(time_ev.id, time_msg.id) as source_id,
-                          coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
-                          coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
-                          ${effectiveProjectNameSql("time_session")} as project_name,
-                          ${effectiveProjectPathSql("time_session")} as project_path
-                        from memory_node_sources time_mns
-                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
-                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
-                        left join sessions time_session on time_session.id = coalesce(time_ev.session_id, time_msg.session_id)
-                        where time_mns.memory_node_id = me.memory_node_id
-                          and (
-                            $8::text = 'global'
-                            or (
-                              $8::text = 'session'
-                              and (time_ev.session_id = $9::uuid or time_msg.session_id = $9::uuid)
-                            )
-                            or (
-                              $8::text = 'project'
-                              and (
-                                repository_scope_matches(coalesce(time_session.repository_override_identity, time_session.repository_automatic_identity), $10)
-                              )
-                            )
-                          )
-                          and (
-                            ($12::timestamptz is null and $13::timestamptz is null)
-                            or coalesce(time_ev.captured_at, time_msg.captured_at) is not null
-                          )
-                          and coalesce(time_ev.payload ->> 'content', time_msg.content, '') <> ''
-                          and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
-                          and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
-                        order by coalesce(time_ev.captured_at, time_msg.captured_at) asc, coalesce(time_ev.id, time_msg.id) asc
-                      ) source_row
-                    )
-                    else null
-                  end as filtered_source_items,
+                  false as has_out_of_window_sources,
+                  null::json as filtered_source_items,
                   me.visibility,
                   mn.summary_structured_json,
                   null::text[] as lexical_anchors,
@@ -11606,12 +11716,14 @@ export const createMemorySourceRepository = (
                  and cma.status = 'current'
                  and cma.suppressed_at is null
                  and (cma.expires_at is null or cma.expires_at > now())
-                ${searchDomain === "global" ? globalRepositoryContextJoinSql() : "left join lateral (select null::jsonb as contexts) repo_context on true"}
+                ${searchDomain === "global" ? globalRepositoryContextJoinSql("$9", "$10") : "left join lateral (select null::jsonb as contexts) repo_context on true"}
                 left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
                 left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
                 where me.invalidated_at is null
+                  and (me.memory_event_id is null or (ev.owner_user_id=$1 and ev.visibility='personal' and ev.personal_deleted_at is null and ${personalSourceSelectionSql("ev_session", "$14")}))
+                  and (me.message_id is null or (msg.owner_user_id=$1 and msg.visibility='personal' and ${personalSourceSelectionSql("msg_session", "$14")}))
                   and not (
                     me.memory_event_id is not null
                     and not (${semanticMemoryEventEligibleSql("ev")})
@@ -11679,146 +11791,16 @@ export const createMemorySourceRepository = (
                   )
                   and me.owner_user_id = $1
                   and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
+                  and (me.memory_node_id is null or ${personalMemoryNodeSelectionSql("mn.id", "$14", "$9", "$10")}
+                    or (mn.summary_model is null and ${personalMemoryNodeHasSelectedSourcesSql("mn.id", "$14", "$9", "$10")}))
+                  and (me.curated_memory_assertion_id is null or ${personalCuratedMemorySelectionSql("cma", "$14", "$9", "$10")})
+                  and (me.memory_event_id is null or (($9::timestamptz is null or ev.captured_at >= $9) and ($10::timestamptz is null or ev.captured_at < $10)))
+                  and (me.message_id is null or (($9::timestamptz is null or msg.captured_at >= $9) and ($10::timestamptz is null or msg.captured_at < $10)))
                   and (
-                    $8::text = 'global'
+                    ($8::text = 'rollup_search' and me.memory_node_id is not null and mn.kind = 'rollup')
+                    or ($8::text = 'leaf_search' and me.memory_node_id is not null and mn.kind = 'leaf')
                     or (
-                      $8::text = 'session'
-                      and (
-                        ev.session_id = $9::uuid
-                        or msg.session_id = $9::uuid
-                        or exists (
-                          select 1
-                          from memory_node_sources filter_mns
-                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
-                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null and filter_msg.recall_eligible = true
-                          where filter_mns.memory_node_id = me.memory_node_id
-                            and (filter_ev.session_id = $9::uuid or filter_msg.session_id = $9::uuid)
-                        )
-                        or (
-                          cma.id is not null
-                          and exists (
-                            select 1
-                            from curated_memory_sources session_cms
-                            left join memory_events session_cme on session_cme.id = session_cms.memory_event_id
-                            left join memory_nodes session_cmn on session_cmn.id = session_cms.lcm_node_id
-                            left join conversation_items session_cci on session_cci.id = session_cms.conversation_item_id
-                            where session_cms.assertion_id = cma.id
-                              and coalesce(session_cme.session_id, session_cmn.session_id, session_cci.session_id) = $9::uuid
-                          )
-                        )
-                      )
-                    )
-                    or (
-                      $8::text = 'project'
-                      and (
-                        (
-                          ev.id is not null
-                          and (
-                            repository_scope_matches(coalesce(ev_session.repository_override_identity, ev_session.repository_automatic_identity), $10)
-                          )
-                        )
-                        or (
-                          msg.id is not null
-                          and (
-                            repository_scope_matches(coalesce(msg_session.repository_override_identity, msg_session.repository_automatic_identity), $10)
-                          )
-                        )
-                        or exists (
-                          select 1
-                          from memory_node_sources filter_mns
-                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
-                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null and filter_msg.recall_eligible = true
-                          left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
-                          where filter_mns.memory_node_id = me.memory_node_id
-                            and (
-                              repository_scope_matches(coalesce(filter_session.repository_override_identity, filter_session.repository_automatic_identity), $10)
-                            )
-                        )
-                        or (
-                          cma.id is not null
-                          and exists (
-                            select 1
-                            from curated_memory_sources project_cms
-                            left join memory_events project_cme on project_cme.id = project_cms.memory_event_id
-                            left join memory_nodes project_cmn on project_cmn.id = project_cms.lcm_node_id
-                            left join conversation_items project_cci on project_cci.id = project_cms.conversation_item_id
-                            left join sessions project_cs on project_cs.id = coalesce(project_cme.session_id, project_cmn.session_id, project_cci.session_id)
-                            where project_cms.assertion_id = cma.id
-                              and (
-                                repository_scope_matches(coalesce(project_cs.repository_override_identity, project_cs.repository_automatic_identity), $10)
-                              )
-                          )
-                        )
-                      )
-                    )
-                  )
-                  and (
-                    ($12::timestamptz is null and $13::timestamptz is null)
-                    or (
-                      me.memory_node_id is not null
-                      and exists (
-                        select 1
-                        from memory_node_sources time_mns
-                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
-                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
-                        where time_mns.memory_node_id = me.memory_node_id
-                          and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
-                          and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
-                      )
-                    )
-                    or (
-                      me.memory_event_id is not null
-                      and ($12::timestamptz is null or ev.captured_at >= $12::timestamptz)
-                      and ($13::timestamptz is null or ev.captured_at < $13::timestamptz)
-                    )
-                    or (
-                      me.message_id is not null
-                      and ($12::timestamptz is null or msg.captured_at >= $12::timestamptz)
-                      and ($13::timestamptz is null or msg.captured_at < $13::timestamptz)
-                    )
-                    or (
-                      cma.id is not null
-                      and ($12::timestamptz is null or cma.observed_at >= $12::timestamptz)
-                      and ($13::timestamptz is null or cma.observed_at < $13::timestamptz)
-                    )
-                  )
-                  and (
-                    me.memory_node_id is null
-                    or exists (
-                      select 1
-                      from memory_node_sources source_mns
-                      left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
-                      left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
-                      left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
-                      where source_mns.memory_node_id = me.memory_node_id
-                        and (
-                          $8::text = 'global'
-                          or (
-                            $8::text = 'session'
-                            and (source_ev.session_id = $9::uuid or source_msg.session_id = $9::uuid)
-                          )
-                          or (
-                            $8::text = 'project'
-                            and (
-                              repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $10)
-                            )
-                          )
-                        )
-                        and (
-                          ($12::timestamptz is null and $13::timestamptz is null)
-                          or (
-                            coalesce(source_ev.captured_at, source_msg.captured_at) is not null
-                            and ($12::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) >= $12::timestamptz)
-                            and ($13::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) < $13::timestamptz)
-                          )
-                        )
-                    )
-                  )
-                  and (
-                    ($11::text = 'rollup_search' and me.memory_node_id is not null and mn.kind = 'rollup')
-                    or ($11::text = 'leaf_search' and me.memory_node_id is not null and mn.kind = 'leaf')
-                    or (
-                      $11::text = 'scoped_leaf_search'
+                      $8::text = 'scoped_leaf_search'
                       and me.memory_node_id is not null
                       and mn.kind = 'leaf'
                       and exists (
@@ -11829,13 +11811,13 @@ export const createMemorySourceRepository = (
                           and scoped_parent_node.invalidated_at is null
                           and scoped_parent_node.personal_deleted_at is null
                         where scoped_parent.child_memory_node_id = me.memory_node_id
-                          and scoped_parent.parent_memory_node_id = any($14::uuid[])
+                          and scoped_parent.parent_memory_node_id = any($11::uuid[])
                           and scoped_parent_node.visibility = 'personal'
                           and scoped_parent_node.owner_user_id = $1
                       )
                     )
                     or (
-                      $11::text = 'fresh_pending_search'
+                      $8::text = 'fresh_pending_search'
                       and me.memory_node_id is null
                       and coalesce(ev.payload ->> 'actor', msg.role, '') <> 'tool'
                       and (
@@ -11864,12 +11846,12 @@ export const createMemorySourceRepository = (
                       )
                     )
                     or (
-                      $11::text = 'raw_fallback_search'
+                      $8::text = 'raw_fallback_search'
                       and me.memory_node_id is null
                       and coalesce(ev.payload ->> 'actor', msg.role, '') <> 'tool'
                     )
                     or (
-                      $11::text = 'curated_memory_search'
+                      $8::text = 'curated_memory_search'
                       and me.curated_memory_assertion_id is not null
                       and cma.id is not null
                     )
@@ -11880,10 +11862,10 @@ export const createMemorySourceRepository = (
                   order by score desc, created_at desc, source_id limit $4)
                 union all
                 (select candidates.*, 'current'::text as candidate_pool from candidates
-                  where $16::integer>0 and jsonb_array_length(repository_contexts)>0
+                  where $13::integer>0 and jsonb_array_length(repository_contexts)>0
                     and not exists(select 1 from jsonb_array_elements(repository_contexts) context
-                      where not coalesce(repository_scope_matches(context->'identity',$15::text),false))
-                  order by score desc, created_at desc, source_id limit $16)
+                      where not coalesce(repository_scope_matches(context->'identity',$12::text),false))
+                  order by score desc, created_at desc, source_id limit $13)
               ) pooled order by score desc, created_at desc, source_id
             `,
                 [
@@ -11894,15 +11876,13 @@ export const createMemorySourceRepository = (
                   embedded.model,
                   embedded.dimensions,
                   localEmbeddingVersion(),
-                  searchDomain,
-                  input.sessionId ?? null,
-                  input.projectId ?? null,
                   stage,
                   sourceAfter,
                   sourceBefore,
                   parentNodeIds,
                   currentRepositoryScope,
-                  pools.current
+                  pools.current,
+                  JSON.stringify(personalSourceSelection)
                 ]
               );
               globalCandidateCount += vectorResult.rows.filter(
@@ -13099,6 +13079,9 @@ export const createMemorySourceRepository = (
     },
 
     async expandMemoryNode(nodeId, actor, input = {}) {
+      const projected = projectPersonalSelectionQuery(actor.userId, input);
+      input = projected.input;
+      const selection = projected.selection;
       const searchDomain = input.searchDomain ?? "global";
       if (searchDomain === "session" && !input.sessionId) {
         throw new Error("Session-scoped memory expansion requires sessionId");
@@ -13158,6 +13141,7 @@ export const createMemorySourceRepository = (
             nodeId,
             {
               searchDomain,
+              personalSelection: input.personalSelection,
               projectId: input.projectId,
               sessionId: input.sessionId,
               sourceAfter: sourceAfter?.toISOString(),
@@ -13169,7 +13153,6 @@ export const createMemorySourceRepository = (
         }
         throw new Error("Memory node not found or not visible");
       }
-      const hydratedNode = await hydrateRepositoryMemoryNodeRow(pool, node);
 
       const sources = await pool.query<{
         id: string;
@@ -13191,38 +13174,26 @@ export const createMemorySourceRepository = (
         source_event_time: Date | null;
       }>(
         `
-        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at, me.source_event_time
-        from memory_node_sources mns
-        join memory_events me on me.id = mns.memory_event_id
-        left join sessions source_session on source_session.id = me.session_id
-        where mns.memory_node_id = $1
-          and me.invalidated_at is null
-            and pds_session_recall_ready(me.session_id)
-          and me.visibility = 'personal'
-          and me.owner_user_id = $2
-          and me.personal_deleted_at is null
-          and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)
-          and ($4::timestamptz is null or me.captured_at < $4::timestamptz)
-          and (
-            $5::text = 'global'
-            or ($5::text = 'session' and me.session_id = $6::uuid)
-            or (
-              $5::text = 'project'
-              and (
-                repository_scope_matches(coalesce(source_session.repository_override_identity, source_session.repository_automatic_identity), $7)
-              )
-            )
-          )
-        order by me.captured_at asc, me.id asc
+        ${personalNodeLineageSql("$1::uuid", "$3")}
+        select distinct me.id,me.owner_user_id,me.visibility,me.event_type,me.session_id,me.turn_id,me.payload,me.created_at,me.captured_at,me.source_event_time
+        from selection_nodes lineage join memory_node_sources ref on ref.memory_node_id=lineage.id
+        join memory_events me on me.id=ref.memory_event_id
+        left join sessions source_session on source_session.id=me.session_id
+        where me.owner_user_id=$2 and me.visibility='personal'
+          and me.invalidated_at is null and me.personal_deleted_at is null
+          and (me.include_in_embedding=true or me.include_in_lcm=true)
+          and ${semanticMemoryEventEligibleSql("me")}
+          and ${personalSourceSelectionSql("source_session", "$3")}
+          and ($4::timestamptz is null or me.captured_at >= $4)
+          and ($5::timestamptz is null or me.captured_at < $5)
+        order by me.captured_at,me.id
       `,
         [
           nodeId,
           actor.userId,
+          JSON.stringify(selection),
           sourceAfter,
-          sourceBefore,
-          searchDomain,
-          input.sessionId ?? null,
-          input.projectId ?? null
+          sourceBefore
         ]
       );
       const hydratedSources = await Promise.all(
@@ -13277,16 +13248,25 @@ export const createMemorySourceRepository = (
 	                ci.metadata
 	              from memory_event_sources mes
 	              join conversation_items ci on ci.id = mes.conversation_item_id
+                  left join sessions s on s.id=ci.session_id
 	              where mes.memory_event_id = any($1::uuid[])
 	                and mes.source_role = $2
 	                and ci.visibility = 'personal'
 	                and ci.owner_user_id = $3
+                    and ci.personal_deleted_at is null and ci.memory_excluded_at is null
+                    and not ${approvalConversationItemSql("ci")}
+                    and ${personalSourceSelectionSql("s", "$4")}
+                    and ($5::timestamptz is null or coalesce(ci.event_time,ci.observed_at,ci.created_at) >= $5)
+                    and ($6::timestamptz is null or coalesce(ci.event_time,ci.observed_at,ci.created_at) < $6)
 	              order by mes.memory_event_id, mes.source_order asc, ci.id asc
 	            `,
               [
                 hydratedSources.map((source) => source.id),
                 SUPPORTING_CONTEXT_SOURCE_ROLE,
-                actor.userId
+                actor.userId,
+                JSON.stringify(selection),
+                sourceAfter,
+                sourceBefore
               ]
             )
           : { rows: [] };
@@ -13382,59 +13362,45 @@ export const createMemorySourceRepository = (
           position
         })
       );
-      const nodeSourceItems = Array.isArray(hydratedNode.source_items_json)
-        ? hydratedNode.source_items_json
-        : [];
-      const sourceItemInWindow = (item: LcmSourceItem): boolean => {
-        if (!sourceAfter && !sourceBefore) {
-          return true;
-        }
-        if (!item.createdAt) {
-          return false;
-        }
-        const itemDate = new Date(item.createdAt);
-        if (Number.isNaN(itemDate.getTime())) {
-          return false;
-        }
-        return (
-          (!sourceAfter || itemDate >= sourceAfter) &&
-          (!sourceBefore || itemDate < sourceBefore)
-        );
-      };
-      const sourceItemInBoundary = (item: LcmSourceItem): boolean => {
-        if (searchDomain === "global") {
-          return true;
-        }
-        if (item.kind === "lcm_child") {
-          return false;
-        }
-        const payload =
-          item.payload && typeof item.payload === "object"
-            ? (item.payload as Record<string, unknown>)
-            : {};
-        if (searchDomain === "session") {
-          return (
-            typeof input.sessionId === "string" &&
-            payload.sessionId === input.sessionId
-          );
-        }
-        // Capture-time JSON cannot authorize current Project expansion.
-        return false;
-      };
-      const filteredNodeSourceItems = nodeSourceItems.filter(
-        (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)
+      const children = await loadPersonalExpansionChildren(
+        pool,
+        nodeId,
+        selection,
+        sourceAfter,
+        sourceBefore
       );
-
+      const hydratedChildren = await hydrateRepositoryMemoryNodeRows(
+        pool,
+        children.rows
+      );
+      const childItems: LcmSourceItem[] = hydratedChildren.map((child) => ({
+        kind: "lcm_child",
+        nodeId: child.id,
+        text: child.summary_text,
+        sourceGeneration: child.summary_embedding_revision,
+        position: child.child_order
+      }));
+      const messageItems = await loadPersonalExpansionMessages(pool, {
+        nodeId,
+        selection,
+        after: sourceAfter,
+        before: sourceBefore,
+        decryptMessage: (id) =>
+          decryptAuthorizedEncryptedFieldPayload(
+            pool,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: actor.userId,
+              sourceTable: "messages",
+              sourceId: id,
+              sourceColumn: "content"
+            }
+          )
+      });
       return {
         nodeId,
-        visibility: hydratedNode.visibility,
-        sourceItems:
-          filteredNodeSourceItems.length > 0 &&
-          filteredNodeSourceItems.some((item) => item.kind === "lcm_child")
-            ? [...filteredNodeSourceItems, ...eventSourceItems]
-            : eventSourceItems.length > 0
-              ? eventSourceItems
-              : filteredNodeSourceItems,
+        visibility: node.visibility,
+        sourceItems: [...childItems, ...messageItems, ...eventSourceItems],
         sources: hydratedSources.map(mapMemoryEvent)
       } satisfies ExpandedMemoryNode;
     },

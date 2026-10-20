@@ -1823,6 +1823,9 @@ export function App({
           }
         >
           <PersonalMemoryWorkspace
+            manageProject={personalMemoryApi.manageProject}
+            manageMembershipSync={personalMemoryApi.manageMembershipSync}
+            manageSourceContext={personalMemoryApi.manageSourceContext}
             onCreateProject={
               personalMemoryApi.createProject
                 ? async (name) => {
@@ -1841,17 +1844,7 @@ export function App({
                   }
                 : undefined
             }
-            moveProject={
-              personalMemoryApi.moveProject
-                ? async (input) => {
-                    const result = await personalMemoryApi.moveProject!(input);
-                    scheduleConversationRecentsRefresh();
-                    return result;
-                  }
-                : undefined
-            }
             localAiClients={window.koedDesktop?.localAiClients}
-            assignSessionProject={personalMemoryApi.assignSessionProject}
             updateSessionPresentation={async (input) => {
               const result =
                 await personalMemoryApi.updateSessionPresentation(input);

@@ -77,26 +77,23 @@
   gap: 0.5rem;
 }
 
-.personal-project-create-dialog,
-.personal-project-move-dialog {
+.personal-project-create-dialog {
   width: min(30rem, calc(100vw - 2rem));
 }
 
-.personal-project-create-dialog form,
-.personal-project-move-dialog form {
+.personal-project-create-dialog form {
   display: grid;
   gap: 1rem;
 }
 
-.personal-project-create-dialog label,
-.personal-project-move-dialog label {
+.personal-project-create-dialog label {
   display: grid;
   font-size: 0.875rem;
   gap: 0.5rem;
 }
 
 .personal-project-create-dialog input,
-.personal-project-move-dialog select {
+.personal-project-create-dialog textarea {
   background: var(--background);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -106,30 +103,13 @@
   width: 100%;
 }
 
+.personal-project-create-dialog textarea {
+  min-block-size: 6rem;
+  resize: vertical;
+}
+
 .personal-create-project-link {
   justify-self: start;
-}
-
-.personal-project-destination {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.personal-project-destination-row {
-  align-items: center;
-  display: grid;
-  gap: 0.5rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.personal-project-destination-row select {
-  min-width: 0;
-}
-
-.personal-project-destination-row .personal-project-destination-add {
-  border: 1px solid var(--border);
-  min-height: 2.5rem;
-  min-width: 2.5rem;
 }
 
 .personal-project-create-button {
@@ -1073,106 +1053,6 @@ button.personal-project-details-folder:hover {
 
 .personal-share-button {
   flex: 0 0 auto;
-}
-
-.personal-session-assignment-dialog {
-  width: min(28rem, calc(100vw - 2rem));
-}
-
-.personal-session-assignment-dialog form {
-  display: grid;
-  gap: 1rem;
-}
-
-.personal-session-assignment-dialog .personal-project-destination {
-  display: grid;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.personal-session-assignment-dialog label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
-.personal-session-assignment-dialog select {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--foreground);
-  height: 2.5rem;
-  min-height: 2.5rem;
-  min-width: 0;
-  padding: 0.5rem 0.75rem;
-  width: 100%;
-}
-
-.personal-session-assignment-actions {
-  align-items: center;
-  flex-wrap: wrap;
-  margin-top: 0.5rem;
-}
-.personal-assignment-heading {
-  align-items: center;
-  display: flex;
-  gap: 0.5rem;
-  min-width: 0;
-}
-.personal-assignment-context {
-  display: grid;
-  gap: 0.25rem;
-  overflow-wrap: anywhere;
-}
-.personal-assignment-context strong {
-  font-weight: 500;
-}
-.personal-assignment-conversation {
-  color: var(--foreground);
-}
-.personal-session-assignment-actions .personal-assignment-restore-action {
-  color: var(--muted-foreground);
-  margin-right: auto;
-  padding-inline: 0;
-}
-.personal-assignment-capture-details {
-  color: var(--muted-foreground);
-  font-size: 0.8125rem;
-}
-.personal-assignment-capture-details summary {
-  cursor: pointer;
-  width: fit-content;
-}
-.personal-assignment-capture-details dl {
-  display: grid;
-  gap: 0.25rem;
-  padding-left: 1rem;
-  margin: 0.75rem 0 0;
-}
-.personal-assignment-capture-details dd {
-  color: var(--foreground);
-  margin: 0 0 0.5rem;
-  overflow-wrap: anywhere;
-}
-.personal-assignment-restore-target {
-  border-block: 1px solid var(--border);
-  display: grid;
-  gap: 0.25rem;
-  padding-block: 1rem;
-  overflow-wrap: anywhere;
-}
-.personal-assignment-restore-target span,
-.personal-assignment-note {
-  color: var(--muted-foreground);
-  font-size: 0.8125rem;
-}
-.personal-assignment-restore-target strong {
-  font-weight: 500;
-}
-@media (max-width: 480px) {
-  .personal-session-assignment-actions .personal-assignment-restore-action {
-    flex-basis: 100%;
-    justify-content: flex-start;
-  }
 }
 
 .personal-conversation-host {
@@ -3879,4 +3759,27 @@ button.personal-project-details-folder:hover {
 .personal-project-filter-status button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+.personal-project-sync-list {
+  max-height: 55vh;
+  overflow: auto;
+}
+
+.personal-project-sync-entity {
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.personal-project-sync-entity ul {
+  display: grid;
+  gap: 0.5rem;
+  padding-inline-start: 1.25rem;
+}
+
+.personal-project-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }

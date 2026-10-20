@@ -1,6 +1,10 @@
 import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
 import { repositoryIdentitySchema } from "@koed/shared";
 import {
+  recordedCaptureFolderObservation,
+  currentCaptureFolderObservation
+} from "./capture-repository-context.js";
+import {
   discoverProjectMetadata,
   resolveKoedServerPaths
 } from "@koed-labs/server";
@@ -1477,6 +1481,16 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     );
     return {
       externalSessionId: identity.sessionId,
+      folderObservation: recordedCaptureFolderObservation({
+        sourceKind: "codex",
+        externalSessionId: identity.sessionId,
+        env: { ...process.env, KOED_HOME: this.config.koedHome }
+      }),
+      currentFolderObservation: currentCaptureFolderObservation({
+        sourceKind: "codex",
+        externalSessionId: identity.sessionId,
+        env: { ...process.env, KOED_HOME: this.config.koedHome }
+      }),
       sourceRuntime: "codex-cli" as const,
       captureMethod: "api" as const,
       cwd: sourceProjectPath,

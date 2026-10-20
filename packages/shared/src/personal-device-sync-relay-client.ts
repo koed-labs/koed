@@ -1,3 +1,10 @@
+import {
+  createPdsConfigurationCapabilityAdvertisement,
+  pdsConfigurationCapabilityRecordSchema,
+  PDS_CONFIGURATION_CAPABILITY_PATH,
+  type PersonalConfigurationFeature,
+  type PdsConfigurationCapabilityRecord
+} from "./personal-configuration-capability.js";
 import { randomBytes, sign, type KeyObject } from "node:crypto";
 import {
   PDS_PROTOCOL,
@@ -269,6 +276,35 @@ export class PdsRelayClient {
     return this.commit(pkg);
   }
 
+  async advertiseConfigurationCapabilities(
+    features: PersonalConfigurationFeature[],
+    now = new Date()
+  ): Promise<void> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        PDS_CONFIGURATION_CAPABILITY_PATH,
+        createPdsConfigurationCapabilityAdvertisement(features, now)
+      )
+    );
+    if (response.accepted !== true)
+      throw new TypeError("PDS configuration capability response is invalid");
+  }
+  async configurationCapabilities(): Promise<
+    PdsConfigurationCapabilityRecord[]
+  > {
+    const response = asRecord(
+      await this.request<unknown>("GET", PDS_CONFIGURATION_CAPABILITY_PATH)
+    );
+    if (
+      !Array.isArray(response.capabilities) ||
+      response.capabilities.length > 64
+    )
+      throw new TypeError("PDS configuration capability response is invalid");
+    return response.capabilities.map((record) =>
+      pdsConfigurationCapabilityRecordSchema.parse(record)
+    );
+  }
   async advertisePeerRoute(
     endpointUrl: string,
     now = new Date()

@@ -1039,6 +1039,8 @@ describe("PDS session materialization", () => {
     expect(createCapturedSession).toHaveBeenCalledTimes(1);
     expect(createConversationItems).toHaveBeenCalledTimes(1);
     expect(getPdsClosedReplicaSource).toHaveBeenLastCalledWith({
+      originDeploymentId: "deployment-origin",
+      originDeviceId: "device-origin",
       logicalSessionId: manifest.closedSession.logicalSessionId,
       externalSessionId: manifest.closedSession.externalSessionId,
       userId: "user",

@@ -3,6 +3,8 @@ import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
+  pdsConfigurationCapabilityAdvertisementSchema,
+  PDS_CONFIGURATION_CAPABILITY_PATH,
   PDS_PEER_ROUTE_TTL_MS,
   normalizePdsPeerEndpoint,
   decodePdsBase64url,
@@ -152,6 +154,34 @@ export const registerPersonalDeviceSyncRelayRoutes = (
   });
 
   const pre = { preHandler: context.rateLimit.memoryWrite };
+  app.post(PDS_CONFIGURATION_CAPABILITY_PATH, pre, async (request) => {
+    if (!context.personalDeviceSync.authoritySigner)
+      throw error("Personal Device Sync relay is unavailable", 503);
+    const input = await authenticate(request as RawRequest, context);
+    pdsConfigurationCapabilityAdvertisementSchema.parse(
+      body(request as RawRequest)
+    );
+    await input.relay.advertisePdsConfigurationCapability({
+      ...input.auth,
+      canonicalAdvertisement: rawBody(request as RawRequest).toString("utf8"),
+      canonicalRequestProof: input.canonicalProof
+    });
+    return { accepted: true };
+  });
+  app.get(
+    PDS_CONFIGURATION_CAPABILITY_PATH,
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      return {
+        capabilities: await input.relay.listPdsConfigurationCapabilities(
+          input.auth
+        )
+      };
+    }
+  );
   app.post(
     "/v1/personal-device-sync/relay/peer-routes",
     pre,

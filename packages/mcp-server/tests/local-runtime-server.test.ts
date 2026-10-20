@@ -1,5 +1,11 @@
 import { createServer } from "node:net";
 import {
+  ensureDeviceIdentity,
+  readSourceFolderObservation,
+  readCurrentSourceFolderObservation,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
+import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -55,6 +61,61 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it("authenticates Pi Folder observations and preserves the source's original context", async () => {
+    const koedHome = tempHome(),
+      environment = { NODE_ENV: "test", KOED_HOME: koedHome };
+    const paths = resolveKoedServerPaths(environment);
+    await ensureDeviceIdentity(paths, { environment });
+    const cwd = join(koedHome, "checkout"),
+      later = join(cwd, "sub");
+    mkdirSync(later, { recursive: true });
+    const runtime = await startLocalAiRuntime({
+      environment,
+      serviceFactory: fixture(defaultExecutor()).serviceFactory
+    });
+    try {
+      const registration = readLocalRuntimeRegistration(environment);
+      const input = {
+        sourceKind: "pi",
+        externalSessionId: "native-pi",
+        cwd,
+        newConversation: true
+      };
+      const endpoint = `${runtime.url}/v1/capture/folder-context`;
+      expect(
+        (await fetch(endpoint, { method: "POST", body: JSON.stringify(input) }))
+          .status
+      ).toBe(401);
+      const send = (body: unknown) =>
+        fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: registration.authorization
+          },
+          body: JSON.stringify(body)
+        });
+      expect((await send(input)).status).toBe(200);
+      const key = {
+        sourceKind: "pi" as const,
+        externalSessionId: input.externalSessionId
+      };
+      const original = readSourceFolderObservation(paths, key);
+      expect(original?.normalizedPath).toBe(cwd);
+      expect(
+        (await send({ ...input, cwd: later, newConversation: false })).status
+      ).toBe(200);
+      expect(readSourceFolderObservation(paths, key)).toEqual(original);
+      expect(
+        readCurrentSourceFolderObservation(paths, key)?.normalizedPath
+      ).toBe(later);
+      expect((await send({ ...input, sourceKind: "unknown" })).status).toBe(
+        400
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
   it.each([
     ["local", "Local Koed API request limit reached. Retry later."],
     ["remote", "Remote Team Backend request limit reached. Retry later."]

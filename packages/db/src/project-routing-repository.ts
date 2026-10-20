@@ -1,3 +1,7 @@
+import {
+  personalModelSchemaInstalled,
+  assertPersonalLegacyWriteSupported
+} from "./personal-model-boundary.js";
 import type pg from "pg";
 import { repositoryIdentitySchema, repositoryScopeId } from "@koed/shared";
 import type { PersonalProjectReference } from "./types.js";
@@ -21,6 +25,7 @@ export const resolveProjectRouting = async (
   ownerUserId: string,
   sourceProjectId: string
 ): Promise<ProjectTarget | null> => {
+  if (await personalModelSchemaInstalled(client)) return null;
   const result = await client.query<{
     target_project_id: string;
     target_name: string;
@@ -46,6 +51,7 @@ export const moveProjectConversations = async (
   ownerUserId: string,
   input: { sourceProjectId: string; project: PersonalProjectReference }
 ): Promise<{ movedCount: number; projectId: string }> => {
+  await assertPersonalLegacyWriteSupported(pool);
   const identity = repositoryIdentitySchema.parse(
     input.project.repositoryIdentity
   );
@@ -92,7 +98,7 @@ export const moveProjectConversations = async (
         order by id for update
       )
       update sessions s set repository_override_identity=$6::jsonb,
-        repository_assignment_version=repository_assignment_version+1,
+        repository_assignment_version=repository_assignment_version+1,repository_assignment_revision_id=null,
         project_override_id=$3, project_override_name=$4, project_override_path=$5,
         project_override_at=now(), project_override_by_user_id=$1, updated_at=now()
       from selected where s.id=selected.id returning s.id

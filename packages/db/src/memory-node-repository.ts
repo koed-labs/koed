@@ -1,4 +1,12 @@
 import {
+  authorizedPersonalDerivedEvidence,
+  personalMemoryNodeSelectionSql
+} from "./personal-derived-selection-sql.js";
+import {
+  projectPersonalInspectionQuery,
+  type PersonalSelectionQuery
+} from "./personal-selection-sql.js";
+import {
   effectiveProjectNameSql,
   effectiveProjectPathSql
 } from "./project-scope-sql.js";
@@ -39,15 +47,17 @@ export interface MemoryNodeRepository {
   ): Promise<MemoryNodeRecord>;
   getVisibleMemoryNode(
     actor: ActorContext,
-    nodeId: string
+    nodeId: string,
+    input?: PersonalSelectionQuery
   ): Promise<MemoryNodeRecord | null>;
   listVisibleMemoryNodes(
     actor: ActorContext,
-    visibility?: Visibility
+    visibility?: Visibility,
+    input?: PersonalSelectionQuery
   ): Promise<MemoryNodeRecord[]>;
   listMemoryBrowserItems(
     actor: ActorContext,
-    input?: {
+    input?: PersonalSelectionQuery & {
       query?: string;
       visibility?: Visibility;
       projectId?: string;
@@ -58,7 +68,7 @@ export interface MemoryNodeRepository {
   ): Promise<MemoryBrowserItem[]>;
   listMemoryClusters(
     actor: ActorContext,
-    input?: {
+    input?: PersonalSelectionQuery & {
       query?: string;
       visibility?: Visibility;
       projectId?: string;
@@ -70,7 +80,7 @@ export interface MemoryNodeRepository {
   listMemoriesInCluster(
     actor: ActorContext,
     clusterId: string,
-    input?: { limit?: number }
+    input?: PersonalSelectionQuery & { limit?: number }
   ): Promise<MemoryBrowserItem[]>;
   updateMemoryPresentation(
     actor: ActorContext,
@@ -272,10 +282,31 @@ export const createMemoryNodeRepository = (
     };
   };
 
+  const authorizeRows = async <T extends { id: string }>(
+    actor: ActorContext,
+    input: PersonalSelectionQuery,
+    rows: T[]
+  ): Promise<T[]> => {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
+    const allowed = await authorizedPersonalDerivedEvidence(
+      pool,
+      selection,
+      rows.map((row) => ({ source_type: "memory_node", source_id: row.id })),
+      null,
+      null,
+      false,
+      false,
+      { inspection: true, includeUnassigned: true }
+    );
+    return rows.filter((row) => allowed.get(`memory_node:${row.id}`) === true);
+  };
+
   const getVisibleMemoryNode = async (
     actor: ActorContext,
-    nodeId: string
+    nodeId: string,
+    input: PersonalSelectionQuery = {}
   ): Promise<MemoryNodeRecord | null> => {
+    const { selection } = projectPersonalInspectionQuery(actor.userId, input);
     const result = await pool.query<MemoryNodeRow>(
       `
         select mn.id, mn.owner_user_id, mn.visibility, mn.title, mn.summary_text
@@ -284,20 +315,22 @@ export const createMemoryNodeRepository = (
           and mn.invalidated_at is null
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
+          and ${personalMemoryNodeSelectionSql("mn.id", "$3", "null", "null", { inspection: true, includeUnassigned: true })}
         limit 1
       `,
-      [actor.userId, nodeId]
+      [actor.userId, nodeId, JSON.stringify(selection)]
     );
 
-    return result.rows[0]
-      ? mapMemoryNode(await hydrateMemoryNodeRow(actor, result.rows[0]))
-      : null;
+    const [row] = await authorizeRows(actor, input, result.rows);
+    return row ? mapMemoryNode(await hydrateMemoryNodeRow(actor, row)) : null;
   };
 
   const listMemoryBrowserItems = async (
     actor: ActorContext,
     input: Parameters<MemoryNodeRepository["listMemoryBrowserItems"]>[1] = {}
   ): Promise<MemoryBrowserItem[]> => {
+    const projected = projectPersonalInspectionQuery(actor.userId, input);
+    input = projected.input;
     const requestedLimit = input.limit ?? 100;
     const candidateLimit = Math.min(requestedLimit * 10, 500);
     const result = await pool.query<MemoryBrowserItemRow>(
@@ -331,10 +364,7 @@ export const createMemoryNodeRepository = (
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
-          and (
-            $3::text is null
-            or repository_scope_matches(coalesce(s.repository_override_identity, s.repository_automatic_identity), $3)
-          )
+          and ${personalMemoryNodeSelectionSql("mn.id", "$3", "null", "null", { inspection: true, includeUnassigned: true })}
           and ($4::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $4)
           and ($5::boolean is null or (($5::boolean = true and mn.pinned_at is not null) or ($5::boolean = false and mn.pinned_at is null)))
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or coalesce(mn.title, '') ilike '%' || $6 || '%')
@@ -344,15 +374,16 @@ export const createMemoryNodeRepository = (
       [
         actor.userId,
         input.visibility ?? null,
-        input.projectId ?? null,
+        JSON.stringify(projected.selection),
         input.threadId ?? null,
         input.pinned ?? null,
         input.query?.trim() || null,
         candidateLimit
       ]
     );
+    const authorizedRows = await authorizeRows(actor, input, result.rows);
     const hydratedRows = await Promise.all(
-      result.rows.map((row) => hydrateMemoryNodeRow(actor, row))
+      authorizedRows.map((row) => hydrateMemoryNodeRow(actor, row))
     );
     return hydratedRows
       .map(mapMemoryBrowserItem)
@@ -486,7 +517,8 @@ export const createMemoryNodeRepository = (
 
     getVisibleMemoryNode,
 
-    async listVisibleMemoryNodes(actor, visibility) {
+    async listVisibleMemoryNodes(actor, visibility, input = {}) {
+      const { selection } = projectPersonalInspectionQuery(actor.userId, input);
       const result = await pool.query<MemoryNodeRow>(
         `
           select mn.id, mn.owner_user_id, mn.visibility, mn.title, mn.summary_text
@@ -494,14 +526,16 @@ export const createMemoryNodeRepository = (
           where mn.invalidated_at is null
             and mn.visibility = 'personal'
             and mn.owner_user_id = $1
+            and ${personalMemoryNodeSelectionSql("mn.id", "$3", "null", "null", { inspection: true, includeUnassigned: true })}
             and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
           order by mn.created_at asc, mn.id asc
         `,
-        [actor.userId, visibility ?? null]
+        [actor.userId, visibility ?? null, JSON.stringify(selection)]
       );
 
+      const authorizedRows = await authorizeRows(actor, input, result.rows);
       const hydratedRows = await Promise.all(
-        result.rows.map((row) => hydrateMemoryNodeRow(actor, row))
+        authorizedRows.map((row) => hydrateMemoryNodeRow(actor, row))
       );
       return hydratedRows.map(mapMemoryNode);
     },
@@ -545,6 +579,7 @@ export const createMemoryNodeRepository = (
 
     async listMemoriesInCluster(actor, clusterId, input = {}) {
       const items = await listMemoryBrowserItems(actor, {
+        ...input,
         limit: Math.max(input.limit ?? 100, 100)
       });
       return items

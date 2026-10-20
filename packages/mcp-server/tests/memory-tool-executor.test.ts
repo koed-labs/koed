@@ -1,4 +1,9 @@
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { personalFolderScopeId } from "@koed/shared";
+import {
+  repositoryScopeId,
+  snapshotPinnedPersonalSelection,
+  type RepositoryIdentity
+} from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -24,6 +29,55 @@ const repositoryContext = (root: string): RepositoryIdentity => ({
 });
 
 describe("MemoryToolExecutor", () => {
+  it("carries the accepted Personal selection into every evidence expansion", async () => {
+    const input = memoryAnswerInputSchema.parse({
+      query: "decision",
+      search_domain: "global",
+      repository_context: null
+    });
+    const selection = snapshotPinnedPersonalSelection(
+      "00000000-0000-4000-8000-000000000001",
+      input
+    );
+    const expand = vi.fn(async () => ({
+      expanded: { sourceItems: [], sources: [] }
+    }));
+    const client = {
+      accessCheck: vi.fn(async () => ({ user: { id: selection.ownerUserId } })),
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      expand
+    } as unknown as MemoryApiClient;
+    const executor = new MemoryToolExecutor(
+      client,
+      {},
+      {
+        answerWithMemoryWorker: async (_payload, options) => {
+          await options?.client?.expand(
+            "00000000-0000-4000-8000-000000000003",
+            { searchDomain: "global" }
+          );
+          throw new Error("Expansion boundary reached");
+        }
+      }
+    );
+    await expect(
+      executor.executeMemoryAnswerTask(
+        input,
+        { cwd: "/accepted" },
+        "00000000-0000-4000-8000-000000000004",
+        undefined,
+        undefined,
+        {
+          getExecutionAuthority: () => ({ scope: "personal" }),
+          personalSelection: selection
+        }
+      )
+    ).rejects.toThrow("Expansion boundary reached");
+    expect(expand).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000003",
+      { searchDomain: "global", personalSelection: selection }
+    );
+  });
   it.each([
     [undefined, false],
     ["with_citations", false],
@@ -62,7 +116,9 @@ describe("MemoryToolExecutor", () => {
           })
         );
         const client = {
-          accessCheck: vi.fn(async () => ({})),
+          accessCheck: vi.fn(async () => ({
+            user: { id: "00000000-0000-4000-8000-000000000001" }
+          })),
           listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
           recordTokenUsage: vi.fn(async () => ({})),
           createFinalQuestion
@@ -135,7 +191,9 @@ describe("MemoryToolExecutor", () => {
       );
       try {
         const client = {
-          accessCheck: vi.fn(async () => ({})),
+          accessCheck: vi.fn(async () => ({
+            user: { id: "00000000-0000-4000-8000-000000000001" }
+          })),
           listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
         } as unknown as MemoryApiClient;
         const executor = new MemoryToolExecutor(client, { KOED_HOME: home });
@@ -197,7 +255,9 @@ describe("MemoryToolExecutor", () => {
     const executor = new MemoryToolExecutor(
       {
         recordTokenUsage,
-        accessCheck: vi.fn(async () => ({})),
+        accessCheck: vi.fn(async () => ({
+          user: { id: "00000000-0000-4000-8000-000000000001" }
+        })),
         listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
       } as unknown as MemoryApiClient,
       {},
@@ -251,7 +311,9 @@ describe("MemoryToolExecutor", () => {
 
   it("runs Memory Answer from the requesting adapter cwd", async () => {
     const client = {
-      accessCheck: vi.fn(async () => ({})),
+      accessCheck: vi.fn(async () => ({
+        user: { id: "00000000-0000-4000-8000-000000000001" }
+      })),
       listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
       listAiClientInstances: vi.fn(async () => ({
         instances: [],
@@ -306,7 +368,9 @@ describe("MemoryToolExecutor", () => {
 
   it("keeps remote Project paths as metadata without choosing the local execution directory", async () => {
     const client = {
-      accessCheck: vi.fn(async () => ({})),
+      accessCheck: vi.fn(async () => ({
+        user: { id: "00000000-0000-4000-8000-000000000001" }
+      })),
       listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
       listAiClientInstances: vi.fn(async () => ({
         instances: [],
@@ -369,7 +433,9 @@ describe("MemoryToolExecutor", () => {
       })
     );
     const client = {
-      accessCheck: vi.fn(async () => ({})),
+      accessCheck: vi.fn(async () => ({
+        user: { id: "00000000-0000-4000-8000-000000000001" }
+      })),
       completePendingDesktopAsk,
       listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
       recordTokenUsage: vi.fn(async () => ({}))
@@ -440,7 +506,9 @@ describe("MemoryToolExecutor", () => {
       usedFallback: false
     };
     const client = {
-      accessCheck: vi.fn(async () => ({})),
+      accessCheck: vi.fn(async () => ({
+        user: { id: "00000000-0000-4000-8000-000000000001" }
+      })),
       createFinalQuestion: vi.fn(async () => ({
         question: {
           id: "11111111-1111-4111-8111-111111111111",
@@ -532,7 +600,9 @@ describe("MemoryToolExecutor", () => {
       const expand = vi.fn(async () => ({ items: [] }));
       const createFinalQuestion = vi.fn();
       const client = {
-        accessCheck: vi.fn(async () => ({})),
+        accessCheck: vi.fn(async () => ({
+          user: { id: "00000000-0000-4000-8000-000000000001" }
+        })),
         listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
         recordTokenUsage: vi.fn(async () => ({})),
         createFinalQuestion,
@@ -648,100 +718,171 @@ describe("MemoryToolExecutor", () => {
     });
   });
 
-  it("creates a pending Desktop Ask turn before synthesis and returns display-safe detail", async () => {
-    const callOrder: string[] = [];
-    const question = {
-      id: "11111111-1111-4111-8111-111111111111",
-      askThreadId: "22222222-2222-4222-8222-222222222222",
-      askTurnIndex: 0,
-      query: "What did I decide?",
-      answerMarkdown: null,
-      errorMessage: null,
-      status: "pending",
-      createdAt: "2026-08-17T12:00:00.000Z",
-      updatedAt: "2026-08-17T12:00:00.000Z",
-      answeredAt: null
-    } as const;
-    const client = {
-      createPendingDesktopAsk: vi.fn(async () => {
-        callOrder.push("pending");
-        return { question };
-      }),
-      accessCheck: vi.fn(async () => ({})),
-      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
-      completePendingDesktopAsk: vi.fn(
-        async (_questionId: string, input: Record<string, unknown>) => {
-          callOrder.push("complete");
-          return {
-            question: {
-              ...question,
-              ...input,
-              answerMarkdown: "You chose the Ask welcome page.",
-              status: "answered"
+  it.each([undefined, "00000000-0000-4000-8000-000000000095", "folder"])(
+    "creates a pinned Desktop Ask turn (%s) before synthesis and returns display-safe detail",
+    async (selectionKey) => {
+      const folderSelection =
+        selectionKey === "folder"
+          ? {
+              ownerUserId: "00000000-0000-4000-8000-000000000001",
+              folderId: "folder_fixture",
+              originatingDeploymentId: "deployment_fixture",
+              originatingDeviceId: "device_fixture",
+              originatingProfileId: "profile_fixture",
+              directoryIncarnationId: "incarnation_fixture"
+            }
+          : undefined;
+      const namedProjectId =
+        selectionKey === "folder" ? undefined : selectionKey;
+      const target = folderSelection
+        ? { kind: "folder", folder: folderSelection }
+        : {
+            kind: "project",
+            project: {
+              ownerUserId: "00000000-0000-4000-8000-000000000001",
+              projectId: namedProjectId
             }
           };
-        }
-      ),
-      getQuestion: vi.fn(async () => ({
-        question: {
-          ...question,
-          answerMarkdown: "You chose the Ask welcome page.",
-          status: "answered",
-          updatedAt: "2026-08-17T12:00:01.000Z",
-          answeredAt: "2026-08-17T12:00:01.000Z",
-          evidence: [{ secret: "must not cross the display boundary" }],
-          localMemoryWorker: { diagnostic: true }
-        }
-      })),
-      recordTokenUsage: vi.fn(async () => ({}))
-    } as unknown as MemoryApiClient;
-    const answerWithMemoryWorker: NonNullable<
-      MemoryToolExecutorServices["answerWithMemoryWorker"]
-    > = async (payload) => {
-      callOrder.push("synthesis");
-      return {
-        ...payload,
-        markdown: "You chose the Ask welcome page.",
-        retrieval: { evidenceCount: 0 },
-        localMemoryWorker: {
-          jobId: "desktop-answer-job",
-          model: "gpt-test",
-          provider: "codex",
-          promptVersion: "test",
-          usedFallback: false
-        }
-      };
-    };
-    const executor = new MemoryToolExecutor(
-      client,
-      {},
-      { answerWithMemoryWorker }
-    );
-
-    const result = await executor.executeDesktopAsk(
-      {
-        idempotencyKey: "desktop-ask-request-1",
-        query: question.query
-      },
-      { cwd: "/work" }
-    );
-
-    expect(callOrder).toEqual(["pending", "synthesis", "complete"]);
-    expect(result).toEqual({
-      question: {
-        id: question.id,
-        askThreadId: question.askThreadId,
+      const expectedId = folderSelection
+        ? personalFolderScopeId(folderSelection)
+        : namedProjectId;
+      const callOrder: string[] = [];
+      const question = {
+        id: "11111111-1111-4111-8111-111111111111",
+        askThreadId: "22222222-2222-4222-8222-222222222222",
         askTurnIndex: 0,
-        query: question.query,
-        answerMarkdown: "You chose the Ask welcome page.",
+        query: "What did I decide?",
+        answerMarkdown: null,
         errorMessage: null,
-        status: "answered",
-        createdAt: question.createdAt,
-        updatedAt: "2026-08-17T12:00:01.000Z",
-        answeredAt: "2026-08-17T12:00:01.000Z"
-      }
-    });
-    expect(JSON.stringify(result)).not.toContain("secret");
-    expect(JSON.stringify(result)).not.toContain("diagnostic");
-  });
+        status: "pending",
+        createdAt: "2026-08-17T12:00:00.000Z",
+        updatedAt: "2026-08-17T12:00:00.000Z",
+        answeredAt: null
+      } as const;
+      const client = {
+        createPendingDesktopAsk: vi.fn(async () => {
+          callOrder.push("pending");
+          return { question };
+        }),
+        accessCheck: vi.fn(async () => ({
+          user: { id: "00000000-0000-4000-8000-000000000001" }
+        })),
+        listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+        completePendingDesktopAsk: vi.fn(
+          async (_questionId: string, input: Record<string, unknown>) => {
+            callOrder.push("complete");
+            return {
+              question: {
+                ...question,
+                ...input,
+                answerMarkdown: "You chose the Ask welcome page.",
+                status: "answered"
+              }
+            };
+          }
+        ),
+        getQuestion: vi.fn(async () => ({
+          question: {
+            ...question,
+            answerMarkdown: "You chose the Ask welcome page.",
+            status: "answered",
+            updatedAt: "2026-08-17T12:00:01.000Z",
+            answeredAt: "2026-08-17T12:00:01.000Z",
+            evidence: [{ secret: "must not cross the display boundary" }],
+            localMemoryWorker: { diagnostic: true }
+          }
+        })),
+        search: vi.fn(async () => ({ hits: [] })),
+        expand: vi.fn(async () => ({ sources: [] })),
+        recordTokenUsage: vi.fn(async () => ({}))
+      } as unknown as MemoryApiClient;
+      const answerWithMemoryWorker: NonNullable<
+        MemoryToolExecutorServices["answerWithMemoryWorker"]
+      > = async (payload, worker) => {
+        if (namedProjectId || folderSelection) {
+          if (!worker?.client)
+            throw new Error("Scoped retrieval client is required");
+          expect(worker.config?.cwd).not.toBe("/work");
+          expect(worker.searchDomain).toBe("project");
+          expect(worker.projectId).toBe(expectedId);
+          await worker.client.search({
+            query: "decision",
+            search_domain: "global"
+          });
+          expect(client.search).toHaveBeenCalledWith(
+            expect.objectContaining({
+              personal_selection: {
+                version: 1,
+                ownerUserId: "00000000-0000-4000-8000-000000000001",
+                target,
+                callerRepositoryContext: null
+              }
+            })
+          );
+          await worker.client.expand("00000000-0000-4000-8000-000000000096");
+          expect(vi.mocked(client.expand).mock.calls[0]?.[0]).toBe(
+            "00000000-0000-4000-8000-000000000096"
+          );
+          expect(vi.mocked(client.expand).mock.calls[0]?.[1]).toMatchObject({
+            personalSelection: {
+              target
+            }
+          });
+        }
+        callOrder.push("synthesis");
+        return {
+          ...payload,
+          markdown: "You chose the Ask welcome page.",
+          retrieval: { evidenceCount: 0 },
+          localMemoryWorker: {
+            jobId: "desktop-answer-job",
+            model: "gpt-test",
+            provider: "codex",
+            promptVersion: "test",
+            usedFallback: false
+          }
+        };
+      };
+      const executor = new MemoryToolExecutor(
+        client,
+        {},
+        { answerWithMemoryWorker }
+      );
+
+      const result = await executor.executeDesktopAsk(
+        {
+          idempotencyKey: "desktop-ask-request-1",
+          namedProjectId,
+          folderSelection,
+          query: question.query
+        },
+        { cwd: "/work" }
+      );
+
+      expect(callOrder).toEqual(["pending", "synthesis", "complete"]);
+      expect(result).toEqual({
+        question: {
+          id: question.id,
+          askThreadId: question.askThreadId,
+          askTurnIndex: 0,
+          query: question.query,
+          answerMarkdown: "You chose the Ask welcome page.",
+          errorMessage: null,
+          status: "answered",
+          createdAt: question.createdAt,
+          updatedAt: "2026-08-17T12:00:01.000Z",
+          answeredAt: "2026-08-17T12:00:01.000Z"
+        }
+      });
+      expect(client.createPendingDesktopAsk).toHaveBeenCalledWith({
+        ask_thread_id: undefined,
+        named_project_id: namedProjectId,
+        folder_selection: folderSelection,
+        idempotency_key: "desktop-ask-request-1",
+        query: question.query
+      });
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(JSON.stringify(result)).not.toContain("diagnostic");
+    }
+  );
 });

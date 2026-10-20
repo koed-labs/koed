@@ -1,0 +1,266 @@
+.personal-conversation-card {
+  width: min(42.5rem, calc(100vw - 2rem));
+  max-width: 42.5rem;
+  max-height: calc(100dvh - 2rem);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.personal-conversation-card > [data-slot="dialog-header"] {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 1.25rem 3.25rem 1rem 1.25rem;
+}
+.personal-conversation-card-body {
+  padding: 0 1.25rem 1.25rem;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.personal-conversation-card > [data-slot="dialog-footer"] {
+  flex: 0 0 auto;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding: 0.875rem 1.25rem;
+  margin: 0;
+}
+.personal-conversation-card-status {
+  flex: 1;
+  margin-inline-end: auto;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.personal-conversation-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0 0.875rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.personal-conversation-source svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+.personal-conversation-project-list,
+.personal-conversation-membership-details ul,
+.personal-source-impact ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.personal-conversation-project-list > li {
+  border-bottom: 1px solid var(--border);
+}
+.personal-conversation-project-list > li:last-child {
+  border-bottom: 0;
+}
+.personal-conversation-project-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9375rem 0;
+}
+.personal-conversation-project-row label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.personal-conversation-project-row input {
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+.personal-conversation-project-row strong,
+.personal-conversation-project-row small,
+.personal-conversation-membership-details small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.personal-conversation-project-row strong {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.personal-conversation-project-row small,
+.personal-conversation-membership-details small {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.personal-conversation-caret {
+  flex: 0 0 auto;
+  border: 0;
+  box-shadow: none;
+}
+.personal-conversation-caret[aria-expanded="true"] svg {
+  rotate: 90deg;
+}
+.personal-conversation-membership-details {
+  border-radius: 0.5rem;
+  background: var(--muted);
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+.personal-conversation-membership-details li {
+  padding-bottom: 0.375rem;
+}
+.personal-conversation-membership-details p {
+  margin: 0.5rem 0;
+}
+.personal-conversation-membership-details button {
+  max-width: 100%;
+  white-space: normal;
+  height: auto;
+  min-height: 2rem;
+}
+.personal-conversation-card-error {
+  color: var(--destructive);
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+}
+.personal-source-context-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+.personal-source-context-tabs button {
+  border: 0;
+  box-shadow: none;
+}
+.personal-source-context-tabs button[aria-pressed="true"] {
+  background: var(--muted);
+}
+.personal-source-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+}
+.personal-source-current,
+.personal-source-correction {
+  align-self: stretch;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+.personal-source-current > span,
+.personal-source-current small,
+.personal-source-correction small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.personal-source-current strong {
+  display: block;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.personal-source-comparison-arrow {
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted-foreground);
+}
+.personal-source-correction {
+  background: color-mix(in srgb, var(--primary) 8%, var(--card));
+}
+.personal-source-correction label {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+.personal-source-correction select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--background);
+  color: var(--foreground);
+  padding: 0.5rem;
+  font: inherit;
+}
+.personal-source-correction small {
+  margin-top: 0.75rem;
+}
+.personal-source-impact {
+  margin-top: 1.25rem;
+}
+.personal-source-impact h3 {
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin: 0 0 0.25rem;
+}
+.personal-source-impact li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem 0.75rem;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.personal-source-impact li > div {
+  min-width: 0;
+}
+.personal-source-impact strong {
+  font-weight: 500;
+}
+.personal-source-impact small {
+  display: block;
+  color: var(--muted-foreground);
+}
+.personal-source-impact li > span {
+  font-variant-numeric: tabular-nums;
+}
+.personal-source-review-hint,
+.personal-source-impact > p,
+.personal-source-sync-status {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.personal-source-sync-status:has(> *) {
+  padding-block: 0.75rem;
+}
+@media (max-width: 520px) {
+  .personal-source-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .personal-source-comparison-arrow {
+    display: none;
+  }
+  .personal-conversation-card > [data-slot="dialog-header"] {
+    padding-inline-start: 1rem;
+  }
+  .personal-conversation-card-body {
+    padding-inline: 1rem;
+  }
+  .personal-conversation-card > [data-slot="dialog-footer"] {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding-inline: 1rem;
+  }
+  .personal-conversation-card-status {
+    flex-basis: 100%;
+  }
+}
+
+.personal-conversation-create-project {
+  margin-top: 0.75rem;
+}

@@ -1,4 +1,3 @@
-import { repositoryScopeId } from "@koed/shared/repository-recall";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
@@ -34,6 +33,8 @@ import type {
 } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
 import { ProjectFolderValidation } from "./project-folder-validation.js";
+import { ConversationCardsValidation } from "./conversation-cards-validation.js";
+import { ProjectTransferValidation } from "./project-transfer-validation.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -148,27 +149,23 @@ const independentProjectMetadata: PersonalDesktopProjectMetadata = {
   }
 };
 
-const namedProjectIdentity = {
-  kind: "local_project" as const,
-  key: "project_added",
-  root: null,
-  branch: null,
-  checkoutId: null,
-  originatingDeviceId: "browser_device",
-  reason: "manual" as const,
-  selectedRemote: null,
-  anchorDisplay: null
-};
 const addedPersonalProject: PersonalDesktopProject = {
-  id: repositoryScopeId(namedProjectIdentity),
+  id: uuid(800),
   name: "Added Project",
-  repository: namedProjectIdentity,
   path: null,
   eventCount: 0,
-  threads: []
+  threads: [],
+  namedProject: {
+    projectId: uuid(800),
+    name: "Added Project",
+    version: 1,
+    headRevisionId: uuid(801),
+    deletedAt: null,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }
 };
 let addedProject = false;
-let projectMoved = false;
 
 const richMarkdownFixture = `# Formatting parity
 
@@ -387,17 +384,59 @@ const personalEvents: PersonalDesktopConversationEvent[] = [
 const personalMemoryApi: PersonalDesktopApi = {
   createProject: async ({ name }) => {
     addedPersonalProject.name = name;
+    addedPersonalProject.namedProject!.name = name;
     addedProject = true;
     return { projectId: addedPersonalProject.id };
   },
   moveProject: async () => {
-    projectMoved = true;
+    throw new Error("unsupported_operation");
+  },
+  assignSessionProject: async () => {
+    throw new Error("unsupported_operation");
+  },
+  manageProject: async (input) => {
+    if (
+      input.projectId !== addedPersonalProject.id ||
+      input.expectedVersion !== addedPersonalProject.namedProject!.version
+    )
+      throw new Error("Project changed");
+    if (input.action === "add_session") {
+      const source = personalProject.threads.find(
+        (thread) => thread.sessionId === input.sessionId
+      );
+      if (!source) throw new Error("Unknown Conversation");
+      addedPersonalProject.namedProject!.version++;
+      addedPersonalProject.threads = [
+        {
+          ...source,
+          namedProjectId: addedPersonalProject.id,
+          projectId: addedPersonalProject.id,
+          projectName: addedPersonalProject.name,
+          projectPath: null,
+          sourceProject: {
+            id: personalProject.id,
+            name: personalProject.name,
+            path: personalProject.path
+          },
+          membershipReasons: [
+            { inclusionId: uuid(802), revisionId: uuid(803), kind: "session" }
+          ]
+        }
+      ];
+      addedPersonalProject.eventCount = source.eventCount;
+    } else if (input.action !== "explain_session")
+      throw new Error("Unsupported fixture command");
     return {
-      projectId: addedPersonalProject.id,
-      movedCount: personalProject.threads.length
+      project: addedPersonalProject.namedProject!,
+      explanation: {
+        sessionId: personalThread.sessionId!,
+        logicalSessionId: uuid(804),
+        included: addedPersonalProject.threads.length > 0,
+        reasons: addedPersonalProject.threads[0]?.membershipReasons ?? [],
+        exclusion: null
+      }
     };
   },
-  assignSessionProject: async () => ({ projectId: personalProject.id }),
   updateSessionPresentation: async () => ({
     presentation: {
       pinnedAt: null,
@@ -408,28 +447,10 @@ const personalMemoryApi: PersonalDesktopApi = {
       updatedAt: timestamp
     }
   }),
-  listProjects: async () =>
-    projectMoved
-      ? [
-          {
-            ...addedPersonalProject,
-            eventCount: personalProject.eventCount,
-            threads: personalProject.threads.map((thread) => ({
-              ...thread,
-              projectId: addedPersonalProject.id,
-              projectName: addedPersonalProject.name,
-              projectPath: null,
-              repositoryAssignment: {
-                state: "historical_unresolved" as const,
-                version: 2,
-                automatic: null,
-                override: namedProjectIdentity,
-                effective: namedProjectIdentity
-              }
-            }))
-          }
-        ]
-      : [personalProject, ...(addedProject ? [addedPersonalProject] : [])],
+  listProjects: async () => [
+    personalProject,
+    ...(addedProject ? [addedPersonalProject] : [])
+  ],
   listProjectMetadata: async () => [
     independentProjectMetadata,
     {
@@ -3081,7 +3102,11 @@ const browserValidationView = new URLSearchParams(window.location.search).get(
   "view"
 );
 createRoot(document.querySelector("#root")!).render(
-  browserValidationView === "project-folders" ? (
+  browserValidationView === "conversation-cards" ? (
+    <ConversationCardsValidation />
+  ) : browserValidationView === "project-transfer" ? (
+    <ProjectTransferValidation />
+  ) : browserValidationView === "project-folders" ? (
     <ProjectFolderValidation />
   ) : browserValidationView === "chat" ? (
     <ChatValidationApp />

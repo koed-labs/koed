@@ -1,5 +1,8 @@
 import { randomBytes } from "node:crypto";
 import {
+  personalSelectionFromTaskRequest,
+  personalSelectionCompatibilityError,
+  type PersonalSelectionSnapshot,
   memoryAnswerTaskIsTerminal,
   memoryAnswerTaskExecutionAuthoritySchema,
   type MemoryAnswerTaskExecutionAuthority,
@@ -20,6 +23,7 @@ export type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
 export interface MemoryAnswerTaskExecutionContext {
   getExecutionAuthority(): MemoryAnswerTaskExecutionAuthority;
   taskBackend?: MemoryAnswerRetrievalClient;
+  personalSelection?: PersonalSelectionSnapshot;
 }
 export type MemoryAnswerTaskApi = Pick<
   MemoryApiClient,
@@ -32,13 +36,6 @@ export type MemoryAnswerTaskApi = Pick<
   | "getMemoryAnswerTask"
   | "heartbeatMemoryAnswerTask"
 >;
-
-interface ClaimedMemoryAnswerTask extends SharedClaimedMemoryAnswerTask {
-  request: {
-    input: Record<string, unknown>;
-    caller: LocalRuntimeCallerContext;
-  };
-}
 
 export interface MemoryAnswerTaskExecutor {
   executeMemoryAnswerTask(
@@ -78,6 +75,8 @@ const TERMINAL = new Set<MemoryAnswerTaskStatus>([
 const claimedRequestSchema = z
   .object({
     input: z.record(z.string(), z.unknown()),
+    requestVersion: z.unknown().optional(),
+    selection: z.unknown().optional(),
     caller: z
       .object({
         cwd: z.string(),
@@ -88,13 +87,6 @@ const claimedRequestSchema = z
       .strict()
   })
   .strict();
-
-const claimedTask = (
-  task: SharedClaimedMemoryAnswerTask
-): ClaimedMemoryAnswerTask => ({
-  ...task,
-  request: claimedRequestSchema.parse(task.request)
-});
 
 const positive = (value: number | undefined, fallback: number): number =>
   Number.isInteger(value) && value !== undefined && value > 0
@@ -348,7 +340,7 @@ export class MemoryAnswerTaskScheduler {
         throw error;
       }
       for (const reconciled of batch.reconciled) this.publish(reconciled);
-      const claim = batch.task ? claimedTask(batch.task) : null;
+      const claim = batch.task;
       if (!claim) {
         release();
         return;
@@ -373,7 +365,7 @@ export class MemoryAnswerTaskScheduler {
   }
 
   private async executeClaim(
-    task: ClaimedMemoryAnswerTask,
+    task: SharedClaimedMemoryAnswerTask,
     attempt: MemoryAnswerAttemptControl
   ): Promise<void> {
     let authority = memoryAnswerTaskExecutionAuthoritySchema.parse(
@@ -450,13 +442,29 @@ export class MemoryAnswerTaskScheduler {
     hardTimeout.unref?.();
 
     try {
+      const parsedRequest = claimedRequestSchema.safeParse(task.request);
+      if (!parsedRequest.success)
+        throw personalSelectionCompatibilityError(
+          "Unsupported Memory Answer request shape"
+        );
+      const request = parsedRequest.data;
       const context = this.executionContextForTask?.(
         task,
         getExecutionAuthority
       ) ?? { getExecutionAuthority };
+      const selection = personalSelectionFromTaskRequest(request);
+      if (selection && authority.scope !== "personal")
+        throw Object.assign(
+          new Error("Personal selection cannot execute under Team authority"),
+          {
+            memoryAnswerTaskErrorCode: "personal_selection_incompatible",
+            retryable: false
+          }
+        );
+      if (selection) context.personalSelection = selection;
       const completed = await this.executor.executeMemoryAnswerTask(
-        task.request.input,
-        task.request.caller,
+        request.input,
+        request.caller,
         task.id,
         attempt.controller.signal,
         (status) => attempt.progress(status),

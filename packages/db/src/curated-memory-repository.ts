@@ -1,6 +1,9 @@
 import type pg from "pg";
 import type { ExpandedMemoryNode } from "@koed/core";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type {
+  EnvelopeEncryptionProvider,
+  PersonalSelectionSnapshot
+} from "@koed/shared";
 import { createCuratedMemoryPolicyMethods } from "./curated-memory-policy.js";
 import { createCuratedMemoryProposalTransitionMethods } from "./curated-memory-proposal-transitions.js";
 import { createCuratedMemoryRecallMethods } from "./curated-memory-recall.js";
@@ -53,7 +56,12 @@ export interface CuratedMemoryRepository {
   ): Promise<CuratedMemoryProposalRecord | null>;
   resolveCuratedMemoryProposalEvidence(
     actor: ActorContext,
-    input: { projectId?: string; sessionId?: string; exactQuote?: string }
+    input: {
+      projectId?: string;
+      sessionId?: string;
+      exactQuote?: string;
+      personalSelection?: PersonalSelectionSnapshot;
+    }
   ): Promise<CuratedMemoryResolvedEvidence>;
   processCuratedMemoryProposal(
     actor: ActorContext,
@@ -92,6 +100,7 @@ export interface CuratedMemoryRepository {
     input?: {
       searchDomain?: "global" | "project" | "session";
       projectId?: string;
+      personalSelection?: PersonalSelectionSnapshot;
       sessionId?: string;
       sourceAfter?: string;
       sourceBefore?: string;

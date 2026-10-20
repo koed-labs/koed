@@ -6,6 +6,47 @@ import {
 import { searchMemorySchema } from "./recall-schemas.js";
 
 describe("searchMemorySchema", () => {
+  it("rejects unsupported target fields instead of dropping them into Global recall", () => {
+    expect(() =>
+      searchMemorySchema.parse({
+        query: "bounded",
+        recall_target: { kind: "folder", folderId: "unknown" }
+      })
+    ).toThrow();
+    expect(() =>
+      searchMemorySchema.parse({
+        query: "bounded",
+        personalSelection: { version: 99 }
+      })
+    ).toThrow();
+  });
+  it("rejects Personal selections on the Team path and unknown selection versions", () => {
+    const selection = {
+      version: 0,
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      target: { kind: "global" },
+      callerRepositoryContext: null
+    };
+    expect(() =>
+      searchMemorySchema.parse({
+        query: "bounded",
+        personal_selection: selection,
+        team_workspace_id: "00000000-0000-4000-8000-000000000002"
+      })
+    ).toThrow("Personal selection cannot");
+    expect(() =>
+      searchMemorySchema.parse({
+        query: "bounded",
+        personal_selection: { ...selection, version: 99 }
+      })
+    ).toThrow();
+    expect(
+      searchMemorySchema.parse({
+        query: "bounded",
+        personal_selection: selection
+      }).personal_selection
+    ).toEqual(selection);
+  });
   it("accepts an opaque Team run boundary and rejects it without a Workspace", () => {
     expect(
       searchMemorySchema.parse({

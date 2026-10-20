@@ -94,6 +94,16 @@ const request = async (
   return result;
 };
 
+export const recordCaptureFolderContext = (koedHome, input) =>
+  request(
+    koedHome,
+    "/v1/capture/folder-context",
+    "POST",
+    input,
+    undefined,
+    true
+  );
+
 export const createRuntimeTaskPort = (koedHome) => {
   const scope = resolve(koedHome);
   return {

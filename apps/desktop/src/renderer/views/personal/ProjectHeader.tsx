@@ -282,7 +282,8 @@ export function ProjectHeader({
                   </section>
                 ) : (
                   <p className="personal-project-details-description">
-                    {project.repository?.kind === "local_project"
+                    {project.namedProject ||
+                    project.repository?.kind === "local_project"
                       ? "Named Project. No folder is required."
                       : "No folder recorded."}
                   </p>

@@ -4,7 +4,6 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
-  repositoryScopeId,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationMessage,
@@ -16,7 +15,6 @@ import {
   type PersonalDesktopApi,
   type PersonalDesktopNote,
   type PersonalDesktopProjectThread,
-  type RepositoryIdentity,
   type SharedMemoryGrant,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
@@ -1299,21 +1297,18 @@ describe("CollaborationApp", () => {
     return client;
   };
 
-  it("keeps a moved Captured Session open when unresolved history still has other Sessions", async () => {
-    // A named Project stays a visible move target while it is still empty.
-    const identity: RepositoryIdentity = {
-      kind: "local_project",
-      key: "project_destination",
-      root: null,
-      branch: null,
-      checkoutId: null,
-      originatingDeviceId: "device",
-      reason: "manual",
-      selectedRemote: null,
-      anchorDisplay: null
+  it("keeps a Captured Session open while independent Project membership changes", async () => {
+    let included = false;
+    const destinationId = uuid(903);
+    const destination = {
+      projectId: destinationId,
+      name: "Destination",
+      version: 1,
+      headRevisionId: uuid(904),
+      deletedAt: null,
+      createdAt: "2026-10-20T00:00:00.000Z",
+      updatedAt: "2026-10-20T00:00:00.000Z"
     };
-    const destinationId = repositoryScopeId(identity);
-    let moved = false;
     const history: PersonalDesktopProjectThread = {
       id: "history-a",
       sessionId: uuid(901),
@@ -1343,42 +1338,63 @@ describe("CollaborationApp", () => {
       name: "History B"
     };
     const api = createPersonalMemoryApi();
+    const reason = {
+      kind: "session" as const,
+      inclusionId: uuid(905),
+      revisionId: uuid(906)
+    };
     api.listProjects = async () => [
       {
         id: "unassigned",
         name: "Unresolved history",
         path: "/tmp/old",
-        eventCount: moved ? 1 : 2,
-        threads: moved ? [other] : [history, other]
+        eventCount: 2,
+        threads: [history, other]
       },
       {
         id: destinationId,
         name: "Destination",
-        repository: identity,
         path: null,
-        eventCount: moved ? 1 : 0,
-        threads: moved
+        namedProject: destination,
+        eventCount: included ? 1 : 0,
+        threads: included
           ? [
               {
                 ...history,
                 projectId: destinationId,
                 projectName: "Destination",
-                projectAssignmentSource: "user_override" as const,
-                repositoryAssignment: {
-                  state: "historical_unresolved" as const,
-                  version: 2,
-                  automatic: null,
-                  override: identity,
-                  effective: identity
-                }
+                projectPath: null,
+                sourceProject: {
+                  id: "unassigned",
+                  name: "Unresolved history",
+                  path: "/tmp/old"
+                },
+                membershipReasons: [reason]
               }
             ]
           : []
       }
     ];
-    api.assignSessionProject = vi.fn(async (input) => {
-      moved = input.action === "move";
-      return { projectId: moved ? destinationId : null };
+    api.assignSessionProject = vi.fn(async () => {
+      throw new Error("Retired operation");
+    });
+    api.manageProject = vi.fn(async (input) => {
+      expect(input.expectedVersion).toBe(destination.version);
+      if (input.action === "add_session") included = true;
+      else if (input.action === "remove_inclusion") included = false;
+      else if (input.action !== "explain_session")
+        throw new Error("Unexpected fixture action");
+      if (input.action !== "explain_session") destination.version++;
+      return {
+        project: destination,
+        explanation: {
+          sessionId: history.sessionId!,
+          logicalSessionId: uuid(907),
+          included,
+          reasons: included ? [reason] : [],
+          exclusion: null
+        }
+      };
     });
     await render(createClient(), api);
     await act(async () =>
@@ -1406,62 +1422,62 @@ describe("CollaborationApp", () => {
         .click()
     );
     await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Add to Project")!
         .click()
     );
-    await act(async () => {
-      const select = document.querySelector<HTMLSelectElement>(
-        'select[name="targetProjectId"]'
+    const destinationCheckbox = () =>
+      document.querySelector<HTMLInputElement>(
+        'input[aria-label="Include in Destination"]'
       )!;
-      select.value = destinationId;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () =>
-      document
-        .querySelector(".personal-session-assignment-dialog form")!
-        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
-    );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(".personal-session-detail h2")?.textContent
-      ).toBe("History A")
-    );
-    expect(
-      container.querySelector(".desktop-breadcrumb")?.textContent
-    ).toContain("Destination");
-    expect(
-      container.querySelector('[data-project-id="unassigned"]')
-    ).not.toBeNull();
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Move Conversation"]')!
-        .click()
-    );
-    await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore")!
-        .click()
-    );
-    // The restore page replaces the move page with its own Restore confirmation.
-    await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((button) => button.textContent === "Restore")!
-        .click()
-    );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector(".desktop-breadcrumb")?.textContent
-      ).toContain("Unresolved history")
-    );
+    const confirmMembership = async () => {
+      await act(async () =>
+        [
+          ...document.querySelectorAll<HTMLButtonElement>(
+            ".personal-conversation-card button"
+          )
+        ]
+          .find((button) => button.textContent === "Confirm")!
+          .click()
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector(".personal-conversation-card")).toBeNull()
+      );
+    };
+    await vi.waitFor(() => expect(destinationCheckbox()?.disabled).toBe(false));
+    expect(destinationCheckbox().checked).toBe(false);
+    await act(async () => destinationCheckbox().click());
+    expect(included).toBe(false);
+    await confirmMembership();
+    expect(included).toBe(true);
+
     expect(
       container.querySelector(".personal-session-detail h2")?.textContent
     ).toBe("History A");
-    expect(api.assignSessionProject).toHaveBeenLastCalledWith({
-      action: "reset",
-      sessionId: history.sessionId,
-      expectedVersion: 2
-    });
+    expect(
+      container.querySelector(".desktop-breadcrumb")?.textContent
+    ).toContain("Unresolved history");
+    expect(
+      (await api.listProjects()).find((project) => project.id === "unassigned")
+        ?.threads
+    ).toEqual([history, other]);
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent?.trim() === "Add to Project")!
+        .click()
+    );
+    await vi.waitFor(() => expect(destinationCheckbox()?.disabled).toBe(false));
+    expect(destinationCheckbox().checked).toBe(true);
+    await act(async () => destinationCheckbox().click());
+    expect(included).toBe(true);
+    await confirmMembership();
+    expect(included).toBe(false);
+
+    expect(
+      container.querySelector(".personal-session-detail h2")?.textContent
+    ).toBe("History A");
+    expect(history.repositoryAssignment?.effective).toBeNull();
+    expect(api.assignSessionProject).not.toHaveBeenCalled();
   });
 
   it("reloads both recent lists when the Personal owner changes with the same API", async () => {

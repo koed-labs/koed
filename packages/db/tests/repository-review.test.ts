@@ -3,7 +3,8 @@ import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import {
   createDbPool,
   runDbMigrations,
-  createMemorySourceRepository
+  createMemorySourceRepository,
+  updateSessionRepositoryOverride
 } from "../src/index.js";
 import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 const url = process.env.DATABASE_URL;
@@ -65,7 +66,7 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
       });
     return { actor, a, b, capture, change };
   };
-  it("fixes exact versions and provenance, applies a subset atomically, preserves late sessions, and replays once", async () => {
+  it("retains fixed read-only review snapshots and rejects retired apply and replay without changing sources", async () => {
     const f = await fixture();
     const first = await f.capture(),
       second = await f.capture();
@@ -76,52 +77,44 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
       event.id,
       { includeOverrides: false, includeUnresolved: false }
     );
-    expect(review.count).toBe(2);
-    expect(review.sessions.map((s) => s.id).sort()).toEqual(
+    expect(review.sessions.map((source) => source.id).sort()).toEqual(
       [first.session.id, second.session.id].sort()
     );
     const late = await f.capture();
-    const action = {
-      action: "apply",
-      expectedRevision: event.revision,
-      sessionIds: [first.session.id]
-    };
-    await repo.executeRepositoryAssignmentReview(f.actor, review.id, action);
-    expect(
-      (await repo.getCapturedSession(f.actor, first.session.id))
-        ?.repositoryAssignment
-    ).toMatchObject({ version: 2, effective: f.b });
-    expect(
-      (await repo.getCapturedSession(f.actor, late.session.id))
-        ?.repositoryAssignment?.effective
-    ).toEqual(f.a);
-    expect(
-      (
-        await repo.listLcmGraphThreads(f.actor, {
-          projectId: repositoryScopeId(f.b)
+    const before = await Promise.all(
+      [first, second, late].map((source) =>
+        repo.getCapturedSession(f.actor, source.session.id)
+      )
+    );
+    for (const sessionIds of [
+      [first.session.id],
+      [first.session.id],
+      [second.session.id]
+    ])
+      await expect(
+        repo.executeRepositoryAssignmentReview(f.actor, review.id, {
+          action: "apply",
+          expectedRevision: event.revision,
+          sessionIds
         })
-      ).flatMap((p) => p.threads.map((t) => t.sessionId))
-    ).toEqual([first.session.id]);
+      ).rejects.toMatchObject({
+        statusCode: 410,
+        code: "personal_legacy_write_retired"
+      });
     expect(
-      (
-        await repo.listLcmGraphEvents(f.actor, {
-          projectId: repositoryScopeId(f.a)
-        })
-      ).map((e) => e.id)
-    ).not.toContain(first.event.id);
-    await repo.executeRepositoryAssignmentReview(f.actor, review.id, action);
+      await Promise.all(
+        [first, second, late].map((source) =>
+          repo.getCapturedSession(f.actor, source.session.id)
+        )
+      )
+    ).toEqual(before);
     expect(
-      (await repo.getCapturedSession(f.actor, first.session.id))
-        ?.repositoryAssignment?.version
-    ).toBe(2);
-    await expect(
-      repo.executeRepositoryAssignmentReview(f.actor, review.id, {
-        ...action,
-        sessionIds: [second.session.id]
+      await repo.listLcmGraphThreads(f.actor, {
+        projectId: repositoryScopeId(f.b)
       })
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).toEqual([]);
   });
-  it("rejects the entire stale set, including concurrent single-session edits and owner substitution", async () => {
+  it("keeps read-only reviews owner-bound after a newer source edit", async () => {
     const f = await fixture();
     const first = await f.capture(),
       second = await f.capture();
@@ -131,12 +124,11 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
       event.id,
       { includeOverrides: false, includeUnresolved: false }
     );
-    await repo.moveCapturedSessionToProject(f.actor, second.session.id, {
-      id: repositoryScopeId(f.b),
-      name: "B",
-      path: f.b.root,
-      repositoryIdentity: f.b,
-      expectedAssignmentVersion: 1
+    await updateSessionRepositoryOverride(pool, {
+      ownerUserId: f.actor.userId,
+      sessionId: second.session.id,
+      identity: f.b,
+      expectedVersion: 1
     });
     await expect(
       repo.executeRepositoryAssignmentReview(f.actor, review.id, {
@@ -144,7 +136,10 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
         expectedRevision: event.revision,
         sessionIds: [first.session.id, second.session.id]
       })
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).rejects.toMatchObject({
+      statusCode: 410,
+      code: "personal_legacy_write_retired"
+    });
     expect(
       (await repo.getCapturedSession(f.actor, first.session.id))
         ?.repositoryAssignment?.version
@@ -171,12 +166,11 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
       "update sessions set repository_automatic_identity=null,repository_assignment_state='historical_unresolved' where id=$1",
       [historical.session.id]
     );
-    await repo.moveCapturedSessionToProject(f.actor, overridden.session.id, {
-      id: repositoryScopeId(f.b),
-      name: "B",
-      path: f.b.root,
-      repositoryIdentity: f.b,
-      expectedAssignmentVersion: 1
+    await updateSessionRepositoryOverride(pool, {
+      ownerUserId: f.actor.userId,
+      sessionId: overridden.session.id,
+      identity: f.b,
+      expectedVersion: 1
     });
     const event = await f.change();
     expect(
@@ -197,24 +191,24 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
       review.sessions.find((s) => s.id === overridden.session.id)?.assignment
         .override
     ).toEqual(f.b);
-    await repo.executeRepositoryAssignmentReview(f.actor, review.id, {
-      action: "apply",
-      expectedRevision: event.revision,
-      sessionIds: [historical.session.id]
-    });
+    await expect(
+      repo.executeRepositoryAssignmentReview(f.actor, review.id, {
+        action: "apply",
+        expectedRevision: event.revision,
+        sessionIds: [historical.session.id]
+      })
+    ).rejects.toMatchObject({ statusCode: 410 });
     expect(
       (await repo.getCapturedSession(f.actor, historical.session.id))
         ?.repositoryAssignment
     ).toMatchObject({
       state: "historical_unresolved",
       automatic: null,
-      effective: f.b
+      effective: null
     });
-    await repo.resetCapturedSessionProject(f.actor, historical.session.id, 2);
-    expect(
-      (await repo.getCapturedSession(f.actor, historical.session.id))
-        ?.repositoryAssignment?.effective
-    ).toBeNull();
+    await expect(
+      repo.resetCapturedSessionProject(f.actor, historical.session.id, 1)
+    ).rejects.toMatchObject({ statusCode: 410 });
   });
   it("supersedes A-to-B after B-to-C, rejects old revisions, and dismisses without assignment changes", async () => {
     const f = await fixture();
@@ -238,7 +232,10 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
         expectedRevision: ab.revision,
         sessionIds: [sample.session.id]
       })
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).rejects.toMatchObject({
+      statusCode: 410,
+      code: "personal_legacy_write_retired"
+    });
     const next = await repo.createRepositoryAssignmentReview(f.actor, bc.id, {
       includeOverrides: false,
       includeUnresolved: false
@@ -284,7 +281,7 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
     });
     expect(await repo.listRepositoryChanges(f.actor)).toHaveLength(1);
   });
-  it("serializes concurrent applications so only one review can change the assignment", async () => {
+  it("rejects every concurrent retired application without changing the assignment", async () => {
     const f = await fixture();
     const sample = await f.capture();
     const event = await f.change();
@@ -308,10 +305,17 @@ describe.skipIf(!url)("fixed repository assignment reviews", () => {
         })
       )
     );
-    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      results.every(
+        (result) =>
+          result.status === "rejected" &&
+          (result.reason as { code?: string }).code ===
+            "personal_legacy_write_retired"
+      )
+    ).toBe(true);
     expect(
       (await repo.getCapturedSession(f.actor, sample.session.id))
         ?.repositoryAssignment?.version
-    ).toBe(2);
+    ).toBe(1);
   });
 });

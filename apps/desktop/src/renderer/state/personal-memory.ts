@@ -96,6 +96,19 @@ export class PersonalMemoryStore {
           const eventIds = this.#detailRefreshEventIds.get(key) ?? new Set();
           eventIds.add(id);
           this.#detailRefreshEventIds.set(key, eventIds);
+          for (const thread of this.#snapshot.threadsByKey.values()) {
+            if (
+              (thread.namedProjectId || thread.folderSelection) &&
+              thread.sourceProject?.id === projectId &&
+              thread.sourceThreadId === threadId
+            ) {
+              const namedKey = personalMemoryThreadKey(thread);
+              const pending =
+                this.#detailRefreshEventIds.get(namedKey) ?? new Set<string>();
+              pending.add(id);
+              this.#detailRefreshEventIds.set(namedKey, pending);
+            }
+          }
         }
       } else if (change.type === "conversation_presentation_changed") {
         this.#projectRefreshPending = true;
@@ -190,6 +203,12 @@ export class PersonalMemoryStore {
           threadsByKey.set(personalMemoryThreadKey(thread), thread);
         }
       }
+      for (const [key, detail] of this.#cache)
+        if (
+          (detail.thread.namedProjectId || detail.thread.folderSelection) &&
+          !threadsByKey.has(key)
+        )
+          this.#cache.delete(key);
       this.#replace({
         error: null,
         loading: false,
@@ -316,7 +335,19 @@ export class PersonalMemoryStore {
     try {
       const events = await this.#api.loadEventPage({
         projectId: thread.projectId,
-        threadId: thread.id,
+        threadId: thread.sourceThreadId ?? thread.id,
+        ...(thread.folderSelection
+          ? {
+              folderSelection: thread.folderSelection,
+              sessionId: thread.sessionId ?? undefined
+            }
+          : {}),
+        ...(thread.namedProjectId
+          ? {
+              namedProjectId: thread.namedProjectId,
+              sessionId: thread.sessionId!
+            }
+          : {}),
         limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
       });
       if (this.#cache.get(key) !== entry) return entry;
@@ -362,7 +393,19 @@ export class PersonalMemoryStore {
       try {
         const events = await this.#api.loadEventPage({
           projectId: thread.projectId,
-          threadId: thread.id,
+          threadId: thread.sourceThreadId ?? thread.id,
+          ...(thread.folderSelection
+            ? {
+                folderSelection: thread.folderSelection,
+                sessionId: thread.sessionId ?? undefined
+              }
+            : {}),
+          ...(thread.namedProjectId
+            ? {
+                namedProjectId: thread.namedProjectId,
+                sessionId: thread.sessionId!
+              }
+            : {}),
           limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
           eventIds: [...changedEventIds]
         });
@@ -415,7 +458,19 @@ export class PersonalMemoryStore {
     try {
       const older = await this.#api.loadEventPage({
         projectId: thread.projectId,
-        threadId: thread.id,
+        threadId: thread.sourceThreadId ?? thread.id,
+        ...(thread.folderSelection
+          ? {
+              folderSelection: thread.folderSelection,
+              sessionId: thread.sessionId ?? undefined
+            }
+          : {}),
+        ...(thread.namedProjectId
+          ? {
+              namedProjectId: thread.namedProjectId,
+              sessionId: thread.sessionId!
+            }
+          : {}),
         limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
         cursor: eventCursor(cursor)
       });

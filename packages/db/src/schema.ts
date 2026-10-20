@@ -29,6 +29,8 @@ import type {
   PdsProjectSelectionRecord,
   TeamRepositorySnapshot,
   RepositoryIdentity,
+  PersonalFolderAssignment,
+  PersonalFolderObservation,
   SyncProfileTransitionReceipt
 } from "@koed/shared";
 
@@ -947,6 +949,12 @@ export const sessions = pgTable(
     sourceHash: text("source_hash"),
     model: text("model"),
     cwd: text("cwd"),
+    folderAssignment: jsonb("folder_assignment")
+      .$type<PersonalFolderAssignment>()
+      .notNull()
+      .default(
+        sql`'{"revision":1,"original":{"state":"unresolved","reason":"historical_unresolved"},"correction":{"state":"original"}}'::jsonb`
+      ),
     capturedProjectProvenance: jsonb("captured_project_provenance")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -954,6 +962,7 @@ export const sessions = pgTable(
     repositoryAssignmentState: text("repository_assignment_state")
       .notNull()
       .default("historical_unresolved"),
+    repositoryAssignmentRevisionId: uuid("repository_assignment_revision_id"),
     repositoryAssignmentVersion: integer("repository_assignment_version")
       .notNull()
       .default(1),
@@ -11572,7 +11581,7 @@ export const memoryQuestions = pgTable(
     check(
       "memory_questions_ask_identity_check",
       sql`(${table.origin} = 'mcp_memory_answer' and ${table.askThreadId} is null and ${table.askTurnIndex} is null)
-        or (${table.origin} = 'desktop_ask' and ${table.askThreadId} is not null and ${table.askTurnIndex} >= 0 and ${table.teamWorkspaceId} is null and ${table.searchDomain} = 'global')`
+        or (${table.origin} = 'desktop_ask' and ${table.askThreadId} is not null and ${table.askTurnIndex} >= 0 and ${table.teamWorkspaceId} is null and ${table.searchDomain} in ('global','project'))`
     ),
     check(
       "memory_questions_retrieval_scope_check",
@@ -13175,6 +13184,8 @@ export const pdsRetainedPackages = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     packageId: text("package_id").notNull(),
     sourceManifestHash: text("source_manifest_hash").notNull(),
+    sourceLogicalSessionId: text("source_logical_session_id"),
+    sourceContextHash: text("source_context_hash"),
     sourceProfile: text("source_profile").notNull().default("closed_v1"),
     sourceFingerprint: text("source_fingerprint"),
     sourceClosureHash: text("source_closure_hash"),
@@ -14230,6 +14241,34 @@ export const remoteMcpOAuthCredentials = pgTable(
   ]
 );
 
+export const sessionFolderObservations = pgTable(
+  "session_folder_observations",
+  {
+    id: id(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    observationHash: text("observation_hash").notNull(),
+    observation: jsonb("observation")
+      .$type<PersonalFolderObservation>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("session_folder_observations_dedupe_idx").on(
+      table.sessionId,
+      table.observationHash
+    ),
+    index("session_folder_observations_owner_idx").on(
+      table.ownerUserId,
+      table.sessionId
+    )
+  ]
+);
+
 export const sessionRepositoryObservations = pgTable(
   "session_repository_observations",
   {
@@ -14339,6 +14378,1137 @@ export const personalProjectRoutes = pgTable(
     check(
       "personal_project_routes_distinct_check",
       sql`${table.sourceProjectId} <> ${table.targetProjectId} and ${table.sourceProjectId} <> 'unassigned'`
+    )
+  ]
+);
+
+/** Personal organization is independent from capture attribution and Team authority. */
+export const personalNamedProjects = pgTable(
+  "personal_named_projects",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").notNull().defaultRandom(),
+    name: text("name").notNull(),
+    version: integer("version").notNull().default(1),
+    headRevisionId: uuid("head_revision_id").notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.projectId] }),
+    check(
+      "personal_named_projects_name_check",
+      sql`length(trim(${table.name})) between 1 and 160`
+    ),
+    check("personal_named_projects_version_check", sql`${table.version}>0`),
+    index("personal_named_projects_owner_active_idx").on(
+      table.ownerUserId,
+      table.deletedAt
+    )
+  ]
+);
+
+export const personalProjectInclusions = pgTable(
+  "personal_project_inclusions",
+  {
+    inclusionId: uuid("inclusion_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    // Native logical identity, never a receiving physical Session UUID. No source FK:
+    // source purge must retain an inert membership removal/history record.
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    sourceReference:
+      jsonb("source_reference").$type<
+        import("@koed/shared").PersonalSourceReference
+      >(),
+    version: integer("version").notNull().default(1),
+    headRevisionId: uuid("head_revision_id").notNull(),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }).onDelete("cascade"),
+    unique("personal_project_inclusions_source_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.logicalSessionId
+    ),
+    check("personal_project_inclusions_version_check", sql`${table.version}>0`),
+    index("personal_project_inclusions_source_idx").on(
+      table.ownerUserId,
+      table.logicalSessionId
+    )
+  ]
+);
+
+/** Retained independent inclusion rules; they never rewrite source assignments. */
+export const personalProjectRules = pgTable(
+  "personal_project_rules",
+  {
+    inclusionId: uuid("inclusion_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    target: jsonb("target")
+      .$type<import("@koed/shared").PersonalProjectRule["target"]>()
+      .notNull(),
+    targetScope: text("target_scope").notNull(),
+    folderContext:
+      jsonb("folder_context").$type<
+        import("@koed/shared").PersonalFolderContext
+      >(),
+    version: integer("version").notNull().default(1),
+    headRevisionId: uuid("head_revision_id").notNull(),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }).onDelete("cascade"),
+    unique("personal_project_rules_target_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.targetScope
+    ),
+    check("personal_project_rules_version_check", sql`${table.version}>0`),
+    check(
+      "personal_project_rules_target_check",
+      sql`coalesce((
+        ${table.target}->>'kind'='repository' and ${table.target}->'repository'->>'kind' in ('portable_repository','device_local_repository')
+        and repository_scope_id(${table.target}->'repository') is not null and ${table.targetScope}=repository_scope_id(${table.target}->'repository') and ${table.folderContext} is null
+      ) or (
+        ${table.target}->>'kind'='folder' and ${table.target}->'folder'->>'ownerUserId'=${table.ownerUserId}::text
+        and ${table.targetScope}=('folder:' || (${table.target}->'folder'->>'ownerUserId') || ':' || (${table.target}->'folder'->>'originatingDeploymentId')
+          || ':' || (${table.target}->'folder'->>'originatingDeviceId') || ':' || (${table.target}->'folder'->>'originatingProfileId')
+          || ':' || (${table.target}->'folder'->>'directoryIncarnationId') || ':' || (${table.target}->'folder'->>'folderId'))
+        and (${table.folderContext} is null or ${table.folderContext}->'reference'=${table.target}->'folder')
+      ),false)`
+    ),
+    index("personal_project_rules_owner_active_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.removedAt
+    )
+  ]
+);
+
+/** Retained Project-specific exclusions and explicit clear revisions. */
+export const personalProjectExclusions = pgTable(
+  "personal_project_exclusions",
+  {
+    exclusionId: uuid("exclusion_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    sourceReference:
+      jsonb("source_reference").$type<
+        import("@koed/shared").PersonalSourceReference
+      >(),
+    version: integer("version").notNull().default(1),
+    headRevisionId: uuid("head_revision_id").notNull(),
+    clearedAt: timestamp("cleared_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }).onDelete("cascade"),
+    unique("personal_project_exclusions_source_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.logicalSessionId
+    ),
+    check("personal_project_exclusions_version_check", sql`${table.version}>0`),
+    check(
+      "personal_project_exclusions_source_owner_check",
+      sql`${table.sourceReference} is null or coalesce(${table.sourceReference}->>'ownerUserId'=${table.ownerUserId}::text,false)`
+    ),
+    index("personal_project_exclusions_active_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.logicalSessionId,
+      table.clearedAt
+    )
+  ]
+);
+
+/** Immutable local change journal. Verified projection is owned by P1-12 and P1-13. */
+export const personalMembershipChanges = pgTable(
+  "personal_membership_changes",
+  {
+    sequence: bigserial("sequence", { mode: "number" }).primaryKey(),
+    revisionId: uuid("revision_id").notNull().unique(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    entityId: uuid("entity_id").notNull(),
+    replaces: uuid("replaces")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    operation: text("operation").notNull(),
+    value: jsonb("value").$type<Record<string, unknown>>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }).onDelete("cascade"),
+    check(
+      "personal_membership_changes_operation_check",
+      sql`${table.operation} in ('set_project','delete_project','include_session','include_repository','include_folder','remove_inclusion','exclude','clear_exclusion')`
+    ),
+    index("personal_membership_changes_owner_sequence_idx").on(
+      table.ownerUserId,
+      table.sequence
+    )
+  ]
+);
+
+/** Reviewed Personal source corrections. The original source facts stay on Sessions. */
+export const personalSourceContextReviews = pgTable(
+  "personal_source_context_reviews",
+  {
+    reviewId: uuid("review_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").notNull(),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    axis: text("axis").notNull(),
+    expectedVersion: integer("expected_version").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    patch: jsonb("patch").$type<Record<string, unknown>>().notNull(),
+    preview: jsonb("preview").$type<Record<string, unknown>>().notNull(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "personal_source_context_reviews_axis_check",
+      sql`${table.axis} in ('git','folder')`
+    ),
+    check(
+      "personal_source_context_reviews_version_check",
+      sql`${table.expectedVersion}>0`
+    ),
+    index("personal_source_context_reviews_owner_idx").on(
+      table.ownerUserId,
+      table.sessionId,
+      table.createdAt
+    )
+  ]
+);
+/** Retained source correction audit, including explicit reset revisions. */
+export const personalSourceContextChanges = pgTable(
+  "personal_source_context_changes",
+  {
+    sequence: bigserial("sequence", { mode: "number" }).primaryKey(),
+    revisionId: uuid("revision_id").notNull().unique(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    axis: text("axis").notNull(),
+    version: integer("version").notNull(),
+    previous: jsonb("previous").$type<Record<string, unknown>>().notNull(),
+    value: jsonb("value").$type<Record<string, unknown>>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "personal_source_context_changes_axis_check",
+      sql`${table.axis} in ('git','folder')`
+    ),
+    check(
+      "personal_source_context_changes_version_check",
+      sql`${table.version}>0`
+    ),
+    unique("personal_source_context_changes_version_unique").on(
+      table.ownerUserId,
+      table.logicalSessionId,
+      table.axis,
+      table.version
+    ),
+    index("personal_source_context_changes_owner_idx").on(
+      table.ownerUserId,
+      table.logicalSessionId,
+      table.axis,
+      table.sequence
+    )
+  ]
+);
+
+/** A signed Personal source identity is distinct from its receiving native Session UUID. */
+export const personalSourceBindings = pgTable(
+  "personal_source_bindings",
+  {
+    bindingId: uuid("binding_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    originatingDeploymentId: text("originating_deployment_id").notNull(),
+    originatingDeviceId: text("originating_device_id").notNull(),
+    sourceLogicalSessionId: text("source_logical_session_id").notNull(),
+    originatingOwnerUserId: uuid("originating_owner_user_id"),
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    localLogicalSessionId: uuid("local_logical_session_id"),
+    contextVersion: integer("context_version").notNull().default(0),
+    availability: text("availability").notNull().default("pending"),
+    retainedPackageId: uuid("retained_package_id").references(
+      () => pdsRetainedPackages.id,
+      { onDelete: "set null" }
+    ),
+    gitOriginal: jsonb("git_original").$type<Record<string, unknown>>(),
+    folderOriginal: jsonb("folder_original").$type<Record<string, unknown>>(),
+    gitState: text("git_state").notNull().default("pending"),
+    folderState: text("folder_state").notNull().default("pending"),
+    gitFrontier: text("git_frontier")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    folderFrontier: text("folder_frontier")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    gitAssignment:
+      jsonb("git_assignment").$type<
+        import("@koed/shared").PersonalGitAssignment
+      >(),
+    folderAssignment:
+      jsonb("folder_assignment").$type<
+        import("@koed/shared").PersonalFolderAssignment
+      >(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_source_bindings_native_unique").on(
+      table.ownerUserId,
+      table.localSessionId
+    ),
+    foreignKey({
+      columns: [table.localSessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId]
+    }),
+    unique("personal_source_bindings_identity_unique").on(
+      table.ownerUserId,
+      table.originatingDeploymentId,
+      table.originatingDeviceId,
+      table.sourceLogicalSessionId
+    ),
+    check(
+      "personal_source_bindings_context_version_check",
+      sql`${table.contextVersion} in (0,1)`
+    ),
+    check(
+      "personal_source_bindings_availability_check",
+      sql`${table.availability} in ('pending','available')`
+    ),
+    check(
+      "personal_source_bindings_context_state_check",
+      sql`${table.gitState} in ('pending','available','conflict') and ${table.folderState} in ('pending','available','conflict')`
+    ),
+    check(
+      "personal_source_bindings_identity_bounds_check",
+      sql`length(${table.originatingDeploymentId}) between 1 and 128 and length(${table.originatingDeviceId}) between 1 and 128 and length(${table.sourceLogicalSessionId}) between 1 and 512`
+    ),
+    index("personal_source_bindings_session_idx").on(
+      table.ownerUserId,
+      table.localSessionId
+    )
+  ]
+);
+/** Causal source context records. Scalar assignment counters do not choose a winner. */
+export const personalSourceContextRevisions = pgTable(
+  "personal_source_context_revisions",
+  {
+    bindingId: uuid("binding_id")
+      .notNull()
+      .references(() => personalSourceBindings.bindingId, {
+        onDelete: "cascade"
+      }),
+    axis: text("axis").notNull(),
+    revisionId: text("revision_id").notNull(),
+    replaces: text("replaces").array().notNull(),
+    assignment: jsonb("assignment")
+      .$type<
+        | import("@koed/shared").PersonalGitAssignment
+        | import("@koed/shared").PersonalFolderAssignment
+      >()
+      .notNull(),
+    witnessDeviceId: text("witness_device_id"),
+    verifiedRecordHash: text("verified_record_hash"),
+    retainedPackageId: uuid("retained_package_id").references(
+      () => pdsRetainedPackages.id,
+      { onDelete: "set null" }
+    ),
+    localChangeRevisionId: uuid("local_change_revision_id").references(
+      () => personalSourceContextChanges.revisionId,
+      { onDelete: "set null" }
+    ),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.bindingId, table.axis, table.revisionId] }),
+    check(
+      "personal_source_context_revisions_axis_check",
+      sql`${table.axis} in ('git','folder')`
+    ),
+    check(
+      "personal_source_context_revisions_identity_bounds_check",
+      sql`length(${table.revisionId}) between 1 and 128 and (${table.witnessDeviceId} is null or length(${table.witnessDeviceId}) between 1 and 128) and cardinality(${table.replaces})<=1024`
+    ),
+    index("personal_source_context_revisions_local_change_idx").on(
+      table.localChangeRevisionId
+    )
+  ]
+);
+
+/** Signed configuration is retained encrypted and delivered independently of raw capture. */
+export const personalConfigurationRecords = pgTable(
+  "personal_configuration_records",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    authorDeviceId: text("author_device_id").notNull(),
+    authorSigningKeyId: text("author_signing_key_id").notNull(),
+    recordId: text("record_id").notNull(),
+    recordHash: text("record_hash").notNull(),
+    payloadKind: text("payload_kind").notNull(),
+    direction: text("direction").notNull(),
+    applicationState: text("application_state").notNull().default("pending"),
+    sourceBindingId: uuid("source_binding_id").references(
+      () => personalSourceBindings.bindingId,
+      { onDelete: "set null" }
+    ),
+    encryptedEnvelope: jsonb("encrypted_envelope").notNull(),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_configuration_record_identity_unique").on(
+      table.groupId,
+      table.authorDeviceId,
+      table.recordId
+    ),
+    check(
+      "personal_configuration_record_direction_check",
+      sql`${table.direction} in ('local','inbound')`
+    ),
+    check(
+      "personal_configuration_record_application_check",
+      sql`${table.applicationState} in ('pending','applied')`
+    ),
+    check(
+      "personal_configuration_record_kind_check",
+      sql`${table.payloadKind} in ('source_context','project_membership')`
+    ),
+    check(
+      "personal_configuration_record_bounds_check",
+      sql`length(${table.recordId})=43 and length(${table.recordHash})=43 and length(${table.authorDeviceId}) between 1 and 128 and length(${table.authorSigningKeyId}) between 1 and 128`
+    ),
+    index("personal_configuration_record_pending_idx").on(
+      table.ownerUserId,
+      table.groupId,
+      table.applicationState
+    )
+  ]
+);
+export const personalConfigurationOutbox = pgTable(
+  "personal_configuration_outbox",
+  {
+    id: id(),
+    recordRowId: uuid("record_row_id")
+      .notNull()
+      .references(() => personalConfigurationRecords.id, {
+        onDelete: "cascade"
+      }),
+    dispatchEpoch: text("dispatch_epoch").notNull(),
+    state: text("state").notNull().default("pending"),
+    transportId: text("transport_id"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_configuration_outbox_record_unique").on(table.recordRowId),
+    check(
+      "personal_configuration_outbox_state_check",
+      sql`${table.state} in ('pending','committed','acked','superseded')`
+    ),
+    check(
+      "personal_configuration_outbox_epoch_check",
+      sql`${table.dispatchEpoch} ~ '^(0|[1-9][0-9]*)$'`
+    ),
+    check(
+      "personal_configuration_outbox_attempt_check",
+      sql`${table.attemptCount}>=0`
+    ),
+    index("personal_configuration_outbox_delivery_idx").on(
+      table.state,
+      table.retryAt
+    )
+  ]
+);
+
+/** Portable membership identities remain separate from native UUID view rows. */
+export const personalMembershipEntities = pgTable(
+  "personal_membership_entities",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectIdentity: text("project_identity").notNull(),
+    entityIdentity: text("entity_identity").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    localProjectId: uuid("local_project_id"),
+    localEntityId: uuid("local_entity_id"),
+    sourceBindingId: uuid("source_binding_id").references(
+      () => personalSourceBindings.bindingId,
+      { onDelete: "set null" }
+    ),
+    selectorKey: text("selector_key"),
+    state: text("state").notNull().default("pending"),
+    heads: text("heads")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    currentRevision:
+      jsonb("current_revision").$type<
+        import("@koed/shared").PersonalMembershipRevision
+      >(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_membership_entities_pkey",
+      columns: [table.ownerUserId, table.projectIdentity, table.entityIdentity]
+    }),
+    check(
+      "personal_membership_entities_kind_check",
+      sql`${table.entityKind} in ('project','direct','rule','exclusion')`
+    ),
+    check(
+      "personal_membership_entities_state_check",
+      sql`${table.state} in ('pending','available','conflict')`
+    ),
+    check(
+      "personal_membership_entities_identity_check",
+      sql`length(${table.projectIdentity}) between 1 and 128 and length(${table.entityIdentity}) between 1 and 128 and cardinality(${table.heads})<=1024`
+    ),
+    check(
+      "personal_membership_entities_root_check",
+      sql`${table.entityKind}<>'project' or ${table.entityIdentity}=${table.projectIdentity}`
+    ),
+    index("personal_membership_entities_native_idx").on(
+      table.ownerUserId,
+      table.localProjectId,
+      table.localEntityId
+    ),
+    index("personal_membership_entities_source_idx").on(
+      table.ownerUserId,
+      table.sourceBindingId
+    ),
+    uniqueIndex("personal_membership_entities_native_catalog_unique")
+      .on(table.ownerUserId, table.localProjectId)
+      .where(sql`${table.entityKind}='project'`)
+  ]
+);
+/** Retain all branches and tombstones; the signed witness authorizes a snapshot. */
+export const personalMembershipRevisions = pgTable(
+  "personal_membership_revisions",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectIdentity: text("project_identity").notNull(),
+    entityIdentity: text("entity_identity").notNull(),
+    revisionId: text("revision_id").notNull(),
+    replaces: text("replaces").array().notNull(),
+    revision: jsonb("revision")
+      .$type<import("@koed/shared").PersonalMembershipRevision>()
+      .notNull(),
+    witnessDeviceId: text("witness_device_id").notNull(),
+    verifiedRecordHash: text("verified_record_hash"),
+    nativeChangeRevisionId: uuid("native_change_revision_id").references(
+      () => personalMembershipChanges.revisionId,
+      { onDelete: "set null" }
+    ),
+    localReviewId: uuid("local_review_id"),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_membership_revisions_pkey",
+      columns: [
+        table.ownerUserId,
+        table.projectIdentity,
+        table.entityIdentity,
+        table.revisionId
+      ]
+    }),
+    foreignKey({
+      name: "personal_membership_revisions_entity_fk",
+      columns: [table.ownerUserId, table.projectIdentity, table.entityIdentity],
+      foreignColumns: [
+        personalMembershipEntities.ownerUserId,
+        personalMembershipEntities.projectIdentity,
+        personalMembershipEntities.entityIdentity
+      ]
+    }).onDelete("cascade"),
+    unique("personal_membership_revisions_owner_revision_unique").on(
+      table.ownerUserId,
+      table.revisionId
+    ),
+    unique("personal_membership_revisions_native_change_unique").on(
+      table.nativeChangeRevisionId
+    ),
+    foreignKey({
+      name: "personal_membership_revisions_review_fk",
+      columns: [table.localReviewId],
+      foreignColumns: [personalMembershipResolutionReviews.reviewId]
+    }).onDelete("set null"),
+    unique("personal_membership_revisions_local_review_unique").on(
+      table.localReviewId
+    ),
+    check(
+      "personal_membership_revisions_bounds_check",
+      sql`length(${table.revisionId}) between 1 and 128 and length(${table.witnessDeviceId}) between 1 and 128 and cardinality(${table.replaces})<=1024`
+    )
+  ]
+);
+export const personalMembershipResolutionReviews = pgTable(
+  "personal_membership_resolution_reviews",
+  {
+    reviewId: uuid("review_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectIdentity: text("project_identity").notNull(),
+    entityIdentity: text("entity_identity").notNull(),
+    expectedHeads: text("expected_heads").array().notNull(),
+    expectedProjectState: jsonb("expected_project_state").notNull(),
+    revisionId: text("revision_id").notNull(),
+    operation: jsonb("operation")
+      .$type<import("@koed/shared").PersonalMembershipRevision["operation"]>()
+      .notNull(),
+    preview: jsonb("preview").notNull(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_membership_reviews_entity_fk",
+      columns: [table.ownerUserId, table.projectIdentity, table.entityIdentity],
+      foreignColumns: [
+        personalMembershipEntities.ownerUserId,
+        personalMembershipEntities.projectIdentity,
+        personalMembershipEntities.entityIdentity
+      ]
+    }).onDelete("cascade"),
+    check(
+      "personal_membership_resolution_reviews_bounds_check",
+      sql`cardinality(${table.expectedHeads}) between 1 and 1024 and length(${table.revisionId}) between 1 and 128`
+    ),
+    index("personal_membership_resolution_reviews_owner_idx").on(
+      table.ownerUserId,
+      table.projectIdentity,
+      table.entityIdentity
+    )
+  ]
+);
+
+/** Private physical-device attribution for local User edits; never transport authority. */
+export const personalMembershipLocalDevices = pgTable(
+  "personal_membership_local_devices",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    signingKeyId: text("signing_key_id").notNull(),
+    originatingDeploymentId: text("originating_deployment_id").notNull(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    check(
+      "personal_membership_local_devices_identity_check",
+      sql`length(${table.deviceId}) between 1 and 128 and length(${table.signingKeyId}) between 1 and 128 and length(${table.originatingDeploymentId}) between 1 and 128`
+    )
+  ]
+);
+
+/** Frozen upgrade evidence is separate from source assignment and capture policy.
+ * Data transition is resumed explicitly; schema expansion alone changes no User data.
+ */
+// Historical branch-only upgrade tables remain mapped to preserve applied
+// migration history. No application upgrade service reads or writes them.
+export const personalProjectUpgrades = pgTable(
+  "personal_project_upgrades",
+  {
+    upgradeId: uuid("upgrade_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    profileIdentity: text("profile_identity").notNull(),
+    catalogHash: text("catalog_hash").notNull(),
+    catalog: jsonb("catalog").$type<Record<string, unknown>>().notNull(),
+    state: text("state").notNull().default("prepared"),
+    version: integer("version").notNull().default(1),
+    ownershipConfirmedAt: timestamp("ownership_confirmed_at", {
+      withTimezone: true
+    }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_project_upgrades_manifest_unique").on(
+      table.ownerUserId,
+      table.profileIdentity,
+      table.catalogHash
+    ),
+    unique("personal_project_upgrades_owner_id_unique").on(
+      table.ownerUserId,
+      table.upgradeId
+    ),
+    check(
+      "personal_project_upgrades_state_check",
+      sql`${table.state} in ('prepared','applying','needs_repair','ready_for_activation','complete')`
+    ),
+    check("personal_project_upgrades_version_check", sql`${table.version}>0`)
+  ]
+);
+export const personalProjectUpgradeItems = pgTable(
+  "personal_project_upgrade_items",
+  {
+    itemId: uuid("item_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    upgradeId: uuid("upgrade_id").notNull(),
+    kind: text("kind").notNull(),
+    legacyKey: text("legacy_key").notNull(),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+    proposal: jsonb("proposal").$type<Record<string, unknown>>().notNull(),
+    projectId: uuid("project_id"),
+    localSessionId: uuid("local_session_id"),
+    state: text("state").notNull().default("prepared"),
+    issues: jsonb("issues")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    version: integer("version").notNull().default(1),
+    appliedRevisionId: uuid("applied_revision_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_upgrade_items_owned_job_fk",
+      columns: [table.ownerUserId, table.upgradeId],
+      foreignColumns: [
+        personalProjectUpgrades.ownerUserId,
+        personalProjectUpgrades.upgradeId
+      ]
+    }).onDelete("cascade"),
+    unique("personal_upgrade_items_owned_id_unique").on(
+      table.ownerUserId,
+      table.upgradeId,
+      table.itemId
+    ),
+    unique("personal_upgrade_items_source_unique").on(
+      table.upgradeId,
+      table.kind,
+      table.legacyKey
+    ),
+    index("personal_upgrade_items_owner_page_idx").on(
+      table.ownerUserId,
+      table.upgradeId,
+      table.itemId
+    ),
+    check(
+      "personal_upgrade_items_kind_check",
+      sql`${table.kind} in ('catalog','direct','rule','source_repair')`
+    ),
+    check(
+      "personal_upgrade_items_state_check",
+      sql`${table.state} in ('prepared','needs_repair','applied','skipped')`
+    ),
+    check("personal_upgrade_items_version_check", sql`${table.version}>0`),
+    check(
+      "personal_upgrade_items_issues_check",
+      sql`jsonb_typeof(${table.issues})='array'`
+    )
+  ]
+);
+export const personalLegacyProjectAliases = pgTable(
+  "personal_legacy_project_aliases",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    profileIdentity: text("profile_identity").notNull(),
+    legacyAlias: text("legacy_alias").notNull(),
+    projectId: uuid("project_id").notNull(),
+    upgradeId: uuid("upgrade_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_legacy_project_aliases_pk",
+      columns: [table.ownerUserId, table.profileIdentity, table.legacyAlias]
+    }),
+    foreignKey({
+      name: "personal_legacy_alias_owned_project_fk",
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "personal_legacy_alias_owned_upgrade_fk",
+      columns: [table.ownerUserId, table.upgradeId],
+      foreignColumns: [
+        personalProjectUpgrades.ownerUserId,
+        personalProjectUpgrades.upgradeId
+      ]
+    }).onDelete("cascade"),
+    index("personal_legacy_alias_project_idx").on(
+      table.ownerUserId,
+      table.projectId
+    )
+  ]
+);
+
+/** Exact repair review, independent from the immutable original import proposal. */
+export const personalProjectUpgradeReviews = pgTable(
+  "personal_project_upgrade_reviews",
+  {
+    reviewId: uuid("review_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    upgradeId: uuid("upgrade_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    expectedState: jsonb("expected_state")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    decision: jsonb("decision").$type<Record<string, unknown>>().notNull(),
+    preview: jsonb("preview").$type<Record<string, unknown>>().notNull(),
+    createdAt: now(),
+    appliedAt: timestamp("applied_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_upgrade_reviews_owned_item_fk",
+      columns: [table.ownerUserId, table.upgradeId, table.itemId],
+      foreignColumns: [
+        personalProjectUpgradeItems.ownerUserId,
+        personalProjectUpgradeItems.upgradeId,
+        personalProjectUpgradeItems.itemId
+      ]
+    }).onDelete("cascade"),
+    index("personal_upgrade_reviews_owner_job_idx").on(
+      table.ownerUserId,
+      table.upgradeId
+    )
+  ]
+);
+
+/** A confirmed legacy profile cannot be imported into another User's account. */
+export const personalProjectProfileOwners = pgTable(
+  "personal_project_profile_owners",
+  {
+    profileIdentity: text("profile_identity").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: now()
+  }
+);
+
+/** Capture Target compatibility is independent from Project organization and source facts. */
+export const personalCaptureTargetBindings = pgTable(
+  "personal_capture_target_bindings",
+  {
+    bindingId: uuid("binding_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    origin: text("origin").notNull().default("legacy_session"),
+    routeSourceScope: text("route_source_scope"),
+    originalTargetId: text("original_target_id").notNull(),
+    originalTargetName: text("original_target_name"),
+    originalTargetPath: text("original_target_path"),
+    mode: text("mode").notNull().default("preserved"),
+    targetId: text("target_id"),
+    version: integer("version").notNull().default(1),
+    legacyDetachedAt: timestamp("legacy_detached_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_capture_target_source_unique").on(
+      table.ownerUserId,
+      table.sessionId
+    ),
+    unique("personal_capture_target_owned_id_unique").on(
+      table.ownerUserId,
+      table.bindingId
+    ),
+    check("personal_capture_target_version_check", sql`${table.version}>0`),
+    check(
+      "personal_capture_target_origin_check",
+      sql`(${table.origin}='legacy_session' and ${table.routeSourceScope} is null) or (${table.origin}='legacy_route' and ${table.routeSourceScope} is not null)`
+    ),
+    check(
+      "personal_capture_target_mode_check",
+      sql`(${table.mode}='preserved' and ${table.targetId} is not null and ${table.targetId}=${table.originalTargetId})
+    or (${table.mode}='target' and ${table.targetId} is not null)
+    or (${table.mode} in ('source','global') and ${table.targetId} is null)`
+    )
+  ]
+);
+export const personalCaptureTargetChanges = pgTable(
+  "personal_capture_target_changes",
+  {
+    changeId: uuid("change_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    bindingId: uuid("binding_id").notNull(),
+    operation: text("operation").notNull(),
+    before: jsonb("before").$type<Record<string, unknown> | null>(),
+    after: jsonb("after").$type<Record<string, unknown>>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_capture_target_change_owner_fk",
+      columns: [table.ownerUserId, table.bindingId],
+      foreignColumns: [
+        personalCaptureTargetBindings.ownerUserId,
+        personalCaptureTargetBindings.bindingId
+      ]
+    }).onDelete("cascade"),
+    index("personal_capture_target_change_binding_idx").on(
+      table.ownerUserId,
+      table.bindingId
+    ),
+    check(
+      "personal_capture_target_operation_check",
+      sql`${table.operation} in ('preserve','repair','detach_legacy')`
+    )
+  ]
+);
+
+export const personalCaptureTargetReviews = pgTable(
+  "personal_capture_target_reviews",
+  {
+    reviewId: uuid("review_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    bindingId: uuid("binding_id").notNull(),
+    expectedState: jsonb("expected_state")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    choice: jsonb("choice").$type<Record<string, unknown>>().notNull(),
+    preview: jsonb("preview").$type<Record<string, unknown>>().notNull(),
+    createdAt: now(),
+    appliedAt: timestamp("applied_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_capture_target_review_owner_fk",
+      columns: [table.ownerUserId, table.bindingId],
+      foreignColumns: [
+        personalCaptureTargetBindings.ownerUserId,
+        personalCaptureTargetBindings.bindingId
+      ]
+    }).onDelete("cascade"),
+    index("personal_capture_target_review_binding_idx").on(
+      table.ownerUserId,
+      table.bindingId
+    )
+  ]
+);
+
+/** Local metadata journal for Personal selection consumers. Sequence allocation
+ * is not commit order: readers also pin PostgreSQL transaction visibility. */
+export const personalSelectionChanges = pgTable(
+  "personal_selection_changes",
+  {
+    changeId: bigserial("change_id", { mode: "bigint" }).primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    transactionId: text("transaction_id")
+      .notNull()
+      .default(sql`pg_current_xact_id()::text`),
+    kind: text("kind").notNull(),
+    localSessionId: uuid("local_session_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`)
+  },
+  (table) => [
+    index("personal_selection_changes_owner_id_idx").on(
+      table.ownerUserId,
+      table.changeId
+    ),
+    check(
+      "personal_selection_changes_kind_check",
+      sql`${table.kind} in ('source','membership','source_context','availability')`
+    )
+  ]
+);
+
+/** Opaque, owner-bound continuation descriptors survive process restarts.
+ * Database snapshots never leave the service boundary. */
+export const personalSelectionCursors = pgTable(
+  "personal_selection_cursors",
+  {
+    cursorId: uuid("cursor_id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    selection: jsonb("selection")
+      .$type<import("@koed/shared").PersonalSelectionConsumerSelection>()
+      .notNull(),
+    snapshotVersion: uuid("snapshot_version").notNull(),
+    fromSnapshot: text("from_snapshot").notNull(),
+    toSnapshot: text("to_snapshot"),
+    afterSource: jsonb("after_source").$type<{
+      sessionId: string;
+      reasonId: string;
+    } | null>(),
+    afterChangeId: bigint("after_change_id", { mode: "bigint" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`)
+  },
+  (table) => [
+    index("personal_selection_cursors_owner_expiry_idx").on(
+      table.ownerUserId,
+      table.expiresAt
+    ),
+    check(
+      "personal_selection_cursors_kind_check",
+      sql`${table.kind} in ('enumeration','checkpoint','changes')`
+    ),
+    check(
+      "personal_selection_cursors_window_check",
+      sql`(${table.kind}='changes' and ${table.toSnapshot} is not null) or (${table.kind}<>'changes' and ${table.toSnapshot} is null)`
+    )
+  ]
+);
+
+/** Frozen policy-routing intent from the old source-routing model. New Project
+ * edits never update this table or choose a Capture Policy. */
+export const personalCaptureTargetRoutes = pgTable(
+  "personal_capture_target_routes",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceScope: text("source_scope").notNull(),
+    targetId: text("target_id").notNull(),
+    targetName: text("target_name"),
+    targetPath: text("target_path"),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_capture_target_routes_pk",
+      columns: [table.ownerUserId, table.sourceScope]
+    })
+  ]
+);
+
+/** Source-role evidence survives activation without remaining an active
+ * assignment. A later confirmed profile can still review its own catalog. */
+export const personalLegacySourceAssignments = pgTable(
+  "personal_legacy_source_assignments",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_legacy_source_assignments_pk",
+      columns: [table.ownerUserId, table.sessionId]
+    })
+  ]
+);
+
+export const personalModelActivations = pgTable(
+  "personal_model_activations",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    upgradeId: uuid("upgrade_id").notNull(),
+    contractVersion: integer("contract_version").notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      name: "personal_model_activation_owned_upgrade_fk",
+      columns: [table.ownerUserId, table.upgradeId],
+      foreignColumns: [
+        personalProjectUpgrades.ownerUserId,
+        personalProjectUpgrades.upgradeId
+      ]
+    }),
+    check(
+      "personal_model_activation_version_check",
+      sql`${table.contractVersion}>0`
     )
   ]
 );

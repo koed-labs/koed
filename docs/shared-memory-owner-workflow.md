@@ -1,5 +1,10 @@
 # Shared Memory owner workflow model
 
+This document describes the current source-based sharing implementation.
+The agreed [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
+adds continuous selection of existing and future sources, with automatic resume
+catch-up. That broader sharing authority is not implemented yet.
+
 ## Decision
 
 Defer extraction of a new deep workflow module. The load-bearing Shared Memory

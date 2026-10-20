@@ -1,4 +1,8 @@
-import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
+import {
+  resolveCaptureRepositoryIdentity,
+  recordedCaptureFolderObservation,
+  currentCaptureFolderObservation
+} from "./capture-repository-context.js";
 import { createHash } from "node:crypto";
 import { conversationSourceRewriteGenerationId } from "@koed/shared";
 import fs, { type FSWatcher } from "node:fs";
@@ -371,6 +375,16 @@ export const processPiTranscriptSignal = async (
     await client.ensureConversationSourceArtifact({
       sourceSession: {
         externalSessionId: identity.id,
+        folderObservation: recordedCaptureFolderObservation({
+          sourceKind: "pi",
+          externalSessionId: identity.id,
+          env
+        }),
+        currentFolderObservation: currentCaptureFolderObservation({
+          sourceKind: "pi",
+          externalSessionId: identity.id,
+          env
+        }),
         sourceRuntime: "pi",
         captureMethod: "api",
         cwd: identity.cwd,

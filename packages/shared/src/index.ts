@@ -1009,6 +1009,8 @@ export type {
 export {
   PDS_SESSION_PACKAGE_VERSION,
   PDS_SESSION_MANIFEST_VERSION,
+  PDS_SESSION_CONTEXT_MANIFEST_VERSION,
+  PDS_SESSION_CONTEXT_CHECKPOINT_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
   PDS_SESSION_CHECKPOINT_PROFILE,
   PDS_SESSION_PACKAGE_MAX_BYTES,
@@ -1856,6 +1858,7 @@ export * from "./repository-review.js";
 
 export {
   createPdsRepositoryAssignment,
+  createPdsRepositoryAssignmentFromSourceContext,
   verifyPdsRepositoryAssignment,
   verifyPdsRepositoryAssignmentWithKeyHistory,
   pdsRepositoryAssignmentSchema,
@@ -1865,6 +1868,10 @@ export {
 export type { PdsRepositoryAssignment } from "./personal-repository-assignment.js";
 
 export * from "./personal-project-selection.js";
+export * from "./personal-source-contract.js";
+export * from "./personal-membership-contract.js";
+export * from "./personal-selection-contract.js";
+export * from "./personal-selection-snapshot.js";
 export * from "./team-repository-snapshot.js";
 
 export {
@@ -1875,3 +1882,24 @@ export type {
   SyncProfileTransitionRequest,
   SyncProfileTransitionReceipt
 } from "./cross-identity-sync-profile-transition.js";
+export * from "./personal-project-contract.js";
+
+export * from "./personal-source-correction-contract.js";
+
+export * from "./personal-source-context-transport.js";
+
+export * from "./personal-configuration-capability.js";
+
+export * from "./personal-configuration-record.js";
+
+export * from "./personal-membership-transport.js";
+export * from "./personal-membership-review-contract.js";
+
+export { canonicalJsonStringify } from "./canonical-json.js";
+
+export * from "./personal-selection-consumer-contract.js";
+
+export {
+  personalCaptureTargetBindingSchema,
+  type PersonalCaptureTargetBinding
+} from "./personal-capture-target-contract.js";

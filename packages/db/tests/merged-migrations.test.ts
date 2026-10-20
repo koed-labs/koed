@@ -20,7 +20,7 @@ import {
 
 const databaseUrl = process.env.MERGED_MIGRATIONS_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
-  it.each(["main", "discarded recall"] as const)(
+  it.each(["main", "pre-branch", "discarded recall"] as const)(
     "handles an existing %s database without replaying applied migrations",
     async (history) => {
       const admin = createDbPool({ connectionString: databaseUrl });
@@ -41,7 +41,15 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
         ) as {
           entries: Array<{ idx: number; tag: string; when: number }>;
         };
-        const baseline = journal.entries.slice(0, 46);
+        const baseline = journal.entries.slice(
+          0,
+          history === "pre-branch" ? 47 : 46
+        );
+        const firstPending = baseline.length;
+        const absentTable =
+          history === "pre-branch"
+            ? "personal_named_projects"
+            : "session_repository_observations";
         await mkdir(join(folder, "meta"));
         for (const entry of baseline)
           await copyFile(
@@ -74,7 +82,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
         ).rows;
         const readiness = {
           timeoutMs: 0,
-          expectedLatestMigrationTimestamp: journal.entries[46]!.when,
+          expectedLatestMigrationTimestamp: journal.entries.at(-1)!.when,
           expectedMigrationHashes: readMigrationFiles({
             migrationsFolder: source
           }).map((migration) => migration.hash)
@@ -96,20 +104,24 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
           expect(
             (
               await pool.query<{ table: string | null }>(
-                "select to_regclass('public.session_repository_observations')::text as table"
+                "select to_regclass($1)::text as table",
+                [`public.${absentTable}`]
               )
             ).rows[0]?.table
           ).toBeNull();
           return;
         }
-        if (history === "main") {
+        if (history === "main" || history === "pre-branch") {
           // A failed upgrade must roll back all schema changes and ledger inserts.
-          for (const entry of journal.entries.slice(46))
+          for (const entry of journal.entries.slice(firstPending))
             await copyFile(
               join(source, `${entry.tag}.sql`),
               join(folder, `${entry.tag}.sql`)
             );
-          const broken = join(folder, `${journal.entries[46]!.tag}.sql`);
+          const broken = join(
+            folder,
+            `${journal.entries[firstPending]!.tag}.sql`
+          );
           await writeFile(
             broken,
             `${await readFile(broken, "utf8")}\n--> statement-breakpoint\nselect koed_deliberate_migration_failure();`
@@ -131,7 +143,8 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
           expect(
             (
               await pool.query<{ table: string | null }>(
-                "select to_regclass('public.session_repository_observations')::text as table"
+                "select to_regclass($1)::text as table",
+                [`public.${absentTable}`]
               )
             ).rows[0]?.table
           ).toBeNull();
@@ -146,7 +159,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
               "select count(*)::text from drizzle.__drizzle_migrations"
             )
           ).rows[0]?.count
-        ).toBe("47");
+        ).toBe(String(journal.entries.length));
         expect(
           (
             await pool.query<{ hash: string; created_at: string }>(

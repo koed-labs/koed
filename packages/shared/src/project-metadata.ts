@@ -67,27 +67,7 @@ const sha256 = (value: string): string =>
 export const hmacProjectValue = (salt: string, value: string): string =>
   `hmac_sha256:${createHmac("sha256", salt).update(value).digest("hex")}`;
 
-/** Normalize recorded paths without resolving them against this host or its cwd. */
-export const normalizeRecordedProjectDirectory = (
-  value: unknown
-): string | null => {
-  if (
-    typeof value !== "string" ||
-    !value.trim() ||
-    value.length > 8192 ||
-    value.includes("\0")
-  )
-    return null;
-  if (path.posix.isAbsolute(value))
-    return path.posix.normalize(value).replace(/\/$/, "") || "/";
-  if (/^[a-z]:[\\/]/i.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value)) {
-    const normalized = path.win32.normalize(value);
-    return normalized === path.win32.parse(normalized).root
-      ? normalized
-      : normalized.replace(/\\$/, "");
-  }
-  return null;
-};
+export { normalizeRecordedProjectDirectory } from "./recorded-directory.js";
 
 const stripGitSuffix = (value: string): string => value.replace(/\.git$/i, "");
 

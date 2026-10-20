@@ -292,6 +292,9 @@ export const registerCuratedMemoryRoutes = (
           searchDomain: input.search_domain,
           sessionId: input.session_id,
           projectId: input.project_id,
+          personalSelection: input.personal_selection,
+          sourceAfter: input.source_after?.toISOString(),
+          sourceBefore: input.source_before?.toISOString(),
           currentOnly: input.current_only,
           limit: input.limit
         }

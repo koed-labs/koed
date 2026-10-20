@@ -308,7 +308,7 @@ const run = async () => {
         heading: document.querySelector('.personal-agent-start h1')?.textContent,
         independentFirst: cards[0]?.textContent?.includes('Chat') ?? false,
         projectVisible: projectCard?.textContent?.includes('Koed Desktop browser validation') ?? false,
-        projectCountVisible: projectCard?.textContent?.includes('4 recent Conversations') ?? false,
+        projectContextVisible: Boolean(projectCard?.querySelector('.personal-agent-project-context')),
         projectTextGap: name && count ? Math.round(count.top - name.bottom) : null,
         openProjectVisible: document.querySelector('.personal-agent-open-project')?.textContent?.includes('Open a project') ?? false,
         forbiddenCopyVisible: /CHOOSE YOUR CONTEXT|Explore an idea|Working in/u.test(document.body.innerText),
@@ -319,7 +319,7 @@ const run = async () => {
     assert.equal(askLight.heading, "Where shall we start?");
     assert.equal(askLight.independentFirst, true);
     assert.equal(askLight.projectVisible, true);
-    assert.equal(askLight.projectCountVisible, true);
+    assert.equal(askLight.projectContextVisible, true);
     assert.equal(askLight.projectTextGap, 4);
     assert.equal(askLight.openProjectVisible, true);
     assert.equal(askLight.forbiddenCopyVisible, false);
@@ -539,7 +539,7 @@ const run = async () => {
       return { id: row?.getAttribute('data-project-id'), visible: Boolean(row?.getBoundingClientRect().height), enabled: !action?.disabled };
     })()`);
     assert.ok(
-      createdProject.id?.startsWith("repository:"),
+      createdProject.id === "00000000-0000-4000-8000-000000000800",
       JSON.stringify(createdProject)
     );
     assert.equal(createdProject.visible, true);
@@ -555,17 +555,14 @@ const run = async () => {
       const create = header.querySelector('.personal-new-conversation');
       return {
         height: header.getBoundingClientRect().height,
-        moveHeight: move.getBoundingClientRect().height,
+        retiredMoveVisible: Boolean(move),
         newHeight: create.getBoundingClientRect().height,
         pathsExposed: header.textContent.includes('/private/operator/')
       };
     })()`);
     assert.equal(projectHeader.height, 96, JSON.stringify(projectHeader));
-    assert.equal(
-      projectHeader.moveHeight,
-      projectHeader.newHeight,
-      JSON.stringify(projectHeader)
-    );
+    assert.equal(projectHeader.retiredMoveVisible, false);
+    assert.ok(projectHeader.newHeight > 0);
     assert.equal(
       projectHeader.pathsExposed,
       false,
@@ -1064,47 +1061,67 @@ const run = async () => {
     await window.webContents.executeJavaScript(
       `document.querySelector('[data-project-id="browser-project"]')?.click()`
     );
-    await waitFor(
-      window,
-      `Boolean(document.querySelector('.personal-project-detail-actions [aria-label="Move Project"]'))`,
-      "Project header Move action"
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('[aria-label="Move Project"]'))`
+      ),
+      false
     );
-    await captureValidationScreenshot(window, "project-move-header");
     await window.webContents.executeJavaScript(
-      `document.querySelector('[aria-label="Move Project"]').click()`
+      `document.querySelector('[data-session-id] .personal-session-row-select')?.click()`
     );
     await waitFor(
       window,
-      `Boolean(document.querySelector('.personal-project-move-dialog select'))`,
-      "Project destination dialog"
+      `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Add to Project')`,
+      "Conversation inclusion action"
     );
-    await window.webContents.executeJavaScript(`(() => {
-      const select = document.querySelector('.personal-project-move-dialog select');
-      select.value = [...select.options].find((option) => option.text === 'Added Project').value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    })()`);
-    await waitFor(
-      window,
-      `Boolean(document.querySelector('.personal-project-move-dialog button[type="submit"]:not(:disabled)'))`,
-      "enabled Move action"
-    );
-    const moveLayout = await window.webContents.executeJavaScript(`(() => {
-      const dialog = document.querySelector('.personal-project-move-dialog');
-      const select = dialog.querySelector('select').getBoundingClientRect();
-      const plus = dialog.querySelector('[aria-label="Create Project"]').getBoundingClientRect();
-      return { plusToRight: plus.left > select.right, aligned: Math.abs(plus.top - select.top) <= 1 && Math.abs(plus.height - select.height) <= 1, label: dialog.querySelector('button[type="submit"]').textContent };
-    })()`);
-    assert.equal(moveLayout.plusToRight, true, JSON.stringify(moveLayout));
-    assert.equal(moveLayout.aligned, true, JSON.stringify(moveLayout));
-    assert.equal(moveLayout.label, "Move");
-    await captureValidationScreenshot(window, "project-move-dialog");
     await window.webContents.executeJavaScript(
-      `document.querySelector('.personal-project-move-dialog form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))`
+      `[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='Add to Project').click()`
+    );
+    const inclusionCheckbox = 'input[aria-label="Include in Added Project"]';
+    await waitFor(
+      window,
+      `!!document.querySelector('${inclusionCheckbox}') && !document.querySelector('${inclusionCheckbox}').disabled`,
+      "Project membership checklist"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${inclusionCheckbox}').checked`
+      ),
+      false
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('${inclusionCheckbox}').click()`
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('.personal-conversation-card [role="status"]').textContent`
+      ),
+      "1 pending change"
+    );
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('.personal-conversation-card button')].find(button=>button.textContent.trim()==='Confirm').click()`
     );
     await waitFor(
       window,
-      `document.querySelector('.personal-project-detail h2')?.textContent === 'Added Project' && document.querySelectorAll('.personal-session-row').length === 4`,
-      "all existing Conversations in the named Project"
+      `!document.querySelector('.personal-conversation-card')`,
+      "Confirmed membership closes the card"
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-project-id="00000000-0000-4000-8000-000000000800"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.personal-project-detail h2')?.textContent==='Added Project' && document.querySelectorAll('.personal-session-row').length===1`,
+      "Only the selected Conversation was included"
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelectorAll('.personal-session-row').length===4`,
+      "Original source Conversations remain available"
     );
 
     await setEmulatedViewport(window, 1440, 900);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
+  realpathSync,
   mkdirSync,
   rmSync,
   symlinkSync,
@@ -17,7 +18,7 @@ import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkou
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (name: string): string => {
-  const path = mkdtempSync(join(tmpdir(), name));
+  const path = realpathSync(mkdtempSync(join(tmpdir(), name)));
   temporaryDirectories.push(path);
   return path;
 };

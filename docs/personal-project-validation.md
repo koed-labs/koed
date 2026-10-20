@@ -1,0 +1,289 @@
+# Personal Project validation
+
+Local acceptance was executed on 20 October 2026 against disposable PostgreSQL
+17 databases. Package 1 implements independent Personal Project membership,
+recorded Git and exact Folder recall, reviewed source corrections, Personal
+sync, and direct Project use. The existing-Project upgrade was removed at the
+User's request on 20 October 2026 because Projects are new on this branch. A minor
+release was recommended; the User chose to omit the changeset on 20 October 2026. No release notes or package versions were changed. Local completion does
+not authorize a push, merge, deployment, or release.
+
+## Migration consolidation
+
+On 20 October 2026, the 23 unreleased migrations formerly numbered 0047–0069
+were consolidated into `0047_personal_project_model.sql` and one final Drizzle
+snapshot. The 208 executable statements retain their original order, including
+custom functions, guards, and backfills. SQL, snapshots, and journal entries
+through committed migration 0046 remain unchanged. The consolidated snapshot
+retains the former final schema and links directly to snapshot 0046.
+
+Existing pre-branch databases upgrade normally. Databases that applied the
+temporary branch chain are not silently accepted or rewritten; they require a
+separate reset or reconciliation. No existing database was modified or reset.
+
+Validation used an isolated PostgreSQL 17 cluster with disposable databases:
+
+- All 15 migration acceptance scenarios passed, including interrupted transaction
+  recovery, idempotency, historical data boundaries, and backup/restore.
+- Three focused consolidated-migration cases passed: earlier main, pre-branch
+  0046, and rejection of discarded unreleased history. Failed upgrades roll back
+  schema and ledger changes; reruns preserve existing migration records.
+- Original and consolidated chains produced the same schema fingerprint on both
+  fresh installs and populated pre-branch upgrades. Comparison includes columns,
+  constraints, indexes, triggers, enums, functions, and sequences. Existing
+  synthetic owner and Conversation fields remained unchanged.
+- The old 70-entry branch ledger is rejected by the consolidated build without
+  writing to that database. Fresh/consolidated databases have 48 ledger entries.
+- Drizzle metadata validation, the database package build, targeted lint,
+  formatting, and whitespace checks passed. The application regression suites
+  were not repeated for this migration-only cleanup.
+
+Migration numbers in the earlier acceptance evidence below refer to the original
+branch sequence; the current installable history ends at
+`0047_personal_project_model`.
+
+## Upgrade workflow removal
+
+The existing-Project dialog, profile ownership confirmation, catalog conversion,
+repair inventory, activation endpoint, and preserved-target repair controls have
+been removed. Projects are created directly. The former 0064–0069 schema objects
+remain in the consolidated branch migration as historical schema; they do not
+require a User upgrade step. See Migration consolidation below for the current
+migration baseline.
+
+The acceptance evidence below records the earlier full integration run. Its
+upgrade-specific cases and commands are historical and no longer apply to the
+current application. Checks for the removal are recorded separately below.
+
+## Checks after upgrade workflow removal
+
+On 20 October 2026, production and test typechecks passed (`pnpm typecheck`
+and `pnpm typecheck:test`). Targeted ESLint, Prettier, and `git diff --check`
+passed for the changed files. No SQL migration was changed and no database
+fixture was restarted.
+
+The following focused command passed all 110 cases across three files:
+
+```sh
+pnpm --filter @koed/desktop exec vitest run src/ipc/personal-memory-preload.test.ts src/renderer/views/personal/PersonalMemoryViews.test.tsx src/renderer/views/preferences/PreferencesView.test.tsx --no-file-parallelism
+```
+
+The full integration suite and native Electron harnesses were not repeated for
+this removal. Their earlier results below describe the prior integration run.
+
+## Acceptance evidence
+
+| Requirement                               | Executed evidence                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prepared activation and writer retirement | Two staged activation cases through migration 0069; three Capture Target rehearsal cases; real API retirement checks; native and unit UI checks. Source facts and Memory IDs remain unchanged.                                                                                                                                                                                                                                                                |
+| Legacy compatibility                      | Fifteen durable task cases, six checkpoint receiver modes, signed source delivery, native capture and historical import database cases. Old named assignment evidence does not create a current Project or Capture Target.                                                                                                                                                                                                                                    |
+| Independent selection                     | Six integrated Personal suites cover 17 cases. A synthetic Koed Conversation belongs to Release and Research, each with unrelated Git sources. Original Koed Git recall excludes those unrelated sources. Exact Folder cases exclude parents, children, siblings, and foreign directory identities.                                                                                                                                                           |
+| Live changes                              | Rule, overlap, exclusion, correction, future capture, and two-device journeys execute against real databases. The task case removes membership during an in-flight search, recovers the same pinned request after lease expiry, and collects its terminal result. A second task loses a physically deleted source during search; later Git, graph, and Curated expansion cannot recover it.                                                                   |
+| Repeatable upgrade                        | The original resumable catalog rehearsal executes supported activation after preserving Capture Targets. Effective policies and Capture Pauses survive. Later User edits remain intact. Unknown origin remains blocked from source export after legacy roles are archived and removed.                                                                                                                                                                        |
+| Existing Team behavior                    | All 87 Shared Memory repository cases, 47 focused Team API cases, and five deterministic fixture cases pass, including the live fixture. These cover consent, grants, fixed repository snapshots, encrypted representations, Conversation Source Access, private/revoked denial, and retained knowledge. Real remote MCP database cases and all 15 transactional Team-task authority cases also pass, including revocation before terminal-result decryption. |
+| Package 2 consumer                        | Both bounded consumer cases pass on migration 0069, including transaction commit ordering, stale pages, restart, missed changes, removal, and owner isolation. The signed rule-delivery journey reconciles sync-applied changes.                                                                                                                                                                                                                              |
+| Native UI                                 | All four built Electron harnesses pass: workspace, Folder controls, collaboration, and managed preview. They use synthetic renderer fixtures and complement the real database and API tests.                                                                                                                                                                                                                                                                  |
+
+## Commands and results
+
+Commands ran from the repository root. Connection values identified local
+synthetic databases and are omitted here. Database fixtures need the environment
+variables named below; they must never point at a User's working database.
+Native Electron commands used separate disposable profile directories.
+
+| Command                                                                                                                                                              | Result                                                                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm fmt:prettier:check`                                                                                                                                            | Passed; final documentation formatting is checked again before completion.                                                                                                    |
+| `pnpm lint`                                                                                                                                                          | Passed; touched regression fixtures also received targeted lint checks.                                                                                                       |
+| `pnpm typecheck`                                                                                                                                                     | Passed across production sources.                                                                                                                                             |
+| `pnpm typecheck:test`                                                                                                                                                | Passed across test sources.                                                                                                                                                   |
+| `pnpm build`                                                                                                                                                         | Passed across the workspace, including Desktop.                                                                                                                               |
+| `pnpm db:migrate:check`                                                                                                                                              | Passed.                                                                                                                                                                       |
+| `pnpm db:migrate:acceptance`                                                                                                                                         | All 15 scenarios passed, including historical upgrade, rollback, restore, and rerun. Uses `DATABASE_URL`, `PG_DUMP_BIN`, and `PG_RESTORE_BIN`.                                |
+| `pnpm --filter @koed/db exec vitest run --no-file-parallelism`                                                                                                       | 550 passed. Dedicated staged and optional database suites, plus the added replacement-policy regression, are accounted for separately below.                                  |
+| `pnpm --filter @koed/desktop exec vitest run --no-file-parallelism`                                                                                                  | 961 passed.                                                                                                                                                                   |
+| `pnpm --filter @koed/mcp-server exec vitest run --no-file-parallelism`                                                                                               | 1,305 passed. Its 15 database capture/import cases passed separately with `DATABASE_URL`.                                                                                     |
+| `pnpm --filter @koed/api exec vitest run --no-file-parallelism`                                                                                                      | 1,271 passed. All 35 database integration cases are exercised separately with `DATABASE_URL` and `KOED_OAUTH_TEST_DATABASE_URL`; the remaining skip is Linux-specific.        |
+| `pnpm -r --workspace-concurrency=1 --filter @koed/shared --filter @koed/core --filter @koed/worker --filter @koed-labs/server exec vitest run --no-file-parallelism` | Shared 610, core 47, and local server 722 passed. Worker 362 passed after its three fixture expectations were corrected. Its database checkpoint case also passed separately. |
+| `pnpm test:required-suites`                                                                                                                                          | All required non-empty suites passed: database, API, authorization, realtime, IPC, Electron UI, and accessibility. `DATABASE_URL` selects a dedicated fixture database.       |
+| `node --test scripts/team-saas-fixture-lib.test.mjs`                                                                                                                 | Five passed, zero skipped, with `NODE_ENV=test` and a migrated disposable `DATABASE_URL`.                                                                                     |
+
+The following dedicated DB commands also passed. Each runs with its indicated
+fixture environment; staged upgrade tests require fresh databases.
+
+```sh
+pnpm --filter @koed/db exec vitest run tests/personal-selection-consumer.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/shared-memory-repository.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/memory-answer-task-repository.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/personal-source-closed-sync.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/personal-rule-delivery.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/personal-membership-delivery.test.ts --no-file-parallelism
+```
+
+Activation, Capture Target, upgrade, and consumer cases use
+`P1_ACTIVATION_DATABASE_URL`, `P1_CAPTURE_TARGET_DATABASE_URL`,
+`P1_UPGRADE_DATABASE_URL`, and `P1_SELECTION_CONSUMER_DATABASE_URL` respectively.
+Shared Memory and durable tasks use `SHARED_MEMORY_TEST_DATABASE_URL` and
+`MEMORY_ANSWER_TASK_TEST_DATABASE_URL`. Each signed two-device journey uses its
+own fresh `P1_SOURCE_ORIGIN_DATABASE_URL` and `P1_SOURCE_RECEIVER_DATABASE_URL`.
+The native commands were:
+
+```sh
+pnpm --filter @koed/desktop exec electron scripts/validate-project-workspace.mjs
+pnpm --filter @koed/desktop exec electron scripts/validate-project-folders.mjs
+pnpm --filter @koed/desktop exec electron scripts/validate-collaboration-interactions.mjs
+pnpm --filter @koed/desktop exec electron scripts/validate-managed-preview.mjs
+```
+
+The transactional Team-task command is `pnpm --filter @koed/db exec vitest run tests/memory-answer-team-authority.test.ts --no-file-parallelism`, with
+`MEMORY_ANSWER_TEAM_AUTHORITY_TEST_DATABASE_URL` pointing at a disposable database.
+It creates and removes its own isolated fixture database.
+
+Normal package commands intentionally skip fixtures without their explicit
+inputs. Those skips do not count as acceptance. The required Personal, Team,
+migration, capture, cursor, and signed two-device gates listed here were enabled
+and executed. Live Pi execution, the optional Redis priority integration, the opt-in Privacy capacity benchmark,
+platform-specific Linux checks, packaged distribution validation, and staged
+multi-User/cloud readiness are separate gates; this record does not claim them.
+The existing Team fixture is validated for compatibility, not as a claim that a
+new hosted deployment has completed model embedding or launch readiness.
+
+## Implemented Project transfer controls
+
+On 20 October 2026, the approved Transfer design replaced the named Project's
+separate control buttons. The latest header uses a three-dot Rename/Sync menu and a standard icon-only
+setup control. The transfer card opens in a centered modal and no longer shifts
+the underlying Conversation view. Recorded-source drill-down and breadcrumbs distinguish browsing from
+selection. Both panes remain fixed in height and scroll independently; narrow
+windows stack the panes. The card has no explanatory footer or Ask buttons.
+
+The Project inventory now carries active direct inclusion records independently
+of the currently selected Conversation list. This keeps excluded direct reasons
+available to remove without changing the exclusion. The card preserves existing
+source context, overlapping reasons, Capture Policy, and Team authority.
+
+Validation for this change:
+
+- Production and test typechecks passed, including the shared inventory contract.
+- Five focused Desktop UI/IPC suites passed 81 cases. The new card and existing
+  main-process boundary suites passed 102 cases; seven overlap with the first run.
+  The final eight-case transfer suite also passed, including a remote edit
+  invalidating Undo. The 95-case main-process suite passed again with explicit
+  direct-inclusion inventory pass-through coverage.
+- Four API schema cases passed, including retained direct inclusions with an
+  empty selected Conversation list.
+- The production Desktop build passed. The real Electron check passed at 1100,
+  736, 620, and 360 pixels: stable card/pane dimensions across drill-down,
+  independent scrolling, preserved selection scroll positions, no horizontal
+  overflow, and the edit pencil opening its dialog. A 500-pixel detail column
+  inside an 1100-pixel window also stacks the panes through a container query.
+- Targeted lint, formatting, and diff consistency passed.
+
+Commands include `pnpm typecheck`, `pnpm typecheck:test`, the focused Vitest
+suites `ProjectTransferCard`, `PersonalMemoryViews`, `ProjectMembershipActions`,
+`ProjectSyncDetails`, `personal-memory-preload`, `manager`, and `graph-schemas`,
+`pnpm --filter @koed/desktop build:package`, and
+`pnpm --filter @koed/desktop exec electron scripts/validate-project-transfer.mjs`.
+The full integration suite was not repeated for this UI change.
+
+## Project setup dialog refinement
+
+The setup card now starts closed and opens in a centered modal over the window.
+The header has equal-sized setup and three-dot buttons; Rename and Sync live in
+the menu. The underlying Conversation content does not move when setup opens.
+Drill-down, breadcrumbs, independently scrolling lists, and versioned membership
+writes retain their existing behavior. Closing setup returns focus to its button;
+Rename and Sync return focus to Project actions. A pending membership write
+prevents the setup dialog from closing.
+
+For this refinement, four focused Desktop suites passed 66 cases. Production and
+test typechecks, targeted lint, formatting, the Desktop build, and native Electron
+checks passed. Native checks cover four viewport widths, equal header button
+sizes, dialog centering, unchanged underlying content position, independent
+scrolling, source navigation, and Rename/Sync menu-to-dialog focus restoration.
+A narrow detail column no longer constrains setup width. The full integration
+suite was not repeated.
+
+## Project setup draft and included-source navigation
+
+The right pane now offers All, Git Anchors, and Folders, with matching caret
+navigation through recorded Folders to effective Project Conversations. A nested
+Conversation can be excluded without removing its parent rule. Folder groups
+derived from a Git Anchor are navigation only, while explicit rules and direct
+inclusions remain individually removable.
+
+Arrow actions now stage a local draft. Cancel, close, and Escape discard it;
+Confirm saves it. Undo restores the preceding draft snapshot. Confirm retains
+the opening Project version, checks source previews and Conversation membership,
+and stops on the first failure. A failed or partially saved batch cannot be
+replayed from the same dialog; the error reports saved changes and requires
+reopening setup.
+
+The focused ProjectTransferCard suite passed 13 cases covering staging, Cancel
+and reopening, local Undo, exact-Folder writes, included-source navigation,
+Conversation exclusion, existing exclusions, stale versions, wrong previews,
+partial failure without replay, and independent scroll positions. Desktop build,
+targeted lint, and native Electron checks passed. Native checks cover four widths
+(1100, 736, 620, and 360 pixels), right-side drill-down, independent scrolling,
+footer visibility in short windows, centering, and Cancel focus restoration.
+The full integration suite was not repeated for this UI refinement.
+
+## Conversation checklist and source comparison cards
+
+The selected Checklist and Compare designs now use production components.
+Conversation membership is reviewed when the checklist opens and staged locally.
+Confirm pins each affected Project to its reviewed version; direct-only removal,
+rule-based exclusion, separate direct reasons, reviewed Add back, and Sync conflict
+blocking retain their distinct behavior. Cancel discards checkbox edits. Failed
+or partial saves require reopening and cannot replay a saved operation.
+
+The source comparison card edits one axis at a time. Review changes shows an
+authoritative before/after preview and Project impact; Confirm applies only that
+review ID and source revision. Changing the axis or target invalidates the review.
+Cancel and reopening clear it. Pending synchronized sources remain blocked, and
+conflicting candidates remain available for explicit review.
+
+Three focused Desktop suites passed 26 cases: ProjectMembershipActions,
+SourceContextCorrectionDialog, and ProjectTransferCard. Coverage includes staged
+writes, Cancel/reopen, direct removal with overlapping rules, reviewed exclusion
+revisions, stale versions, partial saves without replay, synchronized exclusion
+conflicts, wrong-Conversation reviews, and invalid correction previews.
+Production and test typechecks, the Desktop build, targeted lint, and formatting
+passed. Native Electron checks cover 1100, 620, and 360 pixel widths at a 600 pixel
+height, scrolling content with visible footers, fresh drafts after Cancel, source
+impact preview, and explicit reviewed Confirm. The full integration suite was
+not repeated for this UI change.
+
+## Pre-commit UI cleanup
+
+The full-app membership acceptance case and native workspace journey now use the
+checklist and Confirm flow. The full-app case verifies that adding and removing
+membership do not write until Confirm, while the open Conversation and recorded
+source remain unchanged. The native journey confirms that only the selected
+Conversation is added and the original source inventory remains available.
+
+Unused membership, destination, and retired assignment-dialog styles were
+removed. Each Conversation card now shares its opening handler between its menu
+and standalone button triggers. The superseded root PLAN.md and unrelated
+ISSUE.md were preserved outside the commit in ignored scratch storage.
+
+The focused CollaborationApp membership case, native project-workspace
+acceptance, Desktop build/typecheck, targeted lint, formatting, and whitespace
+checks passed. The remaining application test suites were not repeated for this
+cleanup.
+
+## Package 2 handoff
+
+Package 2 consumes the owner-authorized selection contract in
+[Personal selection](personal-selection-contract.md#bounded-personal-selection-consumer).
+It must finish bounded enumeration, combine every inclusion reason, retain the
+change cursor, and reconcile stale or missed windows before using current
+membership. Native Session IDs are local evidence; only a verified source
+reference establishes portable identity. Cursor events contain metadata rather
+than source content.
+
+Membership, source-context correction, exclusions, availability, and removals
+remain separate facts. This contract grants no Team publication authority.
+Package 2 still owns consent, destination policy, sharing reasons, publication,
+shared grouping, and Team acceptance. Existing Team grants and repository
+snapshots retain their current meaning.

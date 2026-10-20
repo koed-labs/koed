@@ -107,8 +107,23 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         (await repository.createCapturedSession(actor, input))
           .repositoryAssignment
       ).toEqual(override);
+      const review = await repository.previewPersonalSourceCorrection(
+        actor,
+        captured.id,
+        {
+          axis: "git",
+          action: "reset",
+          expectedVersion: 2
+        }
+      );
+      await repository.applyPersonalSourceCorrection(
+        actor,
+        captured.id,
+        review.preview.reviewId,
+        { expectedVersion: 2 }
+      );
       expect(
-        (await repository.resetCapturedSessionProject(actor, captured.id, 2))
+        (await repository.getCapturedSession(actor, captured.id))
           ?.repositoryAssignment?.effective
       ).toEqual(identity);
       await pool.query(

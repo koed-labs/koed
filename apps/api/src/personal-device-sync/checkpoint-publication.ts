@@ -49,9 +49,18 @@ export const publishPdsCheckpointCandidate = async (input: {
     groupId: input.candidate.groupId
   });
   if (!keyContext) throw new Error("PdsSecureRuntimeUnavailableError");
+  if (keyContext.sourceContextVersion === "1")
+    await keyContext.prepareSourceContextPublication?.();
 
   const publication = {
     ...input.candidate,
+    ...(keyContext.sourceContextVersion === "1"
+      ? {
+          includeSourceContext: true,
+          expectedEpoch: keyContext.configurationAuthority?.epoch,
+          expectedAuthorityHead: keyContext.configurationAuthority?.head
+        }
+      : {}),
     originDeploymentId: keyContext.originDeploymentId,
     originDeviceId: keyContext.originDeviceId,
     async build({
