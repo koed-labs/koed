@@ -1,5 +1,14 @@
 # Implementation backlog
 
+## HQ Desktop integration validation
+
+- Verify the HQ-106 chat lifecycle and Native deletion review HTTP adapters with
+  the actual local Desktop credential. These clients use `Koed-Desktop`, while
+  their routes currently use the Bearer/session-only memory authenticator. Add
+  scoped local Desktop authentication and real HTTP coverage before cut-over;
+  keep Personal API Tokens and Team device authority separate. HQ-107 move
+  routes have their own scoped Desktop authentication coverage.
+
 ## Asynchronous Memory Answer adapters
 
 Ordinary MCP and the Pi extension use explicit non-blocking submission and

@@ -4,8 +4,12 @@ import {
   crossIdentitySyncDeterministicUuid
 } from "@koed/shared";
 import { ConversationPresentationVersionConflictError } from "@koed/db";
+import type { ChatMoveOperation, ChatMoveRepository } from "@koed/db";
+import { ChatMoveConflictError } from "@koed/db";
+import type { createChatMoveCoordinator } from "./chat-move-coordinator.js";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
+import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
 import {
   canonicalEvidenceSourceIdentity,
   teamEvidenceSourceContract
@@ -42,6 +46,14 @@ const hostedExportProfiles = new Set([
   "koed_managed_cloud"
 ]);
 
+const pendingMoveReviews = (operation: ChatMoveOperation) =>
+  operation.acks
+    .filter((ack) => ack.state === "review_required" && ack.actionGrantId)
+    .map((ack) => ({
+      bindingId: ack.bindingId,
+      actionGrantId: ack.actionGrantId!
+    }));
+
 const memoryExportQuerySchema = z.object({
   reason: z.string().trim().min(1).max(160).optional(),
   target: z.string().trim().min(1).max(160).optional(),
@@ -66,7 +78,11 @@ const publicConversationPresentation = (presentation: {
 
 export const registerGraphRoutes = (
   app: FastifyInstance,
-  context: ApiRouteContext
+  context: ApiRouteContext,
+  move?: {
+    repository: ChatMoveRepository | null;
+    coordinator: ReturnType<typeof createChatMoveCoordinator> | null;
+  }
 ) => {
   const {
     requireRepository,
@@ -89,6 +105,21 @@ export const registerGraphRoutes = (
   ) =>
     teamWorkspaceId
       ? authenticateSessionOrDeviceCredential(request, "team_workspace_read")
+      : authenticate(request);
+  const authenticateChatMove = (
+    request: Parameters<typeof authenticate>[0],
+    write: boolean
+  ) =>
+    request.headers.authorization?.trim().startsWith("Koed-Desktop")
+      ? authenticateProjectOperation(
+          request,
+          {
+            deploymentProfile: config.deploymentProfile,
+            koedHome: config.koedHome,
+            auth: context.auth
+          },
+          write
+        )
       : authenticate(request);
 
   app.get(
@@ -368,27 +399,243 @@ export const registerGraphRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
+      const user = await authenticateChatMove(request, true);
       const params = graphSessionParamsSchema.parse(request.params);
       const input = graphSessionProjectPatchSchema.parse(request.body);
+      const before = await repo.getCapturedSession(
+        { userId: user.id },
+        params.sessionId
+      );
+      if (!before)
+        return reply.status(404).send({ error: "Conversation not found" });
+      const oldProjectId = before.projectOverride
+        ? (before.projectOverridePersonalProjectId ?? null)
+        : (before.automaticPersonalProjectId ?? null);
+      if (
+        input.expectedProjectId !== undefined &&
+        oldProjectId !== input.expectedProjectId
+      )
+        return reply
+          .status(409)
+          .send({ error: "Conversation placement changed" });
+      if (input.action === "undo_move") {
+        if (!move?.repository)
+          return reply
+            .status(503)
+            .send({ error: "Move journal is unavailable" });
+        try {
+          await move.repository.undo(
+            user.id,
+            params.sessionId,
+            input.batchId,
+            input.expectedProjectId
+          );
+        } catch (error) {
+          if (error instanceof ChatMoveConflictError)
+            return reply.status(409).send({ error: error.message });
+          throw error;
+        }
+        const session = await repo.getCapturedSession(
+          { userId: user.id },
+          params.sessionId
+        );
+        await cacheProvider.deleteByPrefix("koed:graph:");
+        return { session };
+      }
+      const targetProjectId = input.action === "move" ? input.project.id : null;
+      let pendingMove = null;
+      try {
+        if (
+          input.action !== "reset" &&
+          (!targetProjectId || z.uuid().safeParse(targetProjectId).success)
+        )
+          pendingMove = await move?.repository?.prepare(
+            user.id,
+            params.sessionId,
+            oldProjectId,
+            targetProjectId
+          );
+      } catch (error) {
+        if (error instanceof ChatMoveConflictError)
+          return reply.status(409).send({ error: error.message });
+        throw error;
+      }
+      if (pendingMove) {
+        if (!move?.coordinator)
+          return reply
+            .status(503)
+            .send({ error: "Shared Project move coordinator is unavailable" });
+        try {
+          const progressed = await move.coordinator.advance(pendingMove);
+          if (
+            progressed.acks.length === progressed.bindings.length &&
+            progressed.acks.every(
+              (ack) => ack.state === "frozen" || ack.state === "resolved"
+            )
+          ) {
+            await move.repository!.complete(
+              user.id,
+              params.sessionId,
+              pendingMove.batchId
+            );
+            const moved = await repo.getCapturedSession(
+              { userId: user.id },
+              params.sessionId
+            );
+            await cacheProvider.deleteByPrefix("koed:graph:");
+            return { session: moved, moveBatchId: pendingMove.batchId };
+          }
+        } catch (error) {
+          if (error instanceof ChatMoveConflictError)
+            return reply.status(409).send({ error: error.message });
+          // Native review, offline backends and uncertain dispatch keep the
+          // durable exact manifest pending; no local placement changes.
+        }
+        const latest = await move.repository!.get(
+          user.id,
+          params.sessionId,
+          pendingMove.batchId
+        );
+        return reply.status(202).send({
+          session: before,
+          pending: true,
+          batchId: pendingMove.batchId,
+          pendingReviews: latest ? pendingMoveReviews(latest) : []
+        });
+      }
       const session =
         input.action === "move"
           ? await repo.moveCapturedSessionToProject(
               { userId: user.id },
               params.sessionId,
-              input.project
+              input.project,
+              input.expectedProjectId
             )
-          : await repo.resetCapturedSessionProject(
-              { userId: user.id },
-              params.sessionId
-            );
+          : input.action === "loose"
+            ? await repo.moveCapturedSessionToLooseChats(
+                { userId: user.id },
+                params.sessionId,
+                input.expectedProjectId
+              )
+            : await repo.resetCapturedSessionProject(
+                { userId: user.id },
+                params.sessionId,
+                input.expectedProjectId
+              );
       if (!session) {
-        return reply
-          .status(404)
-          .send({ error: "Captured session not found or not visible" });
+        return reply.status(409).send({
+          error:
+            "Conversation placement changed or shared Project consent is required"
+        });
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };
+    }
+  );
+
+  app.get(
+    "/v1/memory/graph/sessions/:sessionId/move-reviews/:actionGrantId",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const user = await authenticateChatMove(request, false);
+      const params = z
+        .object({ sessionId: z.uuid(), actionGrantId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const query = z
+        .object({ batchId: z.uuid() })
+        .strict()
+        .parse(request.query);
+      if (!move?.repository)
+        return reply.status(503).send({ error: "Move journal is unavailable" });
+      try {
+        const { operation, binding, ack } =
+          await move.repository.reviewReservation(
+            user.id,
+            params.sessionId,
+            query.batchId,
+            params.actionGrantId
+          );
+        return {
+          sessionId: params.sessionId,
+          batchId: query.batchId,
+          bindingId: binding.id,
+          commandRequestId: ack.commandRequestId,
+          oldProjectId: operation.oldProjectId,
+          oldWorkspaceProjectId: operation.oldWorkspaceProjectId,
+          oldProjectVersion: operation.oldProjectVersion,
+          targetProjectId: operation.targetProjectId,
+          mappingVersion: operation.sourceMappingVersion,
+          backendId: binding.backendId,
+          logicalMemoryId: binding.logicalMemoryId,
+          teamId: binding.teamId,
+          teamWorkspaceId: binding.teamWorkspaceId,
+          shareGrantId: binding.shareGrantId,
+          actionGrantId: params.actionGrantId,
+          reviewedGrantVersion: ack.reviewedGrantVersion,
+          manifestHash: operation.manifestHash
+        };
+      } catch (error) {
+        if (error instanceof ChatMoveConflictError)
+          return reply.status(409).send({ error: error.message });
+        throw error;
+      }
+    }
+  );
+
+  app.post(
+    "/v1/memory/graph/sessions/:sessionId/move-progress",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const user = await authenticateChatMove(request, true);
+      const { sessionId } = graphSessionParamsSchema.parse(request.params);
+      const { batchId } = z
+        .object({ batchId: z.uuid() })
+        .strict()
+        .parse(request.body);
+      if (!move?.repository || !move.coordinator)
+        return reply
+          .status(503)
+          .send({ error: "Move coordinator is unavailable" });
+      const operation = await move.repository.get(user.id, sessionId, batchId);
+      if (!operation)
+        return reply.status(404).send({ error: "Move not found" });
+      try {
+        const progressed = await move.coordinator.advance(operation);
+        if (
+          progressed.acks.length === progressed.bindings.length &&
+          progressed.acks.every(
+            (ack) => ack.state === "frozen" || ack.state === "resolved"
+          )
+        ) {
+          const projectId = await move.repository.complete(
+            user.id,
+            sessionId,
+            batchId
+          );
+          await cacheProvider.deleteByPrefix("koed:graph:");
+          return {
+            sessionId,
+            batchId,
+            pending: false,
+            complete: true,
+            projectId,
+            pendingReviews: []
+          };
+        }
+      } catch (error) {
+        if (error instanceof ChatMoveConflictError)
+          return reply.status(409).send({ error: error.message });
+      }
+      const latest = await move.repository.get(user.id, sessionId, batchId);
+      return reply.status(202).send({
+        sessionId,
+        batchId,
+        pending: true,
+        complete: false,
+        projectId: operation.oldProjectId,
+        pendingReviews: latest ? pendingMoveReviews(latest) : []
+      });
     }
   );
 

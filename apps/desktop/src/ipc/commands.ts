@@ -190,6 +190,17 @@ export const registerDesktopCommandHandlers = (
         { operation: "personal.sessions.delete_review"; ok: true }
       >["data"]
     >;
+    reviewChatMove?: (
+      sessionId: string,
+      batchId: string,
+      actionGrantId: string,
+      context: DesktopCommandContext
+    ) => Promise<
+      Extract<
+        PersonalDesktopResult,
+        { operation: "personal.sessions.move_review"; ok: true }
+      >["data"]
+    >;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
     uploadProjectSource?: (
       projectId: string
@@ -500,6 +511,22 @@ export const registerDesktopCommandHandlers = (
             "Conversation deletion Native review is unavailable."
           );
         const data = await options.reviewChatDeletion(
+          request.input.sessionId,
+          request.input.batchId,
+          request.input.actionGrantId,
+          contextForSender(event.sender)
+        );
+        return personalDesktopResultSchema.parse({
+          contractVersion: request.contractVersion,
+          operation: request.operation,
+          ok: true,
+          data
+        });
+      }
+      if (request.operation === "personal.sessions.move_review") {
+        if (!options.reviewChatMove)
+          throw new Error("Conversation move Native review is unavailable.");
+        const data = await options.reviewChatMove(
           request.input.sessionId,
           request.input.batchId,
           request.input.actionGrantId,

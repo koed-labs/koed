@@ -53,6 +53,7 @@ describe("Personal Memory preload bridge", () => {
       "renameNote",
       "restoreSession",
       "reviewSessionDeletion",
+      "reviewSessionMove",
       "submitAsk",
       "subscribe",
       "trashSession",

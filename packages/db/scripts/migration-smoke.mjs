@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0061_great_wolfpack";
-const expectedLatestMigrationIndex = 61;
+const expectedLatestMigrationTag = "0062_square_zarek";
+const expectedLatestMigrationIndex = 62;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1661,6 +1661,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preChatMoveFolder = await createMigrationSlice(journal, 61, {
+    folderPrefix: "koed-pre-chat-move-"
+  });
+  temporaryFolders.add(preChatMoveFolder);
+  const preChatMoveRecords = await migrationRecords(
+    preChatMoveFolder,
+    journal.entries.slice(0, 62)
+  );
   const preChatLifecycleFolder = await createMigrationSlice(journal, 60, {
     folderPrefix: "koed-pre-chat-lifecycle-"
   });
@@ -3127,6 +3135,164 @@ try {
       await assertMigrationLedger(pool, fullRecords);
       if ((await schemaFingerprint(pool)) !== stable)
         throw new Error("Chat lifecycle migration rerun changed schema");
+    });
+  });
+
+  await runScenario("chat-move-0062-upgrade-binding-and-cascade", async () => {
+    const target = await createDisposableDatabase("chat_move_upgrade");
+    const ownerId = randomUUID();
+    const sharedProjectId = randomUUID();
+    const sessionId = randomUUID();
+    const workspaceProjectId = randomUUID();
+    const teamWorkspaceId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const teamId = randomUUID();
+    const shareGrantId = randomUUID();
+    const backendId = "chat-move-migration-team";
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preChatMoveFolder });
+      await assertMigrationLedger(pool, preChatMoveRecords);
+      await pool.query("insert into users(id,email) values($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into projects(id,owner_user_id,name,key,team_backend_id,
+           team_workspace_id,workspace_project_id)
+         values($1,$2,'Shared','shared',$3,$4,$5)`,
+        [
+          sharedProjectId,
+          ownerId,
+          backendId,
+          teamWorkspaceId,
+          workspaceProjectId
+        ]
+      );
+      await pool.query(
+        `insert into sessions(id,owner_user_id,source_runtime,capture_method,
+           automatic_personal_project_id)
+         values($1,$2,'codex-cli','api',$3)`,
+        [sessionId, ownerId, sharedProjectId]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const initial = await pool.query(
+        `select project_assignment_version from sessions
+           where id=$1 and owner_user_id=$2`,
+        [sessionId, ownerId]
+      );
+      if (initial.rows[0]?.project_assignment_version !== 1)
+        throw new Error(
+          "0062 did not initialize retained Session placement version"
+        );
+      const binding = await pool.query(
+        `insert into project_policy_session_grants(owner_user_id,session_id,
+           project_id,backend_id,logical_memory_id,team_id,team_workspace_id,
+           share_grant_id,policy_generation,mapping_version,grant_version)
+         values($1,$2,$3,$4,$5,$6,$7,$8,1,1,1) returning id`,
+        [
+          ownerId,
+          sessionId,
+          sharedProjectId,
+          backendId,
+          logicalMemoryId,
+          teamId,
+          teamWorkspaceId,
+          shareGrantId
+        ]
+      );
+      const bindingId = binding.rows[0]?.id;
+      await expectSqlState(
+        pool,
+        `update project_policy_session_grants set grant_version=2 where id=$1`,
+        "23514",
+        "Immutable policy grant binding update",
+        [bindingId]
+      );
+      await expectSqlState(
+        pool,
+        `delete from project_policy_session_grants where id=$1`,
+        "23514",
+        "Immutable policy grant binding removal",
+        [bindingId]
+      );
+      await pool.query(
+        `update sessions set project_override_id='lp_chats',
+           project_override_name='Chats',project_override_at=now(),
+           project_override_by_user_id=$2,
+           project_override_personal_project_id=null where id=$1`,
+        [sessionId, ownerId]
+      );
+      await pool.query(
+        `update sessions set project_override_id=null,
+           project_override_name=null,project_override_at=null,
+           project_override_by_user_id=null,
+           project_override_personal_project_id=null where id=$1`,
+        [sessionId]
+      );
+      const changed = await pool.query(
+        `select project_assignment_version from sessions where id=$1`,
+        [sessionId]
+      );
+      if (changed.rows[0]?.project_assignment_version !== 3)
+        throw new Error("0062 did not version each Session placement change");
+      const oldProject = await pool.query(
+        `select version from projects where id=$1 and owner_user_id=$2`,
+        [sharedProjectId, ownerId]
+      );
+      const batchId = randomUUID();
+      await pool.query(
+        `insert into chat_move_operations(batch_id,owner_user_id,session_id,
+           old_project_id,old_workspace_project_id,old_project_version,
+           source_mapping_version,binding_manifest,binding_manifest_hash)
+         values($1,$2,$3,$4,$5,$6,3,$7::jsonb,$8)`,
+        [
+          batchId,
+          ownerId,
+          sessionId,
+          sharedProjectId,
+          workspaceProjectId,
+          oldProject.rows[0]?.version,
+          JSON.stringify([{ id: bindingId }]),
+          "a".repeat(64)
+        ]
+      );
+      await expectSqlState(
+        pool,
+        `insert into project_policy_session_grants(owner_user_id,session_id,
+           project_id,backend_id,logical_memory_id,team_id,team_workspace_id,
+           share_grant_id,policy_generation,mapping_version,grant_version)
+         values($1,$2,$3,$4,$5,$6,$7,$8,1,3,1)`,
+        "23514",
+        "Late policy binding during a pending move",
+        [
+          ownerId,
+          sessionId,
+          sharedProjectId,
+          backendId,
+          logicalMemoryId,
+          teamId,
+          teamWorkspaceId,
+          randomUUID()
+        ]
+      );
+      await pool.query("delete from sessions where id=$1", [sessionId]);
+      const children = await pool.query(
+        `select (select count(*)::integer from chat_move_operations
+                  where session_id=$1) as moves,
+                (select count(*)::integer from project_policy_session_grants
+                  where session_id=$1) as bindings`,
+        [sessionId]
+      );
+      if (!isDeepStrictEqual(children.rows[0], { moves: 0, bindings: 0 }))
+        throw new Error(
+          "0062 Session purge stranded move journal or grant binding"
+        );
+      const stable = await schemaFingerprint(pool);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if ((await schemaFingerprint(pool)) !== stable)
+        throw new Error("0062 migration rerun changed schema");
     });
   });
 

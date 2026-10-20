@@ -22,12 +22,14 @@ const chatLifecycleReportPath = resolve(
   "hq-106",
   "browser-report.json"
 );
+const chatMoveReportPath = resolve(scratchDir, "hq-107", "browser-report.json");
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
 await rm(projectViewReportPath, { force: true });
 await rm(workItemReportPath, { force: true });
 await rm(chatLifecycleReportPath, { force: true });
+await rm(chatMoveReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -215,6 +217,31 @@ try {
       }
     } finally {
       await rm(chatLifecycleProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const chatMove = spawnSync(electronPath, ["scripts/validate-hq107.mjs"], {
+      cwd: desktopDir,
+      env: process.env,
+      stdio: "inherit",
+      timeout: 60_000
+    });
+    if (chatMove.error) throw chatMove.error;
+    process.exitCode = chatMove.status ?? 1;
+    if (process.exitCode === 0) {
+      const report = JSON.parse(await readFile(chatMoveReportPath, "utf8"));
+      assert.deepEqual(
+        { id: report.id, status: report.status },
+        { id: "HQ107.private-native", status: "pass" }
+      );
+      assert.deepEqual(report.compoundS15_1, {
+        status: "skip",
+        reason:
+          "Shared destination confirmation and policy issuance belong to HQ-702"
+      });
+      process.stdout.write(
+        "PASS HQ107.private-native [HQ-107]: private Project/Chats drag, highlights, Undo, and light/dark captures; S15.1 shared destination remains HQ-702.\n"
+      );
     }
   }
 } finally {

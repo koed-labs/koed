@@ -22,6 +22,7 @@ import {
   createProjectActivityRepository,
   createProjectApiRepository,
   createChatDeleteRepository,
+  createChatMoveRepository,
   createChatForgetRepository,
   createProjectSourceRepository,
   createProjectSourceRemovalRepository,
@@ -56,6 +57,7 @@ import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import { createCuratedClassificationCoordinator } from "../memory/curated-classification-coordinator.js";
 import { createChatDeleteCoordinator } from "../memory/chat-delete-coordinator.js";
+import { createChatMoveCoordinator } from "../memory/chat-move-coordinator.js";
 import { registerChatDeleteRoutes } from "../memory/chat-delete-routes.js";
 import {
   type CacheProvider,
@@ -501,6 +503,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           ).backends.map((backend) => backend.id)
       })
     : null;
+  const chatMoveRepository = pool ? createChatMoveRepository(pool) : null;
   const chatForgetRepository = pool
     ? createChatForgetRepository(pool, { envelopeEncryptionProvider })
     : null;
@@ -2141,7 +2144,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerQuestionRoutes(app, routeContext);
   registerMemoryAnswerTaskRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);
-  registerGraphRoutes(app, routeContext);
+  registerGraphRoutes(app, routeContext, {
+    repository: chatMoveRepository,
+    coordinator:
+      chatMoveRepository && collaborationSharedMemoryControl
+        ? createChatMoveCoordinator({
+            repository: chatMoveRepository,
+            sharedMemoryControl: collaborationSharedMemoryControl,
+            actionGrantControl: collaborationActionGrantControl
+          })
+        : null
+  });
   graphStreamService.registerRoutes();
   collaborationRealtimeService?.registerRoutes();
   collaborationRealtimeBroker?.registerRoutes();

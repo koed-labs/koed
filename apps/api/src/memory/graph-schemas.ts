@@ -213,10 +213,29 @@ export const graphSessionProjectPatchSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("move"),
-      project: personalProjectReferenceSchema
+      project: personalProjectReferenceSchema,
+      expectedProjectId: z.uuid().nullable().optional()
     })
     .strict(),
-  z.object({ action: z.literal("reset") }).strict()
+  z
+    .object({
+      action: z.literal("loose"),
+      expectedProjectId: z.uuid().nullable().optional()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("undo_move"),
+      batchId: z.uuid(),
+      expectedProjectId: z.uuid().nullable()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("reset"),
+      expectedProjectId: z.uuid().nullable().optional()
+    })
+    .strict()
 ]);
 
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });

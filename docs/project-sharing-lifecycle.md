@@ -381,18 +381,49 @@ again.
 
 ## Move a Conversation out of a shared Project
 
-Moving a Conversation out of a shared Project is a local owner-controlled
-action; it does not need Team enrollment if no Team grant is affected. Before
-detaching, the source owner uses the target per-grant
-`shared_memory.grant.freeze` Native-review action for each old Project-policy
-grant and waits for those Team freezes. This local move caller is still pending.
-Each freeze also pins any attached
-continuous Conversation Source Access frontier. The old grant and previously
-published Team material remain under their existing authorization unless the
-owner separately revokes that exact grant. A new shared destination requires a
-separate confirmation and an exact Captured Session mapping. Moving back or
-restoring the old Project never resumes the frozen grant; a new grant is
-required to advance again.
+The Conversation owner can move an eligible Captured Session to Chats or a
+Personal Project. The move checks the current placement and rejects a stale
+placement, another owner's Conversation, or an HQ-private Conversation. A move
+out of a shared Project uses the source owner's local journal. Its immutable
+manifest binds the old Project-policy grants to that exact Captured Session,
+Personal Project, Team Backend, logical memory, Workspace, grant, policy
+generation, and mapping version. A local Project context string is not a
+Personal Project ID and does not establish this binding. If exact provenance
+is missing or changes, the move stays uncommitted.
+
+For every active bound old grant, the source owner completes the per-grant
+`shared_memory.grant.freeze` Native-review action. The freeze also pins any
+attached continuous Conversation Source Access frontier. The Desktop records
+the reviewed grant version and the Team's confirmed freeze in the journal;
+an already closed grant is reconciled as resolved. Only after every binding is
+frozen or resolved does it recheck the source mapping, grant manifest, Project
+link, and destination in the same transaction that commits the move. A pending
+review, offline Team Backend, or uncertain dispatch leaves the old placement
+in place. Retrying the same move resumes the journal. An uncertain dispatched
+freeze is reconciled only by reading the exact grant; Koed never repeats that
+freeze request. Canceling or denying an undispatched review ends the pending
+move without resuming grants already frozen. An expired or definitively missing
+undispatched review requires fresh approval on retry. A different move conflicts
+with a pending journal. Undo restores only
+the local placement when the same move and original Project are still valid;
+it never unfreezes an old grant. Previously published Team material remains
+under its existing authorization unless the owner separately revokes that
+exact grant.
+
+The HQ Desktop adapter resolves destination IDs from the owning User's Personal
+Project list, including Projects without Conversations. It sends one placement
+request bound to the current owner profile and expected Personal Project ID.
+Move and Native-review routes also accept the existing scoped local Desktop
+credential on loopback; this does not confer Team authority on API Tokens.
+
+The Project-policy grant-binding producer specified by HQ-702 is still to be
+built. It must record the exact, immutable source-to-grant binding when the
+grant is created; the move cannot infer it later from Project membership or
+grant listings. HQ-702 also supplies Project-policy enablement and explicit
+confirmation for a new shared destination. Until those are implemented, this
+move foundation cannot enable policy sharing or move directly into another
+shared Project. Restoring the old Project never resumes a frozen grant; a new
+grant is required to advance again.
 
 ## Leave and remove access
 

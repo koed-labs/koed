@@ -724,6 +724,95 @@ export const chatDeleteOperations = pgTable(
   ]
 );
 
+// Written only after an owner-authorized Project Share Policy issuance. This
+// provenance distinguishes policy grants from explicit grants on the same source.
+export const projectPolicySessionGrants = pgTable(
+  "project_policy_session_grants",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    policyGeneration: integer("policy_generation").notNull(),
+    mappingVersion: integer("mapping_version").notNull(),
+    grantVersion: integer("grant_version").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "project_policy_session_grants_session_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_policy_session_grants_project_fk"
+    }).onDelete("cascade"),
+    unique("project_policy_session_grants_exact_unique").on(
+      table.backendId,
+      table.shareGrantId
+    ),
+    index("project_policy_session_grants_source_idx").on(
+      table.ownerUserId,
+      table.sessionId,
+      table.projectId
+    ),
+    check(
+      "project_policy_session_grants_versions_check",
+      sql`${table.policyGeneration}>0 and ${table.mappingVersion}>0 and ${table.grantVersion}>0`
+    )
+  ]
+);
+
+export const chatMoveOperations = pgTable(
+  "chat_move_operations",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    oldProjectId: uuid("old_project_id").notNull(),
+    oldWorkspaceProjectId: uuid("old_workspace_project_id").notNull(),
+    oldProjectVersion: integer("old_project_version").notNull(),
+    targetProjectId: uuid("target_project_id"),
+    sourceMappingVersion: integer("source_mapping_version").notNull(),
+    bindingManifest: jsonb("binding_manifest").$type<unknown[]>().notNull(),
+    bindingManifestHash: text("binding_manifest_hash").notNull(),
+    grantFreezeAcks: jsonb("grant_freeze_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text("state").notNull().default("freezing"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "chat_move_operations_session_fk"
+    }).onDelete("cascade"),
+    index("chat_move_operations_source_idx").on(
+      table.ownerUserId,
+      table.sessionId,
+      table.createdAt.desc()
+    ),
+    check(
+      "chat_move_operations_hash_check",
+      sql`length(${table.bindingManifestHash})=64`
+    ),
+    check(
+      "chat_move_operations_state_check",
+      sql`${table.state} in ('freezing','ready','complete','cancelled','needs_attention')`
+    )
+  ]
+);
+
 // Exact local provenance for reversible Personal forget. Team grants remain
 // outside this operation and are never implicitly revoked or unfrozen.
 export const chatForgetOperations = pgTable(
@@ -1402,6 +1491,9 @@ export const sessions = pgTable(
     projectOverridePersonalProjectId: uuid(
       "project_override_personal_project_id"
     ),
+    projectAssignmentVersion: integer("project_assignment_version")
+      .notNull()
+      .default(1),
     sourceKind: text("source_kind"),
     sourceAdapterVersion: text("source_adapter_version"),
     sourceFingerprint: text("source_fingerprint"),

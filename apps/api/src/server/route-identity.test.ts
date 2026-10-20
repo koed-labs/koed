@@ -23,6 +23,22 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("inventories both exact Conversation move review routes", () => {
+    for (const [method, path] of [
+      [
+        "GET",
+        "/v1/memory/graph/sessions/{sessionId}/move-reviews/{actionGrantId}"
+      ],
+      ["POST", "/v1/memory/graph/sessions/{sessionId}/move-progress"]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "session_or_api_token",
+        domain: "personal_memory",
+        status: "implemented"
+      });
+      expect(openApiPaths[path]?.[method.toLowerCase()]).toBeDefined();
+    }
+  });
   it("advertises Personal Project activity only on local edge deployments", () => {
     for (const [method, path] of [
       ["GET", "/v1/projects/{id}/activity"],

@@ -18,6 +18,7 @@ import {
   personalDesktopChatDeleteInputSchema,
   personalDesktopChatDeleteProgressInputSchema,
   personalDesktopChatDeleteReviewInputSchema,
+  personalDesktopChatMoveReviewInputSchema,
   personalDesktopChatRestoreInputSchema,
   personalDesktopChatForgetInputSchema,
   personalDesktopChatForgetUndoInputSchema,
@@ -407,6 +408,20 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Personal Memory assignment result.");
       }
       return result.data;
+    },
+    reviewSessionMove: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["reviewSessionMove"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.move_review",
+          input: personalDesktopChatMoveReviewInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.move_review")
+        throw new Error("Invalid move review result.");
+      return result.data.status;
     },
     updateSessionTitle: async (
       value: Parameters<PersonalDesktopApi["updateSessionTitle"]>[0]

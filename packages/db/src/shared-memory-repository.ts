@@ -670,6 +670,8 @@ export interface SharedMemoryGrantRecord {
   createdAt: string;
   updatedAt: string;
   revokedAt: string | null;
+  frozenAt: string | null;
+  freezeSourceAccessExpected: boolean;
   companionScope: SharedMemoryCompanionScopeDto;
 }
 
@@ -3083,7 +3085,9 @@ const mapGrant = (row: Row): SharedMemoryGrantRecord => {
       : null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    revokedAt: nullableIso(row.revoked_at)
+    revokedAt: nullableIso(row.revoked_at),
+    frozenAt: nullableIso(row.frozen_at),
+    freezeSourceAccessExpected: row.freeze_source_access_expected === true
   };
   return { ...grant, companionScope: companionScope(grant) };
 };

@@ -459,6 +459,8 @@ const ownerGrantDto = (grant: SharedMemoryGrantRecord) => ({
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
   revokedAt: grant.revokedAt,
+  frozenAt: grant.frozenAt,
+  freezeSourceAccessExpected: grant.freezeSourceAccessExpected,
   companionScope: grant.companionScope
 });
 

@@ -202,6 +202,8 @@ const createFixture = () => {
     createdAt: iso,
     updatedAt: iso,
     revokedAt: revoked ? iso : null,
+    frozenAt: null,
+    freezeSourceAccessExpected: false,
     companionScope
   });
 

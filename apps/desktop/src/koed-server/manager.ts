@@ -1,6 +1,8 @@
 import { hostname } from "node:os";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
 import { createChatDeleteNativeClient } from "./chat-delete-native-client.js";
+import { createChatMoveNativeClient } from "./chat-move-native-client.js";
+import { createChatMovePlacementClient } from "./chat-move-placement-client.js";
 import {
   createProjectsClient,
   type ProjectsAuthority
@@ -272,6 +274,7 @@ export interface KoedServerManager {
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
   projectSourceNative: ReturnType<typeof createProjectSourceNativeClient>;
   chatDeleteNative: ReturnType<typeof createChatDeleteNativeClient>;
+  chatMoveNative: ReturnType<typeof createChatMoveNativeClient>;
   projectHqConversation: (
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
@@ -3943,6 +3946,60 @@ export const createKoedServerManager = ({
       return remote.payload;
     }
   });
+  const chatMoveNative = createChatMoveNativeClient({
+    authority: projectsAuthority,
+    requestJson: async (path, init, bound) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 60_000, maxBytes: 1_048_576 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    }
+  });
+  const chatMovePlacement = createChatMovePlacementClient({
+    authority: projectsAuthority,
+    requestJson: async (path, init, bound) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 60_000, maxBytes: 1_048_576 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    }
+  });
 
   const projects = createProjectsClient(
     async (path, init, bound: ProjectsAuthority) => {
@@ -4500,6 +4557,12 @@ export const createKoedServerManager = ({
       { operation: "personal.sessions.assign_project" }
     >["input"]
   ) => {
+    if (
+      input.expectedProjectId !== undefined ||
+      input.action === "loose" ||
+      input.action === "undo_move"
+    )
+      return chatMovePlacement.assign(input);
     const target =
       input.action === "move"
         ? (await listPersonalProjects()).projects.find(
@@ -4520,9 +4583,10 @@ export const createKoedServerManager = ({
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
             input.action === "reset"
-              ? { action: "reset" }
+              ? { action: "reset", expectedProjectId: input.expectedProjectId }
               : {
                   action: "move",
+                  expectedProjectId: input.expectedProjectId,
                   project: {
                     id: target!.id,
                     name: target!.name,
@@ -4544,7 +4608,17 @@ export const createKoedServerManager = ({
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
     return personalDesktopSessionProjectDataSchema.parse({
-      projectId: project?.id ?? null
+      projectId: project?.id ?? null,
+      ...(payload.pending === true ? { pending: true } : {}),
+      ...(typeof payload.moveBatchId === "string"
+        ? { moveBatchId: payload.moveBatchId }
+        : {}),
+      ...(typeof payload.batchId === "string"
+        ? { batchId: payload.batchId }
+        : {}),
+      ...(Array.isArray(payload.pendingReviews)
+        ? { pendingReviews: payload.pendingReviews }
+        : {})
     });
   };
 
@@ -4972,7 +5046,10 @@ export const createKoedServerManager = ({
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
-      if (request.operation === "personal.sessions.delete_review")
+      if (
+        request.operation === "personal.sessions.delete_review" ||
+        request.operation === "personal.sessions.move_review"
+      )
         throw new Error(
           "Native chat deletion review requires the trusted desktop handler"
         );
@@ -5848,6 +5925,7 @@ export const createKoedServerManager = ({
     projects,
     projectSourceNative,
     chatDeleteNative,
+    chatMoveNative,
     projectHqConversation,
     agents,
     discoverProject: (cwd) =>

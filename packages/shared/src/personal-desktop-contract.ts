@@ -451,17 +451,77 @@ export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
       .object({
         action: z.literal("move"),
         sessionId: z.uuid(),
-        targetProjectId: identifierSchema
+        targetProjectId: identifierSchema,
+        expectedProjectId: z.uuid().nullable().optional()
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("loose"),
+        sessionId: z.uuid(),
+        expectedProjectId: z.uuid().nullable().optional()
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("undo_move"),
+        sessionId: z.uuid(),
+        batchId: z.uuid(),
+        expectedProjectId: z.uuid().nullable()
       })
       .strict(),
     z
       .object({
         action: z.literal("reset"),
-        sessionId: z.uuid()
+        sessionId: z.uuid(),
+        expectedProjectId: z.uuid().nullable().optional()
       })
       .strict()
   ]
 );
+
+export const personalDesktopChatMoveReviewInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    actionGrantId: z.uuid()
+  })
+  .strict();
+export const personalDesktopChatMoveReviewReservationSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    bindingId: z.uuid(),
+    commandRequestId: z.uuid(),
+    oldProjectId: z.uuid(),
+    oldWorkspaceProjectId: z.uuid(),
+    oldProjectVersion: z.number().int().positive(),
+    targetProjectId: z.uuid().nullable(),
+    mappingVersion: z.number().int().positive(),
+    backendId: z.string().min(1).max(64),
+    logicalMemoryId: z.uuid(),
+    teamId: z.uuid(),
+    teamWorkspaceId: z.uuid(),
+    shareGrantId: z.uuid(),
+    actionGrantId: z.uuid(),
+    reviewedGrantVersion: z.number().int().positive(),
+    manifestHash: z.string().regex(/^[a-f0-9]{64}$/)
+  })
+  .strict();
+export const personalDesktopChatMoveStatusSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    pending: z.boolean(),
+    complete: z.boolean(),
+    projectId: z.uuid().nullable(),
+    pendingReviews: z
+      .array(
+        z.object({ bindingId: z.uuid(), actionGrantId: z.uuid() }).strict()
+      )
+      .max(1000)
+  })
+  .strict();
 
 export const personalDesktopSessionTitleInputSchema = z
   .object({
@@ -801,6 +861,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.move_review"),
+      input: personalDesktopChatMoveReviewInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.sessions.update_title"),
       input: personalDesktopSessionTitleInputSchema
     })
@@ -897,7 +964,16 @@ export const personalDesktopEventsDataSchema = z
 
 export const personalDesktopSessionProjectDataSchema = z
   .object({
-    projectId: identifierSchema.nullable()
+    projectId: identifierSchema.nullable(),
+    pending: z.boolean().optional(),
+    moveBatchId: z.uuid().optional(),
+    batchId: z.uuid().optional(),
+    pendingReviews: z
+      .array(
+        z.object({ bindingId: z.uuid(), actionGrantId: z.uuid() }).strict()
+      )
+      .max(1000)
+      .optional()
   })
   .strict();
 
@@ -1121,6 +1197,15 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.sessions.assign_project"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.move_review"),
+      ok: z.literal(true),
+      data: z.object({ status: personalDesktopChatMoveStatusSchema }).strict()
+    })
+    .strict(),
+  failedResult("personal.sessions.move_review"),
   z
     .object({
       ...resultBase,
@@ -1407,7 +1492,10 @@ export interface PersonalDesktopApi {
   ) => Promise<PersonalDesktopConversationEvent[]>;
   assignSessionProject: (
     input: PersonalDesktopSessionProjectInput
-  ) => Promise<{ projectId: string | null }>;
+  ) => Promise<z.infer<typeof personalDesktopSessionProjectDataSchema>>;
+  reviewSessionMove?: (
+    input: z.infer<typeof personalDesktopChatMoveReviewInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatMoveStatusSchema>>;
   updateSessionTitle: (
     input: PersonalDesktopSessionTitleInput
   ) => Promise<{ title: string }>;

@@ -1275,7 +1275,21 @@ export const routeIdentityContracts = [
     "/v1/memory/graph/sessions/{sessionId}/project",
     "session_or_api_token",
     "personal_memory",
-    "Move a personal Captured Session to a Personal Project or reset automatic placement."
+    "Move a personal Captured Session or reset placement; scoped local Desktop write credentials are also accepted on loopback."
+  ),
+  route(
+    "GET",
+    "/v1/memory/graph/sessions/{sessionId}/move-reviews/{actionGrantId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Read an exact owner-only Native Project-policy grant freeze review reservation; scoped local Desktop read credentials are also accepted on loopback."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/move-progress",
+    "session_or_api_token",
+    "personal_memory",
+    "Advance or inspect an exact owner-only Conversation move batch; scoped local Desktop write credentials are also accepted on loopback."
   ),
   route(
     "PATCH",

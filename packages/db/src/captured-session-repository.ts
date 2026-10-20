@@ -77,11 +77,18 @@ export interface CapturedSessionRepository {
   moveCapturedSessionToProject(
     actor: ActorContext,
     sessionId: string,
-    project: PersonalProjectReference
+    project: PersonalProjectReference,
+    expectedProjectId?: string | null
+  ): Promise<CapturedSessionRecord | null>;
+  moveCapturedSessionToLooseChats(
+    actor: ActorContext,
+    sessionId: string,
+    expectedProjectId?: string | null
   ): Promise<CapturedSessionRecord | null>;
   resetCapturedSessionProject(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    expectedProjectId?: string | null
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionsNeedingTitles(
     actor: ActorContext,
@@ -1006,40 +1013,94 @@ export const createCapturedSessionRepository = (
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async moveCapturedSessionToProject(actor, sessionId, input) {
+  async moveCapturedSessionToProject(
+    actor,
+    sessionId,
+    input,
+    expectedProjectId
+  ) {
     const project = normalizedProjectReference(input);
     if (!project) return null;
     const result = await pool.query<CapturedSessionRow>(
       `
-        update sessions
-        set
-          project_override_id = $3,
-          project_override_name = $4,
-          project_override_path = $5,
-          project_override_personal_project_id = coalesce(
+        with canonical_target as materialized (
+          select coalesce(
             (select id from projects where owner_user_id=$1 and id::text=$3),
             (select min(project_id::text)::uuid from project_local_contexts
               where owner_user_id=$1 and local_project_id=$3
                 and association_state='resolved'
               having count(distinct project_id)=1)
-          ),
+          ) as canonical_project_id
+        )
+        update sessions
+        set
+          project_override_id = $3,
+          project_override_name = $4,
+          project_override_path = $5,
+          project_override_personal_project_id = canonical_target.canonical_project_id,
           project_override_at = now(),
           project_override_by_user_id = $1,
           updated_at = now()
-        where id = $2
+        from canonical_target
+        where sessions.id = $2
           and owner_user_id = $1
           and visibility = 'personal'
           and invalidated_at is null
           and personal_deleted_at is null
           and trashed_at is null
+          and delete_batch_id is null
+          and forget_batch_id is null
+          and not exists (select 1 from managed_conversation_executions hq
+            left join managed_conversation_runtime_bindings binding
+              on binding.execution_id=hq.id and binding.owner_user_id=hq.owner_user_id
+            where hq.owner_user_id=sessions.owner_user_id and hq.is_project_hq
+              and (hq.logical_session_id=sessions.logical_session_id
+                or binding.local_session_id=sessions.id
+                or (hq.hq_private_path is not null and hq.hq_private_path=sessions.cwd)))
+          and ($6::boolean = false or
+            (case when project_override_id is not null then project_override_personal_project_id
+              else automatic_personal_project_id end) is not distinct from $7::uuid)
+          and not exists (select 1 from projects old_project
+            where old_project.id = (case when sessions.project_override_id is not null
+              then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end)
+              and (old_project.team_backend_id is not null or old_project.team_workspace_id is not null
+                or old_project.workspace_project_id is not null))
+          and ((case when sessions.project_override_id is not null
+              then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end) is null
+            or exists (select 1 from projects old_project where old_project.owner_user_id=$1
+              and old_project.id=(case when sessions.project_override_id is not null
+                then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end)
+              and old_project.lifecycle='active' and old_project.deletion_phase is null))
+          and (canonical_target.canonical_project_id is null or exists (select 1 from projects new_project
+            where new_project.owner_user_id=$1 and new_project.id=canonical_target.canonical_project_id
+              and new_project.lifecycle='active' and new_project.deletion_phase is null
+              and new_project.team_backend_id is null and new_project.team_workspace_id is null
+              and new_project.workspace_project_id is null))
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId, project.id, project.name, project.path]
+      [
+        actor.userId,
+        sessionId,
+        project.id,
+        project.name,
+        project.path,
+        expectedProjectId !== undefined,
+        expectedProjectId ?? null
+      ]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async resetCapturedSessionProject(actor, sessionId) {
+  async moveCapturedSessionToLooseChats(actor, sessionId, expectedProjectId) {
+    return this.moveCapturedSessionToProject(
+      actor,
+      sessionId,
+      { id: "lp_chats", name: "Chats", path: null },
+      expectedProjectId
+    );
+  },
+
+  async resetCapturedSessionProject(actor, sessionId, expectedProjectId) {
     const result = await pool.query<CapturedSessionRow>(
       `
         update sessions
@@ -1057,9 +1118,45 @@ export const createCapturedSessionRepository = (
           and invalidated_at is null
           and personal_deleted_at is null
           and trashed_at is null
+          and delete_batch_id is null
+          and forget_batch_id is null
+          and not exists (select 1 from managed_conversation_executions hq
+            left join managed_conversation_runtime_bindings binding
+              on binding.execution_id=hq.id and binding.owner_user_id=hq.owner_user_id
+            where hq.owner_user_id=sessions.owner_user_id and hq.is_project_hq
+              and (hq.logical_session_id=sessions.logical_session_id
+                or binding.local_session_id=sessions.id
+                or (hq.hq_private_path is not null and hq.hq_private_path=sessions.cwd)))
+          and ($3::boolean = false or
+            (case when project_override_id is not null then project_override_personal_project_id
+              else automatic_personal_project_id end) is not distinct from $4::uuid)
+          and not exists (select 1 from projects old_project
+            where old_project.id = (case when sessions.project_override_id is not null
+              then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end)
+              and (old_project.team_backend_id is not null or old_project.team_workspace_id is not null
+                or old_project.workspace_project_id is not null))
+          and ((case when sessions.project_override_id is not null
+              then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end) is null
+            or exists (select 1 from projects old_project where old_project.owner_user_id=$1
+              and old_project.id=(case when sessions.project_override_id is not null
+                then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end)
+              and old_project.lifecycle='active' and old_project.deletion_phase is null))
+          and not exists (select 1 from projects restored_project
+            where restored_project.id=sessions.automatic_personal_project_id
+              and (restored_project.team_backend_id is not null or restored_project.team_workspace_id is not null
+                or restored_project.workspace_project_id is not null))
+          and (sessions.automatic_personal_project_id is null or exists
+            (select 1 from projects restored_project where restored_project.id=sessions.automatic_personal_project_id
+              and restored_project.owner_user_id=$1 and restored_project.lifecycle='active'
+              and restored_project.deletion_phase is null))
         returning ${capturedSessionColumns}
       `,
-      [actor.userId, sessionId]
+      [
+        actor.userId,
+        sessionId,
+        expectedProjectId !== undefined,
+        expectedProjectId ?? null
+      ]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },

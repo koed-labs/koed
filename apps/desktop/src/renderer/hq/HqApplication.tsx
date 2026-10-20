@@ -120,6 +120,23 @@ export function HqApplication({
   const [pendingChatDeletionIds, setPendingChatDeletionIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  const [moveNotice, setMoveNotice] = useState<{
+    sessionId: string;
+    fromProjectId: string | null;
+    toProjectId: string | null;
+    message: string;
+    undoable: boolean;
+    pending?: boolean;
+    moveBatchId?: string;
+  } | null>(null);
+  const [revealProject, setRevealProject] = useState<{
+    id: string;
+    token: number;
+  } | null>(null);
+  const moveNoticeRef = useRef(moveNotice);
+  moveNoticeRef.current = moveNotice;
+  const moveBusyRef = useRef(false);
+  const moveEpoch = useRef(0);
   const chatIntentEpoch = useRef(0);
   const chatBusyRef = useRef(false);
   const chatAuthority = useRef({
@@ -150,6 +167,10 @@ export function HqApplication({
     setChatDeleteRequest(null);
     setChatDeleteNotice(null);
     setPendingChatDeletionIds(new Set());
+    moveEpoch.current++;
+    moveBusyRef.current = false;
+    setMoveNotice(null);
+    setRevealProject(null);
   }, [visibilityOwnerId, visibilityProfileKey]);
   useEffect(() => {
     if (!personalMemoryApi?.listPendingSessionDeletions) return;
@@ -1040,6 +1061,124 @@ export function HqApplication({
         }}
       />
     ) : undefined;
+  const assignPlacement = async (
+    sessionId: string,
+    fromProjectId: string | null,
+    toProjectId: string | null,
+    undo = false,
+    undoBatchId?: string
+  ) => {
+    if (!personalMemoryApi || !personalMemoryStore || moveBusyRef.current)
+      return;
+    moveBusyRef.current = true;
+    const epoch = ++moveEpoch.current;
+    const ownerId = visibilityOwnerId;
+    const profileKey = visibilityProfileKey;
+    const current = () =>
+      moveEpoch.current === epoch &&
+      chatAuthority.current.ownerId === ownerId &&
+      chatAuthority.current.profileKey === profileKey;
+    try {
+      let result = await personalMemoryApi.assignSessionProject(
+        undoBatchId
+          ? {
+              action: "undo_move",
+              sessionId,
+              batchId: undoBatchId,
+              expectedProjectId: fromProjectId
+            }
+          : toProjectId
+            ? {
+                action: "move",
+                sessionId,
+                targetProjectId: toProjectId,
+                expectedProjectId: fromProjectId
+              }
+            : { action: "loose", sessionId, expectedProjectId: fromProjectId }
+      );
+      if (!current()) return;
+      if (
+        result.pending &&
+        result.batchId &&
+        result.pendingReviews?.length &&
+        personalMemoryApi.reviewSessionMove
+      ) {
+        const reviewed = new Set<string>();
+        for (let attempt = 0; attempt < 16 && result.pending; attempt++) {
+          const next = result.pendingReviews?.find(
+            (item) => !reviewed.has(item.actionGrantId)
+          );
+          if (!next) break;
+          reviewed.add(next.actionGrantId);
+          const status = await personalMemoryApi.reviewSessionMove({
+            sessionId,
+            batchId: result.batchId!,
+            actionGrantId: next.actionGrantId
+          });
+          if (!current()) return;
+          result = {
+            projectId: status.projectId,
+            pending: status.pending,
+            batchId: status.batchId,
+            pendingReviews: status.pendingReviews,
+            ...(status.complete ? { moveBatchId: status.batchId } : {})
+          };
+        }
+      }
+      if (result.pending) {
+        setMoveNotice({
+          sessionId,
+          fromProjectId,
+          toProjectId,
+          message:
+            "Move pending. Waiting for sharing approval or reconnection.",
+          undoable: false,
+          pending: true
+        });
+        return;
+      }
+      await personalMemoryStore.loadProjects({ silent: true });
+      if (!current()) return;
+      if (toProjectId) setRevealProject({ id: toProjectId, token: epoch });
+      if (
+        routeRef.current.kind === "conversation" &&
+        routeRef.current.sessionId === sessionId
+      )
+        setSelection({
+          route: {
+            kind: "conversation",
+            projectId: toProjectId ?? "lp_chats",
+            sessionId
+          }
+        });
+      setMoveNotice(
+        undo
+          ? null
+          : {
+              sessionId,
+              fromProjectId,
+              toProjectId,
+              message: toProjectId
+                ? `Moved to ${personalProjects.find((project) => project.id === toProjectId)?.name ?? "Project"}.`
+                : "Removed from the project.",
+              undoable: true,
+              moveBatchId: result.moveBatchId
+            }
+      );
+    } catch (error) {
+      if (current())
+        setMoveNotice({
+          sessionId,
+          fromProjectId,
+          toProjectId,
+          message:
+            error instanceof Error ? error.message : "Chat could not be moved.",
+          undoable: false
+        });
+    } finally {
+      if (current()) moveBusyRef.current = false;
+    }
+  };
   return (
     <>
       <HqShell
@@ -1051,6 +1190,7 @@ export function HqApplication({
         sidebar={({ compact }) => (
           <HqSidebar
             compact={compact}
+            revealProject={revealProject}
             accountIdentity={accountIdentity}
             onOpenSettings={renderSettings ? openSettings : undefined}
             groupsReady={
@@ -1112,6 +1252,27 @@ export function HqApplication({
             nowActive={route.kind === "home" && !blankOpen}
             onSelectConversation={(projectId, sessionId) =>
               selectRoute({ kind: "conversation", projectId, sessionId })
+            }
+            onMoveConversation={
+              personalMemoryApi && firstClassLoaded
+                ? (sessionId, fromProjectId, toProjectId) => {
+                    const thread = projects
+                      .flatMap((project) => project.threads)
+                      .find(
+                        (item) =>
+                          item.sessionId === sessionId &&
+                          item.personalProjectId === fromProjectId
+                      );
+                    if (
+                      !thread ||
+                      thread.originDevice ||
+                      !visibilityOwnerId ||
+                      !visibilityProfileKey
+                    )
+                      return;
+                    void assignPlacement(sessionId, fromProjectId, toProjectId);
+                  }
+                : undefined
             }
             onNewConversation={
               managedConversations &&
@@ -1358,6 +1519,51 @@ export function HqApplication({
         onUndo={() => void undoChatDelete()}
         onRetry={() => void retryChatDelete()}
       />
+      {moveNotice ? (
+        <div className="hq-chat-move__notice" role="status">
+          <span>{moveNotice.message}</span>
+          {moveNotice.undoable ? (
+            <button
+              type="button"
+              onClick={() => {
+                const notice = moveNoticeRef.current;
+                if (notice && notice.undoable)
+                  void assignPlacement(
+                    notice.sessionId,
+                    notice.toProjectId,
+                    notice.fromProjectId,
+                    true,
+                    notice.moveBatchId
+                  );
+              }}
+            >
+              Undo
+            </button>
+          ) : moveNotice.pending ? (
+            <button
+              type="button"
+              onClick={() => {
+                const notice = moveNoticeRef.current;
+                if (notice?.pending)
+                  void assignPlacement(
+                    notice.sessionId,
+                    notice.fromProjectId,
+                    notice.toProjectId
+                  );
+              }}
+            >
+              Retry
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label="Dismiss move notice"
+            onClick={() => setMoveNotice(null)}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
     </>
   );
 }

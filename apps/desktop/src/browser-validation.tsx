@@ -3005,12 +3005,15 @@ const TimelineValidationApp = () => {
   );
 };
 
+const { Hq107ValidationApp } = await import("./hq107-validation.js");
 const browserValidationView = new URLSearchParams(window.location.search).get(
   "view"
 );
 createRoot(document.querySelector("#root")!).render(
   browserValidationView === "chat" ? (
     <ChatValidationApp />
+  ) : browserValidationView === "hq107" ? (
+    <Hq107ValidationApp />
   ) : browserValidationView === "hq" ? (
     <HqValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (

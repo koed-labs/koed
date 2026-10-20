@@ -147,6 +147,12 @@ export type HqSidebarProps = {
   onOpenSettings?: () => void;
   onSelectConversation: (projectId: string, sessionId: string) => void;
   onSelectProject: (projectId: string) => void;
+  onMoveConversation?: (
+    sessionId: string,
+    fromProjectId: string | null,
+    toProjectId: string | null
+  ) => void;
+  revealProject?: { id: string; token: number } | null;
   projectsError?: boolean;
   projects: readonly DesktopProject[];
   personalProjects?: readonly Project[];
@@ -171,6 +177,8 @@ export function HqSidebar({
   onRetryProjects,
   onSelectConversation,
   onSelectProject,
+  onMoveConversation,
+  revealProject,
   projectsError = false,
   projects,
   personalProjects,
@@ -197,6 +205,11 @@ export function HqSidebar({
   const [conversationMenuId, setConversationMenuId] = useState<string | null>(
     null
   );
+  const [dragging, setDragging] = useState<{
+    sessionId: string;
+    projectId: string | null;
+  } | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [projectMenuPosition, setProjectMenuPosition] = useState({
     x: 0,
     y: 0
@@ -345,6 +358,14 @@ export function HqSidebar({
     preferencesStore.setGroupFolded(groupId, folded);
     void preferencesStore.flush();
   };
+  useEffect(() => {
+    if (!revealProject) return;
+    preferencesStore.setGroupFolded(hqProjectFoldId(revealProject.id), false);
+    void preferencesStore.flush();
+    setExpandedLists((current) =>
+      new Set(current).add(`project-list:${revealProject.id}`)
+    );
+  }, [preferencesStore, revealProject?.id, revealProject?.token]);
   const showMore = (key: string) => expandedLists.has(key);
   const toggleShowMore = (key: string) => {
     setExpandedLists((current) => {
@@ -357,7 +378,8 @@ export function HqSidebar({
 
   const renderConversation = (
     projectId: string,
-    thread: PersonalDesktopProjectThread
+    thread: PersonalDesktopProjectThread,
+    personalProjectId: string | null
   ) => {
     const sessionId = sessionSelectionId(thread);
     const selected =
@@ -381,6 +403,29 @@ export function HqSidebar({
           data-hq-chat-project={projectId}
           data-hq-chat-row=""
           data-hq-chat-title=""
+          data-hq-drag-source={
+            dragging?.sessionId === thread.sessionId || undefined
+          }
+          draggable={Boolean(
+            thread.sessionId && !thread.originDevice && onMoveConversation
+          )}
+          onDragStart={(event) => {
+            if (!thread.sessionId || thread.originDevice || !onMoveConversation)
+              return;
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData(
+              "application/x-koed-conversation",
+              thread.sessionId
+            );
+            setDragging({
+              sessionId: thread.sessionId,
+              projectId: personalProjectId
+            });
+          }}
+          onDragEnd={() => {
+            setDragging(null);
+            setDropTarget(null);
+          }}
           onClick={() => onSelectConversation(projectId, sessionId)}
           title={thread.name || "Conversation"}
           type="button"
@@ -467,7 +512,42 @@ export function HqSidebar({
     const childrenId = projectDomId(project.id);
     const selected = route.kind === "project" && route.projectId === project.id;
     return (
-      <li className="hq-sidebar__project" key={project.id}>
+      <li
+        className="hq-sidebar__project"
+        key={project.id}
+        data-hq-drop-active={dropTarget === project.id || undefined}
+        onDragOver={(event) => {
+          if (
+            !dragging ||
+            dragging.projectId === project.id ||
+            !onMoveConversation
+          )
+            return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropTarget(project.id);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node))
+            setDropTarget(null);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          if (
+            dragging &&
+            dragging.projectId !== project.id &&
+            event.dataTransfer.getData("application/x-koed-conversation") ===
+              dragging.sessionId
+          )
+            onMoveConversation?.(
+              dragging.sessionId,
+              dragging.projectId,
+              project.id
+            );
+          setDragging(null);
+          setDropTarget(null);
+        }}
+      >
         <div
           className="hq-sidebar__project-row"
           data-hq-project-row=""
@@ -628,7 +708,7 @@ export function HqSidebar({
           id={childrenId}
         >
           {visible.map(({ technicalProjectId, thread }) =>
-            renderConversation(technicalProjectId, thread)
+            renderConversation(technicalProjectId, thread, project.id)
           )}
           {moreCount > 0 ? (
             <li className="hq-sidebar__more-row">
@@ -790,14 +870,55 @@ export function HqSidebar({
                     </li>
                   ) : null}
                   {sortedProjects.map(renderProject)}
-                  {looseChats.length > 0 ? (
-                    <li className="hq-sidebar__loose-group">
+                  {looseChats.length > 0 || onMoveConversation ? (
+                    <li
+                      className="hq-sidebar__loose-group"
+                      data-hq-dragging={Boolean(dragging) || undefined}
+                      data-hq-drop-active={dropTarget === "chats" || undefined}
+                      onDragOver={(event) => {
+                        if (
+                          !dragging ||
+                          dragging.projectId === null ||
+                          !onMoveConversation
+                        )
+                          return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        setDropTarget("chats");
+                      }}
+                      onDragLeave={(event) => {
+                        if (
+                          !event.currentTarget.contains(
+                            event.relatedTarget as Node
+                          )
+                        )
+                          setDropTarget(null);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (
+                          dragging &&
+                          dragging.projectId !== null &&
+                          event.dataTransfer.getData(
+                            "application/x-koed-conversation"
+                          ) === dragging.sessionId
+                        )
+                          onMoveConversation?.(
+                            dragging.sessionId,
+                            dragging.projectId,
+                            null
+                          );
+                        setDragging(null);
+                        setDropTarget(null);
+                      }}
+                    >
                       <div className="hq-sidebar__loose-heading">Chats</div>
                       <ul className="hq-sidebar__nested-list">
                         {visibleLooseChats.map((thread) =>
                           renderConversation(
                             thread.technicalProjectId,
-                            thread.thread
+                            thread.thread,
+                            null
                           )
                         )}
                         {looseMoreCount > 0 ? (
