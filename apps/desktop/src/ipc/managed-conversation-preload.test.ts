@@ -204,6 +204,7 @@ describe("Managed Conversation preload bridge", () => {
       conversation: identity
     });
     expect(Object.keys(api).sort()).toEqual([
+      "citationDetail",
       "deleteDraft",
       "deleteRecovery",
       "discoverCommands",
@@ -223,6 +224,7 @@ describe("Managed Conversation preload bridge", () => {
       "stop",
       "targets",
       "transferStatus",
+      "turnCitations",
       "usage",
       "writeDraft",
       "writeRecovery"
@@ -239,6 +241,149 @@ describe("Managed Conversation preload bridge", () => {
       runnerKind: "local_device",
       idempotencyKey: "start-request-1"
     });
+  });
+
+  it("exposes bounded citation reads with exact request and result correlation", async () => {
+    const executionId = "11111111-1111-4111-8111-111111111111";
+    const providerTurnId = "provider-turn-1";
+    const alias = `r${"a".repeat(32)}c1`;
+    const listCitation = {
+      alias,
+      providerTurnId,
+      sourceType: "message",
+      sourceId: "22222222-2222-4222-8222-222222222222",
+      visibility: "personal",
+      detailAvailable: true,
+      title: "Source message",
+      summary: null
+    };
+    const citation = {
+      ...listCitation,
+      kind: null,
+      provenance: "Your chat",
+      replaces: null,
+      messageLink: null,
+      messageTarget: {
+        messageId: "22222222-2222-4222-8222-222222222222",
+        sessionId: "33333333-3333-4333-8333-333333333333",
+        projectId: "44444444-4444-4444-8444-444444444444",
+        threadId: "thread-1"
+      }
+    };
+    let override: Record<string, unknown> | null = null;
+    const invoke = vi.fn(async (_channel, request: any) => {
+      if (override) {
+        const result = override;
+        override = null;
+        return result;
+      }
+      return request.operation === "turn_citations"
+        ? {
+            operation: "turn_citations",
+            executionId: request.executionId,
+            providerTurnId: request.providerTurnId,
+            citations: [listCitation]
+          }
+        : { ...request, citation };
+    });
+    const api = createManagedConversationPreloadApi(invoke);
+
+    await expect(
+      api.turnCitations!(executionId, providerTurnId, [alias])
+    ).resolves.toMatchObject({
+      operation: "turn_citations",
+      citations: [listCitation]
+    });
+    expect(invoke).toHaveBeenLastCalledWith(managedConversationCommandChannel, {
+      operation: "turn_citations",
+      executionId,
+      providerTurnId,
+      aliases: [alias]
+    });
+    const callsBeforeInvalidAlias = invoke.mock.calls.length;
+    await expect(
+      api.turnCitations!(executionId, providerTurnId, ["invented-alias"])
+    ).rejects.toThrow("Managed citation aliases are invalid");
+    await expect(
+      api.turnCitations!(executionId, providerTurnId, Array(65).fill(alias))
+    ).rejects.toThrow("Managed citation aliases are invalid");
+    expect(invoke).toHaveBeenCalledTimes(callsBeforeInvalidAlias);
+
+    override = {
+      operation: "turn_citations",
+      executionId: "55555555-5555-4555-8555-555555555555",
+      providerTurnId,
+      citations: [listCitation]
+    };
+    await expect(
+      api.turnCitations!(executionId, providerTurnId, [alias])
+    ).rejects.toThrow("citation correlation");
+
+    for (const invalidCitation of [
+      { ...listCitation, ownerUserId: executionId },
+      { ...listCitation, kind: 123 },
+      { ...listCitation, kind: undefined },
+      {
+        ...listCitation,
+        messageTarget: { ...citation.messageTarget, ownerUserId: executionId }
+      }
+    ]) {
+      override = {
+        operation: "turn_citations",
+        executionId,
+        providerTurnId,
+        citations: [invalidCitation]
+      };
+      await expect(
+        api.turnCitations!(executionId, providerTurnId, [alias])
+      ).rejects.toThrow();
+    }
+
+    await expect(
+      api.citationDetail!(executionId, providerTurnId, alias)
+    ).resolves.toMatchObject({
+      operation: "citation_detail",
+      alias,
+      citation
+    });
+    expect(invoke).toHaveBeenLastCalledWith(managedConversationCommandChannel, {
+      operation: "citation_detail",
+      executionId,
+      providerTurnId,
+      alias
+    });
+    override = {
+      operation: "citation_detail",
+      executionId,
+      providerTurnId,
+      alias,
+      citation: {
+        ...citation,
+        visibility: "team",
+        detailAvailable: false,
+        title: "Team memory unavailable",
+        messageTarget: null
+      }
+    };
+    await expect(
+      api.citationDetail!(executionId, providerTurnId, alias)
+    ).resolves.toMatchObject({
+      citation: {
+        detailAvailable: false,
+        title: "Team memory unavailable",
+        messageTarget: null
+      }
+    });
+    override = {
+      operation: "citation_detail",
+      executionId,
+      providerTurnId,
+      alias: `r${"b".repeat(32)}c1`,
+      citation
+    };
+    await expect(
+      api.citationDetail!(executionId, providerTurnId, alias)
+    ).rejects.toThrow("citation detail correlation");
   });
 
   it("round-trips the bounded encrypted recovery payload through strict IPC", async () => {

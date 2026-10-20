@@ -256,7 +256,9 @@ describe("HQ managed start HTTP admission", () => {
     app.setErrorHandler((error, _request, reply) =>
       reply
         .code((error as Error & { statusCode?: number }).statusCode ?? 500)
-        .send({ message: error.message })
+        .send({
+          message: error instanceof Error ? error.message : "Request failed"
+        })
     );
     registerManagedConversationRoutes(
       app,
@@ -338,7 +340,9 @@ describe("HQ managed start HTTP admission", () => {
     app.setErrorHandler((error, _request, reply) =>
       reply
         .code((error as Error & { statusCode?: number }).statusCode ?? 500)
-        .send({ message: error.message })
+        .send({
+          message: error instanceof Error ? error.message : "Request failed"
+        })
     );
     const todo = {
       id: itemId,
@@ -509,7 +513,9 @@ describe("HQ managed start HTTP admission", () => {
     app.setErrorHandler((error, _request, reply) =>
       reply
         .code((error as Error & { statusCode?: number }).statusCode ?? 500)
-        .send({ message: error.message })
+        .send({
+          message: error instanceof Error ? error.message : "Request failed"
+        })
     );
     const item = {
       id: itemId,

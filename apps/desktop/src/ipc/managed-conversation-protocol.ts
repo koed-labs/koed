@@ -42,6 +42,20 @@ const exactKeys = (
   }
 };
 
+const exactRequiredAndOptionalKeys = (
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string
+): void => {
+  const allowed = new Set([...required, ...optional]);
+  if (
+    required.some((key) => !Object.hasOwn(value, key)) ||
+    Object.keys(value).some((key) => !allowed.has(key))
+  )
+    throw new TypeError(`${label} has unexpected fields.`);
+};
+
 const identifier = (value: unknown, label: string): string => {
   if (
     typeof value !== "string" ||
@@ -2080,7 +2094,7 @@ export const parseManagedConversationResult = (
       providerTurnId: identifier(result.providerTurnId, "Provider turn id"),
       citations: result.citations.map((entry) => {
         const citation = record(entry, "Managed citation");
-        exactKeys(
+        exactRequiredAndOptionalKeys(
           citation,
           [
             "alias",
@@ -2090,13 +2104,9 @@ export const parseManagedConversationResult = (
             "visibility",
             "detailAvailable",
             "title",
-            "summary",
-            "kind",
-            "provenance",
-            "replaces",
-            "messageLink",
-            "messageTarget"
+            "summary"
           ],
+          ["kind", "provenance", "replaces", "messageLink", "messageTarget"],
           "Managed citation"
         );
         if (
@@ -2109,17 +2119,25 @@ export const parseManagedConversationResult = (
           !["personal", "team"].includes(String(citation.visibility)) ||
           typeof citation.detailAvailable !== "boolean" ||
           (citation.summary !== null && typeof citation.summary !== "string") ||
-          [
-            citation.kind,
-            citation.provenance,
-            citation.replaces,
-            citation.messageLink
-          ].some(
-            (value) =>
-              value !== undefined && value !== null && typeof value !== "string"
-          )
+          ["kind", "provenance", "replaces", "messageLink"].some(
+            (key) =>
+              Object.hasOwn(citation, key) &&
+              citation[key] !== null &&
+              typeof citation[key] !== "string"
+          ) ||
+          (Object.hasOwn(citation, "messageTarget") &&
+            citation.messageTarget === undefined)
         )
           throw new TypeError("Managed citation is invalid.");
+        if (
+          citation.messageTarget !== undefined &&
+          citation.messageTarget !== null
+        )
+          exactKeys(
+            record(citation.messageTarget, "Message target"),
+            ["messageId", "sessionId", "projectId", "threadId"],
+            "Message target"
+          );
         return {
           alias: identifier(citation.alias, "Citation alias"),
           providerTurnId: identifier(

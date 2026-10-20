@@ -434,7 +434,9 @@ describe("Pi managed RPC conversation", () => {
   });
   it("captures native Pi memory and completion tool results before a turn settles", async () => {
     const f = fixture();
-    const onKoedToolCompleted = vi.fn(async () => undefined);
+    const onKoedToolCompleted = vi.fn(async (_event: unknown) => {
+      void _event;
+    });
     const session = new PiManagedConversationSession({
       ...f.config,
       onKoedToolCompleted
