@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import console from "node:console";
+import process from "node:process";
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
