@@ -1,5 +1,9 @@
 import { hostname } from "node:os";
 import { createProjectsClient } from "./projects-client.js";
+import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
+import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
+import { agentBootstrapContextSchema } from "@koed/shared/agent-contract";
+import type { AgentsRequest, AgentsResult } from "../ipc/agents-protocol.js";
 import type {
   ProjectsRequest,
   ProjectsResult
@@ -251,6 +255,7 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  agents: (request: AgentsRequest) => Promise<AgentsResult>;
   localAiClients: LocalAiClientDesktopHandler;
   hardwareAcceleration: {
     get: () => Promise<HardwareAccelerationState>;
@@ -4613,6 +4618,67 @@ export const createKoedServerManager = ({
     return readLocalAiClientReadModel(payload, environment);
   };
 
+  const agentsRequestJson = async (
+    path: string,
+    init: RequestInit,
+    authority: AgentsAuthority
+  ) => {
+    const remote = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL(path, authority.apiOrigin),
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          ...init.headers,
+          authorization: authority.authorization
+        }
+      },
+      { timeoutMs: 30_000, maxBytes: 1_024_000 }
+    );
+    if (!remote.response.ok) {
+      await remote.response.body?.cancel().catch(() => undefined);
+      throw new PersonalMemoryBoundaryError(
+        remote.response.status === 404 ? "not_found" : "request_failed",
+        remote.response.status === 408 || remote.response.status >= 500
+      );
+    }
+    return remote.payload;
+  };
+
+  const agents = createAgentsClient({
+    requestJson: agentsRequestJson,
+    authority: async () => {
+      const access = await managedProjectAccess(true);
+      const credential = readDesktopLocalCredentialAuthorization(
+        resolveKoedHome(environment)
+      );
+      if (!credential || credential.authorization !== access.authorization)
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      return {
+        key: `${access.apiOrigin}\u0000${access.authorization}\u0000${credential.ownerUserId}`,
+        ownerId: credential.ownerUserId,
+        apiOrigin: access.apiOrigin,
+        authorization: access.authorization
+      };
+    },
+    defaultInstance: async (authority) => {
+      const context = agentBootstrapContextSchema.parse(
+        await agentsRequestJson(
+          "/v1/agents/bootstrap-context",
+          { method: "GET" },
+          authority
+        )
+      );
+      return resolveChiefDefaultInstance(
+        context,
+        authority.ownerId,
+        environment
+      );
+    }
+  });
+
   const localAiClients: LocalAiClientDesktopHandler = async (value) => {
     const request = localAiClientCommandSchema.parse(value);
     let refreshed = false;
@@ -5517,6 +5583,7 @@ export const createKoedServerManager = ({
     managedConversation,
     managedProject,
     projects,
+    agents,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,

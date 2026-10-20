@@ -75,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0051_useful_zemo";
+const expectedLatestMigrationTag = "0052_free_ghost_rider";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 51;
+const expectedLatestMigrationIndex = 52;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -796,6 +796,18 @@ const assertLatestSchema = async (pool) => {
       ["deleted_at", "timestamp with time zone", "YES"],
       ["creation_payload_hash", "text", "NO"],
       ["version", "integer", "NO"]
+    ],
+    agents: [
+      ["id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["name", "text", "NO"],
+      ["role", "text", "YES"],
+      ["look", "jsonb", "NO"],
+      ["ai_client_instance_id", "text", "NO"],
+      ["default_permission_mode", "text", "NO"],
+      ["default_model", "text", "YES"],
+      ["is_chief_of_staff", "boolean", "NO"],
+      ["created_at", "timestamp with time zone", "NO"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -911,7 +923,15 @@ const assertLatestSchema = async (pool) => {
     ["project_activity", "project_activity_kind_check", "c"],
     ["project_seen", "project_seen_owner_user_id_project_id_pk", "p"],
     ["project_seen", "project_seen_owner_project_fk", "f", "projects", "c"],
-    ["project_seen", "project_seen_sequence_nonnegative", "c"]
+    ["project_seen", "project_seen_sequence_nonnegative", "c"],
+    ["agents", "agents_pkey", "p"],
+    ["agents", "agents_owner_user_id_users_id_fk", "f", "users", "c"],
+    ["agents", "agents_owner_instance_fk", "f", "ai_client_instances", "r"],
+    ["agents", "agents_name_check", "c"],
+    ["agents", "agents_role_check", "c"],
+    ["agents", "agents_look_check", "c"],
+    ["agents", "agents_permission_mode_check", "c"],
+    ["agents", "agents_model_check", "c"]
   ].map(([table, name, ...contract]) => [
     table,
     name.slice(0, 63),
@@ -1009,6 +1029,17 @@ const assertLatestSchema = async (pool) => {
     throw new Error(
       "Work Item cursor pagination index is missing or has the wrong key order"
     );
+  const chiefIndex = await pool.query(
+    `select indexdef from pg_indexes where schemaname='public'
+     and tablename='agents' and indexname='agents_one_chief_per_owner_idx'`
+  );
+  if (
+    !/UNIQUE INDEX/.test(chiefIndex.rows[0]?.indexdef ?? "") ||
+    !/WHERE \(is_chief_of_staff = true\)/.test(
+      chiefIndex.rows[0]?.indexdef ?? ""
+    )
+  )
+    throw new Error("One-Chief-per-owner unique index is missing");
   const eventFamily = await pool.query(
     `select enumlabel from pg_enum join pg_type on pg_type.oid=pg_enum.enumtypid
       where pg_type.typname='collaboration_event_family' and enumlabel='work_item_changed'`
@@ -1453,6 +1484,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preAgentsFolder = await createMigrationSlice(journal, 51, {
+    folderPrefix: "koed-pre-agents-"
+  });
+  temporaryFolders.add(preAgentsFolder);
+  const preAgentsRecords = await migrationRecords(
+    preAgentsFolder,
+    journal.entries.slice(0, 52)
+  );
   const preActivityFolder = await createMigrationSlice(journal, 50, {
     folderPrefix: "koed-pre-project-activity-"
   });
@@ -2428,6 +2467,68 @@ try {
       await stableFixtureFingerprint(pool, oldShapeFixture);
       await assertUpgradedStableDefaults(pool, oldShapeFixture);
       await assertMigrationLedger(pool, through0020Records);
+    });
+  });
+
+  await runScenario("agents-0052-upgrade-rollback-idempotence", async () => {
+    const target = await createDisposableDatabase("agents_upgrade");
+    const ownerId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preAgentsFolder });
+      await assertMigrationLedger(pool, preAgentsRecords);
+      await pool.query("insert into users(id,email) values ($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name)
+         values ($1,'codex.default','codex','Codex')`,
+        [ownerId]
+      );
+    });
+    const interrupted = await createMigrationSlice(journal, 52, {
+      folderPrefix: "koed-agents-interrupted-",
+      transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+    });
+    temporaryFolders.add(interrupted);
+    await withPool(target.url, async (pool) => {
+      let failed = false;
+      try {
+        await runDbMigrations(pool, { migrationsFolder: interrupted });
+      } catch {
+        failed = true;
+      }
+      if (!failed)
+        throw new Error("Interrupted Agents migration unexpectedly succeeded");
+      const rollback = await pool.query(
+        `select to_regclass('public.agents')::text as agents,
+          exists(select 1 from ai_client_instances where owner_user_id=$1 and instance_id='codex.default') as retained`,
+        [ownerId]
+      );
+      if (
+        rollback.rows[0]?.agents !== null ||
+        rollback.rows[0]?.retained !== true
+      )
+        throw new Error(
+          "Interrupted Agents migration changed retained instance data"
+        );
+      await assertMigrationLedger(pool, preAgentsRecords);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const agentId = randomUUID();
+      await pool.query(
+        `insert into agents(id,owner_user_id,name,look,ai_client_instance_id,is_chief_of_staff)
+         values ($1,$2,'Chief','{}'::jsonb,'codex.default',true)`,
+        [agentId, ownerId]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const retained = await pool.query(
+        "select name from agents where id=$1 and owner_user_id=$2",
+        [agentId, ownerId]
+      );
+      if (retained.rows[0]?.name !== "Chief")
+        throw new Error("Agents migration rerun lost the retained Chief");
     });
   });
 

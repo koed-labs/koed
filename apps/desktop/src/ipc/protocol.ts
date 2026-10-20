@@ -85,6 +85,7 @@ export const launchAtStartupSetChannel = "koed:launch-at-startup:set";
 export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
 export { localAiClientCommandChannel } from "./local-ai-client-protocol.js";
+export { agentsCommandChannel } from "./agents-protocol.js";
 export const personalDevicePairingLinkChannel =
   "koed:personal-device-pairing:link";
 export const personalDevicePairingLinkConsumeChannel =

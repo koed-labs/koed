@@ -18,6 +18,7 @@ import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 import { ProjectsStore } from "./useProjects.js";
+import { AgentsStore } from "./agents/agents-store.js";
 import { visibleHqProjects } from "./project-navigation.js";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type {
@@ -53,6 +54,7 @@ export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
   projectsApi,
+  agentsApi,
   visibilityClient,
   visibilityOwnerId,
   visibilityProfileKey,
@@ -71,6 +73,7 @@ export function HqApplication({
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
   projectsApi?: ProjectsDesktopApi | null;
+  agentsApi?: DesktopApi["agents"];
   visibilityClient?: CollaborationRendererClient;
   visibilityOwnerId?: string | null;
   visibilityProfileKey?: string | null;
@@ -103,6 +106,19 @@ export function HqApplication({
   const [projectsStore] = useState(() =>
     projectsApi ? new ProjectsStore(projectsApi) : null
   );
+  const [agentsStore] = useState(() =>
+    agentsApi ? new AgentsStore(agentsApi) : null
+  );
+  useSyncExternalStore(
+    agentsStore?.subscribe ?? subscribeEmpty,
+    agentsStore?.current ?? emptySnapshot
+  );
+  useEffect(() => {
+    agentsStore?.setOwner(
+      visibilityOwnerId ?? null,
+      visibilityProfileKey ?? null
+    );
+  }, [agentsStore, visibilityOwnerId, visibilityProfileKey]);
   useEffect(() => {
     projectsStore?.setOwner(
       visibilityOwnerId ?? null,

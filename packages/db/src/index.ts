@@ -471,6 +471,12 @@ export {
 export { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
+export {
+  createAgentsRepository,
+  AgentInstanceUnavailableError,
+  AgentNotFoundError,
+  type AgentsRepository
+} from "./agents-repository.js";
 export * from "./types.js";
 export * from "./memory-answer-team-authority.js";
 

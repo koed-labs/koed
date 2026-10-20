@@ -18,6 +18,7 @@ import {
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
   createWorkItemRepository,
+  createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
   databaseErrorCode,
@@ -43,6 +44,7 @@ import {
 } from "../auth/workos.js";
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
+import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
@@ -470,6 +472,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         })
       : null);
   const workItemRepository = pool ? createWorkItemRepository(pool) : null;
+  const agentsRepository = pool ? createAgentsRepository(pool) : null;
   const projectActivityRepository = pool
     ? createProjectActivityRepository(pool)
     : null;
@@ -1873,6 +1876,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerWorkItemRoutes(app, {
     repository: workItemRepository,
     auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerAgentRoutes(app, {
+    repository: agentsRepository,
+    auth: authHelpers,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
   });

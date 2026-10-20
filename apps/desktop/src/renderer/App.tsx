@@ -1175,6 +1175,7 @@ export function App({
         personalMemoryStore={personalMemoryStore}
         personalMemoryReady={personalMemoryReady}
         projectsApi={projectsApi}
+        agentsApi={window.koedDesktop?.agents}
         visibilityClient={client}
         visibilityOwnerId={snapshot?.navigation.personalOwner.id ?? null}
         visibilityProfileKey={`${snapshot?.connection.backendId ?? "local"}|${snapshot?.connection.connectedAt ?? ""}|${client.currentRemoteUrl() ?? ""}`}

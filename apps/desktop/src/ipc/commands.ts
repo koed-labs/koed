@@ -7,6 +7,13 @@ import {
   type ProjectsResult
 } from "./projects-protocol.js";
 import {
+  agentsCommandChannel,
+  agentsRequestSchema,
+  agentsResultSchema,
+  type AgentsRequest,
+  type AgentsResult
+} from "./agents-protocol.js";
+import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
@@ -165,6 +172,7 @@ export const registerDesktopCommandHandlers = (
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    agents?: (request: AgentsRequest) => Promise<AgentsResult>;
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
@@ -462,6 +470,23 @@ export const registerDesktopCommandHandlers = (
       result.value.project.id !== request.projectId
     )
       throw new Error("Invalid Project HQ identity.");
+    return result;
+  });
+  ipcMain.handle(agentsCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (process.env.KOED_DESKTOP_HQ_ENABLED !== "true" || !options.agents)
+      throw new Error("Agents are unavailable.");
+    const request = agentsRequestSchema.parse(value);
+    const result = agentsResultSchema.parse(await options.agents(request));
+    if (result.operation !== request.operation)
+      throw new Error("Invalid Agents operation correlation.");
+    if (
+      request.operation === "patch" &&
+      result.operation === "patch" &&
+      result.agent.id !== request.id
+    )
+      throw new Error("Invalid Agent identity.");
     return result;
   });
 

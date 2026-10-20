@@ -16,6 +16,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "./ipc/projects-protocol.js";
+import type { AgentsDesktopApi } from "./ipc/agents-protocol.js";
 import type { HqLayoutPreferencesApi } from "./ipc/hq-layout-preferences-protocol.js";
 import type { HqSidebarPreferencesApi } from "./ipc/hq-sidebar-preferences-protocol.js";
 
@@ -167,6 +168,7 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   projects?: ProjectsDesktopApi;
+  agents?: AgentsDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
   localAiClients?: {
     list: () => Promise<LocalAiClientResponse>;
