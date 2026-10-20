@@ -1,4 +1,4 @@
-import { ArrowUp, Paperclip } from "lucide-react";
+import { ArrowUp, Paperclip, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
@@ -33,7 +33,11 @@ export function HqProjectConversation({
   managedProject,
   store,
   lifecycle,
-  markdownAdapters
+  markdownAdapters,
+  inspectorOpen = false,
+  panelHostRef,
+  contextLabel,
+  onClearContext
 }: {
   project: DesktopProject;
   chiefName: string;
@@ -44,6 +48,10 @@ export function HqProjectConversation({
   store: PersonalMemoryStore;
   lifecycle: ManagedConversationLifecycle;
   markdownAdapters: MarkdownPlatformAdapters;
+  inspectorOpen?: boolean;
+  panelHostRef?: (node: HTMLDivElement | null) => void;
+  contextLabel?: string | null;
+  onClearContext?: () => void;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -244,7 +252,12 @@ export function HqProjectConversation({
   );
 
   const start = async (retry = false) => {
-    const text = retry ? attemptedPrompt : prompt;
+    if (!retry && !prompt.trim()) return;
+    const text = retry
+      ? attemptedPrompt
+      : contextLabel
+        ? `About ${contextLabel}: ${prompt}`
+        : prompt;
     if (pending || loading || !text?.trim() || (executionId && !retry)) return;
     if (!selection.permissionMode) {
       setError("Ask first is unavailable for the configured Chief of Staff.");
@@ -263,6 +276,7 @@ export function HqProjectConversation({
       setUncertain(false);
       setConflict(false);
       setPrompt("");
+      if (contextLabel && !retry) onClearContext?.();
     } catch (cause) {
       setUncertain(true);
       const differentMessage =
@@ -317,6 +331,10 @@ export function HqProjectConversation({
           lifecycle={lifecycle}
           onRetryStart={() => undefined}
           markdownAdapters={markdownAdapters}
+          contextLabel={contextLabel}
+          onClearContext={onClearContext}
+          inspectorOpen={inspectorOpen}
+          panelHostRef={panelHostRef}
         />
         {conflict && attemptedPrompt ? (
           <div className="hq-project-conversation__unsent" role="status">
@@ -337,7 +355,10 @@ export function HqProjectConversation({
 
   return (
     <div className="hq-project-conversation">
-      <header className="hq-project-conversation__header">
+      <header
+        className="hq-project-conversation__header"
+        hidden={inspectorOpen}
+      >
         <span className="hq-visually-hidden">{project.name}</span>
         <strong>Just me</strong>
       </header>
@@ -347,7 +368,11 @@ export function HqProjectConversation({
         </div>
       ) : (
         <div className="hq-conversation hq-project-conversation__empty">
-          <div className="hq-conversation__scroll" aria-live="polite">
+          <div
+            className="hq-conversation__scroll"
+            aria-live="polite"
+            hidden={inspectorOpen}
+          >
             {executionId ? (
               <p role="status">
                 {terminalUncaptured
@@ -359,9 +384,26 @@ export function HqProjectConversation({
             ) : null}
             {loading ? <p role="status">Opening HQ Conversation…</p> : null}
           </div>
+          <div
+            className="hq-project-conversation__inspector"
+            hidden={!inspectorOpen}
+            ref={panelHostRef}
+          />
           <div className="hq-conversation__dock">
             <div className="hq-composer-wrap">
               <HqVisibilityLine visibility="personal-private" />
+              {contextLabel ? (
+                <div className="hq-project-conversation__context">
+                  About <strong>{contextLabel}</strong>
+                  <button
+                    type="button"
+                    aria-label="Stop talking about this"
+                    onClick={onClearContext}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : null}
               <form
                 className="hq-composer"
                 aria-label="HQ Conversation composer"

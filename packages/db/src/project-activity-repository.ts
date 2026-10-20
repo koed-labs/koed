@@ -166,11 +166,18 @@ export const createProjectActivityRepository = (pool: pg.Pool) => ({
     return readActiveProject(pool, ownerUserId, projectId, async (client) => {
       // PostgreSQL now() is the server clock. Seven UTC calendar dates include
       // today, from the start of day six dates ago through the current instant.
-      const result = await client.query<{ day: string; count: number }>(
+      const result = await client.query<{
+        day: string;
+        count: number;
+        done: number;
+        merged: number;
+      }>(
         `with dates as (select generate_series(
          (now() at time zone 'UTC')::date - 6,
          (now() at time zone 'UTC')::date, interval '1 day')::date as day)
-       select to_char(dates.day,'YYYY-MM-DD') as day, count(a.sequence)::integer as count
+       select to_char(dates.day,'YYYY-MM-DD') as day, count(a.sequence)::integer as count,
+         count(a.sequence) filter (where a.kind='work_item_done')::integer as done,
+         count(a.sequence) filter (where a.kind='pr_merged')::integer as merged
          from dates left join project_activity a on a.owner_user_id=$1 and a.project_id=$2
           and a.at >= dates.day::timestamp at time zone 'UTC'
           and a.at < (dates.day+1)::timestamp at time zone 'UTC' and a.at <= now()
@@ -179,7 +186,15 @@ export const createProjectActivityRepository = (pool: pg.Pool) => ({
       );
       return {
         days: result.rows.map((row) => ({ date: row.day, count: row.count })),
-        total: result.rows.reduce((sum, row) => sum + row.count, 0)
+        total: result.rows.reduce((sum, row) => sum + row.count, 0),
+        outcomes: {
+          days: result.rows.map((row) => ({
+            date: row.day,
+            count: row.done + row.merged
+          })),
+          done: result.rows.reduce((sum, row) => sum + row.done, 0),
+          merged: result.rows.reduce((sum, row) => sum + row.merged, 0)
+        }
       };
     });
   },

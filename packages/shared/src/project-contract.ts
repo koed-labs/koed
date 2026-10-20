@@ -89,7 +89,24 @@ export const projectHqSchema = z
                   .strict()
               )
               .length(7),
-            total: z.number().int().nonnegative()
+            total: z.number().int().nonnegative(),
+            outcomes: z
+              .object({
+                days: z
+                  .array(
+                    z
+                      .object({
+                        date: z.iso.date(),
+                        count: z.number().int().nonnegative()
+                      })
+                      .strict()
+                  )
+                  .length(7),
+                done: z.number().int().nonnegative(),
+                merged: z.number().int().nonnegative()
+              })
+              .strict()
+              .optional()
           })
           .strict()
       })

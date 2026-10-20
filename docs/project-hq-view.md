@@ -1,0 +1,9 @@
+# Project HQ view
+
+The desktop Project route opens a Project HQ overview beside its private Chief of Staff Conversation. The heading uses the Personal Project name and saved folder path. Its seven-day sparkline counts completed Work Items and merged pull requests from `activity.lastSevenDays.outcomes`; the accompanying labels show those two counts separately. Other activity does not become ticket progress. Older servers without `outcomes` show the metrics as unavailable.
+
+Sources and the key-item chip come from the Project Sources contract. A selected document opens in the right context above the same private HQ composer. The composer shows an **About** chip; sending a question includes the selected document name and returns to the HQ timeline. Escape, the inspector close button, or the chip close button clears that context. The user can also fold work sections and hide or restore the right context. The private HQ Conversation stays mounted while a document is open, preserving its execution and draft state.
+
+Needs you shows pending runtime requests from active executions owned by this exact Personal Project. Working now shows those active executions. Both lists require the current profile, owner, API, and Project identity; captured Session and graph identifiers are resolved to the canonical Personal Project ID before they count. Foreign Project and terminal executions are excluded. Rows display current state without inventing Work Item or PR evidence.
+
+The Shared and Memory affordances currently explain that their data is unavailable. To do, In review, and Done have no inferred records. Future ticket, memory, Team, and artefact owners can replace those placeholders when their contracts supply verified Project-scoped data. This view does not send Team messages or include Team chat in private HQ input.

@@ -8,11 +8,50 @@
   color: var(--hq-muted);
   font-size: 13px;
 }
+.hq-project-conversation__header[hidden] {
+  display: none;
+}
 .hq-project-conversation {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
+}
+.hq-project-conversation__inspector {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.hq-project-conversation__inspector[hidden],
+.hq-project-conversation .hq-conversation__scroll[hidden],
+.hq-project-conversation .hq-conversation__hero[hidden] {
+  display: none;
+}
+.hq-project-conversation__context {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px 7px;
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-project-conversation__context strong {
+  max-width: 80%;
+  color: var(--hq-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hq-project-conversation__context button {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  margin-left: auto;
+  border-radius: 5px;
+}
+.hq-project-conversation__context button:hover {
+  background: var(--hq-surface-hover);
 }
 .hq-project-conversation__active,
 .hq-project-conversation__empty {

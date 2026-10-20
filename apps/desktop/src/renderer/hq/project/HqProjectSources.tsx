@@ -35,7 +35,9 @@ export function HqProjectSources({
   visibilityOwnerId,
   visibilityProfileKey,
   panelHost,
-  onOpenChange
+  onOpenChange,
+  onContextChange,
+  closeSignal
 }: {
   projectId: string;
   projectName: string;
@@ -44,6 +46,8 @@ export function HqProjectSources({
   visibilityProfileKey?: string | null;
   panelHost?: HTMLElement | null;
   onOpenChange?: (open: boolean) => void;
+  onContextChange?: (label: string | null) => void;
+  closeSignal?: number;
 }) {
   const [sources, setSources] = useState<ProjectSource[]>([]);
   const [open, setOpen] = useState(false);
@@ -136,6 +140,14 @@ export function HqProjectSources({
     [sources]
   );
   const source = selected ? sources.find((item) => item.id === selected) : null;
+  useEffect(() => {
+    onContextChange?.(open && source?.kind === "doc" ? source.name : null);
+  }, [open, source?.id, source?.kind, source?.name, onContextChange]);
+  useEffect(() => {
+    if (!closeSignal) return;
+    setPanelOpen(false);
+    setSelected(null);
+  }, [closeSignal]);
   const act = async (
     run: (current: () => boolean) => Promise<unknown>,
     shouldRefresh = true

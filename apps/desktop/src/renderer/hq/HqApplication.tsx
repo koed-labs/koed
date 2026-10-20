@@ -45,7 +45,7 @@ import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
-import { HqProjectSources } from "./project/HqProjectSources.js";
+import { HqProjectView } from "./project/HqProjectView.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 
 const subscribeEmpty = () => () => undefined;
@@ -109,6 +109,8 @@ export function HqApplication({
   const [blankLaunchPending, setBlankLaunchPending] = useState(false);
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [artifactContext, setArtifactContext] = useState<string | null>(null);
+  const [closeInspectorSignal, setCloseInspectorSignal] = useState(0);
   const [sourcesPanelHost, setSourcesPanelHost] =
     useState<HTMLDivElement | null>(null);
   const shellActions = useRef<HqShellActions>(null);
@@ -573,6 +575,14 @@ export function HqApplication({
             writeClipboard: (value) => navigator.clipboard.writeText(value)
           }
         }
+        inspectorOpen={sourcesOpen}
+        panelHostRef={setSourcesPanelHost}
+        contextLabel={artifactContext}
+        onClearContext={() => {
+          setCloseInspectorSignal((value) => value + 1);
+          setSourcesOpen(false);
+          setArtifactContext(null);
+        }}
       />
     ) : undefined;
   return (
@@ -580,23 +590,7 @@ export function HqApplication({
       <HqShell
         actionsRef={shellActions}
         contextAvailable={contextAvailable}
-        contextContent={
-          projectHqContent ? (
-            <>
-              <div
-                hidden={sourcesOpen}
-                className="hq-project-sources__conversation"
-              >
-                {projectHqContent}
-              </div>
-              <div
-                hidden={!sourcesOpen}
-                className="hq-project-sources__host"
-                ref={setSourcesPanelHost}
-              />
-            </>
-          ) : undefined
-        }
+        contextContent={projectHqContent}
         title={title}
         route={route}
         sidebar={({ compact }) => (
@@ -775,22 +769,35 @@ export function HqApplication({
               }
               onSelectConversation={openNowNeed}
             />
-          ) : route.kind === "project" && project && projectHqContent ? (
-            <div className="hq-project-route__overview">
-              <h1>{project.name}</h1>
-              {projectsApi ? (
-                <HqProjectSources
-                  key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${project.id}`}
-                  projectId={project.id}
-                  projectName={project.name}
-                  api={projectsApi}
-                  visibilityOwnerId={visibilityOwnerId}
-                  visibilityProfileKey={visibilityProfileKey}
-                  panelHost={sourcesPanelHost}
-                  onOpenChange={setSourcesOpen}
-                />
-              ) : null}
-            </div>
+          ) : route.kind === "project" && personalProject && projectsApi ? (
+            <HqProjectView
+              key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${personalProject.id}`}
+              project={personalProject}
+              personalProjects={personalProjects}
+              graphProjects={projects}
+              projectsApi={projectsApi}
+              conversationsApi={managedConversations}
+              lifecycle={managedConversationLifecycle}
+              ownerId={visibilityOwnerId}
+              profileKey={visibilityProfileKey}
+              panelHost={sourcesPanelHost}
+              onSourcesOpenChange={setSourcesOpen}
+              onContextChange={setArtifactContext}
+              closeSignal={closeInspectorSignal}
+              onSelectConversation={openNowNeed}
+              onOpenPrivateHq={() => {
+                setCloseInspectorSignal((value) => value + 1);
+                setSourcesOpen(false);
+                setArtifactContext(null);
+                if (
+                  document.querySelector(
+                    'button[aria-label="Show project context"]'
+                  )
+                )
+                  shellActions.current?.toggleContext();
+              }}
+              blockedConversationSessions={blockedConversationSessions}
+            />
           ) : route.kind === "conversation" &&
             project &&
             conversationThread &&

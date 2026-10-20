@@ -428,7 +428,9 @@ function Composer({
   lockDraft,
   settingsDisabled,
   privateProjectHq,
-  visibility
+  visibility,
+  contextLabel,
+  onClearContext
 }: {
   value: string;
   setValue: (value: string) => void;
@@ -453,6 +455,8 @@ function Composer({
   settingsDisabled?: boolean;
   privateProjectHq?: boolean;
   visibility: HqVisibility;
+  contextLabel?: string | null;
+  onClearContext?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(value.length);
@@ -466,6 +470,18 @@ function Composer({
   return (
     <div className="hq-composer-wrap">
       <HqVisibilityLine visibility={visibility} />
+      {privateProjectHq && contextLabel ? (
+        <div className="hq-project-conversation__context">
+          About <strong>{contextLabel}</strong>
+          <button
+            type="button"
+            aria-label="Stop talking about this"
+            onClick={onClearContext}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <form
         className="hq-composer"
         aria-label="Conversation composer"
@@ -1022,7 +1038,11 @@ export function HqActiveConversation({
   visibilityRevision,
   visibilityConnected = false,
   openFilePickerOnReady = false,
-  inventoryOnly = false
+  inventoryOnly = false,
+  contextLabel,
+  onClearContext,
+  inspectorOpen = false,
+  panelHostRef
 }: {
   api: ManagedConversationDesktopApi | null;
   privateProjectHq?: boolean;
@@ -1042,6 +1062,10 @@ export function HqActiveConversation({
   visibilityConnected?: boolean;
   openFilePickerOnReady?: boolean;
   inventoryOnly?: boolean;
+  contextLabel?: string | null;
+  onClearContext?: () => void;
+  inspectorOpen?: boolean;
+  panelHostRef?: (node: HTMLDivElement | null) => void;
 }) {
   const detailThread = draft?.thread ?? thread;
   const { detail, loadOlder, retry } = usePersonalMemoryDetail(
@@ -1588,6 +1612,10 @@ export function HqActiveConversation({
     draft?.initialPrompt?.prompt
   ]);
   const send = async (manualRetry = false) => {
+    const effectivePrompt =
+      privateProjectHq && contextLabel && !manualRetry
+        ? `About ${contextLabel}: ${prompt}`
+        : prompt;
     const exactRetry =
       manualRetry &&
       pending.current?.request &&
@@ -1632,7 +1660,7 @@ export function HqActiveConversation({
       manualRetry && pending.current
         ? pending.current
         : pending.current &&
-            pending.current.prompt === prompt &&
+            pending.current.prompt === effectivePrompt &&
             JSON.stringify(pending.current.attachments) ===
               JSON.stringify(attachments) &&
             JSON.stringify(pending.current.settingsChange) ===
@@ -1641,7 +1669,7 @@ export function HqActiveConversation({
           : {
               key: `desktop-prompt:${crypto.randomUUID()}`,
               messageId: crypto.randomUUID(),
-              prompt,
+              prompt: effectivePrompt,
               attachments,
               settingsChange
             };
@@ -1761,6 +1789,8 @@ export function HqActiveConversation({
             )
           );
           setError("");
+          if (privateProjectHq && contextLabel && !manualRetry)
+            onClearContext?.();
         } catch {
           if (
             !mounted.current ||
@@ -2102,9 +2132,17 @@ export function HqActiveConversation({
     <div
       className={`hq-conversation ${isBlank ? "hq-conversation--blank" : "hq-conversation--active"}`}
     >
+      {privateProjectHq ? (
+        <div
+          className="hq-project-conversation__inspector"
+          hidden={!inspectorOpen}
+          ref={panelHostRef}
+        />
+      ) : null}
       {!isBlank ? (
         <div
           className="hq-conversation__scroll"
+          hidden={privateProjectHq && inspectorOpen}
           ref={scrollRef}
           onScroll={(event) => {
             const target = event.currentTarget;
@@ -2243,7 +2281,10 @@ export function HqActiveConversation({
           </div>
         </div>
       ) : (
-        <div className="hq-conversation__hero">
+        <div
+          className="hq-conversation__hero"
+          hidden={privateProjectHq && inspectorOpen}
+        >
           <h1>
             {options?.instances.find(
               (item) => item.instanceId === selection.instanceId
@@ -2280,6 +2321,8 @@ export function HqActiveConversation({
         <Composer
           visibility={privateProjectHq ? "personal-private" : visibility}
           privateProjectHq={privateProjectHq}
+          contextLabel={contextLabel}
+          onClearContext={onClearContext}
           value={prompt}
           setValue={(value) => {
             if (sendLocked || resumeStatus === "read_only" || !recoveryReady)

@@ -85,14 +85,16 @@ const run = async () => {
     );
     assert.deepEqual(
       await js(`({ count: document.querySelectorAll('[data-hq-context][role=complementary]').length,
-      inRightPane: Boolean(document.querySelector('.hq-context__body > .hq-project-sources__host > .hq-project-sources__panel')),
-      chatHidden: document.querySelector('.hq-project-sources__conversation')?.hidden,
+      inRightPane: Boolean(document.querySelector('.hq-context .hq-project-conversation__inspector > .hq-project-sources__panel')),
+      timelineHidden: document.querySelector('.hq-project-conversation .hq-conversation__scroll')?.hidden,
+      composerVisible: Boolean(document.querySelector('.hq-project-conversation .hq-composer:not([hidden])')),
       nestedComplementary: document.querySelectorAll('.hq-context aside, .hq-context [role=complementary]').length,
       skillGroup: document.querySelector('.hq-project-sources__panel')?.textContent.includes('Skills used here') })`),
       {
         count: 1,
         inRightPane: true,
-        chatHidden: true,
+        timelineHidden: true,
+        composerVisible: true,
         nestedComplementary: 0,
         skillGroup: true
       }
@@ -113,7 +115,7 @@ const run = async () => {
     await capture("hq205-skill-detail-light.png");
     await js(`document.querySelector('[aria-label="Close Sources"]').click()`);
     await waitFor(
-      "!document.querySelector('.hq-project-sources__panel') && !document.querySelector('.hq-project-sources__conversation')?.hidden"
+      "!document.querySelector('.hq-project-sources__panel') && !document.querySelector('.hq-project-conversation .hq-conversation__scroll')?.hidden"
     );
     assert.ok(
       await js(
@@ -128,7 +130,7 @@ const run = async () => {
       "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"
     );
     await waitFor(
-      "!document.querySelector('.hq-project-sources__panel') && !document.querySelector('.hq-project-sources__conversation')?.hidden"
+      "!document.querySelector('.hq-project-sources__panel') && !document.querySelector('.hq-project-conversation .hq-conversation__scroll')?.hidden"
     );
     assert.equal(errors.length, 0, errors.join(" | "));
     await writeFile(

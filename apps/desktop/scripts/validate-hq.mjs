@@ -124,6 +124,7 @@ const approvedTwoUserIds = [
 const browserSkipReason =
   "This acceptance-map clause remains SKIP until every listed owning ticket is implemented and validated.";
 const delegatedS09 = process.env.KOED_HQ205_DELEGATED_S09 === "1";
+const delegatedProjectHq = process.env.KOED_HQ207_DELEGATED_S01_S11 === "1";
 const unitSkipReason =
   "This ID belongs to its owning unit suite, not the Electron browser harness.";
 const integrationSkipReason =
@@ -974,6 +975,12 @@ const reportSkippedCases = () => {
     if (delegatedS09 && entry.id === "S09.1") {
       process.stdout.write(
         "DELEGATED S09.1 [HQ-205]: dedicated native Sources proof runs after this harness.\n"
+      );
+      continue;
+    }
+    if (delegatedProjectHq && ["S01.1", "S11.1"].includes(entry.id)) {
+      process.stdout.write(
+        `DELEGATED ${entry.id} [HQ-207]: dedicated native Project HQ proof runs after this harness.\n`
       );
       continue;
     }
@@ -2052,7 +2059,7 @@ const runValidation = async () => {
     });
 
     await runAssertion(
-      "HQ104 composer and timeline (ticket-owned proof; S11.1 remains SKIP)",
+      "HQ104 composer and timeline (ticket-owned proof; S11.1 completes in the dedicated Project HQ proof)",
       async () => {
         await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
           width: 1280,
@@ -2672,7 +2679,7 @@ const runValidation = async () => {
     assert.equal(hq208Created.dialogClosed, true);
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

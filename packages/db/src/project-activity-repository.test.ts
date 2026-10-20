@@ -248,6 +248,65 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
     );
   });
 
+  it("separates completed and merged outcomes from other activity with the same UTC and ownership fences", async () => {
+    const activity = createProjectActivityRepository(pool);
+    const before = await activity.summary(owner, project);
+    const client = await pool.connect();
+    const events = [
+      ["done-six", "work_item_done"],
+      ["merge-today", "pr_merged"],
+      ["done-old", "work_item_done"],
+      ["merge-future", "pr_merged"],
+      ["source-today", "source_added"],
+      ["open-today", "pr_opened"]
+    ] as const;
+    try {
+      await client.query("begin");
+      for (const [suffix, kind] of events) {
+        await appendProjectActivityWithClient(client, {
+          ownerUserId: owner,
+          projectId: project,
+          actorUserId: owner,
+          kind,
+          ref: `${ref}:${suffix}`
+        });
+      }
+      await appendProjectActivityWithClient(client, {
+        ownerUserId: other,
+        projectId: otherProject,
+        actorUserId: other,
+        kind: "pr_merged",
+        ref: `${ref}:foreign`
+      });
+      await client.query("commit");
+    } finally {
+      client.release();
+    }
+    await pool.query(
+      `update project_activity set at=((now() at time zone 'UTC')::date - 6)::timestamp at time zone 'UTC' where ref=$1`,
+      [`${ref}:done-six`]
+    );
+    await pool.query(
+      `update project_activity set at=((now() at time zone 'UTC')::date - 7)::timestamp at time zone 'UTC' where ref=$1`,
+      [`${ref}:done-old`]
+    );
+    await pool.query(
+      `update project_activity set at=now()+interval '1 day' where ref=$1`,
+      [`${ref}:merge-future`]
+    );
+    const summary = await activity.summary(owner, project);
+    expect(summary.total).toBe(before.total + 4);
+    expect(summary.outcomes.done).toBe(before.outcomes.done + 1);
+    expect(summary.outcomes.merged).toBe(before.outcomes.merged + 1);
+    expect(summary.outcomes.days).toHaveLength(7);
+    expect(summary.outcomes.days[0]!.count).toBe(
+      before.outcomes.days[0]!.count + 1
+    );
+    expect(summary.outcomes.days.reduce((sum, day) => sum + day.count, 0)).toBe(
+      summary.outcomes.done + summary.outcomes.merged
+    );
+  });
+
   it("acknowledges only committed owner Project cursors and never rewinds", async () => {
     const activity = createProjectActivityRepository(pool);
     const page = await activity.list(owner, project);

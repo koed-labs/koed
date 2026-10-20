@@ -35,6 +35,8 @@ const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes";
 const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
+const hq207Capture =
+  new URLSearchParams(window.location.search).get("hq207Capture") === "yes";
 const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
 const hq205SourceOwnerId = "00000000-0000-4000-8000-000000002051";
 const hq205SourceTime = "2026-10-20T09:00:00.000Z";
@@ -84,6 +86,13 @@ const hq205InitialSources = [
 ];
 let hq205Sources = structuredClone(hq205InitialSources);
 const hq204ProjectId = "00000000-0000-4000-8000-000000002038";
+const hq207RuntimeExecutionIds = Array.from(
+  { length: 5 },
+  (_, index) =>
+    `00000000-0000-4000-8000-${String(2078 + index).padStart(12, "0")}`
+);
+const hq207OtherExecutionId = "00000000-0000-4000-8000-000000002083";
+const hq207TerminalExecutionId = "00000000-0000-4000-8000-000000002084";
 const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
 const hq204SessionId = "00000000-0000-4000-8000-000000002045";
 let hq204Started = false;
@@ -254,7 +263,7 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
-    ...(hq204Capture || hq205Capture
+    ...(hq204Capture || hq205Capture || hq207Capture
       ? {
           agents: {
             list: async () => [
@@ -640,6 +649,65 @@ const hq204ManagedConversations = {
     };
   }
 } as ManagedConversationDesktopApi;
+const hq207ManagedConversations = {
+  ...hq204ManagedConversations,
+  list: async () => ({
+    operation: "list" as const,
+    complete: true,
+    executions: [
+      ...hq207RuntimeExecutionIds.map((executionId) => ({
+        executionId,
+        projectId: hq204ProjectId,
+        sessionId: null,
+        threadId: null,
+        state: "running"
+      })),
+      {
+        executionId: hq207OtherExecutionId,
+        projectId: hq205ProjectId,
+        sessionId: null,
+        threadId: null,
+        state: "running"
+      },
+      {
+        executionId: hq207TerminalExecutionId,
+        projectId: hq204ProjectId,
+        sessionId: null,
+        threadId: null,
+        state: "stopped"
+      }
+    ]
+  }),
+  runtime: async (executionId: string) => {
+    return {
+      ...(await hq204ManagedConversations.runtime(executionId)),
+      items: hq207RuntimeExecutionIds.includes(executionId)
+        ? [
+            {
+              id: `${executionId}-approval`,
+              executionGeneration: 1,
+              providerTurnId: null,
+              providerItemId: null,
+              itemKind: "command_approval" as const,
+              presentation: {
+                mode: "expanded" as const,
+                renderer: "approval" as const,
+                policyKey: "hq207-fixture",
+                policyRevision: 1,
+                reason: "Pending"
+              },
+              state: "pending" as const,
+              payload: { command: ["review", "Project plan"] },
+              revision: 1,
+              createdAt: FIXTURE_TIME,
+              updatedAt: FIXTURE_TIME,
+              answered: false
+            }
+          ]
+        : []
+    };
+  }
+} as ManagedConversationDesktopApi;
 
 const seededData = {
   fixedAt: FIXTURE_TIME,
@@ -943,10 +1011,11 @@ const initialSidebarPersonalProjects = sidebarProjectGroups
       id === "hq103-notes" ? "Research archive" : name
     )
   );
-if (hq203Empty || hq204Capture)
-  initialSidebarPersonalProjects.push(
-    sidebarProjectRecord(hq204ProjectId, "New empty Project")
-  );
+if (hq203Empty || hq204Capture || hq207Capture)
+  initialSidebarPersonalProjects.push({
+    ...sidebarProjectRecord(hq204ProjectId, "New empty Project"),
+    folderPath: hq207Capture ? "/fixtures/koed" : null
+  });
 let sidebarPersonalProjects: Project[] = structuredClone(
   initialSidebarPersonalProjects
 );
@@ -968,8 +1037,12 @@ const hq208Status = () => {
 };
 const sidebarProjectsApi = {
   sourceList: async (projectId: string) =>
-    hq205Capture && projectId === hq205ProjectId
-      ? structuredClone(hq205Sources)
+    (hq205Capture && projectId === hq205ProjectId) ||
+    (hq207Capture && projectId === hq204ProjectId)
+      ? structuredClone(hq205Sources).map((source) => ({
+          ...source,
+          projectId
+        }))
       : [],
   sourceDiscoverRepos: async () =>
     hq205Capture
@@ -1014,8 +1087,42 @@ const sidebarProjectsApi = {
     }
     return structuredClone(sidebarPersonalProjects);
   },
-  hq: async () => {
-    throw new Error("HQ Project view is a later ticket.");
+  hq: async (projectId: string) => {
+    if (!hq207Capture || projectId !== hq204ProjectId)
+      throw new Error("HQ Project activity is unavailable in this fixture.");
+    const project = sidebarPersonalProjects.find(
+      (item) => item.id === projectId
+    );
+    if (!project) throw new Error("Project unavailable.");
+    const counts = [1, 2, 0, 3, 1, 1, 2];
+    const completedOrMerged = [0, 1, 0, 1, 1, 0, 2];
+    return {
+      project: structuredClone(project),
+      activity: {
+        lastSevenDays: {
+          days: counts.map((count, index) => ({
+            date: `2026-10-${String(14 + index).padStart(2, "0")}`,
+            count
+          })),
+          total: counts.reduce((sum, count) => sum + count, 0),
+          outcomes: {
+            days: completedOrMerged.map((count, index) => ({
+              date: `2026-10-${String(14 + index).padStart(2, "0")}`,
+              count
+            })),
+            done: 3,
+            merged: 2
+          }
+        }
+      },
+      sections: {
+        conversations: { availability: "available" as const, count: 1 },
+        workItems: { availability: "not_implemented" as const },
+        sources: { availability: "available" as const, count: 3 },
+        decks: { availability: "not_implemented" as const },
+        scheduledJobs: { availability: "not_implemented" as const }
+      }
+    };
   },
   create: async ({
     name,
@@ -1123,7 +1230,25 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
             contentPreview: hq204Trace.firstPrompt,
             invalidatedAt: null,
             metadata: {}
-          }
+          },
+          ...(hq207Capture
+            ? [
+                {
+                  id: "hq207-plan-answer",
+                  actor: "assistant" as const,
+                  eventType: "message" as const,
+                  timestamp: FIXTURE_TIME,
+                  sourceEventTime: FIXTURE_TIME,
+                  sourceSequence: 2,
+                  content:
+                    "For Plan.md, review the goals and choose the next task.",
+                  contentPreview:
+                    "For Plan.md, review the goals and choose the next task.",
+                  invalidatedAt: null,
+                  metadata: {}
+                }
+              ]
+            : [])
         ]
       : threadId === "hq103-loose-conversation-91"
         ? [
@@ -1411,7 +1536,11 @@ export function HqValidationApp() {
       personalMemoryApi={sidebarPersonalMemoryApi}
       projectsApi={sidebarProjectsApi}
       managedConversations={
-        hq204Capture ? hq204ManagedConversations : hq104ManagedConversations
+        hq207Capture
+          ? hq207ManagedConversations
+          : hq204Capture
+            ? hq204ManagedConversations
+            : hq104ManagedConversations
       }
       statusReadyOverride
       teamCollaborationEnabled
