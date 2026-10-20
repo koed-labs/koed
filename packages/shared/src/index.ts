@@ -1856,3 +1856,4 @@ export {
 } from "./memory-answer-task-contract.js";
 export * from "./work-item-contract.js";
 export * from "./project-contract.js";
+export * from "./project-activity-contract.js";

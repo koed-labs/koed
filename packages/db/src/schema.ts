@@ -538,6 +538,70 @@ export const projects = pgTable(
   ]
 );
 
+// Personal Project history is ordered under the owning Project row lock.
+// The per-Project sequence therefore follows commit order, unlike a global
+// database sequence allocated before a concurrent transaction commits.
+export const projectActivity = pgTable(
+  "project_activity",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    sequence: bigint("sequence", { mode: "bigint" }).notNull(),
+    actorUserId: uuid("actor_user_id").notNull(),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.projectId, table.sequence]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_activity_owner_project_fk"
+    }).onDelete("cascade"),
+    unique("project_activity_event_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.kind,
+      table.ref
+    ),
+    index("project_activity_recent_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.at
+    ),
+    check("project_activity_sequence_positive", sql`${table.sequence} > 0`),
+    check("project_activity_ref_nonblank", sql`length(trim(${table.ref})) > 0`),
+    check(
+      "project_activity_kind_check",
+      sql`${table.kind} in ('work_item_created','work_item_status','work_item_done','source_added','source_ready','source_failed','pr_opened','pr_merged','assertion_created')`
+    )
+  ]
+);
+
+export const projectSeen = pgTable(
+  "project_seen",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    seenSequence: bigint("seen_sequence", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.projectId] }),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_seen_owner_project_fk"
+    }).onDelete("cascade"),
+    check("project_seen_sequence_nonnegative", sql`${table.seenSequence} >= 0`)
+  ]
+);
+
 // Local-only durable coordinator state. Team sees only the opaque batch and
 // exact logical source identity, never the Personal Project or folder.
 export const projectDeleteOperations = pgTable(
