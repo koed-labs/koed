@@ -60,8 +60,12 @@ export function HqProjectPullRequests({
   mergeRequestedItemId,
   onMergeRequestHandled,
   onNeedsCount,
+  onVisibleCount,
+  onCoveredWorkItemIds,
+  showEmpty = true,
   ownerId,
   profileKey,
+  limit,
   mode = "review"
 }: {
   project: Project;
@@ -75,8 +79,12 @@ export function HqProjectPullRequests({
   mergeRequestedItemId?: string | null;
   onMergeRequestHandled?: () => void;
   onNeedsCount?: (count: number) => void;
+  onVisibleCount?: (count: number) => void;
+  onCoveredWorkItemIds?: (ids: readonly string[]) => void;
+  showEmpty?: boolean;
   ownerId: string | null;
   profileKey: string | null;
+  limit?: number;
   mode?: "need" | "review";
 }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -502,10 +510,22 @@ export function HqProjectPullRequests({
   useEffect(() => {
     if (mode === "need") onNeedsCount?.(visibleRows.length);
   }, [mode, onNeedsCount, visibleRows.length]);
+  useEffect(() => {
+    onVisibleCount?.(visibleRows.length);
+  }, [onVisibleCount, visibleRows.length]);
+  const coveredWorkItemIds = rows.flatMap((row) =>
+    row.item ? [row.item.id] : []
+  );
+  const coveredKey = [...new Set(coveredWorkItemIds)].sort().join(",");
+  useEffect(() => {
+    onCoveredWorkItemIds?.(coveredKey ? coveredKey.split(",") : []);
+  }, [onCoveredWorkItemIds, coveredKey]);
+  const displayedRows =
+    limit === undefined ? visibleRows : visibleRows.slice(0, limit);
   return (
     <div className="hq-project-prs">
       {error ? <p role="alert">{error}</p> : null}
-      {visibleRows.map((row) => (
+      {displayedRows.map((row) => (
         <div className="hq-project-prs__row" key={row.key}>
           <span className="hq-project-prs__avatar" aria-hidden="true">
             !
@@ -567,7 +587,7 @@ export function HqProjectPullRequests({
           </div>
         </div>
       ))}
-      {!visibleRows.length && mode === "review" ? (
+      {!visibleRows.length && mode === "review" && showEmpty ? (
         <p>No other open pull requests.</p>
       ) : null}
     </div>

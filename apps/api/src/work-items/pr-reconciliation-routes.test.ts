@@ -184,7 +184,7 @@ describe("Work Item provider reconciliation authority", () => {
     });
     expect(remote.statusCode).toBe(403);
     expect(local.reconcile).not.toHaveBeenCalled();
-    const team = fixture(undefined, "team_backend");
+    const team = fixture(undefined, "team_self_hosted");
     const response = await team.app.inject({
       method: "POST",
       url: path,
@@ -192,6 +192,14 @@ describe("Work Item provider reconciliation authority", () => {
       payload: {}
     });
     expect(response.statusCode).toBe(403);
+    expect(team.reconcile).not.toHaveBeenCalled();
+    const teamSession = await team.app.inject({
+      method: "POST",
+      url: path,
+      headers: { authorization: "Session fixture" },
+      payload: {}
+    });
+    expect(teamSession.statusCode).toBe(403);
     expect(team.reconcile).not.toHaveBeenCalled();
     const token = await local.app.inject({
       method: "POST",

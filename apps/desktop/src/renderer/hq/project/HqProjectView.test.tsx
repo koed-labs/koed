@@ -276,3 +276,60 @@ describe("Project HQ Work Item writes", () => {
     node.remove();
   });
 });
+
+describe("Project HQ unavailable provider review", () => {
+  it("keeps an existing PR Work Item visible and counted when provider discovery is unavailable", async () => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    const project = {
+      id: personalId,
+      name: "Koed",
+      lifecycle: "active"
+    } as Project;
+    const item = {
+      id: "review-a",
+      projectId: personalId,
+      title: "Review without provider connection",
+      status: "review",
+      prNumber: 17,
+      prUrl: "https://github.com/koed-labs/koed/pull/17",
+      prProvider: "github",
+      prState: "open",
+      updatedAt: new Date().toISOString()
+    } as WorkItem;
+    const api = {
+      hq: vi.fn(async () => ({ project, activity: null })),
+      workItemList: vi.fn(async () => [item]),
+      sourceList: vi.fn(async () => [])
+    } as unknown as ProjectsDesktopApi;
+    try {
+      await act(async () =>
+        root.render(
+          <HqProjectView
+            project={project}
+            personalProjects={[project]}
+            graphProjects={[]}
+            projectsApi={api}
+            ownerId="owner"
+            profileKey="profile"
+            onSelectConversation={() => undefined}
+          />
+        )
+      );
+      const section = node.querySelector('[aria-label="In review"]');
+      expect(
+        section?.querySelector(".hq-project-view__section-head span")
+          ?.textContent
+      ).toBe("1");
+      expect(section?.textContent).toContain(item.title);
+      expect(section?.querySelector("a")?.textContent).toBe("Open on GitHub");
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+    }
+  });
+});

@@ -131,7 +131,10 @@ describe.skipIf(!testUrl)("HQ-405 durable proposal decline", () => {
     ).toEqual([]);
   });
   it("rejects writes and feedback after Project or session lifecycle closes", async () => {
-    await pool.query("update projects set deletion_phase='preparing', delete_batch_id=$2 where id=$1", [project, randomUUID()]);
+    await pool.query(
+      "update projects set deletion_phase='preparing', delete_batch_id=$2 where id=$1",
+      [project, randomUUID()]
+    );
     await expect(
       repository.declineManagedMergeProposal(actor, {
         executionId: execution,
@@ -145,7 +148,10 @@ describe.skipIf(!testUrl)("HQ-405 durable proposal decline", () => {
         executionGeneration: 1
       })
     ).rejects.toThrow();
-    await pool.query("update projects set deletion_phase=null, delete_batch_id=null where id=$1", [project]);
+    await pool.query(
+      "update projects set deletion_phase=null, delete_batch_id=null where id=$1",
+      [project]
+    );
     await pool.query("update sessions set trashed_at=now() where id=$1", [
       session
     ]);

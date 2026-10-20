@@ -21,6 +21,15 @@ export const authenticateWorkItemSourceControl = async (
   request: FastifyRequest,
   context: ApiRouteContext
 ) => {
+  if (
+    !["developer", "local_personal"].includes(context.config.deploymentProfile)
+  )
+    throw Object.assign(
+      new Error("Local Project source control is unavailable"),
+      {
+        statusCode: 403
+      }
+    );
   const user = await authenticateProjectOperation(
     request,
     {

@@ -90,6 +90,28 @@ const run = async () => {
         "document.querySelector('[aria-label=\"In review\"]').textContent.includes('Open on GitLab')"
       )
     );
+    assert.equal(
+      await js(
+        "document.querySelector('[aria-label=\"In review\"] .hq-project-view__section-head span')?.textContent"
+      ),
+      "2"
+    );
+    assert.ok(
+      await js(
+        "document.querySelector('[aria-label=\"In review\"]')?.textContent.includes('Review the release PR')"
+      )
+    );
+    assert.equal(
+      await js(
+        "document.querySelectorAll('[aria-label=\"In review\"] .hq-project-prs__row').length"
+      ),
+      1
+    );
+    assert.ok(
+      await js(
+        "!document.querySelector('[aria-label=\"In review\"]')?.textContent.includes('No open pull requests') && !document.querySelector('[aria-label=\"In review\"]')?.textContent.includes(\"Colleague's PR\")"
+      )
+    );
     assert.ok(
       await js(
         "!Array.from(document.querySelectorAll('[aria-label=\"In review\"] button')).some((button) => button.textContent === 'Merge')"
@@ -101,7 +123,7 @@ const run = async () => {
     );
     assert.ok(
       await js(
-        "(() => { const button = Array.from(document.querySelectorAll('.hq-project-prs__actions button')).find(x=>x.textContent.trim()==='Merge'); if(!button)return false; const style=getComputedStyle(button); const box=button.getBoundingClientRect(); return box.width>=44 && box.height>=24 && style.color!==style.backgroundColor && style.borderRadius==='999px'; })()"
+        "(() => { const buttons = Array.from(document.querySelectorAll('.hq-project-prs__actions button, .hq-project-view__merge')).filter(x=>x.textContent.trim()==='Merge'); return buttons.length>=2 && buttons.every(button=>{ const style=getComputedStyle(button); const box=button.getBoundingClientRect(); return box.width>=44 && box.height>=24 && style.color!==style.backgroundColor && style.borderRadius==='999px'; }); })()"
       )
     );
     await capture("pr-ready-dark.png");
@@ -150,6 +172,32 @@ const run = async () => {
     );
     await capture("proposal-declined-light.png");
     assert.equal(errors.length, 0, errors.join(" | "));
+    ({ js, waitFor, errors } = await open({
+      view: "hq",
+      hq405Capture: "yes",
+      hq405Many: "yes"
+    }));
+    await waitFor(
+      "document.querySelector('[aria-label=\"In review\"] .hq-project-view__section-head span')?.textContent === '6'"
+    );
+    assert.equal(
+      await js(
+        "document.querySelectorAll('[aria-label=\"In review\"] .hq-project-prs__row').length"
+      ),
+      4
+    );
+    assert.ok(
+      await js(
+        "document.querySelector('[aria-label=\"In review\"] .hq-project-view__more')?.textContent.includes('Show 2 more') && !document.querySelector('[aria-label=\"In review\"]')?.textContent.includes('No open pull requests')"
+      )
+    );
+    await js(
+      "document.querySelector('[aria-label=\"In review\"] .hq-project-view__more').click()"
+    );
+    await waitFor(
+      "document.querySelectorAll('[aria-label=\"In review\"] .hq-project-prs__row').length === 5"
+    );
+    assert.equal(errors.length, 0, errors.join(" | "));
     await writeFile(
       resolve(scratch, "hq-405", "browser-report.json"),
       JSON.stringify(
@@ -159,6 +207,7 @@ const run = async () => {
           status: "pass",
           checks: [
             "ticket and ticketless PRs",
+            "actual In review count and Show more cap",
             "checks and unsupported-provider link",
             "merge request through managedProject IPC",
             "provider-verified Work Item update fixture",

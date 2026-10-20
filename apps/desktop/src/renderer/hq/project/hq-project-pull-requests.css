@@ -77,3 +77,13 @@
   opacity: 0.55;
   cursor: wait;
 }
+
+.hq-project-view__action.hq-project-view__merge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  background: var(--hq-fg);
+  color: var(--hq-bg);
+  padding: 6px 12px;
+}

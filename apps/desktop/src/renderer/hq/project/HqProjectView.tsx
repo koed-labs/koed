@@ -4,12 +4,13 @@ import {
   ArrowUpRight,
   Folder,
   ListTodo,
+  GitMerge,
   Plus,
   RotateCw,
   Sparkles,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Agent } from "@koed/shared/agent-contract";
 import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
@@ -160,6 +161,36 @@ export function HqProjectView({
     string | null
   >(null);
   const [needsPrCount, setNeedsPrCount] = useState(0);
+  const [reviewCountState, setReviewCountState] = useState({
+    identity: "",
+    count: 0
+  });
+  const reviewIdentity = `${ownerId ?? ""}:${profileKey ?? ""}:${project.id}`;
+  const reviewPrCount =
+    reviewCountState.identity === reviewIdentity ? reviewCountState.count : 0;
+  const [coveredReviewState, setCoveredReviewState] = useState<{
+    identity: string;
+    ids: readonly string[];
+  }>({ identity: "", ids: [] });
+  const onCoveredReviewItems = useCallback(
+    (ids: readonly string[]) =>
+      setCoveredReviewState((previous) =>
+        previous.identity === reviewIdentity &&
+        previous.ids.join(",") === ids.join(",")
+          ? previous
+          : { identity: reviewIdentity, ids }
+      ),
+    [reviewIdentity]
+  );
+  const onReviewCount = useCallback(
+    (count: number) =>
+      setReviewCountState((previous) =>
+        previous.identity === reviewIdentity && previous.count === count
+          ? previous
+          : { identity: reviewIdentity, count }
+      ),
+    [reviewIdentity]
+  );
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [sourceCloseSignal, setSourceCloseSignal] = useState(0);
   const [memoryCountState, setMemoryCountState] = useState<{
@@ -549,6 +580,13 @@ export function HqProjectView({
     timeZone,
     now
   );
+  const coveredReviewIds = new Set(
+    coveredReviewState.identity === reviewIdentity ? coveredReviewState.ids : []
+  );
+  const fallbackReview = work.review.filter(
+    (item) => !coveredReviewIds.has(item.id)
+  );
+  const totalReviewCount = reviewPrCount + fallbackReview.length;
   const createTodo = async () => {
     const parsed = parseWorkItemInput(draft, timeZone, new Date());
     if (!parsed.title || workPending) return;
@@ -1089,11 +1127,12 @@ export function HqProjectView({
                               {item.prState === "ready_to_merge" ? (
                                 <button
                                   type="button"
-                                  className="hq-project-view__action"
+                                  className="hq-project-view__action hq-project-view__merge"
                                   onClick={() =>
                                     setMergeRequestedItemId(item.id)
                                   }
                                 >
+                                  <GitMerge size={13} aria-hidden="true" />{" "}
                                   Merge
                                 </button>
                               ) : null}
@@ -1500,46 +1539,79 @@ export function HqProjectView({
             className="hq-project-view__section hq-project-view__section--review"
             aria-label="In review"
           >
-            {sectionHead("review", "In review", work.review.length)}
-            {!folded.review ? (
-              <>
-                <HqProjectPullRequests
-                  key={`${ownerId ?? ""}:${profileKey ?? ""}:${project.id}:review`}
-                  mode="review"
-                  project={project}
-                  personalProjects={personalProjects}
-                  graphProjects={graphProjects}
-                  workItems={visibleInventory.workItems}
-                  api={managedProject ?? null}
-                  conversations={conversationsApi ?? null}
-                  projectsApi={projectsApi}
-                  onWorkItemsChanged={() => setRefresh((value) => value + 1)}
-                  ownerId={ownerId ?? null}
-                  profileKey={profileKey ?? null}
-                />
-                {work.review.length > cap.review ? (
-                  <button
-                    className="hq-project-view__more"
-                    type="button"
-                    onClick={() =>
-                      setExpanded((value) => ({
-                        ...value,
-                        review: !value.review
-                      }))
-                    }
-                  >
-                    {expanded.review
-                      ? "Show less"
-                      : `Show ${work.review.length - cap.review} more`}
-                  </button>
-                ) : null}
-                {!work.review.length ? (
-                  <p className="hq-project-view__none">
-                    No open pull requests.
-                  </p>
-                ) : null}
-              </>
-            ) : null}
+            {sectionHead("review", "In review", totalReviewCount)}
+            <div hidden={folded.review}>
+              <HqProjectPullRequests
+                key={`${ownerId ?? ""}:${profileKey ?? ""}:${project.id}:review`}
+                mode="review"
+                project={project}
+                personalProjects={personalProjects}
+                graphProjects={graphProjects}
+                workItems={visibleInventory.workItems}
+                api={managedProject ?? null}
+                conversations={conversationsApi ?? null}
+                projectsApi={projectsApi}
+                onWorkItemsChanged={() => setRefresh((value) => value + 1)}
+                onVisibleCount={onReviewCount}
+                onCoveredWorkItemIds={onCoveredReviewItems}
+                showEmpty={fallbackReview.length === 0}
+                limit={expanded.review ? undefined : cap.review}
+                ownerId={ownerId ?? null}
+                profileKey={profileKey ?? null}
+              />
+              {(expanded.review
+                ? fallbackReview
+                : fallbackReview.slice(
+                    0,
+                    Math.max(0, cap.review - reviewPrCount)
+                  )
+              ).map((item) => (
+                <div className="hq-project-view__work-item" key={item.id}>
+                  <span className="hq-project-view__work-item-text">
+                    <b>{item.title}</b>
+                    <small>
+                      {item.prNumber
+                        ? `PR #${item.prNumber} · ${item.prState ?? "open"}`
+                        : "In review"}
+                    </small>
+                  </span>
+                  {safeWorkItemPrUrl(item) ? (
+                    <a
+                      href={safeWorkItemPrUrl(item) ?? undefined}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open on{" "}
+                      {(
+                        {
+                          github: "GitHub",
+                          gitlab: "GitLab",
+                          bitbucket: "Bitbucket",
+                          azure_devops: "Azure DevOps"
+                        } as Record<string, string>
+                      )[item.prProvider ?? ""] ?? "provider"}
+                    </a>
+                  ) : null}
+                  {sendControl(item)}
+                </div>
+              ))}
+              {totalReviewCount > cap.review ? (
+                <button
+                  className="hq-project-view__more"
+                  type="button"
+                  onClick={() =>
+                    setExpanded((value) => ({
+                      ...value,
+                      review: !value.review
+                    }))
+                  }
+                >
+                  {expanded.review
+                    ? "Show less"
+                    : `Show ${totalReviewCount - cap.review} more`}
+                </button>
+              ) : null}
+            </div>
           </section>
         ) : null}
         <section

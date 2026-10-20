@@ -64,6 +64,8 @@ const hq404Capture =
   new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
 const hq405Capture =
   new URLSearchParams(window.location.search).get("hq405Capture") === "yes";
+const hq405ManyCapture =
+  new URLSearchParams(window.location.search).get("hq405Many") === "yes";
 const hq405ProposalCapture =
   new URLSearchParams(window.location.search).get("hq405Proposal") === "yes";
 const hq405DeclinedCapture =
@@ -1907,7 +1909,9 @@ const hq405ManagedProject = {
             ? {
                 kind: "review_requests",
                 reviewRequests: gitlab
-                  ? [hq405Review(214)]
+                  ? (hq405ManyCapture ? [214, 215, 216, 217, 218] : [214]).map(
+                      (number) => hq405Review(number)
+                    )
                   : [
                       hq405Review(212, hq405ProviderState),
                       hq405Review(213)
