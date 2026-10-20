@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import {
+  deleteDesktopLocalCredential,
+  storeDesktopLocalCredential
+} from "@koed/shared";
 import { registerProjectRoutes } from "./routes.js";
 import { ProjectNativeReviewDeclined } from "./delete-coordinator.js";
 
@@ -20,19 +27,30 @@ const project = {
   updatedAt: now,
   version: 1
 };
-const fixture = (deploymentProfile = "local_personal") => {
+const fixture = (deploymentProfile = "local_personal", koedHome?: string) => {
   const app = Fastify();
   const repository = {
     list: vi.fn(async () => ({ projects: [project], nextCursor: null })),
     create: vi.fn(async () => project),
-    patch: vi.fn(async () => project)
+    patch: vi.fn(async () => project),
+    hq: vi.fn(async () => ({
+      project,
+      sections: Object.fromEntries(
+        ["conversations", "workItems", "sources", "decks", "scheduledJobs"].map(
+          (key) => [key, { availability: "not_implemented" }]
+        )
+      )
+    }))
   };
   const authenticate = vi.fn(
     async (
       request: { headers: { authorization?: string } },
       family: string
     ) => {
-      if (request.headers.authorization?.startsWith("Bearer "))
+      if (
+        request.headers.authorization?.startsWith("Bearer ") ||
+        request.headers.authorization?.startsWith("Koed-Desktop ")
+      )
         throw Object.assign(
           new Error("API Tokens cannot authorize Project operations"),
           { statusCode: 403 }
@@ -52,6 +70,7 @@ const fixture = (deploymentProfile = "local_personal") => {
     managedRepository: null,
     sourceCoordinator: null,
     deploymentProfile,
+    koedHome,
     auth: { authenticateSessionOrDeviceCredential: authenticate } as never,
     readRateLimit: async () => undefined,
     writeRateLimit: async () => undefined
@@ -60,6 +79,94 @@ const fixture = (deploymentProfile = "local_personal") => {
 };
 
 describe("Personal Project routes", () => {
+  it("accepts only the current owner Desktop read credential on loopback for list and HQ", async () => {
+    const home = mkdtempSync(join(tmpdir(), "koed-project-read-"));
+    const credential = storeDesktopLocalCredential(home, {
+      ownerUserId: owner,
+      operationFamilies: ["personal_collaboration_read"]
+    });
+    const { app, repository, authenticate } = fixture("local_personal", home);
+    try {
+      const headers = { authorization: credential.authorization };
+      const list = await app.inject({
+        method: "GET",
+        url: "/v1/projects",
+        headers,
+        remoteAddress: "127.0.0.1"
+      });
+      const hq = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/hq`,
+        headers,
+        remoteAddress: "::1"
+      });
+      expect(list.statusCode).toBe(200);
+      expect(hq.statusCode).toBe(200);
+      expect(repository.list).toHaveBeenCalledWith(owner, expect.anything());
+      expect(repository.hq).toHaveBeenCalledWith(owner, projectId);
+      expect(authenticate).not.toHaveBeenCalled();
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        headers,
+        payload: { name: "Denied", idempotencyKey: "desktop-read" }
+      });
+      const patch = await app.inject({
+        method: "PATCH",
+        url: `/v1/projects/${projectId}`,
+        headers,
+        payload: { name: "Denied" }
+      });
+      expect(create.statusCode).toBe(403);
+      expect(patch.statusCode).toBe(403);
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(repository.patch).not.toHaveBeenCalled();
+      const remote = await app.inject({
+        method: "GET",
+        url: "/v1/projects",
+        remoteAddress: "192.0.2.10",
+        headers: { ...headers, "x-forwarded-for": "127.0.0.1" }
+      });
+      expect(remote.statusCode).toBe(403);
+      deleteDesktopLocalCredential(home);
+      const revoked = await app.inject({
+        method: "GET",
+        url: "/v1/projects",
+        headers
+      });
+      expect(revoked.statusCode).toBe(401);
+      const wrongScopeCredential = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const wrongFamily = await app.inject({
+        method: "GET",
+        url: "/v1/projects",
+        headers: { authorization: wrongScopeCredential.authorization }
+      });
+      expect(wrongFamily.statusCode).toBe(401);
+      const remoteProfile = fixture("team_self_hosted", home);
+      try {
+        const wrongProfile = await remoteProfile.app.inject({
+          method: "GET",
+          url: "/v1/projects",
+          headers: { authorization: wrongScopeCredential.authorization }
+        });
+        expect(wrongProfile.statusCode).toBe(403);
+      } finally {
+        await remoteProfile.app.close();
+      }
+      const token = await app.inject({
+        method: "GET",
+        url: "/v1/projects",
+        headers: { authorization: "Bearer personal-token" }
+      });
+      expect(token.statusCode).toBe(403);
+    } finally {
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it("binds list and create to the authenticated local owner and operation family", async () => {
     const { app, repository, authenticate } = fixture();
     try {

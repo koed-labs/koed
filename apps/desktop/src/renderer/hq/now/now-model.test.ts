@@ -9,6 +9,7 @@ import {
   nowNeedsFromApprovals,
   nowInspectableExecutions,
   nowProjectStatus,
+  nowPersonalProjectStatus,
   nowProjects,
   nowVisible
 } from "./now-model.js";
@@ -80,6 +81,49 @@ describe("Now aggregation", () => {
       "runtime:a:question",
       "runtime:b:approval"
     ]);
+  });
+
+  it("counts a captured execution once in its exact Personal Project", () => {
+    const draft = {
+      conversation: {
+        projectId: "technical-repository",
+        capturedSessionId: "captured-b",
+        threadId: "thread-b"
+      },
+      thread: { name: "Conversation B" }
+    } as ManagedConversationDraft;
+    const runtime = [
+      {
+        id: "question",
+        state: "pending",
+        itemKind: "user_input",
+        createdAt: "2026-10-20T00:00:00Z"
+      }
+    ] as ManagedConversationRuntimeItem[];
+    const needs = nowNeedsFromRuntime(
+      new Map([["execution-b", draft]]),
+      new Map([["execution-b", runtime]])
+    );
+    const row = (sessionId: string) => ({
+      id: sessionId,
+      name: sessionId,
+      conversations: [
+        {
+          technicalProjectId: "technical-repository",
+          thread: { sessionId, id: `thread-${sessionId}` }
+        }
+      ]
+    });
+    expect(needs[0]).toMatchObject({
+      sessionId: "captured-b",
+      executionId: "execution-b"
+    });
+    expect(
+      nowPersonalProjectStatus(row("captured-a") as never, needs).pending
+    ).toBe(0);
+    expect(
+      nowPersonalProjectStatus(row("captured-b") as never, needs).pending
+    ).toBe(1);
   });
 
   it("uses five-row caps and excludes the Chats container from Project rows", () => {

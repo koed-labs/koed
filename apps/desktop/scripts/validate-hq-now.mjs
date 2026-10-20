@@ -86,7 +86,7 @@ export async function validateHqNow(
   await waitFor(
     window,
     delay,
-    `document.querySelector('[data-hq-route="conversation"][data-hq-session-id="hq108-execution-0"]') !== null`,
+    `document.querySelector('[data-hq-route="conversation"][data-hq-session-id="00000000-0000-4000-8000-000000000021"]') !== null`,
     "inventory Conversation route"
   );
   assert.equal(

@@ -413,6 +413,7 @@ const bootstrap = async () => {
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
+    projects: server.projects,
     managedConversation: server.managedConversation,
     managedProject: server.managedProject,
     managedPreview: managedPreviewController,

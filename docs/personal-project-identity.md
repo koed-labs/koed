@@ -1,8 +1,17 @@
 # Personal Project Identity
 
-Status: First-class storage and local capture association implemented under
-[ADR 0059](./adr/0059-first-class-personal-projects.md). The Projects API,
-HQ Conversation and shared Project links remain later work.
+Status: First-class storage, local capture association, and the Projects API
+are implemented under [ADR 0059](./adr/0059-first-class-personal-projects.md).
+The HQ Conversation and shared Project links remain later work.
+
+The Desktop Projects bridge reads the owner-scoped `/v1/projects` and
+`/v1/projects/:id/hq` endpoints with its existing local Desktop credential.
+This read access requires a local or developer deployment, a loopback socket,
+and the existing `personal_collaboration_read` credential family. Project
+writes retain their separate authorization path. Personal API Tokens cannot
+authorize Project operations. The graph thread read exposes the nullable
+effective Personal Project ID from the captured Session's verified assignment;
+the Desktop keeps that ID separate from local discovery and execution IDs.
 
 ## Purpose
 
@@ -169,6 +178,12 @@ Memory is not purged. Shared Project grant freeze, restore, and access behavior
 follow the [Project-sharing lifecycle](./project-sharing-lifecycle.md), which
 is published with HQ-001. Restoring a Project does not transfer ownership or
 resume frozen sharing.
+
+The HQ navigation read model suppresses a Captured Session when its selected
+Session is trashed or its non-null Personal Project ID is absent from the
+active owner Project list. Retained Memory remains available to its existing
+read contracts. A null Personal Project assignment can appear under Chats;
+an unavailable assignment is not inferred from the technical Project ID.
 
 This document records identity and ownership semantics. Database columns,
 indexes, endpoints, and migration mechanics belong in their implementation

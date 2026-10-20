@@ -16,6 +16,9 @@ import type { ManagedConversationLifecycle } from "../state/use-managed-conversa
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
+import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
+import { ProjectsStore } from "./useProjects.js";
+import { visibleHqProjects } from "./project-navigation.js";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type {
   CollaborationActionGrantProjection,
@@ -44,12 +47,15 @@ const subscribeEmpty = () => () => undefined;
 const emptySnapshot = () => null;
 const emptyApprovals: readonly CollaborationActionGrantProjection[] = [];
 const approvalsEmptySnapshot = () => emptyApprovals;
+const emptyPersonalProjects: readonly import("@koed/shared").Project[] = [];
 
 export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
+  projectsApi,
   visibilityClient,
   visibilityOwnerId,
+  visibilityProfileKey,
   visibilityRevision,
   visibilityConnected,
   renderSettings,
@@ -64,8 +70,10 @@ export function HqApplication({
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
+  projectsApi?: ProjectsDesktopApi | null;
   visibilityClient?: CollaborationRendererClient;
   visibilityOwnerId?: string | null;
+  visibilityProfileKey?: string | null;
   visibilityRevision?: string | null;
   visibilityConnected?: boolean;
   renderSettings?: (onClose: () => void) => ReactNode;
@@ -92,6 +100,63 @@ export function HqApplication({
   const [blankLaunchPending, setBlankLaunchPending] = useState(false);
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const shellActions = useRef<HqShellActions>(null);
+  const [projectsStore] = useState(() =>
+    projectsApi ? new ProjectsStore(projectsApi) : null
+  );
+  useEffect(() => {
+    projectsStore?.setOwner(
+      visibilityOwnerId ?? null,
+      visibilityProfileKey ?? null
+    );
+  }, [projectsStore, visibilityOwnerId, visibilityProfileKey]);
+  useEffect(
+    () =>
+      visibilityClient?.subscribe((current, update) => {
+        if (
+          !projectsStore ||
+          !visibilityOwnerId ||
+          !visibilityProfileKey ||
+          current.navigation.personalOwner.id !== visibilityOwnerId
+        )
+          return;
+        const currentKey = `${current.connection.backendId ?? "local"}|${current.connection.connectedAt ?? ""}|${visibilityClient.currentRemoteUrl() ?? ""}`;
+        if (currentKey !== visibilityProfileKey) return;
+        if (update.authoritativeRecovery || update.kind === "connection") {
+          void projectsStore.refresh();
+          return;
+        }
+        if (update.kind !== "realtime") return;
+        const changed = update.realtimeUpdate;
+        if (changed?.type === "project_changed")
+          projectsStore.projectChanged(
+            visibilityOwnerId,
+            visibilityProfileKey,
+            changed.projectId,
+            changed.project
+          );
+      }),
+    [projectsStore, visibilityClient, visibilityOwnerId, visibilityProfileKey]
+  );
+  const personalProjectsSnapshot = useSyncExternalStore(
+    projectsStore?.subscribe ?? subscribeEmpty,
+    projectsStore?.current ?? emptySnapshot,
+    projectsStore?.current ?? emptySnapshot
+  );
+  const personalProjects =
+    projectsStore &&
+    personalProjectsSnapshot?.ownerId === visibilityOwnerId &&
+    personalProjectsSnapshot?.profileKey === visibilityProfileKey
+      ? (personalProjectsSnapshot?.projects ?? emptyPersonalProjects)
+      : emptyPersonalProjects;
+  const projectsAuthorityCurrent = Boolean(
+    projectsStore &&
+    personalProjectsSnapshot?.ownerId === visibilityOwnerId &&
+    personalProjectsSnapshot?.profileKey === visibilityProfileKey
+  );
+  const firstClassLoaded =
+    projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.loaded);
+  const firstClassError =
+    projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.error);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
   usePersonalProjectsLoader({
     personalMemoryReady,
@@ -107,23 +172,56 @@ export function HqApplication({
     visibilityClient?.currentActionGrants ?? approvalsEmptySnapshot,
     approvalsEmptySnapshot
   );
-  const projects = useMemo(() => {
-    const loaded =
+  const capturedProjects = useMemo(
+    () =>
       snapshot?.projectOrder.flatMap((id) => {
         const project = snapshot.projectsById.get(id);
         return project ? [project] : [];
-      }) ?? [];
-    return withPendingHqConversations(
-      loaded,
+      }) ?? [],
+    [snapshot]
+  );
+  const blockedConversationSessions = useMemo(() => {
+    const blocked = new Set<string>();
+    if (!projectsStore) return blocked;
+    const active = new Set(personalProjects.map(({ id }) => id));
+    for (const project of capturedProjects)
+      for (const thread of project.threads)
+        if (
+          thread.conversationTrashedAt ||
+          (thread.personalProjectId && !active.has(thread.personalProjectId))
+        )
+          blocked.add(`${project.id}\u0000${sessionSelectionId(thread)}`);
+    return blocked;
+  }, [capturedProjects, personalProjects, projectsStore]);
+  const projects = useMemo(() => {
+    const merged = withPendingHqConversations(
+      capturedProjects,
       managedConversationLifecycle?.drafts
     );
-  }, [snapshot, managedConversationLifecycle?.drafts]);
-  const route = reconcileHqRoute(selection.route, selection.project, projects);
+    return projectsStore
+      ? firstClassLoaded
+        ? visibleHqProjects(personalProjects, capturedProjects, merged)
+        : merged.map((project) => ({ ...project, threads: [] }))
+      : merged;
+  }, [
+    capturedProjects,
+    managedConversationLifecycle?.drafts,
+    projectsStore,
+    firstClassLoaded,
+    personalProjects
+  ]);
+  const route =
+    selection.route.kind === "project" && projectsStore
+      ? selection.route
+      : reconcileHqRoute(selection.route, selection.project, projects);
   const contextAvailable =
     route.kind === "project" &&
-    projects.some(
-      (item) => item.id === route.projectId && item.contextKind === "project"
-    );
+    (projectsStore
+      ? personalProjects.some(({ id }) => id === route.projectId)
+      : projects.some(
+          (item) =>
+            item.id === route.projectId && item.contextKind === "project"
+        ));
   const resolveBlankProject = useCallback(() => {
     if (!onResolveIndependent) return;
     if (!snapshot?.projectsLoaded) {
@@ -174,9 +272,13 @@ export function HqApplication({
     });
   };
   const project =
-    route.kind === "project" || route.kind === "conversation"
+    route.kind === "conversation"
       ? projects.find(({ id }) => id === route.projectId)
-      : undefined;
+      : projectsStore
+        ? undefined
+        : route.kind === "project"
+          ? projects.find(({ id }) => id === route.projectId)
+          : undefined;
   useEffect(() => {
     if (project && (route !== selection.route || project !== selection.project))
       setSelection({ route, project });
@@ -187,8 +289,14 @@ export function HqApplication({
           (thread) => sessionSelectionId(thread) === route.sessionId
         )
       : undefined;
+  const selectedConversationBlocked =
+    route.kind === "conversation" &&
+    blockedConversationSessions.has(
+      `${route.projectId}\u0000${route.sessionId}`
+    );
   const inventoryThread: PersonalDesktopProjectThread | undefined =
     route.kind === "conversation" &&
+    !selectedConversationBlocked &&
     inventoryTarget?.executionId === route.sessionId &&
     inventoryTarget.projectId === route.projectId &&
     inventoryTarget.sessionId &&
@@ -211,7 +319,7 @@ export function HqApplication({
         }
       : undefined;
   const draftEntry =
-    route.kind === "conversation"
+    route.kind === "conversation" && !selectedConversationBlocked
       ? findHqConversationDraft(
           managedConversationLifecycle?.drafts,
           route.projectId,
@@ -221,6 +329,14 @@ export function HqApplication({
   const draft = draftEntry?.[1] ?? null;
   const conversationThread = conversation ?? draft?.thread ?? inventoryThread;
   const openNowNeed = (need: NowNeed) => {
+    if (
+      need.projectId &&
+      need.sessionId &&
+      blockedConversationSessions.has(
+        `${need.projectId}\u0000${need.sessionId}`
+      )
+    )
+      return;
     const destination = nowConversationDestination(need, projects);
     if (!destination) return;
     selectRoute({
@@ -234,7 +350,9 @@ export function HqApplication({
     route.kind === "conversation"
       ? conversationThread?.name || "Conversation"
       : route.kind === "project"
-        ? project?.name || "Project"
+        ? personalProjects.find(({ id }) => id === route.projectId)?.name ||
+          project?.name ||
+          "Project"
         : "Now";
   // A successful graph read with unavailable metadata is incomplete, even
   // though the shared store deliberately does not expose a global error.
@@ -245,7 +363,7 @@ export function HqApplication({
     !snapshot.loading
   );
   const destinations: HqCommand[] = projects.flatMap((item) => [
-    ...(item.contextKind === "independent"
+    ...(projectsStore || item.contextKind === "independent"
       ? []
       : [
           {
@@ -276,6 +394,17 @@ export function HqApplication({
         })
       )
   ]);
+  if (projectsStore)
+    for (const item of personalProjects)
+      destinations.push({
+        id: `project:${item.id}`,
+        label: item.name,
+        scope: "Project",
+        action: {
+          kind: "route",
+          route: { kind: "project", projectId: item.id }
+        }
+      });
   destinations.push(
     ...hqLayoutCommands(Boolean(renderSettings), contextAvailable)
   );
@@ -361,19 +490,31 @@ export function HqApplication({
             compact={compact}
             accountIdentity={accountIdentity}
             onOpenSettings={renderSettings ? openSettings : undefined}
-            groupsReady={Boolean(snapshot?.projectsLoaded)}
-            loading={
-              !snapshot ||
-              snapshot.loading ||
-              (!snapshot.projectsLoaded &&
-                !snapshot.error &&
-                !incompleteProjects)
+            groupsReady={
+              projectsStore
+                ? firstClassLoaded
+                : Boolean(snapshot?.projectsLoaded)
             }
-            projectsError={Boolean(snapshot?.error) || incompleteProjects}
+            loading={
+              projectsStore
+                ? !firstClassLoaded && !firstClassError
+                : !snapshot ||
+                  snapshot.loading ||
+                  (!snapshot.projectsLoaded &&
+                    !snapshot.error &&
+                    !incompleteProjects)
+            }
+            projectsError={
+              projectsStore
+                ? firstClassError
+                : Boolean(snapshot?.error) || incompleteProjects
+            }
             projects={projects}
+            personalProjects={projectsStore ? personalProjects : undefined}
             route={route}
             onRetryProjects={() => {
               void personalMemoryStore?.loadProjects();
+              void projectsStore?.refresh();
             }}
             onOpenSearchAndCommands={() => {
               if (!settingsOpen) setSearchOpen(true);
@@ -410,7 +551,9 @@ export function HqApplication({
       >
         <section
           data-hq-route={route.kind}
-          data-hq-project-id={project?.id}
+          data-hq-project-id={
+            route.kind === "project" ? route.projectId : project?.id
+          }
           data-hq-session-id={
             route.kind === "conversation" ? route.sessionId : undefined
           }
@@ -450,12 +593,28 @@ export function HqApplication({
                 <NowView
                   key={visibilityOwnerId ?? "no-owner"}
                   projects={projects}
+                  personalProjects={
+                    projectsStore ? personalProjects : undefined
+                  }
                   api={managedConversations}
                   lifecycle={managedConversationLifecycle}
                   approvals={approvals}
-                  projectsReady={Boolean(snapshot?.projectsLoaded)}
-                  projectsLoading={Boolean(snapshot?.loading)}
-                  projectsError={Boolean(snapshot?.error) || incompleteProjects}
+                  blockedConversationSessions={blockedConversationSessions}
+                  projectsReady={
+                    projectsStore
+                      ? firstClassLoaded
+                      : Boolean(snapshot?.projectsLoaded)
+                  }
+                  projectsLoading={
+                    projectsStore
+                      ? !firstClassLoaded && !firstClassError
+                      : Boolean(snapshot?.loading)
+                  }
+                  projectsError={
+                    projectsStore
+                      ? firstClassError
+                      : Boolean(snapshot?.error) || incompleteProjects
+                  }
                   onSelectProject={(projectId) =>
                     selectRoute({ kind: "project", projectId })
                   }
@@ -467,12 +626,26 @@ export function HqApplication({
             <NowView
               key={visibilityOwnerId ?? "no-owner"}
               projects={projects}
+              personalProjects={projectsStore ? personalProjects : undefined}
               api={managedConversations}
               lifecycle={managedConversationLifecycle}
               approvals={approvals}
-              projectsReady={Boolean(snapshot?.projectsLoaded)}
-              projectsLoading={Boolean(snapshot?.loading)}
-              projectsError={Boolean(snapshot?.error) || incompleteProjects}
+              blockedConversationSessions={blockedConversationSessions}
+              projectsReady={
+                projectsStore
+                  ? firstClassLoaded
+                  : Boolean(snapshot?.projectsLoaded)
+              }
+              projectsLoading={
+                projectsStore
+                  ? !firstClassLoaded && !firstClassError
+                  : Boolean(snapshot?.loading)
+              }
+              projectsError={
+                projectsStore
+                  ? firstClassError
+                  : Boolean(snapshot?.error) || incompleteProjects
+              }
               onSelectProject={(projectId) =>
                 selectRoute({ kind: "project", projectId })
               }
@@ -520,7 +693,12 @@ export function HqApplication({
                   : undefined
               }
             >
-              {!project || (route.kind === "conversation" && !conversation)
+              {(!project &&
+                !(
+                  route.kind === "project" &&
+                  personalProjects.some(({ id }) => id === route.projectId)
+                )) ||
+              (route.kind === "conversation" && !conversation)
                 ? `This ${route.kind === "project" ? "Project" : "Conversation"} is no longer available.`
                 : route.kind === "project"
                   ? "Your Project workspace will appear here."

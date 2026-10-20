@@ -24,6 +24,7 @@ import {
   ProjectNativeReviewDeclined,
   type ProjectSourceCoordinator
 } from "./delete-coordinator.js";
+import { authenticateProjectRead } from "./desktop-read-auth.js";
 
 const paramsSchema = z.object({ id: z.uuid() }).strict();
 const cancelSchema = z.object({ batchId: z.uuid() }).strict();
@@ -52,6 +53,7 @@ export function registerProjectRoutes(
     > | null;
     sourceCoordinator: ProjectSourceCoordinator | null;
     deploymentProfile: string;
+    koedHome?: string;
     auth: ApiRouteContext["auth"];
     readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
     writeRateLimit: ApiRouteContext["rateLimit"]["memoryWrite"];
@@ -101,7 +103,7 @@ export function registerProjectRoutes(
     "/v1/projects",
     { preHandler: input.readRateLimit },
     async (request, reply) => {
-      const user = await authenticate(request, false);
+      const user = await authenticateProjectRead(request, input);
       const parsed = projectListQuerySchema.safeParse(request.query);
       if (!parsed.success)
         return reply.code(400).send({ message: "Invalid Project page query" });
@@ -573,7 +575,7 @@ export function registerProjectRoutes(
     "/v1/projects/:id/hq",
     { preHandler: input.readRateLimit },
     async (request, reply) => {
-      const user = await authenticate(request, false);
+      const user = await authenticateProjectRead(request, input);
       const { id } = paramsSchema.parse(request.params);
       try {
         return projectHqSchema.parse(await repo().hq(user.id, id));

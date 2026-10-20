@@ -26,6 +26,12 @@ export const graphThreadIndexResponseSchema = z.object({
           sourceAiClient: sourceAiClientSchema.nullable(),
           originDeviceId: z.string().nullable().optional(),
           projectId: z.string(),
+          personalProjectId: z.string().uuid().nullable().optional(),
+          conversationTrashedAt: z
+            .string()
+            .datetime({ offset: true })
+            .nullable()
+            .optional(),
           projectName: z.string(),
           projectPath: z.string().nullable(),
           projectAssignmentSource: z

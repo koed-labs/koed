@@ -6,6 +6,7 @@ import {
   createProjectRepository,
   type VerifiedLocalProjectContext
 } from "./project-repository.js";
+import { createMemorySourceRepository } from "./repository.js";
 
 const testUrl =
   process.env.KOED_PROJECT_TEST_DATABASE_URL ??
@@ -131,6 +132,89 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
       "Same name"
     ]);
     expect(new Set(projects.rows.map((row) => row.key)).size).toBe(2);
+  });
+
+  it("projects graph threads by the exact effective owner-owned Personal Project ID", async () => {
+    const automatic = await fixture();
+    const personalProjectId = (
+      await repository.associateVerifiedCapturedSession(automatic)
+    ).projectId!;
+    const overridden = await fixture({
+      owner: automatic.ownerUserId,
+      localProjectId: automatic.localProjectId
+    });
+    await repository.associateVerifiedCapturedSession(overridden);
+    const priorTrash = await fixture({
+      owner: automatic.ownerUserId,
+      localProjectId: automatic.localProjectId
+    });
+    await repository.associateVerifiedCapturedSession(priorTrash);
+    const otherOwner = await fixture({
+      localProjectId: automatic.localProjectId
+    });
+    await repository.associateVerifiedCapturedSession(otherOwner);
+    await pool.query(
+      `update sessions set metadata=jsonb_build_object('threadName', case when id=$1 then 'Automatic' when id=$2 then 'Explicit null' when id=$3 then 'Prior trash' else 'Other owner' end)
+       where id=any($4::uuid[])`,
+      [
+        automatic.sessionId,
+        overridden.sessionId,
+        priorTrash.sessionId,
+        [
+          automatic.sessionId,
+          overridden.sessionId,
+          priorTrash.sessionId,
+          otherOwner.sessionId
+        ]
+      ]
+    );
+    await pool.query(
+      `update sessions set project_override_id=$2,project_override_name='Independent',
+        project_override_at=now(),project_override_by_user_id=$3,
+        project_override_personal_project_id=null where id=$1`,
+      [overridden.sessionId, automatic.localProjectId, automatic.ownerUserId]
+    );
+    await pool.query(
+      `update sessions set trashed_at=now() where id=any($1::uuid[])`,
+      [[automatic.sessionId, priorTrash.sessionId]]
+    );
+    const graph = await createMemorySourceRepository(pool).listLcmGraphThreads(
+      { userId: automatic.ownerUserId },
+      { limit: 500 }
+    );
+    const bySession = new Map(
+      graph.flatMap(({ threads }) =>
+        threads.map((thread) => [thread.sessionId, thread] as const)
+      )
+    );
+    expect(bySession.get(automatic.sessionId)?.personalProjectId).toBe(
+      personalProjectId
+    );
+    expect(bySession.get(overridden.sessionId)?.personalProjectId).toBeNull();
+    expect(
+      bySession.get(automatic.sessionId)?.conversationTrashedAt
+    ).toBeTruthy();
+    expect(
+      bySession.get(priorTrash.sessionId)?.conversationTrashedAt
+    ).toBeTruthy();
+    expect(bySession.has(otherOwner.sessionId)).toBe(false);
+    await pool.query(`update sessions set trashed_at=null where id=$1`, [
+      automatic.sessionId
+    ]);
+    const restored = await createMemorySourceRepository(
+      pool
+    ).listLcmGraphThreads({ userId: automatic.ownerUserId }, { limit: 500 });
+    const restoredBySession = new Map(
+      restored.flatMap(({ threads }) =>
+        threads.map((thread) => [thread.sessionId, thread] as const)
+      )
+    );
+    expect(
+      restoredBySession.get(automatic.sessionId)?.conversationTrashedAt
+    ).toBeNull();
+    expect(
+      restoredBySession.get(priorTrash.sessionId)?.conversationTrashedAt
+    ).toBeTruthy();
   });
 
   it("keeps a locally changed checkout unresolved until a new confirmation", async () => {

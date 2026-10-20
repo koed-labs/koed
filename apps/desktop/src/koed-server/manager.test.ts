@@ -89,6 +89,53 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("uses the Desktop read credential for first-class Projects and fails closed", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-projects-"));
+    const stored = storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "11111111-1111-4111-8111-111111111111",
+      operationFamilies: ["personal_collaboration_read"]
+    });
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe("/v1/projects");
+      const authorization = new Headers(init?.headers).get("authorization");
+      expect(authorization).toBe(stored.authorization);
+      expect(authorization).toMatch(/^Koed-Desktop /);
+      return new Response(JSON.stringify({ projects: [], nextCursor: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify(healthyLocalServiceStatus()), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    try {
+      await expect(manager.projects({ operation: "list" })).resolves.toEqual({
+        operation: "list",
+        projects: []
+      });
+      expect(personalMemoryFetch).toHaveBeenCalledOnce();
+      personalMemoryFetch.mockResolvedValueOnce(
+        new Response(null, { status: 401 })
+      );
+      await expect(manager.projects({ operation: "list" })).rejects.toThrow();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("submits Personal Ask through the fixed local runtime operation", async () => {
     const question = {
       id: "11111111-1111-4111-8111-111111111111",

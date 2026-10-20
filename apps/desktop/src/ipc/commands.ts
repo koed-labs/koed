@@ -1,5 +1,12 @@
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
+  projectsCommandChannel,
+  projectsRequestSchema,
+  projectsResultSchema,
+  type ProjectsRequest,
+  type ProjectsResult
+} from "./projects-protocol.js";
+import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
@@ -157,6 +164,7 @@ export const registerDesktopCommandHandlers = (
     allowedRendererOrigins: ReadonlySet<string>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
+    projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
@@ -439,6 +447,23 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(projectsCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.projects) throw new Error("Projects are unavailable.");
+    const request = projectsRequestSchema.parse(value);
+    const result = projectsResultSchema.parse(await options.projects(request));
+    if (result.operation !== request.operation)
+      throw new Error("Invalid Projects operation correlation.");
+    if (
+      request.operation === "hq" &&
+      result.operation === "hq" &&
+      result.value.project.id !== request.projectId
+    )
+      throw new Error("Invalid Project HQ identity.");
+    return result;
+  });
 
   ipcMain.handle(
     managedConversationCommandChannel,

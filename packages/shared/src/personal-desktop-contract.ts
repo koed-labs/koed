@@ -225,6 +225,8 @@ export const personalDesktopProjectThreadSchema = z
       .enum(["codex", "codex-cli", "claude-code", "pi"])
       .nullable(),
     projectId: identifierSchema,
+    personalProjectId: z.uuid().nullable().optional(),
+    conversationTrashedAt: timestampSchema.nullable().optional(),
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
     projectAssignmentSource: z.enum(["detected", "user_override"]).nullable(),

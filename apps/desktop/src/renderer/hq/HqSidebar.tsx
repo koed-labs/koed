@@ -1,4 +1,10 @@
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { Project } from "@koed/shared";
+import {
+  projectNavigation,
+  type ProjectConversation,
+  type ProjectNavigationRow
+} from "./project-navigation.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { HqRoute } from "./hq-navigation.js";
@@ -128,6 +134,7 @@ export type HqSidebarProps = {
   onSelectProject: (projectId: string) => void;
   projectsError?: boolean;
   projects: readonly DesktopProject[];
+  personalProjects?: readonly Project[];
   route: HqRoute;
 };
 
@@ -147,6 +154,7 @@ export function HqSidebar({
   onSelectProject,
   projectsError = false,
   projects,
+  personalProjects,
   route
 }: HqSidebarProps) {
   const groupsReady = groupsReadyProp ?? !loading;
@@ -188,9 +196,25 @@ export function HqSidebar({
     }
   });
 
-  const sortedProjects = useMemo(
-    () => projects.filter((project) => project.contextKind !== "independent"),
-    [projects]
+  const navigation = useMemo(
+    () =>
+      personalProjects ? projectNavigation(personalProjects, projects) : null,
+    [personalProjects, projects]
+  );
+  const sortedProjects = useMemo<ProjectNavigationRow[]>(
+    () =>
+      navigation?.projects ??
+      projects
+        .filter((project) => project.contextKind !== "independent")
+        .map(({ id, name, threads }) => ({
+          id,
+          name,
+          conversations: threads.map((thread) => ({
+            technicalProjectId: id,
+            thread
+          }))
+        })),
+    [navigation, projects]
   );
   const foldGroupIds = useMemo(
     () => [
@@ -210,15 +234,27 @@ export function HqSidebar({
       new Map(
         sortedProjects.map((project) => [
           project.id,
-          visibleConversations(project.threads)
+          visibleConversations(
+            project.conversations.map(({ thread }) => thread)
+          ).map(
+            (thread) =>
+              project.conversations.find((item) => item.thread === thread)!
+          )
         ])
       ),
     [sortedProjects]
   );
-  const looseChats = useMemo(
-    () => visibleConversations(chatsProject?.threads ?? []),
-    [chatsProject]
-  );
+  const looseChats = useMemo<ProjectConversation[]>(() => {
+    const rows =
+      navigation?.loose ??
+      (chatsProject?.threads ?? []).map((thread) => ({
+        technicalProjectId: chatsProject!.id,
+        thread
+      }));
+    return visibleConversations(rows.map(({ thread }) => thread)).map(
+      (thread) => rows.find((row) => row.thread === thread)!
+    );
+  }, [navigation, chatsProject]);
   const selectedProjectId =
     route.kind === "project" || route.kind === "conversation"
       ? route.projectId
@@ -270,7 +306,7 @@ export function HqSidebar({
     );
   };
 
-  const renderProject = (project: DesktopProject) => {
+  const renderProject = (project: ProjectNavigationRow) => {
     const groupId = hqProjectFoldId(project.id);
     const folded = groupFolded(groupId);
     const chats = projectChats.get(project.id) ?? [];
@@ -323,7 +359,9 @@ export function HqSidebar({
           hidden={folded}
           id={childrenId}
         >
-          {visible.map((thread) => renderConversation(project.id, thread))}
+          {visible.map(({ technicalProjectId, thread }) =>
+            renderConversation(technicalProjectId, thread)
+          )}
           {moreCount > 0 ? (
             <li className="hq-sidebar__more-row">
               <button
@@ -488,7 +526,10 @@ export function HqSidebar({
                       <div className="hq-sidebar__loose-heading">Chats</div>
                       <ul className="hq-sidebar__nested-list">
                         {visibleLooseChats.map((thread) =>
-                          renderConversation(chatsProject!.id, thread)
+                          renderConversation(
+                            thread.technicalProjectId,
+                            thread.thread
+                          )
                         )}
                         {looseMoreCount > 0 ? (
                           <li className="hq-sidebar__more-row">

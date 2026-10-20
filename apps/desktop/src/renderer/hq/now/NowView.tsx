@@ -7,6 +7,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
+import type { Project } from "@koed/shared";
+import {
+  projectNavigation,
+  type ProjectNavigationRow
+} from "../project-navigation.js";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationRuntimeItem,
@@ -19,6 +24,7 @@ import {
   nowNeedsFromRuntime,
   nowInspectableExecutions,
   nowProjectStatus,
+  nowPersonalProjectStatus,
   nowNeedsFromExecutionInventory,
   nowProjects,
   nowVisible
@@ -29,9 +35,11 @@ import "./now.css";
 
 export function NowView({
   projects,
+  personalProjects,
   api,
   lifecycle,
   approvals,
+  blockedConversationSessions,
   projectsReady = false,
   projectsLoading = false,
   projectsError = false,
@@ -39,9 +47,11 @@ export function NowView({
   onSelectConversation
 }: {
   projects: readonly DesktopProject[];
+  personalProjects?: readonly Project[];
   api?: ManagedConversationDesktopApi | null;
   lifecycle?: ManagedConversationLifecycle;
   approvals: readonly CollaborationActionGrantProjection[];
+  blockedConversationSessions?: ReadonlySet<string>;
   projectsReady?: boolean;
   projectsLoading?: boolean;
   projectsError?: boolean;
@@ -174,17 +184,35 @@ export function NowView({
           projects
         ),
         ...nowNeedsFromApprovals(approvals)
-      ].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+      ]
+        .filter(
+          (need) =>
+            !need.projectId ||
+            !need.sessionId ||
+            !blockedConversationSessions?.has(
+              `${need.projectId}\u0000${need.sessionId}`
+            )
+        )
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
     [
       scopedDrafts,
       visibleRuntime,
       visibleExecutions,
       approvals,
       projects,
+      blockedConversationSessions,
       approvalClock
     ]
   );
-  const projectRows = useMemo(() => nowProjects(projects), [projects]);
+  const projectRows = useMemo<
+    readonly (DesktopProject | ProjectNavigationRow)[]
+  >(
+    () =>
+      personalProjects
+        ? projectNavigation(personalProjects, projects).projects
+        : nowProjects(projects),
+    [personalProjects, projects]
+  );
   const setFold = (section: "needsFolded" | "projectsFolded") => {
     const next = { ...preferences, [section]: !preferences[section] };
     setPreferences(next);
@@ -312,8 +340,13 @@ export function NowView({
               {projectsReady && projectRows.length === 0 ? (
                 <p className="hq-now__empty">No Projects yet.</p>
               ) : null}
-              {nowVisible(projectRows, moreProjects).map((project) => {
-                const status = nowProjectStatus(project, needs);
+              {nowVisible<DesktopProject | ProjectNavigationRow>(
+                projectRows,
+                moreProjects
+              ).map((project) => {
+                const status = !("threads" in project)
+                  ? nowPersonalProjectStatus(project, needs)
+                  : nowProjectStatus(project, needs);
                 return (
                   <button
                     key={project.id}
