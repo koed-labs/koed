@@ -41,6 +41,21 @@ const api = (sources = [skill, docSource]) =>
       deletedAt: "2026-10-20T00:00:00.000Z"
     })),
     sourceRetry: vi.fn(async () => skill),
+    sourceUpload: vi.fn(async () => docSource),
+    sourceRead: vi.fn(async () => ({
+      sourceId: docSource.id,
+      sourceRevisionId: randomUUID(),
+      noteRevisionId: docSource.currentRevisionId!,
+      noteId: randomUUID(),
+      text: "The exact owner-readable document text."
+    })),
+    sourceRemoval: vi.fn(async () => ({
+      batchId: randomUUID(),
+      sourceId: docSource.id,
+      complete: true,
+      pendingReviews: [],
+      cancellationPending: false
+    })),
     pickFolder: vi.fn(async () => null)
   }) as unknown as ProjectsDesktopApi;
 
@@ -94,8 +109,14 @@ describe("Project Sources in HQ", () => {
       "Listing it does not run the skill or add its outputs to memory"
     );
   });
-  it("keeps document action visibly unavailable and links a discovered repo", async () => {
+  it("uploads a document through the native API and links a discovered repo", async () => {
     const client = api([]);
+    const current: (typeof docSource)[] = [];
+    client.sourceList = vi.fn(async () => current);
+    client.sourceUpload = vi.fn(async () => {
+      current.push(docSource);
+      return docSource;
+    });
     await act(async () =>
       root.render(
         <HqProjectSources
@@ -112,13 +133,21 @@ describe("Project Sources in HQ", () => {
         ) as HTMLButtonElement
       ).click()
     );
-    expect(
+    await act(async () =>
       (
-        node.querySelector(
-          '[title="Document ingestion is not available yet"]'
+        Array.from(node.querySelectorAll("button")).find((button) =>
+          button.textContent?.includes("Add a doc")
         ) as HTMLButtonElement
-      ).disabled
-    ).toBe(true);
+      ).click()
+    );
+    expect(client.sourceUpload).toHaveBeenCalledWith(projectId);
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll("button")).find((button) =>
+          button.textContent?.includes("All sources")
+        ) as HTMLButtonElement
+      ).click()
+    );
     await act(async () =>
       (
         Array.from(node.querySelectorAll("button")).find((button) =>
@@ -128,6 +157,188 @@ describe("Project Sources in HQ", () => {
     );
     expect(node.textContent).toContain("example.org/team/repo");
     expect(client.sourceDiscoverRepos).toHaveBeenCalledWith(projectId);
+  });
+  it("reads the pinned Note revision and uses the Native removal flow", async () => {
+    const client = api([docSource]);
+    await act(async () =>
+      root.render(
+        <HqProjectSources
+          projectId={projectId}
+          projectName="Atlas"
+          api={client}
+        />
+      )
+    );
+    await act(async () =>
+      (
+        node.querySelector(".hq-project-sources__key") as HTMLButtonElement
+      ).click()
+    );
+    expect(client.sourceRead).toHaveBeenCalledWith(
+      projectId,
+      docSource.id,
+      docSource.currentRevisionId
+    );
+    expect(node.textContent).toContain(
+      "The exact owner-readable document text."
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll("button")).find(
+          (button) => button.textContent === "Remove"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(client.sourceRemoval).toHaveBeenCalledWith(projectId, docSource.id);
+    expect(client.sourceRemove).not.toHaveBeenCalled();
+  });
+  it("ignores a stale document read after selecting a different Source", async () => {
+    const otherDoc = {
+      ...docSource,
+      id: randomUUID(),
+      name: "Second.md",
+      currentRevisionId: randomUUID()
+    };
+    const client = api([docSource, otherDoc]);
+    let resolveFirst!: (
+      value: Awaited<ReturnType<NonNullable<ProjectsDesktopApi["sourceRead"]>>>
+    ) => void;
+    client.sourceRead = vi.fn((_project, sourceId, noteRevisionId) =>
+      sourceId === docSource.id
+        ? new Promise<
+            Awaited<ReturnType<NonNullable<ProjectsDesktopApi["sourceRead"]>>>
+          >((resolve) => {
+            resolveFirst = resolve;
+          })
+        : Promise.resolve({
+            sourceId,
+            noteRevisionId,
+            noteId: randomUUID(),
+            sourceRevisionId: randomUUID(),
+            name: otherDoc.name,
+            text: "Second document remains visible."
+          })
+    );
+    await act(async () =>
+      root.render(
+        <HqProjectSources
+          projectId={projectId}
+          projectName="Atlas"
+          api={client}
+        />
+      )
+    );
+    await act(async () =>
+      (
+        node.querySelector(".hq-project-sources__key") as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll("button")).find((button) =>
+          button.textContent?.includes("All sources")
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll(".hq-project-sources__row")).find(
+          (row) => row.textContent?.includes("Second.md")
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(node.textContent).toContain("Second document remains visible.");
+    await act(async () =>
+      resolveFirst({
+        sourceId: docSource.id,
+        noteRevisionId: docSource.currentRevisionId!,
+        noteId: randomUUID(),
+        sourceRevisionId: randomUUID(),
+        name: docSource.name,
+        text: "Stale first document must not appear."
+      })
+    );
+    expect(node.textContent).toContain("Second document remains visible.");
+    expect(node.textContent).not.toContain(
+      "Stale first document must not appear."
+    );
+  });
+  it("keeps a prior Source removal result out of the newly selected Source", async () => {
+    const otherDoc = {
+      ...docSource,
+      id: randomUUID(),
+      name: "Second.md",
+      currentRevisionId: randomUUID()
+    };
+    const client = api([docSource, otherDoc]);
+    let resolveRemoval!: (
+      value: Awaited<
+        ReturnType<NonNullable<ProjectsDesktopApi["sourceRemoval"]>>
+      >
+    ) => void;
+    client.sourceRemoval = vi.fn(
+      () =>
+        new Promise<
+          Awaited<ReturnType<NonNullable<ProjectsDesktopApi["sourceRemoval"]>>>
+        >((resolve) => {
+          resolveRemoval = resolve;
+        })
+    );
+    await act(async () =>
+      root.render(
+        <HqProjectSources
+          projectId={projectId}
+          projectName="Atlas"
+          api={client}
+        />
+      )
+    );
+    await act(async () =>
+      (
+        node.querySelector(".hq-project-sources__key") as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll("button")).find(
+          (button) => button.textContent === "Remove"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll("button")).find((button) =>
+          button.textContent?.includes("All sources")
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        Array.from(node.querySelectorAll(".hq-project-sources__row")).find(
+          (row) => row.textContent?.includes("Second.md")
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      resolveRemoval({
+        batchId: randomUUID(),
+        state: "freezing",
+        complete: false,
+        retryable: true,
+        pendingFreezeCount: 1,
+        pendingReviews: [
+          {
+            backendId: "backend-a",
+            shareGrantId: randomUUID(),
+            actionGrantId: randomUUID()
+          }
+        ],
+        cancellationPending: false
+      })
+    );
+    expect(node.textContent).toContain("Second.md");
+    expect(node.textContent).not.toContain("Review Share Grant");
+    expect(node.textContent).not.toContain("waiting for Native approval");
   });
   it("discards an old folder choice when profile identity changes on the same Project", async () => {
     let choose!: (folder: string) => void;

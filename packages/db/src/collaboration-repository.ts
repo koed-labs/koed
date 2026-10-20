@@ -165,6 +165,7 @@ export interface PersonalNoteRecord {
   title: string;
   titleVersion: number;
   body: string;
+  sourceRevisionId?: string;
   revisionId: string;
   revision: number;
   contentHash: string;
@@ -177,7 +178,7 @@ export interface PersonalNoteRecord {
 }
 
 export interface PersonalNotePageRecord {
-  notes: PersonalNoteRecord[];
+  notes: Omit<PersonalNoteRecord, "body">[];
   nextBeforeSequence: number | null;
 }
 
@@ -681,6 +682,7 @@ type PersonalNoteRow = {
   created_at: Date;
   updated_at: Date;
   revision_id: string;
+  source_revision_id: string | null;
   revision: number;
   content_hash: string;
   memory_event_id: string | null;
@@ -715,7 +717,10 @@ const selectPersonalNoteSql = `
          note.current_revision,note.lifecycle,note.created_at,note.updated_at,
          revision.id as revision_id,revision.revision,revision.content_hash,
          revision.memory_event_id,revision.projection_state,
-         revision.projection_failure_code,source.logical_memory_id
+         revision.projection_failure_code,source.logical_memory_id,
+         (select attempt.id from project_source_revisions attempt
+           where attempt.note_revision_id=revision.id and attempt.owner_user_id=note.owner_user_id
+           limit 1) as source_revision_id
     from personal_notes note
     join local_personal_note_logical_memories source
       on source.local_note_id=note.id and source.owner_user_id=note.owner_user_id
@@ -755,6 +760,47 @@ const decryptPersonalNote = async (
     title: normalizePersonalNoteTitle(titlePayload.plaintext),
     titleVersion: row.title_version,
     body: bodyPayload.plaintext,
+    ...(row.source_revision_id
+      ? { sourceRevisionId: row.source_revision_id }
+      : {}),
+    revisionId: row.revision_id,
+    revision: row.revision,
+    contentHash: row.content_hash,
+    memoryEventId: row.memory_event_id,
+    projectionState: row.projection_state,
+    projectionFailureCode: row.projection_failure_code,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+    sourceSequence: Number(row.sequence)
+  };
+};
+
+const decryptPersonalNoteSummary = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  row: PersonalNoteRow
+): Promise<Omit<PersonalNoteRecord, "body">> => {
+  const titlePayload = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+    client,
+    actor,
+    provider,
+    {
+      sourceTable: "personal_notes",
+      sourceId: row.id,
+      sourceColumn: "title"
+    }
+  );
+  if (typeof titlePayload?.plaintext !== "string")
+    throw new Error("Personal Note encrypted title is unavailable");
+  return {
+    noteId: row.id,
+    logicalMemoryId: row.logical_memory_id,
+    title: normalizePersonalNoteTitle(titlePayload.plaintext),
+    titleVersion: row.title_version,
+    ...(row.source_revision_id
+      ? { sourceRevisionId: row.source_revision_id }
+      : {}),
     revisionId: row.revision_id,
     revision: row.revision,
     contentHash: row.content_hash,
@@ -4542,6 +4588,201 @@ export const collaborationSubscriptionPrincipalHash = (
   principalId: string
 ): string => hashDomain("subscription-principal", principalId);
 
+// Used only by the Project Source ingestion transaction. The caller must hold
+// the owning Project and Source row locks and bind the returned revision to its
+// exact upload attempt before committing. Public Note writes retain their
+// smaller message-sized body limit.
+export const writeProjectSourcePersonalNoteWithClient = async (
+  client: pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    ownerUserId: string;
+    sourceRevisionId: string;
+    sourceName: string;
+    body: string;
+    existingNoteId: string | null;
+  }
+): Promise<PersonalNoteRecord> => {
+  const actor = { userId: input.ownerUserId };
+  if (
+    !input.body.trim() ||
+    Buffer.byteLength(input.body, "utf8") > 25 * 1024 * 1024
+  )
+    throw new TypeError("Project Source extracted text is out of bounds");
+  const title = normalizePersonalNoteTitle(
+    Array.from(input.sourceName.trim()).slice(0, 80).join("")
+  );
+  const noteId = input.existingNoteId ?? randomUUID();
+  const keyHash = hashDomain(
+    "project-source-note-revision-idempotency",
+    input.sourceRevisionId
+  );
+  const bodyHash = hashDomain("personal-note-body", input.body);
+  const bodyRequestHash = requestHash({ body: input.body });
+  let revision: number;
+  let revisionId: string;
+  if (input.existingNoteId) {
+    const locked = await client.query<{
+      current_revision: number;
+      lifecycle: string;
+    }>(
+      `select current_revision,lifecycle from personal_notes
+        where id=$1 and owner_user_id=$2 for update`,
+      [noteId, input.ownerUserId]
+    );
+    if (!locked.rows[0] || locked.rows[0].lifecycle !== "active")
+      throw new CollaborationStateConflictError(
+        "Project Source Personal Note is unavailable"
+      );
+    const earlier = await client.query<{
+      id: string;
+      revision: number;
+      request_hash: string;
+    }>(
+      `select id,revision,request_hash from personal_note_revisions
+        where note_id=$1 and owner_user_id=$2 and idempotency_key_hash=$3`,
+      [noteId, input.ownerUserId, keyHash]
+    );
+    if (earlier.rows[0]) {
+      if (earlier.rows[0].request_hash !== bodyRequestHash)
+        throw new CollaborationStateConflictError(
+          "Project Source revision changed after Note creation"
+        );
+      if (locked.rows[0].current_revision !== earlier.rows[0].revision)
+        throw new CollaborationStateConflictError(
+          "Project Source Note advanced beyond this attempt"
+        );
+      const current = await client.query<PersonalNoteRow>(
+        `${selectPersonalNoteSql} where note.id=$1 and note.owner_user_id=$2`,
+        [noteId, input.ownerUserId]
+      );
+      return decryptPersonalNote(client, actor, provider, current.rows[0]!);
+    }
+    revision = locked.rows[0].current_revision + 1;
+    revisionId = randomUUID();
+  } else {
+    revision = 1;
+    revisionId = randomUUID();
+    await client.query(
+      `insert into personal_notes (
+        id,owner_user_id,title_marker,title_version,current_revision,
+        idempotency_key_hash,request_hash
+      ) values ($1,$2,$3,1,1,$4,$5)`,
+      [
+        noteId,
+        input.ownerUserId,
+        PERSONAL_NOTE_TITLE_MARKER,
+        keyHash,
+        bodyRequestHash
+      ]
+    );
+    const deployment = await client.query<{
+      id: string;
+      protocol_deployment_id: string;
+    }>(
+      `select id,protocol_deployment_id from deployment_identities
+        where locality='local' and disabled_at is null limit 1`
+    );
+    const local = deployment.rows[0];
+    if (!local)
+      throw new CollaborationStateConflictError(
+        "Local deployment identity is required for Personal Notes"
+      );
+    const logicalMemoryId = crossIdentitySyncDeterministicUuid({
+      protocol: "koed.personal-note-share/v1",
+      sourceDeploymentId: local.protocol_deployment_id,
+      sourceOwnerPrincipalId: input.ownerUserId,
+      noteId,
+      identity: "logical-memory"
+    });
+    await client.query(
+      `insert into logical_memories (
+        id,protocol_logical_id,owner_user_id,owner_principal_id,
+        origin_deployment_identity_id,source_kind,logical_key,
+        latest_source_revision
+      ) values ($1,$1,$2,$2,$3,'personal_note',$4,0)`,
+      [
+        logicalMemoryId,
+        input.ownerUserId,
+        local.id,
+        `personal_note:${local.protocol_deployment_id}:${noteId}`
+      ]
+    );
+    await client.query(
+      `insert into personal_note_logical_memories
+        (logical_memory_id,source_note_id,owner_principal_id)
+       values ($1,$2,$3)`,
+      [logicalMemoryId, noteId, input.ownerUserId]
+    );
+    await client.query(
+      `insert into local_personal_note_logical_memories
+        (logical_memory_id,local_note_id,owner_user_id)
+       values ($1,$2,$3)`,
+      [logicalMemoryId, noteId, input.ownerUserId]
+    );
+    await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+      sourceTable: "personal_notes",
+      sourceId: noteId,
+      sourceColumn: "title",
+      plaintext: title,
+      scope: { objectClass: "personal_note" },
+      rowFamily: "personal_note",
+      aad: { noteId, ownerUserId: input.ownerUserId }
+    });
+  }
+  await client.query(
+    `insert into personal_note_revisions (
+      id,note_id,owner_user_id,revision,idempotency_key_hash,
+      request_hash,body_marker,content_hash
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      revisionId,
+      noteId,
+      input.ownerUserId,
+      revision,
+      keyHash,
+      bodyRequestHash,
+      PERSONAL_NOTE_BODY_MARKER,
+      bodyHash
+    ]
+  );
+  await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+    sourceTable: "personal_note_revisions",
+    sourceId: revisionId,
+    sourceColumn: "body",
+    plaintext: input.body,
+    scope: { objectClass: "personal_note_revision" },
+    rowFamily: "personal_note_revision",
+    aad: { noteId, revision, ownerUserId: input.ownerUserId }
+  });
+  if (input.existingNoteId)
+    await client.query(
+      `update personal_notes set current_revision=$3,updated_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [noteId, input.ownerUserId, revision]
+    );
+  await client.query(`select pg_notify('koed_graph_updates',$1)`, [
+    JSON.stringify({
+      table: "personal_notes",
+      operation: input.existingNoteId ? "UPDATE" : "INSERT",
+      id: noteId,
+      ownerUserId: input.ownerUserId,
+      visibility: "personal",
+      changedAt: new Date().toISOString()
+    })
+  ]);
+  const current = await client.query<PersonalNoteRow>(
+    `${selectPersonalNoteSql} where note.id=$1 and note.owner_user_id=$2`,
+    [noteId, input.ownerUserId]
+  );
+  return {
+    ...(await decryptPersonalNote(client, actor, provider, current.rows[0]!)),
+    // The enclosing ingestion transaction binds this revision to its upload
+    // attempt after this helper returns. The record is internal until commit.
+    sourceRevisionId: input.sourceRevisionId
+  };
+};
+
 export const createCollaborationRepository = (
   pool: pg.Pool,
   options: {
@@ -4945,7 +5186,7 @@ export const createCollaborationRepository = (
       const rows = result.rows.slice(0, limit);
       const notes = await Promise.all(
         rows.map((row) =>
-          decryptPersonalNote(pool, actor, requireProvider(), row)
+          decryptPersonalNoteSummary(pool, actor, requireProvider(), row)
         )
       );
       return {
@@ -4976,6 +5217,16 @@ export const createCollaborationRepository = (
         "expectedTitleVersion"
       );
       return withTransaction(pool, async (client) => {
+        const managed = await client.query(
+          `select 1 from project_source_revisions attempt
+             join personal_note_revisions revision on revision.id=attempt.note_revision_id
+            where revision.note_id=$1 and revision.owner_user_id=$2 limit 1`,
+          [input.noteId, actor.userId]
+        );
+        if (managed.rows[0])
+          throw new CollaborationStateConflictError(
+            "Project Source Personal Notes are revised through Source upload"
+          );
         const result = await client.query<PersonalNoteRow>(
           `${selectPersonalNoteSql}
             where note.id=$1 and note.owner_user_id=$2
@@ -5054,6 +5305,16 @@ export const createCollaborationRepository = (
       const revisionRequestHash = requestHash({ body });
       const contentHash = hashDomain("personal-note-body", body);
       return withTransaction(pool, async (client) => {
+        const managed = await client.query(
+          `select 1 from project_source_revisions attempt
+             join personal_note_revisions revision on revision.id=attempt.note_revision_id
+            where revision.note_id=$1 and revision.owner_user_id=$2 limit 1`,
+          [input.noteId, actor.userId]
+        );
+        if (managed.rows[0])
+          throw new CollaborationStateConflictError(
+            "Project Source Personal Notes are revised through Source upload"
+          );
         const existing = await client.query<{
           request_hash: string;
         }>(

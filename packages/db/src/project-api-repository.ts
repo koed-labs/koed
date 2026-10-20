@@ -216,11 +216,20 @@ const activeExecutionSet = async (
       .digest("hex")
   };
 };
-type DeleteSource = {
+type DeleteSessionSource = {
   sessionId: string;
   logicalMemoryId: string | null;
   backends: Array<{ backendId: string; relationshipIds: string[] }>;
 };
+type DeleteNoteSource = {
+  kind: "personal_note";
+  noteId: string;
+  noteRevision: number;
+  memoryEventId: string;
+  logicalMemoryId: string;
+  backends: Array<{ backendId: string; relationshipIds: string[] }>;
+};
+type DeleteSource = DeleteSessionSource | DeleteNoteSource;
 type DeleteExecution = {
   id: string;
   executionGeneration: number;
@@ -334,6 +343,71 @@ const sourceManifest = async (
         backends: []
       };
       grouped.set(row.session_id, source);
+    }
+    if (row.relationship_id && row.backend_id) {
+      let backend = source.backends.find(
+        (item) => item.backendId === row.backend_id
+      );
+      if (!backend) {
+        backend = { backendId: row.backend_id, relationshipIds: [] };
+        source.backends.push(backend);
+      }
+      backend.relationshipIds.push(row.relationship_id);
+    }
+  }
+  const notes = await client.query<{
+    note_id: string;
+    note_revision: number;
+    memory_event_id: string;
+    logical_memory_id: string;
+    relationship_id: string | null;
+    backend_id: string | null;
+  }>(
+    `select note.note_id,note.revision as note_revision,
+            note.memory_event_id,root.logical_memory_id,
+            relationship.id as relationship_id,
+            remote_deployment.upstream_backend_id as backend_id
+       from (
+         select distinct on (revision.note_id)
+                revision.note_id,revision.revision,revision.memory_event_id
+           from project_sources source
+           join project_source_revisions attempt
+             on attempt.source_id=source.id
+            and attempt.owner_user_id=source.owner_user_id
+           join personal_note_revisions revision
+             on revision.id=attempt.note_revision_id
+            and revision.owner_user_id=source.owner_user_id
+          where source.owner_user_id=$1 and source.project_id=$2
+            and revision.memory_event_id is not null
+          order by revision.note_id,revision.revision desc
+       ) note
+       join local_personal_note_logical_memories root
+         on root.local_note_id=note.note_id and root.owner_user_id=$1
+       left join cross_identity_sync_relationships relationship
+         on relationship.logical_memory_id=root.logical_memory_id
+        and relationship.local_user_id=$1 and relationship.side='source'
+       left join deployment_identities remote_deployment
+         on remote_deployment.id=relationship.remote_deployment_identity_id
+      order by note.note_id,relationship.id`,
+    [ownerUserId, projectId]
+  );
+  for (const row of notes.rows) {
+    if (row.relationship_id && !row.backend_id)
+      throw new ProjectCapabilityError(
+        "A Project Source Note backend has no verified identity"
+      );
+    const key = `note:${row.note_id}`;
+    let source = grouped.get(key) as DeleteNoteSource | undefined;
+    if (!source) {
+      source = {
+        kind: "personal_note",
+        noteId: row.note_id,
+        noteRevision: row.note_revision,
+        memoryEventId: row.memory_event_id,
+        logicalMemoryId: row.logical_memory_id,
+        backends: []
+      };
+      grouped.set(key, source);
     }
     if (row.relationship_id && row.backend_id) {
       let backend = source.backends.find(
@@ -686,15 +760,6 @@ export const createProjectApiRepository = (
       const current = await ownerProject(client, ownerUserId, projectId, true);
       personalOnly(current);
       activeOnly(current);
-      const noteBacked = await client.query(
-        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
-           and current_revision_id is not null limit 1`,
-        [ownerUserId, projectId]
-      );
-      if (noteBacked.rows[0])
-        throw new ProjectCapabilityError(
-          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
-        );
       return {
         project: mapProject(current),
         ...(await activeExecutionSet(client, ownerUserId, projectId))
@@ -716,14 +781,14 @@ export const createProjectApiRepository = (
       )
         return mapProject(current);
       activeOnly(current);
-      const noteBacked = await client.query(
+      const pendingDocument = await client.query(
         `select 1 from project_sources where owner_user_id=$1 and project_id=$2
-           and current_revision_id is not null limit 1`,
+           and (pending_revision_id is not null or remove_batch_id is not null) limit 1`,
         [ownerUserId, projectId]
       );
-      if (noteBacked.rows[0])
-        throw new ProjectCapabilityError(
-          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
+      if (pendingDocument.rows[0])
+        throw new ProjectConflictError(
+          "Project Source ingestion or removal must settle before Project deletion"
         );
       const reused = await client.query(
         `select 1 from project_delete_operations where batch_id=$1`,
@@ -1327,15 +1392,6 @@ export const createProjectApiRepository = (
         where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
         [ownerUserId, projectId, batchId]
       );
-      const noteBacked = await client.query(
-        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
-           and current_revision_id is not null limit 1`,
-        [ownerUserId, projectId]
-      );
-      if (noteBacked.rows[0])
-        throw new ProjectCapabilityError(
-          "Note-backed Project Sources cannot be deleted until sharing is safely frozen"
-        );
       await client.query(
         `update project_sources set deleted_at=now(),delete_batch_id=$3,updated_at=now()
           where owner_user_id=$1 and project_id=$2 and deleted_at is null`,

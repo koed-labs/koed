@@ -5176,6 +5176,30 @@ export const createRetentionLifecycleRepository = (
             where user_id=$1 and status<>'disabled'`,
           [input.userId, erasedAt]
         );
+        // Project Source originals use an opaque encrypted payload reference,
+        // not a row FK. Erase them explicitly at the owner tombstone boundary.
+        await client.query(
+          `delete from encrypted_field_payloads
+            where owner_user_id=$1 and encryption_scope='personal'
+              and source_table='project_source_revisions'
+              and source_column='original_binary'`,
+          [input.userId]
+        );
+        await client.query(
+          `delete from encrypted_field_payloads payload
+            where payload.owner_user_id=$1 and payload.encryption_scope='personal'
+              and ((payload.source_table='personal_note_revisions'
+                and payload.source_id in (
+                  select attempt.note_revision_id from project_source_revisions attempt
+                   where attempt.owner_user_id=$1 and attempt.note_revision_id is not null
+                )) or (payload.source_table='personal_notes'
+                and payload.source_id in (
+                  select distinct revision.note_id from project_source_revisions attempt
+                   join personal_note_revisions revision on revision.id=attempt.note_revision_id
+                  where attempt.owner_user_id=$1
+                )))`,
+          [input.userId]
+        );
         await client.query(
           `update users
               set email=$2, display_name=null, avatar_reference=null,

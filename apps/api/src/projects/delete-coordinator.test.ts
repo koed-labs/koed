@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectApiRepository } from "@koed/db";
+import type {
+  ProjectApiRepository,
+  ProjectSourceRemovalRepository
+} from "@koed/db";
 import type { CollaborationActionGrantControl } from "../local-edge/collaboration-action-grant-control.js";
 import type { CollaborationSharedMemoryControl } from "../local-edge/collaboration-shared-memory-control.js";
 import { createProjectSourceCoordinator } from "./delete-coordinator.js";
@@ -34,21 +37,32 @@ const operation = {
 
 describe("Project source deletion coordinator", () => {
   const fixture = (
-    grant: {
-      id: string;
-      teamId: string;
-      teamWorkspaceId: string;
-      grantVersion: number;
-    } | null,
+    grant:
+      | {
+          id: string;
+          teamId: string;
+          teamWorkspaceId: string;
+          grantVersion: number;
+        }
+      | Array<{
+          id: string;
+          teamId: string;
+          teamWorkspaceId: string;
+          grantVersion: number;
+        }>
+      | null,
     options: {
       review?: "required" | "approved";
       loseFreezeResponse?: boolean;
       loseReviewAck?: boolean;
+      sourceRemoval?: boolean;
     } = {}
   ) => {
     let prepared = false;
     let sealed = false;
-    let frozen = false;
+    const grants = grant ? (Array.isArray(grant) ? grant : [grant]) : [];
+    const frozen = new Set<string>();
+    const activeGrants = () => grants.filter((item) => !frozen.has(item.id));
     let released = false;
     let lostFreezeResponse = false;
     const remote = vi.fn(
@@ -65,12 +79,12 @@ describe("Project source deletion coordinator", () => {
               holdVersion: released ? 3 : sealed ? 2 : 1,
               heldBatchId: released ? null : batchId,
               sealed: released ? false : sealed,
-              activeUnfrozenGrants: grant && !frozen ? 1 : 0
+              activeUnfrozenGrants: activeGrants().length
             }
           };
         }
         if (input.method === "GET" && input.path.endsWith("/admission/grants"))
-          return { grants: grant && !frozen ? [grant] : [] };
+          return { grants: activeGrants() };
         if (input.method === "POST" && input.path.endsWith("/admission")) {
           if (input.body?.operation === "prepare") prepared = true;
           if (input.body?.operation === "seal") sealed = true;
@@ -81,17 +95,20 @@ describe("Project source deletion coordinator", () => {
               holdVersion: released ? 3 : sealed ? 2 : 1,
               heldBatchId: released ? null : batchId,
               sealed: released ? false : sealed,
-              activeUnfrozenGrants: grant && !frozen ? 1 : 0
+              activeUnfrozenGrants: activeGrants().length
             }
           };
         }
         if (input.method === "POST" && input.path.endsWith("/freeze")) {
-          frozen = true;
+          const grantId = input.path.split("/").at(-2);
+          if (!grantId || !grants.some((item) => item.id === grantId))
+            throw new Error("unexpected grant freeze");
+          frozen.add(grantId);
           if (options.loseFreezeResponse && !lostFreezeResponse) {
             lostFreezeResponse = true;
             throw new Error("freeze response lost");
           }
-          return { grant: { id: grant?.id } };
+          return { grant: { id: grantId } };
         }
         throw new Error("unexpected request");
       }
@@ -213,10 +230,17 @@ describe("Project source deletion coordinator", () => {
       getDeleteOperationByBatch: vi.fn(async () => ({
         ...operation,
         grantFreezeAcks: [...durableReviews]
+      })),
+      get: vi.fn(async () => ({
+        ...operation,
+        grantFreezeAcks: [...durableReviews]
       }))
     } as unknown as ProjectApiRepository;
     const coordinator = createProjectSourceCoordinator({
       repository,
+      sourceRemovalRepository: options.sourceRemoval
+        ? (repository as unknown as ProjectSourceRemovalRepository)
+        : null,
       sharedMemoryControl: shared,
       actionGrantControl: action,
       resolveSourceIdentity: () => ({
@@ -307,6 +331,73 @@ describe("Project source deletion coordinator", () => {
           request.method === "POST" && request.body?.operation === "seal"
       )
     ).toBe(false);
+  });
+  it("freezes two grants on one Source Note root with distinct Native reviews", async () => {
+    const grants = [
+      {
+        id: randomUUID(),
+        teamId: randomUUID(),
+        teamWorkspaceId: randomUUID(),
+        grantVersion: 2
+      },
+      {
+        id: randomUUID(),
+        teamId: randomUUID(),
+        teamWorkspaceId: randomUUID(),
+        grantVersion: 5
+      }
+    ];
+    const { coordinator, remote, freezeAck, actionDispatch } = fixture(grants, {
+      review: "approved",
+      sourceRemoval: true
+    });
+    const sourceOperation = {
+      sourceRemoval: true as const,
+      batchId,
+      projectId,
+      ownerUserId: owner,
+      sourceId: randomUUID(),
+      state: "preparing",
+      sourceManifestHash: "a".repeat(64),
+      sources: [
+        {
+          kind: "personal_note" as const,
+          noteId: randomUUID(),
+          noteRevision: 2,
+          memoryEventId: randomUUID(),
+          logicalMemoryId,
+          backends: [{ backendId, relationshipIds: [] }]
+        }
+      ],
+      backendAcks: [],
+      grantFreezeAcks: []
+    };
+    await coordinator.advance({
+      ownerUserId: owner,
+      projectId,
+      batchId,
+      operation: sourceOperation
+    });
+    const frozenIds = freezeAck.mock.calls
+      .map((call) => call[3])
+      .filter((ack) => ack.state === "frozen")
+      .map((ack) => ack.shareGrantId);
+    expect(frozenIds.sort()).toEqual(grants.map((grant) => grant.id).sort());
+    const nativeCommands = actionDispatch.mock.calls
+      .map((call) => call[0].input.intent)
+      .filter(
+        (intent) =>
+          intent?.intent === "collaboration.freeze_shared_memory_grant"
+      );
+    expect(
+      new Set(nativeCommands.map((intent) => intent?.commandRequestId)).size
+    ).toBe(2);
+    expect(
+      remote.mock.calls.filter(
+        ([request]) =>
+          request.method === "POST" && request.path.endsWith("/freeze")
+      )
+    ).toHaveLength(2);
   });
   it("releases only the old sealed admission hold after restore", async () => {
     const { coordinator, remote, backendAck } = fixture(null);

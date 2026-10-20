@@ -1081,6 +1081,9 @@ export const registerCollaborationRoutes = (
           projectionState: note.projectionState,
           projectionFailureCode: note.projectionFailureCode,
           body: note.body,
+          ...(note.sourceRevisionId
+            ? { sourceRevisionId: note.sourceRevisionId }
+            : {}),
           logicalMemoryId: note.logicalMemoryId,
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
@@ -1121,11 +1124,17 @@ export const registerCollaborationRoutes = (
           projectionState: note.projectionState,
           projectionFailureCode: note.projectionFailureCode,
           body: note.body,
+          ...(note.sourceRevisionId
+            ? { sourceRevisionId: note.sourceRevisionId }
+            : {}),
           logicalMemoryId: note.logicalMemoryId,
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,
-          event
+          event:
+            note.sourceRevisionId && event
+              ? { ...event, content: undefined, rawContent: undefined }
+              : event
         }
       };
     }

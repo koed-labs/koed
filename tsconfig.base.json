@@ -61,6 +61,18 @@
       "@koed/worker/embedding-workflow": [
         "apps/worker/src/embedding-workflow.ts"
       ],
+      "@koed/worker/project-source-extraction-contract": [
+        "apps/worker/src/project-source-extraction-contract.ts"
+      ],
+      "@koed/worker/project-source-extractor": [
+        "apps/worker/src/project-source-extractor.ts"
+      ],
+      "@koed/worker/project-source-extractor-client": [
+        "apps/worker/src/project-source-extractor-client.ts"
+      ],
+      "@koed/worker/project-source-extractor-thread": [
+        "apps/worker/src/project-source-extractor-thread.ts"
+      ],
       "@koed/worker/command-discovery-adapter": [
         "apps/worker/src/command-discovery-adapter.ts"
       ],

@@ -30,6 +30,22 @@
     "./command-discovery-adapter-pi": {
       "types": "./dist/command-discovery-adapter-pi.d.ts",
       "import": "./dist/command-discovery-adapter-pi.js"
+    },
+    "./project-source-extractor": {
+      "types": "./dist/project-source-extractor.d.ts",
+      "import": "./dist/project-source-extractor.js"
+    },
+    "./project-source-extraction-contract": {
+      "types": "./dist/project-source-extraction-contract.d.ts",
+      "import": "./dist/project-source-extraction-contract.js"
+    },
+    "./project-source-extractor-client": {
+      "types": "./dist/project-source-extractor-client.d.ts",
+      "import": "./dist/project-source-extractor-client.js"
+    },
+    "./project-source-extractor-thread": {
+      "types": "./dist/project-source-extractor-thread.d.ts",
+      "import": "./dist/project-source-extractor-thread.js"
     }
   },
   "files": [
@@ -52,6 +68,8 @@
     "bullmq": "^5.76.9",
     "dotenv": "^17.2.3",
     "ioredis": "^5.10.1",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.4.299",
     "pino": "^10.3.1",
     "undici": "^7.28.0"
   },

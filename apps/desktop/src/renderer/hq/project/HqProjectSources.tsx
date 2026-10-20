@@ -56,6 +56,18 @@ export function HqProjectSources({
   const [reposOpen, setReposOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [document, setDocument] = useState<Awaited<
+    ReturnType<NonNullable<ProjectsDesktopApi["sourceRead"]>>
+  > | null>(null);
+  const [reading, setReading] = useState(false);
+  const [removal, setRemoval] = useState<Awaited<
+    ReturnType<NonNullable<ProjectsDesktopApi["sourceRemoval"]>>
+  > | null>(null);
+  const view = useRef({ selected, open });
+  view.current = { selected, open };
+  useLayoutEffect(() => {
+    setRemoval(null);
+  }, [selected, open]);
   const setPanelOpen = (value: boolean) => {
     setOpen(value);
     onOpenChange?.(value);
@@ -91,6 +103,9 @@ export function HqProjectSources({
     setReposOpen(false);
     setBusy(false);
     setError("");
+    setDocument(null);
+    setReading(false);
+    setRemoval(null);
     void api
       .sourceList(projectId)
       .then((value) => {
@@ -140,6 +155,76 @@ export function HqProjectSources({
     [sources]
   );
   const source = selected ? sources.find((item) => item.id === selected) : null;
+  useEffect(() => {
+    if (
+      !open ||
+      !sources.some(
+        (item) => item.status === "extracting" || item.status === "uploading"
+      )
+    )
+      return;
+    const generation = identity.current.generation;
+    const timer = window.setInterval(() => {
+      if (identity.current.generation === generation)
+        void refresh(() => identity.current.generation === generation).catch(
+          () => undefined
+        );
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [api, open, projectId, sources]);
+  useEffect(() => {
+    let live = true;
+    setDocument(null);
+    setReading(false);
+    if (
+      !open ||
+      !selected ||
+      source?.kind !== "doc" ||
+      source.status !== "ready" ||
+      !source.currentRevisionId ||
+      !api.sourceRead
+    )
+      return () => {
+        live = false;
+      };
+    const generation = identity.current.generation;
+    const noteRevisionId = source.currentRevisionId;
+    setReading(true);
+    void api
+      .sourceRead(projectId, selected, noteRevisionId)
+      .then((value) => {
+        if (
+          live &&
+          identity.current.generation === generation &&
+          value.sourceId === selected &&
+          value.noteRevisionId === noteRevisionId
+        )
+          setDocument(value);
+      })
+      .catch((cause) => {
+        if (live && identity.current.generation === generation)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Document could not be read."
+          );
+      })
+      .finally(() => {
+        if (live && identity.current.generation === generation)
+          setReading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [
+    api,
+    open,
+    projectId,
+    selected,
+    source?.currentRevisionId,
+    source?.kind,
+    source?.status
+  ]);
   useEffect(() => {
     onContextChange?.(open && source?.kind === "doc" ? source.name : null);
   }, [open, source?.id, source?.kind, source?.name, onContextChange]);
@@ -204,9 +289,36 @@ export function HqProjectSources({
               {source.kind === "skill"
                 ? "This skill is listed as a Project reference. Ask your Chief of Staff to use it by name. Listing it does not run the skill or add its outputs to memory."
                 : source.kind === "doc"
-                  ? "Document text and memory become available only after ingestion creates a Personal Note revision."
+                  ? source.status === "ready"
+                    ? "Read this document here. Its text is also available in your Personal Memory."
+                    : "This document is being prepared for your Personal Memory."
                   : "The folder or repository stays in place. Agents may read its files through their own tools during your Conversation; Koed does not ingest them."}
             </p>
+            {source.kind === "doc" && source.status === "ready" ? (
+              <div className="hq-project-sources__document">
+                {reading ? (
+                  <p>Reading document…</p>
+                ) : document &&
+                  document.sourceId === source.id &&
+                  document.noteRevisionId === source.currentRevisionId ? (
+                  <>
+                    <p className="hq-project-sources__revision">
+                      Personal document
+                    </p>
+                    <pre>{document.text}</pre>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {removal && !removal.complete ? (
+              <p role="status" className="hq-project-sources__note">
+                {removal.pendingReviews.length
+                  ? "Source removal is waiting for Native approval."
+                  : removal.cancellationPending
+                    ? "Source removal cancellation is finishing."
+                    : "Source removal is waiting for Share Grant freeze."}
+              </p>
+            ) : null}
             <div className="hq-project-sources__actions">
               {source.status === "failed" ? (
                 <button
@@ -224,13 +336,86 @@ export function HqProjectSources({
                 disabled={busy}
                 onClick={() =>
                   void act(async (current) => {
-                    await api.sourceRemove(projectId, source.id);
-                    if (current()) setSelected(null);
+                    const sameSource = () =>
+                      current() &&
+                      view.current.open &&
+                      view.current.selected === source.id;
+                    if (
+                      source.kind === "doc" &&
+                      source.currentRevisionId &&
+                      api.sourceRemoval
+                    ) {
+                      const status = await api.sourceRemoval(
+                        projectId,
+                        source.id
+                      );
+                      if (sameSource()) {
+                        setRemoval(status);
+                        if (status.complete) setSelected(null);
+                      }
+                    } else {
+                      await api.sourceRemove(projectId, source.id);
+                      if (sameSource()) setSelected(null);
+                    }
                   })
                 }
               >
                 Remove
               </button>
+              {removal &&
+              !removal.complete &&
+              removal.pendingReviews.length > 0 &&
+              api.sourceReview ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(async (current) => {
+                      const review = removal.pendingReviews[0]!;
+                      const status = await api.sourceReview!(
+                        projectId,
+                        source.id,
+                        removal.batchId,
+                        review.actionGrantId
+                      );
+                      if (
+                        current() &&
+                        view.current.open &&
+                        view.current.selected === source.id
+                      ) {
+                        setRemoval(status);
+                        if (status.complete) setSelected(null);
+                      }
+                    })
+                  }
+                >
+                  Review Share Grant
+                </button>
+              ) : null}
+              {removal && !removal.complete && api.sourceRemoval ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(async (current) => {
+                      const status = await api.sourceRemoval!(
+                        projectId,
+                        source.id
+                      );
+                      if (
+                        current() &&
+                        view.current.open &&
+                        view.current.selected === source.id
+                      ) {
+                        setRemoval(status);
+                        if (status.complete) setSelected(null);
+                      }
+                    })
+                  }
+                >
+                  Check status
+                </button>
+              ) : null}
               <button type="button" onClick={() => setSelected(null)}>
                 All sources
               </button>
@@ -293,8 +478,16 @@ export function HqProjectSources({
             <div className="hq-project-sources__actions">
               <button
                 type="button"
-                disabled
-                title="Document ingestion is not available yet"
+                disabled={busy || !api.sourceUpload}
+                onClick={() =>
+                  void act(async (current) => {
+                    const uploaded = await api.sourceUpload?.(projectId);
+                    if (current() && uploaded) {
+                      setSelected(uploaded.id);
+                      setPanelOpen(true);
+                    }
+                  })
+                }
               >
                 <Plus size={15} />
                 Add a doc
@@ -369,8 +562,8 @@ export function HqProjectSources({
             <p className="hq-project-sources__note">
               Your Chief of Staff can read the Project folder with its own
               tools. Folders and repositories are references; their files are
-              not ingested. Documents become readable after document ingestion
-              is available.
+              not ingested. Documents become readable after ingestion creates a
+              Personal Note revision.
             </p>
           </>
         )}

@@ -917,6 +917,40 @@ const deviceHeaders = (
 });
 
 describe("collaboration HTTP routes", () => {
+  it("returns a large source-backed Note through the ordinary owner route without duplicate event body", async () => {
+    const fixture = createCollaborationFixture();
+    const created = await fixture.repository.createPersonalNote(
+      { userId: fixture.ids.alice },
+      { idempotencyKey: "source-read", body: "seed" }
+    );
+    const body = "Source-backed owner-readable text.\n".repeat(35_000);
+    const sourceNote: PersonalNoteRecord = {
+      ...created,
+      body,
+      sourceRevisionId: randomUUID(),
+      memoryEventId: randomUUID(),
+      projectionState: "available"
+    };
+    const getPersonalNote = fixture.repository.getPersonalNote.bind(
+      fixture.repository
+    );
+    fixture.repository.getPersonalNote = async (actor, input) =>
+      input.noteId === created.noteId && actor.userId === fixture.ids.alice
+        ? sourceNote
+        : getPersonalNote(actor, input);
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/personal/notes/${created.noteId}`,
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(response.statusCode, response.body.slice(0, 200)).toBe(200);
+    const note = jsonBody<{ note: Record<string, unknown> }>(response).note;
+    expect(note.body).toBe(body);
+    expect(note.event).toMatchObject({ id: sourceNote.memoryEventId });
+    expect(note.event).not.toHaveProperty("content");
+    await app.close();
+  });
   it("projects committed Personal Notes without projecting channel messages", async () => {
     const fixture = createCollaborationFixture();
     const projected: Array<{

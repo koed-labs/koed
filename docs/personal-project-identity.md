@@ -32,14 +32,18 @@ receives only normalized, credential-free display names. Folders and
 repositories remain references that an AI Client may read through its own
 tools in a Conversation; Koed does not ingest their files.
 
-Document ingestion belongs to HQ-209. Until it is implemented, Add a doc is
-unavailable and the create endpoint returns an unavailable response without
-creating a fake failed or readable document. A failed document already stored
-in the table remains failed when Retry is requested without an ingestor.
-`current_revision_id` can point only to an owner-owned Personal Note revision;
-this ticket does not create or project one. Skill records appear in the
-Sources panel with a description of what their reference means. The panel
-does not infer installed skills or run them.
+Desktop's Add a doc picker uploads a bounded original file through the binary
+Source route. The API extracts readable text, stores the original as an
+encrypted owner payload, and creates an actual owner Personal Note revision.
+`current_revision_id` binds that exact Note revision; the Source becomes ready
+only after its Personal Memory projection is available. Retrying a failed extraction retains
+the same Source and reprocesses its durable attempt; a later same-name upload
+creates a new revision. The metadata-only create endpoint rejects documents
+and directs callers to the binary upload route. See
+[Project Source ingestion](./project-source-ingestion.md) for supported types,
+limits, and failure states. Skill records appear in the Sources panel with a
+description of what their reference means. The panel does not infer installed
+skills or run them.
 
 A trusted runtime may increment `uses` once per exact source and captured
 turn when it has a verified citation or tool-read reference. The internal
@@ -48,12 +52,13 @@ association and records an idempotent turn-use row. No renderer or public API
 operation can increment this value. Automatic capture of source citations is
 still pending its producer integration.
 
-Trashing a reference hides its Project metadata, without deleting any Personal
-Note revision or using `sessions.personal_deleted_at`. A Project delete batch
-trashes only references still active at completion; Undo restores only those
-tagged with that exact batch and leaves earlier trash untouched. Until the
-HQ-209 Note grant freeze adapter exists, deleting or trashing a Note-backed
-Project Source fails closed before changing its metadata.
+Trashing a reference hides its Project metadata, without forgetting any
+Personal Note revision or using `sessions.personal_deleted_at`. A Project delete
+batch trashes only references still active at completion; Undo restores only
+those tagged with that exact batch and leaves earlier trash untouched.
+Note-backed Source removal and Project delete reserve the exact Note logical
+roots, close source admission, and freeze affected Share Grants through the
+existing Native review before local trash. An unresolved freeze fails closed.
 
 ## Private HQ Conversation
 

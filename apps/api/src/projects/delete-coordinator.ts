@@ -5,9 +5,14 @@ import {
   collaborationRendererCommandSchema,
   sharedMemoryFreezeActionGrantBinding,
   sourceAdmissionActionGrantBinding,
-  type CollaborationActionGrantIntent
+  type CollaborationActionGrantIntent,
+  type SharedMemorySourceRef
 } from "@koed/shared";
-import type { ProjectApiRepository } from "@koed/db";
+import type {
+  ProjectApiRepository,
+  ProjectSourceRemovalRepository,
+  ProjectSourceRemoveOperation
+} from "@koed/db";
 import { z } from "zod";
 import type {
   CollaborationActionGrantControl,
@@ -46,27 +51,53 @@ const grantListSchema = z
   .strict();
 export class ProjectNativeReviewDeclined extends Error {}
 
+const manifestSourceRef = (
+  source:
+    | NonNullable<
+        Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
+      >["sources"][number]
+    | ProjectSourceRemoveOperation["sources"][number]
+): SharedMemorySourceRef =>
+  "sessionId" in source
+    ? {
+        kind: "captured_session",
+        sessionId: source.sessionId,
+        logicalMemoryId: source.logicalMemoryId!
+      }
+    : {
+        kind: "personal_note",
+        noteId: source.noteId,
+        noteRevision: source.noteRevision,
+        memoryEventId: source.memoryEventId,
+        logicalMemoryId: source.logicalMemoryId
+      };
+
 export interface ProjectSourceCoordinator {
   advance(input: {
     ownerUserId: string;
     projectId: string;
     batchId: string;
-    operation: NonNullable<
-      Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
-    >;
+    operation:
+      | NonNullable<
+          Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
+        >
+      | ProjectSourceRemoveOperation;
   }): Promise<void>;
   cancel(input: {
     ownerUserId: string;
     projectId: string;
     batchId: string;
-    operation: NonNullable<
-      Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
-    >;
+    operation:
+      | NonNullable<
+          Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
+        >
+      | ProjectSourceRemoveOperation;
   }): Promise<boolean>;
 }
 
 export const createProjectSourceCoordinator = (input: {
   repository: ProjectApiRepository;
+  sourceRemovalRepository?: ProjectSourceRemovalRepository | null;
   sharedMemoryControl: CollaborationSharedMemoryControl;
   actionGrantControl: CollaborationActionGrantControl;
   resolveSourceIdentity: (ownerUserId: string) => {
@@ -74,6 +105,16 @@ export const createProjectSourceCoordinator = (input: {
     sourceOwnerPrincipalId: string;
   } | null;
 }): ProjectSourceCoordinator => {
+  const records = (
+    operation: Parameters<ProjectSourceCoordinator["advance"]>[0]["operation"]
+  ) => {
+    if ("sourceRemoval" in operation) {
+      if (!input.sourceRemovalRepository)
+        throw new Error("Project Source removal coordinator is unavailable");
+      return input.sourceRemovalRepository;
+    }
+    return input.repository;
+  };
   const context = async (
     ownerUserId: string,
     backendId: string
@@ -125,6 +166,7 @@ export const createProjectSourceCoordinator = (input: {
   };
   return {
     async cancel({ ownerUserId, projectId, batchId, operation }) {
+      const repository = records(operation);
       const identity = input.resolveSourceIdentity(ownerUserId);
       if (!identity) return false;
       let allClosed = true;
@@ -132,11 +174,7 @@ export const createProjectSourceCoordinator = (input: {
         if (!source.logicalMemoryId) continue;
         for (const backend of source.backends) {
           const backendId = backend.backendId;
-          const sourceRef = {
-            kind: "captured_session" as const,
-            sessionId: source.sessionId,
-            logicalMemoryId: source.logicalMemoryId
-          };
+          const sourceRef = manifestSourceRef(source);
           const path = `/v1/shared-memory/sources/${source.logicalMemoryId}/admission`;
           try {
             const authority = await context(ownerUserId, backendId);
@@ -202,19 +240,14 @@ export const createProjectSourceCoordinator = (input: {
               allClosed = false;
               continue;
             }
-            await input.repository.recordBackendAck(
-              ownerUserId,
-              projectId,
-              batchId,
-              {
-                logicalMemoryId: source.logicalMemoryId,
-                backendId,
-                generation: admission.generation,
-                holdVersion: admission.holdVersion,
-                sealed: false,
-                cancelled: true
-              }
-            );
+            await repository.recordBackendAck(ownerUserId, projectId, batchId, {
+              logicalMemoryId: source.logicalMemoryId,
+              backendId,
+              generation: admission.generation,
+              holdVersion: admission.holdVersion,
+              sealed: false,
+              cancelled: true
+            });
           } catch {
             allClosed = false;
           }
@@ -223,6 +256,7 @@ export const createProjectSourceCoordinator = (input: {
       return allClosed;
     },
     async advance({ ownerUserId, projectId, batchId, operation }) {
+      const repository = records(operation);
       const identity = input.resolveSourceIdentity(ownerUserId);
       if (!identity)
         throw new Error("Verified Project source identity is unavailable");
@@ -230,11 +264,7 @@ export const createProjectSourceCoordinator = (input: {
         if (!source.logicalMemoryId) continue;
         for (const backend of source.backends) {
           const backendId = backend.backendId;
-          const sourceRef = {
-            kind: "captured_session" as const,
-            sessionId: source.sessionId,
-            logicalMemoryId: source.logicalMemoryId
-          };
+          const sourceRef = manifestSourceRef(source);
           const authority = await context(ownerUserId, backendId);
           const admissionPath = `/v1/shared-memory/sources/${source.logicalMemoryId}/admission`;
           const readAdmission = async () =>
@@ -299,18 +329,13 @@ export const createProjectSourceCoordinator = (input: {
           }
           if (admission.heldBatchId !== batchId)
             throw new Error("Project source hold did not bind batch");
-          await input.repository.recordBackendAck(
-            ownerUserId,
-            projectId,
-            batchId,
-            {
-              logicalMemoryId: source.logicalMemoryId,
-              backendId,
-              generation: admission.generation,
-              holdVersion: admission.holdVersion,
-              sealed: admission.sealed
-            }
-          );
+          await repository.recordBackendAck(ownerUserId, projectId, batchId, {
+            logicalMemoryId: source.logicalMemoryId,
+            backendId,
+            generation: admission.generation,
+            holdVersion: admission.holdVersion,
+            sealed: admission.sealed
+          });
           const grants = grantListSchema.parse(
             await input.sharedMemoryControl.projectSourceRequest({
               backendId,
@@ -322,7 +347,7 @@ export const createProjectSourceCoordinator = (input: {
           for (const grant of grants) {
             // Persist the immutable review identity before remote dispatch.
             // A concurrent retry receives the same command and action grant.
-            const reservation = await input.repository.reserveGrantFreezeReview(
+            const reservation = await repository.reserveGrantFreezeReview(
               ownerUserId,
               projectId,
               batchId,
@@ -367,7 +392,7 @@ export const createProjectSourceCoordinator = (input: {
                 "Project Share Grant freeze review ended"
               );
             if (status.state !== "approved") {
-              await input.repository.recordGrantFreezeAck(
+              await repository.recordGrantFreezeAck(
                 ownerUserId,
                 projectId,
                 batchId,
@@ -404,7 +429,7 @@ export const createProjectSourceCoordinator = (input: {
                 status.actionGrant.id
               )
             });
-            await input.repository.recordGrantFreezeAck(
+            await repository.recordGrantFreezeAck(
               ownerUserId,
               projectId,
               batchId,
@@ -476,11 +501,18 @@ export const createProjectSourceCoordinator = (input: {
             admission.activeUnfrozenGrants !== 0
           )
             throw new Error("Project source seal is incomplete");
-          const latest = await input.repository.getDeleteOperationByBatch(
-            ownerUserId,
-            projectId,
-            batchId
-          );
+          const latest =
+            "sourceRemoval" in operation
+              ? await input.sourceRemovalRepository!.get(
+                  ownerUserId,
+                  projectId,
+                  batchId
+                )
+              : await input.repository.getDeleteOperationByBatch(
+                  ownerUserId,
+                  projectId,
+                  batchId
+                );
           if (!latest) throw new Error("Project source operation changed");
           for (const prior of latest.grantFreezeAcks.filter(
             (ack) =>
@@ -488,7 +520,7 @@ export const createProjectSourceCoordinator = (input: {
               ack.logicalMemoryId === source.logicalMemoryId &&
               (ack.state === "reserved" || ack.state === "review_required")
           )) {
-            await input.repository.recordGrantFreezeAck(
+            await repository.recordGrantFreezeAck(
               ownerUserId,
               projectId,
               batchId,
@@ -498,18 +530,13 @@ export const createProjectSourceCoordinator = (input: {
               }
             );
           }
-          await input.repository.recordBackendAck(
-            ownerUserId,
-            projectId,
-            batchId,
-            {
-              logicalMemoryId: source.logicalMemoryId,
-              backendId,
-              generation: admission.generation,
-              holdVersion: admission.holdVersion,
-              sealed: true
-            }
-          );
+          await repository.recordBackendAck(ownerUserId, projectId, batchId, {
+            logicalMemoryId: source.logicalMemoryId,
+            backendId,
+            generation: admission.generation,
+            holdVersion: admission.holdVersion,
+            sealed: true
+          });
         }
       }
     }

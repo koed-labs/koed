@@ -18,6 +18,42 @@ export const projectSourceFailureSchema = z.enum([
   "no_text_layer",
   "parse_error"
 ]);
+export const projectSourceRemovalStatusSchema = z
+  .object({
+    batchId: z.uuid(),
+    state: z.enum([
+      "preparing",
+      "freezing",
+      "cancel_requested",
+      "ready",
+      "complete",
+      "cancelled"
+    ]),
+    complete: z.boolean(),
+    retryable: z.boolean(),
+    pendingFreezeCount: z.number().int().nonnegative(),
+    pendingReviews: z.array(
+      z
+        .object({
+          backendId: z.string().min(1),
+          shareGrantId: z.uuid(),
+          actionGrantId: z.uuid()
+        })
+        .strict()
+    ),
+    cancellationPending: z.boolean()
+  })
+  .strict();
+export const projectSourceRemovalReviewReservationSchema = z
+  .object({
+    batchId: z.uuid(),
+    sourceId: z.uuid(),
+    backendId: z.string().min(1),
+    shareGrantId: z.uuid(),
+    actionGrantId: z.uuid(),
+    reviewedGrantVersion: z.number().int().nonnegative()
+  })
+  .strict();
 export const projectSourceSchema = z
   .object({
     id: z.uuid(),
@@ -71,6 +107,24 @@ export const createProjectSourceSchema = z
   });
 export const projectSourcesSchema = z
   .object({ sources: z.array(projectSourceSchema) })
+  .strict();
+export const projectSourceUploadSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    mediaType: z.string().trim().min(1).max(120),
+    bytesBase64: z.string().max(34_952_536),
+    idempotencyKey: z.string().trim().min(1).max(512)
+  })
+  .strict();
+export const projectSourceReadSchema = z
+  .object({
+    sourceId: z.uuid(),
+    sourceRevisionId: z.uuid(),
+    noteId: z.uuid(),
+    noteRevisionId: z.uuid(),
+    name: z.string().min(1).max(200),
+    text: z.string().max(25 * 1024 * 1024)
+  })
   .strict();
 export type ProjectSource = z.infer<typeof projectSourceSchema>;
 export type CreateProjectSource = z.infer<typeof createProjectSourceSchema>;

@@ -129,6 +129,19 @@ try {
       await rm(projectViewProfile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const sourceIngestion = spawnSync(
+      process.execPath,
+      ["scripts/run-hq209-validation.mjs"],
+      { cwd: desktopDir, env: process.env, stdio: "inherit" }
+    );
+    if (sourceIngestion.error) throw sourceIngestion.error;
+    process.exitCode = sourceIngestion.status ?? 1;
+    if (process.exitCode === 0)
+      process.stdout.write(
+        "PASS HQ209.native [HQ-209]: owner-readable Source text and exact Note revision context in the native Project view.\n"
+      );
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

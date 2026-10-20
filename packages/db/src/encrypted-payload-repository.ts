@@ -21,6 +21,7 @@ export type EncryptedFieldSourceTable =
   | "memory_questions"
   | "personal_notes"
   | "personal_note_revisions"
+  | "project_source_revisions"
   | "messages"
   | "collaboration_messages"
   | "collaboration_threads"

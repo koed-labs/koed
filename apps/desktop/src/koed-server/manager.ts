@@ -3,6 +3,7 @@ import {
   createProjectsClient,
   type ProjectsAuthority
 } from "./projects-client.js";
+import { createProjectSourceNativeClient } from "./project-source-native-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
 import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
 import { agentBootstrapContextSchema } from "@koed/shared/agent-contract";
@@ -267,6 +268,7 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  projectSourceNative: ReturnType<typeof createProjectSourceNativeClient>;
   projectHqConversation: (
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
@@ -997,6 +999,27 @@ const personalEventsData = (payload: Record<string, unknown>) => {
         }
       };
     })
+  });
+};
+
+export const mapPersonalNoteLoadResponse = (
+  payload: Record<string, unknown>
+) => {
+  const note = objectValue(payload.note);
+  if (!note) throw new PersonalMemoryBoundaryError("invalid_response", false);
+  const event = note.event === null ? null : objectValue(note.event);
+  const mappedEvent = event
+    ? personalEventsData({ events: [event] }).events[0]
+    : null;
+  if (
+    (note.memoryEventId === null && note.event !== null) ||
+    (note.memoryEventId !== null &&
+      (!mappedEvent || mappedEvent.id !== note.memoryEventId))
+  ) {
+    throw new PersonalMemoryBoundaryError("invalid_response", false);
+  }
+  return personalDesktopNoteDataSchema.parse({
+    note: { ...note, event: mappedEvent }
   });
 };
 
@@ -3863,6 +3886,34 @@ export const createKoedServerManager = ({
     };
   };
 
+  const projectSourceNative = createProjectSourceNativeClient({
+    authority: projectsAuthority,
+    requestJson: async (path, init, bound) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 60_000, maxBytes: 51 * 1024 * 1024 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    }
+  });
+
   const projects = createProjectsClient(
     async (path, init, bound: ProjectsAuthority) => {
       const remote = await fetchBoundedJsonObject(
@@ -4606,26 +4657,9 @@ export const createKoedServerManager = ({
         ),
         init: { method: "GET" }
       }),
-      4 * 1_024 * 1_024
+      51 * 1_024 * 1_024
     );
-    const note = objectValue(payload.note);
-    if (!note) {
-      throw new PersonalMemoryBoundaryError("invalid_response", false);
-    }
-    const event = note.event === null ? null : objectValue(note.event);
-    const mappedEvent = event
-      ? personalEventsData({ events: [event] }).events[0]
-      : null;
-    if (
-      (note.memoryEventId === null && note.event !== null) ||
-      (note.memoryEventId !== null &&
-        (!mappedEvent || mappedEvent.id !== note.memoryEventId))
-    ) {
-      throw new PersonalMemoryBoundaryError("invalid_response", false);
-    }
-    return personalDesktopNoteDataSchema.parse({
-      note: { ...note, event: mappedEvent }
-    });
+    return mapPersonalNoteLoadResponse(payload);
   };
 
   const createPersonalNote = async (
@@ -5716,6 +5750,7 @@ export const createKoedServerManager = ({
     managedConversation,
     managedProject,
     projects,
+    projectSourceNative,
     projectHqConversation,
     agents,
     discoverProject: (cwd) =>

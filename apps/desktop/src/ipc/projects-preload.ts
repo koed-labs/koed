@@ -44,6 +44,54 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    sourceUpload: async (projectId) => {
+      const result = await command({ operation: "sourceUpload", projectId });
+      if (result.operation !== "sourceUpload")
+        throw new Error("Invalid Project Source upload.");
+      if (!result.value.canceled && result.value.source.projectId !== projectId)
+        throw new Error("Invalid Project Source upload identity.");
+      return result.value.source;
+    },
+    sourceRead: async (projectId, sourceId, noteRevisionId) => {
+      const result = await command({
+        operation: "sourceRead",
+        projectId,
+        sourceId,
+        noteRevisionId
+      });
+      if (
+        result.operation !== "sourceRead" ||
+        result.value.sourceId !== sourceId ||
+        result.value.noteRevisionId !== noteRevisionId
+      )
+        throw new Error("Invalid Project Source read.");
+      return result.value;
+    },
+    sourceRemoval: async (projectId, sourceId) => {
+      const result = await command({
+        operation: "sourceRemoval",
+        projectId,
+        sourceId
+      });
+      if (result.operation !== "sourceRemoval")
+        throw new Error("Invalid Project Source removal.");
+      return result.value;
+    },
+    sourceReview: async (projectId, sourceId, batchId, actionGrantId) => {
+      const result = await command({
+        operation: "sourceReview",
+        projectId,
+        sourceId,
+        batchId,
+        actionGrantId
+      });
+      if (
+        result.operation !== "sourceReview" ||
+        result.value.batchId !== batchId
+      )
+        throw new Error("Invalid Project Source review.");
+      return result.value;
+    },
     sourceList: async (projectId) => {
       const result = await command({ operation: "sourceList", projectId });
       if (

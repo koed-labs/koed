@@ -381,6 +381,26 @@ const managedConversationRunnerRoutes = [
 
 export const routeIdentityContracts = [
   route(
+    "POST",
+    "/v1/projects/{id}/sources/upload",
+    "session_or_device_credential",
+    "projects",
+    "Upload an original Project Source through the owner-bound Desktop flow.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/sources/{sourceId}/content",
+    "session_or_device_credential",
+    "projects",
+    "Read the current extracted Project Source Note revision as its owner.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/projects/{id}/sources",
     "session_or_device_credential",
@@ -416,6 +436,26 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "projects",
     "Retry a failed Project Source when ingestion is available.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/sources/{sourceId}/removal",
+    "session_or_device_credential",
+    "projects",
+    "Advance a source-scoped durable Share Grant freeze before trash.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/projects/{id}/sources/{sourceId}/removal/reviews/{actionGrantId}",
+    "session_or_device_credential",
+    "projects",
+    "Read an exact reserved Source removal review identity before Native device review.",
     "none",
     "implemented",
     localEdgeDeploymentModes

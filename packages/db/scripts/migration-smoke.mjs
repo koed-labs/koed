@@ -76,9 +76,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0054_woozy_diamondback";
+const expectedLatestMigrationTag = "0055_youthful_wong";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 54;
+const expectedLatestMigrationIndex = 55;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1630,6 +1630,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preSourceIngestionFolder = await createMigrationSlice(journal, 54, {
+    folderPrefix: "koed-pre-source-ingestion-"
+  });
+  temporaryFolders.add(preSourceIngestionFolder);
+  const preSourceIngestionRecords = await migrationRecords(
+    preSourceIngestionFolder,
+    journal.entries.slice(0, 55)
+  );
   const preSourceFolder = await createMigrationSlice(journal, 53, {
     folderPrefix: "koed-pre-project-sources-"
   });
@@ -2981,6 +2989,190 @@ try {
         await assertMigrationLedger(pool, fullRecords);
         if ((await schemaFingerprint(pool)) !== fingerprint)
           throw new Error("Project Sources migration rerun changed schema");
+      });
+    }
+  );
+
+  await runScenario(
+    "source-ingestion-0055-upgrade-rollback-restore",
+    async () => {
+      const target = await createDisposableDatabase("source_ingestion_upgrade");
+      const ownerId = randomUUID();
+      const otherId = randomUUID();
+      const projectId = randomUUID();
+      const sourceId = randomUUID();
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: preSourceIngestionFolder
+        });
+        await assertMigrationLedger(pool, preSourceIngestionRecords);
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          ownerId,
+          `${ownerId}@example.test`,
+          otherId,
+          `${otherId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Retained ingestion','INGEST')",
+          [projectId, ownerId]
+        );
+        await pool.query(
+          `insert into project_sources(id,owner_user_id,project_id,kind,name,status,added_by)
+         values($1,$2,$3,'doc','Retained.txt','uploading',$2)`,
+          [sourceId, ownerId, projectId]
+        );
+        const before = await schemaFingerprint(pool);
+        const interrupted = await createMigrationSlice(journal, 55, {
+          folderPrefix: "koed-source-ingestion-interrupted-",
+          transformLastSql: (sql) =>
+            `${sql}--> statement-breakpoint\nselect 1/0;`
+        });
+        temporaryFolders.add(interrupted);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed)
+          throw new Error("Interrupted 0055 ingestion migration succeeded");
+        const rollback = await pool.query(
+          `select to_regclass('public.project_source_revisions')::text as attempts,
+          to_regclass('public.project_source_remove_operations')::text as removals,
+          exists(select 1 from project_sources where id=$1 and owner_user_id=$2) as retained,
+          exists(select 1 from information_schema.columns
+            where table_name='personal_note_revisions' and column_name='forgotten_at') as forgotten_column`,
+          [sourceId, ownerId]
+        );
+        if (
+          !isDeepStrictEqual(rollback.rows[0], {
+            attempts: null,
+            removals: null,
+            retained: true,
+            forgotten_column: false
+          }) ||
+          (await schemaFingerprint(pool)) !== before
+        )
+          throw new Error(
+            "Interrupted 0055 ingestion migration changed retained data"
+          );
+        await assertMigrationLedger(pool, preSourceIngestionRecords);
+      });
+      const backupFolder = await mkdtemp(
+        resolve(tmpdir(), "koed-source-ingestion-backup-")
+      );
+      temporaryFolders.add(backupFolder);
+      const backupPath = resolve(backupFolder, "pre-0055.dump");
+      await runPostgresTool(
+        process.env.PG_DUMP_BIN ?? "pg_dump",
+        [
+          "--format=custom",
+          "--no-owner",
+          "--no-privileges",
+          "--file",
+          backupPath
+        ],
+        target.url
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const definition = await pool.query(
+          `select pg_get_constraintdef(oid) as definition from pg_constraint
+          where conname='encrypted_field_payloads_source_table_check'`
+        );
+        if (
+          !definition.rows[0]?.definition.includes("project_source_revisions")
+        )
+          throw new Error("0055 did not allowlist encrypted source originals");
+        const attemptId = randomUUID();
+        const insert = `insert into project_source_revisions
+        (id,owner_user_id,source_id,revision,idempotency_key_hash,content_hash,byte_length,media_type)
+        values($1,$2,$3,1,$4,$5,3,'text/plain')`;
+        await expectSqlState(
+          pool,
+          insert,
+          "23503",
+          "Source attempt owner binding",
+          [attemptId, otherId, sourceId, "a".repeat(64), "b".repeat(64)]
+        );
+        await pool.query(insert, [
+          attemptId,
+          ownerId,
+          sourceId,
+          "a".repeat(64),
+          "b".repeat(64)
+        ]);
+        const siblingSourceId = randomUUID();
+        await pool.query(
+          `insert into project_sources(id,owner_user_id,project_id,kind,name,status,added_by)
+         values($1,$2,$3,'doc','Sibling.txt','uploading',$2)`,
+          [siblingSourceId, ownerId, projectId]
+        );
+        await expectSqlState(
+          pool,
+          "update project_sources set pending_revision_id=$1 where id=$2",
+          "23503",
+          "Pending revision exact Source binding",
+          [attemptId, siblingSourceId]
+        );
+        const otherProjectId = randomUUID();
+        const foreignSourceId = randomUUID();
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Foreign ingestion','OTHER')",
+          [otherProjectId, otherId]
+        );
+        await pool.query(
+          `insert into project_sources(id,owner_user_id,project_id,kind,name,status,added_by)
+         values($1,$2,$3,'doc','Foreign.txt','uploading',$2)`,
+          [foreignSourceId, otherId, otherProjectId]
+        );
+        await expectSqlState(
+          pool,
+          "update project_sources set pending_revision_id=$1 where id=$2",
+          "23503",
+          "Pending revision owner binding",
+          [attemptId, foreignSourceId]
+        );
+        await pool.query(
+          "update project_sources set pending_revision_id=$1 where id=$2",
+          [attemptId, sourceId]
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0055 ingestion migration rerun changed schema");
+      });
+      const restored = await createDisposableDatabase(
+        "source_ingestion_restore"
+      );
+      await runPostgresTool(
+        process.env.PG_RESTORE_BIN ?? "pg_restore",
+        [
+          "--exit-on-error",
+          "--single-transaction",
+          "--no-owner",
+          "--no-privileges",
+          "--dbname",
+          restored.database,
+          backupPath
+        ],
+        restored.url
+      );
+      await withPool(restored.url, async (pool) => {
+        await assertMigrationLedger(pool, preSourceIngestionRecords);
+        if (
+          !(
+            await pool.query(
+              "select 1 from project_sources where id=$1 and owner_user_id=$2",
+              [sourceId, ownerId]
+            )
+          ).rows[0]
+        )
+          throw new Error("Pre-0055 restore lost retained Source");
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
       });
     }
   );

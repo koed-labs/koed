@@ -17,7 +17,7 @@ import type {
   CollaborationRendererClient
 } from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
-import type { Project } from "@koed/shared";
+import type { Project, ProjectSource } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
@@ -35,8 +35,11 @@ const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes";
 const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
+const hq209Capture =
+  new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
 const hq207Capture =
-  new URLSearchParams(window.location.search).get("hq207Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
+  hq209Capture;
 const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
 const hq205SourceOwnerId = "00000000-0000-4000-8000-000000002051";
 const hq205SourceTime = "2026-10-20T09:00:00.000Z";
@@ -84,7 +87,7 @@ const hq205InitialSources = [
     createdAt: hq205SourceTime
   }
 ];
-let hq205Sources = structuredClone(hq205InitialSources);
+let hq205Sources: ProjectSource[] = structuredClone(hq205InitialSources);
 const hq204ProjectId = "00000000-0000-4000-8000-000000002038";
 const hq207RuntimeExecutionIds = Array.from(
   { length: 5 },
@@ -1053,6 +1056,59 @@ const sidebarProjectsApi = {
           }
         ]
       : [],
+  sourceUpload: async (projectId: string) => {
+    if (!hq209Capture || projectId !== hq204ProjectId)
+      throw new Error("Document upload is unavailable in this fixture.");
+    const source = {
+      ...hq205InitialSources[1]!,
+      projectId,
+      id: "00000000-0000-4000-8000-000000002095",
+      name: "Field report.txt",
+      currentRevisionId: "00000000-0000-4000-8000-000000002096"
+    };
+    if (!hq205Sources.some((item) => item.id === source.id))
+      hq205Sources.unshift(source);
+    return source;
+  },
+  sourceRead: async (
+    projectId: string,
+    sourceId: string,
+    noteRevisionId: string
+  ) => {
+    if (!hq209Capture || projectId !== hq204ProjectId)
+      throw new Error("Document read is unavailable in this fixture.");
+    const source = hq205Sources.find((item) => item.id === sourceId);
+    if (!source || source.currentRevisionId !== noteRevisionId)
+      throw new Error("Document revision changed.");
+    return {
+      sourceId,
+      noteRevisionId,
+      name: source.name,
+      noteId: "00000000-0000-4000-8000-000000002097",
+      sourceRevisionId:
+        sourceId === "00000000-0000-4000-8000-000000002095"
+          ? "00000000-0000-4000-8000-000000002098"
+          : "00000000-0000-4000-8000-000000002099",
+      text:
+        sourceId === "00000000-0000-4000-8000-000000002095"
+          ? "Field report: the review owner is Maya; the next checkpoint is Friday."
+          : "Plan: review the Project goals and choose the next task."
+    };
+  },
+  sourceRemoval: async (projectId: string, sourceId: string) => {
+    if (!hq209Capture || projectId !== hq204ProjectId)
+      throw new Error("Source removal is unavailable in this fixture.");
+    hq205Sources = hq205Sources.filter((item) => item.id !== sourceId);
+    return {
+      batchId: "00000000-0000-4000-8000-000000002094",
+      state: "complete" as const,
+      complete: true,
+      retryable: false,
+      pendingFreezeCount: 0,
+      pendingReviews: [],
+      cancellationPending: false
+    };
+  },
   sourceCreate: async (
     _projectId: string,
     input: { kind: string; name: string; uri?: string | null }

@@ -533,11 +533,25 @@ export const personalDesktopNoteSummarySchema = z
 
 export const personalDesktopNoteSchema = personalDesktopNoteSummarySchema
   .extend({
-    body: z.string().min(1).max(32_768),
+    // Project Source revisions are genuine Personal Notes. Reads may carry the
+    // extracted text; public create/update inputs retain the 32 KiB limit.
+    body: z
+      .string()
+      .min(1)
+      .max(25 * 1024 * 1024),
+    sourceRevisionId: z.uuid().optional(),
     logicalMemoryId: z.uuid(),
     event: personalDesktopConversationEventSchema.nullable()
   })
-  .strict();
+  .strict()
+  .superRefine((note, context) => {
+    if (!note.sourceRevisionId && note.body.length > 32_768)
+      context.addIssue({
+        code: "custom",
+        path: ["body"],
+        message: "Ordinary Personal Note body exceeds 32 KiB"
+      });
+  });
 
 export const personalDesktopNoteListInputSchema = z
   .object({

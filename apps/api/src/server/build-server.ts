@@ -22,6 +22,7 @@ import {
   createProjectActivityRepository,
   createProjectApiRepository,
   createProjectSourceRepository,
+  createProjectSourceRemovalRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -48,6 +49,7 @@ import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
 import { registerProjectSourceRoutes } from "../projects/source-routes.js";
+import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import {
@@ -487,7 +489,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       })
     : null;
   const projectSourceRepository = pool
-    ? createProjectSourceRepository(pool)
+    ? createProjectSourceRepository(pool, { envelopeEncryptionProvider })
+    : null;
+  const projectSourceRemovalRepository = pool
+    ? createProjectSourceRemovalRepository(pool, () =>
+        readLocalEdgeUpstreamRegistry(
+          localEdgeUpstreamBackendsPath
+        ).backends.map((backend) => backend.id)
+      )
     : null;
   const retentionRepository =
     options.retentionRepository ??
@@ -595,6 +604,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
     typeof createPersonalNoteMemoryRepairService
+  > | null = null;
+  let projectSourceIngestionService: ReturnType<
+    typeof createProjectSourceIngestionService
   > | null = null;
   let realtimeTransportAdmissionService: RealtimeTransportAdmissionService | null =
     null;
@@ -752,6 +764,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       clearInterval(continuousNoteAdvancementWorkerTimer);
     }
     await personalNoteMemoryRepairService?.close();
+    await projectSourceIngestionService?.close();
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
@@ -1380,6 +1393,33 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       }
     });
   }
+  if (
+    projectSourceRepository &&
+    repository &&
+    envelopeEncryptionProvider &&
+    ["developer", "local_personal"].includes(config.deploymentProfile)
+  ) {
+    projectSourceIngestionService = createProjectSourceIngestionService({
+      repository: projectSourceRepository,
+      projectNote: async ({ ownerUserId, note }) => {
+        await projectPersonalNoteToMemory(
+          {
+            repository,
+            enqueueEmbedding,
+            requestContinuousShareAdvancement: () =>
+              requestContinuousNoteAdvancementWork?.()
+          },
+          { ownerUserId, note }
+        );
+      },
+      onError: (error) => {
+        app.log.error(
+          { err: error, event: { name: "project_source.ingestion.failed" } },
+          "Project Source ingestion failed"
+        );
+      }
+    });
+  }
   const inspectDeploymentIdentity =
     options.inspectDeploymentIdentity ??
     (() =>
@@ -1892,21 +1932,23 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
+  const projectSourceCoordinator =
+    projectApiRepository &&
+    collaborationSharedMemoryControl &&
+    localSharedMemoryCandidatePreparation
+      ? createProjectSourceCoordinator({
+          repository: projectApiRepository,
+          sourceRemovalRepository: projectSourceRemovalRepository,
+          sharedMemoryControl: collaborationSharedMemoryControl,
+          actionGrantControl: collaborationActionGrantControl,
+          resolveSourceIdentity:
+            localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
+        })
+      : null;
   registerProjectRoutes(app, {
     repository: projectApiRepository,
     managedRepository: repository,
-    sourceCoordinator:
-      projectApiRepository &&
-      collaborationSharedMemoryControl &&
-      localSharedMemoryCandidatePreparation
-        ? createProjectSourceCoordinator({
-            repository: projectApiRepository,
-            sharedMemoryControl: collaborationSharedMemoryControl,
-            actionGrantControl: collaborationActionGrantControl,
-            resolveSourceIdentity:
-              localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
-          })
-        : null,
+    sourceCoordinator: projectSourceCoordinator,
     deploymentProfile: config.deploymentProfile,
     koedHome: config.koedHome,
     auth: authHelpers,
@@ -1915,6 +1957,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerProjectSourceRoutes(app, {
     repository: projectSourceRepository,
+    removalRepository: projectSourceRemovalRepository,
+    sourceCoordinator: projectSourceCoordinator,
+    requestIngestion: () => void projectSourceIngestionService?.runNow(),
     deploymentProfile: config.deploymentProfile,
     koedHome: config.koedHome,
     auth: authHelpers,

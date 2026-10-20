@@ -389,16 +389,37 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
     }
   });
 
-  it("rejects unimplemented and Team kinds at the Personal append boundary", async () => {
+  it("writes Source readiness once per attempt and rejects unimplemented and Team kinds", async () => {
     const client = await pool.connect();
     try {
       await client.query("begin");
-      for (const kind of [
-        "source_ready",
-        "source_failed",
-        "assertion_created",
-        "member_joined"
-      ] as const)
+      const attempts = [
+        { kind: "source_ready" as const, ref: randomUUID() },
+        { kind: "source_failed" as const, ref: randomUUID() }
+      ];
+      for (const attempt of attempts) {
+        const event = {
+          ownerUserId: owner,
+          projectId: project,
+          actorUserId: owner,
+          ...attempt
+        };
+        expect(
+          await appendProjectActivityWithClient(client, event)
+        ).not.toBeNull();
+        expect(await appendProjectActivityWithClient(client, event)).toBeNull();
+      }
+      await client.query("commit");
+      const written = (
+        await createProjectActivityRepository(pool).list(owner, project)
+      ).items.filter((item) =>
+        attempts.some((attempt) => attempt.ref === item.ref)
+      );
+      expect(
+        written.map((item) => ({ kind: item.kind, ref: item.ref }))
+      ).toEqual(attempts);
+      await client.query("begin");
+      for (const kind of ["assertion_created", "member_joined"] as const)
         await expect(
           appendProjectActivityWithClient(client, {
             ownerUserId: owner,

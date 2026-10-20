@@ -2055,14 +2055,6 @@ const ensureCandidateSourceIdentity = async (
       "Candidate source provenance does not match its logical Memory"
     );
   }
-  if (
-    mode === "restrictive_admission" &&
-    input.source.kind !== "captured_session"
-  ) {
-    throw new SharedMemoryConflictError(
-      "Project source admission requires an explicit source adapter"
-    );
-  }
   const credential = await client.query<Row>(
     `select credential_key_id,upstream_backend_id,device_instance_id,
             lineage_id,credential_version,verifier_kind,verifier_hash,
@@ -2126,26 +2118,68 @@ const ensureCandidateSourceIdentity = async (
       localIdentity.rows[0].invalidated_at !== null ||
       localIdentity.rows[0].purge_completed_at !== null)
   ) {
-    if (input.source.kind !== "captured_session") {
-      throw new SharedMemoryConflictError(
-        "Project source admission requires an explicit source adapter"
-      );
-    }
-    const retained = await client.query(
-      `select 1 from captured_session_logical_memories
-        where logical_memory_id=$1 and source_session_id=$2
-          and owner_principal_id=$3`,
-      [
-        input.source.logicalMemoryId,
-        input.source.sessionId,
-        input.sourceOwnerPrincipalId
-      ]
-    );
+    const retained =
+      input.source.kind === "captured_session"
+        ? await client.query(
+            `select 1 from captured_session_logical_memories
+            where logical_memory_id=$1 and source_session_id=$2
+              and owner_principal_id=$3`,
+            [
+              input.source.logicalMemoryId,
+              input.source.sessionId,
+              input.sourceOwnerPrincipalId
+            ]
+          )
+        : await client.query(
+            `select 1 from personal_note_logical_memories
+            where logical_memory_id=$1 and source_note_id=$2
+              and owner_principal_id=$3 and source_kind='personal_note'`,
+            [
+              input.source.logicalMemoryId,
+              input.source.noteId,
+              input.sourceOwnerPrincipalId
+            ]
+          );
     if (!retained.rows[0])
       throw new SharedMemoryConflictError(
         "Retained source identity is unavailable"
       );
   }
+  const ensureRestrictiveNoteRoot = async () => {
+    if (
+      mode !== "restrictive_admission" ||
+      input.source.kind !== "personal_note"
+    )
+      return;
+    // This operation only closes admission. Bootstrap the typed root for a
+    // never-shared Note without creating a revision, grant, or preview.
+    const root = await client.query(
+      `insert into personal_note_logical_memories
+         (logical_memory_id,source_kind,source_note_id,owner_principal_id)
+       values ($1,'personal_note',$2,$3)
+       on conflict (logical_memory_id) do update
+         set source_note_id=personal_note_logical_memories.source_note_id
+       where personal_note_logical_memories.source_note_id=excluded.source_note_id
+         and personal_note_logical_memories.owner_principal_id=excluded.owner_principal_id
+       returning logical_memory_id`,
+      [
+        input.source.logicalMemoryId,
+        input.source.noteId,
+        input.sourceOwnerPrincipalId
+      ]
+    );
+    if (!root.rows[0])
+      throw new SharedMemoryConflictError(
+        "Personal Note admission root changed"
+      );
+  };
+  if (
+    localIdentity.rows[0] &&
+    localIdentity.rows[0].lifecycle === "active" &&
+    localIdentity.rows[0].invalidated_at === null &&
+    localIdentity.rows[0].purge_completed_at === null
+  )
+    await ensureRestrictiveNoteRoot();
   if (
     localIdentity.rows[0] &&
     !input.requireExternalBinding &&
@@ -2228,6 +2262,7 @@ const ensureCandidateSourceIdentity = async (
   if (!logical.rows[0]) {
     throw new SharedMemoryConflictError("Candidate source identity changed");
   }
+  await ensureRestrictiveNoteRoot();
   return {
     ownerPrincipalId: input.sourceOwnerPrincipalId,
     deploymentIdentityId: stringValue(deployment.id),

@@ -9,6 +9,8 @@ import {
 } from "@koed/shared/project-contract";
 import {
   createProjectSourceSchema,
+  projectSourceReadSchema,
+  projectSourceRemovalStatusSchema,
   projectSourceSchema,
   projectSourcesSchema
 } from "@koed/shared/project-source-contract";
@@ -22,6 +24,33 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("hq"), projectId: z.uuid() }).strict(),
   z
     .object({ operation: z.literal("sourceList"), projectId: z.uuid() })
+    .strict(),
+  z
+    .object({ operation: z.literal("sourceUpload"), projectId: z.uuid() })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRead"),
+      projectId: z.uuid(),
+      sourceId: z.uuid(),
+      noteRevisionId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRemoval"),
+      projectId: z.uuid(),
+      sourceId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceReview"),
+      projectId: z.uuid(),
+      sourceId: z.uuid(),
+      batchId: z.uuid(),
+      actionGrantId: z.uuid()
+    })
     .strict(),
   z
     .object({
@@ -116,6 +145,35 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     .strict(),
   z
     .object({
+      operation: z.literal("sourceUpload"),
+      value: z.discriminatedUnion("canceled", [
+        z.object({ canceled: z.literal(true), source: z.null() }).strict(),
+        z
+          .object({ canceled: z.literal(false), source: projectSourceSchema })
+          .strict()
+      ])
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRead"),
+      value: projectSourceReadSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceRemoval"),
+      value: projectSourceRemovalStatusSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sourceReview"),
+      value: projectSourceRemovalStatusSchema
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal("sourceDiscoverRepos"),
       value: z
         .object({
@@ -189,6 +247,24 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  sourceUpload?(
+    projectId: string
+  ): Promise<z.infer<typeof projectSourceSchema> | null>;
+  sourceRead?(
+    projectId: string,
+    sourceId: string,
+    noteRevisionId: string
+  ): Promise<z.infer<typeof projectSourceReadSchema>>;
+  sourceRemoval?(
+    projectId: string,
+    sourceId: string
+  ): Promise<z.infer<typeof projectSourceRemovalStatusSchema>>;
+  sourceReview?(
+    projectId: string,
+    sourceId: string,
+    batchId: string,
+    actionGrantId: string
+  ): Promise<z.infer<typeof projectSourceRemovalStatusSchema>>;
   sourceList(projectId: string): Promise<z.infer<typeof projectSourceSchema>[]>;
   sourceDiscoverRepos(
     projectId: string

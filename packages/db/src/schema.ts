@@ -20,7 +20,8 @@ import {
   uniqueIndex,
   uuid,
   vector,
-  type AnyPgColumn
+  type AnyPgColumn,
+  type PgTableExtraConfigValue
 } from "drizzle-orm/pg-core";
 import type {
   CollaborationApprovalReview,
@@ -2330,6 +2331,7 @@ export const personalNoteRevisions = pgTable(
     projectionFailureCode: text("projection_failure_code"),
     projectedAt: timestamp("projected_at", { withTimezone: true }),
     supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    forgottenAt: timestamp("forgotten_at", { withTimezone: true }),
     createdByDeviceCredentialId: uuid("created_by_device_credential_id"),
     createdAt: now()
   },
@@ -2390,6 +2392,8 @@ export const projectSources = pgTable(
     name: text("name").notNull(),
     uri: text("uri"),
     currentRevisionId: uuid("current_revision_id"),
+    pendingRevisionId: uuid("pending_revision_id"),
+    removeBatchId: uuid("remove_batch_id"),
     status: text("status").notNull(),
     failureReason: text("failure_reason"),
     addedBy: uuid("added_by").notNull(),
@@ -2399,7 +2403,7 @@ export const projectSources = pgTable(
     createdAt: now(),
     updatedAt: updatedNow()
   },
-  (table) => [
+  (table): PgTableExtraConfigValue[] => [
     foreignKey({
       columns: [table.ownerUserId, table.projectId],
       foreignColumns: [projects.ownerUserId, projects.id],
@@ -2412,6 +2416,15 @@ export const projectSources = pgTable(
         personalNoteRevisions.ownerUserId
       ],
       name: "project_sources_owner_note_revision_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.ownerUserId, table.id, table.pendingRevisionId],
+      foreignColumns: [
+        projectSourceRevisions.ownerUserId as AnyPgColumn,
+        projectSourceRevisions.sourceId as AnyPgColumn,
+        projectSourceRevisions.id as AnyPgColumn
+      ],
+      name: "project_sources_pending_revision_fk"
     }).onDelete("restrict"),
     foreignKey({
       columns: [table.addedBy],
@@ -2446,6 +2459,138 @@ export const projectSources = pgTable(
     check(
       "project_sources_document_revision_check",
       sql`${table.currentRevisionId} is null or ${table.kind} = 'doc'`
+    ),
+    check(
+      "project_sources_remove_batch_check",
+      sql`${table.removeBatchId} is null or ${table.deletedAt} is null`
+    )
+  ]
+);
+
+// Source trash uses an independent durable admission/freeze batch. The row
+// reservation on project_sources serializes it with uploads and extraction.
+export const projectSourceRemoveOperations = pgTable(
+  "project_source_remove_operations",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    sourceManifest: jsonb("source_manifest").$type<unknown[]>().notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    backendAcks: jsonb("backend_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    grantFreezeAcks: jsonb("grant_freeze_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text("state").notNull().default("preparing"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_source_remove_operations_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.sourceId],
+      foreignColumns: [projectSources.ownerUserId, projectSources.id],
+      name: "project_source_remove_operations_source_fk"
+    }).onDelete("cascade"),
+    index("project_source_remove_operations_source_idx").on(
+      table.ownerUserId,
+      table.sourceId,
+      table.createdAt.desc()
+    ),
+    check(
+      "project_source_remove_operations_hash_check",
+      sql`length(${table.sourceManifestHash})=64`
+    ),
+    check(
+      "project_source_remove_operations_state_check",
+      sql`${table.state} in ('preparing','freezing','cancel_requested','ready','complete','cancelled')`
+    )
+  ]
+);
+
+// A document upload attempt is durable before extraction starts. Its encrypted
+// original is referenced by (project_source_revisions, id, original_binary)
+// in encrypted_field_payloads; plaintext bytes never enter this table.
+export const projectSourceRevisions = pgTable(
+  "project_source_revisions",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    revision: integer("revision").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    contentHash: text("content_hash").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    mediaType: text("media_type").notNull(),
+    state: text("state").notNull().default("uploading"),
+    failureReason: text("failure_reason"),
+    noteRevisionId: uuid("note_revision_id"),
+    leaseGeneration: integer("lease_generation").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table): PgTableExtraConfigValue[] => [
+    foreignKey({
+      columns: [table.ownerUserId, table.sourceId],
+      foreignColumns: [projectSources.ownerUserId, projectSources.id],
+      name: "project_source_revisions_owner_source_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.noteRevisionId, table.ownerUserId],
+      foreignColumns: [
+        personalNoteRevisions.id,
+        personalNoteRevisions.ownerUserId
+      ],
+      name: "project_source_revisions_owner_note_revision_fk"
+    }).onDelete("restrict"),
+    unique("project_source_revisions_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("project_source_revisions_owner_source_id_unique").on(
+      table.ownerUserId,
+      table.sourceId,
+      table.id
+    ),
+    unique("project_source_revisions_source_number_unique").on(
+      table.sourceId,
+      table.revision
+    ),
+    unique("project_source_revisions_source_idempotency_unique").on(
+      table.sourceId,
+      table.idempotencyKeyHash
+    ),
+    uniqueIndex("project_source_revisions_note_revision_unique")
+      .on(table.noteRevisionId)
+      .where(sql`${table.noteRevisionId} is not null`),
+    index("project_source_revisions_pending_idx").on(
+      table.state,
+      table.updatedAt
+    ),
+    check(
+      "project_source_revisions_hashes_check",
+      sql`length(${table.idempotencyKeyHash}) = 64 and length(${table.contentHash}) = 64`
+    ),
+    check(
+      "project_source_revisions_size_check",
+      sql`${table.byteLength} >= 0 and ${table.byteLength} <= 26214400`
+    ),
+    check(
+      "project_source_revisions_state_check",
+      sql`${table.state} in ('uploading','extracting','ready','failed')`
+    ),
+    check(
+      "project_source_revisions_failure_check",
+      sql`(${table.state} = 'failed' and ${table.failureReason} in ('unsupported_type','too_large','no_text_layer','parse_error')) or (${table.state} <> 'failed' and ${table.failureReason} is null)`
     )
   ]
 );
@@ -3480,6 +3625,7 @@ export const encryptedFieldPayloads = pgTable(
         'memory_questions',
         'personal_notes',
         'personal_note_revisions',
+        'project_source_revisions',
         'memory_replica_revisions',
         'messages',
         'privacy_classification_results',

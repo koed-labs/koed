@@ -179,6 +179,31 @@ export const registerDesktopCommandHandlers = (
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    uploadProjectSource?: (
+      projectId: string
+    ) => Promise<
+      Extract<ProjectsResult, { operation: "sourceUpload" }>["value"]
+    >;
+    readProjectSource?: (
+      projectId: string,
+      sourceId: string,
+      noteRevisionId: string
+    ) => Promise<Extract<ProjectsResult, { operation: "sourceRead" }>["value"]>;
+    removeProjectSource?: (
+      projectId: string,
+      sourceId: string
+    ) => Promise<
+      Extract<ProjectsResult, { operation: "sourceRemoval" }>["value"]
+    >;
+    reviewProjectSource?: (
+      projectId: string,
+      sourceId: string,
+      batchId: string,
+      actionGrantId: string,
+      context: DesktopCommandContext
+    ) => Promise<
+      Extract<ProjectsResult, { operation: "sourceReview" }>["value"]
+    >;
     pickProjectFolder?: () => Promise<string | null>;
     agents?: (request: AgentsRequest) => Promise<AgentsResult>;
     managedConversation: (
@@ -478,6 +503,52 @@ export const registerDesktopCommandHandlers = (
         operation: "pickFolder",
         path: await options.pickProjectFolder()
       });
+    }
+    if (request.operation === "sourceUpload") {
+      if (!options.uploadProjectSource)
+        throw new Error("Project Source upload is unavailable.");
+      const value = await options.uploadProjectSource(request.projectId);
+      if (!value.canceled && value.source.projectId !== request.projectId)
+        throw new Error("Invalid Project Source upload identity.");
+      return projectsResultSchema.parse({ operation: "sourceUpload", value });
+    }
+    if (request.operation === "sourceRead") {
+      if (!options.readProjectSource)
+        throw new Error("Project Source read is unavailable.");
+      const value = await options.readProjectSource(
+        request.projectId,
+        request.sourceId,
+        request.noteRevisionId
+      );
+      if (
+        value.sourceId !== request.sourceId ||
+        value.noteRevisionId !== request.noteRevisionId
+      )
+        throw new Error("Invalid Project Source read identity.");
+      return projectsResultSchema.parse({ operation: "sourceRead", value });
+    }
+    if (request.operation === "sourceRemoval") {
+      if (!options.removeProjectSource)
+        throw new Error("Project Source removal is unavailable.");
+      const value = await options.removeProjectSource(
+        request.projectId,
+        request.sourceId
+      );
+      return projectsResultSchema.parse({ operation: "sourceRemoval", value });
+    }
+    if (request.operation === "sourceReview") {
+      if (!options.reviewProjectSource)
+        throw new Error("Project Source Native review is unavailable.");
+      const value = await options.reviewProjectSource(
+        request.projectId,
+        request.sourceId,
+        request.batchId,
+        request.actionGrantId,
+        contextForSender(event.sender)
+      );
+      if (value.batchId !== request.batchId)
+        throw new Error("Project Source review batch changed.");
+      return projectsResultSchema.parse({ operation: "sourceReview", value });
     }
     if (!options.projects) throw new Error("Projects are unavailable.");
     const result = projectsResultSchema.parse(await options.projects(request));

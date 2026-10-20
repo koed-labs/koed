@@ -73,7 +73,12 @@ export const projectPersonalNoteToMemory = async (
       content: note.body,
       metadata: {
         semanticUnitType: "personal_note",
-        sourceAdapterVersion: "desktop-notes-v2",
+        sourceAdapterVersion: note.sourceRevisionId
+          ? "project-sources-v1"
+          : "desktop-notes-v2",
+        ...(note.sourceRevisionId
+          ? { projectSourceRevisionId: note.sourceRevisionId }
+          : {}),
         personalNoteId: note.noteId,
         personalNoteRevisionId: note.revisionId,
         personalNoteRevision: note.revision,

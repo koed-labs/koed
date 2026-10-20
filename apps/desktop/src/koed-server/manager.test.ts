@@ -26,6 +26,7 @@ import {
   createKoedServerManager,
   detectedSetupAiClients,
   desktopCodexSetupCommand,
+  mapPersonalNoteLoadResponse,
   personalMemoryChangeFromSseFrame,
   shouldRefreshLocalAiClientsAfterResume,
   setupStartupReady,
@@ -89,6 +90,44 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("maps a 1 MiB source-backed owner Note without requiring duplicate event content", () => {
+    const noteId = "11111111-1111-4111-8111-111111111111";
+    const memoryEventId = "22222222-2222-4222-8222-222222222222";
+    const body = "A dated project source fact.\n".repeat(40_000);
+    const mapped = mapPersonalNoteLoadResponse({
+      note: {
+        noteId,
+        title: "Large source",
+        titleVersion: 1,
+        revisionId: "33333333-3333-4333-8333-333333333333",
+        revision: 1,
+        contentHash: "a".repeat(64),
+        memoryEventId,
+        projectionState: "available",
+        projectionFailureCode: null,
+        createdAt: "2026-10-20T00:00:00.000Z",
+        updatedAt: "2026-10-20T00:00:00.000Z",
+        sourceSequence: 1,
+        logicalMemoryId: "44444444-4444-4444-8444-444444444444",
+        sourceRevisionId: "55555555-5555-4555-8555-555555555555",
+        body,
+        event: {
+          id: memoryEventId,
+          actor: "user",
+          eventType: "personal_note_revision",
+          timestamp: "2026-10-20T00:00:00.000Z",
+          sourceEventTime: "2026-10-20T00:00:00.000Z",
+          sourceSequence: 1,
+          contentPreview: "A dated project source fact.",
+          invalidatedAt: null,
+          metadata: {}
+        }
+      }
+    });
+    expect(mapped.note.body).toBe(body);
+    expect(mapped.note.event?.id).toBe(memoryEventId);
+    expect(mapped.note.event).not.toHaveProperty("content");
+  });
   it("uses the Desktop read credential for first-class Projects and fails closed", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-projects-"));
     const stored = storeDesktopLocalCredential(koedHome, {

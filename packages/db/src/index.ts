@@ -20,6 +20,11 @@ export {
   type ProjectSourceRepository
 } from "./project-source-repository.js";
 export {
+  createProjectSourceRemovalRepository,
+  type ProjectSourceRemovalRepository,
+  type ProjectSourceRemoveOperation
+} from "./project-source-removal-repository.js";
+export {
   createProjectRepository,
   type ProjectRepository,
   type ProjectAssociationResult,

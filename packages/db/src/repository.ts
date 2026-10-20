@@ -84,6 +84,7 @@ import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 import {
   codexIdePromptUserText,
   countTokensForModel,
+  resolveTokenEncodingForModel,
   estimateTokens,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   lcmLexicalAnchorGroundingPayloads,
@@ -10771,9 +10772,63 @@ export const createMemorySourceRepository = (
       if (sourceEventTime && Number.isNaN(sourceEventTime.getTime())) {
         throw new Error("sourceEventTime must be a valid timestamp");
       }
-      const tokenCountResult = countTokensForModel(input.content, {
-        model: input.tokenModel ?? "gpt-5.4-mini"
-      });
+      // Source-backed Notes can contain up to 25 MiB of arbitrary valid text.
+      // Use the existing fast heuristic for every server-proven source Note
+      // to keep synchronous token counting bounded on the API process.
+      const sourceNote =
+        input.rawEventType === "personal_note_revision" &&
+        input.metadata?.sourceAdapterVersion === "project-sources-v1" &&
+        typeof input.metadata.projectSourceRevisionId === "string" &&
+        typeof input.metadata.personalNoteRevisionId === "string" &&
+        typeof input.metadata.personalNoteId === "string" &&
+        Number.isSafeInteger(input.metadata.personalNoteRevision) &&
+        typeof input.metadata.personalNoteContentHash === "string";
+      if (sourceNote) {
+        const sourceMetadata = input.metadata!;
+        const bodyHash = createHash("sha256")
+          .update(
+            `koed:collaboration:personal-note-body:v1\n${input.content}`,
+            "utf8"
+          )
+          .digest("hex");
+        const binding = await pool.query(
+          `select 1 from project_source_revisions attempt
+             join personal_note_revisions revision
+               on revision.id=attempt.note_revision_id
+              and revision.owner_user_id=attempt.owner_user_id
+             join personal_notes note on note.id=revision.note_id
+               and note.owner_user_id=revision.owner_user_id
+            where attempt.id=$1 and attempt.owner_user_id=$2
+              and revision.id=$3 and revision.content_hash=$4
+              and revision.note_id=$5 and revision.revision=$6
+              and revision.forgotten_at is null and note.lifecycle='active'
+            limit 1`,
+          [
+            sourceMetadata.projectSourceRevisionId,
+            ownerUserId,
+            sourceMetadata.personalNoteRevisionId,
+            bodyHash,
+            sourceMetadata.personalNoteId,
+            sourceMetadata.personalNoteRevision
+          ]
+        );
+        if (
+          bodyHash !== sourceMetadata.personalNoteContentHash ||
+          !binding.rows[0]
+        )
+          throw new Error(
+            "Project Source Note revision binding is unavailable"
+          );
+      }
+      const tokenCountResult = sourceNote
+        ? {
+            ...resolveTokenEncodingForModel(input.tokenModel ?? "gpt-5.4-mini"),
+            tokens: Math.ceil(input.content.trim().length / 4),
+            tokenizer: "heuristic" as const
+          }
+        : countTokensForModel(input.content, {
+            model: input.tokenModel ?? "gpt-5.4-mini"
+          });
       const tokenCount = tokenCountResult.tokens;
       const includeInEmbedding = input.metadata?.includeInEmbedding !== false;
       const includeInLcm = input.metadata?.includeInLcm !== false;

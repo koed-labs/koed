@@ -17,6 +17,8 @@ export type ProjectActivityWriteKind = Extract<
   | "work_item_status"
   | "work_item_done"
   | "source_added"
+  | "source_ready"
+  | "source_failed"
   | "pr_opened"
   | "pr_merged"
 >;
@@ -26,6 +28,8 @@ const availableWriteKinds = new Set<ProjectActivityWriteKind>([
   "work_item_status",
   "work_item_done",
   "source_added",
+  "source_ready",
+  "source_failed",
   "pr_opened",
   "pr_merged"
 ]);
