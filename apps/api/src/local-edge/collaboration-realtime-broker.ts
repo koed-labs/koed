@@ -36,6 +36,7 @@ import {
   materializePersonalRealtimeEvent,
   materializeWorkItemChangedEvent,
   materializeProjectChangedEvent,
+  materializeScheduledJobChangedEvent,
   type PersonalRealtimeMaterializationRepository
 } from "../collaboration/realtime.js";
 import {
@@ -2238,11 +2239,16 @@ export const createCollaborationRealtimeBroker = (
                 event,
                 options.requireProjectRepository()
               )
-            : await materializePersonalRealtimeEvent(
-                { userId: connection.binding.localOwnerUserId },
-                event,
-                options.requireCollaborationMaterializationRepository()
-              );
+            : event.family === "scheduled_job_changed"
+              ? materializeScheduledJobChangedEvent(
+                  { userId: connection.binding.localOwnerUserId },
+                  event
+                )
+              : await materializePersonalRealtimeEvent(
+                  { userId: connection.binding.localOwnerUserId },
+                  event,
+                  options.requireCollaborationMaterializationRepository()
+                );
       if (materialized.action !== "deliver") {
         await sendPersonalControlAndStop(connection, "requires_snapshot");
         return;
@@ -2271,7 +2277,9 @@ export const createCollaborationRealtimeBroker = (
             ? { workItemId: event.resourceId }
             : event.family === "project_changed"
               ? { projectId: event.resourceId }
-              : {})
+              : event.family === "scheduled_job_changed"
+                ? { scheduledJobId: event.resourceId }
+                : {})
         },
         update: materialized.update
       });

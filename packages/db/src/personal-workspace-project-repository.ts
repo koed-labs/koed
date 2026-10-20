@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { workspaceProjectCopyManifestHash } from "./workspace-project-repository.js";
+import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
 import {
   workspaceProjectCopyFitsTransport,
   workspaceProjectCopySchema
@@ -830,6 +831,10 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
             input.workspaceProjectId
           ]
         );
+        await pauseScheduledJobsWithClient(client, ownerUserId, {
+          projectId,
+          reason: "shared_project_copy_back"
+        });
         await detachSharedDispatches(
           client,
           ownerUserId,
@@ -913,6 +918,10 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           workspaceProjectId
         ]
       );
+      await pauseScheduledJobsWithClient(client, ownerUserId, {
+        projectId,
+        reason: "shared_project_invalidation"
+      });
       await detachSharedDispatches(
         client,
         ownerUserId,

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
+import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
 
 export type ChatDeleteBackend = {
   backendId: string;
@@ -798,6 +799,10 @@ export const createChatDeleteRepository = (
         where id=$2 and owner_user_id=$1 and trashed_at is null`,
         [ownerUserId, sessionId]
       );
+      await pauseScheduledJobsWithClient(client, ownerUserId, {
+        conversationSessionId: sessionId,
+        reason: "conversation_deleted"
+      });
       await client.query(
         `update chat_delete_operations set state='complete',updated_at=now()
         where owner_user_id=$1 and session_id=$2 and batch_id=$3`,

@@ -29,6 +29,8 @@ import {
   createProjectApiRepository,
   createWorkspaceProjectRepository,
   createPersonalWorkspaceProjectRepository,
+  createScheduledJobRepository,
+  type ScheduledJobTeamAuthority,
   createChatDeleteRepository,
   createChatMoveRepository,
   createChatForgetRepository,
@@ -59,6 +61,8 @@ import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
+import { registerScheduledJobRoutes } from "../scheduled-jobs/routes.js";
+import { createScheduledJobTeamAuthority } from "../scheduled-jobs/team-authority.js";
 import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
@@ -510,6 +514,16 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           readLocalEdgeUpstreamRegistry(
             localEdgeUpstreamBackendsPath
           ).backends.map((backend) => backend.id)
+      })
+    : null;
+  let scheduledJobTeamAuthority: ScheduledJobTeamAuthority | null = null;
+  const scheduledJobRepository = pool
+    ? createScheduledJobRepository(pool, {
+        teamAuthority: (input) => {
+          if (!scheduledJobTeamAuthority)
+            throw new Error("Team authority is unavailable");
+          return scheduledJobTeamAuthority(input);
+        }
       })
     : null;
   const chatDeleteRepository = pool
@@ -1677,6 +1691,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       wakePool: pool
     }
   };
+  if (personalWorkspaceProjectRepository)
+    scheduledJobTeamAuthority = createScheduledJobTeamAuthority(
+      routeContext,
+      personalWorkspaceProjectRepository
+    );
   const pdsCheckpointRepository = repository as {
     listPdsCheckpointCandidates?: MemorySourceRepository["listPdsCheckpointCandidates"];
     checkpointPdsSourceSession?: MemorySourceRepository["checkpointPdsSourceSession"];
@@ -2110,6 +2129,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
+  registerScheduledJobRoutes(app, routeContext, scheduledJobRepository);
   registerProjectSourceRoutes(app, {
     repository: projectSourceRepository,
     removalRepository: projectSourceRemovalRepository,

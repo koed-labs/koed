@@ -1,5 +1,25 @@
 import { createHash } from "node:crypto";
 export {
+  scheduledJobScheduleSchema,
+  createScheduledJobSchema,
+  editScheduledJobSchema,
+  scheduledJobVersionSchema,
+  scheduledJobRunNowSchema,
+  scheduledJobReassignSchema,
+  scheduledJobRunStatusSchema,
+  scheduledJobSchema,
+  scheduledJobRunSchema,
+  scheduledJobAttemptSchema,
+  scheduledJobAttemptEventSchema,
+  type ScheduledJobSchedule,
+  type CreateScheduledJob,
+  type EditScheduledJob
+} from "./scheduled-job-contract.js";
+export {
+  nextScheduledJobOccurrence,
+  scheduledJobWallInstant
+} from "./scheduled-job-calendar.js";
+export {
   managedMemoryActionSchema,
   type ManagedMemoryAction
 } from "./managed-memory-action-contract.js";

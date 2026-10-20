@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0066_late_nighthawk";
-const expectedLatestMigrationIndex = 66;
+const expectedLatestMigrationTag = "0067_pale_bill_hollister";
+const expectedLatestMigrationIndex = 67;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -3545,6 +3545,114 @@ try {
         throw new Error("0062 migration rerun changed schema");
     });
   });
+
+  await runScenario(
+    "scheduled-jobs-0067-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("scheduled_jobs_upgrade");
+      const predecessor = await createMigrationSlice(journal, 66, {
+        folderPrefix: "koed-scheduled-jobs-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 67, {
+        folderPrefix: "koed-scheduled-jobs-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 67)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const ownerId = randomUUID(),
+          projectId = randomUUID();
+        await pool.query("insert into users(id,email) values($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Retained for Jobs','JOBS')",
+          [projectId, ownerId]
+        );
+        const state = () =>
+          pool.query(`select state,enabled_at,
+          to_regclass('public.scheduled_jobs')::text as jobs,
+          to_regclass('public.scheduled_job_attempts')::text as attempts,
+          to_regclass('public.scheduled_job_attempt_dispatch_bindings')::text as bindings
+          from project_lifecycle_schema_capabilities where capability='project_scheduled_jobs'`);
+        const before = (await state()).rows[0];
+        if (
+          !isDeepStrictEqual(before, {
+            state: "absent",
+            enabled_at: null,
+            jobs: null,
+            attempts: null,
+            bindings: null
+          })
+        )
+          throw new Error(
+            "0067 predecessor Scheduled Job capability must be absent"
+          );
+        const fingerprint = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (
+          !failed ||
+          !isDeepStrictEqual((await state()).rows[0], before) ||
+          (await schemaFingerprint(pool)) !== fingerprint
+        )
+          throw new Error(
+            "Interrupted 0067 migration leaked schema or capability"
+          );
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const enabled = (await state()).rows[0];
+        if (
+          enabled.state !== "enabled" ||
+          !enabled.enabled_at ||
+          enabled.jobs !== "scheduled_jobs" ||
+          enabled.attempts !== "scheduled_job_attempts" ||
+          enabled.bindings !== "scheduled_job_attempt_dispatch_bindings"
+        )
+          throw new Error(
+            "0067 migration did not activate complete Scheduled Job storage"
+          );
+        const guards = await pool.query(
+          `select count(*)::integer as count from pg_trigger
+          where not tgisinternal and tgname=any($1::text[])`,
+          [
+            [
+              "scheduled_job_attempt_dispatch_bindings_immutable",
+              "scheduled_job_attempt_events_immutable",
+              "scheduled_job_attempts_immutable",
+              "scheduled_job_runs_delete_guard"
+            ]
+          ]
+        );
+        if (guards.rows[0].count !== 4)
+          throw new Error(
+            "0067 immutable Scheduled Job history guards are incomplete"
+          );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0067 migration rerun changed schema");
+        const retained = await pool.query(
+          "select id from projects where id=$1 and owner_user_id=$2",
+          [projectId, ownerId]
+        );
+        if (retained.rowCount !== 1)
+          throw new Error("0067 migration lost retained Personal Project");
+      });
+    }
+  );
 
   await runScenario(
     "workspace-projects-0066-upgrade-rollback-and-rerun",

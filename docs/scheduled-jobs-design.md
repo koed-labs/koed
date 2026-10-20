@@ -1,8 +1,7 @@
 # Scheduled Jobs design reference (HQ-600)
 
-**Status:** Design comparison only. No Scheduled Jobs runtime feature is
-implemented or validated by this note. HQ-601 remains gated on this note being
-merged and reviewed by a human.
+**Status:** Design reference approved by the User on 20 October 2026. This note
+does not claim a Scheduled Jobs runtime implementation; HQ-602 owns execution.
 
 ## Decision
 

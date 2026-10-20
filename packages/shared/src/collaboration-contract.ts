@@ -3400,7 +3400,8 @@ const realtimeResourceSchema = z
     sharedSessionId: z.uuid().nullable(),
     shareGrantId: z.uuid().nullable(),
     workItemId: z.uuid().nullable().optional(),
-    projectId: z.uuid().nullable().optional()
+    projectId: z.uuid().nullable().optional(),
+    scheduledJobId: z.uuid().nullable().optional()
   })
   .strict()
   .superRefine((resource, context) => {
@@ -3444,6 +3445,12 @@ const teamRealtimeEventResourceV2Schema = z
   .strict();
 
 export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("scheduled_job_changed"),
+      scheduledJobId: z.uuid()
+    })
+    .strict(),
   z
     .object({
       type: z.literal("project_changed"),
@@ -3697,6 +3704,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "managed_conversation_changed",
   "work_item_changed",
   "project_changed",
+  "scheduled_job_changed",
   "access_revoked"
 ]);
 
@@ -3864,6 +3872,7 @@ const realtimeUpdateDeliverySchema = z
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
       work_item_changed: new Set(["work_item_changed"]),
       project_changed: new Set(["project_changed"]),
+      scheduled_job_changed: new Set(["scheduled_job_changed"]),
       access_revoked: new Set(["shared_session_removed"])
     };
 
@@ -3876,6 +3885,23 @@ const realtimeUpdateDeliverySchema = z
       return;
     }
 
+    if (
+      update.type === "scheduled_job_changed" &&
+      (resource.scope !== "personal" ||
+        resource.teamId !== null ||
+        resource.workspaceId !== null ||
+        resource.threadId !== null ||
+        resource.messageId !== null ||
+        resource.sharedSessionId !== null ||
+        resource.shareGrantId !== null ||
+        resource.scheduledJobId !== update.scheduledJobId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update"],
+        message: "Scheduled Job update must match its Personal resource"
+      });
+    }
     if (
       update.type === "work_item_changed" &&
       (resource.scope !== "personal" ||

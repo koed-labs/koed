@@ -232,6 +232,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "managed_conversation_changed",
   "work_item_changed",
   "project_changed",
+  "scheduled_job_changed",
   "access_revoked"
 ]);
 export const collaborationStreamState = pgEnum("collaboration_stream_state", [
@@ -13880,6 +13881,7 @@ export const agents = pgTable(
       .on(table.ownerUserId)
       .where(sql`${table.isChiefOfStaff} = true`),
     index("agents_owner_created_idx").on(table.ownerUserId, table.createdAt),
+    unique("agents_id_owner_unique").on(table.id, table.ownerUserId),
     check(
       "agents_name_check",
       sql`length(trim(${table.name})) between 1 and 120`
@@ -13900,6 +13902,277 @@ export const agents = pgTable(
       "agents_model_check",
       sql`${table.defaultModel} is null or length(trim(${table.defaultModel})) between 1 and 512`
     )
+  ]
+);
+
+export const scheduledJobRunStatus = pgEnum("scheduled_job_run_status", [
+  "scheduled",
+  "running",
+  "waiting_approval",
+  "ok",
+  "failed",
+  "interrupted",
+  "missed",
+  "skipped"
+]);
+export const scheduledJobTrigger = pgEnum("scheduled_job_trigger", [
+  "scheduled",
+  "manual"
+]);
+
+export const scheduledJobs = pgTable(
+  "scheduled_jobs",
+  {
+    id: id(),
+    creationRequestId: uuid("creation_request_id").notNull(),
+    creationPayloadHash: text("creation_payload_hash").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    projectId: uuid("project_id"),
+    agentId: uuid("agent_id").notNull(),
+    conversationSessionId: uuid("conversation_session_id").notNull(),
+    title: text("title").notNull(),
+    instruction: text("instruction").notNull(),
+    schedule: jsonb("schedule").$type<Record<string, unknown>>().notNull(),
+    paused: boolean("paused").notNull().default(false),
+    pausedReason: text("paused_reason"),
+    runnerDeviceId: uuid("runner_device_id").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    version: integer("version").notNull().default(1)
+  },
+  (table) => [
+    unique("scheduled_jobs_id_owner_unique").on(table.id, table.ownerUserId),
+    unique("scheduled_jobs_owner_request_unique").on(
+      table.ownerUserId,
+      table.creationRequestId
+    ),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "scheduled_jobs_owner_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.agentId],
+      foreignColumns: [agents.ownerUserId, agents.id],
+      name: "scheduled_jobs_owner_agent_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.conversationSessionId],
+      foreignColumns: [sessions.ownerUserId, sessions.id],
+      name: "scheduled_jobs_owner_conversation_fk"
+    }).onDelete("cascade"),
+    index("scheduled_jobs_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc()
+    ),
+    index("scheduled_jobs_device_active_idx").on(
+      table.runnerDeviceId,
+      table.paused
+    ),
+    check("scheduled_jobs_version_positive", sql`${table.version}>0`),
+    check(
+      "scheduled_jobs_title_length",
+      sql`length(trim(${table.title})) between 1 and 160`
+    ),
+    check(
+      "scheduled_jobs_instruction_length",
+      sql`length(trim(${table.instruction})) between 1 and 20000`
+    ),
+    check(
+      "scheduled_jobs_schedule_object",
+      sql`jsonb_typeof(${table.schedule})='object'`
+    )
+  ]
+);
+
+export const scheduledJobRuns = pgTable(
+  "scheduled_job_runs",
+  {
+    id: id(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => scheduledJobs.id, { onDelete: "cascade" }),
+    manualRequestId: uuid("manual_request_id"),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    trigger: scheduledJobTrigger("trigger").notNull(),
+    attempt: integer("attempt").notNull().default(0),
+    status: scheduledJobRunStatus("status").notNull().default("scheduled"),
+    skipReason: text("skip_reason"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    executionId: uuid("execution_id"),
+    error: text("error"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("scheduled_job_runs_occurrence_unique").on(
+      table.jobId,
+      table.scheduledFor
+    ),
+    unique("scheduled_job_runs_manual_request_unique").on(
+      table.jobId,
+      table.manualRequestId
+    ),
+    check(
+      "scheduled_job_runs_manual_request_shape",
+      sql`(${table.trigger}='manual')=(${table.manualRequestId} is not null)`
+    ),
+    uniqueIndex("scheduled_job_runs_one_active_per_job")
+      .on(table.jobId)
+      .where(sql`${table.status} in ('running','waiting_approval')`),
+    index("scheduled_job_runs_job_time_idx").on(
+      table.jobId,
+      table.scheduledFor.desc()
+    ),
+    check("scheduled_job_runs_attempt_nonnegative", sql`${table.attempt}>=0`),
+    check(
+      "scheduled_job_runs_skip_reason_check",
+      sql`${table.status}='skipped' or ${table.skipReason} is null`
+    )
+  ]
+);
+
+export const scheduledJobAttempts = pgTable(
+  "scheduled_job_attempts",
+  {
+    id: id(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => scheduledJobRuns.id, { onDelete: "cascade" }),
+    attempt: integer("attempt").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    fenceGeneration: integer("fence_generation").notNull(),
+    fenceTokenHash: text("fence_token_hash").notNull(),
+    jobVersion: integer("job_version").notNull(),
+    runnerDeviceId: uuid("runner_device_id").notNull(),
+    conversationSessionId: uuid("conversation_session_id").notNull(),
+    conversationProjectAssignmentVersion: integer(
+      "conversation_project_assignment_version"
+    ).notNull(),
+    projectId: uuid("project_id"),
+    projectVersion: integer("project_version"),
+    teamBackendId: text("team_backend_id"),
+    workspaceProjectId: uuid("workspace_project_id"),
+    teamProjectVersion: integer("team_project_version"),
+    teamMemberVersion: integer("team_member_version"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("scheduled_job_attempts_run_number_unique").on(
+      table.runId,
+      table.attempt
+    ),
+    unique("scheduled_job_attempts_execution_unique").on(table.executionId),
+    check(
+      "scheduled_job_attempts_positive",
+      sql`${table.attempt}>0 and ${table.fenceGeneration}>0 and ${table.jobVersion}>0`
+    ),
+    check(
+      "scheduled_job_attempts_project_shape",
+      sql`(${table.projectId} is null)=(${table.projectVersion} is null)`
+    ),
+    check(
+      "scheduled_job_attempts_team_shape",
+      sql`(
+    ${table.teamBackendId} is null and ${table.workspaceProjectId} is null
+    and ${table.teamProjectVersion} is null and ${table.teamMemberVersion} is null
+    ) or (
+    ${table.teamBackendId} is not null and ${table.workspaceProjectId} is not null
+    and ${table.teamProjectVersion}>0 and ${table.teamMemberVersion}>0
+    )`
+    )
+  ]
+);
+
+export const scheduledJobAttemptEvents = pgTable(
+  "scheduled_job_attempt_events",
+  {
+    id: id(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => scheduledJobAttempts.id, { onDelete: "cascade" }),
+    eventKind: text("event_kind").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    fenceGeneration: integer("fence_generation").notNull(),
+    status: scheduledJobRunStatus("status").notNull(),
+    leaseOwnerId: text("lease_owner_id"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    uncertainty: boolean("uncertainty").notNull().default(false),
+    outcome: text("outcome"),
+    error: text("error"),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("scheduled_job_attempt_events_attempt_idx").on(
+      table.attemptId,
+      table.at
+    ),
+    check(
+      "scheduled_job_attempt_events_kind",
+      sql`${table.eventKind} in ('attempt_start','state','lease_acquired','lease_renewed','fence_changed')`
+    ),
+    check(
+      "scheduled_job_attempt_events_fence_positive",
+      sql`${table.fenceGeneration}>0`
+    ),
+    check(
+      "scheduled_job_attempt_events_lease_shape",
+      sql`(${table.leaseOwnerId} is null)=(${table.leaseExpiresAt} is null)`
+    )
+  ]
+);
+
+// A Scheduled Job attempt has its own execution identity. HQ-602 binds that
+// attempt to one new prompt command on the Conversation's existing Managed
+// Execution before the command can dispatch.
+export const scheduledJobAttemptDispatchBindings = pgTable(
+  "scheduled_job_attempt_dispatch_bindings",
+  {
+    attemptId: uuid("attempt_id")
+      .primaryKey()
+      .references(() => scheduledJobAttempts.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    managedExecutionId: uuid("managed_execution_id").notNull(),
+    managedExecutionGeneration: integer(
+      "managed_execution_generation"
+    ).notNull(),
+    managedCommandId: uuid("managed_command_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("scheduled_job_attempt_dispatch_command_unique").on(
+      table.managedCommandId
+    ),
+    check(
+      "scheduled_job_attempt_dispatch_generation_positive",
+      sql`${table.managedExecutionGeneration}>0`
+    ),
+    foreignKey({
+      columns: [table.ownerUserId, table.managedExecutionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "scheduled_job_attempt_dispatch_execution_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.ownerUserId,
+        table.managedExecutionId,
+        table.managedCommandId
+      ],
+      foreignColumns: [
+        managedConversationCommands.ownerUserId,
+        managedConversationCommands.executionId,
+        managedConversationCommands.id
+      ],
+      name: "scheduled_job_attempt_dispatch_command_fk"
+    }).onDelete("restrict")
   ]
 );
 

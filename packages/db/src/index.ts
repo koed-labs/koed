@@ -13,6 +13,19 @@ export {
   type PersonalWorkspaceProjectRepository
 } from "./personal-workspace-project-repository.js";
 export {
+  createScheduledJobRepository,
+  pauseScheduledJobsWithClient,
+  forgetScheduledJobsWithClient,
+  bindScheduledJobManagedPromptWithClient,
+  ScheduledJobNotFound,
+  ScheduledJobConflict,
+  ScheduledJobAuthorityUnavailable,
+  type ScheduledJobRepository,
+  type ScheduledJobRecord,
+  type ScheduledJobRunRecord,
+  type ScheduledJobTeamAuthority
+} from "./scheduled-job-repository.js";
+export {
   createSourceControlMergeRepository,
   type SourceControlMergeRepository,
   type MergeJournalEntry,

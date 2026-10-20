@@ -55,6 +55,7 @@ export interface RouteIdentityContract {
     | "team_memory"
     | "collaboration"
     | "projects"
+    | "scheduled_jobs"
     | "shared_memory"
     | "high_risk"
     | "retention"
@@ -929,6 +930,60 @@ export const routeIdentityContracts = [
     "none",
     "implemented",
     localEdgeDeploymentModes
+  ),
+  ...(
+    [
+      ["GET", "/v1/scheduled-jobs", "Read owned Scheduled Jobs."],
+      [
+        "POST",
+        "/v1/scheduled-jobs",
+        "Create a Job bound to the authenticated device."
+      ],
+      ["GET", "/v1/scheduled-jobs/{id}", "Read an owned Scheduled Job."],
+      [
+        "PATCH",
+        "/v1/scheduled-jobs/{id}",
+        "Edit an owned Scheduled Job by version."
+      ],
+      [
+        "POST",
+        "/v1/scheduled-jobs/{id}/pause",
+        "Pause or unpause an owned Job."
+      ],
+      [
+        "POST",
+        "/v1/scheduled-jobs/{id}/reassign",
+        "Assign an enrolled owner device by version."
+      ],
+      ["GET", "/v1/scheduled-jobs/{id}/runs", "Read stable run occurrences."],
+      ["POST", "/v1/scheduled-jobs/{id}/run-now", "Queue a manual occurrence."],
+      [
+        "POST",
+        "/v1/scheduled-jobs/{id}/runs/{runId}/retry",
+        "Queue another attempt on the same occurrence."
+      ],
+      [
+        "POST",
+        "/v1/scheduled-jobs/{id}/runs/{runId}/skip",
+        "Skip an occurrence."
+      ],
+      [
+        "GET",
+        "/v1/scheduled-jobs/{id}/runs/{runId}/attempts",
+        "Read immutable attempt history."
+      ]
+    ] as const
+  ).map(([method, path, description]) =>
+    route(
+      method,
+      path,
+      "session_or_device_credential",
+      "scheduled_jobs",
+      description,
+      "none",
+      "implemented",
+      localEdgeDeploymentModes
+    )
   ),
   route(
     "GET",

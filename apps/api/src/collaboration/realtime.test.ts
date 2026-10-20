@@ -26,6 +26,7 @@ import {
   materializePendingShareLifecycleEvent,
   materializePersonalMemoryChangedEvent,
   materializeWorkItemChangedEvent,
+  materializeScheduledJobChangedEvent,
   type CollaborationRealtimeServiceOptions
 } from "./realtime.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
@@ -155,6 +156,7 @@ const realtimeFamilyCases = [
   ["managed_conversation_changed", "control", null],
   ["work_item_changed", "control", null],
   ["project_changed", "control", null],
+  ["scheduled_job_changed", "control", null],
   ["access_revoked", "access_revoked", null]
 ] as const satisfies ReadonlyArray<
   readonly [
@@ -2315,6 +2317,44 @@ describe("collaboration realtime protocol", () => {
         }
       }
     });
+  });
+
+  it("delivers Scheduled Job refresh IDs only to the exact Personal owner", () => {
+    const ownerId = randomUUID(),
+      jobId = randomUUID();
+    const notification: CollaborationOutboxEventRecord = {
+      ...event({
+        cursor: 1,
+        family: "scheduled_job_changed",
+        scope: "personal"
+      }),
+      personalOwnerUserId: ownerId,
+      actorPrincipalId: ownerId,
+      resourceType: "scheduled_job",
+      resourceId: jobId,
+      teamId: null,
+      teamWorkspaceId: null,
+      threadId: null,
+      messageId: null,
+      shareGrantId: null,
+      logicalMemoryId: null
+    };
+    expect(
+      materializeScheduledJobChangedEvent({ userId: ownerId }, notification)
+    ).toEqual({
+      action: "deliver",
+      update: { type: "scheduled_job_changed", scheduledJobId: jobId }
+    });
+    for (const malformed of [
+      { ...notification, personalOwnerUserId: randomUUID() },
+      { ...notification, actorPrincipalId: randomUUID() },
+      { ...notification, scope: "team" as const, teamId: randomUUID() },
+      { ...notification, threadId: randomUUID() },
+      { ...notification, resourceType: "session" }
+    ])
+      expect(
+        materializeScheduledJobChangedEvent({ userId: ownerId }, malformed)
+      ).toEqual({ action: "requires_snapshot" });
   });
 
   it("keeps the realtime event-family matrix exhaustive with the shared contract", () => {

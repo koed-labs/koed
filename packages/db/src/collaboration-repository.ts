@@ -79,6 +79,7 @@ export type CollaborationEventFamily =
   | "managed_conversation_changed"
   | "work_item_changed"
   | "project_changed"
+  | "scheduled_job_changed"
   | "access_revoked";
 
 export interface CollaborationParticipantRecord {

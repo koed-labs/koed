@@ -8,6 +8,7 @@ import type {
 } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { createProjectActivityRepository } from "./project-activity-repository.js";
+import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
 
 type Row = Record<string, unknown>;
 const textValue = (value: unknown): string => {
@@ -130,7 +131,9 @@ const assertFutureProjectCapabilities = async (
     relation: string | null;
   }>(
     `select capability,state,
-      to_regclass('public.' || capability)::text as relation
+      to_regclass('public.' || case
+        when capability='project_scheduled_jobs' then 'scheduled_jobs'
+        else capability end)::text as relation
       from project_lifecycle_schema_capabilities
      where capability=any($1::text[])`,
     [
@@ -146,8 +149,13 @@ const assertFutureProjectCapabilities = async (
   if (
     result.rows.length !== 5 ||
     result.rows.some((row) =>
-      row.capability === "project_sources"
-        ? row.state !== "enabled" || row.relation !== "project_sources"
+      row.capability === "project_sources" ||
+      row.capability === "project_scheduled_jobs"
+        ? row.state !== "enabled" ||
+          row.relation !==
+            (row.capability === "project_sources"
+              ? "project_sources"
+              : "scheduled_jobs")
         : row.state !== "absent" || row.relation !== null
     )
   )
@@ -759,7 +767,17 @@ export const createProjectApiRepository = (
           count: Number(result.rows[0]!.sources)
         },
         decks: { availability: "not_implemented" as const },
-        scheduledJobs: { availability: "not_implemented" as const }
+        scheduledJobs: {
+          availability: "available" as const,
+          count: Number(
+            (
+              await pool.query<{ count: string }>(
+                "select count(*)::text as count from scheduled_jobs where owner_user_id=$1 and project_id=$2",
+                [ownerUserId, projectId]
+              )
+            ).rows[0]!.count
+          )
+        }
       }
     };
   },
@@ -1395,6 +1413,10 @@ export const createProjectApiRepository = (
           and trashed_at is null and personal_deleted_at is null and invalidated_at is null`,
         [ownerUserId, projectId, batchId]
       );
+      await pauseScheduledJobsWithClient(client, ownerUserId, {
+        projectId,
+        reason: "project_deleted"
+      });
       await client.query(
         `update project_work_items set deleted_at=now(),delete_batch_id=$3,updated_at=now()
         where owner_user_id=$1 and project_id=$2 and deleted_at is null`,

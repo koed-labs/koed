@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
+import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
 
 export type ProjectPolicyGrantBinding = {
   id: string;
@@ -710,6 +711,10 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
           target ? String(target.id) : null
         ]
       );
+      await pauseScheduledJobsWithClient(client, ownerUserId, {
+        conversationSessionId: sessionId,
+        reason: "conversation_project_changed"
+      });
       await client.query(
         `update chat_move_operations set state='complete',updated_at=now()
         where owner_user_id=$1 and session_id=$2 and batch_id=$3`,

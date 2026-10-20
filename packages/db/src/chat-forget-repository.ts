@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
+import { forgetScheduledJobsWithClient } from "./scheduled-job-repository.js";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import {
   activeCuratedMemoryEvidencePredicate,
@@ -334,6 +335,7 @@ export const createChatForgetRepository = (
           where owner_user_id=$1 and id=$2 and personal_deleted_at is null`,
         [ownerUserId, sessionId, timestamp]
       );
+      await forgetScheduledJobsWithClient(client, ownerUserId, sessionId);
       const suppressed =
         await suppressCuratedMemoryWithoutActiveEvidenceWithClient(
           client,

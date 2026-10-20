@@ -275,6 +275,7 @@ const requiredOperationFamiliesForEvent = (
     case "personal_memory_changed":
     case "pending_share_lifecycle":
     case "managed_conversation_changed":
+    case "scheduled_job_changed":
     case "access_revoked":
       return [];
     case "work_item_changed":
@@ -783,6 +784,30 @@ export const materializeProjectChangedEvent = async (
   };
 };
 
+export const materializeScheduledJobChangedEvent = (
+  actor: ActorContext,
+  event: CollaborationOutboxEventRecord
+): EventMaterialization => {
+  if (
+    event.family !== "scheduled_job_changed" ||
+    event.scope !== "personal" ||
+    event.personalOwnerUserId !== actor.userId ||
+    event.actorPrincipalId !== actor.userId ||
+    event.teamId !== null ||
+    event.teamWorkspaceId !== null ||
+    event.threadId !== null ||
+    event.messageId !== null ||
+    event.shareGrantId !== null ||
+    event.logicalMemoryId !== null ||
+    event.resourceType !== "scheduled_job"
+  )
+    return { action: "requires_snapshot" };
+  return {
+    action: "deliver",
+    update: { type: "scheduled_job_changed", scheduledJobId: event.resourceId }
+  };
+};
+
 const displayName = (
   value: string | null | undefined,
   fallback: string
@@ -1166,7 +1191,9 @@ const validateRendererUpdate = (
         ? { workItemId: event.resourceId }
         : family === "project_changed"
           ? { projectId: event.resourceId }
-          : {})
+          : family === "scheduled_job_changed"
+            ? { scheduledJobId: event.resourceId }
+            : {})
     },
     update
   });
@@ -1211,6 +1238,9 @@ const materializeEvent = async (
         event,
         options.projectRepository
       );
+    }
+    case "scheduled_job_changed": {
+      return materializeScheduledJobChangedEvent(client.actor, event);
     }
     case "personal_memory_changed":
     case "managed_conversation_changed":
@@ -1587,7 +1617,9 @@ const eventEnvelope = (input: {
         ? { workItemId: input.event.resourceId }
         : input.event.family === "project_changed"
           ? { projectId: input.event.resourceId }
-          : {})
+          : input.event.family === "scheduled_job_changed"
+            ? { scheduledJobId: input.event.resourceId }
+            : {})
     },
     actor: { principalId: grantScopedActorPrincipalId },
     update: input.update

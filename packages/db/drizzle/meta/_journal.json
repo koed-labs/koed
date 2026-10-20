@@ -470,6 +470,13 @@
       "when": 1792526708793,
       "tag": "0066_late_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792536440065,
+      "tag": "0067_pale_bill_hollister",
+      "breakpoints": true
     }
   ]
 }
