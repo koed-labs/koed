@@ -474,6 +474,35 @@ try {
       await rm(profile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-405", "browser-report.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq405-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq405.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ405_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ405.native", owner: "HQ-405", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ405.native [HQ-405]: compact PR/check/review rows, ticketless PR, exact Native client, provider-read reconciliation to Done and proposal decline; text routing remains HQ-504.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

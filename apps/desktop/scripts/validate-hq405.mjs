@@ -132,7 +132,9 @@ const run = async () => {
       hq405Proposal: "yes",
       hq405Declined: "yes"
     }));
-    await js("document.documentElement.classList.remove('dark'); document.documentElement.classList.add('light')");
+    await js(
+      "document.documentElement.classList.remove('dark'); document.documentElement.classList.add('light')"
+    );
     await waitFor(
       "document.body.textContent.includes('Merge review declined')"
     );
@@ -142,7 +144,10 @@ const run = async () => {
         "document.querySelector('[aria-label=\"Needs you\"]')?.textContent.includes('Ship the release')"
       )
     );
-    assert.equal(await js("document.documentElement.classList.contains('light')"), true);
+    assert.equal(
+      await js("document.documentElement.classList.contains('light')"),
+      true
+    );
     await capture("proposal-declined-light.png");
     assert.equal(errors.length, 0, errors.join(" | "));
     await writeFile(
