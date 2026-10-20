@@ -589,6 +589,11 @@
   color: var(--hq-danger, #d97971);
   font-size: 13px;
 }
+.hq-conversation__delegation-notice {
+  margin: 7px 9px;
+  color: var(--hq-muted);
+  font-size: 13px;
+}
 .hq-conversation__message {
   display: flex;
   flex-direction: column;

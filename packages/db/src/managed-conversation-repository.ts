@@ -297,6 +297,29 @@ export interface ManagedConversationRepository {
     expectedProjectVersion: number;
     expectedMemberVersion: number;
   } | null>;
+  getManagedAgentDelegationByRequest(
+    actor: ActorContext,
+    requestId: string
+  ): Promise<{
+    parentExecutionId: string | null;
+    parentExecutionGeneration: number | null;
+    childExecutionId: string;
+    agentId: string;
+    projectId: string;
+  } | null>;
+  listManagedAgentDelegations(
+    actor: ActorContext,
+    projectId: string
+  ): Promise<
+    Array<{
+      parentExecutionId: string | null;
+      childExecutionId: string;
+      agentId: string;
+      taskLabel: string;
+      childSessionId: string | null;
+      childState: string;
+    }>
+  >;
   createManagedConversation(
     actor: ActorContext,
     input: {
@@ -331,6 +354,12 @@ export interface ManagedConversationRepository {
         expectedProjectVersion: number;
         expectedMemberVersion: number;
         agentId: string;
+      };
+      agentDelegation?: {
+        parentExecutionId: string | null;
+        parentExecutionGeneration: number | null;
+        agentId: string;
+        requestId: string;
       };
     }
   ): Promise<{
@@ -1809,6 +1838,62 @@ export const createManagedConversationRepository = (
         expectedMemberVersion: value.expectedMemberVersion
       };
     },
+    async getManagedAgentDelegationByRequest(actor, requestId) {
+      const result = await pool.query<{
+        parent_execution_id: string | null;
+        parent_execution_generation: number | null;
+        child_execution_id: string;
+        agent_id: string;
+        project_id: string;
+      }>(
+        `select d.parent_execution_id,d.parent_execution_generation,
+                d.child_execution_id,d.agent_id,d.project_id
+           from managed_agent_delegations d
+           join projects p on p.id=d.project_id and p.owner_user_id=d.owner_user_id
+          where d.owner_user_id=$1 and d.request_id=$2
+            and p.lifecycle='active' and p.deletion_phase is null`,
+        [actor.userId, requestId]
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            parentExecutionId: row.parent_execution_id,
+            parentExecutionGeneration: row.parent_execution_generation,
+            childExecutionId: row.child_execution_id,
+            agentId: row.agent_id,
+            projectId: row.project_id
+          }
+        : null;
+    },
+    async listManagedAgentDelegations(actor, projectId) {
+      const result = await pool.query<{
+        parent_execution_id: string | null;
+        child_execution_id: string;
+        agent_id: string;
+        task_label: string;
+        logical_session_id: string | null;
+        state: string;
+      }>(
+        `select d.parent_execution_id,d.child_execution_id,d.agent_id,d.task_label,
+                c.logical_session_id,c.state
+           from managed_agent_delegations d
+           join managed_conversation_executions c
+             on c.id=d.child_execution_id and c.owner_user_id=d.owner_user_id
+           join projects p on p.id=d.project_id and p.owner_user_id=d.owner_user_id
+          where d.owner_user_id=$1 and d.project_id=$2
+            and p.lifecycle='active' and p.deletion_phase is null
+          order by d.created_at desc,d.id desc limit 100`,
+        [actor.userId, projectId]
+      );
+      return result.rows.map((row) => ({
+        parentExecutionId: row.parent_execution_id,
+        childExecutionId: row.child_execution_id,
+        agentId: row.agent_id,
+        taskLabel: row.task_label,
+        childSessionId: row.logical_session_id,
+        childState: row.state
+      }));
+    },
     async createManagedConversation(actor, input) {
       const projectId = input.projectId.trim();
       if (
@@ -1824,6 +1909,15 @@ export const createManagedConversationRepository = (
       }
       if (input.hqProjectId && !input.hqPrivatePath?.startsWith("/"))
         throw statusError("Project HQ private path is invalid", 400);
+      if (
+        input.agentDelegation &&
+        (input.hqProjectId ||
+          input.workItemDispatch ||
+          !input.initialPrompt ||
+          input.contextKind === "independent" ||
+          input.agentDelegation.requestId !== input.idempotencyKey)
+      )
+        throw statusError("Agent delegation request is invalid", 400);
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -1837,6 +1931,7 @@ export const createManagedConversationRepository = (
           assignee_agent_id: string | null;
         };
         let dispatchItem: DispatchItemRow | null = null;
+        let delegationRequestDigest: string | null = null;
         if (input.workItemDispatch) {
           const dispatch = input.workItemDispatch;
           const activeProject = await client.query(
@@ -1974,6 +2069,191 @@ export const createManagedConversationRepository = (
           );
           if (!agent.rowCount) throw statusError("Agent is unavailable", 409);
         }
+        if (input.agentDelegation) {
+          const delegation = input.agentDelegation;
+          if (
+            (delegation.parentExecutionId === null) !==
+            (delegation.parentExecutionGeneration === null)
+          )
+            throw statusError(
+              "Agent delegation parent identity is invalid",
+              400
+            );
+          let parent: ExecutionRow | null = null;
+          if (delegation.parentExecutionId === null) {
+            const hq = await client.query<{
+              managed_execution_id: string | null;
+            }>(
+              `select h.managed_execution_id from project_hq_conversations h
+                 join projects p on p.id=h.project_id and p.owner_user_id=h.owner_user_id
+                where h.project_id=$1 and h.owner_user_id=$2
+                  and p.lifecycle='active' and p.deletion_phase is null
+                for update of h,p`,
+              [projectId, actor.userId]
+            );
+            if (!hq.rows[0])
+              throw statusError("Project HQ is unavailable", 404);
+            // A prior cold request remains recoverable after Chief starts.
+            if (hq.rows[0].managed_execution_id) {
+              const priorCold = await client.query(
+                `select 1 from managed_agent_delegations where owner_user_id=$1
+                   and project_id=$2 and request_id=$3 and parent_execution_id is null`,
+                [actor.userId, projectId, delegation.requestId]
+              );
+              if (!priorCold.rowCount)
+                throw statusError(
+                  "Project HQ has started; refresh the Conversation",
+                  409
+                );
+            }
+          } else {
+            // The lifecycle path locks Project/Session before execution. Read a
+            // selector without a lock, acquire those parents in that order,
+            // then lock and revalidate the execution so we cannot deadlock a
+            // concurrent chat move, forget, or Project deletion.
+            const selector = await client.query<{
+              logical_session_id: string | null;
+              provider_thread_id: string | null;
+            }>(
+              `select logical_session_id,provider_thread_id
+                 from managed_conversation_executions
+                where id=$1 and owner_user_id=$2 and project_id=$3
+                  and runner_deployment_id=$4 and runner_device_id=$5`,
+              [
+                delegation.parentExecutionId,
+                actor.userId,
+                projectId,
+                input.runnerDeploymentId,
+                input.runnerDeviceId
+              ]
+            );
+            if (
+              !selector.rows[0]?.logical_session_id ||
+              !selector.rows[0].provider_thread_id
+            )
+              throw statusError(
+                "Parent private Conversation is not captured",
+                409
+              );
+            const projectLock = await client.query(
+              `select 1 from projects where id=$1 and owner_user_id=$2
+                 and lifecycle='active' and deletion_phase is null for share`,
+              [projectId, actor.userId]
+            );
+            if (!projectLock.rowCount)
+              throw statusError("Parent Project is unavailable", 409);
+            const sessions = await client.query<{
+              visibility: string;
+              trashed_at: Date | null;
+              personal_deleted_at: Date | null;
+              delete_batch_id: string | null;
+              forget_batch_id: string | null;
+            }>(
+              `select visibility,trashed_at,personal_deleted_at,delete_batch_id,forget_batch_id
+                 from sessions where owner_user_id=$1 and logical_session_id=$2
+                order by id for share`,
+              [actor.userId, selector.rows[0].logical_session_id]
+            );
+            if (
+              !sessions.rows.some(
+                (row) =>
+                  row.visibility === "personal" &&
+                  !row.trashed_at &&
+                  !row.personal_deleted_at &&
+                  !row.delete_batch_id &&
+                  !row.forget_batch_id
+              )
+            )
+              throw statusError(
+                "Parent private Conversation is unavailable",
+                409
+              );
+            const foundParent = await client.query<ExecutionRow>(
+              `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+              where id=$1 and owner_user_id=$2 and project_id=$3
+                and runner_deployment_id=$4 and runner_device_id=$5
+              for update`,
+              [
+                delegation.parentExecutionId,
+                actor.userId,
+                projectId,
+                input.runnerDeploymentId,
+                input.runnerDeviceId
+              ]
+            );
+            parent = foundParent.rows[0] ?? null;
+            if (!parent)
+              throw statusError("Parent Conversation is unavailable", 404);
+            if (
+              parent.logical_session_id !==
+                selector.rows[0].logical_session_id ||
+              parent.provider_thread_id !== selector.rows[0].provider_thread_id
+            )
+              throw statusError("Parent Conversation identity changed", 409);
+            await assertExecutionProjectWritable(client, parent);
+            await assertExecutionChatWritable(client, parent);
+            if (!parent.logical_session_id || !parent.provider_thread_id)
+              throw statusError(
+                "Parent private Conversation is not captured",
+                409
+              );
+          }
+          const prior = await client.query<{
+            request_digest: string;
+            child_execution_id: string;
+          }>(
+            `select request_digest,child_execution_id from managed_agent_delegations
+              where owner_user_id=$1 and request_id=$2`,
+            [actor.userId, delegation.requestId]
+          );
+          const digest = sha256(
+            JSON.stringify({
+              parentExecutionId: delegation.parentExecutionId,
+              parentExecutionGeneration: delegation.parentExecutionGeneration,
+              agentId: delegation.agentId,
+              projectId,
+              prompt: input.initialPrompt,
+              provider: input.provider,
+              aiClientInstanceId: input.aiClientInstanceId,
+              model: input.model,
+              reasoningEffort: input.reasoningEffort ?? null,
+              permissionMode: input.permissionMode,
+              runnerDeploymentId: input.runnerDeploymentId,
+              runnerDeviceId: input.runnerDeviceId
+            })
+          );
+          delegationRequestDigest = digest;
+          if (prior.rows[0]) {
+            if (prior.rows[0].request_digest !== digest)
+              throw statusError("Agent delegation request changed", 409);
+          } else {
+            if (
+              parent &&
+              (parent.execution_generation !==
+                delegation.parentExecutionGeneration ||
+                !["running", "quiesced"].includes(parent.state))
+            )
+              throw statusError("Parent Conversation generation changed", 409);
+            const agent = await client.query(
+              `select 1 from agents a join ai_client_instances i
+                 on i.owner_user_id=a.owner_user_id and i.instance_id=a.ai_client_instance_id
+               where a.id=$1 and a.owner_user_id=$2 and not a.is_chief_of_staff
+                 and a.ai_client_instance_id=$3 and a.default_permission_mode=$4
+                 and (a.default_model is null or a.default_model=$5)
+                 and i.driver_id=$6 and i.enabled=true for share of a,i`,
+              [
+                delegation.agentId,
+                actor.userId,
+                input.aiClientInstanceId,
+                input.permissionMode,
+                input.model,
+                input.provider
+              ]
+            );
+            if (!agent.rowCount)
+              throw statusError("Helper Agent is unavailable", 409);
+          }
+        }
         if (input.hqProjectId) {
           if (projectId !== input.hqProjectId)
             throw statusError("HQ Project identity mismatch", 400);
@@ -2074,6 +2354,22 @@ export const createManagedConversationRepository = (
               JSON.stringify(input.sharedWorkItemDispatch)
             )
               throw statusError("Shared Work Item dispatch key changed", 409);
+          }
+          if (input.agentDelegation) {
+            const linked = await client.query<{
+              child_execution_id: string;
+              request_digest: string;
+            }>(
+              `select child_execution_id,request_digest from managed_agent_delegations
+                 where owner_user_id=$1 and request_id=$2`,
+              [actor.userId, input.idempotencyKey]
+            );
+            if (
+              linked.rows[0]?.child_execution_id !==
+                existing.rows[0].execution_id ||
+              linked.rows[0]?.request_digest !== delegationRequestDigest
+            )
+              throw statusError("Agent delegation request changed", 409);
           }
           const execution = await client.query<ExecutionRow>(
             `select ${EXECUTION_COLUMNS}
@@ -2259,6 +2555,28 @@ export const createManagedConversationRepository = (
             actorPrincipalId: actor.userId,
             mutationId: randomUUID()
           });
+        }
+        if (input.agentDelegation && delegationRequestDigest) {
+          await client.query(
+            `insert into managed_agent_delegations
+               (owner_user_id,project_id,parent_execution_id,parent_execution_generation,
+                cold_hq_project_id,child_execution_id,agent_id,task_label,request_id,request_digest)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              actor.userId,
+              projectId,
+              input.agentDelegation.parentExecutionId,
+              input.agentDelegation.parentExecutionGeneration,
+              input.agentDelegation.parentExecutionId === null
+                ? projectId
+                : null,
+              executionId,
+              input.agentDelegation.agentId,
+              input.initialPrompt!.trim().replace(/\s+/g, " ").slice(0, 200),
+              input.agentDelegation.requestId,
+              delegationRequestDigest
+            ]
+          );
         }
         await notifyManagedConversationCommand(client, executionId);
         await client.query("commit");

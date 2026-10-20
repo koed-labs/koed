@@ -1,4 +1,8 @@
 import { agentSchema } from "@koed/shared/agent-contract";
+import {
+  agentDelegationResponseSchema,
+  agentDelegationsResponseSchema
+} from "@koed/shared/agent-delegation-contract";
 import { z } from "zod";
 import {
   agentsRequestSchema,
@@ -62,6 +66,60 @@ export const createAgentsClient =
         operation: "list",
         agents: await checked(read)
       });
+    if (request.operation === "delegations") {
+      const response = await checked(() =>
+        input.requestJson(
+          `/v1/managed-conversations/agent-delegations?projectId=${encodeURIComponent(request.projectId)}`,
+          { method: "GET" },
+          initialAuthority
+        )
+      );
+      const { items } = agentDelegationsResponseSchema.parse(response);
+      return agentsResultSchema.parse({ operation: "delegations", items });
+    }
+    if (request.operation === "delegate") {
+      const response = await checked(() =>
+        input.requestJson(
+          `/v1/managed-conversations/${encodeURIComponent(request.parentExecutionId)}/delegate`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              agentId: request.agentId,
+              executionGeneration: request.executionGeneration,
+              requestId: request.requestId,
+              prompt: request.prompt
+            })
+          },
+          initialAuthority
+        )
+      );
+      const parsed = agentDelegationResponseSchema.parse(response);
+      if (parsed.agentId !== request.agentId)
+        throw new Error("Agent delegation identity mismatch.");
+      return agentsResultSchema.parse({ operation: "delegate", ...parsed });
+    }
+    if (request.operation === "delegateCold") {
+      const response = await checked(() =>
+        input.requestJson(
+          `/v1/projects/${encodeURIComponent(request.projectId)}/hq/delegate`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              agentId: request.agentId,
+              requestId: request.requestId,
+              prompt: request.prompt
+            })
+          },
+          initialAuthority
+        )
+      );
+      const parsed = agentDelegationResponseSchema.parse(response);
+      if (parsed.agentId !== request.agentId)
+        throw new Error("Agent delegation identity mismatch.");
+      return agentsResultSchema.parse({ operation: "delegateCold", ...parsed });
+    }
     if (request.operation === "ensureChief") {
       const existing = (await checked(read)).find(
         (agent) => agent.isChiefOfStaff
@@ -95,6 +153,21 @@ export const createAgentsClient =
       if (!agent.isChiefOfStaff)
         throw new Error("Chief of Staff identity mismatch.");
       return agentsResultSchema.parse({ operation: "ensureChief", agent });
+    }
+    if (request.operation === "ensureHelpers") {
+      const response = await checked(() =>
+        input.requestJson(
+          "/v1/agents/helpers:ensure",
+          { method: "POST" },
+          initialAuthority
+        )
+      );
+      const agents = listResponse.parse(response).agents;
+      if (
+        agents.some((agent) => agent.ownerUserId !== initialAuthority.ownerId)
+      )
+        throw new Error("Helper Agents owner identity mismatch.");
+      return agentsResultSchema.parse({ operation: "ensureHelpers", agents });
     }
     if (request.operation === "create") {
       const response = await checked(() =>

@@ -134,6 +134,23 @@ export function registerAgentRoutes(
     }
   );
   app.post(
+    "/v1/agents/helpers:ensure",
+    { preHandler: input.writeRateLimit },
+    async (request) => {
+      const repo = repository();
+      const owner = await authenticate(request, true);
+      try {
+        return {
+          agents: (await repo.ensureHelpers(owner.id)).map((agent) =>
+            agentSchema.parse(agent)
+          )
+        };
+      } catch (error) {
+        return handle(error);
+      }
+    }
+  );
+  app.post(
     "/v1/agents",
     { preHandler: input.writeRateLimit },
     async (request, reply) => {

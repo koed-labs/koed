@@ -59,6 +59,10 @@
       "types": "./dist/agent-contract.d.ts",
       "import": "./dist/agent-contract.js"
     },
+    "./agent-delegation-contract": {
+      "types": "./dist/agent-delegation-contract.d.ts",
+      "import": "./dist/agent-delegation-contract.js"
+    },
     "./private-network": {
       "types": "./dist/private-network.d.ts",
       "import": "./dist/private-network.js"

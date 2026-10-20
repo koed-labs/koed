@@ -46,6 +46,13 @@ import type {
   ManagedConversationTurnCitation
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
+import type { Agent } from "@koed/shared/agent-contract";
+import {
+  clearPendingDelegation,
+  pendingDelegationRequestId,
+  resolveAgentMention
+} from "../agents/agent-delegation-intent.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type {
   ManagedConversationLifecycle,
@@ -1052,7 +1059,9 @@ export function HqActiveConversation({
   panelHostRef,
   onOpenCitationMessage,
   onOfferChatForget,
-  focusEventId
+  focusEventId,
+  agentsApi,
+  helperAgents = []
 }: {
   api: ManagedConversationDesktopApi | null;
   privateProjectHq?: boolean;
@@ -1090,6 +1099,8 @@ export function HqActiveConversation({
   }) => Promise<boolean>;
   onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
   focusEventId?: string | null;
+  agentsApi?: AgentsDesktopApi | null;
+  helperAgents?: readonly Agent[];
 }) {
   const detailThread = draft?.thread ?? thread;
   const { detail, loadOlder, retry } = usePersonalMemoryDetail(
@@ -1200,6 +1211,7 @@ export function HqActiveConversation({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [delegationNotice, setDelegationNotice] = useState("");
   const [uncertainSend, setUncertainSend] = useState(
     draft?.initialPrompt?.status === "reconciling"
   );
@@ -1408,6 +1420,7 @@ export function HqActiveConversation({
   }, [recoveredPending, recoveryReady]);
   useEffect(() => {
     setBusy(false);
+    setDelegationNotice("");
     setFileOpen(false);
     setPendingFile(null);
     setFilePage(null);
@@ -1746,6 +1759,83 @@ export function HqActiveConversation({
     documentPrompt?: string,
     selectedDocumentSourceId?: string
   ) => {
+    const mention =
+      !manualRetry && !documentPrompt
+        ? resolveAgentMention(prompt, helperAgents)
+        : { kind: "none" as const };
+    if (mention.kind === "invalid") {
+      setError(mention.message);
+      return;
+    }
+    if (mention.kind === "matched") {
+      if (
+        !agentsApi ||
+        !api ||
+        !conversation?.executionId ||
+        !runtime ||
+        !recoveryReady ||
+        resumeStatus !== "ready" ||
+        busy ||
+        sendLocked ||
+        (runtime.executionState !== "running" &&
+          runtime.executionState !== "quiesced")
+      ) {
+        setError(
+          "This Conversation is not ready to delegate. Check its status and try again."
+        );
+        return;
+      }
+      if (attachments.length) {
+        setError(
+          "Send attached files in the Conversation before delegating this task."
+        );
+        return;
+      }
+      const scope = `${visibilityOwnerId ?? ""}:${identityKey}:${runtime.executionGeneration}`;
+      setBusy(true);
+      setError("");
+      setDelegationNotice("");
+      try {
+        await queueDraftOperation(() =>
+          api.writeDraft({ ...draftScope(conversation), value: prompt })
+        );
+        const requestId = await pendingDelegationRequestId(
+          scope,
+          mention.agent.id,
+          mention.task
+        );
+        const result = await agentsApi.delegate({
+          parentExecutionId: conversation.executionId,
+          executionGeneration: runtime.executionGeneration,
+          agentId: mention.agent.id,
+          requestId,
+          prompt: mention.task
+        });
+        if (!mounted.current || identityKeyRef.current !== identityKey) return;
+        await queueDraftOperation(() =>
+          api.deleteDraft(draftScope(conversation))
+        );
+        clearPendingDelegation(scope, requestId);
+        setPrompt("");
+        setDelegationNotice(
+          `${mention.agent.name} is working on this in a private Conversation.`
+        );
+        window.dispatchEvent(
+          new CustomEvent("hq-agent-delegated", {
+            detail: { projectId: project.id, executionId: result.executionId }
+          })
+        );
+      } catch {
+        if (mounted.current && identityKeyRef.current === identityKey)
+          setError(
+            "Koed cannot confirm this Agent delegation. Check Working now, then retry the same draft to recover it."
+          );
+      } finally {
+        if (mounted.current && identityKeyRef.current === identityKey)
+          setBusy(false);
+      }
+      return;
+    }
     const effectivePrompt =
       documentPrompt ??
       (privateProjectHq && contextLabel && !manualRetry
@@ -2742,6 +2832,11 @@ export function HqActiveConversation({
           <p className="hq-conversation-error" role="alert">
             Koed cannot prove whether the last command reached the AI Client. It
             will not retry automatically.
+          </p>
+        ) : null}
+        {delegationNotice ? (
+          <p className="hq-conversation__delegation-notice" role="status">
+            {delegationNotice}
           </p>
         ) : null}
         <Composer

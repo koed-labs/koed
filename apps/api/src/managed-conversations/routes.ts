@@ -58,6 +58,7 @@ import {
   requireSharedDispatchRunnerAuthority,
   publishSharedWorkItemProgress
 } from "./shared-work-item-dispatch.js";
+import { registerAgentDelegationRoutes } from "./agent-delegation-routes.js";
 import {
   managedConversationTransferRequestHash,
   managedConversationTransferScopeHash
@@ -1426,6 +1427,18 @@ export const registerManagedConversationRoutes = (
     /^Koed-Device\s/i.test(request.headers.authorization?.trim() ?? "")
       ? (await runnerIdentity(request)).deviceId
       : (context.deploymentIdentity.inspect().deviceInstanceId ?? undefined);
+
+  registerAgentDelegationRoutes(app, {
+    context,
+    agents: hqAgents ?? null,
+    readRateLimit: managedConversationReadRateLimit,
+    writeRateLimit: managedConversationWriteRateLimit,
+    runnerIdentity,
+    launchInstances,
+    assertSelection: assertLocalLaunchSelection,
+    localProjectExecutionPath: (projectId) =>
+      localProjectExecutionPath(context.config.koedHome, projectId)
+  });
 
   const assertExecutionCapabilityForAuthorityRequest = async (
     request: FastifyRequest,

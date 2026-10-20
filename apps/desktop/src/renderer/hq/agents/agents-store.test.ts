@@ -17,6 +17,25 @@ const chief: Agent = {
 };
 
 describe("HQ Agents store", () => {
+  it("loads real owner-bound Helpers after Chief setup", async () => {
+    const quinn = {
+      ...chief,
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "Quinn",
+      isChiefOfStaff: false
+    };
+    const api = {
+      list: vi.fn(async () => [chief]),
+      ensureChief: vi.fn(),
+      ensureHelpers: vi.fn(async () => [chief, quinn])
+    };
+    const store = new AgentsStore(api as never);
+    store.setOwner(id, "local");
+    await store.refresh();
+    expect(api.ensureHelpers).toHaveBeenCalledOnce();
+    expect(store.current().agents).toEqual([chief, quinn]);
+    expect(store.current().selectedAgentId).toBe(chief.id);
+  });
   it("bootstraps a missing Chief and chooses only an owned listed Agent", async () => {
     const api = {
       list: vi.fn(async () => []),

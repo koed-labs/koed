@@ -60,6 +60,57 @@ describe.skipIf(!databaseUrl)("Agents owner and Chief constraints", () => {
     expect(same.id).toBe(results[0]!.id);
     expect(same.name).toBe("My Chief");
   });
+  it("seeds Nova, Quinn and Sage once from a valid owned Chief binding", async () => {
+    const userId = await owner();
+    await instance(userId, "codex.helpers");
+    const repo = createAgentsRepository(pool);
+    const chief = await repo.ensureChief(userId, "codex.helpers");
+    await repo.patch(userId, chief.id, {
+      defaultModel: "gpt-test",
+      defaultPermissionMode: "supervised"
+    });
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => repo.ensureHelpers(userId))
+    );
+    const ids = results.map((agents) =>
+      agents
+        .map((agent) => agent.id)
+        .sort()
+        .join(",")
+    );
+    expect(new Set(ids).size).toBe(1);
+    const helpers = results[0]!.filter((agent) => !agent.isChiefOfStaff);
+    expect(helpers.map((agent) => agent.name).sort()).toEqual([
+      "Nova",
+      "Quinn",
+      "Sage"
+    ]);
+    expect(
+      helpers.every(
+        (agent) =>
+          agent.aiClientInstanceId === "codex.helpers" &&
+          agent.defaultModel === "gpt-test" &&
+          agent.defaultPermissionMode === "supervised"
+      )
+    ).toBe(true);
+    await repo.patch(
+      userId,
+      helpers.find((agent) => agent.name === "Quinn")!.id,
+      { role: "My builder" }
+    );
+    expect(
+      (await repo.ensureHelpers(userId)).find((agent) => agent.name === "Quinn")
+        ?.role
+    ).toBe("My builder");
+    await pool.query(
+      "update ai_client_instances set enabled=false where owner_user_id=$1",
+      [userId]
+    );
+    await expect(repo.ensureHelpers(userId)).rejects.toBeInstanceOf(
+      AgentInstanceUnavailableError
+    );
+    expect(await repo.list(userId)).toHaveLength(4);
+  });
   it("rejects foreign, missing and disabled bindings; keeps owner reads private", async () => {
     const a = await owner(),
       b = await owner();

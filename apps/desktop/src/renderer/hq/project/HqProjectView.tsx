@@ -334,6 +334,15 @@ export function HqProjectView({
   const [workError, setWorkError] = useState("");
   const [workPending, setWorkPending] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [delegationState, setDelegationState] = useState<{
+    identity: string;
+    items: Awaited<ReturnType<AgentsDesktopApi["delegations"]>>;
+  }>({ identity: "", items: [] });
+  const delegationIdentity = `${ownerId ?? ""}:${profileKey ?? ""}:${project.id}`;
+  const delegations =
+    delegationState.identity === delegationIdentity
+      ? delegationState.items
+      : [];
   const [sendFor, setSendFor] = useState<string | null>(null);
   const [dueFor, setDueFor] = useState<string | null>(null);
   const [briefFor, setBriefFor] = useState<string | null>(null);
@@ -389,6 +398,7 @@ export function HqProjectView({
     setWorkError("");
     setWorkPending(false);
     setAgents([]);
+    setDelegationState({ identity: "", items: [] });
     setSendFor(null);
     setDueFor(null);
     setBriefFor(null);
@@ -432,6 +442,43 @@ export function HqProjectView({
       live = false;
     };
   }, [agentsApi, project.id, ownerId, profileKey]);
+  useEffect(() => {
+    if (!agentsApi || !ownerId || !profileKey) return;
+    let live = true;
+    const load = () =>
+      void agentsApi
+        .delegations(project.id)
+        .then((items) => {
+          if (
+            live &&
+            intent.current.ownerId === ownerId &&
+            intent.current.profileKey === profileKey &&
+            intent.current.projectId === project.id
+          )
+            setDelegationState({ identity: delegationIdentity, items });
+        })
+        .catch(() => {
+          if (live)
+            setDelegationState({ identity: delegationIdentity, items: [] });
+        });
+    load();
+    const notified = (event: Event) => {
+      if (
+        (event as CustomEvent<{ projectId: string }>).detail?.projectId ===
+        project.id
+      ) {
+        load();
+        setRefresh((value) => value + 1);
+      }
+    };
+    window.addEventListener("hq-agent-delegated", notified);
+    const timer = window.setInterval(load, 10_000);
+    return () => {
+      live = false;
+      window.removeEventListener("hq-agent-delegated", notified);
+      window.clearInterval(timer);
+    };
+  }, [agentsApi, project.id, ownerId, profileKey, delegationIdentity]);
   useEffect(() => {
     if (!sendFor) return;
     const focusFrame = window.requestAnimationFrame(() => {
@@ -1283,14 +1330,30 @@ export function HqProjectView({
           const boundExecutions = new Set(
             work.doing.map((item) => item.executionId).filter(Boolean)
           );
+          const delegated =
+            kind === "doing"
+              ? delegations.filter(
+                  (delegation) =>
+                    activeStates.has(delegation.childState) &&
+                    !work.doing.some(
+                      (item) => item.executionId === delegation.childExecutionId
+                    )
+                )
+              : [];
+          const delegatedIds = new Set(
+            delegated.map((row) => row.childExecutionId)
+          );
           const items =
             kind === "doing"
               ? rows.doing.filter(
-                  (item) => !boundExecutions.has(item.executionId)
+                  (item) =>
+                    !boundExecutions.has(item.executionId) &&
+                    !delegatedIds.has(item.executionId ?? "")
                 )
               : rows.need;
           const total =
             workRows.length +
+            delegated.length +
             items.length +
             (kind === "need" ? needsPrCount : 0);
           const workVisible = workRows.slice(
@@ -1298,6 +1361,12 @@ export function HqProjectView({
             expanded[kind] ? undefined : cap[kind]
           );
           const runtimeVisible = items.slice(
+            0,
+            expanded[kind]
+              ? undefined
+              : Math.max(0, cap[kind] - workVisible.length - delegated.length)
+          );
+          const delegatedVisible = delegated.slice(
             0,
             expanded[kind]
               ? undefined
@@ -1481,6 +1550,73 @@ export function HqProjectView({
                           {sendControl(item)}
                         </div>
                       ))}
+                  {delegatedVisible.map((delegation) => {
+                    const agent = agents.find(
+                      (candidate) => candidate.id === delegation.agentId
+                    );
+                    const captured = visibleInventory.executions.find(
+                      (execution) =>
+                        execution.executionId === delegation.childExecutionId &&
+                        execution.sessionId === delegation.childSessionId &&
+                        Boolean(execution.threadId)
+                    );
+                    const graphProject =
+                      captured &&
+                      graphProjects.find(
+                        (candidate) =>
+                          candidate.id === captured.projectId ||
+                          candidate.threads.some(
+                            (thread) =>
+                              thread.id === captured.threadId &&
+                              thread.sessionId === captured.sessionId
+                          )
+                      );
+                    const target =
+                      captured?.sessionId && captured.threadId && graphProject
+                        ? {
+                            id: delegation.childExecutionId,
+                            kind: "question" as const,
+                            title: delegation.taskLabel,
+                            context: project.name,
+                            projectId: graphProject.id,
+                            sessionId: captured.sessionId,
+                            threadId: captured.threadId,
+                            executionId: delegation.childExecutionId,
+                            createdAt: new Date().toISOString()
+                          }
+                        : null;
+                    return (
+                      <div
+                        className="hq-project-view__work-item"
+                        key={`delegated:${delegation.childExecutionId}`}
+                      >
+                        <span className="hq-project-view__avatar">
+                          {agent ? (
+                            <Pixelkin agent={agent} size={28} />
+                          ) : (
+                            <Folder size={15} />
+                          )}
+                        </span>
+                        <span className="hq-project-view__work-item-text">
+                          <button
+                            type="button"
+                            className="hq-project-view__row"
+                            aria-label={`Open ${agent?.name ?? "Agent"} task: ${delegation.taskLabel}`}
+                            disabled={!target}
+                            onClick={() => {
+                              if (target) onSelectConversation(target);
+                            }}
+                          >
+                            <b>{delegation.taskLabel}</b>
+                            <small>
+                              {agent?.name ?? "Agent"}{" "}
+                              {target ? "working" : "starting"}
+                            </small>
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
                   {runtimeVisible.map((item) =>
                     kind === "need" ? (
                       <div

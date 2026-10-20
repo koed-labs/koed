@@ -1224,6 +1224,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/agents/helpers:ensure",
+    "session_or_device_credential",
+    "projects",
+    "Ensure Nova, Quinn and Sage from the owner's valid Chief AI Client binding.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/agents",
     "session_or_device_credential",
     "projects",
@@ -3413,6 +3423,36 @@ export const routeIdentityContracts = [
     "session_or_api_token",
     "personal_memory",
     "Read one Koed-managed conversation execution.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/agent-delegations",
+    "session_or_device_credential",
+    "personal_memory",
+    "List owner-only private child Agent Conversation bindings for one Project.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/delegate",
+    "session_or_device_credential",
+    "personal_memory",
+    "Start an idempotent child Managed Conversation bound to an owned Helper Agent.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{projectId}/hq/delegate",
+    "session_or_device_credential",
+    "personal_memory",
+    "Start a Helper child from an existing unstarted owner-qualified Project HQ handle.",
     "none",
     "implemented",
     localEdgeDeploymentModes

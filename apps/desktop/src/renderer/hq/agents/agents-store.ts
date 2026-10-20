@@ -91,6 +91,30 @@ export class AgentsStore {
             return;
           }
         }
+        if (this.api.ensureHelpers) {
+          try {
+            const ensured = await this.api.ensureHelpers();
+            if (generation !== this.#generation) return;
+            validate(ensured);
+            if (!ensured.some((agent) => agent.isChiefOfStaff))
+              throw new Error(
+                "Chief of Staff is unavailable after Helper setup."
+              );
+            agents = ensured;
+          } catch (error) {
+            if (generation !== this.#generation) return;
+            this.#set({
+              ...this.#snapshot,
+              agents,
+              loading: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Helper Agents are unavailable."
+            });
+            return;
+          }
+        }
         this.#set({
           ...this.#snapshot,
           agents,

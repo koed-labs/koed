@@ -155,6 +155,56 @@ export const createAgentsRepository = (pool: pg.Pool) => {
       return present(result.rows[0]);
     });
 
+  const ensureHelpers = async (ownerUserId: string): Promise<Agent[]> =>
+    withTransaction(async (client) => {
+      const owner = await client.query(
+        `select 1 from users where id=$1 for update`,
+        [ownerUserId]
+      );
+      if (!owner.rowCount) throw new AgentNotFoundError("User is unavailable");
+      const chief = await client.query<Row>(
+        `select ${fields} from agents where owner_user_id=$1 and is_chief_of_staff=true for share`,
+        [ownerUserId]
+      );
+      if (!chief.rows[0])
+        throw new AgentNotFoundError("Chief of Staff is unavailable");
+      const bound = present(chief.rows[0]);
+      await assertInstance(client, ownerUserId, bound.aiClientInstanceId);
+      const existing = await client.query<Row>(
+        `select ${fields} from agents where owner_user_id=$1 for share`,
+        [ownerUserId]
+      );
+      const names = new Set(
+        existing.rows.map((row) => String(row.name).toLocaleLowerCase())
+      );
+      for (const [name, role] of [
+        ["Nova", "Research"],
+        ["Quinn", "Builder"],
+        ["Sage", "Writing"]
+      ] as const) {
+        if (names.has(name.toLocaleLowerCase())) continue;
+        await client.query(
+          `insert into agents (owner_user_id,name,role,look,ai_client_instance_id,
+            default_permission_mode,default_model,is_chief_of_staff)
+           values ($1,$2,$3,'{}'::jsonb,$4,$5,$6,false)`,
+          [
+            ownerUserId,
+            name,
+            role,
+            bound.aiClientInstanceId,
+            bound.defaultPermissionMode,
+            bound.defaultModel
+          ]
+        );
+      }
+      const result = await client.query<Row>(
+        `select ${fields} from agents where owner_user_id=$1
+          order by is_chief_of_staff desc,created_at asc,id asc`,
+        [ownerUserId]
+      );
+      return result.rows.map(present);
+    });
+
   const patch = async (
     ownerUserId: string,
     id: string,
@@ -188,7 +238,7 @@ export const createAgentsRepository = (pool: pg.Pool) => {
       if (!result.rows[0]) throw new Error("Agent update did not return a row");
       return present(result.rows[0]);
     });
-  return { bootstrapContext, list, ensureChief, create, patch };
+  return { bootstrapContext, list, ensureChief, ensureHelpers, create, patch };
 };
 
 export type AgentsRepository = ReturnType<typeof createAgentsRepository>;

@@ -348,6 +348,11 @@ export function HqApplication({
     agentsSnapshot.profileKey === visibilityProfileKey
       ? (agentsSnapshot.agents.find((agent) => agent.isChiefOfStaff) ?? null)
       : null;
+  const ownedAgents =
+    agentsSnapshot?.ownerId === visibilityOwnerId &&
+    agentsSnapshot?.profileKey === visibilityProfileKey
+      ? (agentsSnapshot?.agents ?? [])
+      : [];
   const agentIdentity = `${visibilityOwnerId ?? ""}\0${visibilityProfileKey ?? ""}`;
   const [conversationAgentState, setConversationAgentState] = useState<{
     identity: string;
@@ -1255,6 +1260,9 @@ export function HqApplication({
         project={project}
         chiefName={chiefAgent?.name ?? "Chief of Staff"}
         chiefAgent={chiefAgent}
+        agentsApi={agentsApi}
+        helperAgents={ownedAgents}
+        ownerIdentity={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}`}
         chiefInstanceId={chiefAgent?.aiClientInstanceId ?? null}
         api={projectHqConversation}
         managedConversations={managedConversations}
@@ -1735,6 +1743,8 @@ export function HqApplication({
             personalMemoryStore ? (
             <HqActiveConversation
               key={route.sessionId}
+              agentsApi={agentsApi}
+              helperAgents={ownedAgents}
               visibilityClient={visibilityClient}
               visibilityOwnerId={visibilityOwnerId}
               visibilityRevision={visibilityRevision}

@@ -5400,6 +5400,10 @@ export const projectHqConversations = pgTable(
     }),
     unique("project_hq_conversations_execution_unique").on(
       table.managedExecutionId
+    ),
+    unique("project_hq_conversations_owner_project_unique").on(
+      table.ownerUserId,
+      table.projectId
     )
   ]
 );
@@ -14173,6 +14177,84 @@ export const scheduledJobAttemptDispatchBindings = pgTable(
       ],
       name: "scheduled_job_attempt_dispatch_command_fk"
     }).onDelete("restrict")
+  ]
+);
+
+/** Private, owner-scoped Agent delegation. A child is never a Team Thread. */
+export const managedAgentDelegations = pgTable(
+  "managed_agent_delegations",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    parentExecutionId: uuid("parent_execution_id"),
+    parentExecutionGeneration: integer("parent_execution_generation"),
+    coldHqProjectId: uuid("cold_hq_project_id"),
+    childExecutionId: uuid("child_execution_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    taskLabel: text("task_label").notNull(),
+    requestId: text("request_id").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "managed_agent_delegations_owner_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.coldHqProjectId],
+      foreignColumns: [
+        projectHqConversations.ownerUserId,
+        projectHqConversations.projectId
+      ],
+      name: "managed_agent_delegations_owner_hq_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.parentExecutionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "managed_agent_delegations_parent_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.childExecutionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "managed_agent_delegations_child_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [agents.id, agents.ownerUserId],
+      name: "managed_agent_delegations_agent_fk"
+    }).onDelete("restrict"),
+    unique("managed_agent_delegations_owner_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    unique("managed_agent_delegations_child_unique").on(table.childExecutionId),
+    index("managed_agent_delegations_parent_idx").on(
+      table.ownerUserId,
+      table.parentExecutionId
+    ),
+    check(
+      "managed_agent_delegations_identity_check",
+      sql`((${table.parentExecutionId} is null and ${table.parentExecutionGeneration} is null
+          and ${table.coldHqProjectId} is not null
+          and ${table.coldHqProjectId} = ${table.projectId})
+        or (${table.parentExecutionId} is not null
+          and ${table.parentExecutionGeneration} is not null
+          and ${table.parentExecutionGeneration} > 0
+          and ${table.parentExecutionId} <> ${table.childExecutionId}
+          and ${table.coldHqProjectId} is null))
+        and length(${table.requestId}) between 8 and 255
+        and length(trim(${table.taskLabel})) between 1 and 200
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'`
+    )
   ]
 );
 

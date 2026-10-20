@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0067_pale_bill_hollister";
-const expectedLatestMigrationIndex = 67;
+const expectedLatestMigrationTag = "0068_brief_reptil";
+const expectedLatestMigrationIndex = 68;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -3545,6 +3545,248 @@ try {
         throw new Error("0062 migration rerun changed schema");
     });
   });
+
+  await runScenario(
+    "agent-delegations-0068-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase(
+        "agent_delegations_upgrade"
+      );
+      const predecessor = await createMigrationSlice(journal, 67, {
+        folderPrefix: "koed-agent-delegations-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 68, {
+        folderPrefix: "koed-agent-delegations-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 68)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const ownerId = randomUUID();
+        const otherOwnerId = randomUUID();
+        const projectId = randomUUID();
+        const agentId = randomUUID();
+        const otherAgentId = randomUUID();
+        const parentId = randomUUID();
+        const coldChildId = randomUUID();
+        const activeChildId = randomUUID();
+        const foreignAgentChildId = randomUUID();
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          ownerId,
+          `${ownerId}@example.test`,
+          otherOwnerId,
+          `${otherOwnerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Retained Helper Project','HELP')",
+          [projectId, ownerId]
+        );
+        await pool.query(
+          `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name,enabled)
+           values ($1,'codex.helper','codex','Codex',true),
+                  ($2,'codex.helper','codex','Codex',true)`,
+          [ownerId, otherOwnerId]
+        );
+        await pool.query(
+          `insert into agents(id,owner_user_id,name,look,ai_client_instance_id)
+           values ($1,$2,'Quinn','{}'::jsonb,'codex.helper'),
+                  ($3,$4,'Foreign','{}'::jsonb,'codex.helper')`,
+          [agentId, ownerId, otherAgentId, otherOwnerId]
+        );
+        await pool.query(
+          "insert into project_hq_conversations(project_id,owner_user_id) values($1,$2)",
+          [projectId, ownerId]
+        );
+        for (const executionId of [
+          parentId,
+          coldChildId,
+          activeChildId,
+          foreignAgentChildId
+        ]) {
+          await pool.query(
+            `insert into managed_conversation_executions
+             (id,owner_user_id,project_id,provider,ai_client_instance_id,model,
+              permission_mode,runner_kind,fencing_token_hash,runner_deployment_id,runner_device_id)
+             values($1,$2,$3,'codex','codex.helper','gpt-test',
+              'supervised','local_device',$4,$5,$6)`,
+            [
+              executionId,
+              ownerId,
+              projectId,
+              "a".repeat(64),
+              randomUUID(),
+              randomUUID()
+            ]
+          );
+        }
+        const priorState = await pool.query(
+          `select to_regclass('public.managed_agent_delegations')::text as delegations,
+                  (select count(*)::integer from project_hq_conversations where project_id=$1) as hq,
+                  (select count(*)::integer from managed_conversation_executions where owner_user_id=$2) as executions`,
+          [projectId, ownerId]
+        );
+        if (
+          !isDeepStrictEqual(priorState.rows[0], {
+            delegations: null,
+            hq: 1,
+            executions: 4
+          })
+        )
+          throw new Error(
+            "0068 predecessor did not retain private HQ and executions"
+          );
+        const before = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        const rollback = await pool.query(
+          `select to_regclass('public.managed_agent_delegations')::text as delegations,
+                  (select count(*)::integer from project_hq_conversations where project_id=$1) as hq,
+                  (select count(*)::integer from managed_conversation_executions where owner_user_id=$2) as executions`,
+          [projectId, ownerId]
+        );
+        if (
+          !failed ||
+          !isDeepStrictEqual(rollback.rows[0], priorState.rows[0]) ||
+          (await schemaFingerprint(pool)) !== before
+        )
+          throw new Error(
+            "Interrupted 0068 migration leaked delegation schema or lost private state"
+          );
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const insert = `insert into managed_agent_delegations
+          (owner_user_id,project_id,parent_execution_id,parent_execution_generation,
+           cold_hq_project_id,child_execution_id,agent_id,task_label,request_id,request_digest)
+          values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`;
+        const cold = [
+          ownerId,
+          projectId,
+          null,
+          null,
+          projectId,
+          coldChildId,
+          agentId,
+          "Check the syllabus",
+          "agent-delegation:cold",
+          "b".repeat(64)
+        ];
+        const active = [
+          ownerId,
+          projectId,
+          parentId,
+          1,
+          null,
+          activeChildId,
+          agentId,
+          "Review the tests",
+          "agent-delegation:active",
+          "c".repeat(64)
+        ];
+        await pool.query(insert, cold);
+        await pool.query(insert, active);
+        await expectSqlState(
+          pool,
+          insert,
+          "23514",
+          "Cold delegation without its HQ handle",
+          [
+            ownerId,
+            projectId,
+            null,
+            null,
+            null,
+            randomUUID(),
+            agentId,
+            "Invalid cold",
+            "agent-delegation:bad-cold",
+            "d".repeat(64)
+          ]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23514",
+          "Active delegation without parent generation",
+          [
+            ownerId,
+            projectId,
+            parentId,
+            null,
+            null,
+            randomUUID(),
+            agentId,
+            "Invalid active",
+            "agent-delegation:bad-active",
+            "d".repeat(64)
+          ]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23503",
+          "Delegation using another owner's Agent",
+          [
+            ownerId,
+            projectId,
+            null,
+            null,
+            projectId,
+            foreignAgentChildId,
+            otherAgentId,
+            "Foreign Agent",
+            "agent-delegation:foreign",
+            "d".repeat(64)
+          ]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23505",
+          "Duplicate delegation request",
+          cold
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0068 migration rerun changed schema");
+        const retained = await pool.query(
+          `select request_id,parent_execution_id,parent_execution_generation,
+                  cold_hq_project_id,child_execution_id
+             from managed_agent_delegations where owner_user_id=$1`,
+          [ownerId]
+        );
+        const byRequest = new Map(
+          retained.rows.map((row) => [row.request_id, row])
+        );
+        const retainedCold = byRequest.get("agent-delegation:cold");
+        const retainedActive = byRequest.get("agent-delegation:active");
+        if (
+          retained.rowCount !== 2 ||
+          retainedCold?.cold_hq_project_id !== projectId ||
+          retainedCold?.parent_execution_id !== null ||
+          retainedCold?.child_execution_id !== coldChildId ||
+          retainedActive?.parent_execution_id !== parentId ||
+          retainedActive?.parent_execution_generation !== 1 ||
+          retainedActive?.child_execution_id !== activeChildId
+        )
+          throw new Error(
+            "0068 migration rerun lost valid cold or active delegation"
+          );
+      });
+    }
+  );
 
   await runScenario(
     "scheduled-jobs-0067-upgrade-rollback-and-rerun",

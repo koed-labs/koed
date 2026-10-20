@@ -57,6 +57,10 @@ const hq406Capture =
 const hq406ActiveCapture =
   hq406Capture &&
   new URLSearchParams(window.location.search).get("hq406Active") === "yes";
+const hq503Capture =
+  new URLSearchParams(window.location.search).get("hq503Capture") === "yes";
+const hq503ColdCapture =
+  new URLSearchParams(window.location.search).get("hq503Cold") === "yes";
 const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq712Capture =
@@ -70,11 +74,13 @@ const hq204Capture =
   hq308Capture ||
   hq406Capture ||
   hq502Capture ||
-  hq407Capture;
+  hq407Capture ||
+  hq503Capture;
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
-  hq308Capture;
+  hq308Capture ||
+  (hq503Capture && !hq503ColdCapture);
 const hq306Race =
   new URLSearchParams(window.location.search).get("hq306Race") === "yes";
 const hq306Trace = { aliasLookups: 0, detailOpens: 0, raceComplete: false };
@@ -113,7 +119,8 @@ const hq207Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
   hq308Capture ||
-  hq502Capture;
+  hq502Capture ||
+  hq503Capture;
 const hq304Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
 const hq305Capture =
@@ -380,6 +387,9 @@ const hq207OtherExecutionId = "00000000-0000-4000-8000-000000002083";
 const hq207TerminalExecutionId = "00000000-0000-4000-8000-000000002084";
 const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
 const hq204SessionId = "00000000-0000-4000-8000-000000002045";
+const hq503ChildExecutionId = "00000000-0000-4000-8000-000000005031";
+const hq503ChildSessionId = "00000000-0000-4000-8000-000000005032";
+const hq503ChildThreadId = "hq503-child-thread";
 // Renderer-only HQ-307 presentation data. Session storage models a durable API
 // response across a browser reload; it does not exercise the native write path.
 const hq307StorageKey = "koed-hq307-validation-actions";
@@ -518,6 +528,23 @@ const hq204Trace = {
   firstSelectedDocumentSourceId: "",
   nextSelectedDocumentSourceId: ""
 };
+const hq503Trace = {
+  calls: [] as Array<{
+    parentExecutionId: string | null;
+    executionGeneration: number | null;
+    agentId: string;
+    requestId: string;
+    prompt: string;
+  }>,
+  delegations: [] as Array<{
+    parentExecutionId: string | null;
+    childExecutionId: string;
+    agentId: string;
+    taskLabel: string;
+    childSessionId: string | null;
+    childState: string;
+  }>
+};
 const hq108ProjectIds = [
   "hq103-koed",
   "hq103-notes",
@@ -592,7 +619,7 @@ const settingsStatusStore = {
     );
   }
 } as unknown as DesktopStatusStore;
-const settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
+let settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
   contractVersion: COLLABORATION_CONTRACT_VERSION,
   snapshotRevision: "hq-settings-fixture-v1",
   generatedAt: FIXTURE_TIME,
@@ -688,37 +715,39 @@ const installSettingsDesktop = () => {
                 ownerUserId: "00000000-0000-4000-8000-000000000109",
                 name: "Chief of Staff",
                 role: "Project assistant",
-                look: hq502Capture
-                  ? {
-                      pixelkin: {
-                        seed: 712,
-                        body: { shape: "sphere" },
-                        palette: { base: "#47c98b" }
+                look:
+                  hq502Capture || hq503Capture
+                    ? {
+                        pixelkin: {
+                          seed: 712,
+                          body: { shape: "sphere" },
+                          palette: { base: "#47c98b" }
+                        }
                       }
-                    }
-                  : {},
+                    : {},
                 aiClientInstanceId: "codex.fixture",
                 defaultPermissionMode: "supervised",
                 defaultModel: "gpt-fixture",
                 isChiefOfStaff: true,
                 createdAt: FIXTURE_TIME
               },
-              ...(hq404Capture || hq502Capture
+              ...(hq404Capture || hq502Capture || hq503Capture
                 ? [
                     {
                       id: "00000000-0000-4000-8000-000000004041",
                       ownerUserId: "00000000-0000-4000-8000-000000000109",
                       name: "Quinn",
                       role: "Builder",
-                      look: hq502Capture
-                        ? {
-                            pixelkin: {
-                              seed: 4812,
-                              body: { shape: "roundedBox" },
-                              palette: { base: "#7658e8" }
+                      look:
+                        hq502Capture || hq503Capture
+                          ? {
+                              pixelkin: {
+                                seed: 4812,
+                                body: { shape: "roundedBox" },
+                                palette: { base: "#7658e8" }
+                              }
                             }
-                          }
-                        : {},
+                          : {},
                       aiClientInstanceId: "codex.fixture",
                       defaultPermissionMode: "supervised" as const,
                       defaultModel: "gpt-fixture",
@@ -727,7 +756,78 @@ const installSettingsDesktop = () => {
                     }
                   ]
                 : [])
-            ]
+            ],
+            // Every fixture exposes the current Agent IPC contract; only the
+            // HQ503 scenario supplies an actual delegated child.
+            delegations: async () => [],
+            ...(hq503Capture
+              ? {
+                  delegations: async () => [...hq503Trace.delegations],
+                  delegate: async (
+                    input: (typeof hq503Trace.calls)[number]
+                  ) => {
+                    hq503Trace.calls.push(input);
+                    const prior = hq503Trace.delegations.find(
+                      (item) =>
+                        item.parentExecutionId === input.parentExecutionId &&
+                        item.agentId === input.agentId &&
+                        item.taskLabel === input.prompt
+                    );
+                    const childExecutionId =
+                      prior?.childExecutionId ?? hq503ChildExecutionId;
+                    if (!prior)
+                      hq503Trace.delegations.push({
+                        parentExecutionId: input.parentExecutionId,
+                        childExecutionId,
+                        agentId: input.agentId,
+                        taskLabel: input.prompt,
+                        childSessionId: hq503ChildSessionId,
+                        childState: "running"
+                      });
+                    return {
+                      operation: "delegate" as const,
+                      executionId: childExecutionId,
+                      agentId: input.agentId,
+                      reused: Boolean(prior)
+                    };
+                  },
+                  delegateCold: async (input: {
+                    projectId: string;
+                    agentId: string;
+                    requestId: string;
+                    prompt: string;
+                  }) => {
+                    hq503Trace.calls.push({
+                      ...input,
+                      parentExecutionId: null,
+                      executionGeneration: null
+                    });
+                    const prior = hq503Trace.delegations.find(
+                      (item) =>
+                        item.parentExecutionId === null &&
+                        item.agentId === input.agentId &&
+                        item.taskLabel === input.prompt
+                    );
+                    const childExecutionId =
+                      prior?.childExecutionId ?? hq503ChildExecutionId;
+                    if (!prior)
+                      hq503Trace.delegations.push({
+                        parentExecutionId: null,
+                        childExecutionId,
+                        agentId: input.agentId,
+                        taskLabel: input.prompt,
+                        childSessionId: hq503ChildSessionId,
+                        childState: "running"
+                      });
+                    return {
+                      operation: "delegateCold" as const,
+                      executionId: childExecutionId,
+                      agentId: input.agentId,
+                      reused: Boolean(prior)
+                    };
+                  }
+                }
+              : {})
           },
           projectHqConversation: {
             reserve: async (projectId: string) => {
@@ -1328,6 +1428,30 @@ const hq207ManagedConversations = {
   }
 } as ManagedConversationDesktopApi;
 
+const hq503ManagedConversations = {
+  ...hq207ManagedConversations,
+  list: async () => {
+    const base = await hq207ManagedConversations.list!();
+    return {
+      ...base,
+      executions: [
+        ...base.executions,
+        ...(hq503Trace.delegations.length
+          ? [
+              {
+                executionId: hq503ChildExecutionId,
+                projectId: hq204ProjectId,
+                sessionId: hq503ChildSessionId,
+                threadId: hq503ChildThreadId,
+                state: "running"
+              }
+            ]
+          : [])
+      ]
+    };
+  }
+} as ManagedConversationDesktopApi;
+
 const hq308Trace = { detailOpens: 0, turnReads: 0 };
 const hq308TurnId = "hq308-latest-turn";
 const hq308Citations = [
@@ -1687,7 +1811,7 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
       sidebarConversation("hq103-loose", "Chats", 90 + index + 1)
     )
   },
-  ...(hq306Capture
+  ...(hq306Capture || hq503ColdCapture
     ? [
         {
           eventCount: 2,
@@ -1695,13 +1819,36 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
           name: "New empty Project",
           path: null,
           threads: [
-            {
-              ...sidebarConversation(hq204ProjectId, "New empty Project", 204),
-              id: "hq204-fixture-thread",
-              sessionId: hq204SessionId,
-              personalProjectId: hq204ProjectId,
-              name: "Plan next week"
-            }
+            ...(hq306Capture
+              ? [
+                  {
+                    ...sidebarConversation(
+                      hq204ProjectId,
+                      "New empty Project",
+                      204
+                    ),
+                    id: "hq204-fixture-thread",
+                    sessionId: hq204SessionId,
+                    personalProjectId: hq204ProjectId,
+                    name: "Plan next week"
+                  }
+                ]
+              : []),
+            ...(hq503Capture
+              ? [
+                  {
+                    ...sidebarConversation(
+                      hq204ProjectId,
+                      "New empty Project",
+                      503
+                    ),
+                    id: hq503ChildThreadId,
+                    sessionId: hq503ChildSessionId,
+                    personalProjectId: hq204ProjectId,
+                    name: "Quinn helper task"
+                  }
+                ]
+              : [])
           ]
         }
       ]
@@ -3048,6 +3195,27 @@ export function HqValidationApp() {
     fixture.reset();
     hq104SentPrompt = "";
     hq204Started = hq306Capture || hq406ActiveCapture;
+    hq503Trace.calls.length = 0;
+    hq503Trace.delegations.length = 0;
+    (
+      window as Window & { __koedHq503Trace?: typeof hq503Trace }
+    ).__koedHq503Trace = hq503Trace;
+    (
+      window as Window & { __koedHq503SwitchOwner?: () => void }
+    ).__koedHq503SwitchOwner = () => {
+      settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
+        ...settingsCollaborationSnapshot,
+        snapshotRevision: `hq503-other-owner-${Date.now()}`,
+        navigation: {
+          ...settingsCollaborationSnapshot.navigation,
+          personalOwner: {
+            ...settingsCollaborationSnapshot.navigation.personalOwner,
+            id: "00000000-0000-4000-8000-000000005099"
+          }
+        }
+      });
+      publishHq105VisibilityUpdate({ kind: "connection" });
+    };
     Object.assign(hq204Trace, {
       reserve: 0,
       reserveByProject: {},
@@ -3149,11 +3317,13 @@ export function HqValidationApp() {
       managedConversations={
         hq308Capture
           ? hq308ManagedConversations
-          : hq207Capture
-            ? hq207ManagedConversations
-            : hq204Capture
-              ? hq204ManagedConversations
-              : hq104ManagedConversations
+          : hq503Capture
+            ? hq503ManagedConversations
+            : hq207Capture
+              ? hq207ManagedConversations
+              : hq204Capture
+                ? hq204ManagedConversations
+                : hq104ManagedConversations
       }
       managedProject={hq405Capture ? hq405ManagedProject : null}
       statusReadyOverride

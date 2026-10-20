@@ -20,6 +20,37 @@ export const createAgentsPreloadApi = (
     return result;
   };
   return Object.freeze({
+    delegations: async (projectId: string) => {
+      const result = await command({ operation: "delegations", projectId });
+      if (result.operation !== "delegations")
+        throw new Error("Invalid Agent delegations result.");
+      return result.items;
+    },
+    delegate: async (
+      input: Omit<
+        Extract<AgentsRequest, { operation: "delegate" }>,
+        "operation"
+      >
+    ) => {
+      const result = await command({ operation: "delegate", ...input });
+      if (result.operation !== "delegate" || result.agentId !== input.agentId)
+        throw new Error("Invalid Agent delegation result.");
+      return result;
+    },
+    delegateCold: async (
+      input: Omit<
+        Extract<AgentsRequest, { operation: "delegateCold" }>,
+        "operation"
+      >
+    ) => {
+      const result = await command({ operation: "delegateCold", ...input });
+      if (
+        result.operation !== "delegateCold" ||
+        result.agentId !== input.agentId
+      )
+        throw new Error("Invalid cold Agent delegation result.");
+      return result;
+    },
     list: async () => {
       const result = await command({ operation: "list" });
       if (result.operation !== "list")
@@ -31,6 +62,12 @@ export const createAgentsPreloadApi = (
       if (result.operation !== "ensureChief")
         throw new Error("Invalid Chief result.");
       return result.agent;
+    },
+    ensureHelpers: async () => {
+      const result = await command({ operation: "ensureHelpers" });
+      if (result.operation !== "ensureHelpers")
+        throw new Error("Invalid Helper Agents result.");
+      return result.agents;
     },
     create: async (agent: AgentCreate) => {
       const result = await command({ operation: "create", agent });

@@ -12,6 +12,12 @@ import type {
   ManagedConversationLaunchOptions
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
+import {
+  clearPendingDelegation,
+  pendingDelegationRequestId,
+  resolveAgentMention
+} from "../agents/agent-delegation-intent.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
 import {
@@ -43,7 +49,10 @@ export function HqProjectConversation({
   documentWorkItemIntent,
   onDocumentWorkItemIntentConsumed,
   onOfferChatForget,
-  onClearContext
+  onClearContext,
+  agentsApi,
+  helperAgents,
+  ownerIdentity = ""
 }: {
   project: DesktopProject;
   chiefName: string;
@@ -66,6 +75,9 @@ export function HqProjectConversation({
   onDocumentWorkItemIntentConsumed?: (id: string) => void;
   onClearContext?: () => void;
   onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
+  agentsApi?: AgentsDesktopApi | null;
+  helperAgents?: readonly Agent[];
+  ownerIdentity?: string;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -93,6 +105,7 @@ export function HqProjectConversation({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const startedDocumentIntent = useRef<string | null>(null);
+  const [delegationNotice, setDelegationNotice] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -108,6 +121,7 @@ export function HqProjectConversation({
     setPending(false);
     setUncertain(false);
     setError("");
+    setDelegationNotice("");
     void api
       .reserve(project.id)
       .then((value) => {
@@ -273,14 +287,65 @@ export function HqProjectConversation({
     selectedDocumentSourceId?: string
   ) => {
     if (!retry && !(documentPrompt ?? prompt).trim()) return;
-    const text = retry
-      ? attemptedPrompt
-      : documentPrompt
-        ? documentPrompt
-        : contextLabel
-          ? `About ${contextLabel}: ${prompt}`
-          : prompt;
+    const raw = retry ? attemptedPrompt : (documentPrompt ?? prompt);
+    const mention = documentPrompt
+      ? { kind: "none" as const }
+      : resolveAgentMention(raw ?? "", helperAgents ?? []);
+    if (mention.kind === "invalid") {
+      setError(mention.message);
+      return;
+    }
+    const text =
+      mention.kind === "matched"
+        ? raw
+        : retry
+          ? attemptedPrompt
+          : (documentPrompt ??
+            (contextLabel ? `About ${contextLabel}: ${prompt}` : prompt));
     if (pending || loading || !text?.trim() || (executionId && !retry)) return;
+    if (mention.kind === "matched") {
+      if (!agentsApi) {
+        setError("Helper Agents are unavailable. Retry when they are ready.");
+        return;
+      }
+      if (!retry) setAttemptedPrompt(raw);
+      setPending(true);
+      setError("");
+      try {
+        const scope = `${ownerIdentity}:${project.id}:cold-hq`;
+        const requestId = await pendingDelegationRequestId(
+          scope,
+          mention.agent.id,
+          mention.task
+        );
+        await agentsApi.delegateCold({
+          projectId: project.id,
+          agentId: mention.agent.id,
+          requestId,
+          prompt: mention.task
+        });
+        clearPendingDelegation(scope, requestId);
+        setPrompt("");
+        setAttemptedPrompt(null);
+        setUncertain(false);
+        setDelegationNotice(
+          `${mention.agent.name} is working on this in a private Conversation.`
+        );
+        window.dispatchEvent(
+          new CustomEvent("hq-agent-delegated", {
+            detail: { projectId: project.id }
+          })
+        );
+      } catch {
+        setUncertain(true);
+        setError(
+          "Koed cannot confirm this Agent delegation. Check Working now, then retry the same draft to recover it."
+        );
+      } finally {
+        setPending(false);
+      }
+      return;
+    }
     if (!selection.permissionMode) {
       setError("Ask first is unavailable for the configured Chief of Staff.");
       return;
@@ -361,6 +426,15 @@ export function HqProjectConversation({
   ]);
 
   const checkDelivery = async () => {
+    if (
+      resolveAgentMention(attemptedPrompt ?? "", helperAgents ?? []).kind ===
+      "matched"
+    ) {
+      setError(
+        "Check Working now for this Agent task, then retry the same message to confirm delivery."
+      );
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -406,6 +480,8 @@ export function HqProjectConversation({
           onDocumentWorkItemIntentConsumed={onDocumentWorkItemIntentConsumed}
           onClearContext={onClearContext}
           onOfferChatForget={onOfferChatForget}
+          agentsApi={agentsApi}
+          helperAgents={helperAgents}
           inspectorOpen={inspectorOpen}
           panelHostRef={panelHostRef}
         />
@@ -457,6 +533,7 @@ export function HqProjectConversation({
               </p>
             ) : null}
             {loading ? <p role="status">Opening HQ Conversation…</p> : null}
+            {delegationNotice ? <p role="status">{delegationNotice}</p> : null}
           </div>
           <div
             className="hq-project-conversation__inspector"
@@ -530,7 +607,9 @@ export function HqProjectConversation({
                       Boolean(executionId) ||
                       uncertain ||
                       !prompt.trim() ||
-                      !selection.permissionMode
+                      (!selection.permissionMode &&
+                        resolveAgentMention(prompt, helperAgents ?? []).kind !==
+                          "matched")
                     }
                   >
                     <ArrowUp size={19} />

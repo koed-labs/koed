@@ -619,6 +619,35 @@ try {
       await rm(profile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-503", "native-report.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq503-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq503.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ503_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ503.native", owner: "HQ-503", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ503.native [HQ-503]: exact owned Helper mention, one child dispatch from cold/active private HQ, Working now and captured child navigation, owner-switch hiding.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

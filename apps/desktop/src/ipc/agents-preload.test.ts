@@ -33,4 +33,26 @@ describe("Agents preload", () => {
     }));
     await expect(api.list()).rejects.toThrow();
   });
+  it("passes only the cold Project HQ selector and exact request through typed IPC", async () => {
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const invoke = vi.fn(async () => ({
+      operation: "delegateCold",
+      agentId,
+      executionId: "44444444-4444-4444-8444-444444444444",
+      reused: false
+    }));
+    const api = createAgentsPreloadApi(invoke);
+    const request = {
+      projectId,
+      agentId,
+      requestId: "agent-delegation:11111111-1111-4111-8111-111111111111",
+      prompt: "Fix lint errors"
+    };
+    await api.delegateCold(request);
+    expect(invoke).toHaveBeenCalledWith(agentsCommandChannel, {
+      operation: "delegateCold",
+      ...request
+    });
+  });
 });

@@ -143,4 +143,44 @@ describe("Agents main client", () => {
       "Chief of Staff identity"
     );
   });
+  it("sends a cold Helper request through the exact Project HQ route without a Chief selector", async () => {
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const helperId = "33333333-3333-4333-8333-333333333333";
+    const childId = "44444444-4444-4444-8444-444444444444";
+    const requestJson = vi.fn(async () => ({
+      executionId: childId,
+      agentId: helperId,
+      reused: false
+    }));
+    const client = createAgentsClient({
+      requestJson,
+      authority: async () => authority("owner-cold"),
+      defaultInstance: async () => null
+    });
+    const request = {
+      operation: "delegateCold" as const,
+      projectId,
+      agentId: helperId,
+      requestId: "agent-delegation:11111111-1111-4111-8111-111111111111",
+      prompt: "Fix lint errors"
+    };
+    expect(await client(request)).toEqual({
+      operation: "delegateCold",
+      executionId: childId,
+      agentId: helperId,
+      reused: false
+    });
+    expect(requestJson).toHaveBeenCalledWith(
+      `/v1/projects/${projectId}/hq/delegate`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          agentId: helperId,
+          requestId: request.requestId,
+          prompt: request.prompt
+        })
+      }),
+      expect.objectContaining({ authorization: "owner-cold" })
+    );
+  });
 });
