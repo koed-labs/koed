@@ -1,0 +1,6 @@
+.hq-pixelkin {
+  display: inline-block;
+  flex: none;
+  image-rendering: pixelated;
+  vertical-align: middle;
+}

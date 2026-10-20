@@ -9,6 +9,8 @@ import type { DesktopProject } from "../../project-memory-ui.js";
 import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { HqRoute } from "./hq-navigation.js";
 import { HqSidebarPreferencesStore } from "../state/hq-sidebar-preferences.js";
+import type { Agent } from "@koed/shared/agent-contract";
+import { Pixelkin } from "./agents/Pixelkin.js";
 import {
   useEffect,
   useLayoutEffect,
@@ -122,6 +124,7 @@ const projectDomId = (projectId: string): string =>
   `hq-project-children-${encodeURIComponent(projectId)}`;
 
 export type HqSidebarProps = {
+  conversationAgents?: Readonly<Record<string, Agent>>;
   compact?: boolean;
   accountIdentity?: HqAccountIdentity;
 
@@ -161,6 +164,7 @@ export type HqSidebarProps = {
 };
 
 export function HqSidebar({
+  conversationAgents,
   compact = false,
   accountIdentity,
   onOpenSettings,
@@ -430,6 +434,9 @@ export function HqSidebar({
           title={thread.name || "Conversation"}
           type="button"
         >
+          {thread.sessionId && conversationAgents?.[thread.sessionId] ? (
+            <Pixelkin agent={conversationAgents[thread.sessionId]!} size={16} />
+          ) : null}
           <span>{thread.name || "Conversation"}</span>
           {thread.sessionId && pendingDeletionIds?.has(thread.sessionId) ? (
             <small className="hq-sidebar__deletion-pending">

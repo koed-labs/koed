@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { Agent } from "@koed/shared/agent-contract";
 import type { Project } from "@koed/shared/project-contract";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -102,6 +103,7 @@ describe("HQ sidebar", () => {
   const render = async (
     route: HqRoute = initialRoute,
     options: {
+      conversationAgents?: Readonly<Record<string, Agent>>;
       groupsReady?: boolean;
       loading?: boolean;
       projectsError?: boolean;
@@ -116,6 +118,7 @@ describe("HQ sidebar", () => {
     await act(async () => {
       root.render(
         <HqSidebar
+          conversationAgents={options.conversationAgents}
           groupsReady={options.groupsReady}
           loading={options.loading}
           onOpenSearchAndCommands={onOpenSearchAndCommands}
@@ -175,6 +178,46 @@ describe("HQ sidebar", () => {
     }
     vi.restoreAllMocks();
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  });
+
+  it("keeps v50 Now navigation and places a Pixelkin only on a known Agent Conversation", async () => {
+    const canvas = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue(null);
+    const agent = { id: "agent-quinn", name: "Quinn", look: {} } as Agent;
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    try {
+      await render(
+        initialRoute,
+        {
+          onOpenNow: () => undefined,
+          conversationAgents: { [sessionId]: agent }
+        },
+        [projects[0]!]
+      );
+      expect(
+        container.querySelector(".hq-sidebar__action--now svg")
+      ).not.toBeNull();
+      expect(
+        container.querySelector(".hq-sidebar__action--now canvas")
+      ).toBeNull();
+      expect(
+        container.querySelectorAll('[aria-label="Quinn Pixelkin"]')
+      ).toHaveLength(1);
+      expect(
+        container
+          .querySelector('[aria-label="Quinn Pixelkin"]')
+          ?.closest("button")?.textContent
+      ).toContain("Chat 1");
+      await render(
+        initialRoute,
+        { onOpenNow: () => undefined, conversationAgents: {} },
+        [projects[0]!]
+      );
+      expect(container.querySelector("canvas")).toBeNull();
+    } finally {
+      canvas.mockRestore();
+    }
   });
 
   it("renders real personal groups, caps lists, and filters subagents", async () => {

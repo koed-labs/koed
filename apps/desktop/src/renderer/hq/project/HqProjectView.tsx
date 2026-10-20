@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Agent } from "@koed/shared/agent-contract";
+import { Pixelkin } from "../agents/Pixelkin.js";
 import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
 import type { Project } from "@koed/shared/project-contract";
 import type { WorkItem } from "@koed/shared/work-item-contract";
@@ -129,7 +130,8 @@ export function HqProjectView({
   onSelectConversation,
   onOpenPrivateHq,
   onOpenCitationMessage,
-  blockedConversationSessions
+  blockedConversationSessions,
+  onConversationAgentsChange
 }: {
   project: Project;
   personalProjects: readonly Project[];
@@ -155,6 +157,10 @@ export function HqProjectView({
     >
   ) => Promise<boolean>;
   blockedConversationSessions?: ReadonlySet<string>;
+  onConversationAgentsChange?: (
+    projectId: string,
+    bySession: Readonly<Record<string, string>>
+  ) => void;
 }) {
   const [inventory, setInventory] = useState<Inventory>(emptyInventory);
   const [mergeRequestedItemId, setMergeRequestedItemId] = useState<
@@ -587,6 +593,22 @@ export function HqProjectView({
     (item) => !coveredReviewIds.has(item.id)
   );
   const totalReviewCount = reviewPrCount + fallbackReview.length;
+  useEffect(() => {
+    if (!onConversationAgentsChange) return;
+    const bySession: Record<string, string> = {};
+    for (const item of visibleInventory.workItems) {
+      if (!item.executionId || !item.assigneeAgentId) continue;
+      const execution = visibleInventory.executions.find(
+        (entry) => entry.executionId === item.executionId
+      );
+      if (
+        execution?.sessionId &&
+        agents.some((agent) => agent.id === item.assigneeAgentId)
+      )
+        bySession[execution.sessionId] = item.assigneeAgentId;
+    }
+    onConversationAgentsChange(project.id, bySession);
+  }, [onConversationAgentsChange, project.id, visibleInventory, agents]);
   const createTodo = async () => {
     const parsed = parseWorkItemInput(draft, timeZone, new Date());
     if (!parsed.title || workPending) return;
@@ -832,12 +854,11 @@ export function HqProjectView({
                 key={agent.id}
                 onClick={() => void sendToAgent(item, agent)}
               >
-                <span
+                <Pixelkin
+                  agent={agent}
+                  size={25}
                   className="hq-project-view__agent-initial"
-                  aria-hidden="true"
-                >
-                  {agent.name.slice(0, 1)}
-                </span>
+                />
                 <span className="hq-project-view__agent-name">
                   {agent.name}
                 </span>
@@ -1166,7 +1187,20 @@ export function HqProjectView({
                           key={item.id}
                         >
                           <span className="hq-project-view__avatar">
-                            <Folder size={15} />
+                            {agents.find(
+                              (agent) => agent.id === item.assigneeAgentId
+                            ) ? (
+                              <Pixelkin
+                                agent={
+                                  agents.find(
+                                    (agent) => agent.id === item.assigneeAgentId
+                                  )!
+                                }
+                                size={28}
+                              />
+                            ) : (
+                              <Folder size={15} />
+                            )}
                           </span>
                           <span className="hq-project-view__work-item-text">
                             <button

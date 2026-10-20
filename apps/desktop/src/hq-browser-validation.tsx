@@ -44,11 +44,14 @@ const hq307Capture =
   new URLSearchParams(window.location.search).get("hq307Capture") === "yes";
 const hq308Capture =
   new URLSearchParams(window.location.search).get("hq308Capture") === "yes";
+const hq502Capture =
+  new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
-  hq308Capture;
+  hq308Capture ||
+  hq502Capture;
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
@@ -73,7 +76,8 @@ const hq405DeclinedCapture =
 const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
   hq404Capture ||
-  hq405Capture;
+  hq405Capture ||
+  hq502Capture;
 const hq106Capture =
   new URLSearchParams(window.location.search).get("hq106Capture") === "yes" ||
   hq307Capture;
@@ -86,7 +90,8 @@ const hq207Capture =
   hq403Capture ||
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
-  hq308Capture;
+  hq308Capture ||
+  hq502Capture;
 const hq304Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
 const hq305Capture =
@@ -659,21 +664,37 @@ const installSettingsDesktop = () => {
                 ownerUserId: "00000000-0000-4000-8000-000000000109",
                 name: "Chief of Staff",
                 role: "Project assistant",
-                look: {},
+                look: hq502Capture
+                  ? {
+                      pixelkin: {
+                        seed: 712,
+                        body: { shape: "sphere" },
+                        palette: { base: "#47c98b" }
+                      }
+                    }
+                  : {},
                 aiClientInstanceId: "codex.fixture",
                 defaultPermissionMode: "supervised",
                 defaultModel: "gpt-fixture",
                 isChiefOfStaff: true,
                 createdAt: FIXTURE_TIME
               },
-              ...(hq404Capture
+              ...(hq404Capture || hq502Capture
                 ? [
                     {
                       id: "00000000-0000-4000-8000-000000004041",
                       ownerUserId: "00000000-0000-4000-8000-000000000109",
                       name: "Quinn",
                       role: "Builder",
-                      look: {},
+                      look: hq502Capture
+                        ? {
+                            pixelkin: {
+                              seed: 4812,
+                              body: { shape: "roundedBox" },
+                              palette: { base: "#7658e8" }
+                            }
+                          }
+                        : {},
                       aiClientInstanceId: "codex.fixture",
                       defaultPermissionMode: "supervised" as const,
                       defaultModel: "gpt-fixture",
@@ -1791,6 +1812,18 @@ const hq405WorkItem: WorkItem = {
   prState: "ready_to_merge"
 };
 let hq403Items: WorkItem[] = [
+  ...(hq502Capture
+    ? [
+        {
+          ...hq403Seed(
+            "00000000-0000-4000-8000-000000005021",
+            "Build Pixelkin preview",
+            "doing"
+          ),
+          assigneeAgentId: "00000000-0000-4000-8000-000000004041"
+        }
+      ]
+    : []),
   hq403Seed(
     "00000000-0000-4000-8000-000000004031",
     "Review release notes",

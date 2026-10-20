@@ -329,6 +329,55 @@ export function HqApplication({
     agentsSnapshot.profileKey === visibilityProfileKey
       ? (agentsSnapshot.agents.find((agent) => agent.isChiefOfStaff) ?? null)
       : null;
+  const agentIdentity = `${visibilityOwnerId ?? ""}\0${visibilityProfileKey ?? ""}`;
+  const [conversationAgentState, setConversationAgentState] = useState<{
+    identity: string;
+    projects: Record<string, Readonly<Record<string, string>>>;
+  }>({ identity: "", projects: {} });
+  const onConversationAgentsChange = useCallback(
+    (projectId: string, bySession: Readonly<Record<string, string>>) => {
+      setConversationAgentState((previous) => {
+        const projects =
+          previous.identity === agentIdentity ? previous.projects : {};
+        if (
+          previous.identity === agentIdentity &&
+          JSON.stringify(projects[projectId] ?? {}) ===
+            JSON.stringify(bySession)
+        )
+          return previous;
+        return {
+          identity: agentIdentity,
+          projects: { ...projects, [projectId]: bySession }
+        };
+      });
+    },
+    [agentIdentity]
+  );
+  const conversationAgents = useMemo(() => {
+    const result: Record<string, import("@koed/shared/agent-contract").Agent> =
+      {};
+    if (
+      !agentsSnapshot ||
+      conversationAgentState.identity !== agentIdentity ||
+      agentsSnapshot?.ownerId !== visibilityOwnerId ||
+      agentsSnapshot?.profileKey !== visibilityProfileKey
+    )
+      return result;
+    for (const entries of Object.values(conversationAgentState.projects))
+      for (const [sessionId, agentId] of Object.entries(entries)) {
+        const agent = agentsSnapshot.agents.find(
+          (agent) => agent.id === agentId
+        );
+        if (agent) result[sessionId] = agent;
+      }
+    return result;
+  }, [
+    conversationAgentState,
+    agentIdentity,
+    agentsSnapshot,
+    visibilityOwnerId,
+    visibilityProfileKey
+  ]);
   const projectsAuthorityCurrent = Boolean(
     projectsStore &&
     personalProjectsSnapshot?.ownerId === visibilityOwnerId &&
@@ -1169,6 +1218,7 @@ export function HqApplication({
         key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${project.id}`}
         project={project}
         chiefName={chiefAgent?.name ?? "Chief of Staff"}
+        chiefAgent={chiefAgent}
         chiefInstanceId={chiefAgent?.aiClientInstanceId ?? null}
         api={projectHqConversation}
         managedConversations={managedConversations}
@@ -1327,6 +1377,7 @@ export function HqApplication({
         sidebar={({ compact }) => (
           <HqSidebar
             compact={compact}
+            conversationAgents={conversationAgents}
             revealProject={revealProject}
             accountIdentity={accountIdentity}
             onOpenSettings={renderSettings ? openSettings : undefined}
@@ -1565,6 +1616,7 @@ export function HqApplication({
               lifecycle={managedConversationLifecycle}
               ownerId={visibilityOwnerId}
               profileKey={visibilityProfileKey}
+              onConversationAgentsChange={onConversationAgentsChange}
               ownedAgents={
                 agentsSnapshot &&
                 agentsSnapshot.ownerId === visibilityOwnerId &&

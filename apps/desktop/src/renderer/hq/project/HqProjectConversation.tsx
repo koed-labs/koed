@@ -1,3 +1,5 @@
+import type { Agent } from "@koed/shared/agent-contract";
+import { Pixelkin } from "../agents/Pixelkin.js";
 import { ArrowUp, Paperclip, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
@@ -27,6 +29,7 @@ import "./hq-project-conversation.css";
 export function HqProjectConversation({
   project,
   chiefName,
+  chiefAgent,
   chiefInstanceId,
   api,
   managedConversations,
@@ -42,6 +45,7 @@ export function HqProjectConversation({
 }: {
   project: DesktopProject;
   chiefName: string;
+  chiefAgent?: Agent | null;
   chiefInstanceId: string | null;
   api: ProjectHqConversationDesktopApi;
   managedConversations: ManagedConversationDesktopApi;
@@ -363,6 +367,7 @@ export function HqProjectConversation({
         hidden={inspectorOpen}
       >
         <span className="hq-visually-hidden">{project.name}</span>
+        {chiefAgent ? <Pixelkin agent={chiefAgent} size={22} /> : null}
         <strong>Just me</strong>
       </header>
       {activeConversation ? (
