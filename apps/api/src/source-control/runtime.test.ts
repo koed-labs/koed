@@ -972,10 +972,7 @@ describe("version-2 merge runtime", () => {
       const fixture = await setup();
       const prepared = await fixture.prepare();
       const originalFetch = fixture.providerFetch.getMockImplementation()!;
-      const originalAuthority = await fixture.assertExecutionAuthority(
-        userId,
-        executionId
-      );
+      const originalAuthority = await fixture.assertExecutionAuthority(userId);
       let changed = false;
       fixture.providerFetch.mockImplementation(async (input, init) => {
         const response = await originalFetch(input, init);

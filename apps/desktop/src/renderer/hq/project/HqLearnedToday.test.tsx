@@ -164,11 +164,13 @@ describe("HQ Learned today", () => {
         node.querySelector(".hq-learned-today__heading") as HTMLButtonElement
       ).click()
     );
-    await act(async () =>
-      (
-        node.querySelector(".hq-learned-today__detail") as HTMLButtonElement
-      ).click()
+    const firstDetail = [
+      ...node.querySelectorAll<HTMLButtonElement>(".hq-learned-today__detail")
+    ].find(
+      (button) => button.querySelector("b")?.textContent === first.assertionText
     );
+    expect(firstDetail).toBeDefined();
+    await act(async () => firstDetail!.click());
     expect(onOpenItem).toHaveBeenCalledWith(
       expect.objectContaining({ id: first.id })
     );
