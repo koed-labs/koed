@@ -13,6 +13,22 @@ import type {
 } from "./types.js";
 
 export interface CapturedSessionRepository {
+  restoreTrashedCapturedSession(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<"restored" | "expired" | "not_found">;
+  listTrashedCapturedSessions(
+    actor: ActorContext,
+    before?: { trashedAt: string; sessionId: string }
+  ): Promise<{
+    sessions: Array<{
+      sessionId: string;
+      title: string;
+      trashedAt: string;
+      batchId: string | null;
+    }>;
+    nextBefore: { trashedAt: string; sessionId: string } | null;
+  }>;
   createCapturedSession(
     actor: ActorContext,
     input: {
@@ -515,6 +531,68 @@ export const createCapturedSessionRepository = (
   pool: pg.Pool,
   options: CapturedSessionRepositoryOptions = {}
 ): CapturedSessionRepository => ({
+  async restoreTrashedCapturedSession(actor, sessionId) {
+    const restored = await pool.query(
+      `update sessions set trashed_at=null,updated_at=now()
+       where id=$2 and owner_user_id=$1 and visibility='personal'
+         and personal_deleted_at is null and invalidated_at is null
+         and delete_batch_id is null
+         and trashed_at > now() - interval '30 days'
+       returning id`,
+      [actor.userId, sessionId]
+    );
+    if (restored.rowCount) return "restored";
+    const found = await pool.query<{ trashed_at: Date | null }>(
+      `select trashed_at from sessions where id=$2 and owner_user_id=$1
+       and visibility='personal' and personal_deleted_at is null
+       and invalidated_at is null and delete_batch_id is null`,
+      [actor.userId, sessionId]
+    );
+    return found.rows[0]?.trashed_at ? "expired" : "not_found";
+  },
+
+  async listTrashedCapturedSessions(actor, before) {
+    const result = await pool.query<{
+      id: string;
+      title: string;
+      trashed_at: Date;
+      trashed_cursor: string;
+      delete_batch_id: string | null;
+    }>(
+      `select id,coalesce(nullif(btrim(metadata->>'threadName'),''),'Conversation') as title,
+              trashed_at,
+              to_char(trashed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as trashed_cursor,
+              delete_batch_id
+       from sessions where owner_user_id=$1 and visibility='personal'
+         and trashed_at is not null
+         and (delete_batch_id is null or exists (
+           select 1 from chat_delete_operations operation
+            where operation.batch_id=sessions.delete_batch_id
+              and operation.session_id=sessions.id
+              and operation.owner_user_id=$1 and operation.state='complete'
+         ))
+         and personal_deleted_at is null and invalidated_at is null
+         and trashed_at > now() - interval '30 days'
+         and ($2::timestamptz is null or (trashed_at,id)<($2::timestamptz,$3::uuid))
+       order by trashed_at desc,id desc limit 201`,
+      [actor.userId, before?.trashedAt ?? null, before?.sessionId ?? null]
+    );
+    const included = result.rows.slice(0, 200);
+    const sessions = included.map((row) => ({
+      sessionId: row.id,
+      title: row.title,
+      trashedAt: row.trashed_at.toISOString(),
+      batchId: row.delete_batch_id
+    }));
+    const last = included.at(-1);
+    return {
+      sessions,
+      nextBefore:
+        result.rows.length > 200 && last
+          ? { trashedAt: last.trashed_cursor, sessionId: last.id }
+          : null
+    };
+  },
   async createCapturedSession(actor, input) {
     const ownsTransaction = !options.transactionClient;
     const client = options.transactionClient ?? (await pool.connect());

@@ -470,6 +470,94 @@ export const personalDesktopSessionTitleInputSchema = z
   })
   .strict();
 
+export const personalDesktopChatDeleteInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid()
+  })
+  .strict();
+export const personalDesktopChatForgetInputSchema = z
+  .object({ sessionId: z.uuid(), batchId: z.uuid() })
+  .strict();
+export const personalDesktopChatDeleteProgressInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid()
+  })
+  .strict();
+export const personalDesktopChatDeleteReviewInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    actionGrantId: z.uuid()
+  })
+  .strict();
+export const personalDesktopChatDeleteReviewReservationSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    backendId: z.string().min(1).max(64),
+    shareGrantId: z.uuid(),
+    actionGrantId: z.uuid(),
+    reviewedGrantVersion: z.number().int().nonnegative()
+  })
+  .strict();
+export const personalDesktopChatRestoreInputSchema = z
+  .object({ sessionId: z.uuid(), batchId: z.uuid().optional() })
+  .strict();
+export const personalDesktopChatForgetUndoInputSchema = z
+  .object({ sessionId: z.uuid(), batchId: z.uuid() })
+  .strict();
+export const personalDesktopChatForgetDataSchema = z.discriminatedUnion(
+  "pending",
+  [
+    z.object({ pending: z.literal(true), batchId: z.uuid() }).strict(),
+    z
+      .object({
+        pending: z.literal(false),
+        batchId: z.uuid(),
+        forgottenAt: timestampSchema,
+        suppressedAssertionIds: z.array(z.uuid()).max(10000)
+      })
+      .strict()
+  ]
+);
+export const personalDesktopPendingChatForgetsDataSchema = z
+  .object({
+    operations: z
+      .array(z.object({ sessionId: z.uuid(), batchId: z.uuid() }).strict())
+      .max(200)
+  })
+  .strict();
+export const personalDesktopChatDeleteStatusSchema = z
+  .object({
+    sessionId: z.uuid(),
+    batchId: z.uuid(),
+    state: z.string(),
+    complete: z.boolean(),
+    pending: z.boolean(),
+    pendingReviews: z
+      .array(
+        z
+          .object({
+            backendId: z.string().min(1).max(64),
+            shareGrantId: z.uuid(),
+            actionGrantId: z.uuid()
+          })
+          .strict()
+      )
+      .max(1000)
+  })
+  .strict();
+export const personalDesktopDeletedChatSchema = z
+  .object({
+    sessionId: z.uuid(),
+    title: z.string().max(120),
+    trashedAt: timestampSchema,
+    batchId: z.uuid().nullable()
+  })
+  .strict();
+
 export const personalDesktopAskTurnSchema = z
   .object({
     id: z.uuid(),
@@ -605,6 +693,76 @@ export const personalDesktopSessionPresentationInputSchema = z
   );
 
 export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.forget"),
+      input: personalDesktopChatForgetInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.forget_progress"),
+      input: personalDesktopChatDeleteProgressInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.forget_pending_list"),
+      input: z.object({}).strict()
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.forget_undo"),
+      input: personalDesktopChatForgetUndoInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.trash"),
+      input: personalDesktopChatDeleteInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.delete_progress"),
+      input: personalDesktopChatDeleteProgressInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.delete_review"),
+      input: personalDesktopChatDeleteReviewInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.restore"),
+      input: personalDesktopChatRestoreInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.deleted_list"),
+      input: z.object({ cursor: z.string().max(512).optional() }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.delete_pending_list"),
+      input: z.object({}).strict()
+    })
+    .strict(),
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
@@ -748,6 +906,20 @@ export const personalDesktopSessionTitleDataSchema = z
     title: z.string().trim().min(1).max(120)
   })
   .strict();
+export const personalDesktopChatDeleteDataSchema = z
+  .object({ status: personalDesktopChatDeleteStatusSchema })
+  .strict();
+export const personalDesktopPendingChatDeletionsDataSchema = z
+  .object({
+    operations: z.array(personalDesktopChatDeleteStatusSchema).max(200)
+  })
+  .strict();
+export const personalDesktopDeletedChatsDataSchema = z
+  .object({
+    sessions: z.array(personalDesktopDeletedChatSchema).max(200),
+    nextCursor: z.string().max(512).nullable()
+  })
+  .strict();
 
 export const personalDesktopAskThreadsDataSchema = z
   .object({
@@ -814,6 +986,96 @@ const failedResult = <Operation extends string>(operation: Operation) =>
     .strict();
 
 export const personalDesktopResultSchema = z.union([
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.forget"),
+      ok: z.literal(true),
+      data: personalDesktopChatForgetDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.forget"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.forget_progress"),
+      ok: z.literal(true),
+      data: personalDesktopChatForgetDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.forget_progress"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.forget_pending_list"),
+      ok: z.literal(true),
+      data: personalDesktopPendingChatForgetsDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.forget_pending_list"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.forget_undo"),
+      ok: z.literal(true),
+      data: z.object({ outcome: z.literal("restored") }).strict()
+    })
+    .strict(),
+  failedResult("personal.sessions.forget_undo"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.trash"),
+      ok: z.literal(true),
+      data: personalDesktopChatDeleteDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.trash"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.delete_progress"),
+      ok: z.literal(true),
+      data: personalDesktopChatDeleteDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.delete_progress"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.delete_review"),
+      ok: z.literal(true),
+      data: personalDesktopChatDeleteDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.delete_review"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.restore"),
+      ok: z.literal(true),
+      data: z.object({ outcome: z.literal("restored") }).strict()
+    })
+    .strict(),
+  failedResult("personal.sessions.restore"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.deleted_list"),
+      ok: z.literal(true),
+      data: personalDesktopDeletedChatsDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.deleted_list"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.delete_pending_list"),
+      ok: z.literal(true),
+      data: personalDesktopPendingChatDeletionsDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.delete_pending_list"),
   z
     .object({
       ...resultBase,
@@ -1102,6 +1364,36 @@ export const conversationToolKindAndLabel = (
 };
 
 export interface PersonalDesktopApi {
+  forgetSession?: (
+    input: z.infer<typeof personalDesktopChatForgetInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatForgetDataSchema>>;
+  progressSessionForget?: (
+    input: z.infer<typeof personalDesktopChatDeleteProgressInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatForgetDataSchema>>;
+  listPendingSessionForgets?: () => Promise<
+    z.infer<typeof personalDesktopPendingChatForgetsDataSchema>["operations"]
+  >;
+  undoForgetSession?: (
+    input: z.infer<typeof personalDesktopChatForgetUndoInputSchema>
+  ) => Promise<void>;
+  trashSession?: (
+    input: z.infer<typeof personalDesktopChatDeleteInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatDeleteStatusSchema>>;
+  progressSessionDeletion?: (
+    input: z.infer<typeof personalDesktopChatDeleteProgressInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatDeleteStatusSchema>>;
+  reviewSessionDeletion?: (
+    input: z.infer<typeof personalDesktopChatDeleteReviewInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatDeleteStatusSchema>>;
+  restoreSession?: (
+    input: z.infer<typeof personalDesktopChatRestoreInputSchema>
+  ) => Promise<void>;
+  listDeletedSessions?: (input?: {
+    cursor?: string;
+  }) => Promise<z.infer<typeof personalDesktopDeletedChatsDataSchema>>;
+  listPendingSessionDeletions?: () => Promise<
+    z.infer<typeof personalDesktopChatDeleteStatusSchema>[]
+  >;
   listProjects: () => Promise<PersonalDesktopProject[]>;
   listRecentConversations?: (
     input: PersonalDesktopConversationRecentListInput

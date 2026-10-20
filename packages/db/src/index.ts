@@ -357,6 +357,19 @@ export {
 } from "./embedding-capacity-repository.js";
 export { createMemorySourceRepository } from "./repository.js";
 export {
+  createChatDeleteRepository,
+  ChatDeleteConflictError,
+  ChatDeleteNotFoundError,
+  type ChatDeleteRepository,
+  type ChatDeleteOperation
+} from "./chat-delete-repository.js";
+export {
+  createChatForgetRepository,
+  ChatForgetConflictError,
+  ChatForgetNotFoundError,
+  type ChatForgetRepository
+} from "./chat-forget-repository.js";
+export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,
   type ClaimedPurgeJob,

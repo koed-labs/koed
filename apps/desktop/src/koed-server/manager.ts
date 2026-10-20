@@ -1,4 +1,6 @@
 import { hostname } from "node:os";
+import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
+import { createChatDeleteNativeClient } from "./chat-delete-native-client.js";
 import {
   createProjectsClient,
   type ProjectsAuthority
@@ -269,6 +271,7 @@ export interface KoedServerManager {
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
   projectSourceNative: ReturnType<typeof createProjectSourceNativeClient>;
+  chatDeleteNative: ReturnType<typeof createChatDeleteNativeClient>;
   projectHqConversation: (
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
@@ -3913,6 +3916,33 @@ export const createKoedServerManager = ({
       return remote.payload;
     }
   });
+  const chatDeleteNative = createChatDeleteNativeClient({
+    authority: projectsAuthority,
+    requestJson: async (path, init, bound) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 60_000, maxBytes: 1_048_576 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    }
+  });
 
   const projects = createProjectsClient(
     async (path, init, bound: ProjectsAuthority) => {
@@ -4942,49 +4972,115 @@ export const createKoedServerManager = ({
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
+      if (request.operation === "personal.sessions.delete_review")
+        throw new Error(
+          "Native chat deletion review requires the trusted desktop handler"
+        );
+      const chatLifecycle = createChatLifecycleClient({
+        authority: projectsAuthority,
+        requestJson: async (path, init, maximumResponseBytes, bound) => {
+          const remote = await fetchBoundedJsonObject(
+            personalMemoryFetch,
+            new URL(path, bound.apiOrigin),
+            {
+              ...init,
+              redirect: "error",
+              headers: {
+                accept: "application/json",
+                ...init.headers,
+                authorization: bound.authorization
+              }
+            },
+            { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
+          );
+          if (!remote.response.ok) {
+            await remote.response.body?.cancel().catch(() => undefined);
+            throw new PersonalMemoryBoundaryError(
+              remote.response.status === 404
+                ? "not_found"
+                : remote.response.status === 409
+                  ? "conflict"
+                  : "request_failed",
+              remote.response.status === 408 || remote.response.status >= 500
+            );
+          }
+          return remote.payload;
+        }
+      });
       const data =
-        request.operation === "personal.ask.threads.list"
-          ? await listPersonalAskThreads(request.input)
-          : request.operation === "personal.ask.thread.load"
-            ? await loadPersonalAskThread(request.input)
-            : request.operation === "personal.ask.submit"
-              ? await submitPersonalAsk(request.input)
-              : request.operation === "personal.notes.list"
-                ? await listPersonalNotes(request.input)
-                : request.operation === "personal.notes.load"
-                  ? await loadPersonalNote(request.input)
-                  : request.operation === "personal.notes.create"
-                    ? await createPersonalNote(request.input)
-                    : request.operation === "personal.notes.rename"
-                      ? await renamePersonalNote(request.input)
-                      : request.operation === "personal.notes.update"
-                        ? await updatePersonalNote(request.input)
-                        : request.operation === "personal.projects.list"
-                          ? await listPersonalProjects()
-                          : request.operation ===
-                              "personal.conversations.recent.list"
-                            ? await listRecentPersonalConversations(
-                                request.input
-                              )
-                            : request.operation ===
-                                "personal.projects.metadata.list"
-                              ? localProjectMetadataData(environment)
-                              : request.operation ===
-                                  "personal.events.load_page"
-                                ? await loadPersonalEventPage(request.input)
-                                : request.operation ===
-                                    "personal.sessions.assign_project"
-                                  ? await assignPersonalSessionProject(
-                                      request.input
-                                    )
-                                  : request.operation ===
-                                      "personal.sessions.update_presentation"
-                                    ? await updatePersonalSessionPresentation(
-                                        request.input
-                                      )
-                                    : await updatePersonalSessionTitle(
-                                        request.input
-                                      );
+        request.operation === "personal.sessions.forget"
+          ? await chatLifecycle.forget(request.input)
+          : request.operation === "personal.sessions.forget_progress"
+            ? await chatLifecycle.progressForget(request.input)
+            : request.operation === "personal.sessions.forget_pending_list"
+              ? await chatLifecycle.listPendingForgets()
+              : request.operation === "personal.sessions.forget_undo"
+                ? await chatLifecycle.undoForget(request.input)
+                : request.operation === "personal.sessions.trash"
+                  ? await chatLifecycle.trash(request.input)
+                  : request.operation === "personal.sessions.delete_progress"
+                    ? await chatLifecycle.progress(request.input)
+                    : request.operation === "personal.sessions.restore"
+                      ? await chatLifecycle.restore(request.input)
+                      : request.operation === "personal.sessions.deleted_list"
+                        ? await chatLifecycle.listDeleted(request.input)
+                        : request.operation ===
+                            "personal.sessions.delete_pending_list"
+                          ? await chatLifecycle.listPending()
+                          : request.operation === "personal.ask.threads.list"
+                            ? await listPersonalAskThreads(request.input)
+                            : request.operation === "personal.ask.thread.load"
+                              ? await loadPersonalAskThread(request.input)
+                              : request.operation === "personal.ask.submit"
+                                ? await submitPersonalAsk(request.input)
+                                : request.operation === "personal.notes.list"
+                                  ? await listPersonalNotes(request.input)
+                                  : request.operation === "personal.notes.load"
+                                    ? await loadPersonalNote(request.input)
+                                    : request.operation ===
+                                        "personal.notes.create"
+                                      ? await createPersonalNote(request.input)
+                                      : request.operation ===
+                                          "personal.notes.rename"
+                                        ? await renamePersonalNote(
+                                            request.input
+                                          )
+                                        : request.operation ===
+                                            "personal.notes.update"
+                                          ? await updatePersonalNote(
+                                              request.input
+                                            )
+                                          : request.operation ===
+                                              "personal.projects.list"
+                                            ? await listPersonalProjects()
+                                            : request.operation ===
+                                                "personal.conversations.recent.list"
+                                              ? await listRecentPersonalConversations(
+                                                  request.input
+                                                )
+                                              : request.operation ===
+                                                  "personal.projects.metadata.list"
+                                                ? localProjectMetadataData(
+                                                    environment
+                                                  )
+                                                : request.operation ===
+                                                    "personal.events.load_page"
+                                                  ? await loadPersonalEventPage(
+                                                      request.input
+                                                    )
+                                                  : request.operation ===
+                                                      "personal.sessions.assign_project"
+                                                    ? await assignPersonalSessionProject(
+                                                        request.input
+                                                      )
+                                                    : request.operation ===
+                                                        "personal.sessions.update_presentation"
+                                                      ? await updatePersonalSessionPresentation(
+                                                          request.input
+                                                        )
+                                                      : await updatePersonalSessionTitle(
+                                                          request.input
+                                                        );
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -5751,6 +5847,7 @@ export const createKoedServerManager = ({
     managedProject,
     projects,
     projectSourceNative,
+    chatDeleteNative,
     projectHqConversation,
     agents,
     discoverProject: (cwd) =>

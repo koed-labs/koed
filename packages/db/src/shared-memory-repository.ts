@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
+import { chatAllowsTeamPublication } from "./chat-sharing-publication.js";
 import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
@@ -2314,10 +2315,18 @@ const capturedSourceMayEnterSharedMemory = async (
     [sessionId]
   );
   if (local.rows[0]?.known_local)
-    return capturedSessionMayLeavePersonalBoundary(
-      client,
-      ownerUserId,
-      sessionId
+    return (
+      (await chatAllowsTeamPublication(
+        client,
+        ownerUserId,
+        logicalMemoryId,
+        sessionId
+      )) &&
+      (await capturedSessionMayLeavePersonalBoundary(
+        client,
+        ownerUserId,
+        sessionId
+      ))
     );
   if (admittedRemote !== undefined) return admittedRemote;
   // Later stages have no device request. Read the retained source origin and
@@ -8235,6 +8244,17 @@ export const createSharedMemoryRepository = (
         throw new SharedMemoryConflictError(
           "Project HQ Conversation cannot be shared"
         );
+      if (
+        !(await chatAllowsTeamPublication(
+          client,
+          actor.userId,
+          context.logicalMemoryId,
+          context.localSessionId
+        ))
+      )
+        throw new SharedMemoryConflictError(
+          "Conversation deletion blocks new Team publication"
+        );
       const provider = await resolveOwnerPrivateReplicaEncryptionProvider({
         ownerUserId: context.ownerUserId,
         ownerPrincipalId: context.ownerPrincipalId,
@@ -10568,6 +10588,18 @@ export const createSharedMemoryRepository = (
       });
     }
     const published = await withTransaction(pool, async (client) => {
+      if (
+        context.source.kind === "captured_session" &&
+        !(await chatAllowsTeamPublication(
+          client,
+          actor.userId,
+          context.source.logicalMemoryId,
+          context.source.sessionId
+        ))
+      )
+        throw new SharedMemoryConflictError(
+          "Conversation deletion blocks staged Team publication"
+        );
       if (stagedRepresentation) {
         const companion = await client.query<{ id: string }>(
           `select id from collaboration_threads
@@ -17385,6 +17417,18 @@ export const createSharedMemoryRepository = (
           client,
           stringValue(grantRow.logical_memory_id)
         );
+        if (
+          grantRow.source_kind === "captured_session" &&
+          !(await chatAllowsTeamPublication(
+            client,
+            actor.userId,
+            stringValue(grantRow.logical_memory_id),
+            nullableString(grantRow.source_session_id)
+          ))
+        )
+          throw new SharedMemoryConflictError(
+            "Conversation deletion blocks Team materialization"
+          );
         const pendingActivation =
           stringValue(grantRow.lifecycle) === "unavailable"
             ? await client.query<Row>(

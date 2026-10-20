@@ -1285,6 +1285,76 @@ export const routeIdentityContracts = [
     "Update owner-only Conversation navigation presentation state."
   ),
   route(
+    "GET",
+    "/v1/memory/graph/sessions/deleted",
+    "session_or_api_token",
+    "personal_memory",
+    "List owner-only Conversations available for restoration."
+  ),
+  route(
+    "GET",
+    "/v1/memory/graph/sessions/delete-pending",
+    "session_or_api_token",
+    "personal_memory",
+    "List durable owner-only Conversation deletion batches awaiting completion."
+  ),
+  route(
+    "DELETE",
+    "/v1/memory/graph/sessions/{sessionId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Move an owner-only Conversation to Deleted while retaining its Personal Memory."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/delete-progress",
+    "session_or_api_token",
+    "personal_memory",
+    "Advance or inspect the exact owner-only Conversation deletion batch."
+  ),
+  route(
+    "GET",
+    "/v1/memory/graph/sessions/{sessionId}/delete-reviews/{actionGrantId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Read an exact owner-only Native Share Grant freeze review reservation."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/restore",
+    "session_or_api_token",
+    "personal_memory",
+    "Restore an owner-only deleted Conversation within 30 days."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/forget",
+    "session_or_api_token",
+    "personal_memory",
+    "Forget an owned Conversation from Personal recall with a seven-day Undo window."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/forget-progress",
+    "session_or_api_token",
+    "personal_memory",
+    "Advance an exact owner-only pending Conversation Forget batch after stopping work."
+  ),
+  route(
+    "GET",
+    "/v1/memory/graph/sessions/forget-pending",
+    "session_or_api_token",
+    "personal_memory",
+    "List owner-only pending Conversation Forget batches."
+  ),
+  route(
+    "POST",
+    "/v1/memory/graph/sessions/{sessionId}/forget-undo",
+    "session_or_api_token",
+    "personal_memory",
+    "Undo an exact owner-only Conversation Forget operation within seven days."
+  ),
+  route(
     "DELETE",
     "/v1/memory/graph/events/{eventId}",
     "session_or_api_token",

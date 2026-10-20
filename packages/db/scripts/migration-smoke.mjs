@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0060_cuddly_jack_power";
-const expectedLatestMigrationIndex = 60;
+const expectedLatestMigrationTag = "0061_great_wolfpack";
+const expectedLatestMigrationIndex = 61;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -848,6 +848,33 @@ const assertLatestSchema = async (pool) => {
     managed_conversation_executions: [
       ["is_project_hq", "boolean", "NO"],
       ["hq_private_path", "text", "YES"]
+    ],
+    sessions: [["forget_batch_id", "uuid", "YES"]],
+    chat_delete_operations: [
+      ["batch_id", "uuid", "NO"],
+      ["session_id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["source_manifest", "jsonb", "NO"],
+      ["source_manifest_hash", "text", "NO"],
+      ["execution_manifest", "jsonb", "NO"],
+      ["execution_set_hash", "text", "NO"],
+      ["backend_acks", "jsonb", "NO"],
+      ["grant_freeze_acks", "jsonb", "NO"],
+      ["runtime_acks", "jsonb", "NO"],
+      ["state", "text", "NO"]
+    ],
+    chat_forget_operations: [
+      ["batch_id", "uuid", "NO"],
+      ["session_id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["state", "text", "NO"],
+      ["execution_manifest", "jsonb", "NO"],
+      ["runtime_acks", "jsonb", "NO"],
+      ["event_ids", "jsonb", "NO"],
+      ["item_ids", "jsonb", "NO"],
+      ["node_ids", "jsonb", "NO"],
+      ["assertion_snapshots", "jsonb", "NO"],
+      ["undone_at", "timestamp with time zone", "YES"]
     ]
   };
   const expectedColumns = Object.entries(columnsByTable)
@@ -1634,6 +1661,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preChatLifecycleFolder = await createMigrationSlice(journal, 60, {
+    folderPrefix: "koed-pre-chat-lifecycle-"
+  });
+  temporaryFolders.add(preChatLifecycleFolder);
+  const preChatLifecycleRecords = await migrationRecords(
+    preChatLifecycleFolder,
+    journal.entries.slice(0, 61)
+  );
   const preSourceIngestionFolder = await createMigrationSlice(journal, 54, {
     folderPrefix: "koed-pre-source-ingestion-"
   });
@@ -2996,6 +3031,104 @@ try {
       });
     }
   );
+
+  await runScenario("chat-lifecycle-0061-upgrade-cascade", async () => {
+    const target = await createDisposableDatabase("chat_lifecycle_upgrade");
+    const ownerId = randomUUID();
+    const retainedSessionId = randomUUID();
+    const purgedSessionId = randomUUID();
+    const forgetBatchId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, {
+        migrationsFolder: preChatLifecycleFolder
+      });
+      await assertMigrationLedger(pool, preChatLifecycleRecords);
+      await pool.query("insert into users(id,email) values($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into sessions(id,owner_user_id,source_runtime,capture_method)
+         values($1,$3,'codex','transcript'),($2,$3,'codex','transcript')`,
+        [retainedSessionId, purgedSessionId, ownerId]
+      );
+      const before = await pool.query(
+        "select id from sessions where owner_user_id=$1 order by id",
+        [ownerId]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if (
+        !isDeepStrictEqual(
+          (
+            await pool.query(
+              "select id from sessions where owner_user_id=$1 order by id",
+              [ownerId]
+            )
+          ).rows,
+          before.rows
+        )
+      )
+        throw new Error("Chat lifecycle upgrade changed retained sessions");
+      const constraints = await pool.query(
+        `select conname, confdeltype from pg_constraint
+         where conname in ('chat_delete_operations_session_fk',
+                           'chat_forget_operations_session_fk')
+         order by conname`
+      );
+      if (
+        !isDeepStrictEqual(constraints.rows, [
+          { conname: "chat_delete_operations_session_fk", confdeltype: "c" },
+          { conname: "chat_forget_operations_session_fk", confdeltype: "c" }
+        ])
+      )
+        throw new Error(
+          "Chat lifecycle operations must cascade on session purge"
+        );
+      await pool.query(
+        `insert into chat_delete_operations
+         (batch_id,session_id,owner_user_id,source_manifest,source_manifest_hash,
+          execution_manifest,execution_set_hash)
+         values($1,$2,$3,'[]'::jsonb,$4,'[]'::jsonb,$4)`,
+        [randomUUID(), purgedSessionId, ownerId, "a".repeat(64)]
+      );
+      await pool.query(
+        `insert into chat_forget_operations(batch_id,session_id,owner_user_id)
+         values($1,$2,$3)`,
+        [forgetBatchId, purgedSessionId, ownerId]
+      );
+      await pool.query("update sessions set forget_batch_id=$2 where id=$1", [
+        purgedSessionId,
+        forgetBatchId
+      ]);
+      const reserved = await pool.query(
+        "select forget_batch_id from sessions where id=$1",
+        [purgedSessionId]
+      );
+      if (reserved.rows[0]?.forget_batch_id !== forgetBatchId)
+        throw new Error("Chat Forget reservation did not survive upgrade");
+      await pool.query("delete from sessions where id=$1", [purgedSessionId]);
+      const remaining = await pool.query(
+        `select (select count(*)::integer from chat_delete_operations where session_id=$1) as delete_ops,
+                (select count(*)::integer from chat_forget_operations where session_id=$1) as forget_ops,
+                (select count(*)::integer from sessions where id=$2) as retained`,
+        [purgedSessionId, retainedSessionId]
+      );
+      if (
+        !isDeepStrictEqual(remaining.rows[0], {
+          delete_ops: 0,
+          forget_ops: 0,
+          retained: 1
+        })
+      )
+        throw new Error("Session purge stranded chat lifecycle operations");
+      const stable = await schemaFingerprint(pool);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      if ((await schemaFingerprint(pool)) !== stable)
+        throw new Error("Chat lifecycle migration rerun changed schema");
+    });
+  });
 
   await runScenario(
     "source-ingestion-0055-upgrade-rollback-restore",

@@ -21,6 +21,8 @@ import {
   createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
+  createChatDeleteRepository,
+  createChatForgetRepository,
   createProjectSourceRepository,
   createProjectSourceRemovalRepository,
   databaseErrorCode,
@@ -53,6 +55,8 @@ import { createProjectSourceIngestionService } from "../projects/source-ingestio
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
 import { createCuratedClassificationCoordinator } from "../memory/curated-classification-coordinator.js";
+import { createChatDeleteCoordinator } from "../memory/chat-delete-coordinator.js";
+import { registerChatDeleteRoutes } from "../memory/chat-delete-routes.js";
 import {
   type CacheProvider,
   createRateLimitHandlers,
@@ -488,6 +492,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localEdgeUpstreamBackendsPath
           ).backends.map((backend) => backend.id)
       })
+    : null;
+  const chatDeleteRepository = pool
+    ? createChatDeleteRepository(pool, {
+        configuredBackendIds: () =>
+          readLocalEdgeUpstreamRegistry(
+            localEdgeUpstreamBackendsPath
+          ).backends.map((backend) => backend.id)
+      })
+    : null;
+  const chatForgetRepository = pool
+    ? createChatForgetRepository(pool, { envelopeEncryptionProvider })
     : null;
   const projectSourceRepository = pool
     ? createProjectSourceRepository(pool, { envelopeEncryptionProvider })
@@ -1982,6 +1997,24 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     curatedClassificationWorkerTimer.unref();
     tick();
   }
+  const chatDeleteCoordinator =
+    chatDeleteRepository &&
+    collaborationSharedMemoryControl &&
+    localSharedMemoryCandidatePreparation
+      ? createChatDeleteCoordinator({
+          repository: chatDeleteRepository,
+          sharedMemoryControl: collaborationSharedMemoryControl,
+          actionGrantControl: collaborationActionGrantControl,
+          resolveSourceIdentity:
+            localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
+        })
+      : null;
+  registerChatDeleteRoutes(app, routeContext, {
+    repository: chatDeleteRepository,
+    forgetRepository: chatForgetRepository,
+    managedRepository: repository,
+    coordinator: chatDeleteCoordinator
+  });
   registerProjectRoutes(app, {
     repository: projectApiRepository,
     managedRepository: repository,

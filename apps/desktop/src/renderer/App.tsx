@@ -1173,6 +1173,7 @@ export function App({
     return (
       <HqApplication
         personalMemoryStore={personalMemoryStore}
+        personalMemoryApi={window.koedDesktop?.personalMemory}
         personalMemoryReady={personalMemoryReady}
         projectsApi={projectsApi}
         agentsApi={window.koedDesktop?.agents}
@@ -1204,8 +1205,14 @@ export function App({
             ? { displayName: snapshot.navigation.personalOwner.displayName }
             : undefined
         }
-        renderSettings={(onClose) => (
+        renderSettings={(onClose, onChatRestored) => (
           <HqSettings
+            personalMemoryApi={window.koedDesktop?.personalMemory}
+            personalMemoryAuthorityKey={`${snapshot?.navigation.personalOwner.id ?? ""}|${snapshot?.connection.backendId ?? "local"}|${snapshot?.connection.connectedAt ?? ""}|${client.currentRemoteUrl() ?? ""}`}
+            onChatRestored={(sessionId, batchId) => {
+              onChatRestored?.(sessionId, batchId);
+              void personalMemoryStore?.loadProjects({ silent: true });
+            }}
             collaborationClient={client}
             collaborationSnapshot={snapshot}
             hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}

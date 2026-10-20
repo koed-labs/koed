@@ -20,6 +20,7 @@ import {
   personalDesktopRequestSchema,
   personalDesktopResultSchema
 } from "@koed/shared";
+import type { PersonalDesktopResult } from "@koed/shared/personal-desktop";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import type {
   DesktopCommandContext,
@@ -178,6 +179,17 @@ export const registerDesktopCommandHandlers = (
     allowedRendererOrigins: ReadonlySet<string>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
+    reviewChatDeletion?: (
+      sessionId: string,
+      batchId: string,
+      actionGrantId: string,
+      context: DesktopCommandContext
+    ) => Promise<
+      Extract<
+        PersonalDesktopResult,
+        { operation: "personal.sessions.delete_review"; ok: true }
+      >["data"]
+    >;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
     uploadProjectSource?: (
       projectId: string
@@ -482,6 +494,24 @@ export const registerDesktopCommandHandlers = (
         throw new Error("Untrusted Desktop IPC sender.");
       }
       const request = personalDesktopRequestSchema.parse(value);
+      if (request.operation === "personal.sessions.delete_review") {
+        if (!options.reviewChatDeletion)
+          throw new Error(
+            "Conversation deletion Native review is unavailable."
+          );
+        const data = await options.reviewChatDeletion(
+          request.input.sessionId,
+          request.input.batchId,
+          request.input.actionGrantId,
+          contextForSender(event.sender)
+        );
+        return personalDesktopResultSchema.parse({
+          contractVersion: request.contractVersion,
+          operation: request.operation,
+          ok: true,
+          data
+        });
+      }
       const result = personalDesktopResultSchema.parse(
         await options.personalMemory(request)
       );

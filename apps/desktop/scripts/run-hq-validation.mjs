@@ -17,11 +17,17 @@ const projectViewReportPath = resolve(
   "browser-report.json"
 );
 const workItemReportPath = resolve(scratchDir, "hq-403", "browser-report.json");
+const chatLifecycleReportPath = resolve(
+  scratchDir,
+  "hq-106",
+  "browser-report.json"
+);
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
 await rm(projectViewReportPath, { force: true });
 await rm(workItemReportPath, { force: true });
+await rm(chatLifecycleReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -173,6 +179,42 @@ try {
       }
     } finally {
       await rm(workItemProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const chatLifecycleProfile = await mkdtemp(
+      resolve(scratchDir, "hq106-electron-profile-")
+    );
+    try {
+      const chatLifecycle = spawnSync(
+        electronPath,
+        ["scripts/validate-hq106.mjs"],
+        {
+          cwd: desktopDir,
+          env: {
+            ...process.env,
+            KOED_HQ106_USER_DATA_DIR: chatLifecycleProfile
+          },
+          stdio: "inherit",
+          timeout: 60_000
+        }
+      );
+      if (chatLifecycle.error) throw chatLifecycle.error;
+      process.exitCode = chatLifecycle.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(
+          await readFile(chatLifecycleReportPath, "utf8")
+        );
+        assert.deepEqual(
+          { id: report.id, status: report.status },
+          { id: "HQ106.native", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ106.native [HQ-106]: Delete, pending, Deleted restore, Forget, Undo, and light/dark captures.\n"
+        );
+      }
+    } finally {
+      await rm(chatLifecycleProfile, { recursive: true, force: true });
     }
   }
 } finally {

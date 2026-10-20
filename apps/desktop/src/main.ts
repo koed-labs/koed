@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import { reviewProjectSourceRemoval } from "./koed-server/project-source-native-review.js";
+import { reviewChatDeletion } from "./koed-server/chat-delete-native-review.js";
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationRendererCommandSchema,
@@ -419,6 +420,84 @@ const bootstrap = async () => {
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
+    reviewChatDeletion: async (sessionId, batchId, actionGrantId, context) => {
+      const dispatch = async (
+        command:
+          | "collaboration.await_action_grant"
+          | "collaboration.confirm_action_grant",
+        input: Record<string, unknown>
+      ) => {
+        const request = collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: crypto.randomUUID(),
+          command,
+          input
+        });
+        const result = collaborationCommandResultSchema.parse(
+          await server.handlers.collaboration(
+            request as unknown as Record<string, unknown>,
+            context
+          )
+        );
+        if (
+          !result.ok ||
+          result.command !== command ||
+          !("status" in result.data)
+        )
+          throw new Error(
+            "Conversation deletion requires the matching Team device authority."
+          );
+        return result.data.status;
+      };
+      const status = await reviewChatDeletion({
+        sessionId,
+        batchId,
+        actionGrantId,
+        prepare: () =>
+          server.chatDeleteNative.prepareReview(
+            sessionId,
+            batchId,
+            actionGrantId
+          ),
+        assertAuthority: (key, ownerId) =>
+          server.chatDeleteNative.assertAuthority(key, ownerId),
+        awaitGrant: () =>
+          dispatch("collaboration.await_action_grant", {
+            actionGrant: { id: actionGrantId }
+          }),
+        showReview: async (review) => {
+          const options: MessageBoxOptions = {
+            type: "warning",
+            title: review.title,
+            message: review.title,
+            detail: [
+              review.description,
+              ...review.details.map(
+                (entry) => `${entry.label}: ${entry.value}`
+              ),
+              review.consequence
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+            buttons: ["Cancel", "Approve"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true
+          };
+          const response = mainWindow
+            ? await dialog.showMessageBox(mainWindow, options)
+            : await dialog.showMessageBox(options);
+          return response.response === 1;
+        },
+        confirmGrant: (decision) =>
+          dispatch("collaboration.confirm_action_grant", {
+            actionGrant: { id: actionGrantId },
+            decision
+          }),
+        advance: () => server.chatDeleteNative.progress(sessionId, batchId)
+      });
+      return { status };
+    },
     projects: server.projects,
     projectHqConversation: server.projectHqConversation,
     agents: server.agents,

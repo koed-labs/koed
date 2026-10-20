@@ -1,0 +1,100 @@
+.hq-chat-delete__scrim,
+.hq-chat-delete__notice {
+  /* These controls sit beside the HQ shell, outside its token scope. */
+  --hq-bg: #fbfbfc;
+  --hq-fg: #18181b;
+  --hq-fg2: #3f3f46;
+  --hq-border: #dcdce2;
+  --hq-surface: #e7e7ec;
+  --hq-danger: #b91c1c;
+  --hq-btn-fg: #fafafa;
+}
+.dark .hq-chat-delete__scrim,
+.dark .hq-chat-delete__notice {
+  --hq-bg: #050507;
+  --hq-fg: #f4f4f5;
+  --hq-fg2: #d4d4d8;
+  --hq-border: #2a2a31;
+  --hq-surface: #1d1d23;
+  --hq-danger: #fca5a5;
+  --hq-btn-fg: #0b0b0e;
+}
+.hq-chat-delete__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, black 46%, transparent);
+}
+.hq-chat-delete__dialog {
+  inline-size: min(420px, calc(100vw - 36px));
+  padding: 22px 22px 18px;
+  border: 1px solid var(--hq-border);
+  border-radius: 20px;
+  background: var(--hq-bg);
+  color: var(--hq-fg);
+  box-shadow: 0 24px 60px #0003;
+}
+.hq-chat-delete__dialog h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.hq-chat-delete__dialog p {
+  margin: 0 0 12px;
+  color: var(--hq-fg2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.hq-chat-delete__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.hq-chat-delete__actions button,
+.hq-chat-delete__notice button {
+  padding: 8px 12px;
+  border: 1px solid var(--hq-border);
+  border-radius: 8px;
+  background: var(--hq-surface);
+  color: var(--hq-fg);
+  font: inherit;
+  cursor: pointer;
+}
+.hq-chat-delete__actions .hq-chat-delete__danger {
+  background: var(--hq-danger, #a9343d);
+  border-color: var(--hq-danger, #a9343d);
+  color: var(--hq-btn-fg);
+}
+.hq-chat-delete__notice {
+  position: fixed;
+  z-index: 210;
+  inset-inline-end: 24px;
+  inset-block-end: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-inline-size: min(520px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--hq-border);
+  border-radius: 11px;
+  background: var(--hq-bg);
+  color: var(--hq-fg);
+  box-shadow: 0 10px 28px #0003;
+}
+.hq-chat-delete__notice button[aria-label="Dismiss"] {
+  padding: 5px;
+  border: 0;
+  background: transparent;
+}
+.hq-chat-delete__notice svg {
+  inline-size: 15px;
+  block-size: 15px;
+}
+.hq-sidebar__deletion-pending {
+  color: var(--hq-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}

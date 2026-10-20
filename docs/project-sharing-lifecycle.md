@@ -231,6 +231,28 @@ ask for confirmation and then stop it. If the Conversation is a Scheduled
 Job's own chat, pause that local job. Show an Undo toast; restore is available
 from Settings → Deleted for 30 days and does not resume grant advancement.
 
+When a required Team backend is offline, the owner can record an exact
+deletion batch locally. The UI shows **Deletion pending** and keeps that chat
+visible until the backend acknowledges the source-admission seal and every
+affected grant freeze. Reconnect retries the same batch and does not widen its
+source manifest. A declined Native review releases remote admission holds
+before the local reservation is cancelled. The session reservation blocks new
+source publication and new execution starts while pending. The Scheduled Job
+pause and later resume check belong to the Scheduled Jobs lifecycle (HQ-601/602);
+this chat operation exposes its durable pending/complete state for that hook
+and does not imply that jobs are already paused by the current implementation.
+
+"Forget this chat" uses a separate owner-only batch. If an Agent is running,
+Koed reserves that chat against new work, requests a generation-bound stop,
+and shows **Forget pending** while the stop is unresolved. Personal recall is
+removed only after the stop is confirmed; Undo for seven days restores only
+evidence and assertion suppression recorded by that Forget batch. Forget does
+not freeze or revoke a Team grant. The `memory_forget` citation action can use
+this same batch when its citation routing is delivered by HQ-307. There is no
+current `memory_forget` chat-citation producer or Scheduled Job owner record;
+the lifecycle endpoints retain the exact reservation and stop hook for those
+later integrations, and the job pause is not yet implemented.
+
 ### Delete a Project Source
 
 Deleting Team-side Project Source metadata is a Team action through

@@ -13,6 +13,46 @@ import {
 } from "./curated-memory-support.js";
 import type { ActorContext, CuratedMemorySourceInput } from "./types.js";
 
+/** A derived summary must stay hidden while any contributing chat is forgotten. */
+export const memoryNodeHasForgottenSessionPredicate = (
+  nodeAlias: string
+): string => `exists (
+  with recursive contributing_nodes(id) as (
+    select ${nodeAlias}.id
+    union
+    select child.child_memory_node_id
+      from memory_node_children child
+      join contributing_nodes parent on parent.id=child.parent_memory_node_id
+  )
+  select 1 from contributing_nodes contributing
+    join memory_nodes node on node.id=contributing.id
+   where exists (
+     select 1 from sessions own_session
+      where own_session.id=node.session_id
+        and own_session.personal_deleted_at is not null
+   ) or exists (
+     select 1 from memory_node_sources source
+     left join memory_events event on event.id=source.memory_event_id
+     left join messages message on message.id=source.message_id
+     left join tool_events tool on tool.id=source.tool_event_id
+     join sessions source_session on source_session.id=coalesce(
+       event.session_id,message.session_id,tool.session_id
+     )
+      where source.memory_node_id=node.id
+        and source_session.personal_deleted_at is not null
+   )
+)`;
+
+const activePersonalSourceSessionPredicate = (
+  sourceAlias: string,
+  assertionAlias: string
+): string => `(${sourceAlias}.session_id is null or exists (
+  select 1 from sessions source_session
+   where source_session.id=${sourceAlias}.session_id
+     and source_session.owner_user_id=${assertionAlias}.owner_user_id
+     and source_session.personal_deleted_at is null
+))`;
+
 export const curatedMemoryActiveEvidenceRowsSql = (
   assertionAlias: string,
   prefix: string
@@ -63,6 +103,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_ci.visibility = 'personal'
     and ${prefix}_ci.personal_deleted_at is null
     and ${prefix}_ci.memory_excluded_at is null
+    and ${activePersonalSourceSessionPredicate(`${prefix}_ci`, assertionAlias)}
   left join sessions ${prefix}_ci_session
     on ${prefix}_ci_session.id = ${prefix}_ci.session_id
     and ${prefix}_ci_session.owner_user_id = ${assertionAlias}.owner_user_id
@@ -73,6 +114,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_me.visibility = 'personal'
     and ${prefix}_me.invalidated_at is null
     and ${prefix}_me.personal_deleted_at is null
+    and ${activePersonalSourceSessionPredicate(`${prefix}_me`, assertionAlias)}
   left join sessions ${prefix}_me_session
     on ${prefix}_me_session.id = ${prefix}_me.session_id
     and ${prefix}_me_session.owner_user_id = ${assertionAlias}.owner_user_id
@@ -91,6 +133,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_mn.visibility = 'personal'
     and ${prefix}_mn.invalidated_at is null
     and ${prefix}_mn.personal_deleted_at is null
+    and not ${memoryNodeHasForgottenSessionPredicate(`${prefix}_mn`)}
   left join memory_node_sources ${prefix}_mns
     on ${prefix}_mns.memory_node_id = ${prefix}_mn.id
   left join memory_events ${prefix}_node_me
@@ -99,6 +142,7 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_node_me.visibility = 'personal'
     and ${prefix}_node_me.invalidated_at is null
     and ${prefix}_node_me.personal_deleted_at is null
+    and ${activePersonalSourceSessionPredicate(`${prefix}_node_me`, assertionAlias)}
   left join sessions ${prefix}_node_session
     on ${prefix}_node_session.id = ${prefix}_node_me.session_id
     and ${prefix}_node_session.owner_user_id = ${assertionAlias}.owner_user_id
@@ -152,8 +196,10 @@ export const activeCuratedMemoryEvidencePredicate = (
 export const suppressCuratedMemoryWithoutActiveEvidenceWithClient = async (
   client: pg.PoolClient,
   actor: ActorContext,
-  provider: EnvelopeEncryptionProvider | undefined
+  provider: EnvelopeEncryptionProvider | undefined,
+  assertionIds?: readonly string[]
 ): Promise<string[]> => {
+  if (assertionIds && assertionIds.length === 0) return [];
   const protectPayload = protectedCuratedMemoryPayloadsRequired();
   if (protectPayload) {
     requireEncryptionProvider(provider);
@@ -170,6 +216,7 @@ export const suppressCuratedMemoryWithoutActiveEvidenceWithClient = async (
         and cma.visibility = 'personal'
         and cma.status = 'current'
         and cma.suppressed_at is null
+        and ($3::uuid[] is null or cma.id = any($3::uuid[]))
         and not ${activeCuratedMemoryEvidencePredicate("cma")}
       returning cma.id
     `,
@@ -177,7 +224,8 @@ export const suppressCuratedMemoryWithoutActiveEvidenceWithClient = async (
       actor.userId,
       protectPayload
         ? ENCRYPTED_CURATED_MEMORY_TEXT
-        : "Final active source evidence was deleted"
+        : "Final active source evidence was deleted",
+      assertionIds ?? null
     ]
   );
   if (protectPayload) {

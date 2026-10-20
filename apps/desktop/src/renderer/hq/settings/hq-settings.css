@@ -499,3 +499,24 @@ div:has(+ div > .hq-settings-dialog) {
     transition: none;
   }
 }
+.hq-settings__deleted-list {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+}
+.hq-settings__deleted-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hq-border);
+}
+.hq-settings__deleted-list button {
+  padding: 6px 12px;
+  border: 1px solid var(--hq-border);
+  border-radius: 7px;
+  color: var(--hq-fg);
+  background: var(--hq-surface);
+  cursor: pointer;
+}

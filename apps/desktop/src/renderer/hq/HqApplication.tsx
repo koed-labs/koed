@@ -16,6 +16,7 @@ import type { ManagedConversationLifecycle } from "../state/use-managed-conversa
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type { ProjectHqConversationDesktopApi } from "../../ipc/project-hq-conversation-protocol.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 import { ProjectsStore } from "./useProjects.js";
@@ -37,6 +38,11 @@ import {
 } from "./conversation/hq-conversation-threads.js";
 import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
+import {
+  HqChatDeleteControls,
+  type ChatDeleteNotice,
+  type ChatDeleteRequest
+} from "./HqChatDeleteControls.js";
 import { HqSearch } from "./HqSearch.js";
 import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
 import { hqSettingsShortcut } from "./settings/HqSettings.js";
@@ -57,6 +63,7 @@ const emptyPersonalProjects: readonly import("@koed/shared").Project[] = [];
 export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
+  personalMemoryApi,
   projectsApi,
   agentsApi,
   visibilityClient,
@@ -77,6 +84,7 @@ export function HqApplication({
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
+  personalMemoryApi?: PersonalDesktopApi;
   projectsApi?: ProjectsDesktopApi | null;
   agentsApi?: DesktopApi["agents"];
   visibilityClient?: CollaborationRendererClient;
@@ -84,7 +92,10 @@ export function HqApplication({
   visibilityProfileKey?: string | null;
   visibilityRevision?: string | null;
   visibilityConnected?: boolean;
-  renderSettings?: (onClose: () => void) => ReactNode;
+  renderSettings?: (
+    onClose: () => void,
+    onChatRestored?: (sessionId: string, batchId: string | null) => void
+  ) => ReactNode;
   accountIdentity?: HqAccountIdentity;
   managedConversations?: ManagedConversationDesktopApi | null;
   projectHqConversation?: ProjectHqConversationDesktopApi | null;
@@ -101,6 +112,98 @@ export function HqApplication({
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatDeleteRequest, setChatDeleteRequest] =
+    useState<ChatDeleteRequest | null>(null);
+  const [chatDeleteNotice, setChatDeleteNotice] =
+    useState<ChatDeleteNotice | null>(null);
+  const [chatDeleteBusy, setChatDeleteBusy] = useState(false);
+  const [pendingChatDeletionIds, setPendingChatDeletionIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const chatIntentEpoch = useRef(0);
+  const chatBusyRef = useRef(false);
+  const chatAuthority = useRef({
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey
+  });
+  chatAuthority.current = {
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey
+  };
+  const chatRequestRef = useRef(chatDeleteRequest);
+  chatRequestRef.current = chatDeleteRequest;
+  const chatNoticeRef = useRef(chatDeleteNotice);
+  chatNoticeRef.current = chatDeleteNotice;
+  const chatToken = () => ({
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey,
+    epoch: chatIntentEpoch.current
+  });
+  const chatCurrent = (token: ReturnType<typeof chatToken>) =>
+    chatIntentEpoch.current === token.epoch &&
+    chatAuthority.current.ownerId === token.ownerId &&
+    chatAuthority.current.profileKey === token.profileKey;
+  useEffect(() => {
+    chatIntentEpoch.current++;
+    chatBusyRef.current = false;
+    setChatDeleteBusy(false);
+    setChatDeleteRequest(null);
+    setChatDeleteNotice(null);
+    setPendingChatDeletionIds(new Set());
+  }, [visibilityOwnerId, visibilityProfileKey]);
+  useEffect(() => {
+    if (!personalMemoryApi?.listPendingSessionDeletions) return;
+    let active = true;
+    const token = chatToken();
+    void personalMemoryApi
+      .listPendingSessionDeletions()
+      .then((operations) => {
+        if (active && chatCurrent(token)) {
+          setPendingChatDeletionIds(
+            new Set(operations.map((item) => item.sessionId))
+          );
+          if (operations[0])
+            setChatDeleteNotice(
+              (current) =>
+                current ?? {
+                  kind: "pending",
+                  sessionId: operations[0]!.sessionId,
+                  batchId: operations[0]!.batchId,
+                  message:
+                    "Deletion pending. Koed will finish after the source freeze and running work complete."
+                }
+            );
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [personalMemoryApi, visibilityOwnerId, visibilityProfileKey]);
+  useEffect(() => {
+    if (!personalMemoryApi?.listPendingSessionForgets) return;
+    let active = true;
+    const token = chatToken();
+    void personalMemoryApi
+      .listPendingSessionForgets()
+      .then((operations) => {
+        if (active && chatCurrent(token) && operations[0])
+          setChatDeleteNotice(
+            (current) =>
+              current ?? {
+                kind: "forget_pending",
+                sessionId: operations[0]!.sessionId,
+                batchId: operations[0]!.batchId,
+                message:
+                  "Forget pending. Koed is stopping the agent before removing Personal recall."
+              }
+          );
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [personalMemoryApi, visibilityOwnerId, visibilityProfileKey]);
   const [blankOpen, setBlankOpen] = useState(false);
   const [inventoryTarget, setInventoryTarget] = useState<NowNeed | null>(null);
   const [blankProjectId, setBlankProjectId] = useState<string | null>(null);
@@ -256,6 +359,9 @@ export function HqApplication({
     selection.route.kind === "project" && projectsStore
       ? selection.route
       : reconcileHqRoute(selection.route, selection.project, projects);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const routeEpoch = useRef(0);
   const contextAvailable =
     route.kind === "project" &&
     (projectsStore
@@ -301,6 +407,7 @@ export function HqApplication({
     resolveBlankProject
   ]);
   const selectRoute = (next: HqRoute) => {
+    routeEpoch.current++;
     setInventoryTarget(null);
     setBlankOpen(false);
     setBlankLaunchPending(false);
@@ -312,6 +419,354 @@ export function HqApplication({
           ? undefined
           : projects.find(({ id }) => id === next.projectId)
     });
+  };
+  const openChatDeleteRequest = (
+    projectId: string,
+    sessionId: string,
+    title: string,
+    mode: "delete" | "forget"
+  ) => {
+    if (!visibilityOwnerId || !visibilityProfileKey || chatBusyRef.current)
+      return;
+    chatIntentEpoch.current++;
+    const token = chatToken();
+    setChatDeleteRequest({ projectId, sessionId, title, mode, running: null });
+    if (!managedConversations?.list) {
+      setChatDeleteRequest(null);
+      setChatDeleteNotice({
+        kind: "error",
+        sessionId,
+        message: "Cannot check whether an agent is working in this chat."
+      });
+      return;
+    }
+    void managedConversations
+      .list()
+      .then((result) => {
+        if (!chatCurrent(token)) return;
+        if (!result.complete)
+          throw new Error("Incomplete managed Conversation list");
+        const running = result.executions.some(
+          (execution) =>
+            execution.sessionId === sessionId &&
+            !["stopped", "failed", "fenced"].includes(execution.state)
+        );
+        setChatDeleteRequest((current) =>
+          current?.sessionId === sessionId && current.mode === mode
+            ? { ...current, running }
+            : current
+        );
+      })
+      .catch(() => {
+        if (
+          !chatCurrent(token) ||
+          chatRequestRef.current?.sessionId !== sessionId
+        )
+          return;
+        setChatDeleteRequest(null);
+        setChatDeleteNotice({
+          kind: "error",
+          sessionId,
+          message: "Cannot check whether an agent is working in this chat."
+        });
+      });
+  };
+  const confirmChatDelete = async () => {
+    if (
+      !chatDeleteRequest ||
+      chatBusyRef.current ||
+      chatDeleteRequest.running === null
+    )
+      return;
+    chatBusyRef.current = true;
+    setChatDeleteBusy(true);
+    const target = chatDeleteRequest;
+    const token = chatToken();
+    const originalRouteEpoch = routeEpoch.current;
+    let submittedBatchId: string | null = null;
+    try {
+      if (target.mode === "forget") {
+        if (!personalMemoryApi?.forgetSession) return;
+        const requestedBatchId = crypto.randomUUID();
+        submittedBatchId = requestedBatchId;
+        const forgotten = await personalMemoryApi.forgetSession({
+          sessionId: target.sessionId,
+          batchId: requestedBatchId
+        });
+        if (!chatCurrent(token)) return;
+        if (forgotten.batchId !== requestedBatchId)
+          throw new Error("Conversation Forget response identity changed.");
+        setChatDeleteRequest(null);
+        if (forgotten.pending) {
+          setChatDeleteNotice({
+            kind: "forget_pending",
+            sessionId: target.sessionId,
+            batchId: forgotten.batchId,
+            message: `Forget pending for ${target.title}. Koed is stopping the agent before removing Personal recall.`
+          });
+          return;
+        }
+        await personalMemoryStore?.loadProjects({ silent: true });
+        if (!chatCurrent(token)) return;
+        if (
+          routeEpoch.current === originalRouteEpoch &&
+          routeRef.current.kind === "conversation" &&
+          routeRef.current.sessionId === target.sessionId
+        )
+          selectRoute({ kind: "home" });
+        setChatDeleteNotice({
+          kind: "forgotten",
+          sessionId: target.sessionId,
+          batchId: forgotten.batchId,
+          message: `${target.title} forgotten from Personal recall.`
+        });
+        return;
+      }
+      if (!personalMemoryApi?.trashSession) return;
+      const requestedBatchId = crypto.randomUUID();
+      submittedBatchId = requestedBatchId;
+      let result = await personalMemoryApi.trashSession({
+        sessionId: target.sessionId,
+        batchId: requestedBatchId
+      });
+      if (!chatCurrent(token)) return;
+      if (
+        result.sessionId !== target.sessionId ||
+        result.batchId !== requestedBatchId
+      )
+        throw new Error("Conversation deletion response identity changed.");
+      if (personalMemoryApi.reviewSessionDeletion) {
+        for (const review of result.pendingReviews) {
+          result = await personalMemoryApi.reviewSessionDeletion({
+            sessionId: target.sessionId,
+            batchId: result.batchId,
+            actionGrantId: review.actionGrantId
+          });
+          if (!chatCurrent(token)) return;
+          if (
+            result.sessionId !== target.sessionId ||
+            result.batchId !== requestedBatchId
+          )
+            throw new Error("Conversation deletion review identity changed.");
+        }
+      }
+      setChatDeleteRequest(null);
+      if (result.complete) {
+        setPendingChatDeletionIds((current) => {
+          const next = new Set(current);
+          next.delete(target.sessionId);
+          return next;
+        });
+        await personalMemoryStore?.loadProjects({ silent: true });
+        if (!chatCurrent(token)) return;
+        if (
+          routeEpoch.current === originalRouteEpoch &&
+          routeRef.current.kind === "conversation" &&
+          routeRef.current.sessionId === target.sessionId
+        )
+          selectRoute({ kind: "home" });
+        setChatDeleteNotice({
+          kind: "deleted",
+          sessionId: target.sessionId,
+          batchId: result.batchId,
+          message: `${target.title} moved to Deleted.`
+        });
+      } else {
+        setPendingChatDeletionIds((current) =>
+          new Set(current).add(target.sessionId)
+        );
+        setChatDeleteNotice({
+          kind: "pending",
+          sessionId: target.sessionId,
+          batchId: result.batchId,
+          message: `Deletion pending for ${target.title}. Koed is waiting for the source freeze or running work to finish.`
+        });
+      }
+    } catch (error) {
+      if (!chatCurrent(token)) return;
+      setChatDeleteRequest(null);
+      if (submittedBatchId) {
+        setPendingChatDeletionIds((current) =>
+          target.mode === "delete"
+            ? new Set(current).add(target.sessionId)
+            : current
+        );
+        setChatDeleteNotice({
+          kind: target.mode === "forget" ? "forget_pending" : "pending",
+          sessionId: target.sessionId,
+          batchId: submittedBatchId,
+          message: `${target.mode === "forget" ? "Forget" : "Deletion"} pending for ${target.title}. Check its status to reconcile this exact batch.`
+        });
+      } else {
+        setChatDeleteNotice({
+          kind: "error",
+          sessionId: target.sessionId,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not delete this chat."
+        });
+      }
+    } finally {
+      if (chatCurrent(token)) {
+        chatBusyRef.current = false;
+        setChatDeleteBusy(false);
+      }
+    }
+  };
+  const retryChatDelete = async () => {
+    const notice = chatDeleteNotice;
+    if (!notice || chatBusyRef.current) return;
+    chatBusyRef.current = true;
+    setChatDeleteBusy(true);
+    const token = chatToken();
+    const originalRouteEpoch = routeEpoch.current;
+    try {
+      if (notice.kind === "forget_pending") {
+        if (!notice.batchId || !personalMemoryApi?.progressSessionForget)
+          return;
+        try {
+          const result = await personalMemoryApi.progressSessionForget({
+            sessionId: notice.sessionId,
+            batchId: notice.batchId
+          });
+          if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+          if (result.batchId !== notice.batchId)
+            throw new Error("Conversation Forget response identity changed.");
+          if (!result.pending) {
+            await personalMemoryStore?.loadProjects({ silent: true });
+            if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+            if (
+              routeEpoch.current === originalRouteEpoch &&
+              routeRef.current.kind === "conversation" &&
+              routeRef.current.sessionId === notice.sessionId
+            )
+              selectRoute({ kind: "home" });
+            setChatDeleteNotice({
+              kind: "forgotten",
+              sessionId: notice.sessionId,
+              batchId: result.batchId,
+              message: "Conversation forgotten from Personal recall."
+            });
+          }
+        } catch (error) {
+          if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+          setChatDeleteNotice({
+            ...notice,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Forget is still pending."
+          });
+        }
+        return;
+      }
+      if (!notice.batchId || !personalMemoryApi?.progressSessionDeletion)
+        return;
+      try {
+        let result = await personalMemoryApi.progressSessionDeletion({
+          sessionId: notice.sessionId,
+          batchId: notice.batchId
+        });
+        if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+        if (
+          result.sessionId !== notice.sessionId ||
+          result.batchId !== notice.batchId
+        )
+          throw new Error("Conversation deletion response identity changed.");
+        if (personalMemoryApi.reviewSessionDeletion) {
+          for (const review of result.pendingReviews) {
+            result = await personalMemoryApi.reviewSessionDeletion({
+              sessionId: notice.sessionId,
+              batchId: result.batchId,
+              actionGrantId: review.actionGrantId
+            });
+            if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+            if (
+              result.sessionId !== notice.sessionId ||
+              result.batchId !== notice.batchId
+            )
+              throw new Error("Conversation deletion review identity changed.");
+          }
+        }
+        if (result.complete) {
+          setPendingChatDeletionIds((current) => {
+            const next = new Set(current);
+            next.delete(result.sessionId);
+            return next;
+          });
+          await personalMemoryStore?.loadProjects({ silent: true });
+          if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+          if (
+            routeEpoch.current === originalRouteEpoch &&
+            routeRef.current.kind === "conversation" &&
+            routeRef.current.sessionId === result.sessionId
+          )
+            selectRoute({ kind: "home" });
+          setChatDeleteNotice({
+            kind: "deleted",
+            sessionId: result.sessionId,
+            batchId: result.batchId,
+            message: "Conversation moved to Deleted."
+          });
+        }
+      } catch (error) {
+        if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+        setChatDeleteNotice({
+          ...notice,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Deletion is still pending."
+        });
+      }
+    } finally {
+      if (chatCurrent(token)) {
+        chatBusyRef.current = false;
+        setChatDeleteBusy(false);
+      }
+    }
+  };
+  const undoChatDelete = async () => {
+    const notice = chatDeleteNotice;
+    if (!notice || !notice.batchId || chatBusyRef.current) return;
+    chatBusyRef.current = true;
+    setChatDeleteBusy(true);
+    const token = chatToken();
+    try {
+      if (notice.kind === "forgotten") {
+        if (!personalMemoryApi?.undoForgetSession) return;
+        await personalMemoryApi.undoForgetSession({
+          sessionId: notice.sessionId,
+          batchId: notice.batchId
+        });
+      } else {
+        if (!personalMemoryApi?.restoreSession) return;
+        await personalMemoryApi.restoreSession({
+          sessionId: notice.sessionId,
+          batchId: notice.batchId
+        });
+      }
+      if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+      await personalMemoryStore?.loadProjects({ silent: true });
+      if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+      setChatDeleteNotice(null);
+    } catch (error) {
+      if (!chatCurrent(token) || chatNoticeRef.current !== notice) return;
+      setChatDeleteNotice({
+        kind: "error",
+        sessionId: notice.sessionId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not restore this chat."
+      });
+    } finally {
+      if (chatCurrent(token)) {
+        chatBusyRef.current = false;
+        setChatDeleteBusy(false);
+      }
+    }
   };
   const projectMenu = useProjectMenuActions({
     api: projectsApi,
@@ -619,6 +1074,7 @@ export function HqApplication({
             }
             projects={projects}
             personalProjects={projectsStore ? personalProjects : undefined}
+            pendingDeletionIds={pendingChatDeletionIds}
             route={route}
             onRetryProjects={() => {
               void personalMemoryStore?.loadProjects();
@@ -638,6 +1094,18 @@ export function HqApplication({
             onDeleteProject={
               projectsStore && firstClassLoaded
                 ? projectMenu.openDelete
+                : undefined
+            }
+            onDeleteConversation={
+              personalMemoryApi?.trashSession
+                ? (projectId, sessionId, title) =>
+                    openChatDeleteRequest(projectId, sessionId, title, "delete")
+                : undefined
+            }
+            onForgetConversation={
+              personalMemoryApi?.forgetSession
+                ? (projectId, sessionId, title) =>
+                    openChatDeleteRequest(projectId, sessionId, title, "forget")
                 : undefined
             }
             onOpenNow={() => selectRoute({ kind: "home" })}
@@ -861,7 +1329,35 @@ export function HqApplication({
         onOpenChange={setSearchOpen}
         onInvoke={invoke}
       />
-      {settingsOpen && renderSettings ? renderSettings(closeSettings) : null}
+      {settingsOpen && renderSettings
+        ? renderSettings(closeSettings, (sessionId, batchId) => {
+            setChatDeleteNotice((notice) =>
+              notice?.kind === "deleted" &&
+              notice.sessionId === sessionId &&
+              notice.batchId === batchId
+                ? null
+                : notice
+            );
+          })
+        : null}
+      <HqChatDeleteControls
+        request={chatDeleteRequest}
+        notice={chatDeleteNotice}
+        busy={chatDeleteBusy}
+        onCancel={() => {
+          chatIntentEpoch.current++;
+          setChatDeleteRequest(null);
+        }}
+        onConfirm={() => void confirmChatDelete()}
+        onDismiss={() => {
+          chatIntentEpoch.current++;
+          chatBusyRef.current = false;
+          setChatDeleteBusy(false);
+          setChatDeleteNotice(null);
+        }}
+        onUndo={() => void undoChatDelete()}
+        onRetry={() => void retryChatDelete()}
+      />
     </>
   );
 }

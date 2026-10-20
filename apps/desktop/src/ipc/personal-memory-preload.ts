@@ -15,6 +15,12 @@ import {
   personalDesktopResultSchema,
   personalDesktopSessionProjectInputSchema,
   personalDesktopSessionTitleInputSchema,
+  personalDesktopChatDeleteInputSchema,
+  personalDesktopChatDeleteProgressInputSchema,
+  personalDesktopChatDeleteReviewInputSchema,
+  personalDesktopChatRestoreInputSchema,
+  personalDesktopChatForgetInputSchema,
+  personalDesktopChatForgetUndoInputSchema,
   personalDesktopSessionPresentationInputSchema,
   type PersonalDesktopApi,
   type PersonalDesktopRequest,
@@ -59,6 +65,144 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    forgetSession: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["forgetSession"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.forget",
+          input: personalDesktopChatForgetInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.forget")
+        throw new Error("Invalid Forget result.");
+      return result.data;
+    },
+    progressSessionForget: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["progressSessionForget"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.forget_progress",
+          input: personalDesktopChatDeleteProgressInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.forget_progress")
+        throw new Error("Invalid Forget progress result.");
+      return result.data;
+    },
+    listPendingSessionForgets: async () => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.forget_pending_list",
+          input: {}
+        })
+      );
+      if (result.operation !== "personal.sessions.forget_pending_list")
+        throw new Error("Invalid pending Forget result.");
+      return result.data.operations;
+    },
+    undoForgetSession: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["undoForgetSession"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.forget_undo",
+          input: personalDesktopChatForgetUndoInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.forget_undo")
+        throw new Error("Invalid Forget Undo result.");
+    },
+    trashSession: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["trashSession"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.trash",
+          input: personalDesktopChatDeleteInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.trash")
+        throw new Error("Invalid delete result.");
+      return result.data.status;
+    },
+    progressSessionDeletion: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["progressSessionDeletion"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.delete_progress",
+          input: personalDesktopChatDeleteProgressInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.delete_progress")
+        throw new Error("Invalid delete progress result.");
+      return result.data.status;
+    },
+    reviewSessionDeletion: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["reviewSessionDeletion"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.delete_review",
+          input: personalDesktopChatDeleteReviewInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.delete_review")
+        throw new Error("Invalid delete review result.");
+      return result.data.status;
+    },
+    restoreSession: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["restoreSession"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.restore",
+          input: personalDesktopChatRestoreInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.restore")
+        throw new Error("Invalid restore result.");
+    },
+    listDeletedSessions: async (input: { cursor?: string } = {}) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.deleted_list",
+          input: { cursor: input.cursor }
+        })
+      );
+      if (result.operation !== "personal.sessions.deleted_list")
+        throw new Error("Invalid deleted Conversations result.");
+      return result.data;
+    },
+    listPendingSessionDeletions: async () => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.delete_pending_list",
+          input: {}
+        })
+      );
+      if (result.operation !== "personal.sessions.delete_pending_list")
+        throw new Error("Invalid pending deletion result.");
+      return result.data.operations;
+    },
     listRecentConversations: async (
       value: Parameters<
         NonNullable<PersonalDesktopApi["listRecentConversations"]>

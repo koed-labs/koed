@@ -259,6 +259,50 @@
 .hq-sidebar__conversation-link {
   padding-inline-start: 32px;
 }
+.hq-sidebar__conversation {
+  position: relative;
+}
+.hq-sidebar__conversation-trash {
+  position: absolute;
+  inset-inline-end: 5px;
+  inset-block-start: 5px;
+  inline-size: 26px;
+  block-size: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--hq-surface);
+  color: var(--hq-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.hq-sidebar__conversation-trash svg {
+  inline-size: 14px;
+  block-size: 14px;
+}
+.hq-sidebar__conversation:hover .hq-sidebar__conversation-trash,
+.hq-sidebar__conversation:focus-within .hq-sidebar__conversation-trash {
+  opacity: 1;
+}
+.hq-sidebar__conversation-menu {
+  position: absolute;
+  z-index: 30;
+  inset-inline-end: 5px;
+  inset-block-start: 32px;
+  padding: 4px;
+  border: 1px solid var(--hq-border);
+  border-radius: 9px;
+  background: var(--hq-surface);
+  box-shadow: 0 12px 24px #0002;
+}
+.hq-sidebar__conversation-menu button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--hq-fg);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
 .hq-sidebar__more-row {
   padding-inline-start: 23px;
 }

@@ -178,7 +178,7 @@ describe("HQ-owned Settings", () => {
       [...container.querySelectorAll("nav button")].map(
         (button) => button.textContent
       )
-    ).toEqual(["General", "Agents", "Teams", "Services", "About"]);
+    ).toEqual(["General", "Agents", "Teams", "Services", "Deleted", "About"]);
     await click("About");
     expect(container.textContent).toContain("Version 0.8.1");
     await click("Close Settings");

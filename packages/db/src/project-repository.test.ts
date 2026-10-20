@@ -174,7 +174,7 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
     ]);
   });
 
-  it("projects graph threads by the exact effective owner-owned Personal Project ID", async () => {
+  it("projects active graph threads by the exact owner-owned Personal Project ID", async () => {
     const automatic = await fixture();
     const personalProjectId = (
       await repository.associateVerifiedCapturedSession(automatic)
@@ -227,16 +227,11 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
         threads.map((thread) => [thread.sessionId, thread] as const)
       )
     );
-    expect(bySession.get(automatic.sessionId)?.personalProjectId).toBe(
-      personalProjectId
-    );
+    // HQ-106 hides trashed chats from navigation while Personal recall retains
+    // their underlying evidence through the separate Memory retrieval path.
+    expect(bySession.has(automatic.sessionId)).toBe(false);
     expect(bySession.get(overridden.sessionId)?.personalProjectId).toBeNull();
-    expect(
-      bySession.get(automatic.sessionId)?.conversationTrashedAt
-    ).toBeTruthy();
-    expect(
-      bySession.get(priorTrash.sessionId)?.conversationTrashedAt
-    ).toBeTruthy();
+    expect(bySession.has(priorTrash.sessionId)).toBe(false);
     expect(bySession.has(otherOwner.sessionId)).toBe(false);
     await pool.query(`update sessions set trashed_at=null where id=$1`, [
       automatic.sessionId
@@ -249,12 +244,13 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
         threads.map((thread) => [thread.sessionId, thread] as const)
       )
     );
+    expect(restoredBySession.get(automatic.sessionId)?.personalProjectId).toBe(
+      personalProjectId
+    );
     expect(
       restoredBySession.get(automatic.sessionId)?.conversationTrashedAt
     ).toBeNull();
-    expect(
-      restoredBySession.get(priorTrash.sessionId)?.conversationTrashedAt
-    ).toBeTruthy();
+    expect(restoredBySession.has(priorTrash.sessionId)).toBe(false);
   });
 
   it("keeps a locally changed checkout unresolved until a new confirmation", async () => {

@@ -1424,6 +1424,23 @@ export const createManagedConversationRepository = (
       throw statusError("Project is unavailable for managed execution", 409);
   };
 
+  const assertExecutionChatWritable = async (
+    client: pg.PoolClient,
+    execution: ExecutionRow
+  ) => {
+    const blocked = await client.query(
+      `select 1 from sessions captured
+        where captured.owner_user_id=$1 and captured.logical_session_id=$2
+          and (captured.delete_batch_id is not null or captured.forget_batch_id is not null
+            or captured.trashed_at is not null
+            or captured.personal_deleted_at is not null)
+        limit 1`,
+      [execution.owner_user_id, execution.logical_session_id]
+    );
+    if (blocked.rowCount)
+      throw statusError("Conversation lifecycle blocks new work", 409);
+  };
+
   return {
     async createManagedConversation(actor, input) {
       const projectId = input.projectId.trim();
@@ -1712,6 +1729,7 @@ export const createManagedConversationRepository = (
         );
         const current = execution.rows[0];
         if (current) await assertExecutionProjectWritable(client, current);
+        if (current) await assertExecutionChatWritable(client, current);
         if (
           !current ||
           !["starting", "running"].includes(current.state) ||
@@ -2637,6 +2655,12 @@ export const createManagedConversationRepository = (
           where owner_user_id = $1
             and ($2::text is null or project_id = $2)
             and not is_project_hq
+            and not exists (
+              select 1 from sessions captured
+              where captured.owner_user_id=managed_conversation_executions.owner_user_id
+                and captured.logical_session_id=managed_conversation_executions.logical_session_id
+                and (captured.trashed_at is not null or captured.personal_deleted_at is not null)
+            )
           order by updated_at desc, id desc
           limit $3`,
         [actor.userId, input.projectId ?? null, limit]
@@ -2719,6 +2743,14 @@ export const createManagedConversationRepository = (
               )
               and ($7::uuid is null or command.owner_user_id = $7)
               and command.execution_generation = execution.execution_generation
+              and not exists (
+                select 1 from sessions captured
+                 where captured.owner_user_id=execution.owner_user_id
+                   and captured.logical_session_id=execution.logical_session_id
+                   and (captured.delete_batch_id is not null or captured.forget_batch_id is not null
+            or captured.trashed_at is not null
+                     or captured.personal_deleted_at is not null)
+              )
               and not exists (
                 select 1
                   from managed_conversation_commands predecessor
@@ -2917,6 +2949,14 @@ export const createManagedConversationRepository = (
                   and command.lease_expires_at <= now())
               )
               and command.execution_generation = execution.execution_generation
+              and not exists (
+                select 1 from sessions captured
+                 where captured.owner_user_id=execution.owner_user_id
+                   and captured.logical_session_id=execution.logical_session_id
+                   and (captured.delete_batch_id is not null or captured.forget_batch_id is not null
+            or captured.trashed_at is not null
+                     or captured.personal_deleted_at is not null)
+              )
               and ($6::uuid is null or command.owner_user_id = $6)
               and execution.runner_device_id = $4
               and execution.runner_deployment_id = $5
@@ -3492,6 +3532,30 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const captured = await client.query<{
+          delete_batch_id: string | null;
+          forget_batch_id: string | null;
+          trashed_at: Date | null;
+          personal_deleted_at: Date | null;
+        }>(
+          `select delete_batch_id,forget_batch_id,trashed_at,personal_deleted_at from sessions
+            where owner_user_id=$1 and logical_session_id=$2
+            order by id for update`,
+          [actor.userId, input.logicalSessionId]
+        );
+        if (
+          captured.rows.some(
+            (row) =>
+              row.delete_batch_id ||
+              row.forget_batch_id ||
+              row.trashed_at ||
+              row.personal_deleted_at
+          )
+        )
+          throw statusError(
+            "Conversation lifecycle blocks runtime binding",
+            409
+          );
         const result = await client.query<ExecutionRow>(
           `update managed_conversation_executions
             set state = 'running',

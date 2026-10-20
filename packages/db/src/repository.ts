@@ -43,7 +43,10 @@ import {
   createCuratedMemoryRepository,
   suppressCuratedMemoryWithoutActiveEvidenceWithClient
 } from "./curated-memory-repository.js";
-import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";
+import {
+  activeCuratedMemoryEvidencePredicate,
+  memoryNodeHasForgottenSessionPredicate
+} from "./curated-memory-policy.js";
 import { createDeviceCredentialRepository } from "./device-credential-repository.js";
 import {
   createEncryptedPayloadRepository,
@@ -7150,6 +7153,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
+            and (s.id is null or (s.trashed_at is null and s.personal_deleted_at is null))
             and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
             and (
               $6::uuid is not null
@@ -7891,6 +7895,7 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
+            and (s.id is null or (s.trashed_at is null and s.personal_deleted_at is null))
             and (s.id is null or not exists (
               select 1 from managed_conversation_executions execution
               left join managed_conversation_runtime_bindings binding
@@ -7950,6 +7955,7 @@ export const createMemorySourceRepository = (
             null::text as content
           from sessions s
           where ($2::boolean = true or s.invalidated_at is null)
+            and s.trashed_at is null and s.personal_deleted_at is null
             and ($3::visibility_scope is null or s.visibility = $3::visibility_scope)
             and btrim(coalesce(s.metadata ->> 'threadName', '')) <> ''
             and s.metadata ->> 'threadName' <> coalesce(s.external_session_id, '')
@@ -11678,7 +11684,7 @@ export const createMemorySourceRepository = (
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
-                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.include_in_embedding = true
+                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.personal_deleted_at is null and ev.include_in_embedding = true
                 left join messages msg on msg.id = me.message_id and msg.invalidated_at is null and msg.recall_eligible = true
                 left join curated_memory_assertions cma
                   on cma.id = me.curated_memory_assertion_id
@@ -11690,6 +11696,13 @@ export const createMemorySourceRepository = (
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
                 left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
                 where me.invalidated_at is null
+                  and me.personal_deleted_at is null
+                  and (me.memory_event_id is null or (ev.id is not null and ev_session.personal_deleted_at is null))
+                  and (me.message_id is null or (msg.id is not null and msg_session.personal_deleted_at is null))
+                  and (me.memory_node_id is null or (
+                    mn.id is not null
+                    and not ${memoryNodeHasForgottenSessionPredicate("mn")}
+                  ))
                   and not (
                     me.memory_event_id is not null
                     and not (${semanticMemoryEventEligibleSql("ev")})
@@ -13054,6 +13067,7 @@ export const createMemorySourceRepository = (
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
           and mn.personal_deleted_at is null
+          and not ${memoryNodeHasForgottenSessionPredicate("mn")}
         limit 1
       `,
         [actor.userId, nodeId]
@@ -13102,6 +13116,7 @@ export const createMemorySourceRepository = (
           and me.visibility = 'personal'
           and me.owner_user_id = $2
           and me.personal_deleted_at is null
+          and (source_session.id is null or source_session.personal_deleted_at is null)
           and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)
           and ($4::timestamptz is null or me.captured_at < $4::timestamptz)
           and (

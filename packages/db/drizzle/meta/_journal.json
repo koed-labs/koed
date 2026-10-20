@@ -428,6 +428,13 @@
       "when": 1792500584276,
       "tag": "0060_cuddly_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792505607052,
+      "tag": "0061_great_wolfpack",
+      "breakpoints": true
     }
   ]
 }

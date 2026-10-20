@@ -39,6 +39,11 @@ const hq209Capture =
   new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
 const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes";
+const hq106Capture =
+  new URLSearchParams(window.location.search).get("hq106Capture") === "yes";
+const hq106Pending = new Map<string, string>();
+const hq106Deleted = new Map<string, string>();
+const hq106Forgotten = new Map<string, string>();
 const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
   hq209Capture ||
@@ -269,6 +274,7 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
     ...(hq204Capture || hq205Capture || hq207Capture
       ? {
           agents: {
@@ -1401,8 +1407,112 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
       failInitialProjectsLoad = false;
       throw new Error("Fixture project list failure");
     }
-    return structuredClone(sidebarProjectGroups);
+    return structuredClone(sidebarProjectGroups).map((group) => ({
+      ...group,
+      threads: group.threads.filter(
+        (thread) =>
+          !hq106Deleted.has(thread.sessionId ?? "") &&
+          !hq106Forgotten.has(thread.sessionId ?? "")
+      )
+    }));
   },
+  ...(hq106Capture
+    ? {
+        trashSession: async ({
+          sessionId,
+          batchId
+        }: {
+          sessionId: string;
+          batchId: string;
+        }) => {
+          hq106Pending.set(sessionId, batchId);
+          return {
+            sessionId,
+            batchId,
+            state: "freezing",
+            complete: false,
+            pending: true,
+            pendingReviews: []
+          };
+        },
+        progressSessionDeletion: async ({
+          sessionId,
+          batchId
+        }: {
+          sessionId: string;
+          batchId: string;
+        }) => {
+          if (hq106Pending.get(sessionId) !== batchId)
+            throw new Error("Fixture deletion batch changed");
+          hq106Pending.delete(sessionId);
+          hq106Deleted.set(sessionId, batchId);
+          return {
+            sessionId,
+            batchId,
+            state: "complete",
+            complete: true,
+            pending: false,
+            pendingReviews: []
+          };
+        },
+        listPendingSessionDeletions: async () =>
+          [...hq106Pending].map(([sessionId, batchId]) => ({
+            sessionId,
+            batchId,
+            state: "freezing",
+            complete: false,
+            pending: true,
+            pendingReviews: []
+          })),
+        listDeletedSessions: async () => ({
+          sessions: [...hq106Deleted].map(([sessionId, batchId]) => ({
+            sessionId,
+            batchId,
+            title: "Conversation " + Number(sessionId.slice(-2)),
+            trashedAt: FIXTURE_TIME
+          })),
+          nextCursor: null
+        }),
+        restoreSession: async ({
+          sessionId,
+          batchId
+        }: {
+          sessionId: string;
+          batchId?: string;
+        }) => {
+          if (hq106Deleted.get(sessionId) !== batchId)
+            throw new Error("Fixture restore batch changed");
+          hq106Deleted.delete(sessionId);
+        },
+        forgetSession: async ({
+          sessionId,
+          batchId
+        }: {
+          sessionId: string;
+          batchId: string;
+        }) => {
+          hq106Forgotten.set(sessionId, batchId);
+          return {
+            pending: false as const,
+            batchId,
+            forgottenAt: FIXTURE_TIME,
+            suppressedAssertionIds: []
+          };
+        },
+        undoForgetSession: async ({
+          sessionId,
+          batchId
+        }: {
+          sessionId: string;
+          batchId: string;
+        }) => {
+          if (hq106Forgotten.get(sessionId) !== batchId)
+            throw new Error("Fixture Forget batch changed");
+          hq106Forgotten.delete(sessionId);
+        },
+        listPendingSessionForgets: async () => []
+      }
+    : {}),
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async ({ threadId }) =>
     threadId === "hq204-fixture-thread" && hq204Started
@@ -1655,6 +1765,9 @@ export function HqValidationApp() {
   const restoreDesktop = useMemo(installSettingsDesktop, []);
 
   useLayoutEffect(() => {
+    hq106Pending.clear();
+    hq106Deleted.clear();
+    hq106Forgotten.clear();
     hq205Sources = structuredClone(hq205InitialSources);
     document.documentElement.dataset.browserValidationReady = "false";
     document.documentElement.dataset.hqFixtureReady = "false";

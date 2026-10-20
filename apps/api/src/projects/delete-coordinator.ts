@@ -52,11 +52,7 @@ const grantListSchema = z
 export class ProjectNativeReviewDeclined extends Error {}
 
 const manifestSourceRef = (
-  source:
-    | NonNullable<
-        Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
-      >["sources"][number]
-    | ProjectSourceRemoveOperation["sources"][number]
+  source: SourceLifecycleOperation["sources"][number]
 ): SharedMemorySourceRef =>
   "sessionId" in source
     ? {
@@ -95,26 +91,61 @@ export interface ProjectSourceCoordinator {
   }): Promise<boolean>;
 }
 
-export const createProjectSourceCoordinator = (input: {
-  repository: ProjectApiRepository;
-  sourceRemovalRepository?: ProjectSourceRemovalRepository | null;
+type ProjectDeleteOperation = NonNullable<
+  Awaited<ReturnType<ProjectApiRepository["getDeleteOperation"]>>
+>;
+
+export type SourceLifecycleOperation = {
+  sources: (
+    | ProjectDeleteOperation["sources"][number]
+    | ProjectSourceRemoveOperation["sources"][number]
+  )[];
+  grantFreezeAcks: ProjectDeleteOperation["grantFreezeAcks"];
+};
+
+export type SourceLifecycleStore = {
+  recordBackendAck: (
+    ownerUserId: string,
+    resourceId: string,
+    batchId: string,
+    ack: Parameters<ProjectApiRepository["recordBackendAck"]>[3]
+  ) => Promise<unknown>;
+  reserveGrantFreezeReview: (
+    ownerUserId: string,
+    resourceId: string,
+    batchId: string,
+    grant: Parameters<ProjectApiRepository["reserveGrantFreezeReview"]>[3]
+  ) => ReturnType<ProjectApiRepository["reserveGrantFreezeReview"]>;
+  recordGrantFreezeAck: (
+    ownerUserId: string,
+    resourceId: string,
+    batchId: string,
+    ack: Parameters<ProjectApiRepository["recordGrantFreezeAck"]>[3]
+  ) => Promise<unknown>;
+  getOperation: (
+    ownerUserId: string,
+    resourceId: string,
+    batchId: string
+  ) => Promise<SourceLifecycleOperation | null>;
+};
+
+type SourceLifecycleControlInput = {
   sharedMemoryControl: CollaborationSharedMemoryControl;
   actionGrantControl: CollaborationActionGrantControl;
   resolveSourceIdentity: (ownerUserId: string) => {
     sourceDeploymentProtocolId: string;
     sourceOwnerPrincipalId: string;
   } | null;
-}): ProjectSourceCoordinator => {
-  const records = (
-    operation: Parameters<ProjectSourceCoordinator["advance"]>[0]["operation"]
-  ) => {
-    if ("sourceRemoval" in operation) {
-      if (!input.sourceRemovalRepository)
-        throw new Error("Project Source removal coordinator is unavailable");
-      return input.sourceRemovalRepository;
-    }
-    return input.repository;
-  };
+};
+
+/** The same exact-source freeze protocol serves Projects, documents and chats. */
+export const createSourceLifecycleCoordinator = (
+  input: SourceLifecycleControlInput & {
+    storeForOperation: (
+      operation: SourceLifecycleOperation
+    ) => SourceLifecycleStore;
+  }
+) => {
   const context = async (
     ownerUserId: string,
     backendId: string
@@ -165,10 +196,23 @@ export const createProjectSourceCoordinator = (input: {
     return secret;
   };
   return {
-    async cancel({ ownerUserId, projectId, batchId, operation }) {
-      const repository = records(operation);
+    async cancel({
+      ownerUserId,
+      resourceId,
+      batchId,
+      operation
+    }: SourceLifecycleInput) {
+      if (!operation.sources.some((source) => source.backends.length > 0))
+        return true;
+      if (
+        operation.sources.some(
+          (source) => source.backends.length > 0 && !source.logicalMemoryId
+        )
+      )
+        return false;
       const identity = input.resolveSourceIdentity(ownerUserId);
       if (!identity) return false;
+      const repository = input.storeForOperation(operation);
       let allClosed = true;
       for (const source of operation.sources) {
         if (!source.logicalMemoryId) continue;
@@ -240,14 +284,19 @@ export const createProjectSourceCoordinator = (input: {
               allClosed = false;
               continue;
             }
-            await repository.recordBackendAck(ownerUserId, projectId, batchId, {
-              logicalMemoryId: source.logicalMemoryId,
-              backendId,
-              generation: admission.generation,
-              holdVersion: admission.holdVersion,
-              sealed: false,
-              cancelled: true
-            });
+            await repository.recordBackendAck(
+              ownerUserId,
+              resourceId,
+              batchId,
+              {
+                logicalMemoryId: source.logicalMemoryId,
+                backendId,
+                generation: admission.generation,
+                holdVersion: admission.holdVersion,
+                sealed: false,
+                cancelled: true
+              }
+            );
           } catch {
             allClosed = false;
           }
@@ -255,11 +304,24 @@ export const createProjectSourceCoordinator = (input: {
       }
       return allClosed;
     },
-    async advance({ ownerUserId, projectId, batchId, operation }) {
-      const repository = records(operation);
+    async advance({
+      ownerUserId,
+      resourceId,
+      batchId,
+      operation
+    }: SourceLifecycleInput) {
+      if (!operation.sources.some((source) => source.backends.length > 0))
+        return;
+      if (
+        operation.sources.some(
+          (source) => source.backends.length > 0 && !source.logicalMemoryId
+        )
+      )
+        throw new Error("Verified source identity is unavailable");
       const identity = input.resolveSourceIdentity(ownerUserId);
       if (!identity)
         throw new Error("Verified Project source identity is unavailable");
+      const repository = input.storeForOperation(operation);
       for (const source of operation.sources) {
         if (!source.logicalMemoryId) continue;
         for (const backend of source.backends) {
@@ -329,7 +391,7 @@ export const createProjectSourceCoordinator = (input: {
           }
           if (admission.heldBatchId !== batchId)
             throw new Error("Project source hold did not bind batch");
-          await repository.recordBackendAck(ownerUserId, projectId, batchId, {
+          await repository.recordBackendAck(ownerUserId, resourceId, batchId, {
             logicalMemoryId: source.logicalMemoryId,
             backendId,
             generation: admission.generation,
@@ -349,7 +411,7 @@ export const createProjectSourceCoordinator = (input: {
             // A concurrent retry receives the same command and action grant.
             const reservation = await repository.reserveGrantFreezeReview(
               ownerUserId,
-              projectId,
+              resourceId,
               batchId,
               {
                 logicalMemoryId: source.logicalMemoryId,
@@ -394,7 +456,7 @@ export const createProjectSourceCoordinator = (input: {
             if (status.state !== "approved") {
               await repository.recordGrantFreezeAck(
                 ownerUserId,
-                projectId,
+                resourceId,
                 batchId,
                 {
                   logicalMemoryId: source.logicalMemoryId,
@@ -431,7 +493,7 @@ export const createProjectSourceCoordinator = (input: {
             });
             await repository.recordGrantFreezeAck(
               ownerUserId,
-              projectId,
+              resourceId,
               batchId,
               {
                 logicalMemoryId: source.logicalMemoryId,
@@ -501,18 +563,11 @@ export const createProjectSourceCoordinator = (input: {
             admission.activeUnfrozenGrants !== 0
           )
             throw new Error("Project source seal is incomplete");
-          const latest =
-            "sourceRemoval" in operation
-              ? await input.sourceRemovalRepository!.get(
-                  ownerUserId,
-                  projectId,
-                  batchId
-                )
-              : await input.repository.getDeleteOperationByBatch(
-                  ownerUserId,
-                  projectId,
-                  batchId
-                );
+          const latest = await repository.getOperation(
+            ownerUserId,
+            resourceId,
+            batchId
+          );
           if (!latest) throw new Error("Project source operation changed");
           for (const prior of latest.grantFreezeAcks.filter(
             (ack) =>
@@ -522,7 +577,7 @@ export const createProjectSourceCoordinator = (input: {
           )) {
             await repository.recordGrantFreezeAck(
               ownerUserId,
-              projectId,
+              resourceId,
               batchId,
               {
                 ...prior,
@@ -530,7 +585,7 @@ export const createProjectSourceCoordinator = (input: {
               }
             );
           }
-          await repository.recordBackendAck(ownerUserId, projectId, batchId, {
+          await repository.recordBackendAck(ownerUserId, resourceId, batchId, {
             logicalMemoryId: source.logicalMemoryId,
             backendId,
             generation: admission.generation,
@@ -540,5 +595,52 @@ export const createProjectSourceCoordinator = (input: {
         }
       }
     }
+  };
+};
+
+export type SourceLifecycleInput = {
+  ownerUserId: string;
+  resourceId: string;
+  batchId: string;
+  operation: SourceLifecycleOperation;
+};
+
+export const createProjectSourceCoordinator = (
+  input: SourceLifecycleControlInput & {
+    repository: ProjectApiRepository;
+    sourceRemovalRepository?: ProjectSourceRemovalRepository | null;
+  }
+): ProjectSourceCoordinator => {
+  const coordinator = createSourceLifecycleCoordinator({
+    ...input,
+    storeForOperation(operation) {
+      if ("sourceRemoval" in operation) {
+        const repository = input.sourceRemovalRepository;
+        if (!repository)
+          throw new Error("Project Source removal coordinator is unavailable");
+        return {
+          recordBackendAck: repository.recordBackendAck.bind(repository),
+          reserveGrantFreezeReview:
+            repository.reserveGrantFreezeReview.bind(repository),
+          recordGrantFreezeAck:
+            repository.recordGrantFreezeAck.bind(repository),
+          getOperation: repository.get.bind(repository)
+        };
+      }
+      const repository = input.repository;
+      return {
+        recordBackendAck: repository.recordBackendAck.bind(repository),
+        reserveGrantFreezeReview:
+          repository.reserveGrantFreezeReview.bind(repository),
+        recordGrantFreezeAck: repository.recordGrantFreezeAck.bind(repository),
+        getOperation: repository.getDeleteOperationByBatch.bind(repository)
+      };
+    }
+  });
+  return {
+    advance: ({ projectId, ...operation }) =>
+      coordinator.advance({ ...operation, resourceId: projectId }),
+    cancel: ({ projectId, ...operation }) =>
+      coordinator.cancel({ ...operation, resourceId: projectId })
   };
 };

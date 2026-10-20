@@ -674,6 +674,114 @@ export const projectDeleteOperations = pgTable(
   ]
 );
 
+// A single Conversation deletion has its own exact-source coordinator. Its
+// identity never depends on a Project association or a synthetic Project ID.
+export const chatDeleteOperations = pgTable(
+  "chat_delete_operations",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    sessionId: uuid("session_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sourceManifest: jsonb("source_manifest").$type<unknown[]>().notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    executionManifest: jsonb("execution_manifest").$type<unknown[]>().notNull(),
+    executionSetHash: text("execution_set_hash").notNull(),
+    backendAcks: jsonb("backend_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    grantFreezeAcks: jsonb("grant_freeze_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    runtimeAcks: jsonb("runtime_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text("state").notNull().default("preparing"),
+    lastErrorCode: text("last_error_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "chat_delete_operations_session_fk"
+    }).onDelete("cascade"),
+    index("chat_delete_operations_owner_idx").on(
+      table.ownerUserId,
+      table.createdAt.desc()
+    ),
+    check(
+      "chat_delete_operations_state_check",
+      sql`${table.state} in ('preparing','freezing','stopping','ready','complete','cancelled','needs_attention','restore_releasing','restored')`
+    ),
+    check(
+      "chat_delete_operations_manifest_hash_check",
+      sql`length(${table.sourceManifestHash})=64 and length(${table.executionSetHash})=64`
+    )
+  ]
+);
+
+// Exact local provenance for reversible Personal forget. Team grants remain
+// outside this operation and are never implicitly revoked or unfrozen.
+export const chatForgetOperations = pgTable(
+  "chat_forget_operations",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    sessionId: uuid("session_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    state: text("state").notNull().default("stopping"),
+    executionManifest: jsonb("execution_manifest")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    runtimeAcks: jsonb("runtime_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    forgottenAt: timestamp("forgotten_at", { withTimezone: true }),
+    eventIds: jsonb("event_ids")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    itemIds: jsonb("item_ids")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    nodeIds: jsonb("node_ids")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    assertionSnapshots: jsonb("assertion_snapshots")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    undoneAt: timestamp("undone_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "chat_forget_operations_session_fk"
+    }).onDelete("cascade"),
+    index("chat_forget_operations_owner_idx").on(
+      table.ownerUserId,
+      table.createdAt.desc()
+    ),
+    check(
+      "chat_forget_operations_state_check",
+      sql`${table.state} in ('stopping','complete','undone')`
+    ),
+    check(
+      "chat_forget_operations_snapshot_arrays_check",
+      sql`jsonb_typeof(${table.eventIds})='array' and jsonb_typeof(${table.itemIds})='array' and jsonb_typeof(${table.nodeIds})='array' and jsonb_typeof(${table.assertionSnapshots})='array'`
+    )
+  ]
+);
+
 export const projectWorkItems = pgTable(
   "project_work_items",
   {
@@ -1331,6 +1439,7 @@ export const sessions = pgTable(
     }),
     trashedAt: timestamp("trashed_at", { withTimezone: true }),
     deleteBatchId: uuid("delete_batch_id"),
+    forgetBatchId: uuid("forget_batch_id"),
     personalDeletedByUserId: uuid("personal_deleted_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }

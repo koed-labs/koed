@@ -129,6 +129,16 @@ export type HqSidebarProps = {
   loading?: boolean;
   onCreateProject?: () => void;
   onDeleteProject?: (projectId: string) => void;
+  onDeleteConversation?: (
+    projectId: string,
+    sessionId: string,
+    title: string
+  ) => void;
+  onForgetConversation?: (
+    projectId: string,
+    sessionId: string,
+    title: string
+  ) => void;
   onNewConversation?: () => void;
   onOpenNow?: () => void;
   nowActive?: boolean;
@@ -140,6 +150,7 @@ export type HqSidebarProps = {
   projectsError?: boolean;
   projects: readonly DesktopProject[];
   personalProjects?: readonly Project[];
+  pendingDeletionIds?: ReadonlySet<string>;
   route: HqRoute;
 };
 
@@ -151,6 +162,8 @@ export function HqSidebar({
   loading = false,
   onCreateProject,
   onDeleteProject,
+  onDeleteConversation,
+  onForgetConversation,
   onNewConversation,
   onOpenNow,
   nowActive = false,
@@ -161,6 +174,7 @@ export function HqSidebar({
   projectsError = false,
   projects,
   personalProjects,
+  pendingDeletionIds,
   route
 }: HqSidebarProps) {
   const groupsReady = groupsReadyProp ?? !loading;
@@ -180,11 +194,34 @@ export function HqSidebar({
     () => new Set()
   );
   const [projectMenuId, setProjectMenuId] = useState<string | null>(null);
+  const [conversationMenuId, setConversationMenuId] = useState<string | null>(
+    null
+  );
   const [projectMenuPosition, setProjectMenuPosition] = useState({
     x: 0,
     y: 0
   });
   const menuReturnFocus = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!conversationMenuId) return;
+    const close = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest(".hq-sidebar__conversation")
+      )
+        setConversationMenuId(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setConversationMenuId(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [conversationMenuId]);
 
   useEffect(() => {
     if (!projectMenuId) return;
@@ -329,6 +366,13 @@ export function HqSidebar({
       <li
         className="hq-sidebar__conversation"
         key={`${projectId}:${thread.id}`}
+        onContextMenu={(event) => {
+          if (!thread.sessionId || !onDeleteConversation) return;
+          event.preventDefault();
+          setConversationMenuId(
+            conversationMenuId === thread.sessionId ? null : thread.sessionId
+          );
+        }}
       >
         <button
           aria-current={selected ? "page" : undefined}
@@ -342,7 +386,70 @@ export function HqSidebar({
           type="button"
         >
           <span>{thread.name || "Conversation"}</span>
+          {thread.sessionId && pendingDeletionIds?.has(thread.sessionId) ? (
+            <small className="hq-sidebar__deletion-pending">
+              Deletion pending
+            </small>
+          ) : null}
         </button>
+        {thread.sessionId && onDeleteConversation ? (
+          <button
+            aria-label={`Delete ${thread.name || "Conversation"}`}
+            className="hq-sidebar__conversation-trash"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDeleteConversation(
+                projectId,
+                thread.sessionId!,
+                thread.name || "Conversation"
+              );
+              setConversationMenuId(null);
+            }}
+            type="button"
+          >
+            <Trash2 aria-hidden="true" />
+          </button>
+        ) : null}
+        {conversationMenuId === thread.sessionId &&
+        thread.sessionId &&
+        onDeleteConversation ? (
+          <div
+            className="hq-sidebar__conversation-menu"
+            role="menu"
+            aria-label={`${thread.name || "Conversation"} actions`}
+          >
+            <button
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                onDeleteConversation(
+                  projectId,
+                  thread.sessionId!,
+                  thread.name || "Conversation"
+                );
+                setConversationMenuId(null);
+              }}
+            >
+              Delete chat
+            </button>
+            {onForgetConversation ? (
+              <button
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  onForgetConversation(
+                    projectId,
+                    thread.sessionId!,
+                    thread.name || "Conversation"
+                  );
+                  setConversationMenuId(null);
+                }}
+              >
+                Forget this chat
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </li>
     );
   };

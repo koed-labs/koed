@@ -5,10 +5,12 @@ import { HqSettingsModal } from "./HqSettingsModal.js";
 import type { CollaborationSnapshot } from "@koed/shared/collaboration";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import type { DesktopApi } from "../../../types.js";
+import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { DesktopThemePreference } from "../../../window/theme-preference.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { HqSettingsAgents } from "./HqSettingsAgents.js";
 import { HqSettingsServices } from "./HqSettingsServices.js";
+import { HqSettingsDeleted } from "./HqSettingsDeleted.js";
 import "./hq-settings.css";
 
 export type HqSettingsSection =
@@ -16,6 +18,7 @@ export type HqSettingsSection =
   | "agents"
   | "teams"
   | "services"
+  | "deleted"
   | "about";
 export type HqSettingsProps = {
   statusStore: DesktopStatusStore;
@@ -31,6 +34,9 @@ export type HqSettingsProps = {
   collaborationClient?: CollaborationRendererClient;
   collaborationSnapshot?: CollaborationSnapshot | null;
   teamCollaborationEnabled?: boolean;
+  personalMemoryApi?: PersonalDesktopApi;
+  personalMemoryAuthorityKey?: string;
+  onChatRestored?: (sessionId: string, batchId: string | null) => void;
   acknowledgements?: readonly string[];
 };
 const sections: readonly HqSettingsSection[] = [
@@ -38,6 +44,7 @@ const sections: readonly HqSettingsSection[] = [
   "agents",
   "teams",
   "services",
+  "deleted",
   "about"
 ];
 const label = (value: string) => value[0]!.toUpperCase() + value.slice(1);
@@ -161,6 +168,13 @@ export function HqSettings(props: HqSettingsProps) {
         ) : null}
         {section === "services" ? (
           <HqSettingsServices statusStore={props.statusStore} />
+        ) : null}
+        {section === "deleted" ? (
+          <HqSettingsDeleted
+            api={props.personalMemoryApi}
+            authorityKey={props.personalMemoryAuthorityKey}
+            onRestored={props.onChatRestored}
+          />
         ) : null}
         {section === "about" ? (
           <>
