@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 
 export {
+  curatedWithdrawalBodySchema,
+  curatedWithdrawalReceiptSchema,
+  curatedWithdrawalManifestHash,
+  type CuratedWithdrawalBody
+} from "./curated-withdrawal-contract.js";
+
+export {
   nodeCliInvocation,
   nodeCliProcessEnvironment,
   type NodeCliInvocation

@@ -7,6 +7,7 @@ import {
   PRIVACY_REPLACEMENT_CONTRACT_VERSION,
   createLocalTestKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  curatedWithdrawalManifestHash,
   noPrivacyLabelsPolicy,
   privacyContentPolicyHash,
   privacyClassificationExpectedManifestHash,
@@ -11703,6 +11704,27 @@ describeDb("Shared Memory repository", () => {
     });
     const source = await createSource(fixture, 1, "curated-three-key");
     await putOwnerPolicy(fixture, source, allowed);
+    const backendIdentity = await pool.query<{ upstream_backend_id: string }>(
+      `select upstream_backend_id from device_credentials where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    const project = await pool.query<{ id: string }>(
+      `insert into projects (
+         owner_user_id,name,key,team_backend_id,team_workspace_id,
+         workspace_project_id
+       ) values ($1,'Curated test Project',$2,$3,$4,$5) returning id`,
+      [
+        fixture.ownerUserId,
+        `curated-${randomUUID()}`,
+        backendIdentity.rows[0]!.upstream_backend_id,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    await pool.query(
+      `update sessions set automatic_personal_project_id=$2 where id=$1`,
+      [source.localSessionId, project.rows[0]!.id]
+    );
 
     const assertionId = randomUUID();
     const sourceId = source.seededEvents[0]!.contributorIds[0]!;
@@ -11723,10 +11745,16 @@ describeDb("Shared Memory repository", () => {
     await pool.query(
       `insert into curated_memory_assertions (
          id,owner_user_id,visibility,assertion_text,normalized_assertion,
-         sensitivity,confidence,tags,metadata,status,observed_at
+         sensitivity,confidence,tags,metadata,status,observed_at,
+         scope,project_id
        ) values ($1,$2,'personal','[koed encrypted curated memory]',
-         $3,'normal',95,'{}','{}','current',now())`,
-      [assertionId, fixture.ownerUserId, `encrypted:${randomUUID()}`]
+         $3,'normal',95,'{}','{}','current',now(),'project',$4)`,
+      [
+        assertionId,
+        fixture.ownerUserId,
+        `encrypted:${randomUUID()}`,
+        project.rows[0]!.id
+      ]
     );
     await upsertEncryptedFieldPayloadWithClient(
       pool,
@@ -11755,6 +11783,27 @@ describeDb("Shared Memory repository", () => {
        ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
       [assertionId, sourceId]
     );
+    const secondSourceId = source.seededEvents[0]!.contributorIds[1]!;
+    await upsertEncryptedFieldPayloadWithClient(
+      pool,
+      actor(fixture.ownerUserId),
+      personal,
+      {
+        sourceTable: "conversation_items",
+        sourceId: secondSourceId,
+        sourceColumn: "raw_text",
+        plaintext: "A second exact-session evidence item.",
+        visibility: "personal",
+        rowFamily: "conversation_item",
+        aad: { conversationItemId: secondSourceId }
+      }
+    );
+    await pool.query(
+      `insert into curated_memory_sources (
+         assertion_id,source_type,source_role,conversation_item_id,metadata
+       ) values ($1,'conversation_item','supporting_evidence',$2,'{}')`,
+      [assertionId, secondSourceId]
+    );
 
     const addAssertion = async (
       claim: string,
@@ -11763,16 +11812,25 @@ describeDb("Shared Memory repository", () => {
         | "superseding_evidence"
         | "conflicting_evidence",
       evidenceId: string,
-      expiresAt: string | null = null
+      expiresAt: string | null = null,
+      scope: "project" | "me" | "unscoped" = "project"
     ) => {
       const id = randomUUID();
       await pool.query(
         `insert into curated_memory_assertions (
            id,owner_user_id,visibility,assertion_text,normalized_assertion,
-           sensitivity,confidence,tags,metadata,status,observed_at,expires_at
+           sensitivity,confidence,tags,metadata,status,observed_at,expires_at,
+           scope,project_id
          ) values ($1,$2,'personal','[koed encrypted curated memory]',
-           $3,'normal',90,'{}','{}','current',now(),$4)`,
-        [id, fixture.ownerUserId, `encrypted:${randomUUID()}`, expiresAt]
+           $3,'normal',90,'{}','{}','current',now(),$4,$5,$6)`,
+        [
+          id,
+          fixture.ownerUserId,
+          `encrypted:${randomUUID()}`,
+          expiresAt,
+          scope,
+          scope === "project" ? project.rows[0]!.id : null
+        ]
       );
       await upsertEncryptedFieldPayloadWithClient(
         pool,
@@ -11800,6 +11858,7 @@ describeDb("Shared Memory repository", () => {
          ) values ($1,'conversation_item',$2,$3,'{}')`,
         [id, role, evidenceId]
       );
+      return id;
     };
     await addAssertion(
       "Supporting exact-session assertion.",
@@ -11818,10 +11877,30 @@ describeDb("Shared Memory repository", () => {
       sourceId
     );
     const otherSource = await createSource(fixture, 1, "curated-mixed-session");
-    await addAssertion(
+    const mixedAssertionId = await addAssertion(
       "MIXED_SESSION_CURATED_SENTINEL",
       "supporting_evidence",
       otherSource.seededEvents[0]!.contributorIds[0]!
+    );
+    await pool.query(
+      `insert into curated_memory_sources (
+         assertion_id,source_type,source_role,conversation_item_id,metadata
+       ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
+      [mixedAssertionId, sourceId]
+    );
+    await addAssertion(
+      "ME_SCOPE_CURATED_SENTINEL",
+      "supporting_evidence",
+      sourceId,
+      null,
+      "me"
+    );
+    await addAssertion(
+      "UNSCOPED_CURATED_SENTINEL",
+      "supporting_evidence",
+      sourceId,
+      null,
+      "unscoped"
     );
 
     const created = await createConsent(fixture, source, {
@@ -11893,6 +11972,13 @@ describeDb("Shared Memory repository", () => {
       read?.items.some(
         (item) =>
           item.content.assertionText === "MIXED_SESSION_CURATED_SENTINEL"
+      )
+    ).toBe(false);
+    expect(
+      read?.items.some((item) =>
+        ["ME_SCOPE_CURATED_SENTINEL", "UNSCOPED_CURATED_SENTINEL"].includes(
+          String(item.content.assertionText)
+        )
       )
     ).toBe(false);
     expect(
@@ -12172,6 +12258,27 @@ describeDb("Shared Memory repository", () => {
         "frozen-curated-suppression"
       );
       await putOwnerPolicy(fixture, source, allowed);
+      const backendIdentity = await pool.query<{ upstream_backend_id: string }>(
+        `select upstream_backend_id from device_credentials where id=$1`,
+        [fixture.deviceCredentialId]
+      );
+      const project = await pool.query<{ id: string }>(
+        `insert into projects (
+           owner_user_id,name,key,team_backend_id,team_workspace_id,
+           workspace_project_id
+         ) values ($1,'Frozen Curated Project',$2,$3,$4,$5) returning id`,
+        [
+          fixture.ownerUserId,
+          `frozen-curated-${randomUUID()}`,
+          backendIdentity.rows[0]!.upstream_backend_id,
+          fixture.teamWorkspaceId,
+          randomUUID()
+        ]
+      );
+      await pool.query(
+        `update sessions set automatic_personal_project_id=$2 where id=$1`,
+        [source.localSessionId, project.rows[0]!.id]
+      );
       const evidenceId = source.seededEvents[0]!.contributorIds[0]!;
       await upsertEncryptedFieldPayloadWithClient(
         pool,
@@ -12192,10 +12299,11 @@ describeDb("Shared Memory repository", () => {
         await pool.query(
           `insert into curated_memory_assertions (
            id,owner_user_id,visibility,assertion_text,normalized_assertion,
-           sensitivity,confidence,tags,metadata,status,observed_at
+           sensitivity,confidence,tags,metadata,status,observed_at,
+           scope,project_id
          ) values ($1,$2,'personal','[koed encrypted curated memory]',
-           $3,'normal',95,'{}','{}','current',now())`,
-          [id, fixture.ownerUserId, `encrypted:${id}`]
+           $3,'normal',95,'{}','{}','current',now(),'project',$4)`,
+          [id, fixture.ownerUserId, `encrypted:${id}`, project.rows[0]!.id]
         );
         await upsertEncryptedFieldPayloadWithClient(
           pool,
@@ -12226,7 +12334,7 @@ describeDb("Shared Memory repository", () => {
         return id;
       };
       const firstId = await insertAssertion("Frozen assertion one.");
-      await insertAssertion("Frozen assertion two.");
+      const secondId = await insertAssertion("Frozen assertion two.");
       const created = await createConsent(fixture, source, {
         representation: "curated_assertions",
         mode: "continuous",
@@ -12497,11 +12605,85 @@ describeDb("Shared Memory repository", () => {
       expect(markers.rows.filter((row) => row.frozen_snapshot)).toHaveLength(
         legacyPublication ? 1 : 2
       );
+      const withdrawal = {
+        source: {
+          kind: "captured_session" as const,
+          sessionId: source.sessionId,
+          logicalMemoryId: source.logicalMemoryId
+        },
+        sourceDeploymentProtocolId: fixture.sourceProtocolDeploymentId,
+        sourceOwnerPrincipalId: fixture.sourceOwnerPrincipalId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        mutationId: randomUUID(),
+        assertionId: secondId,
+        classificationVersion: 1,
+        items: []
+      };
+      const manifestHash = curatedWithdrawalManifestHash(withdrawal);
+      const receipt = await repository.withdrawCuratedAssertionCopies(
+        actor(fixture.ownerUserId),
+        { ...withdrawal, manifestHash }
+      );
+      expect(receipt).toEqual({
+        mutationId: withdrawal.mutationId,
+        manifestHash,
+        appliedVersion: 1
+      });
+      expect(
+        await repository.withdrawCuratedAssertionCopies(
+          actor(fixture.ownerUserId),
+          { ...withdrawal, manifestHash }
+        )
+      ).toEqual(receipt);
+      expect((await read())?.items ?? []).toHaveLength(0);
+      expect(await search()).toHaveLength(0);
+      const vectors = await pool.query<{ count: string }>(
+        `select count(*)::text as count from team_memory_semantic_vectors_384 vector_row
+          join team_memory_semantic_items item on item.id=vector_row.semantic_item_id
+         where item.share_grant_id=$1 and item.pseudonymous_source_id=$2`,
+        [grant.id, sharedMemoryGrantScopedSourceId(grant.id, secondId)]
+      );
+      expect(vectors.rows[0]?.count).toBe("0");
+      const withdrawnSemantic = await pool.query<{
+        id: string;
+        content_hash: string;
+      }>(
+        `select id,content_hash from team_memory_semantic_items
+          where share_grant_id=$1 and pseudonymous_source_id=$2 limit 1`,
+        [grant.id, sharedMemoryGrantScopedSourceId(grant.id, secondId)]
+      );
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: withdrawnSemantic.rows[0]!.id,
+          contentHash: withdrawnSemantic.rows[0]!.content_hash,
+          model: "frozen-curated-test",
+          dimensions: 384,
+          version: "v1",
+          vector: curatedVector
+        })
+      ).toBe(false);
+      await expect(
+        repository.withdrawCuratedAssertionCopies(actor(fixture.ownerUserId), {
+          ...withdrawal,
+          assertionId: firstId,
+          manifestHash: curatedWithdrawalManifestHash({
+            ...withdrawal,
+            assertionId: firstId
+          })
+        })
+      ).rejects.toThrow();
+      await expect(
+        repository.withdrawCuratedAssertionCopies(actor(fixture.ownerUserId), {
+          ...withdrawal,
+          deviceCredentialId: randomUUID(),
+          manifestHash
+        })
+      ).rejects.toThrow();
       await pool.query(
         "update conversation_items set memory_excluded_at=now() where id=$1",
         [evidenceId]
       );
-      expect((await read())?.items).toHaveLength(0);
+      expect((await read())?.items ?? []).toHaveLength(0);
     }
   );
 

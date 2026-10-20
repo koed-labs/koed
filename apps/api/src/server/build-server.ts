@@ -52,6 +52,7 @@ import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
+import { createCuratedClassificationCoordinator } from "../memory/curated-classification-coordinator.js";
 import {
   type CacheProvider,
   createRateLimitHandlers,
@@ -597,6 +598,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
   let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
+  let curatedClassificationWorkerTimer: NodeJS.Timeout | null = null;
   let pdsCheckpointPublicationService: ReturnType<
     typeof createPdsCheckpointPublicationService
   > | null = null;
@@ -762,6 +764,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
     if (continuousNoteAdvancementWorkerTimer) {
       clearInterval(continuousNoteAdvancementWorkerTimer);
+    }
+    if (curatedClassificationWorkerTimer) {
+      clearInterval(curatedClassificationWorkerTimer);
     }
     await personalNoteMemoryRepairService?.close();
     await projectSourceIngestionService?.close();
@@ -1945,6 +1950,38 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
         })
       : null;
+  const curatedClassificationCoordinator =
+    repository &&
+    collaborationSharedMemoryControl &&
+    localSharedMemoryCandidatePreparation
+      ? createCuratedClassificationCoordinator({
+          repository,
+          sharedMemoryControl: collaborationSharedMemoryControl,
+          resolveSourceIdentity:
+            localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity
+        })
+      : null;
+  if (curatedClassificationCoordinator) {
+    let running = false;
+    const tick = () => {
+      if (running) return;
+      running = true;
+      void curatedClassificationCoordinator
+        .runPending()
+        .catch((error: unknown) =>
+          app.log.warn(
+            { err: error },
+            "Curated classification withdrawal will retry"
+          )
+        )
+        .finally(() => {
+          running = false;
+        });
+    };
+    curatedClassificationWorkerTimer = setInterval(tick, 5_000);
+    curatedClassificationWorkerTimer.unref();
+    tick();
+  }
   registerProjectRoutes(app, {
     repository: projectApiRepository,
     managedRepository: repository,

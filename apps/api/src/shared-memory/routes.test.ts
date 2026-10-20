@@ -479,6 +479,9 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async withdrawCuratedAssertionCopies() {
+      throw new Error("Curated withdrawal is not configured in this fixture");
+    },
     async listUnfrozenSourceGrants() {
       return [];
     },
@@ -1685,6 +1688,41 @@ describe("Shared Memory HTTP routes", () => {
 
     expect([bearer.statusCode, unrelated.statusCode]).toEqual([403, 403]);
     expect(fixture.repositoryCalls).toBe(1);
+    await app.close();
+  });
+
+  it("requires a share-management device credential for Curated withdrawal", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const url = "/v1/shared-memory/curated-withdrawals";
+    const bearer = await app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: "Bearer personal-api-token" },
+      payload: {}
+    });
+    const browser = await app.inject({
+      method: "POST",
+      url,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {}
+    });
+    const reader = await app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: "Koed-Device reader:secret" },
+      payload: {}
+    });
+    const ownerDevice = await app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload: {}
+    });
+    expect([bearer.statusCode, browser.statusCode, reader.statusCode]).toEqual([
+      403, 401, 403
+    ]);
+    expect(ownerDevice.statusCode).toBe(400);
     await app.close();
   });
 

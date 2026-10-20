@@ -69,11 +69,19 @@ Curated Memory assertions must link to source evidence. Supported source types:
 - `conversation_item`: raw transcript item evidence.
 - `memory_event`: projected semantic bundle evidence.
 - `lcm_summary`: derived LCM summary evidence.
+- `project_source_note_revision`: an actual ready Project Source linked to an
+  owner-authorized Personal Note revision.
+- `project_work_item`: an actual owner-owned Project Work Item.
 
 An assertion can initially link only to a `conversation_item`. When Projection
 later creates Memory Events, `POST /v1/memory/curated/reconcile` or the
 periodic backend reconciliation path can attach the derived `memory_event` and
 `lcm_summary` links without AI involvement.
+The existing v1 intake and supervised reviewer still create Conversation-backed
+assertions. The repository can validate and hydrate genuine Project Source Note
+revisions and Work Items, but the HQ-302 classification producer and HQ-303
+presentation are separate work. Deck Cards have no source record yet; an enum
+label alone does not make them eligible evidence.
 
 Only active direct evidence keeps an assertion recallable. Deleted, invalidated,
 or memory-excluded sources cannot satisfy eligibility, Search Domain, temporal
@@ -83,6 +91,33 @@ expansion fail closed immediately, and supported source deletion paths suppress
 the orphaned assertion in the same transaction. The deterministic reconciliation
 pass also suppresses any orphan created outside a supported deletion path, while
 retaining its provenance for diagnostics and export.
+Project or Source trash retains the owner's underlying Note revision or Work
+Item, so it does not by itself erase Personal Curated recall. Actual Note
+forgetting or final evidence loss removes recall eligibility. New Project
+classification and Project Source hydration still require the Project and
+Source to be active.
+
+## Scope and classification
+
+An assertion has `scope` (`me`, `project`, or `unscoped`), optional `kind`, and
+optional `author_kind` and `author_ref`. `project` requires an owner-owned
+Personal Project; the other scopes have no Project ID. Existing writers and v1
+requests can omit these fields, and old assertions become `unscoped`. Unknown
+authors stay unknown. Proposal scope, kind, and Project context are hints; a
+Project context must be owned and active before it is stored. The existing
+reviewer does not yet turn those hints into authoritative classification.
+
+Legacy assertions wait in a durable activation queue until their previously
+shared Curated copies have been withdrawn. The trusted source-owning local edge
+also coordinates later scope and Project changes through a versioned outbox.
+Every historically linked Team backend must atomically block the old Curated
+copy and its semantic routes, delete its vectors, fence stale publication, and
+acknowledge the exact mutation before the Personal classification commits.
+An unavailable backend leaves the change pending for retry. Co-located
+Personal and Team storage uses one database transaction; separate backends use
+acknowledged withdrawal followed by the Personal transaction. This is the
+conditional lifecycle in [Project-Sharing Lifecycle](./project-sharing-lifecycle.md)
+and the scope contract in [ADR 0063](./adr/0063-project-memory-scope-and-combined-recall.md).
 
 ## Retrieval
 
@@ -201,23 +236,23 @@ must select it through the same preview, policy intersection, consent, Share
 Grant, and materialization lifecycle as every other representation. Curated
 assertions are never appended to transcript representations.
 
-The representation includes only current, unexpired assertions for which every
+The representation includes only active `project` assertions linked to the
+exact owner Personal Project, Workspace Project, and Team backend, and for which every
 active direct source role is wholly inside the exact granted Captured Session.
 Conversation Items and Memory Events must belong directly to that session. An
 LCM Summary is eligible only when its complete active descendant source set
 exists and belongs to the session. Missing, deleted, excluded, invalidated,
-suppressed, expired, or mixed-session evidence fails closed. Derived links do
+suppressed, expired, non-Conversation, or mixed-session evidence fails closed. Derived links do
 not broaden this direct-source decision.
 
 Personal Curated payloads are decrypted with the Personal/base provider. The
 redacted artifact and preview use the owner-private replica provider, and the
 Team representation uses the Team provider. Materialization rejects key
 substitution across these three boundaries. Curated acceptance and
-reconciliation rematerialize active continuous grants immediately. Assertion
-or source lifecycle changes run database invalidation triggers in the same
-transaction as the Personal mutation. Those triggers invalidate the affected
-Team representation and delete its semantic routing/vector rows before either
-side can commit; an invalidation error rolls the Personal mutation back.
+reconciliation rematerialize active continuous grants immediately. Source
+lifecycle changes and co-located classification changes invalidate affected
+Team representations in the Personal transaction. Separate Team backends use
+the authenticated withdrawal and acknowledgement protocol above.
 
 Team semantic search and expansion expose only grant-scoped pseudonymous
 lineage from the encrypted Team representation. Canonical Personal assertion

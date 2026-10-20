@@ -34,6 +34,7 @@ import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { MemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
+import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
@@ -94,11 +95,16 @@ export type CuratedMemorySensitivity =
   | "normal"
   | "sensitive"
   | "review_required";
+export type CuratedMemoryScope = "me" | "project" | "unscoped";
+export type CuratedMemoryKind = "decision" | "fact" | "learning" | "preference";
+export type CuratedMemoryAuthorKind = "user" | "agent";
 
 export type CuratedMemorySourceType =
   | "conversation_item"
   | "memory_event"
-  | "lcm_summary";
+  | "lcm_summary"
+  | "project_source_note_revision"
+  | "project_work_item";
 
 export type CuratedMemorySourceRole =
   | "primary_evidence"
@@ -1771,6 +1777,8 @@ export interface CuratedMemorySourceRecord {
   conversationItemId: string | null;
   memoryEventId: string | null;
   lcmNodeId: string | null;
+  projectSourceRevisionId: string | null;
+  projectWorkItemId: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
 }
@@ -1779,6 +1787,12 @@ export interface CuratedMemoryAssertionRecord {
   id: string;
   ownerUserId: string;
   visibility: Visibility;
+  scope: CuratedMemoryScope;
+  projectId: string | null;
+  kind: CuratedMemoryKind | null;
+  authorKind: CuratedMemoryAuthorKind | null;
+  authorRef: string | null;
+  classificationVersion: number;
   topicId: string | null;
   topicTitle: string | null;
   assertionText: string;
@@ -1813,6 +1827,9 @@ export interface CuratedMemoryProposalRecord {
   rationale: string | null;
   tags: string[];
   sensitivityHint: CuratedMemorySensitivity | null;
+  scopeHint: CuratedMemoryScope | null;
+  kindHint: CuratedMemoryKind | null;
+  projectContextId: string | null;
   expiresAt: string | null;
   evidenceConversationItemIds: string[];
   evidenceMemoryEventIds: string[];
@@ -1839,6 +1856,8 @@ export interface CuratedMemorySourceInput {
   conversationItemId?: string | null;
   memoryEventId?: string | null;
   lcmNodeId?: string | null;
+  projectSourceRevisionId?: string | null;
+  projectWorkItemId?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -1904,6 +1923,9 @@ export interface CuratedMemoryProposalInput {
   rationale?: string | null;
   tags?: string[];
   sensitivityHint?: CuratedMemorySensitivity | null;
+  scopeHint?: CuratedMemoryScope | null;
+  kindHint?: CuratedMemoryKind | null;
+  projectContextId?: string | null;
   expiresAt?: string | null;
   evidenceConversationItemIds?: string[];
   evidenceMemoryEventIds?: string[];
@@ -1971,6 +1993,14 @@ export interface MemorySourceRepository
     MemoryQuestionRepository,
     MemoryAnswerTaskRepository,
     SharedMemoryRepository,
+    Pick<
+      CuratedMemoryRepository,
+      | "prepareLegacyCuratedActivationBatch"
+      | "deferCuratedClassificationRetry"
+      | "listPendingCuratedClassificationWork"
+      | "recordCuratedClassificationAck"
+      | "commitCuratedClassification"
+    >,
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;

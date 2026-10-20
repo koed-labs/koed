@@ -111,6 +111,27 @@ export const curatedMemoryActiveEvidenceRowsSql = (
     and ${prefix}_node_me_encrypted.source_id = ${prefix}_node_me.id
     and ${prefix}_node_me_encrypted.source_column = 'payload'
     and ${prefix}_node_me_encrypted.invalidated_at is null
+  left join project_source_revisions ${prefix}_revision
+    on ${prefix}_revision.id=${prefix}_cms.project_source_revision_id
+    and ${prefix}_revision.owner_user_id=${assertionAlias}.owner_user_id
+    and ${prefix}_revision.state='ready'
+    and ${prefix}_revision.note_revision_id is not null
+  left join project_sources ${prefix}_project_source
+    on ${prefix}_project_source.id=${prefix}_revision.source_id
+    and ${prefix}_project_source.owner_user_id=${assertionAlias}.owner_user_id
+    and ${prefix}_project_source.kind='doc'
+  left join personal_note_revisions ${prefix}_note_revision
+    on ${prefix}_note_revision.id=${prefix}_revision.note_revision_id
+    and ${prefix}_note_revision.owner_user_id=${assertionAlias}.owner_user_id
+    and ${prefix}_note_revision.projection_state='available'
+    and ${prefix}_note_revision.forgotten_at is null
+  left join personal_notes ${prefix}_note
+    on ${prefix}_note.id=${prefix}_note_revision.note_id
+    and ${prefix}_note.owner_user_id=${assertionAlias}.owner_user_id
+    and ${prefix}_note.lifecycle='active'
+  left join project_work_items ${prefix}_work_item
+    on ${prefix}_work_item.id=${prefix}_cms.project_work_item_id
+    and ${prefix}_work_item.owner_user_id=${assertionAlias}.owner_user_id
   where ${prefix}_cms.assertion_id = ${assertionAlias}.id
     and ${prefix}_cms.source_role in (
       'primary_evidence',
@@ -118,7 +139,9 @@ export const curatedMemoryActiveEvidenceRowsSql = (
       'superseding_evidence',
       'conflicting_evidence'
     )
-    and coalesce(${prefix}_ci.id, ${prefix}_me.id, ${prefix}_mn.id) is not null
+    and (coalesce(${prefix}_ci.id, ${prefix}_me.id, ${prefix}_mn.id) is not null
+      or (${prefix}_project_source.id is not null and ${prefix}_note.id is not null)
+      or ${prefix}_work_item.id is not null)
 `;
 
 export const activeCuratedMemoryEvidencePredicate = (
@@ -199,6 +222,12 @@ export const verifyCuratedMemorySourcesWithClient = async (
   const lcmNodeIds = sources
     .map((source) => source.lcmNodeId)
     .filter((value): value is string => Boolean(value));
+  const projectSourceRevisionIds = sources
+    .map((source) => source.projectSourceRevisionId)
+    .filter((value): value is string => Boolean(value));
+  const projectWorkItemIds = sources
+    .map((source) => source.projectWorkItemId)
+    .filter((value): value is string => Boolean(value));
 
   if (conversationItemIds.length > 0) {
     const result = await client.query<{ count: string }>(
@@ -258,6 +287,50 @@ export const verifyCuratedMemorySourcesWithClient = async (
     if (Number(result.rows[0]?.count ?? 0) !== new Set(lcmNodeIds).size) {
       throw visibilityError("Curated Memory source LCM Summary is not visible");
     }
+  }
+  if (projectSourceRevisionIds.length) {
+    const result = await client.query<{ count: string }>(
+      `select count(*)::text as count
+         from project_source_revisions revision
+         join project_sources source on source.id=revision.source_id
+           and source.owner_user_id=revision.owner_user_id
+         join personal_note_revisions note_revision
+           on note_revision.id=revision.note_revision_id
+          and note_revision.owner_user_id=revision.owner_user_id
+          and note_revision.forgotten_at is null
+          and note_revision.projection_state='available'
+         join personal_notes note on note.id=note_revision.note_id
+          and note.owner_user_id=revision.owner_user_id
+          and note.lifecycle='active'
+         join projects project on project.id=source.project_id
+           and project.owner_user_id=source.owner_user_id
+        where revision.id=any($1::uuid[]) and revision.owner_user_id=$2
+          and revision.state='ready' and revision.note_revision_id is not null
+          and source.kind='doc' and source.status='ready'
+          and source.deleted_at is null and source.remove_batch_id is null
+          and project.lifecycle='active' and project.deletion_phase is null`,
+      [projectSourceRevisionIds, actor.userId]
+    );
+    if (
+      Number(result.rows[0]?.count ?? 0) !==
+      new Set(projectSourceRevisionIds).size
+    )
+      throw visibilityError(
+        "Curated Project Source Note revision is unavailable"
+      );
+  }
+  if (projectWorkItemIds.length) {
+    const result = await client.query<{ count: string }>(
+      `select count(*)::text as count from project_work_items work_item
+         join projects project on project.id=work_item.project_id
+           and project.owner_user_id=work_item.owner_user_id
+        where work_item.id=any($1::uuid[]) and work_item.owner_user_id=$2
+          and work_item.deleted_at is null
+          and project.lifecycle='active' and project.deletion_phase is null`,
+      [projectWorkItemIds, actor.userId]
+    );
+    if (Number(result.rows[0]?.count ?? 0) !== new Set(projectWorkItemIds).size)
+      throw visibilityError("Curated Work Item is unavailable");
   }
 };
 

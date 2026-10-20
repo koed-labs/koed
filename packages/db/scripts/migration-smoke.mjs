@@ -76,9 +76,11 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0055_youthful_wong";
+const expectedBaseMigrationTag = "0055_youthful_wong";
+const expectedLatestMigrationTag = "0060_cuddly_jack_power";
+const expectedLatestMigrationIndex = 60;
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 55;
+const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -178,11 +180,13 @@ const assertAlphaMigrationContract = async () => {
     journal.entries[42]?.tag !== "0042_owner_scoped_projection_identity" ||
     journal.entries[43]?.tag !== expectedRemoteMcpOAuthTag ||
     journal.entries[44]?.tag !== expectedTeamAuthorityTag ||
+    journal.entries[expectedBaseMigrationIndex]?.tag !==
+      expectedBaseMigrationTag ||
     journal.entries.at(-1)?.idx !== expectedLatestMigrationIndex ||
     journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
   ) {
     throw new Error(
-      `Expected ${expectedLatestMigrationTag} at migration index ${expectedLatestMigrationIndex} to be latest`
+      `Expected ${expectedBaseMigrationTag} at migration index ${expectedBaseMigrationIndex} in the migration history`
     );
   }
   return journal;
@@ -3602,6 +3606,81 @@ try {
       });
     }
   );
+
+  await runScenario("curated-scope-0055-upgrade-and-shape", async () => {
+    const preCuratedFolder = await createMigrationSlice(journal, 55, {
+      folderPrefix: "koed-curated-scope-preupgrade-"
+    });
+    temporaryFolders.add(preCuratedFolder);
+    const target = await createDisposableDatabase("curated_scope_upgrade");
+    const ownerId = randomUUID();
+    const assertionId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preCuratedFolder });
+      await pool.query("insert into users(id,email) values($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into curated_memory_assertions (
+           id,owner_user_id,visibility,assertion_text,normalized_assertion,
+           sensitivity,confidence,tags,metadata,status,observed_at
+         ) values ($1,$2,'personal','Legacy claim','legacy claim',
+           'normal',80,'{}','{}','current',now())`,
+        [assertionId, ownerId]
+      );
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const legacy = await pool.query(
+        `select scope,scope_activation_state,classification_version,project_id
+           from curated_memory_assertions where id=$1`,
+        [assertionId]
+      );
+      if (
+        !isDeepStrictEqual(legacy.rows[0], {
+          scope: "unscoped",
+          scope_activation_state: "pending",
+          classification_version: 1,
+          project_id: null
+        })
+      ) {
+        throw new Error(
+          `Legacy Curated assertion activated: ${JSON.stringify(legacy.rows[0])}`
+        );
+      }
+      const fresh = await pool.query(
+        `insert into curated_memory_assertions (
+           owner_user_id,visibility,assertion_text,normalized_assertion,
+           sensitivity,confidence,tags,metadata,status,observed_at
+         ) values ($1,'personal','New claim','new claim',
+           'normal',80,'{}','{}','current',now())
+         returning id,scope,scope_activation_state,classification_version,project_id`,
+        [ownerId]
+      );
+      const { id: freshId, ...freshShape } = fresh.rows[0];
+      if (
+        !isDeepStrictEqual(freshShape, {
+          scope: "unscoped",
+          scope_activation_state: "active",
+          classification_version: 1,
+          project_id: null
+        })
+      ) {
+        throw new Error(
+          `New Curated default changed: ${JSON.stringify(freshShape)}`
+        );
+      }
+      await expectSqlState(
+        pool,
+        `insert into curated_memory_sources (
+           assertion_id,source_type,source_role,metadata
+         ) values ($1,'project_work_item','primary_evidence','{}')`,
+        "23514",
+        "Project Work Item source without a real record",
+        [freshId]
+      );
+    });
+  });
 
   const latestMigration = await getLatestMigrationTimestamp();
   console.log(

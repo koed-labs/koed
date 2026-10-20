@@ -162,7 +162,8 @@ export {
 } from "./cross-identity-sync-repository.js";
 export {
   createCuratedMemoryRepository,
-  type CuratedMemoryRepository
+  type CuratedMemoryRepository,
+  type CuratedClassificationOperation
 } from "./curated-memory-repository.js";
 export { createDeviceCredentialRepository } from "./device-credential-repository.js";
 export {

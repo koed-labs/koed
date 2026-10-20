@@ -102,6 +102,19 @@ export const createCuratedMemoryRecordMethods = ({
           memoryEventId
         }))
       ]);
+      if (input.projectContextId) {
+        const contextProject = await client.query<{ id: string }>(
+          `select id from projects
+            where id=$1 and owner_user_id=$2
+              and lifecycle='active' and deletion_phase is null`,
+          [input.projectContextId, actor.userId]
+        );
+        if (!contextProject.rows[0]) {
+          throw visibilityError(
+            "Curated Memory Project context not found or not active"
+          );
+        }
+      }
       if (targetAssertionId) {
         const target = await client.query<{ id: string }>(
           `
@@ -137,6 +150,9 @@ export const createCuratedMemoryRecordMethods = ({
           rationale,
           tags,
           sensitivity_hint,
+          scope_hint,
+          kind_hint,
+          project_context_id,
           expires_at_hint,
           evidence_conversation_item_ids,
           evidence_memory_event_ids,
@@ -153,6 +169,9 @@ export const createCuratedMemoryRecordMethods = ({
           $4,
           $5::text[],
           $6,
+          $14::curated_memory_scope,
+          $15::curated_memory_kind,
+          $16::uuid,
           $7,
           $8::uuid[],
           $9::uuid[],
@@ -176,7 +195,10 @@ export const createCuratedMemoryRecordMethods = ({
           operation,
           targetAssertionId,
           input.createdByModel ?? null,
-          input.createdByPromptVersion ?? null
+          input.createdByPromptVersion ?? null,
+          input.scopeHint ?? null,
+          input.kindHint ?? null,
+          input.projectContextId ?? null
         ]
       );
       const row = result.rows[0]!;

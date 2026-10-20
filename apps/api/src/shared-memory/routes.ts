@@ -21,6 +21,7 @@ import {
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
   sourceAdmissionActionGrantBinding,
+  curatedWithdrawalBodySchema,
   sharedMemorySourceRefSchema,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
@@ -739,6 +740,32 @@ export const registerSharedMemoryRoutes = (
       authority: sharedMemoryAuthoritySchema
     })
     .strict();
+  app.post(
+    "/v1/shared-memory/curated-withdrawals",
+    { preHandler: context.writeRateLimit, bodyLimit: 128 * 1024 },
+    async (request) => {
+      rejectApiToken(request);
+      const authenticated = await context.authenticateDeviceCredential(request);
+      if (
+        !authenticated.credential.operationFamilies.includes(
+          "share_grant_management"
+        )
+      )
+        throw forbidden();
+      const body = curatedWithdrawalBodySchema.parse(request.body);
+      const receipt = await executeRepositoryOperation(() =>
+        context.requireSharedMemoryRepository().withdrawCuratedAssertionCopies(
+          { userId: authenticated.user.id },
+          {
+            ...body,
+            source: body.source,
+            deviceCredentialId: authenticated.credential.id
+          }
+        )
+      );
+      return { receipt };
+    }
+  );
   app.get(
     "/v1/shared-memory/sources/:logicalMemoryId/admission",
     { preHandler: context.readRateLimit },

@@ -363,6 +363,8 @@ const validateCuratedAssertionContent = (
       "topicTitle",
       "tags",
       "sourceCount",
+      "scopeProtocolVersion",
+      "classificationVersion",
       "expansionItems"
     ]) ||
     !requiredString(content.assertionText) ||
@@ -372,7 +374,14 @@ const validateCuratedAssertionContent = (
     !Array.isArray(content.tags) ||
     content.tags.some((tag) => !requiredString(tag)) ||
     !Number.isSafeInteger(content.sourceCount) ||
-    Number(content.sourceCount) < 1
+    Number(content.sourceCount) < 1 ||
+    (content.scopeProtocolVersion !== undefined &&
+      content.scopeProtocolVersion !== 1) ||
+    (content.classificationVersion !== undefined &&
+      (!Number.isSafeInteger(content.classificationVersion) ||
+        Number(content.classificationVersion) < 1)) ||
+    (content.scopeProtocolVersion === undefined) !==
+      (content.classificationVersion === undefined)
   ) {
     throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
   }
@@ -393,6 +402,12 @@ const validateCuratedAssertionContent = (
       keys: { count: 0 }
     }),
     sourceCount: content.sourceCount,
+    ...(content.scopeProtocolVersion === undefined
+      ? {}
+      : {
+          scopeProtocolVersion: 1,
+          classificationVersion: content.classificationVersion
+        }),
     ...(content.expansionItems === undefined
       ? {}
       : {

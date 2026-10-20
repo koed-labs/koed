@@ -214,8 +214,20 @@ source falls outside that session or the provenance is incomplete. The
 assertion must also have `scope = project` and resolve to the matching
 owner-owned Project linked to the Workspace Project. Me-scoped, unscoped,
 mixed-session, and non-Conversation evidence is ineligible. Scope or Project
-changes invalidate affected Team representations and vectors transactionally
-before the Personal mutation commits.
+changes withdraw affected Team representations, semantic routing, and vectors
+before the Personal mutation commits. Co-located Personal and Team records use
+one database transaction. With separate Team storage, the source owner's
+trusted local edge durably coordinates the mutation, fences stale publication,
+and waits for an atomic withdrawal acknowledgement from every affected Team
+backend. An unavailable backend leaves the Personal change pending for retry;
+if withdrawal succeeds but the Personal commit fails, the safer withdrawn
+state remains. The Team backend does not read Personal storage, and a Personal
+API Token does not authorize withdrawal. Unrelated grants remain intact.
+Team backends must receive the atomic withdrawal schema and authenticated
+route before the Personal legacy-scope activation worker runs. Legacy
+assertions stay activation-pending until every historically linked backend
+has returned its durable receipt; an offline or older backend cannot satisfy
+that gate.
 
 When a Personal owner action such as Conversation deletion, movement out of a
 shared Project, or Personal Project deletion affects an active Team grant, the

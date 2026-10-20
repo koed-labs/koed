@@ -181,8 +181,20 @@ insufficient if another active source falls outside the session or provenance
 is incomplete. It must also have `scope = project` and resolve to the matching
 owner-owned Project linked to the Workspace Project. Me-scoped, unscoped,
 mixed-session, and non-Conversation evidence is ineligible. Project/scope
-changes invalidate affected Team representations and vectors transactionally
-before the Personal change commits.
+changes withdraw affected Team representations, semantic routing, and vectors
+before the Personal change commits. Co-located Personal and Team records use
+one transaction. For separate Team storage, the trusted source-owning local
+edge keeps a durable mutation, fences stale publication, and waits for atomic
+withdrawal acknowledgements from every affected backend before the Personal
+commit. An unavailable backend leaves the change pending and retryable. If
+withdrawal succeeds but the Personal commit fails, the withdrawn Team state
+remains. Neither a Team backend nor a Personal API Token gains authority over
+the other storage boundary; unrelated grants remain available.
+Roll out the Team withdrawal schema and route before activating the Personal
+legacy backfill. Existing assertions remain activation-pending until every
+historically linked backend accepts the source-owner withdrawal and returns
+its durable receipt. A backend that has not upgraded cannot acknowledge and
+must be upgraded before the Personal activation proceeds.
 
 Project ownership and Team role are separate authority bindings. The Team-side
 Project owner is `workspace_projects.owner_team_member_id`; this does not

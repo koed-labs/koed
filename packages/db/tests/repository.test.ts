@@ -34313,6 +34313,16 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toThrow("No current user evidence");
 
+    await expect(
+      repo.createCuratedMemoryProposal(
+        { userId: owner.id },
+        {
+          proposedClaim: `The user's Vietnam flight marker is ${sentinel}.`,
+          evidenceConversationItemIds: [item!.id],
+          projectContextId: randomUUID()
+        }
+      )
+    ).rejects.toThrow("Project context not found or not active");
     const proposal = await repo.createCuratedMemoryProposal(
       { userId: owner.id },
       {

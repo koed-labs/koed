@@ -2207,6 +2207,16 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/shared-memory/curated-withdrawals",
+    "device_credential",
+    "shared_memory",
+    "Withdraw exact owner Curated copies before a Personal classification mutation.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/shared-memory/sources/{logicalMemoryId}/admission/grants",
     "session_or_device_credential",

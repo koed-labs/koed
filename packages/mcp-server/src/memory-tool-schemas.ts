@@ -98,7 +98,12 @@ export const memoryIntakeProposeInputSchema = z
       .default("store"),
     target_assertion_id: uuidSchema.optional(),
     source_project_id: z.string().trim().min(1).max(4096).optional(),
-    source_session_id: uuidSchema.optional()
+    source_session_id: uuidSchema.optional(),
+    scope_hint: z.enum(["me", "project", "unscoped"]).optional(),
+    kind_hint: z
+      .enum(["decision", "fact", "learning", "preference"])
+      .optional(),
+    project_context_id: uuidSchema.optional()
   })
   .strict()
   .refine(

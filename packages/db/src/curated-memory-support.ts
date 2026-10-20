@@ -191,6 +191,8 @@ export type SourceRow = {
   conversation_item_id: string | null;
   memory_event_id: string | null;
   lcm_node_id: string | null;
+  project_source_revision_id: string | null;
+  project_work_item_id: string | null;
   metadata: Record<string, unknown> | null;
   created_at: Date;
 };
@@ -199,6 +201,12 @@ export type AssertionRow = {
   id: string;
   owner_user_id: string;
   visibility: Visibility;
+  scope: CuratedMemoryAssertionRecord["scope"];
+  project_id: string | null;
+  kind: CuratedMemoryAssertionRecord["kind"];
+  author_kind: CuratedMemoryAssertionRecord["authorKind"];
+  author_ref: string | null;
+  classification_version: number;
   topic_id: string | null;
   topic_title: string | null;
   assertion_text: string;
@@ -232,6 +240,9 @@ export type ProposalRow = {
   rationale: string | null;
   tags: string[];
   sensitivity_hint: CuratedMemorySensitivity | null;
+  scope_hint: CuratedMemoryProposalRecord["scopeHint"];
+  kind_hint: CuratedMemoryProposalRecord["kindHint"];
+  project_context_id: string | null;
   expires_at_hint: Date | null;
   evidence_conversation_item_ids: string[];
   evidence_memory_event_ids: string[];
@@ -419,6 +430,8 @@ export const mapSource = (row: SourceRow): CuratedMemorySourceRecord => ({
   conversationItemId: row.conversation_item_id,
   memoryEventId: row.memory_event_id,
   lcmNodeId: row.lcm_node_id,
+  projectSourceRevisionId: row.project_source_revision_id,
+  projectWorkItemId: row.project_work_item_id,
   metadata: jsonRecord(row.metadata),
   createdAt: row.created_at.toISOString()
 });
@@ -432,6 +445,9 @@ export const mapProposal = (row: ProposalRow): CuratedMemoryProposalRecord => ({
   rationale: row.rationale,
   tags: row.tags ?? [],
   sensitivityHint: row.sensitivity_hint,
+  scopeHint: row.scope_hint,
+  kindHint: row.kind_hint,
+  projectContextId: row.project_context_id,
   expiresAt: iso(row.expires_at_hint),
   evidenceConversationItemIds: row.evidence_conversation_item_ids ?? [],
   evidenceMemoryEventIds: row.evidence_memory_event_ids ?? [],
@@ -459,6 +475,12 @@ export const mapAssertion = (
   id: row.id,
   ownerUserId: row.owner_user_id,
   visibility: row.visibility,
+  scope: row.scope,
+  projectId: row.project_id,
+  kind: row.kind,
+  authorKind: row.author_kind,
+  authorRef: row.author_ref,
+  classificationVersion: row.classification_version,
   topicId: row.topic_id,
   topicTitle: row.topic_title,
   assertionText: row.assertion_text,
@@ -488,6 +510,12 @@ export const assertionSelect = `
   cma.id,
   cma.owner_user_id,
   cma.visibility,
+  cma.scope,
+  cma.project_id,
+  cma.kind,
+  cma.author_kind,
+  cma.author_ref,
+  cma.classification_version,
   cma.topic_id,
   cmt.title as topic_title,
   cma.assertion_text,
@@ -521,6 +549,9 @@ export const proposalSelect = `
   rationale,
   tags,
   sensitivity_hint,
+  scope_hint,
+  kind_hint,
+  project_context_id,
   expires_at_hint,
   evidence_conversation_item_ids,
   evidence_memory_event_ids,

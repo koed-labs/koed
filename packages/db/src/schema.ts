@@ -143,10 +143,27 @@ export const curatedMemorySensitivity = pgEnum("curated_memory_sensitivity", [
   "sensitive",
   "review_required"
 ]);
+export const curatedMemoryScope = pgEnum("curated_memory_scope", [
+  "me",
+  "project",
+  "unscoped"
+]);
+export const curatedMemoryKind = pgEnum("curated_memory_kind", [
+  "decision",
+  "fact",
+  "learning",
+  "preference"
+]);
+export const curatedMemoryAuthorKind = pgEnum("curated_memory_author_kind", [
+  "user",
+  "agent"
+]);
 export const curatedMemorySourceType = pgEnum("curated_memory_source_type", [
   "conversation_item",
   "memory_event",
-  "lcm_summary"
+  "lcm_summary",
+  "project_source_note_revision",
+  "project_work_item"
 ]);
 export const curatedMemorySourceRole = pgEnum("curated_memory_source_role", [
   "primary_evidence",
@@ -2887,6 +2904,17 @@ export const curatedMemoryAssertions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     visibility: visibilityScope("visibility").notNull().default("personal"),
+    scope: curatedMemoryScope("scope").notNull().default("unscoped"),
+    scopeActivationState: text("scope_activation_state")
+      .notNull()
+      .default("active"),
+    projectId: uuid("project_id"),
+    kind: curatedMemoryKind("kind"),
+    authorKind: curatedMemoryAuthorKind("author_kind"),
+    authorRef: text("author_ref"),
+    classificationVersion: integer("classification_version")
+      .notNull()
+      .default(1),
     topicId: uuid("topic_id").references(() => curatedMemoryTopics.id, {
       onDelete: "set null"
     }),
@@ -2937,6 +2965,10 @@ export const curatedMemoryAssertions = pgTable(
       .default("pending")
   },
   (table) => [
+    unique("curated_memory_assertions_owner_id_unique").on(
+      table.ownerUserId,
+      table.id
+    ),
     uniqueIndex("curated_memory_assertions_owner_current_unique")
       .on(table.ownerUserId, table.normalizedAssertion)
       .where(
@@ -2967,6 +2999,93 @@ export const curatedMemoryAssertions = pgTable(
     check(
       "curated_memory_assertions_confidence_check",
       sql`${table.confidence} >= 0 and ${table.confidence} <= 100`
+    ),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "curated_memory_assertions_owner_project_fk"
+    }).onDelete("restrict"),
+    check(
+      "curated_memory_assertions_project_scope_check",
+      sql`(${table.scope} = 'project') = (${table.projectId} is not null)`
+    ),
+    check(
+      "curated_memory_assertions_author_shape_check",
+      sql`(${table.authorKind} is null) = (${table.authorRef} is null)
+        and (${table.authorRef} is null or length(trim(${table.authorRef})) > 0)`
+    ),
+    check(
+      "curated_memory_assertions_classification_version_check",
+      sql`${table.classificationVersion} > 0`
+    ),
+    check(
+      "curated_memory_assertions_scope_activation_check",
+      sql`${table.scopeActivationState} in ('pending','active')`
+    )
+  ]
+);
+
+// Source-owner outbox for classification changes. The manifest is fixed at
+// preparation time and ACKed by each historical Team backend before commit.
+export const curatedMemoryClassificationOperations = pgTable(
+  "curated_memory_classification_operations",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    assertionId: uuid("assertion_id").notNull(),
+    expectedVersion: integer("expected_version").notNull(),
+    nextVersion: integer("next_version").notNull(),
+    targetScope: curatedMemoryScope("target_scope").notNull(),
+    targetProjectId: uuid("target_project_id"),
+    manifest: jsonb("manifest").$type<unknown[]>().notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    backendAcks: jsonb("backend_acks")
+      .$type<unknown[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text("state").notNull().default("pending"),
+    lastErrorCode: text("last_error_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.assertionId],
+      foreignColumns: [
+        curatedMemoryAssertions.ownerUserId,
+        curatedMemoryAssertions.id
+      ],
+      name: "curated_classification_assertion_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.targetProjectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "curated_classification_project_fk"
+    }).onDelete("restrict"),
+    unique("curated_classification_assertion_version_unique").on(
+      table.assertionId,
+      table.nextVersion
+    ),
+    index("curated_classification_pending_idx").on(
+      table.state,
+      table.updatedAt
+    ),
+    check(
+      "curated_classification_versions_check",
+      sql`${table.expectedVersion}>0 and ${table.nextVersion}=${table.expectedVersion}+1`
+    ),
+    check(
+      "curated_classification_target_check",
+      sql`(${table.targetScope}='project')=(${table.targetProjectId} is not null)`
+    ),
+    check(
+      "curated_classification_state_check",
+      sql`${table.state} in ('pending','ready','complete','conflict')`
+    ),
+    check(
+      "curated_classification_manifest_check",
+      sql`length(${table.manifestHash})=64 and jsonb_typeof(${table.manifest})='array'
+        and jsonb_typeof(${table.backendAcks})='array'`
     )
   ]
 );
@@ -2990,6 +3109,14 @@ export const curatedMemorySources = pgTable(
     lcmNodeId: uuid("lcm_node_id").references(() => memoryNodes.id, {
       onDelete: "cascade"
     }),
+    projectSourceRevisionId: uuid("project_source_revision_id").references(
+      () => projectSourceRevisions.id,
+      { onDelete: "cascade" }
+    ),
+    projectWorkItemId: uuid("project_work_item_id").references(
+      () => projectWorkItems.id,
+      { onDelete: "cascade" }
+    ),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -3003,7 +3130,9 @@ export const curatedMemorySources = pgTable(
       table.sourceRole,
       sql`coalesce(${table.conversationItemId}::text, '')`,
       sql`coalesce(${table.memoryEventId}::text, '')`,
-      sql`coalesce(${table.lcmNodeId}::text, '')`
+      sql`coalesce(${table.lcmNodeId}::text, '')`,
+      sql`coalesce(${table.projectSourceRevisionId}::text, '')`,
+      sql`coalesce(${table.projectWorkItemId}::text, '')`
     ),
     index("curated_memory_sources_conversation_item_idx").on(
       table.conversationItemId,
@@ -3017,11 +3146,21 @@ export const curatedMemorySources = pgTable(
       table.lcmNodeId,
       table.assertionId
     ),
+    index("curated_memory_sources_project_source_revision_idx").on(
+      table.projectSourceRevisionId,
+      table.assertionId
+    ),
+    index("curated_memory_sources_work_item_idx").on(
+      table.projectWorkItemId,
+      table.assertionId
+    ),
     check(
       "curated_memory_sources_one_source_check",
-      sql`(${table.sourceType} = 'conversation_item' and ${table.conversationItemId} is not null and ${table.memoryEventId} is null and ${table.lcmNodeId} is null)
-        or (${table.sourceType} = 'memory_event' and ${table.memoryEventId} is not null and ${table.conversationItemId} is null and ${table.lcmNodeId} is null)
-        or (${table.sourceType} = 'lcm_summary' and ${table.lcmNodeId} is not null and ${table.conversationItemId} is null and ${table.memoryEventId} is null)`
+      sql`(${table.sourceType} = 'conversation_item' and ${table.conversationItemId} is not null and ${table.memoryEventId} is null and ${table.lcmNodeId} is null and ${table.projectSourceRevisionId} is null and ${table.projectWorkItemId} is null)
+        or (${table.sourceType} = 'memory_event' and ${table.memoryEventId} is not null and ${table.conversationItemId} is null and ${table.lcmNodeId} is null and ${table.projectSourceRevisionId} is null and ${table.projectWorkItemId} is null)
+        or (${table.sourceType} = 'lcm_summary' and ${table.lcmNodeId} is not null and ${table.conversationItemId} is null and ${table.memoryEventId} is null and ${table.projectSourceRevisionId} is null and ${table.projectWorkItemId} is null)
+        or (${table.sourceType} = 'project_source_note_revision' and ${table.projectSourceRevisionId} is not null and ${table.conversationItemId} is null and ${table.memoryEventId} is null and ${table.lcmNodeId} is null and ${table.projectWorkItemId} is null)
+        or (${table.sourceType} = 'project_work_item' and ${table.projectWorkItemId} is not null and ${table.conversationItemId} is null and ${table.memoryEventId} is null and ${table.lcmNodeId} is null and ${table.projectSourceRevisionId} is null)`
     )
   ]
 );
@@ -3042,6 +3181,9 @@ export const curatedMemoryProposals = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
     sensitivityHint: curatedMemorySensitivity("sensitivity_hint"),
+    scopeHint: curatedMemoryScope("scope_hint"),
+    kindHint: curatedMemoryKind("kind_hint"),
+    projectContextId: uuid("project_context_id"),
     expiresAtHint: timestamp("expires_at_hint", { withTimezone: true }),
     evidenceConversationItemIds: uuid("evidence_conversation_item_ids")
       .array()
@@ -3088,6 +3230,11 @@ export const curatedMemoryProposals = pgTable(
     index("curated_memory_proposals_pending_idx")
       .on(table.createdAt, table.id)
       .where(sql`${table.status} = 'pending'`),
+    foreignKey({
+      columns: [table.ownerUserId, table.projectContextId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "curated_memory_proposals_owner_project_context_fk"
+    }).onDelete("restrict"),
     check(
       "curated_memory_proposals_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
@@ -9353,6 +9500,79 @@ export const teamMemoryCuratedItemEligibility = pgTable(
     check(
       "team_memory_curated_item_eligibility_unknown_blocked_check",
       sql`${table.pinnedRevisionHash} is not null or ${table.blockedAt} is not null`
+    )
+  ]
+);
+
+// A recipient keeps the highest withdrawn Curated classification version even
+// after deleting its copied semantic item. This prevents a delayed publication
+// from restoring an older Personal classification.
+export const teamMemoryCuratedWithdrawalFences = pgTable(
+  "team_memory_curated_withdrawal_fences",
+  {
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references(() => teamMemoryShareGrants.id, { onDelete: "cascade" }),
+    pseudonymousSourceId: uuid("pseudonymous_source_id").notNull(),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    classificationVersion: integer("classification_version").notNull(),
+    mutationId: uuid("mutation_id").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.shareGrantId, table.pseudonymousSourceId] }),
+    check(
+      "team_memory_curated_withdrawal_fences_shape_check",
+      sql`${table.classificationVersion} > 0 and length(${table.manifestHash}) = 64`
+    )
+  ]
+);
+
+export const teamMemoryCuratedAssertionFences = pgTable(
+  "team_memory_curated_assertion_fences",
+  {
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    assertionId: uuid("assertion_id").notNull(),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    classificationVersion: integer("classification_version").notNull(),
+    mutationId: uuid("mutation_id").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.logicalMemoryId, table.assertionId] }),
+    check(
+      "team_curated_assertion_fence_shape_check",
+      sql`${table.classificationVersion}>0 and length(${table.manifestHash})=64`
+    )
+  ]
+);
+
+export const teamMemoryCuratedWithdrawalReceipts = pgTable(
+  "team_memory_curated_withdrawal_receipts",
+  {
+    mutationId: uuid("mutation_id").primaryKey(),
+    assertionId: uuid("assertion_id").notNull(),
+    sourceLogicalMemoryId: uuid("source_logical_memory_id").notNull(),
+    sourceSessionId: uuid("source_session_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    sourceDeploymentProtocolId: uuid("source_deployment_protocol_id").notNull(),
+    classificationVersion: integer("classification_version").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    itemCount: integer("item_count").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "team_curated_withdrawal_receipt_shape_check",
+      sql`${table.classificationVersion}>0 and ${table.itemCount}>=0
+        and length(${table.manifestHash})=64`
     )
   ]
 );

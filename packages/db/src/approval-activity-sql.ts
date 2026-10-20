@@ -71,7 +71,10 @@ export const sessionExactCuratedAssertionSql = (
        and cms.source_role in
          ('primary_evidence','supporting_evidence','superseding_evidence','conflicting_evidence')
        and (
-         num_nonnulls(cms.conversation_item_id,cms.memory_event_id,cms.lcm_node_id)<>1
+         num_nonnulls(cms.conversation_item_id,cms.memory_event_id,cms.lcm_node_id,
+           cms.project_source_revision_id,cms.project_work_item_id)<>1
+         or cms.project_source_revision_id is not null
+         or cms.project_work_item_id is not null
          or (cms.conversation_item_id is not null and not exists (
            select 1 from conversation_items ci
             where ci.id=cms.conversation_item_id

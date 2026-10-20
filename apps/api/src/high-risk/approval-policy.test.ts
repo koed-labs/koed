@@ -361,6 +361,20 @@ const matrixCases: Array<{
 ];
 
 describe("action approval policy", () => {
+  it("rejects an unknown Curated share action instead of assigning a default tier", () => {
+    expect(
+      highRiskActionGrantIntentSchema.safeParse({
+        action: "shared_memory.curated_auto_share",
+        includeCuratedMemory: true
+      }).success
+    ).toBe(false);
+    expect(
+      Object.hasOwn(
+        highRiskActionDefinitions,
+        "shared_memory.curated_auto_share"
+      )
+    ).toBe(false);
+  });
   it("defines one exhaustive action entry for every supported action", () => {
     const schemaActions = highRiskActionGrantIntentSchema.options.flatMap(
       (option) =>

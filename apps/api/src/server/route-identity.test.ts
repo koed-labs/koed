@@ -249,6 +249,21 @@ describe("route identity contract", () => {
     expect(openApiPaths["/v1/internal/jobs"]).toBeUndefined();
   });
 
+  it("binds Curated withdrawal to a device credential and request-time source ownership", () => {
+    const path = "/v1/shared-memory/curated-withdrawals";
+    expect(routeIdentityFor("POST", path)).toMatchObject({
+      identity: "device_credential",
+      domain: "shared_memory",
+      teamAuthority: "request_time_shared_memory_owner",
+      status: "implemented"
+    });
+    expect(openApiPaths[path]?.post).toMatchObject({
+      security: [{ deviceCredential: [] }],
+      "x-koed-identity": "device_credential",
+      "x-koed-team-authority": "request_time_shared_memory_owner"
+    });
+  });
+
   it("keeps every managed runner route behind a device credential", () => {
     const runnerRoutes = implementedRouteIdentityContracts.filter((contract) =>
       contract.path.startsWith("/v1/managed-conversation-runner/")
@@ -633,6 +648,7 @@ describe("route identity contract", () => {
         "POST /v1/shared-memory/pending-shares",
         "PUT /v1/shared-memory/pending-shares/{pendingShareId}/personal-note-source",
         "POST /v1/shared-memory/personal-note-revisions/advance",
+        "POST /v1/shared-memory/curated-withdrawals",
         "PUT /v1/shared-memory/share-grants/{shareGrantId}/fidelity-bundle",
         "POST /v1/shared-memory/share-grants/{shareGrantId}/revoke",
         "POST /v1/shared-memory/share-grants/{shareGrantId}/freeze",

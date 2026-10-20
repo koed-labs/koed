@@ -10,6 +10,7 @@ import {
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  curatedWithdrawalManifestHash,
   logicalMemorySourceRevisionIdentity,
   privacyClassificationResultManifestHash,
   projectLifecycleFreezeStageBindingHash,
@@ -997,6 +998,24 @@ export interface ContinuousPersonalNoteAdvancementResult {
 }
 
 export interface SharedMemoryRepository {
+  withdrawCuratedAssertionCopies(
+    actor: ActorContext,
+    input: {
+      source: Extract<SharedMemorySourceRef, { kind: "captured_session" }>;
+      sourceDeploymentProtocolId: string;
+      sourceOwnerPrincipalId: string;
+      deviceCredentialId: string;
+      mutationId: string;
+      assertionId: string;
+      manifestHash: string;
+      classificationVersion: number;
+      items: Array<{ shareGrantId: string; pseudonymousSourceId: string }>;
+    }
+  ): Promise<{
+    mutationId: string;
+    manifestHash: string;
+    appliedVersion: number;
+  }>;
   listUnfrozenSourceGrants(
     actor: ActorContext,
     logicalMemoryId: string
@@ -5038,6 +5057,7 @@ export const createSharedMemoryRepository = (
     ownerPrincipalId: string;
     teamId: string;
     teamWorkspaceId: string;
+    teamBackendId: string;
     syncRelationshipId: string;
     localReplicaId: string;
     remoteSyncReplicaId: string;
@@ -6543,6 +6563,8 @@ export const createSharedMemoryRepository = (
       ownerUserId: string;
       localSessionId: string;
       sourceRevision: number;
+      teamWorkspaceId: string;
+      teamBackendId: string;
     }
   ): Promise<Pick<AuthoritativeSourceMaterial, "items" | "manifest">> => {
     const result = await client.query<AssertionRow>(
@@ -6554,10 +6576,39 @@ export const createSharedMemoryRepository = (
           and cma.status='current'
           and cma.suppressed_at is null
           and (cma.expires_at is null or cma.expires_at>now())
+          and cma.scope='project' and cma.scope_activation_state='active'
+          and not exists (
+            select 1 from curated_memory_classification_operations pending_classification
+             where pending_classification.assertion_id=cma.id
+               and pending_classification.state in ('pending','ready')
+          )
+          and exists (
+            select 1 from sessions source_session
+            join projects personal_project
+              on personal_project.id=cma.project_id
+             and personal_project.owner_user_id=cma.owner_user_id
+             and personal_project.lifecycle='active'
+             and personal_project.deletion_phase is null
+             and personal_project.team_workspace_id=$4
+             and personal_project.team_backend_id=$5
+             and personal_project.workspace_project_id is not null
+            where source_session.id=$2
+              and source_session.owner_user_id=cma.owner_user_id
+              and source_session.personal_deleted_at is null
+              and (case when source_session.project_override_id is not null
+                        then source_session.project_override_personal_project_id
+                        else source_session.automatic_personal_project_id end)=cma.project_id
+          )
           and ${sessionExactCuratedAssertionSql("$1", "$2")}
         order by cma.observed_at asc,cma.id asc
         limit $3`,
-      [input.ownerUserId, input.localSessionId, MAX_SOURCE_ITEMS + 1]
+      [
+        input.ownerUserId,
+        input.localSessionId,
+        MAX_SOURCE_ITEMS + 1,
+        input.teamWorkspaceId,
+        input.teamBackendId
+      ]
     );
     const items: SharedMemoryCanonicalSourceItemDto[] = [];
     const manifest: SharedSourceArtifactV1["manifest"] = [];
@@ -6893,6 +6944,8 @@ export const createSharedMemoryRepository = (
           topicTitle,
           tags,
           sourceCount: direct.length,
+          scopeProtocolVersion: 1,
+          classificationVersion: assertionRow.classification_version,
           ...(expansionItems.length > 0 ? { expansionItems } : {})
         }
       });
@@ -6929,6 +6982,8 @@ export const createSharedMemoryRepository = (
       sourceSessionId: string;
       syncRelationshipId: string;
       sourceRevision: number;
+      teamWorkspaceId: string;
+      teamBackendId: string;
     }
   ): Promise<AuthoritativeSourceMaterial> => {
     const mappedEvents =
@@ -8105,6 +8160,7 @@ export const createSharedMemoryRepository = (
         ownerPrincipalId: stringValue(row.owner_principal_id),
         teamId: input.teamId,
         teamWorkspaceId: input.teamWorkspaceId,
+        teamBackendId: stringValue(row.upstream_backend_id),
         syncRelationshipId: stringValue(row.sync_relationship_id),
         localReplicaId: stringValue(row.local_replica_id),
         remoteSyncReplicaId: stringValue(row.remote_sync_replica_id),
@@ -8200,7 +8256,9 @@ export const createSharedMemoryRepository = (
           localSessionId: context.localSessionId,
           sourceSessionId: context.sourceSessionId,
           syncRelationshipId: context.syncRelationshipId,
-          sourceRevision: context.sourceRevision
+          sourceRevision: context.sourceRevision,
+          teamWorkspaceId: context.teamWorkspaceId,
+          teamBackendId: context.teamBackendId
         }
       );
       const artifactBody = buildArtifactBody({
@@ -17605,6 +17663,62 @@ export const createSharedMemoryRepository = (
           })
         );
         const sanitizedItems = sanitized.payload.items;
+        if (
+          preview.representation === "curated_assertions" &&
+          sanitizedItems.some(
+            (item) =>
+              item.itemType !== "curated_assertion" ||
+              item.content.scopeProtocolVersion !== 1 ||
+              !Number.isSafeInteger(item.content.classificationVersion) ||
+              Number(item.content.classificationVersion) < 1
+          )
+        ) {
+          throw new SharedMemoryConflictError(
+            "Curated source requires current Project-scope provenance protocol"
+          );
+        }
+        if (preview.representation === "curated_assertions") {
+          for (const item of sanitizedItems) {
+            const assertionFence = await client.query<{
+              classification_version: number;
+            }>(
+              `select classification_version
+                 from team_memory_curated_assertion_fences
+                where logical_memory_id=$1 and assertion_id=$2 for update`,
+              [grant.logicalMemoryId, item.sourceId]
+            );
+            if (
+              assertionFence.rows[0] &&
+              Number(item.content.classificationVersion) <=
+                assertionFence.rows[0].classification_version
+            ) {
+              throw new SharedMemoryConflictError(
+                "Curated source predates a classification withdrawal"
+              );
+            }
+            const fence = await client.query<{
+              classification_version: number;
+            }>(
+              `select classification_version
+                 from team_memory_curated_withdrawal_fences
+                where share_grant_id=$1 and pseudonymous_source_id=$2
+                for update`,
+              [
+                grant.id,
+                sharedMemoryGrantScopedSourceId(grant.id, item.sourceId)
+              ]
+            );
+            if (
+              fence.rows[0] &&
+              Number(item.content.classificationVersion) <=
+                fence.rows[0].classification_version
+            ) {
+              throw new SharedMemoryConflictError(
+                "Curated publication predates a classification withdrawal"
+              );
+            }
+          }
+        }
         const curatedManifest =
           preview.representation === "curated_assertions"
             ? (
@@ -18474,18 +18588,324 @@ export const createSharedMemoryRepository = (
       return { advanced };
     },
 
+    async withdrawCuratedAssertionCopies(actor, input) {
+      assertUuid(input.mutationId, "mutationId");
+      assertUuid(input.assertionId, "assertionId");
+      if (
+        !Number.isSafeInteger(input.classificationVersion) ||
+        input.classificationVersion < 1 ||
+        input.items.length > 1000
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated withdrawal manifest is invalid"
+        );
+      }
+      const items = [...input.items].sort(
+        (a, b) =>
+          a.shareGrantId.localeCompare(b.shareGrantId) ||
+          a.pseudonymousSourceId.localeCompare(b.pseudonymousSourceId)
+      );
+      for (const item of items) {
+        assertUuid(item.shareGrantId, "shareGrantId");
+        assertUuid(item.pseudonymousSourceId, "pseudonymousSourceId");
+        if (
+          item.pseudonymousSourceId !==
+          sharedMemoryGrantScopedSourceId(item.shareGrantId, input.assertionId)
+        ) {
+          throw new SharedMemoryConflictError(
+            "Curated assertion pseudonym is invalid"
+          );
+        }
+      }
+      if (
+        new Set(
+          items.map(
+            (item) => `${item.shareGrantId}:${item.pseudonymousSourceId}`
+          )
+        ).size !== items.length ||
+        input.manifestHash !==
+          curatedWithdrawalManifestHash({
+            mutationId: input.mutationId,
+            assertionId: input.assertionId,
+            source: input.source,
+            sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+            sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+            classificationVersion: input.classificationVersion,
+            items
+          })
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated withdrawal manifest hash differs"
+        );
+      }
+      return withTransaction(pool, async (client) => {
+        await ensureCandidateSourceIdentity(
+          client,
+          actor,
+          {
+            source: input.source,
+            sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+            sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+            deviceCredentialId: input.deviceCredentialId,
+            requireExternalBinding: true
+          },
+          "restrictive_admission"
+        );
+        await lockSharedMemoryPublicationFenceWithClient(
+          client,
+          input.source.logicalMemoryId
+        );
+        const priorAssertionFence = await client.query<Row>(
+          `select classification_version,mutation_id,manifest_hash
+             from team_memory_curated_assertion_fences
+            where logical_memory_id=$1 and assertion_id=$2 for update`,
+          [input.source.logicalMemoryId, input.assertionId]
+        );
+        if (
+          priorAssertionFence.rows[0] &&
+          (numberValue(priorAssertionFence.rows[0].classification_version) >
+            input.classificationVersion ||
+            (numberValue(priorAssertionFence.rows[0].classification_version) ===
+              input.classificationVersion &&
+              (priorAssertionFence.rows[0].mutation_id !== input.mutationId ||
+                priorAssertionFence.rows[0].manifest_hash !==
+                  input.manifestHash)))
+        ) {
+          throw new SharedMemoryConflictError(
+            "Curated assertion fence conflicts"
+          );
+        }
+        await client.query(
+          `insert into team_memory_curated_withdrawal_receipts (
+             mutation_id,assertion_id,source_logical_memory_id,source_session_id,
+             owner_user_id,owner_principal_id,source_deployment_protocol_id,
+             classification_version,manifest_hash,item_count
+           ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           on conflict (mutation_id) do nothing`,
+          [
+            input.mutationId,
+            input.assertionId,
+            input.source.logicalMemoryId,
+            input.source.sessionId,
+            actor.userId,
+            input.sourceOwnerPrincipalId,
+            input.sourceDeploymentProtocolId,
+            input.classificationVersion,
+            input.manifestHash,
+            items.length
+          ]
+        );
+        const storedReceipt = await client.query<Row>(
+          `select * from team_memory_curated_withdrawal_receipts
+            where mutation_id=$1 for update`,
+          [input.mutationId]
+        );
+        const bound = storedReceipt.rows[0];
+        if (
+          !bound ||
+          bound.assertion_id !== input.assertionId ||
+          bound.source_logical_memory_id !== input.source.logicalMemoryId ||
+          bound.source_session_id !== input.source.sessionId ||
+          bound.owner_user_id !== actor.userId ||
+          bound.owner_principal_id !== input.sourceOwnerPrincipalId ||
+          bound.source_deployment_protocol_id !==
+            input.sourceDeploymentProtocolId ||
+          numberValue(bound.classification_version) !==
+            input.classificationVersion ||
+          bound.manifest_hash !== input.manifestHash ||
+          numberValue(bound.item_count) !== items.length
+        ) {
+          throw new SharedMemoryConflictError(
+            "Curated withdrawal mutation identity was reused with a different manifest"
+          );
+        }
+        const ownedGrants = await client.query<{ id: string }>(
+          `select distinct id from team_memory_share_grants
+            where logical_memory_id=$1 and owner_user_id=$2
+              and owner_principal_id=$3 order by id`,
+          [
+            input.source.logicalMemoryId,
+            actor.userId,
+            input.sourceOwnerPrincipalId
+          ]
+        );
+        const requestedGrantIds = new Set(
+          items.map((item) => item.shareGrantId)
+        );
+        if (
+          items.some(
+            (item) =>
+              !ownedGrants.rows.some((grant) => grant.id === item.shareGrantId)
+          )
+        ) {
+          throw new SharedMemoryAuthorizationError(
+            "Curated withdrawal grant is outside the source owner"
+          );
+        }
+        const affectedItems = [
+          ...items,
+          ...ownedGrants.rows
+            .filter((grant) => !requestedGrantIds.has(grant.id))
+            .map((grant) => ({
+              shareGrantId: grant.id,
+              pseudonymousSourceId: sharedMemoryGrantScopedSourceId(
+                grant.id,
+                input.assertionId
+              )
+            }))
+        ];
+        for (const item of affectedItems) {
+          const grant = await client.query<Row>(
+            `select id from team_memory_share_grants
+              where id=$1 and logical_memory_id=$2 and owner_user_id=$3
+                and owner_principal_id=$4
+              for update`,
+            [
+              item.shareGrantId,
+              input.source.logicalMemoryId,
+              actor.userId,
+              input.sourceOwnerPrincipalId
+            ]
+          );
+          if (!grant.rows[0]) {
+            throw new SharedMemoryAuthorizationError(
+              "Curated withdrawal grant is outside the source owner"
+            );
+          }
+          const existingFence = await client.query<Row>(
+            `select classification_version,mutation_id,manifest_hash
+               from team_memory_curated_withdrawal_fences
+              where share_grant_id=$1 and pseudonymous_source_id=$2
+              for update`,
+            [item.shareGrantId, item.pseudonymousSourceId]
+          );
+          const previous = existingFence.rows[0];
+          if (
+            previous &&
+            (numberValue(previous.classification_version) >
+              input.classificationVersion ||
+              (numberValue(previous.classification_version) ===
+                input.classificationVersion &&
+                (previous.mutation_id !== input.mutationId ||
+                  previous.manifest_hash !== input.manifestHash)))
+          ) {
+            throw new SharedMemoryConflictError(
+              "Curated withdrawal version conflicts"
+            );
+          }
+          const copied = await client.query<Row>(
+            `select item.id,item.representation_id,rep.frozen_snapshot,
+                    item.team_id,item.team_workspace_id,item.logical_memory_id
+               from team_memory_semantic_items item
+               join team_memory_representations rep on rep.id=item.representation_id
+              where item.share_grant_id=$1 and item.pseudonymous_source_id=$2
+                and rep.representation='curated_assertions'
+              for update of item,rep`,
+            [item.shareGrantId, item.pseudonymousSourceId]
+          );
+          // A grant can be affected before the assertion first materializes.
+          // Persist its fence even when this exact pseudonym has no copy yet.
+          for (const copiedItem of copied.rows) {
+            await client.query(
+              `insert into team_memory_curated_item_eligibility (
+                 semantic_item_id,representation_id,share_grant_id,team_id,
+                 team_workspace_id,logical_memory_id,pseudonymous_source_id,
+                 pinned_revision_hash,blocked_at
+               ) values ($1,$2,$3,$4,$5,$6,$7,null,now())
+               on conflict (semantic_item_id) do update
+                 set blocked_at=now(),updated_at=now()`,
+              [
+                copiedItem.id,
+                copiedItem.representation_id,
+                item.shareGrantId,
+                copiedItem.team_id,
+                copiedItem.team_workspace_id,
+                copiedItem.logical_memory_id,
+                item.pseudonymousSourceId
+              ]
+            );
+            for (const dimensions of [384, 1024, 1536, 3072] as const) {
+              await client.query(
+                `delete from team_memory_semantic_vectors_${dimensions}
+                  where semantic_item_id=$1`,
+                [copiedItem.id]
+              );
+            }
+            if (copiedItem.frozen_snapshot !== true) {
+              await client.query(
+                `update team_memory_representations
+                    set state='invalidated',invalidated_at=coalesce(invalidated_at,now()),
+                        invalidation_reason_code='curated_classification_changed',
+                        record_version=record_version+1,updated_at=now()
+                  where id=$1 and state in ('pending','available','stale')`,
+                [copiedItem.representation_id]
+              );
+            }
+          }
+          await client.query(
+            `insert into team_memory_curated_withdrawal_fences (
+               share_grant_id,pseudonymous_source_id,owner_principal_id,
+               classification_version,mutation_id,manifest_hash
+             ) values ($1,$2,$3,$4,$5,$6)
+             on conflict (share_grant_id,pseudonymous_source_id) do update
+               set classification_version=excluded.classification_version,
+                   mutation_id=excluded.mutation_id,
+                   manifest_hash=excluded.manifest_hash,withdrawn_at=now()`,
+            [
+              item.shareGrantId,
+              item.pseudonymousSourceId,
+              input.sourceOwnerPrincipalId,
+              input.classificationVersion,
+              input.mutationId,
+              input.manifestHash
+            ]
+          );
+        }
+        await client.query(
+          `insert into team_memory_curated_assertion_fences (
+             logical_memory_id,assertion_id,owner_principal_id,
+             classification_version,mutation_id,manifest_hash
+           ) values ($1,$2,$3,$4,$5,$6)
+           on conflict (logical_memory_id,assertion_id) do update
+             set classification_version=excluded.classification_version,
+                 mutation_id=excluded.mutation_id,
+                 manifest_hash=excluded.manifest_hash,withdrawn_at=now()`,
+          [
+            input.source.logicalMemoryId,
+            input.assertionId,
+            input.sourceOwnerPrincipalId,
+            input.classificationVersion,
+            input.mutationId,
+            input.manifestHash
+          ]
+        );
+        return {
+          mutationId: input.mutationId,
+          manifestHash: input.manifestHash,
+          appliedVersion: input.classificationVersion
+        };
+      });
+    },
+
     async syncCuratedSharedItemEligibility(actor, assertionIds) {
       const changedIds = [...new Set(assertionIds)];
       changedIds.forEach((id) => assertUuid(id, "assertionId"));
       if (changedIds.length === 0) return;
       await withTransaction(pool, async (client) => {
         const grants = await client.query<Row>(
-          `select g.id,g.logical_memory_id,g.source_revision,
-                  local_memory.local_session_id
+          `select g.id,g.logical_memory_id,g.source_revision,g.team_workspace_id,
+                  local_memory.local_session_id,credential.upstream_backend_id
              from team_memory_share_grants g
              left join local_captured_session_logical_memories local_memory
                on local_memory.logical_memory_id=g.logical_memory_id
               and local_memory.owner_user_id=g.owner_user_id
+             left join cross_identity_sync_relationships sync_relation
+               on sync_relation.local_replica_id=g.remote_replica_id
+              and sync_relation.logical_memory_id=g.logical_memory_id
+              and sync_relation.side='target'
+             left join device_credentials credential
+               on credential.id=sync_relation.device_credential_id
+              and credential.owner_user_id=g.owner_user_id
             where g.owner_user_id=$1 and g.include_curated_memory=true
               and g.lifecycle in ('active','unavailable')
             order by g.id for update of g`,
@@ -18524,7 +18944,7 @@ export const createSharedMemoryRepository = (
           if (items.rows.length === 0) continue;
           const sessionId = nullableStringValue(grant.local_session_id);
           let currentManifest = new Map<string, string>();
-          if (sessionId) {
+          if (sessionId && grant.upstream_backend_id) {
             const provider = await options.resolvePersonalEncryptionProvider({
               ownerUserId: actor.userId,
               purpose: "decrypt"
@@ -18537,7 +18957,9 @@ export const createSharedMemoryRepository = (
                 logicalMemoryId,
                 ownerUserId: actor.userId,
                 localSessionId: sessionId,
-                sourceRevision: numberValue(grant.source_revision)
+                sourceRevision: numberValue(grant.source_revision),
+                teamWorkspaceId: stringValue(grant.team_workspace_id),
+                teamBackendId: stringValue(grant.upstream_backend_id)
               }
             );
             currentManifest = new Map(

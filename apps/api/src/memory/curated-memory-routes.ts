@@ -55,6 +55,9 @@ export const registerCuratedMemoryRoutes = (
           rationale: input.rationale,
           tags: input.tags,
           sensitivityHint: input.sensitivity_hint,
+          scopeHint: input.scope_hint,
+          kindHint: input.kind_hint,
+          projectContextId: input.project_context_id,
           expiresAt: input.expires_at,
           evidenceConversationItemIds:
             resolvedEvidence?.evidenceConversationItemIds ??

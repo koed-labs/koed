@@ -345,9 +345,11 @@ const createAssertionWithClient = async (
           conversation_item_id,
           memory_event_id,
           lcm_node_id,
+          project_source_revision_id,
+          project_work_item_id,
           metadata
         )
-        values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
         on conflict do nothing
         returning id
       `,
@@ -358,6 +360,8 @@ const createAssertionWithClient = async (
         source.conversationItemId ?? null,
         source.memoryEventId ?? null,
         source.lcmNodeId ?? null,
+        source.projectSourceRevisionId ?? null,
+        source.projectWorkItemId ?? null,
         JSON.stringify(
           protectPayload ? encryptedCuratedMemoryJson : (source.metadata ?? {})
         )

@@ -6,6 +6,8 @@ import { createCuratedMemoryProposalTransitionMethods } from "./curated-memory-p
 import { createCuratedMemoryRecallMethods } from "./curated-memory-recall.js";
 import { createCuratedMemoryRecordMethods } from "./curated-memory-records.js";
 import { createCuratedMemorySourceReconciliationMethods } from "./curated-memory-source-reconciliation.js";
+import { createCuratedMemoryClassificationMethods } from "./curated-memory-classification.js";
+import { createCuratedMemorySourceEvidenceMethods } from "./curated-memory-source-evidence.js";
 import type {
   ActorContext,
   CuratedMemoryAssertionRecord,
@@ -26,6 +28,55 @@ import type {
 export { suppressCuratedMemoryWithoutActiveEvidenceWithClient } from "./curated-memory-policy.js";
 
 export interface CuratedMemoryRepository {
+  hydrateCuratedProjectSourceEvidence(
+    actor: ActorContext,
+    input:
+      | { sourceType: "project_source_note_revision"; sourceId: string }
+      | { sourceType: "project_work_item"; sourceId: string }
+  ): Promise<{
+    sourceType: "project_source_note_revision" | "project_work_item";
+    sourceId: string;
+    projectId: string;
+    text: string;
+  } | null>;
+  prepareCuratedClassification(
+    actor: ActorContext,
+    input: {
+      assertionId: string;
+      expectedVersion: number;
+      scope: "me" | "project" | "unscoped";
+      projectId?: string | null;
+    }
+  ): Promise<CuratedClassificationOperation>;
+  listPendingCuratedClassifications(
+    actor: ActorContext
+  ): Promise<CuratedClassificationOperation[]>;
+  listPendingCuratedClassificationWork(): Promise<
+    CuratedClassificationOperation[]
+  >;
+  prepareLegacyCuratedActivationBatch(
+    limit?: number
+  ): Promise<CuratedClassificationOperation[]>;
+  deferCuratedClassificationRetry(
+    actor: ActorContext,
+    operationId: string
+  ): Promise<void>;
+  recordCuratedClassificationAck(
+    actor: ActorContext,
+    operationId: string,
+    backendId: string,
+    sourceLogicalMemoryId: string,
+    receipt: {
+      mutationId: string;
+      manifestHash: string;
+      appliedVersion: number;
+    },
+    expectedManifestHash: string
+  ): Promise<CuratedClassificationOperation>;
+  commitCuratedClassification(
+    actor: ActorContext,
+    operationId: string
+  ): Promise<CuratedClassificationOperation>;
   createCuratedMemoryProposal(
     actor: ActorContext,
     input: CuratedMemoryProposalInput
@@ -107,6 +158,31 @@ export interface CuratedMemoryRepository {
   ): Promise<CuratedMemoryExportRecords>;
 }
 
+export interface CuratedClassificationOperation {
+  id: string;
+  ownerUserId: string;
+  assertionId: string;
+  expectedVersion: number;
+  nextVersion: number;
+  scope: "me" | "project" | "unscoped";
+  projectId: string | null;
+  manifest: Array<{
+    backendId: string;
+    source: {
+      kind: "captured_session";
+      sessionId: string;
+      logicalMemoryId: string;
+    };
+    items: Array<{ shareGrantId: string; pseudonymousSourceId: string }>;
+  }>;
+  backendAcks: Array<{
+    backendId: string;
+    logicalMemoryId: string;
+    manifestHash: string;
+  }>;
+  state: "pending" | "ready" | "complete" | "conflict";
+}
+
 export interface CuratedMemoryRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   onCuratedMemoryChanged?: (
@@ -130,6 +206,8 @@ export const createCuratedMemoryRepository = (
     ...createCuratedMemoryProposalTransitionMethods(context),
     ...createCuratedMemoryRecallMethods(context),
     ...createCuratedMemoryPolicyMethods(context),
-    ...createCuratedMemorySourceReconciliationMethods(context)
+    ...createCuratedMemorySourceReconciliationMethods(context),
+    ...createCuratedMemorySourceEvidenceMethods(context),
+    ...createCuratedMemoryClassificationMethods(context)
   };
 };

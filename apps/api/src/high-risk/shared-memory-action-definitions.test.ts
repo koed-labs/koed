@@ -457,7 +457,34 @@ describe("Shared Memory action definitions", () => {
       }
     });
     expect(admittedCurated).toMatchObject({
-      policy: { disposition: "step_up" }
+      operation: sharedMemoryPendingShareActionGrantBinding({
+        referenceId: ids.request,
+        source: capturedSource,
+        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+        activationRepresentation: "lcm_rollups",
+        mutationId: ids.mutation,
+        logicalGrantId: ids.logicalGrant,
+        consentId: ids.consent,
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        previewId: ids.preview,
+        previewRevision: 1,
+        previewHash: "a".repeat(64),
+        mode: "snapshot",
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true,
+        expiresAt: null
+      }),
+      policy: {
+        disposition: "step_up",
+        review: {
+          details: expect.arrayContaining([
+            { label: "Maximum fidelity", value: "LCM Rollups" },
+            { label: "Curated Memory", value: "Included" }
+          ])
+        }
+      }
     });
   });
 

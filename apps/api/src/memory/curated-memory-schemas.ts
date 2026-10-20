@@ -13,6 +13,11 @@ export const curatedMemoryProposalSchema = z
     rationale: z.string().trim().max(4000).optional(),
     tags: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
     sensitivity_hint: sensitivitySchema.optional(),
+    scope_hint: z.enum(["me", "project", "unscoped"]).optional(),
+    kind_hint: z
+      .enum(["decision", "fact", "learning", "preference"])
+      .optional(),
+    project_context_id: z.string().uuid().optional(),
     expires_at: z.string().datetime({ offset: true }).optional(),
     evidence_conversation_item_ids: z
       .array(z.string().uuid())
