@@ -165,4 +165,41 @@ describe("native merge client", () => {
     expect(JSON.stringify(reviewed)).not.toContain("fixture:secret");
     expect(JSON.stringify(prepared)).not.toContain("fixture:secret");
   });
+
+  it("returns only the journal identity after an uncertain dispatch and never retries", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(prepared)
+      .mockRejectedValueOnce(new Error("connection closed"));
+    const reviewed = await reviewAndDispatchSourceControlMerge({
+      selector,
+      access: async () => ({ authorization: "Koed-Desktop fixture:secret" }),
+      request,
+      confirm: async () => true
+    });
+    expect(reviewed).toMatchObject({
+      kind: "review_request_merge_result",
+      operationId: prepared.operationId,
+      outcome: "unknown"
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not hide a definitive stale review conflict as an unknown result", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(prepared)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("stale"), { retryable: false })
+      );
+    await expect(
+      reviewAndDispatchSourceControlMerge({
+        selector,
+        access: async () => ({ authorization: "Koed-Desktop fixture:secret" }),
+        request,
+        confirm: async () => true
+      })
+    ).rejects.toThrow("stale");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 });

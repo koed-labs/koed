@@ -59,6 +59,20 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid Work Item list identity.");
       return result.items;
     },
+    workItemReconcile: async (projectId, itemId) => {
+      const result = await command({
+        operation: "workItemReconcile",
+        projectId,
+        itemId
+      });
+      if (
+        result.operation !== "workItemReconcile" ||
+        result.value.projectId !== projectId ||
+        result.value.id !== itemId
+      )
+        throw new Error("Invalid Work Item reconciliation identity.");
+      return result.value;
+    },
     workItemCreate: async (projectId, value) => {
       const result = await command({
         operation: "workItemCreate",

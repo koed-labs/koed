@@ -19,6 +19,7 @@ import type {
 import type { DesktopApi, KoedServerStatus } from "./types.js";
 import type { Project, ProjectSource, WorkItem } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type {
   ManagedMemoryAction,
   ManagedMemoryActionDesktopApi
@@ -61,9 +62,16 @@ const hq209Capture =
   new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
 const hq404Capture =
   new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
+const hq405Capture =
+  new URLSearchParams(window.location.search).get("hq405Capture") === "yes";
+const hq405ProposalCapture =
+  new URLSearchParams(window.location.search).get("hq405Proposal") === "yes";
+const hq405DeclinedCapture =
+  new URLSearchParams(window.location.search).get("hq405Declined") === "yes";
 const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
-  hq404Capture;
+  hq404Capture ||
+  hq405Capture;
 const hq106Capture =
   new URLSearchParams(window.location.search).get("hq106Capture") === "yes" ||
   hq307Capture;
@@ -1127,6 +1135,17 @@ const hq207ManagedConversations = {
     operation: "list" as const,
     complete: true,
     executions: [
+      ...(hq405Capture
+        ? [
+            {
+              executionId: hq405ExecutionId,
+              projectId: hq204ProjectId,
+              sessionId: null,
+              threadId: null,
+              state: "running" as const
+            }
+          ]
+        : []),
       ...(hq404Capture &&
       hq403Items.some(
         (item) => item.executionId === "00000000-0000-4000-8000-000000004404"
@@ -1168,55 +1187,86 @@ const hq207ManagedConversations = {
     return {
       ...(await hq204ManagedConversations.runtime(executionId)),
       items:
-        hq404Capture && executionId === "00000000-0000-4000-8000-000000004404"
-          ? [
-              {
-                id: `${executionId}-step`,
-                executionGeneration: 1,
-                providerTurnId: "fixture-turn",
-                providerItemId: "fixture-step",
-                itemKind: "transient_output" as const,
-                presentation: {
-                  mode: "status" as const,
-                  renderer: "message" as const,
-                  policyKey: "hq404-fixture",
-                  policyRevision: 1,
-                  reason: "Agent update"
-                },
-                state: "answered" as const,
-                payload: {
-                  text: "Read the Work Item goal and Project Sources"
-                },
-                revision: 1,
-                createdAt: FIXTURE_TIME,
-                updatedAt: FIXTURE_TIME,
-                answered: true
-              }
-            ]
-          : hq207RuntimeExecutionIds.includes(executionId)
+        hq405Capture && executionId === hq405ExecutionId
+          ? hq405ProposalCapture
             ? [
                 {
-                  id: `${executionId}-approval`,
+                  id: "00000000-0000-4000-8000-000000004055",
                   executionGeneration: 1,
-                  providerTurnId: null,
-                  providerItemId: null,
-                  itemKind: "command_approval" as const,
+                  providerRequestId:
+                    "review-request-merge-propose:fixture:tool",
+                  providerTurnId: "fixture-turn",
+                  providerItemId: "fixture-proposal",
+                  itemKind: "transient_output" as const,
                   presentation: {
-                    mode: "expanded" as const,
-                    renderer: "approval" as const,
-                    policyKey: "hq207-fixture",
+                    mode: "status" as const,
+                    renderer: "message" as const,
+                    policyKey: "hq405-fixture",
                     policyRevision: 1,
-                    reason: "Pending"
+                    reason: "Agent proposal"
                   },
                   state: "pending" as const,
-                  payload: { command: ["review", "Project plan"] },
+                  payload: {
+                    text: "Merge of PR #212 proposed.",
+                    mergeProposal: { reviewRequestNumber: 212 }
+                  },
                   revision: 1,
                   createdAt: FIXTURE_TIME,
                   updatedAt: FIXTURE_TIME,
-                  answered: false
+                  answered: true
                 }
               ]
             : []
+          : hq404Capture &&
+              executionId === "00000000-0000-4000-8000-000000004404"
+            ? [
+                {
+                  id: `${executionId}-step`,
+                  executionGeneration: 1,
+                  providerTurnId: "fixture-turn",
+                  providerItemId: "fixture-step",
+                  itemKind: "transient_output" as const,
+                  presentation: {
+                    mode: "status" as const,
+                    renderer: "message" as const,
+                    policyKey: "hq404-fixture",
+                    policyRevision: 1,
+                    reason: "Agent update"
+                  },
+                  state: "answered" as const,
+                  payload: {
+                    text: "Read the Work Item goal and Project Sources"
+                  },
+                  revision: 1,
+                  createdAt: FIXTURE_TIME,
+                  updatedAt: FIXTURE_TIME,
+                  answered: true
+                }
+              ]
+            : hq207RuntimeExecutionIds.includes(executionId)
+              ? [
+                  {
+                    id: `${executionId}-approval`,
+                    executionGeneration: 1,
+                    providerTurnId: null,
+                    providerItemId: null,
+                    itemKind: "command_approval" as const,
+                    presentation: {
+                      mode: "expanded" as const,
+                      renderer: "approval" as const,
+                      policyKey: "hq207-fixture",
+                      policyRevision: 1,
+                      reason: "Pending"
+                    },
+                    state: "pending" as const,
+                    payload: { command: ["review", "Project plan"] },
+                    revision: 1,
+                    createdAt: FIXTURE_TIME,
+                    updatedAt: FIXTURE_TIME,
+                    answered: false
+                  }
+                ]
+              : []
     };
   }
 } as ManagedConversationDesktopApi;
@@ -1693,6 +1743,51 @@ const hq403Seed = (
   updatedAt: "2026-10-20T09:00:00.000Z",
   version: 1
 });
+const hq405ExecutionId = "00000000-0000-4000-8000-000000004405";
+const hq405Hash = "a".repeat(64);
+const hq405GitlabHash = "c".repeat(64);
+let hq405ProviderState: "open" | "merged" | "closed" = "open";
+const hq405Trace = { mergeRequests: 0, reconcileReads: 0, capabilityReads: 0 };
+Object.defineProperty(window, "__hq405Trace", {
+  configurable: true,
+  value: hq405Trace
+});
+const hq405Review = (
+  number: number,
+  state: "open" | "merged" | "closed" = "open"
+) => ({
+  id: `review-${number}`,
+  number,
+  title:
+    number === 212
+      ? "Ship the release"
+      : number === 213
+        ? "Colleague's PR"
+        : "GitLab maintenance",
+  state,
+  draft: false,
+  sourceBranch: "feature",
+  targetBranch: "main",
+  headObjectId: "b".repeat(40),
+  author: number === 213 ? "colleague" : "Quinn",
+  webUrl:
+    number === 214
+      ? `https://gitlab.com/acme/repo/-/merge_requests/${number}`
+      : `https://github.com/acme/repo/pull/${number}`,
+  updatedAt: FIXTURE_TIME
+});
+const hq405WorkItem: WorkItem = {
+  ...hq403Seed(
+    "00000000-0000-4000-8000-000000004052",
+    "Ship the release",
+    "review"
+  ),
+  executionId: hq405ExecutionId,
+  prProvider: "github.com",
+  prNumber: 212,
+  prUrl: hq405Review(212).webUrl,
+  prState: "ready_to_merge"
+};
 let hq403Items: WorkItem[] = [
   hq403Seed(
     "00000000-0000-4000-8000-000000004031",
@@ -1750,11 +1845,174 @@ Object.defineProperty(window, "__hq404ExecutionStarts", {
   configurable: true,
   get: () => hq404ExecutionStarts
 });
+const hq405ManagedProject = {
+  command: async (request: {
+    operation: string;
+    requestId: string;
+    executionId: string;
+    sourceControlOperation?: {
+      kind: string;
+      remoteIdentityHash?: string;
+      number?: number;
+    };
+    remoteIdentityHash?: string;
+    reviewRequestNumber?: number;
+  }) => {
+    const base = {
+      requestId: request.requestId,
+      executionId: request.executionId,
+      operation: request.operation
+    };
+    const kind = request.sourceControlOperation?.kind;
+    if (request.executionId !== hq405ExecutionId)
+      throw new Error("No source control for this execution");
+    const gitlab =
+      (request.remoteIdentityHash ??
+        request.sourceControlOperation?.remoteIdentityHash) === hq405GitlabHash;
+    const gitlabRemote = {
+      remoteName: "upstream",
+      provider: "gitlab",
+      host: "gitlab.com",
+      transport: "https",
+      locator: { namespace: "acme", repository: "repo", project: null },
+      remoteIdentityHash: hq405GitlabHash,
+      connectionId: "00000000-0000-4000-8000-000000004058",
+      credentialGeneration: 1,
+      connectionState: "connected",
+      capabilities: ["review_request_read", "checks_read"]
+    };
+    const githubRemote = {
+      ...gitlabRemote,
+      remoteName: "origin",
+      provider: "github",
+      host: "github.com",
+      remoteIdentityHash: hq405Hash,
+      connectionId: "00000000-0000-4000-8000-000000004059"
+    };
+    if (request.operation === "source_control") {
+      if (
+        gitlab &&
+        kind === "review_request" &&
+        request.sourceControlOperation?.number !== 214
+      )
+        throw new Error("Pull request does not exist on GitLab");
+      const result =
+        kind === "remotes"
+          ? {
+              kind: "remotes",
+              remotes: [githubRemote, gitlabRemote],
+              headObjectId: "b".repeat(40)
+            }
+          : kind === "review_requests"
+            ? {
+                kind: "review_requests",
+                reviewRequests: gitlab
+                  ? [hq405Review(214)]
+                  : [
+                      hq405Review(212, hq405ProviderState),
+                      hq405Review(213)
+                    ].filter((review) => review.state === "open"),
+                nextCursor: null
+              }
+            : kind === "review_request"
+              ? {
+                  kind: "review_request",
+                  reviewRequest: hq405Review(
+                    request.sourceControlOperation?.number ?? 212,
+                    request.sourceControlOperation?.number === 212
+                      ? hq405ProviderState
+                      : "open"
+                  )
+                }
+              : {
+                  kind: "checks",
+                  checks: [
+                    {
+                      id: "check-1",
+                      name: "CI",
+                      state: "completed",
+                      conclusion: "success",
+                      webUrl: null
+                    }
+                  ]
+                };
+      return { ...base, result };
+    }
+    if (request.operation === "source_control_merge_capability") {
+      hq405Trace.capabilityReads += 1;
+      return {
+        ...base,
+        result: {
+          kind: "review_request_merge_capability",
+          available: !gitlab,
+          reason: gitlab ? "provider_unavailable" : "ready",
+          allowedMergeMethods: gitlab ? [] : ["squash"],
+          provider: gitlab ? "gitlab" : "github",
+          openUrl: hq405Review(request.reviewRequestNumber ?? 212).webUrl,
+          reviewSummary: gitlab
+            ? null
+            : {
+                requiredReviewCount: 1,
+                approvedReviewCount: 1,
+                headObjectId: "b".repeat(40),
+                reviews: [{ user: "Avery", state: "APPROVED" }]
+              }
+        }
+      };
+    }
+    if (request.operation === "source_control_merge") {
+      hq405Trace.mergeRequests += 1;
+      if (hq405DeclinedCapture)
+        return { ...base, result: { kind: "declined" } };
+      if (request.reviewRequestNumber === 212) hq405ProviderState = "merged";
+      return {
+        ...base,
+        result: {
+          kind: "review_request_merge_result",
+          operationId: crypto.randomUUID(),
+          outcome: "merged",
+          providerOperationId: null,
+          mergeCommitObjectId: "b".repeat(40)
+        }
+      };
+    }
+    return {
+      ...base,
+      result: {
+        kind: "review_request_merge_result",
+        operationId: crypto.randomUUID(),
+        outcome: "merged",
+        providerOperationId: null,
+        mergeCommitObjectId: "b".repeat(40)
+      }
+    };
+  },
+  subscribe: () => () => undefined
+} as unknown as ManagedProjectDesktopApi;
+
 const sidebarProjectsApi = {
   workItemList: async (projectId: string) =>
     hq403Capture && projectId === hq204ProjectId
-      ? structuredClone(hq403Items)
+      ? structuredClone(
+          hq405Capture ? [hq405WorkItem, ...hq403Items] : hq403Items
+        )
       : [],
+  workItemReconcile: async (_projectId: string, itemId: string) => {
+    hq405Trace.reconcileReads += 1;
+    if (!hq405Capture || itemId !== hq405WorkItem.id)
+      throw new Error("Unavailable");
+    if (hq405ProviderState === "merged") {
+      hq405WorkItem.status = "done";
+      hq405WorkItem.prState = "merged";
+      hq405WorkItem.version += 1;
+      hq405WorkItem.doneAt = new Date().toISOString();
+    } else if (hq405ProviderState === "closed") {
+      hq405WorkItem.status = "blocked";
+      hq405WorkItem.prState = "closed";
+      hq405WorkItem.version += 1;
+    }
+    return structuredClone(hq405WorkItem);
+  },
   workItemCreate: async (
     projectId: string,
     value: { title: string; goal: string; dueOn?: string | null }
@@ -2433,6 +2691,14 @@ export function HqValidationApp() {
     hq106Deleted.clear();
     hq106Forgotten.clear();
     hq205Sources = structuredClone(hq205InitialSources);
+    hq405ProviderState = "open";
+    hq405Trace.mergeRequests = 0;
+    hq405Trace.reconcileReads = 0;
+    hq405Trace.capabilityReads = 0;
+    hq405WorkItem.status = "review";
+    hq405WorkItem.prState = "ready_to_merge";
+    hq405WorkItem.doneAt = null;
+    hq405WorkItem.version = 1;
     hq304Rows = [
       hq304Row(
         hq304Ids[0]!,
@@ -2557,6 +2823,7 @@ export function HqValidationApp() {
               ? hq204ManagedConversations
               : hq104ManagedConversations
       }
+      managedProject={hq405Capture ? hq405ManagedProject : null}
       statusReadyOverride
       teamCollaborationEnabled
     />

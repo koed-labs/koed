@@ -10,6 +10,7 @@ type WorkItemRequest = Extract<
   {
     operation:
       | "workItemList"
+      | "workItemReconcile"
       | "workItemCreate"
       | "workItemPatch"
       | "workItemDispatch";
@@ -72,6 +73,26 @@ export const createProjectWorkItemClient =
         operation: "workItemList",
         projectId: request.projectId,
         items
+      });
+    }
+    if (request.operation === "workItemReconcile") {
+      const response = z
+        .object({ workItem: workItemSchema })
+        .strict()
+        .parse(
+          await send(
+            `/v1/projects/${encodeURIComponent(request.projectId)}/work-items/${encodeURIComponent(request.itemId)}/reconcile-pr`,
+            json("POST", {})
+          )
+        );
+      if (
+        response.workItem.projectId !== request.projectId ||
+        response.workItem.id !== request.itemId
+      )
+        throw new Error("Work Item reconciliation identity mismatch.");
+      return projectsResultSchema.parse({
+        operation: "workItemReconcile",
+        value: response.workItem
       });
     }
     if (request.operation === "workItemCreate") {

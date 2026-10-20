@@ -79,20 +79,39 @@ export const reviewAndDispatchSourceControlMerge = async (input: {
       ])
     )
     .digest("hex");
-  return sourceControlV2ResultSchema.parse(
-    await input.request(
-      path,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...base,
-          kind: "review_request_merge",
-          operationId: prepared.operationId,
-          approvalProof
-        })
-      },
-      256 * 1_024
+  try {
+    return sourceControlV2ResultSchema.parse(
+      await input.request(
+        path,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...base,
+            kind: "review_request_merge",
+            operationId: prepared.operationId,
+            approvalProof
+          })
+        },
+        256 * 1_024
+      )
+    );
+  } catch (error) {
+    // A lost dispatch response may follow a successful provider mutation.
+    // Return the prepared journal identity so callers can only reconcile read-only.
+    if (
+      error &&
+      typeof error === "object" &&
+      "retryable" in error &&
+      error.retryable === false
     )
-  );
+      throw error;
+    return sourceControlV2ResultSchema.parse({
+      kind: "review_request_merge_result",
+      operationId: prepared.operationId,
+      outcome: "unknown",
+      providerOperationId: null,
+      mergeCommitObjectId: null
+    });
+  }
 };

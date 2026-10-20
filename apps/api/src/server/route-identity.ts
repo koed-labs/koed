@@ -624,6 +624,26 @@ export const routeIdentityContracts = [
     localEdgeDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/merge-proposals/{itemId}/decline",
+    "session_or_device_credential",
+    "projects",
+    "Record a Native decline for an exact owned merge proposal; grants no provider mutation authority.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{projectId}/work-items/{itemId}/reconcile-pr",
+    "session_or_device_credential",
+    "projects",
+    "Reconcile an owned Work Item from runner-verified PR state; requires collaboration write and source-control authority.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/agents/bootstrap-context",
     "session_or_device_credential",

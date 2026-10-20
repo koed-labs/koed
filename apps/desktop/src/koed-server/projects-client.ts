@@ -84,6 +84,7 @@ export const createProjectsClient = (
     }
     if (
       request.operation === "workItemList" ||
+      request.operation === "workItemReconcile" ||
       request.operation === "workItemCreate" ||
       request.operation === "workItemPatch" ||
       request.operation === "workItemDispatch"

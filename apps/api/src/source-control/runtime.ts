@@ -1228,6 +1228,19 @@ export const createSourceControlRuntime = (options: {
         try {
           const { providerInput, grant } = await bound();
           const supported = [] as Array<"merge" | "squash" | "rebase">;
+          let reviewSummary: {
+            headObjectId: string;
+            requiredReviewCount: number;
+            approvedReviewCount: number;
+            reviews: Array<{
+              user: string;
+              state:
+                | "APPROVED"
+                | "CHANGES_REQUESTED"
+                | "COMMENTED"
+                | "DISMISSED";
+            }>;
+          } | null = null;
           for (const method of grant.allowedMethods) {
             try {
               const snapshot = await readGithubMergeReadiness(
@@ -1235,8 +1248,18 @@ export const createSourceControlRuntime = (options: {
                 operation.reviewRequestNumber,
                 method
               );
-              if (snapshot.targetBranch === grant.targetBranch)
+              if (snapshot.targetBranch === grant.targetBranch) {
                 supported.push(method);
+                reviewSummary ??= {
+                  headObjectId: snapshot.expectedHeadObjectId,
+                  requiredReviewCount: snapshot.requiredReviewCount,
+                  approvedReviewCount: snapshot.approvedReviewCount,
+                  reviews: snapshot.reviews.map(({ user, state }) => ({
+                    user,
+                    state
+                  }))
+                };
+              }
             } catch {
               /* A method is available only on complete positive evidence. */
             }
@@ -1246,6 +1269,7 @@ export const createSourceControlRuntime = (options: {
             available: supported.length > 0,
             reason: supported.length > 0 ? "ready" : "readiness_unavailable",
             allowedMergeMethods: supported,
+            reviewSummary,
             provider: "github",
             openUrl
           });

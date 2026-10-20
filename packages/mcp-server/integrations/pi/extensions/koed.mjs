@@ -407,6 +407,29 @@ export default function koedExtension(pi) {
       }
     });
   }
+  if (process.env.KOED_MANAGED_MERGE_PROPOSAL === "1") {
+    pi.registerTool({
+      name: "review_request_merge_propose",
+      label: "Propose pull request merge",
+      description:
+        "Ask Koed to show Native review for a pull request. Pass only its number. This tool cannot merge it.",
+      parameters: Type.Object(
+        { number: Type.Integer({ minimum: 1 }) },
+        { additionalProperties: false }
+      ),
+      async execute(_toolCallId, { number }) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Koed review_request_merge_propose request v1: {"number":${number},"status":"requested"}`
+            }
+          ],
+          details: { number, status: "requested" }
+        };
+      }
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();

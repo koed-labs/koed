@@ -1,3 +1,6 @@
+import { createWorkItemPrReconciler } from "../work-items/pr-reconciliation.js";
+import { registerMergeProposalDecisionRoutes } from "../work-items/merge-proposal-decision-routes.js";
+import { registerWorkItemPrReconciliationRoutes } from "../work-items/pr-reconciliation-routes.js";
 import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
@@ -2151,6 +2154,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     projectSourceRepository
   );
   registerSourceControlRoutes(app, routeContext);
+  registerMergeProposalDecisionRoutes(app, routeContext);
+  registerWorkItemPrReconciliationRoutes(
+    app,
+    routeContext,
+    pool && workItemRepository
+      ? createWorkItemPrReconciler({
+          workItems: workItemRepository,
+          requireRepository,
+          sourceControl: sourceControlRuntime,
+          trustedRepository: (verifyTrustedTransition) =>
+            createWorkItemRepository(pool, { verifyTrustedTransition })
+        })
+      : null
+  );
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);

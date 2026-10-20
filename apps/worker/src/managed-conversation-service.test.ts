@@ -251,6 +251,7 @@ describe("managed Work Item child environment", () => {
   };
   const inherited = {
     KOED_MANAGED_WORK_ITEM_COMPLETION: "1",
+    KOED_MANAGED_MERGE_PROPOSAL: "1",
     KEEP_THIS: "present"
   };
 
@@ -261,7 +262,7 @@ describe("managed Work Item child environment", () => {
         execution,
         eligible: execution
       })
-    ).toEqual(inherited);
+    ).toEqual({ KOED_MANAGED_WORK_ITEM_COMPLETION: "1", KEEP_THIS: "present" });
     for (const eligible of [
       undefined,
       { ...execution, ownerUserId: "other-owner" },

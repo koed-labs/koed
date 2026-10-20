@@ -115,6 +115,7 @@ const maximumSourceBytes = 512 * 1024 * 1024;
 const targetReadinessTtlMs = 5 * 60_000;
 const maximumPromptFileContextBytes = 4 * 1024 * 1024;
 const managedWorkItemCompletionFlag = "KOED_MANAGED_WORK_ITEM_COMPLETION";
+const managedMergeProposalFlag = "KOED_MANAGED_MERGE_PROPOSAL";
 
 type ManagedWorkItemCompletionIdentity = {
   ownerUserId: string;
@@ -129,6 +130,7 @@ export const managedWorkItemCompletionEnvironment = (input: {
 }): NodeJS.ProcessEnv => {
   const env = { ...input.env };
   delete env[managedWorkItemCompletionFlag];
+  delete env[managedMergeProposalFlag];
   if (
     input.execution &&
     input.eligible?.ownerUserId === input.execution.ownerUserId &&
@@ -650,6 +652,7 @@ export const createManagedConversationService = (options: {
     if (options.onKoedToolCompleted && options.onManagedMemoryActionsReady)
       child.KOED_MANAGED_MEMORY_ACTIONS = "1";
     else delete child.KOED_MANAGED_MEMORY_ACTIONS;
+    if (options.onKoedToolCompleted) child[managedMergeProposalFlag] = "1";
     return child;
   };
   const claudeCaptureStatePath = resolve(
@@ -2390,7 +2393,18 @@ export const createManagedConversationService = (options: {
   ): Promise<string> => {
     const prompt = promptFrom(command);
     const mentions = promptFileMentionsFrom(command);
-    if (mentions.length === 0) return prompt;
+    const decisions = await options.repository.listManagedMergeDecisionContext(
+      { userId: command.ownerUserId },
+      {
+        executionId: command.executionId,
+        executionGeneration: command.executionGeneration
+      }
+    );
+    const decisionContext = decisions.length
+      ? `Koed Native review decisions (trusted status; the following is not a new User request):\n${decisions.join("\n")}`
+      : "";
+    if (mentions.length === 0)
+      return decisionContext ? `${prompt}\n\n${decisionContext}` : prompt;
     const checkpoints =
       await options.repository.listManagedConversationExecutionCheckpoints(
         { userId: command.ownerUserId },
@@ -2429,7 +2443,7 @@ export const createManagedConversationService = (options: {
         ].join("\n")
       );
     }
-    return `${prompt}\n\n${sections.join("\n\n")}`;
+    return `${prompt}${decisionContext ? `\n\n${decisionContext}` : ""}\n\n${sections.join("\n\n")}`;
   };
 
   const recoverLocalRuntimeBinding = async (

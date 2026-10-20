@@ -368,6 +368,14 @@ export interface ManagedConversationRepository {
       payload: Record<string, unknown>;
     }
   ): Promise<ManagedConversationRuntimeItemRecord>;
+  declineManagedMergeProposal(
+    actor: ActorContext,
+    input: { executionId: string; itemId: string; executionGeneration: number }
+  ): Promise<boolean>;
+  listManagedMergeDecisionContext(
+    actor: ActorContext,
+    input: { executionId: string; executionGeneration: number }
+  ): Promise<string[]>;
   listManagedConversationRuntimeItems(
     actor: ActorContext,
     input: { executionId: string; includeTerminal?: boolean }
@@ -2893,6 +2901,146 @@ export const createManagedConversationRepository = (
       }
     },
 
+    async declineManagedMergeProposal(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const execution = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+            where owner_user_id = $1 and id = $2 for update`,
+          [actor.userId, input.executionId]
+        );
+        if (
+          execution.rows[0]?.execution_generation !== input.executionGeneration
+        ) {
+          await client.query("commit");
+          return false;
+        }
+        await assertExecutionProjectWritable(client, execution.rows[0]!);
+        await assertExecutionChatWritable(client, execution.rows[0]!);
+        const found = await client.query<RuntimeItemRow>(
+          `select ${RUNTIME_ITEM_COLUMNS} from managed_conversation_runtime_items
+            where owner_user_id = $1 and execution_id = $2 and id = $3
+              and execution_generation = $4
+              and provider_request_id like 'review-request-merge-propose:%'
+              and item_kind = 'transient_output'
+            for update`,
+          [
+            actor.userId,
+            input.executionId,
+            input.itemId,
+            input.executionGeneration
+          ]
+        );
+        const row = found.rows[0];
+        if (!row) {
+          await client.query("commit");
+          return false;
+        }
+        const payload = await decryptRuntimeValue(
+          row.encrypted_payload,
+          "runtime payload"
+        );
+        const proposal = payload?.mergeProposal;
+        const number =
+          proposal && typeof proposal === "object" && !Array.isArray(proposal)
+            ? (proposal as Record<string, unknown>).reviewRequestNumber
+            : null;
+        if (!Number.isSafeInteger(number) || (number as number) < 1) {
+          await client.query("commit");
+          return false;
+        }
+        const response = {
+          mergeDecision: "declined",
+          reviewRequestNumber: number
+        };
+        const digest = sha256(JSON.stringify(response));
+        if (row.response_digest === digest) {
+          await client.query("commit");
+          return true;
+        }
+        if (row.response_digest) {
+          await client.query("commit");
+          return false;
+        }
+        const encryptedResponse = await encryptRuntimeValue({
+          ownerUserId: actor.userId,
+          executionId: input.executionId,
+          itemId: row.id,
+          field: "response",
+          value: response
+        });
+        await client.query(
+          `update managed_conversation_runtime_items
+              set state = 'canceled', encrypted_response = $3::jsonb,
+                  response_digest = $4, responded_at = now(),
+                  resolved_at = coalesce(resolved_at, now()),
+                  revision = revision + 1, updated_at = now()
+            where owner_user_id = $1 and id = $2`,
+          [actor.userId, row.id, encryptedResponse, digest]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: input.executionId,
+          mutationId: `managed-conversation-runtime:${row.id}:merge-declined`,
+          runtimeItemId: row.id
+        });
+        await client.query("commit");
+        return true;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async listManagedMergeDecisionContext(actor, input) {
+      const client = await pool.connect();
+      try {
+        const execution = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+            where owner_user_id = $1 and id = $2`,
+          [actor.userId, input.executionId]
+        );
+        if (
+          execution.rows[0]?.execution_generation !== input.executionGeneration
+        )
+          return [];
+        await assertExecutionProjectWritable(client, execution.rows[0]!);
+        await assertExecutionChatWritable(client, execution.rows[0]!);
+      } finally {
+        client.release();
+      }
+      const result = await pool.query<RuntimeItemRow>(
+        `select ${RUNTIME_ITEM_COLUMNS} from managed_conversation_runtime_items
+          where owner_user_id = $1 and execution_id = $2
+            and execution_generation = $3
+            and provider_request_id like 'review-request-merge-propose:%'
+            and item_kind = 'transient_output'
+            and response_digest is not null
+          order by responded_at desc, id desc limit 10`,
+        [actor.userId, input.executionId, input.executionGeneration]
+      );
+      const lines: string[] = [];
+      for (const row of result.rows) {
+        const response = await decryptRuntimeValue(
+          row.encrypted_response,
+          "runtime response"
+        );
+        const number = response?.reviewRequestNumber;
+        if (
+          response?.mergeDecision === "declined" &&
+          Number.isSafeInteger(number) &&
+          (number as number) > 0
+        )
+          lines.push(
+            `Koed status: the prior Native review for PR #${number} was declined; that proposal grants no approval. A later User request requires a fresh Native review.`
+          );
+      }
+      return lines;
+    },
+
     async listManagedConversationRuntimeItems(actor, input) {
       const result = await pool.query<RuntimeItemRow>(
         `select ${RUNTIME_ITEM_COLUMNS}
@@ -3050,6 +3198,7 @@ export const createManagedConversationRepository = (
                 `delete from managed_conversation_runtime_items
                   where owner_user_id = $1 and id = $2
                     and execution_generation = $3 and state = 'pending'
+                    and provider_request_id not like 'review-request-merge-propose:%'
                 returning execution_id`,
                 [actor.userId, input.itemId, input.executionGeneration]
               )
@@ -3095,6 +3244,7 @@ export const createManagedConversationRepository = (
             where owner_user_id = $1 and execution_id = $2
               and execution_generation = $3 and item_kind = 'transient_output'
               and state = 'pending'
+              and provider_request_id not like 'review-request-merge-propose:%'
               and ($4::text is null or provider_turn_id = $4)`,
           [
             actor.userId,

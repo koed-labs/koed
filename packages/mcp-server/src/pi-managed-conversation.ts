@@ -567,7 +567,8 @@ export class PiManagedConversationSession {
             "memory_answer_result",
             "memory_forget",
             "memory_correct",
-            "work_item_complete"
+            "work_item_complete",
+            "review_request_merge_propose"
           ].includes(toolName)
         )
           this.active.koedCalls.set(event.toolCallId, {

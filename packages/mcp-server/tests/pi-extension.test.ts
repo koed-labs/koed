@@ -12,6 +12,8 @@ describe("Koed Pi extension package", () => {
       'process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"'
     );
     expect(source).toContain('name: "work_item_complete"');
+    expect(source).toContain('process.env.KOED_MANAGED_MERGE_PROPOSAL === "1"');
+    expect(source).toContain('name: "review_request_merge_propose"');
     expect(source).toContain("return workItemCompletionRequest()");
     const { workItemCompletionRequest } =
       await import("../integrations/pi/work-item-completion-request.mjs");

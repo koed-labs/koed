@@ -192,7 +192,26 @@ export const managedProjectRequestSchema = z.union([
       executionGeneration: z.number().int().positive(),
       remoteIdentityHash: z.string().regex(/^[a-f0-9]{64}$/),
       reviewRequestNumber: z.number().int().positive(),
-      mergeMethod: sourceControlMergeMethodSchema
+      mergeMethod: sourceControlMergeMethodSchema,
+      proposalItemId: z.uuid().optional()
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("source_control_merge_capability"),
+      executionGeneration: z.number().int().positive(),
+      remoteIdentityHash: z.string().regex(/^[a-f0-9]{64}$/),
+      reviewRequestNumber: z.number().int().positive()
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("source_control_merge_status"),
+      executionGeneration: z.number().int().positive(),
+      remoteIdentityHash: z.string().regex(/^[a-f0-9]{64}$/),
+      operationId: z.uuid()
     })
     .strict()
 ]);
@@ -324,6 +343,19 @@ export const managedProjectResultSchema = z.discriminatedUnion("operation", [
     .object({
       ...responseBase,
       operation: z.literal("source_control_merge"),
+      result: z.union([
+        sourceControlV2ResultSchema,
+        z.object({ kind: z.literal("declined") }).strict()
+      ])
+    })
+    .strict(),
+  z
+    .object({
+      ...responseBase,
+      operation: z.enum([
+        "source_control_merge_capability",
+        "source_control_merge_status"
+      ]),
       result: sourceControlV2ResultSchema
     })
     .strict(),

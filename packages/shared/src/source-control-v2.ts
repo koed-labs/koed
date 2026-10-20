@@ -134,7 +134,21 @@ export const sourceControlV2ResultSchema = z.discriminatedUnion("kind", [
       provider: z
         .enum(["github", "gitlab", "bitbucket", "azure_devops"])
         .nullable(),
-      openUrl: z.url().nullable()
+      openUrl: z.url().nullable(),
+      reviewSummary: z
+        .object({
+          requiredReviewCount: z.number().int().nonnegative(),
+          approvedReviewCount: z.number().int().nonnegative(),
+          headObjectId: objectId,
+          reviews: z
+            .array(
+              sourceControlMergeReviewSchema.pick({ user: true, state: true })
+            )
+            .max(400)
+        })
+        .strict()
+        .nullable()
+        .optional()
     })
     .strict(),
   z

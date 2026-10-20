@@ -23,6 +23,7 @@ import {
   type ManagedConversationService
 } from "./managed-conversation-service.js";
 import { createWorkItemCompletionObserver } from "./work-item-completion.js";
+import { createReviewRequestMergeProposalObserver } from "./review-request-merge-proposal.js";
 import {
   createManagedMemoryActionObserver,
   createManagedMemoryActionProcessor
@@ -99,6 +100,9 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   const observeLocalWorkItemCompletion = createWorkItemCompletionObserver(
     options.localRepository
   );
+  const observeLocalMergeProposal = createReviewRequestMergeProposalObserver(
+    options.localRepository
+  );
   const observeLocalMemoryAction = createManagedMemoryActionObserver(
     options.localRepository
   );
@@ -110,6 +114,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
     ServiceOptions["onKoedToolCompleted"]
   > = async (event) => {
     await observeLocalWorkItemCompletion(event);
+    await observeLocalMergeProposal(event);
     try {
       await observeLocalMemoryAction(event);
     } catch {

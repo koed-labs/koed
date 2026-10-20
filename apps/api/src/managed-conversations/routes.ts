@@ -2333,7 +2333,7 @@ export const registerManagedConversationRoutes = (
         )}`,
         `Bounded readable Project Source excerpts: ${JSON.stringify(documents.filter(Boolean))}`,
         `Call memory_answer with search_domain=project and a question about this Work Item's goal to find related Personal Memory. Treat returned citations as evidence, and do not use Team chat messages as input.`,
-        "Report meaningful progress in this Conversation. If no pull request is needed, call work_item_complete when the goal is met."
+        "Report meaningful progress in this Conversation. If no pull request is needed, call work_item_complete when the goal is met. If the User asks to merge a pull request, call review_request_merge_propose with its number; Koed handles review and merge without giving you provider credentials or merge authority."
       ].join("\n\n");
       const started = await repository.createManagedConversation(
         { userId: user.id },

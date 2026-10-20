@@ -26,12 +26,14 @@ import type {
   ManagedConversationRuntimeItem
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
+import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
 import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
 import { projectNavigation } from "../project-navigation.js";
 import { nowInspectableExecutions, type NowNeed } from "../now/now-model.js";
 import { HqProjectSources } from "./HqProjectSources.js";
 import { HqLearnedToday } from "./HqLearnedToday.js";
+import { HqProjectPullRequests } from "./HqProjectPullRequests.js";
 import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
 import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
 import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
@@ -114,6 +116,7 @@ export function HqProjectView({
   curatedMemoryApi,
   agentsApi,
   conversationsApi,
+  managedProject,
   lifecycle,
   ownerId,
   profileKey,
@@ -134,6 +137,7 @@ export function HqProjectView({
   curatedMemoryApi?: CuratedMemoryDesktopApi | null;
   agentsApi?: AgentsDesktopApi | null;
   conversationsApi?: ManagedConversationDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
   lifecycle?: ManagedConversationLifecycle;
   ownerId?: string | null;
   profileKey?: string | null;
@@ -152,6 +156,10 @@ export function HqProjectView({
   blockedConversationSessions?: ReadonlySet<string>;
 }) {
   const [inventory, setInventory] = useState<Inventory>(emptyInventory);
+  const [mergeRequestedItemId, setMergeRequestedItemId] = useState<
+    string | null
+  >(null);
+  const [needsPrCount, setNeedsPrCount] = useState(0);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [sourceCloseSignal, setSourceCloseSignal] = useState(0);
   const [memoryCountState, setMemoryCountState] = useState<{
@@ -999,7 +1007,10 @@ export function HqProjectView({
                   (item) => !boundExecutions.has(item.executionId)
                 )
               : rows.need;
-          const total = workRows.length + items.length;
+          const total =
+            workRows.length +
+            items.length +
+            (kind === "need" ? needsPrCount : 0);
           const workVisible = workRows.slice(
             0,
             expanded[kind] ? undefined : cap[kind]
@@ -1074,13 +1085,36 @@ export function HqProjectView({
                               Tick off
                             </button>
                           ) : safeWorkItemPrUrl(item) ? (
-                            <a
-                              href={safeWorkItemPrUrl(item) ?? undefined}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Open on {item.prProvider || "provider"}
-                            </a>
+                            <span className="hq-project-view__actions">
+                              {item.prState === "ready_to_merge" ? (
+                                <button
+                                  type="button"
+                                  className="hq-project-view__action"
+                                  onClick={() =>
+                                    setMergeRequestedItemId(item.id)
+                                  }
+                                >
+                                  Merge
+                                </button>
+                              ) : null}
+                              <a
+                                href={safeWorkItemPrUrl(item) ?? undefined}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Open on{" "}
+                                {{
+                                  github: "GitHub",
+                                  "github.com": "GitHub",
+                                  gitlab: "GitLab",
+                                  "gitlab.com": "GitLab",
+                                  bitbucket: "Bitbucket",
+                                  azure_devops: "Azure DevOps"
+                                }[item.prProvider ?? ""] ??
+                                  item.prProvider ??
+                                  "provider"}
+                              </a>
+                            </span>
                           ) : null}
                           {item.status === "todo" || item.status === "blocked"
                             ? sendControl(item)
@@ -1305,6 +1339,33 @@ export function HqProjectView({
                       </div>
                     )
                   )}
+                  {kind === "need" &&
+                  (visibleInventory.hasRepoSource ||
+                    visibleInventory.workItems.some(
+                      (item) => item.prNumber
+                    )) ? (
+                    <HqProjectPullRequests
+                      key={`${ownerId ?? ""}:${profileKey ?? ""}:${project.id}:need`}
+                      mode="need"
+                      project={project}
+                      personalProjects={personalProjects}
+                      graphProjects={graphProjects}
+                      workItems={visibleInventory.workItems}
+                      api={managedProject ?? null}
+                      conversations={conversationsApi ?? null}
+                      projectsApi={projectsApi}
+                      onWorkItemsChanged={() =>
+                        setRefresh((value) => value + 1)
+                      }
+                      mergeRequestedItemId={mergeRequestedItemId}
+                      onMergeRequestHandled={() =>
+                        setMergeRequestedItemId(null)
+                      }
+                      onNeedsCount={setNeedsPrCount}
+                      ownerId={ownerId ?? null}
+                      profileKey={profileKey ?? null}
+                    />
+                  ) : null}
                   {!total ? (
                     <p className="hq-project-view__none">
                       {loading
@@ -1442,31 +1503,20 @@ export function HqProjectView({
             {sectionHead("review", "In review", work.review.length)}
             {!folded.review ? (
               <>
-                {(expanded.review
-                  ? work.review
-                  : work.review.slice(0, cap.review)
-                ).map((item) => (
-                  <div className="hq-project-view__work-item" key={item.id}>
-                    <span className="hq-project-view__work-item-text">
-                      <b>{item.title}</b>
-                      <small>
-                        {item.prNumber
-                          ? `PR #${item.prNumber} · ${item.prState ?? "open"}`
-                          : "In review"}
-                      </small>
-                    </span>
-                    {safeWorkItemPrUrl(item) ? (
-                      <a
-                        href={safeWorkItemPrUrl(item) ?? undefined}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open on {item.prProvider || "provider"}
-                      </a>
-                    ) : null}
-                    {sendControl(item)}
-                  </div>
-                ))}
+                <HqProjectPullRequests
+                  key={`${ownerId ?? ""}:${profileKey ?? ""}:${project.id}:review`}
+                  mode="review"
+                  project={project}
+                  personalProjects={personalProjects}
+                  graphProjects={graphProjects}
+                  workItems={visibleInventory.workItems}
+                  api={managedProject ?? null}
+                  conversations={conversationsApi ?? null}
+                  projectsApi={projectsApi}
+                  onWorkItemsChanged={() => setRefresh((value) => value + 1)}
+                  ownerId={ownerId ?? null}
+                  profileKey={profileKey ?? null}
+                />
                 {work.review.length > cap.review ? (
                   <button
                     className="hq-project-view__more"

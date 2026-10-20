@@ -880,8 +880,15 @@ describe("version-2 merge runtime", () => {
       kind: "review_request_merge_capability",
       available: true,
       allowedMergeMethods: ["merge", "squash"],
-      provider: "github"
+      provider: "github",
+      reviewSummary: {
+        headObjectId: fixture.headObjectId,
+        requiredReviewCount: 1,
+        approvedReviewCount: 1,
+        reviews: [{ user: "reviewer", state: "APPROVED" }]
+      }
     });
+    expect(fixture.operations).toHaveLength(0);
     const prepared = await fixture.prepare();
     await expect(fixture.claim(prepared, "0".repeat(64))).rejects.toMatchObject(
       { code: "source_control_approval_required" }

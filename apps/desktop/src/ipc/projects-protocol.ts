@@ -32,6 +32,13 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
     .strict(),
   z
     .object({
+      operation: z.literal("workItemReconcile"),
+      projectId: z.uuid(),
+      itemId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal("workItemCreate"),
       projectId: z.uuid(),
       value: createWorkItemSchema
@@ -181,6 +188,12 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     })
     .strict(),
   z
+    .object({
+      operation: z.literal("workItemReconcile"),
+      value: workItemSchema
+    })
+    .strict(),
+  z
     .object({ operation: z.literal("workItemCreate"), value: workItemSchema })
     .strict(),
   z
@@ -307,6 +320,10 @@ export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
   workItemList?(projectId: string): Promise<z.infer<typeof workItemSchema>[]>;
+  workItemReconcile?(
+    projectId: string,
+    itemId: string
+  ): Promise<z.infer<typeof workItemSchema>>;
   workItemCreate?(
     projectId: string,
     value: z.infer<typeof createWorkItemSchema>

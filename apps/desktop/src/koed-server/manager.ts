@@ -4464,18 +4464,92 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "source_control_merge") {
+      if (request.proposalItemId) {
+        const runtime = await managedProjectJson(
+          `/v1/managed-conversations/${encodeURIComponent(request.executionId)}/runtime`,
+          { method: "GET" },
+          2 * 1_024 * 1_024
+        );
+        const items = Array.isArray(runtime.items) ? runtime.items : [];
+        const proposal = items.find(
+          (item) => objectValue(item)?.id === request.proposalItemId
+        );
+        const proposalRecord = objectValue(proposal);
+        const selector = objectValue(
+          objectValue(proposalRecord?.payload)?.mergeProposal
+        );
+        if (
+          proposalRecord?.executionGeneration !== request.executionGeneration ||
+          proposalRecord?.providerRequestId === undefined ||
+          !String(proposalRecord.providerRequestId).startsWith(
+            "review-request-merge-propose:"
+          ) ||
+          selector?.reviewRequestNumber !== request.reviewRequestNumber
+        )
+          throw new Error("Merge proposal no longer matches this pull request");
+      }
       const result = await reviewAndDispatchSourceControlMerge({
         selector: request,
         access: managedProjectAccess,
         request: managedProjectJson,
         confirm: confirmSourceControlMerge ?? (async () => false)
       });
-      if (!result)
-        throw new PersonalMemoryBoundaryError("request_failed", false);
+      if (!result) {
+        if (request.proposalItemId) {
+          await managedProjectJson(
+            `/v1/managed-conversations/${encodeURIComponent(request.executionId)}/merge-proposals/${encodeURIComponent(request.proposalItemId)}/decline`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                executionGeneration: request.executionGeneration
+              })
+            },
+            256 * 1_024
+          );
+        }
+        return correlated({
+          operation: "source_control_merge",
+          executionId: request.executionId,
+          result: { kind: "declined" }
+        });
+      }
       return correlated({
         operation: "source_control_merge",
         executionId: request.executionId,
         result
+      });
+    }
+
+    if (
+      request.operation === "source_control_merge_capability" ||
+      request.operation === "source_control_merge_status"
+    ) {
+      const payload = await managedProjectJson(
+        `/v2/managed-conversations/${encodeURIComponent(request.executionId)}/source-control`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            contractVersion: 2,
+            executionId: request.executionId,
+            executionGeneration: request.executionGeneration,
+            remoteIdentityHash: request.remoteIdentityHash,
+            kind:
+              request.operation === "source_control_merge_capability"
+                ? "review_request_merge_capability"
+                : "review_request_merge_status",
+            ...(request.operation === "source_control_merge_capability"
+              ? { reviewRequestNumber: request.reviewRequestNumber }
+              : { operationId: request.operationId })
+          })
+        },
+        256 * 1_024
+      );
+      return correlated({
+        operation: request.operation,
+        executionId: request.executionId,
+        result: payload as never
       });
     }
 
