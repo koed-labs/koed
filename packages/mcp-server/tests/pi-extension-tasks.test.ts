@@ -24,6 +24,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   delete process.env.KOED_HOME;
+  delete process.env.KOED_MANAGED_MEMORY_ACTIONS;
   roots
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
@@ -102,6 +103,29 @@ const setup = async () => {
 };
 
 describe("Pi explicit Memory Answer tasks", () => {
+  it("gates native managed memory tools and emits request-only receipts", async () => {
+    const ordinary = await setup();
+    expect(ordinary.tools.has("memory_forget")).toBe(false);
+    process.env.KOED_MANAGED_MEMORY_ACTIONS = "1";
+    const managed = await setup();
+    expect(managed.tools.has("memory_forget")).toBe(true);
+    expect(managed.tools.has("memory_correct")).toBe(true);
+    expect(await managed.invoke("memory_forget", {})).toEqual({
+      content: [
+        {
+          type: "text",
+          text: 'Koed memory_forget request v1: {"status":"requested"}'
+        }
+      ],
+      details: { status: "requested" }
+    });
+    expect(
+      await managed.invoke("memory_correct", {
+        correction: "New wording",
+        user_statement: "Correct that to New wording"
+      })
+    ).toMatchObject({ details: { status: "requested" } });
+  });
   it("submits promptly, collects pending, and freshly collects compact completion across sessions", async () => {
     const fetchMock = vi.fn(async (url: unknown) => {
       void url;

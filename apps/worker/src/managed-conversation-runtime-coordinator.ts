@@ -23,6 +23,10 @@ import {
   type ManagedConversationService
 } from "./managed-conversation-service.js";
 import { createWorkItemCompletionObserver } from "./work-item-completion.js";
+import {
+  createManagedMemoryActionObserver,
+  createManagedMemoryActionProcessor
+} from "./memory-action-observer.js";
 
 type ServiceOptions = Parameters<typeof createManagedConversationService>[0];
 
@@ -95,10 +99,25 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   const observeLocalWorkItemCompletion = createWorkItemCompletionObserver(
     options.localRepository
   );
+  const observeLocalMemoryAction = createManagedMemoryActionObserver(
+    options.localRepository
+  );
+  const processLocalMemoryActions = createManagedMemoryActionProcessor(
+    options.localRepository,
+    options.deploymentId
+  );
   const onLocalKoedToolCompleted: NonNullable<
     ServiceOptions["onKoedToolCompleted"]
   > = async (event) => {
     await observeLocalWorkItemCompletion(event);
+    try {
+      await observeLocalMemoryAction(event);
+    } catch {
+      options.logger.warn(
+        { tool_name: event.toolName },
+        "managed memory action could not be verified or completed"
+      );
+    }
   };
 
   const defaultResolveAuthority =
@@ -326,7 +345,12 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       // Work Items and their command leases are local. The remote authority
       // repository cannot verify or complete a local dispatch.
-      ...(!authority ? { onKoedToolCompleted: onLocalKoedToolCompleted } : {}),
+      ...(!authority
+        ? {
+            onKoedToolCompleted: onLocalKoedToolCompleted,
+            onManagedMemoryActionsReady: processLocalMemoryActions
+          }
+        : {}),
       ...(sourceRestoreControl ? { sourceRestoreControl } : {}),
       ...(sourcePublishControl ? { sourcePublishControl } : {}),
       commandWakePool: options.commandWakePool,

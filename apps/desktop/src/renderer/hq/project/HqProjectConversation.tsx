@@ -37,6 +37,7 @@ export function HqProjectConversation({
   inspectorOpen = false,
   panelHostRef,
   contextLabel,
+  onOfferChatForget,
   onClearContext
 }: {
   project: DesktopProject;
@@ -52,6 +53,7 @@ export function HqProjectConversation({
   panelHostRef?: (node: HTMLDivElement | null) => void;
   contextLabel?: string | null;
   onClearContext?: () => void;
+  onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -333,6 +335,7 @@ export function HqProjectConversation({
           markdownAdapters={markdownAdapters}
           contextLabel={contextLabel}
           onClearContext={onClearContext}
+          onOfferChatForget={onOfferChatForget}
           inspectorOpen={inspectorOpen}
           panelHostRef={panelHostRef}
         />

@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+export {
+  managedMemoryActionSchema,
+  type ManagedMemoryAction
+} from "./managed-memory-action-contract.js";
 
 export {
   curatedWithdrawalBodySchema,

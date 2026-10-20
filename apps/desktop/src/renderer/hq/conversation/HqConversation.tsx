@@ -65,6 +65,7 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { DesktopApi } from "../../../types.js";
 import { assignmentFrom } from "../../views/preferences/local-ai-client-settings-helpers.js";
 import { HqRuntimeItem } from "./HqRuntimeItem.js";
+import { ManagedMemoryActions } from "./ManagedMemoryActions.js";
 import { CitedAnswer, CitationDetail } from "./Citations.js";
 import { citationAliasBatches } from "./citation-alias-batches.js";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
@@ -1048,6 +1049,7 @@ export function HqActiveConversation({
   inspectorOpen = false,
   panelHostRef,
   onOpenCitationMessage,
+  onOfferChatForget,
   focusEventId
 }: {
   api: ManagedConversationDesktopApi | null;
@@ -1078,6 +1080,7 @@ export function HqActiveConversation({
     projectId: string;
     threadId: string;
   }) => Promise<boolean>;
+  onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
   focusEventId?: string | null;
 }) {
   const detailThread = draft?.thread ?? thread;
@@ -2529,6 +2532,17 @@ export function HqActiveConversation({
                 </article>
               );
             })}
+            {executionId && window.koedDesktop?.managedMemoryActions ? (
+              <ManagedMemoryActions
+                key={`${citationGeneration}:${executionId}`}
+                api={window.koedDesktop.managedMemoryActions}
+                executionId={executionId}
+                ownerId={visibilityOwnerId ?? undefined}
+                profileKey={identityKey}
+                onOfferChatForget={onOfferChatForget}
+                onChanged={() => void refresh()}
+              />
+            ) : null}
             {visibleOptimistic.map((item) => (
               <article
                 className="hq-conversation__message hq-conversation__message--user"

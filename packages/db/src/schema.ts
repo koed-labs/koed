@@ -5334,6 +5334,15 @@ export const managedConversationCommands = pgTable(
       table.executionId,
       table.sequence
     ),
+    unique("managed_conversation_commands_owner_id_unique").on(
+      table.ownerUserId,
+      table.id
+    ),
+    unique("managed_conversation_commands_owner_execution_id_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.id
+    ),
     index("managed_conversation_commands_claim_idx").on(
       table.state,
       table.leaseExpiresAt,
@@ -15752,6 +15761,75 @@ export const sourceControlMergeOperations = pgTable(
     check(
       "source_control_merge_state_check",
       sql`${table.state} in ('prepared', 'claimed', 'pending', 'merged', 'rejected', 'unknown')`
+    )
+  ]
+);
+
+export const managedConversationMemoryActions = pgTable(
+  "managed_conversation_memory_actions",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    commandId: uuid("command_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    providerTurnId: text("provider_turn_id").notNull(),
+    toolCallId: text("tool_call_id").notNull(),
+    actionKind: text("action_kind").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    encryptedRequest: jsonb("encrypted_request")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    state: text("state").notNull().default("pending"),
+    encryptedResult: jsonb("encrypted_result").$type<Record<string, unknown>>(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId],
+      foreignColumns: [
+        managedConversationExecutions.ownerUserId,
+        managedConversationExecutions.id
+      ],
+      name: "managed_memory_actions_owner_execution_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId, table.commandId],
+      foreignColumns: [
+        managedConversationCommands.ownerUserId,
+        managedConversationCommands.executionId,
+        managedConversationCommands.id
+      ],
+      name: "managed_memory_actions_owner_command_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.logicalSessionId],
+      foreignColumns: [sessions.ownerUserId, sessions.logicalSessionId],
+      name: "managed_memory_actions_owner_session_fk"
+    }).onDelete("cascade"),
+    unique("managed_memory_actions_tool_call_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.commandId,
+      table.providerTurnId,
+      table.toolCallId
+    ),
+    index("managed_memory_actions_command_state_idx").on(
+      table.ownerUserId,
+      table.commandId,
+      table.state
+    ),
+    check(
+      "managed_memory_actions_shape_check",
+      sql`${table.executionGeneration} > 0
+        and length(${table.providerTurnId}) between 1 and 512
+        and length(${table.toolCallId}) between 1 and 512
+        and ${table.actionKind} in ('forget','correct')
+        and ${table.state} in ('pending','completed','rejected')
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'`
     )
   ]
 );

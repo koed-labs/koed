@@ -20,6 +20,10 @@ import type { DesktopApi, KoedServerStatus } from "./types.js";
 import type { Project, ProjectSource, WorkItem } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type {
+  ManagedMemoryAction,
+  ManagedMemoryActionDesktopApi
+} from "./ipc/managed-memory-action-protocol.js";
+import type {
   CuratedAssertion,
   CuratedMemoryDesktopApi
 } from "./ipc/curated-memory-protocol.js";
@@ -35,11 +39,15 @@ const hq203Empty =
 // Renderer-only presentation fixture. API behavior is verified in Project route tests.
 const hq208Capture =
   new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
+const hq307Capture =
+  new URLSearchParams(window.location.search).get("hq307Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
-  new URLSearchParams(window.location.search).get("hq306Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
+  hq307Capture;
 const hq306Capture =
-  new URLSearchParams(window.location.search).get("hq306Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
+  hq307Capture;
 const hq306Race =
   new URLSearchParams(window.location.search).get("hq306Race") === "yes";
 const hq306Trace = { aliasLookups: 0, detailOpens: 0, raceComplete: false };
@@ -53,7 +61,8 @@ const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
   hq404Capture;
 const hq106Capture =
-  new URLSearchParams(window.location.search).get("hq106Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq106Capture") === "yes" ||
+  hq307Capture;
 const hq106Pending = new Map<string, string>();
 const hq106Deleted = new Map<string, string>();
 const hq106Forgotten = new Map<string, string>();
@@ -186,7 +195,17 @@ const hq305Rows = [
       "decision",
       "Review the launch copy with users"
     ),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    replaces: hq307Capture
+      ? [
+          {
+            id: "00000000-0000-4000-8000-000000003077",
+            text: "Approve the launch copy without user review",
+            author: { kind: "user" as const, ref: hq304OwnerId },
+            at: "2026-10-18T09:00:00.000Z"
+          }
+        ]
+      : []
   },
   {
     ...hq304Row(
@@ -227,7 +246,13 @@ const hq305MemoryApi: CuratedMemoryDesktopApi = {
         row.status === "current" &&
         (!since || Date.parse(row.createdAt) >= Date.parse(since))
     );
-    const index = cursor ? 1 : 0;
+    const index = cursor
+      ? matching.findIndex(
+          (row) => row.id === cursor.id && row.updatedAt === cursor.updatedAt
+        ) + 1
+      : 0;
+    if (cursor && index === 0)
+      throw new Error("Unknown HQ memory fixture cursor");
     const assertions = matching.slice(index, index + 1);
     return {
       assertions: structuredClone(assertions),
@@ -313,6 +338,108 @@ const hq207OtherExecutionId = "00000000-0000-4000-8000-000000002083";
 const hq207TerminalExecutionId = "00000000-0000-4000-8000-000000002084";
 const hq204ExecutionId = "00000000-0000-4000-8000-000000002044";
 const hq204SessionId = "00000000-0000-4000-8000-000000002045";
+// Renderer-only HQ-307 presentation data. Session storage models a durable API
+// response across a browser reload; it does not exercise the native write path.
+const hq307StorageKey = "koed-hq307-validation-actions";
+const hq307ActionIds = [
+  "00000000-0000-4000-8000-000000003071",
+  "00000000-0000-4000-8000-000000003072",
+  "00000000-0000-4000-8000-000000003073",
+  "00000000-0000-4000-8000-000000003074",
+  "00000000-0000-4000-8000-000000003075"
+];
+const hq307InitialActions: ManagedMemoryAction[] = [
+  {
+    id: hq307ActionIds[0]!,
+    executionId: hq204ExecutionId,
+    actionKind: "forget",
+    state: "completed",
+    outcome: "forgotten",
+    message: "Forgot the outdated meeting preference.",
+    assertionId: "00000000-0000-4000-8000-000000003061",
+    createdAt: FIXTURE_TIME,
+    completedAt: FIXTURE_TIME
+  },
+  {
+    id: hq307ActionIds[1]!,
+    executionId: hq204ExecutionId,
+    actionKind: "correct",
+    state: "completed",
+    outcome: "proposal_created",
+    message: "Correction proposed for the launch decision.",
+    proposalId: "00000000-0000-4000-8000-000000003076",
+    createdAt: FIXTURE_TIME,
+    completedAt: FIXTURE_TIME
+  },
+  {
+    id: hq307ActionIds[2]!,
+    executionId: hq204ExecutionId,
+    actionKind: "forget",
+    state: "completed",
+    outcome: "ask_owner",
+    message: "That memory belongs to a teammate. Ask its owner to forget it.",
+    createdAt: FIXTURE_TIME,
+    completedAt: FIXTURE_TIME
+  },
+  {
+    id: hq307ActionIds[3]!,
+    executionId: hq204ExecutionId,
+    actionKind: "correct",
+    state: "completed",
+    outcome: "ask_reference",
+    message:
+      "Which memory should I correct? Please give a more specific reference.",
+    createdAt: FIXTURE_TIME,
+    completedAt: FIXTURE_TIME
+  },
+  {
+    id: hq307ActionIds[4]!,
+    executionId: hq204ExecutionId,
+    actionKind: "forget",
+    state: "completed",
+    outcome: "offer_chat_forget",
+    message: "This memory came from a chat. Review Forget for that chat.",
+    sourceSessionId: hq204SessionId,
+    createdAt: FIXTURE_TIME,
+    completedAt: FIXTURE_TIME
+  }
+];
+const hq307Trace = {
+  lists: 0,
+  undos: [] as string[],
+  chatForgets: [] as string[]
+};
+const hq307ReadActions = (): ManagedMemoryAction[] => {
+  const saved = window.sessionStorage.getItem(hq307StorageKey);
+  return saved
+    ? (JSON.parse(saved) as ManagedMemoryAction[])
+    : structuredClone(hq307InitialActions);
+};
+const hq307MemoryActionsApi: ManagedMemoryActionDesktopApi = {
+  list: async (executionId) => {
+    if (executionId !== hq204ExecutionId)
+      throw new Error("Unknown fixture execution");
+    hq307Trace.lists++;
+    return structuredClone(hq307ReadActions());
+  },
+  undo: async (executionId, actionId) => {
+    if (executionId !== hq204ExecutionId || actionId !== hq307ActionIds[0])
+      throw new Error("Wrong action receipt");
+    const actions = hq307ReadActions();
+    const index = actions.findIndex((action) => action.id === actionId);
+    if (index < 0 || actions[index]!.outcome !== "forgotten")
+      throw new Error("Action already restored");
+    const restored: ManagedMemoryAction = {
+      ...actions[index]!,
+      outcome: "undone",
+      message: "Restored the meeting preference."
+    };
+    actions[index] = restored;
+    window.sessionStorage.setItem(hq307StorageKey, JSON.stringify(actions));
+    hq307Trace.undos.push(actionId);
+    return structuredClone(restored);
+  }
+};
 const hq306Citations = [
   {
     alias: "r11111111111141118111111111111111c1",
@@ -504,6 +631,7 @@ const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    ...(hq307Capture ? { managedMemoryActions: hq307MemoryActionsApi } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
@@ -1923,6 +2051,7 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
           sessionId: string;
           batchId: string;
         }) => {
+          if (hq307Capture) hq307Trace.chatForgets.push(sessionId);
           hq106Forgotten.set(sessionId, batchId);
           return {
             pending: false as const,
@@ -2257,6 +2386,14 @@ export function HqValidationApp() {
     (
       window as Window & { __koedHq306Trace?: typeof hq306Trace }
     ).__koedHq306Trace = hq306Trace;
+    if (hq307Capture) {
+      hq307Trace.lists = 0;
+      hq307Trace.undos.length = 0;
+      hq307Trace.chatForgets.length = 0;
+      (
+        window as Window & { __koedHq307Trace?: typeof hq307Trace }
+      ).__koedHq307Trace = hq307Trace;
+    }
     if (hq305Capture) {
       hq305Trace.pages = 0;
       hq305Trace.since.length = 0;
@@ -2291,6 +2428,8 @@ export function HqValidationApp() {
         .__koedHq306Trace;
       delete (window as Window & { __koedHq305Trace?: typeof hq305Trace })
         .__koedHq305Trace;
+      delete (window as Window & { __koedHq307Trace?: typeof hq307Trace })
+        .__koedHq307Trace;
       delete window.__koedHqFixture;
       delete (
         window as Window & {

@@ -31,6 +31,7 @@ import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import { assertKoedReleaseVersion } from "@koed/koed/release-version";
 import { z } from "zod";
 import { registerWorkItemCompletionTool } from "./work-item-completion-tool.js";
+import { registerMemoryActionTools } from "./memory-action-tools.js";
 import {
   allTools,
   exposedTools,
@@ -525,6 +526,8 @@ export const createKoedMcpServer = async (
   };
 
   registerExposedTools(runtimeCapabilities);
+  if (environment.KOED_MANAGED_MEMORY_ACTIONS === "1")
+    registerMemoryActionTools(server);
   if (process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1")
     registerWorkItemCompletionTool(server);
 

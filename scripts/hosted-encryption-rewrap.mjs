@@ -12,7 +12,7 @@ import { loadRootEnv } from "./api-token-bootstrap-lib.mjs";
 
 const usage = `Usage: pnpm hosted:encryption-rewrap [options]
 
-Rewrap encrypted-field, Managed Conversation citation, merge journal, and Shared Memory representation DEKs with the configured
+Rewrap encrypted-field, Managed Conversation citation/action, merge journal, and Shared Memory representation DEKs with the configured
 Team/general and owner-private envelope providers.
 
 Options:
@@ -272,6 +272,15 @@ try {
     ["prepared"],
     (input) => mergeJournal.rewrapSourceControlMergeBatch(provider, input)
   );
+  const memoryActionFields = await embeddedFamily(
+    "managed_conversation_memory_actions",
+    ["encrypted_request", "encrypted_result"],
+    (input) =>
+      repository.rewrapManagedMemoryActionBatch(provider, {
+        ...input,
+        ...(args.sourceColumn ? { sourceColumn: args.sourceColumn } : {})
+      })
+  );
   const teamRepresentations =
     args.ownerUserId || args.sourceTable || args.sourceColumn
       ? { ...emptyAggregate(), done: true }
@@ -289,6 +298,7 @@ try {
     ownerPrivateFields,
     citationFields,
     mergeFields,
+    memoryActionFields,
     teamRepresentations
   };
   const totals = Object.values(aggregates).reduce(

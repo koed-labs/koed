@@ -252,6 +252,9 @@ export class PiManagedConversationSession {
       ...(this.config.env.KOED_MANAGED_CONVERSATION === "1"
         ? { KOED_MANAGED_CONVERSATION: "1" }
         : {}),
+      ...(this.config.env.KOED_MANAGED_MEMORY_ACTIONS === "1"
+        ? { KOED_MANAGED_MEMORY_ACTIONS: "1" }
+        : {}),
       ...(this.config.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
         ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
         : {}),
@@ -562,6 +565,8 @@ export class PiManagedConversationSession {
           [
             "memory_answer",
             "memory_answer_result",
+            "memory_forget",
+            "memory_correct",
             "work_item_complete"
           ].includes(toolName)
         )

@@ -1434,6 +1434,20 @@ export const routeIdentityContracts = [
     "Read an owned Curated Memory assertion and its replacement chain."
   ),
   route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/memory-actions",
+    "session",
+    "personal_memory",
+    "Read owner-only durable memory action results; local Desktop read credentials are also accepted."
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/memory-actions/{actionId}/undo",
+    "session",
+    "personal_memory",
+    "Undo one exact owner memory action through the existing session or local Desktop Curated boundary."
+  ),
+  route(
     "POST",
     "/v1/memory/curated/assertions/{assertionId}/unsuppress",
     "session",

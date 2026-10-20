@@ -34,6 +34,11 @@ const memoryCitationReportPath = resolve(
   "hq-306",
   "browser-report.json"
 );
+const memoryActionReportPath = resolve(
+  scratchDir,
+  "hq-307",
+  "browser-report.json"
+);
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
@@ -44,6 +49,7 @@ await rm(chatMoveReportPath, { force: true });
 await rm(dispatchReportPath, { force: true });
 await rm(memoryScopeReportPath, { force: true });
 await rm(memoryCitationReportPath, { force: true });
+await rm(memoryActionReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -58,7 +64,8 @@ try {
         KOED_HQ205_DELEGATED_S09: "1",
         KOED_HQ207_DELEGATED_S01_S11: "1",
         KOED_HQ304_DELEGATED_S18: "1",
-        KOED_HQ306_DELEGATED_S07: "1"
+        KOED_HQ306_DELEGATED_S07: "1",
+        KOED_HQ307_DELEGATED_S18: "1"
       },
       stdio: "inherit"
     });
@@ -393,6 +400,43 @@ try {
       }
     } finally {
       await rm(learnedProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const actionProfile = await mkdtemp(
+      resolve(scratchDir, "hq307-electron-profile-")
+    );
+    try {
+      const actions = spawnSync(electronPath, ["scripts/validate-hq307.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ307_USER_DATA_DIR: actionProfile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (actions.error) throw actions.error;
+      process.exitCode = actions.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(
+          await readFile(memoryActionReportPath, "utf8")
+        );
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ307.native", owner: "HQ-307", status: "pass" }
+        );
+        assert.ok(
+          report.assertions.some(
+            (entry) =>
+              entry.id === "S18.1" &&
+              entry.owner === "HQ-307" &&
+              entry.status === "pass"
+          )
+        );
+        process.stdout.write(
+          "PASS S18.1 [HQ-307]: grouped memory, replacement detail and Forget control; exact action Undo and chat confirmation pass. Compound S18.3 and N12.U still require HQ-504.\n"
+        );
+      }
+    } finally {
+      await rm(actionProfile, { recursive: true, force: true });
     }
   }
 } finally {

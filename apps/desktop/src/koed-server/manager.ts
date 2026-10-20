@@ -12,6 +12,11 @@ import {
   createProjectsClient,
   type ProjectsAuthority
 } from "./projects-client.js";
+import { createBoundManagedMemoryActionClient } from "./managed-memory-action-client.js";
+import type {
+  ManagedMemoryActionRequest,
+  ManagedMemoryActionResult
+} from "../ipc/managed-memory-action-protocol.js";
 import { createProjectSourceNativeClient } from "./project-source-native-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
 import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
@@ -286,6 +291,9 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  managedMemoryActions: (
+    request: ManagedMemoryActionRequest
+  ) => Promise<ManagedMemoryActionResult>;
   curatedMemory: (
     request: CuratedMemoryRequest
   ) => Promise<CuratedMemoryResult>;
@@ -4205,6 +4213,11 @@ export const createKoedServerManager = ({
       )
   );
 
+  const managedMemoryActions = createBoundManagedMemoryActionClient(
+    personalMemoryFetch,
+    projectsAuthority
+  );
+
   const curatedMemory = createCuratedMemoryClient(async (path, init, bound) => {
     const remote = await fetchBoundedJsonObject(
       personalMemoryFetch,
@@ -6136,6 +6149,7 @@ export const createKoedServerManager = ({
     managedProject,
     projects,
     curatedMemory,
+    managedMemoryActions,
     projectSourceNative,
     chatDeleteNative,
     chatMoveNative,

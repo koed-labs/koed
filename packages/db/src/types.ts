@@ -24,6 +24,7 @@ import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.
 import type { HighRiskActionRepository } from "./high-risk-action-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { ManagedConversationRepository } from "./managed-conversation-repository.js";
+import type { ManagedMemoryActionRepository } from "./managed-memory-action-repository.js";
 import type { WorkItemRepository } from "./work-item-repository.js";
 import type { ManagedConversationCitationRepository } from "./managed-conversation-citation-repository.js";
 import type { ManagedTerminalRepository } from "./managed-terminal-repository.js";
@@ -1996,6 +1997,7 @@ export interface MemorySourceRepository
     HighRiskActionRepository,
     LocalEmbeddingStatusRepository,
     ManagedConversationRepository,
+    ManagedMemoryActionRepository,
     Pick<
       WorkItemRepository,
       "completeForManagedExecutionLease" | "hasActiveManagedWorkItem"

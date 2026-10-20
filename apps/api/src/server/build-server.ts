@@ -1,3 +1,4 @@
+import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -2154,6 +2155,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
+  registerManagedMemoryActionRoutes(app, routeContext);
   registerCuratedMemoryRoutes(
     app,
     routeContext,

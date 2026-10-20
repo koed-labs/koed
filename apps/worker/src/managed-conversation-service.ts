@@ -587,6 +587,13 @@ export const createManagedConversationService = (options: {
     arguments: unknown;
     result: unknown;
   }) => Promise<void>;
+  onManagedMemoryActionsReady?: (input: {
+    ownerUserId: string;
+    executionId: string;
+    commandId: string;
+    leaseToken: string;
+    executionGeneration: number;
+  }) => Promise<void>;
   apiUrl: string;
   apiToken: string;
   localOwnerUserId: string;
@@ -630,8 +637,8 @@ export const createManagedConversationService = (options: {
   const childEnvironmentFor = (
     execution: ManagedConversationExecutionRecord,
     env: NodeJS.ProcessEnv
-  ): NodeJS.ProcessEnv =>
-    managedWorkItemCompletionEnvironment({
+  ): NodeJS.ProcessEnv => {
+    const child = managedWorkItemCompletionEnvironment({
       env,
       execution: {
         ownerUserId: execution.ownerUserId,
@@ -640,6 +647,11 @@ export const createManagedConversationService = (options: {
       },
       eligible: eligibleWorkItemExecutions.get(execution.id)
     });
+    if (options.onKoedToolCompleted && options.onManagedMemoryActionsReady)
+      child.KOED_MANAGED_MEMORY_ACTIONS = "1";
+    else delete child.KOED_MANAGED_MEMORY_ACTIONS;
+    return child;
+  };
   const claudeCaptureStatePath = resolve(
     options.koedHome,
     "state",
@@ -5412,6 +5424,34 @@ export const createManagedConversationService = (options: {
       return;
     }
     if (command.commandKind === "prompt") {
+      const memorySourceFrontier = async (
+        sourceKind: "pi" | "claude-code",
+        externalSessionId: string | null
+      ): Promise<Record<string, unknown> | null> => {
+        if (!options.onManagedMemoryActionsReady || !externalSessionId)
+          return null;
+        try {
+          const found = await memoryClient.lookupConversationSourceArtifact({
+            sourceKind,
+            externalSessionId
+          });
+          return found.artifact && typeof found.artifact === "object"
+            ? record(found.artifact)
+            : null;
+        } catch {
+          return null;
+        }
+      };
+      const processManagedMemoryActions = async () => {
+        if (command.leaseToken)
+          await options.onManagedMemoryActionsReady?.({
+            ownerUserId: command.ownerUserId,
+            executionId: command.executionId,
+            commandId: command.id,
+            leaseToken: command.leaseToken,
+            executionGeneration: command.executionGeneration
+          });
+      };
       const clientUserMessageId = command.clientUserMessageId;
       if (!clientUserMessageId) {
         throw Object.assign(
@@ -5443,6 +5483,7 @@ export const createManagedConversationService = (options: {
             session
           );
         }
+        await processManagedMemoryActions();
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
@@ -5466,9 +5507,15 @@ export const createManagedConversationService = (options: {
         await ensureTurnBaselineCheckpoint(command, checkpointBinding);
         const session = await sessionForPi(command.execution);
         await withProviderLease(command, "pi", session, async (owned) => {
-          const result = await owned.prompt(
-            await promptWithFileMentions(command, checkpointBinding)
+          const providerPrompt = await promptWithFileMentions(
+            command,
+            checkpointBinding
           );
+          const beforeSource = await memorySourceFrontier(
+            "pi",
+            command.execution.providerThreadId
+          );
+          const result = await owned.prompt(providerPrompt);
           await flushCompletedTransientOutput(
             `${command.executionId}:${result.turnId}:assistant`
           );
@@ -5548,6 +5595,37 @@ export const createManagedConversationService = (options: {
             providerTurnId: result.turnId,
             sourceGenerationId
           });
+          const afterSource = beforeSource
+            ? await memorySourceFrontier("pi", result.identity.sessionId)
+            : null;
+          if (
+            command.clientUserMessageId &&
+            typeof beforeSource?.providerCursorLine === "number" &&
+            beforeSource.sessionId === localSessionId &&
+            beforeSource.sourceGenerationId === sourceGenerationId &&
+            afterSource?.sessionId === localSessionId &&
+            afterSource.sourceGenerationId === sourceGenerationId &&
+            typeof afterSource.providerCursorLine === "number"
+          ) {
+            await options.repository.bindManagedMemoryActionUserSource(
+              { userId: command.ownerUserId },
+              {
+                commandId: command.id,
+                executionId: command.executionId,
+                executionGeneration: command.executionGeneration,
+                leaseToken: command.leaseToken!,
+                localSessionId,
+                clientUserMessageId: command.clientUserMessageId,
+                sourceKind: "pi",
+                externalSessionId: result.identity.sessionId,
+                sourceGenerationId,
+                fromLine: beforeSource.providerCursorLine,
+                toLine: afterSource.providerCursorLine,
+                providerPrompt
+              }
+            );
+          }
+          await processManagedMemoryActions();
           await options.repository.completeManagedConversationCommand({
             commandId: command.id,
             leaseToken: command.leaseToken!,
@@ -5587,6 +5665,10 @@ export const createManagedConversationService = (options: {
             "ManagedConversationProviderMismatchError"
           );
         }
+        const beforeSource = await memorySourceFrontier(
+          "claude-code",
+          command.execution.providerThreadId
+        );
         const result = await withClaudeLease(
           command,
           (session) => session.prompt(providerPrompt),
@@ -5679,6 +5761,37 @@ export const createManagedConversationService = (options: {
           providerTurnId: null,
           sourceGenerationId: captured.sourceGenerationId
         });
+        const afterSource = beforeSource
+          ? await memorySourceFrontier("claude-code", result.sessionId)
+          : null;
+        if (
+          command.clientUserMessageId &&
+          typeof beforeSource?.providerCursorLine === "number" &&
+          beforeSource.sessionId === captured.localSessionId &&
+          beforeSource.sourceGenerationId === captured.sourceGenerationId &&
+          afterSource?.sessionId === captured.localSessionId &&
+          afterSource.sourceGenerationId === captured.sourceGenerationId &&
+          typeof afterSource.providerCursorLine === "number"
+        ) {
+          await options.repository.bindManagedMemoryActionUserSource(
+            { userId: command.ownerUserId },
+            {
+              commandId: command.id,
+              executionId: command.executionId,
+              executionGeneration: command.executionGeneration,
+              leaseToken: command.leaseToken,
+              localSessionId: captured.localSessionId,
+              clientUserMessageId: command.clientUserMessageId,
+              sourceKind: "claude-code",
+              externalSessionId: result.sessionId,
+              sourceGenerationId: captured.sourceGenerationId,
+              fromLine: beforeSource.providerCursorLine,
+              toLine: afterSource.providerCursorLine,
+              providerPrompt
+            }
+          );
+        }
+        await processManagedMemoryActions();
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
@@ -5791,6 +5904,7 @@ export const createManagedConversationService = (options: {
         (session) => session.reconcileTranscript(),
         providerRuntime.session
       );
+      await processManagedMemoryActions();
       await options.repository.completeManagedConversationCommand({
         commandId: command.id,
         leaseToken: command.leaseToken,

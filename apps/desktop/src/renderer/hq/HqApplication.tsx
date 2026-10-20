@@ -576,6 +576,44 @@ export function HqApplication({
         });
       });
   };
+  const offerMemorySourceChatForget = async (
+    sourceSessionId: string
+  ): Promise<boolean> => {
+    const authority = citationNavigationRef.current;
+    if (
+      !authority.ownerId ||
+      !authority.profileKey ||
+      !authority.store ||
+      !personalMemoryApi?.forgetSession
+    )
+      return false;
+    try {
+      await authority.store.loadProjects({ silent: true });
+      if (citationNavigationRef.current !== authority) return false;
+      const fresh = authority.store.current();
+      const matches = [...fresh.projectsById.values()].flatMap(
+        (sourceProject) =>
+          sourceProject.threads
+            .filter(
+              (sourceThread) =>
+                sourceThread.sessionId === sourceSessionId &&
+                !sourceThread.conversationTrashedAt
+            )
+            .map((sourceThread) => ({ sourceProject, sourceThread }))
+      );
+      if (matches.length !== 1 || chatBusyRef.current) return false;
+      const { sourceProject, sourceThread } = matches[0]!;
+      openChatDeleteRequest(
+        sourceProject.id,
+        sourceSessionId,
+        sourceThread.name,
+        "forget"
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const confirmChatDelete = async () => {
     if (
       !chatDeleteRequest ||
@@ -1135,6 +1173,7 @@ export function HqApplication({
             writeClipboard: (value) => navigator.clipboard.writeText(value)
           }
         }
+        onOfferChatForget={offerMemorySourceChatForget}
         inspectorOpen={sourcesOpen}
         panelHostRef={setSourcesPanelHost}
         contextLabel={artifactContext}
@@ -1536,6 +1575,7 @@ export function HqApplication({
               project={project}
               thread={conversationThread}
               onOpenCitationMessage={openCitationMessage}
+              onOfferChatForget={offerMemorySourceChatForget}
               focusEventId={
                 citationFocus?.generation ===
                   citationNavigationRef.current.generation &&

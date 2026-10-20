@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0064_ambiguous_cerebro";
-const expectedLatestMigrationIndex = 64;
+const expectedLatestMigrationTag = "0065_colossal_shadowcat";
+const expectedLatestMigrationIndex = 65;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1746,6 +1746,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preMemoryActionsFolder = await createMigrationSlice(journal, 64, {
+    folderPrefix: "koed-pre-managed-memory-actions-"
+  });
+  temporaryFolders.add(preMemoryActionsFolder);
+  const preMemoryActionsRecords = await migrationRecords(
+    preMemoryActionsFolder,
+    journal.entries.slice(0, 65)
+  );
   const preMergeFolder = await createMigrationSlice(journal, 63, {
     folderPrefix: "koed-pre-source-control-merge-"
   });
@@ -3396,6 +3404,185 @@ try {
         throw new Error("0062 migration rerun changed schema");
     });
   });
+
+  await runScenario(
+    "memory-actions-0065-upgrade-rollback-and-custody",
+    async () => {
+      const target = await createDisposableDatabase(
+        "managed_memory_actions_upgrade"
+      );
+      const ownerId = randomUUID(),
+        otherOwnerId = randomUUID();
+      const executionId = randomUUID(),
+        commandId = randomUUID();
+      const logicalSessionId = randomUUID(),
+        actionId = randomUUID();
+      const interrupted = await createMigrationSlice(journal, 65, {
+        folderPrefix: "koed-managed-memory-actions-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: preMemoryActionsFolder
+        });
+        await assertMigrationLedger(pool, preMemoryActionsRecords);
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          ownerId,
+          `${ownerId}@example.test`,
+          otherOwnerId,
+          `${otherOwnerId}@example.test`
+        ]);
+        await pool.query(
+          `insert into sessions(id,owner_user_id,logical_session_id,source_runtime,capture_method)
+        values($1,$2,$3,'codex','transcript')`,
+          [randomUUID(), ownerId, logicalSessionId]
+        );
+        await pool.query(
+          `insert into managed_conversation_executions
+        (id,owner_user_id,project_id,state,logical_session_id,provider_thread_id,
+         fencing_token_hash,runner_deployment_id,runner_device_id,ai_client_instance_id,
+         model,permission_mode,runner_kind)
+        values($1,$2,'migration-memory-actions','running',$3,'memory-action-thread',$4,$5,$6,
+         'codex.default','gpt-test','supervised','local_device')`,
+          [
+            executionId,
+            ownerId,
+            logicalSessionId,
+            "a".repeat(64),
+            randomUUID(),
+            randomUUID()
+          ]
+        );
+        await pool.query(
+          `insert into managed_conversation_commands
+        (id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,request_digest,
+         execution_generation,encrypted_payload,client_user_message_id)
+        values($1,$2,$3,$4,1,'prompt',$5,1,'{}'::jsonb,$6)`,
+          [
+            commandId,
+            ownerId,
+            executionId,
+            `prompt:${commandId}`,
+            "b".repeat(64),
+            randomUUID()
+          ]
+        );
+        let failed = false;
+        try {
+          await runDbMigrations(pool, { migrationsFolder: interrupted });
+        } catch {
+          failed = true;
+        }
+        if (!failed)
+          throw new Error(
+            "Interrupted memory actions migration unexpectedly succeeded"
+          );
+        const rollback = await pool.query(
+          `select to_regclass('public.managed_conversation_memory_actions')::text as actions,
+        exists(select 1 from managed_conversation_commands where id=$1) as retained`,
+          [commandId]
+        );
+        if (
+          rollback.rows[0]?.actions !== null ||
+          rollback.rows[0]?.retained !== true
+        )
+          throw new Error(
+            "0065 interrupted migration changed retained command data"
+          );
+        await assertMigrationLedger(pool, preMemoryActionsRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const insert = `insert into managed_conversation_memory_actions
+        (id,owner_user_id,logical_session_id,execution_id,command_id,execution_generation,
+         provider_turn_id,tool_call_id,action_kind,request_digest,encrypted_request)
+        values($1,$2,$3,$4,$5,1,'turn-1',$6,'forget',$7,$8::jsonb)`;
+        const values = [
+          actionId,
+          ownerId,
+          logicalSessionId,
+          executionId,
+          commandId,
+          "tool-1",
+          "c".repeat(64),
+          JSON.stringify({ version: 1, ciphertext: "opaque-action-request" })
+        ];
+        await pool.query(insert, values);
+        await expectSqlState(
+          pool,
+          insert,
+          "23505",
+          "Duplicate completed tool calls cannot create a second action",
+          [randomUUID(), ...values.slice(1)]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23503",
+          "Action owner must match the command, execution, and Session",
+          [
+            randomUUID(),
+            otherOwnerId,
+            ...values.slice(2, 5),
+            "tool-other-owner",
+            ...values.slice(6)
+          ]
+        );
+        await expectSqlState(
+          pool,
+          "update managed_conversation_memory_actions set execution_generation=0 where id=$1",
+          "23514",
+          "Memory action generation must be positive",
+          [actionId]
+        );
+        await expectSqlState(
+          pool,
+          "update managed_conversation_memory_actions set state='retry' where id=$1",
+          "23514",
+          "Memory action state must be known",
+          [actionId]
+        );
+        await pool.query(
+          `update managed_conversation_memory_actions set state='completed',
+        encrypted_result=$2::jsonb,completed_at=now() where id=$1`,
+          [
+            actionId,
+            JSON.stringify({ version: 1, ciphertext: "opaque-action-result" })
+          ]
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0065 migration rerun changed schema");
+        const retained = await pool.query(
+          "select state,encrypted_request,encrypted_result from managed_conversation_memory_actions where id=$1",
+          [actionId]
+        );
+        if (
+          retained.rows[0]?.state !== "completed" ||
+          retained.rows[0]?.encrypted_request?.ciphertext !==
+            "opaque-action-request" ||
+          retained.rows[0]?.encrypted_result?.ciphertext !==
+            "opaque-action-result"
+        )
+          throw new Error(
+            "0065 migration rerun lost the action or its opaque envelopes"
+          );
+        await pool.query(
+          "delete from sessions where owner_user_id=$1 and logical_session_id=$2",
+          [ownerId, logicalSessionId]
+        );
+        const purged = await pool.query(
+          "select count(*)::integer as count from managed_conversation_memory_actions where id=$1",
+          [actionId]
+        );
+        if (purged.rows[0]?.count !== 0)
+          throw new Error("0065 Session purge stranded memory action records");
+      });
+    }
+  );
 
   await runScenario(
     "merge-journal-0064-upgrade-rollback-and-fence",

@@ -96,6 +96,31 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("only advertises managed memory action requests for a bound managed client", async () => {
+    const ordinary = await connect();
+    expect(
+      (await ordinary.client.listTools()).tools.map((tool) => tool.name)
+    ).not.toContain("memory_forget");
+    const managed = await connect({
+      environment: { KOED_MANAGED_MEMORY_ACTIONS: "1" }
+    });
+    const names = (await managed.client.listTools()).tools.map(
+      (tool) => tool.name
+    );
+    expect(names).toContain("memory_forget");
+    expect(names).toContain("memory_correct");
+    const result = await managed.client.callTool({
+      name: "memory_forget",
+      arguments: {}
+    });
+    expect(result.structuredContent).toEqual({ status: "requested" });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: 'Koed memory_forget request v1: {"status":"requested"}'
+      }
+    ]);
+  });
   it("presents completed recall as readable text without diagnostics or structured duplicates", async () => {
     const { client } = await connect({
       callTool: async () => ({

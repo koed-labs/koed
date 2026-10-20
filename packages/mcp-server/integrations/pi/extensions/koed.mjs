@@ -22,6 +22,7 @@ import {
 } from "../memory-answer-presentation.mjs";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../memory-answer-delivery-policy.mjs";
 import { workItemCompletionRequest } from "../work-item-completion-request.mjs";
+import { memoryActionRequest } from "../memory-action-request.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
@@ -363,6 +364,37 @@ export default function koedExtension(pi) {
     "Propose curated Personal Memory backed by evidence.",
     intakeParameters
   );
+  if (process.env.KOED_MANAGED_MEMORY_ACTIONS === "1") {
+    const referenceParameters = {
+      citation_alias: Type.Optional(
+        Type.String({ pattern: "^r[0-9a-f]{32}c[1-9][0-9]*$", maxLength: 128 })
+      ),
+      reference: Type.Optional(Type.String({ minLength: 1, maxLength: 500 }))
+    };
+    for (const name of ["memory_forget", "memory_correct"]) {
+      pi.registerTool({
+        name,
+        label: name === "memory_forget" ? "Forget Memory" : "Correct Memory",
+        description:
+          name === "memory_forget"
+            ? "Request to forget the User's own cited Curated Memory, only when explicitly asked. Koed verifies the current Conversation, citation and ownership, then reports the outcome with Undo."
+            : "Request a reviewed, source-linked correction to the User's own cited Curated Memory. Koed verifies the exact User statement and does not overwrite the assertion.",
+        parameters: Type.Object(
+          name === "memory_correct"
+            ? {
+                ...referenceParameters,
+                correction: Type.String({ minLength: 1, maxLength: 4000 }),
+                user_statement: Type.String({ minLength: 1, maxLength: 16000 })
+              }
+            : referenceParameters,
+          { additionalProperties: false }
+        ),
+        async execute() {
+          return memoryActionRequest(name);
+        }
+      });
+    }
+  }
   if (process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1") {
     pi.registerTool({
       name: "work_item_complete",

@@ -1,3 +1,10 @@
+import {
+  managedMemoryActionChannel,
+  managedMemoryActionRequestSchema,
+  managedMemoryActionResultSchema,
+  type ManagedMemoryActionRequest,
+  type ManagedMemoryActionResult
+} from "./managed-memory-action-protocol.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   curatedMemoryCommandChannel,
@@ -209,6 +216,9 @@ export const registerDesktopCommandHandlers = (
       >["data"]
     >;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    managedMemoryActions?: (
+      request: ManagedMemoryActionRequest
+    ) => Promise<ManagedMemoryActionResult>;
     curatedMemory?: (
       request: CuratedMemoryRequest
     ) => Promise<CuratedMemoryResult>;
@@ -558,6 +568,23 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(managedMemoryActionChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.managedMemoryActions)
+      throw new Error("Memory actions are unavailable.");
+    const request = managedMemoryActionRequestSchema.parse(value);
+    const result = managedMemoryActionResultSchema.parse(
+      await options.managedMemoryActions(request)
+    );
+    if (
+      result.operation !== request.operation ||
+      result.executionId !== request.executionId
+    )
+      throw new Error("Invalid memory action correlation.");
+    return result;
+  });
 
   ipcMain.handle(curatedMemoryCommandChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))

@@ -6,6 +6,11 @@ import {
   type MemoryAnswerWorkerConfig,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
+export {
+  memoryActionRequestText,
+  memoryCorrectInputSchema,
+  memoryForgetInputSchema
+} from "./memory-action-tools.js";
 import {
   memoryAnswerTaskClaimResponseSchema,
   memoryAnswerTaskResponseSchema,

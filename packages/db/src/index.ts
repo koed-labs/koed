@@ -84,6 +84,12 @@ export {
 } from "./connection.js";
 export { createConversationItemRepository } from "./conversation-item-repository.js";
 export {
+  createManagedMemoryActionRepository,
+  type ManagedMemoryActionRepository,
+  type ManagedMemoryActionRecord,
+  type ManagedMemoryActionResult
+} from "./managed-memory-action-repository.js";
+export {
   createManagedConversationCitationRepository,
   type ManagedConversationCitationRepository,
   type ManagedConversationTurnCitation

@@ -57,6 +57,7 @@ import { createHighRiskActionRepository } from "./high-risk-action-repository.js
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+import { createManagedMemoryActionRepository } from "./managed-memory-action-repository.js";
 import { createWorkItemRepository } from "./work-item-repository.js";
 import { createManagedConversationCitationRepository } from "./managed-conversation-citation-repository.js";
 import { createManagedTerminalRepository } from "./managed-terminal-repository.js";
@@ -4083,6 +4084,10 @@ export const createMemorySourceRepository = (
     ...createManagedConversationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createManagedMemoryActionRepository(
+      pool,
+      options.envelopeEncryptionProvider
+    ),
     completeForManagedExecutionLease: (input) =>
       workItemRepository.completeForManagedExecutionLease(input),
     hasActiveManagedWorkItem: (input) =>
