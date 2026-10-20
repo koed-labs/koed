@@ -1,5 +1,10 @@
 import type { MemorySourceRepository } from "@koed/db";
 
+// Keep the strict Claude text receipt in sync with the MCP tool. It carries no
+// authority without a trusted Koed tool-completed event and the worker lease.
+const workItemCompletionRequestText =
+  'Koed work_item_complete request v1: {"status":"requested"}';
+
 export type ManagedWorkItemToolCompletion = {
   execution: { id: string; ownerUserId: string; executionGeneration: number };
   command: { id: string; leaseToken: string | null };
@@ -36,14 +41,33 @@ export const createWorkItemCompletionObserver =
       isError?: unknown;
       structuredContent?: unknown;
       details?: unknown;
+      content?: unknown;
     };
     const receipt = response.structuredContent ?? response.details;
+    const hasStructuredReceipt =
+      response.structuredContent !== undefined ||
+      response.details !== undefined;
+    const content: unknown[] = Array.isArray(response.content)
+      ? (response.content as unknown[])
+      : [];
+    const onlyBlock: unknown = content[0];
+    const claudeReceipt =
+      content.length === 1 &&
+      onlyBlock &&
+      typeof onlyBlock === "object" &&
+      !Array.isArray(onlyBlock) &&
+      (onlyBlock as { type?: unknown }).type === "text" &&
+      (onlyBlock as { text?: unknown }).text === workItemCompletionRequestText;
     if (
       response.isError === true ||
-      !receipt ||
-      typeof receipt !== "object" ||
-      Array.isArray(receipt) ||
-      (receipt as { status?: unknown }).status !== "requested"
+      (hasStructuredReceipt
+        ? !(
+            receipt &&
+            typeof receipt === "object" &&
+            !Array.isArray(receipt) &&
+            (receipt as { status?: unknown }).status === "requested"
+          )
+        : !claudeReceipt)
     )
       return false;
     let accepted = false;

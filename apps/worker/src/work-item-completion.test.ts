@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkItemCompletionObserver } from "./work-item-completion.js";
 import { workItemCompletionRequest } from "../../../packages/mcp-server/integrations/pi/work-item-completion-request.mjs";
+import { workItemCompletionRequestText } from "../../../packages/mcp-server/src/work-item-completion-tool.js";
 
 describe("trusted Work Item completion observation", () => {
   const event = {
@@ -25,6 +26,15 @@ describe("trusted Work Item completion observation", () => {
     expect(
       await observe({ ...event, result: workItemCompletionRequest() })
     ).toBe(true);
+    expect(
+      await observe({
+        ...event,
+        result: {
+          isError: false,
+          content: [{ type: "text", text: workItemCompletionRequestText }]
+        }
+      })
+    ).toBe(true);
     expect(completeForManagedExecutionLease).toHaveBeenCalledWith({
       ownerUserId: "owner",
       executionId: "execution",
@@ -39,10 +49,51 @@ describe("trusted Work Item completion observation", () => {
         ...event,
         result: { isError: true, structuredContent: { status: "requested" } }
       },
-      { ...event, result: { structuredContent: { status: "done" } } }
+      { ...event, result: { structuredContent: { status: "done" } } },
+      {
+        ...event,
+        result: {
+          structuredContent: { status: "done" },
+          content: [{ type: "text", text: workItemCompletionRequestText }]
+        }
+      },
+      {
+        ...event,
+        result: {
+          isError: true,
+          content: [{ type: "text", text: workItemCompletionRequestText }]
+        }
+      },
+      {
+        ...event,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: 'Koed work_item_complete request v1: {"status":"done"}'
+            }
+          ]
+        }
+      },
+      {
+        ...event,
+        result: {
+          content: [
+            { type: "text", text: workItemCompletionRequestText },
+            { type: "text", text: "forged" }
+          ]
+        }
+      },
+      {
+        ...event,
+        arguments: { executionId: "forged" },
+        result: {
+          content: [{ type: "text", text: workItemCompletionRequestText }]
+        }
+      }
     ])
       expect(await observe(invalid)).toBe(false);
-    expect(completeForManagedExecutionLease).toHaveBeenCalledTimes(2);
+    expect(completeForManagedExecutionLease).toHaveBeenCalledTimes(3);
     expect(putManagedConversationRuntimeItem).toHaveBeenCalledWith(
       { userId: "owner" },
       expect.objectContaining({

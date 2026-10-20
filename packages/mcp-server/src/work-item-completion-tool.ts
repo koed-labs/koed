@@ -1,6 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
+// Claude's tool_result transport retains MCP text but drops structuredContent.
+// This exact receipt is still only a request; the managed worker owns mutation.
+export const workItemCompletionRequestText =
+  'Koed work_item_complete request v1: {"status":"requested"}';
+
 /**
  * The MCP reply records a request. Only the managed worker's observed,
  * successful tool-completed event may perform the trusted state transition.
@@ -20,7 +25,7 @@ export const registerWorkItemCompletionTool = (server: McpServer): void => {
         content: [
           {
             type: "text" as const,
-            text: "Work Item completion requested. Koed will verify the running execution."
+            text: workItemCompletionRequestText
           }
         ]
       })
