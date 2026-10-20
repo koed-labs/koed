@@ -104,7 +104,7 @@ export async function validateHqSettings({
     );
 
   await viewport(1280, 800);
-  await click('[data-hq-project-link="hq103-koed"]');
+  await click('[data-hq-project-link="00000000-0000-4000-8000-000000002031"]');
   await waitFor(
     "document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route')",
     "project"

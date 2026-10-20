@@ -1887,6 +1887,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           })
         : null,
     deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
     auth: authHelpers,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite

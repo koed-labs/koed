@@ -17,6 +17,7 @@ import type {
   CollaborationRendererClient
 } from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
+import type { Project } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
@@ -25,15 +26,30 @@ const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
 const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
 const hq108Overflow =
   new URLSearchParams(window.location.search).get("nowOverflow") === "yes";
+const hq203Empty =
+  new URLSearchParams(window.location.search).get("hq203Empty") === "yes";
+const hq108ProjectIds = [
+  "hq103-koed",
+  "hq103-notes",
+  "hq103-trip",
+  "hq103-work",
+  "hq108-extra-1",
+  "hq108-extra-2",
+  "hq108-extra-3"
+];
 const hq108Executions = Array.from(
   { length: hq108Overflow ? 7 : 2 },
-  (_, index) => ({
-    executionId: `hq108-execution-${index}`,
-    projectId: index % 2 === 0 ? "hq103-koed" : "hq103-notes",
-    sessionId: `hq108-session-${index}`,
-    threadId: `hq108-thread-${index}`,
-    state: "running"
-  })
+  (_, index) => {
+    const projectId = hq108ProjectIds[index]!;
+    const conversationIndex = (index + 1) * 20 + 1;
+    return {
+      executionId: `hq108-execution-${index}`,
+      projectId,
+      sessionId: `00000000-0000-4000-8000-${String(conversationIndex).padStart(12, "0")}`,
+      threadId: `${projectId}-conversation-${conversationIndex}`,
+      state: "running"
+    };
+  }
 );
 
 // Deterministic renderer-only Settings fixture. No native/profile command is dispatched.
@@ -633,6 +649,7 @@ const sidebarConversation = (
     parentThreadId: threadKind === "subagent" ? `${projectId}-parent` : null,
     projectAssignmentSource: null,
     projectId,
+    personalProjectId: sidebarPersonalProjectIds[projectId] ?? null,
     projectName,
     projectPath: null,
     presentation: null,
@@ -641,6 +658,16 @@ const sidebarConversation = (
     sourceAiClient: null,
     threadKind
   };
+};
+
+const sidebarPersonalProjectIds: Record<string, string> = {
+  "hq103-koed": "00000000-0000-4000-8000-000000002031",
+  "hq103-notes": "00000000-0000-4000-8000-000000002032",
+  "hq103-trip": "00000000-0000-4000-8000-000000002033",
+  "hq103-work": "00000000-0000-4000-8000-000000002034",
+  "hq108-extra-1": "00000000-0000-4000-8000-000000002035",
+  "hq108-extra-2": "00000000-0000-4000-8000-000000002036",
+  "hq108-extra-3": "00000000-0000-4000-8000-000000002037"
 };
 
 const sidebarProjectGroups: PersonalDesktopProject[] = [
@@ -691,8 +718,53 @@ const sidebarProjectMetadata: PersonalDesktopProjectMetadata[] =
     schemaVersion: 1
   }));
 
+const sidebarProjectRecord = (id: string, name: string): Project => ({
+  id,
+  name,
+  key: "HQ",
+  folderPath: null,
+  lifecycle: "active" as const,
+  deletionPhase: null,
+  deleteBatchId: null,
+  deletedAt: null,
+  createdAt: SIDEBAR_FIXTURE_TIME,
+  updatedAt: SIDEBAR_FIXTURE_TIME,
+  version: 1
+});
+const initialSidebarPersonalProjects = sidebarProjectGroups
+  .filter(({ id }) => id !== "hq103-loose")
+  .map(({ id, name }) =>
+    sidebarProjectRecord(
+      sidebarPersonalProjectIds[id]!,
+      id === "hq103-notes" ? "Research archive" : name
+    )
+  );
+if (hq203Empty)
+  initialSidebarPersonalProjects.push(
+    sidebarProjectRecord(
+      "00000000-0000-4000-8000-000000002038",
+      "New empty Project"
+    )
+  );
+let sidebarPersonalProjects: Project[] = structuredClone(
+  initialSidebarPersonalProjects
+);
+const sidebarProjectsApi = {
+  list: async () => {
+    if (failInitialFirstClassProjectsLoad) {
+      failInitialFirstClassProjectsLoad = false;
+      throw new Error("Fixture Project list failure");
+    }
+    return structuredClone(sidebarPersonalProjects);
+  },
+  hq: async () => {
+    throw new Error("HQ Project view is a later ticket.");
+  }
+};
+
 let failInitialProjectsLoad =
   new URLSearchParams(window.location.search).get("projectsFailure") === "once";
+let failInitialFirstClassProjectsLoad = failInitialProjectsLoad;
 
 const sidebarPersonalMemoryApi: PersonalDesktopApi = {
   listProjects: async () => {
@@ -788,6 +860,7 @@ export type HqBrowserFixtureHandle = {
   snapshot: () => HqFixtureData;
   reset: () => void;
   changeProjectName: (projectId: string, name: string) => void;
+  changePersonalProject: (projectId: string, name: string | null) => void;
   recordPrompt: (value: string) => void;
   recordProposal: (value: string) => void;
   recordTurn: (value: string) => void;
@@ -835,6 +908,7 @@ const createHqBrowserFixture = (): HqBrowserFixtureHandle => {
     snapshot: () => structuredClone(data),
     reset: () => {
       data = cloneSeed();
+      sidebarPersonalProjects = structuredClone(initialSidebarPersonalProjects);
       operations = { prompts: [], proposals: [], turns: [], mutations: [] };
     },
     changeProjectName: (projectId, name) => {
@@ -842,6 +916,30 @@ const createHqBrowserFixture = (): HqBrowserFixtureHandle => {
       if (!project) throw new Error(`Unknown fixture Project: ${projectId}`);
       project.name = name;
       record("mutations", `project-name:${projectId}`);
+    },
+    changePersonalProject: (projectId, name) => {
+      const current = sidebarPersonalProjects.find(
+        ({ id }) => id === projectId
+      );
+      if (!current) throw new Error(`Unknown Personal Project: ${projectId}`);
+      const next = {
+        ...current,
+        version: current.version + 1,
+        updatedAt: new Date(
+          Date.parse(current.updatedAt) + 1_000
+        ).toISOString(),
+        ...(name === null
+          ? { lifecycle: "deleted" as const, deletedAt: FIXTURE_TIME }
+          : { name })
+      };
+      sidebarPersonalProjects = sidebarPersonalProjects.filter(
+        ({ id }) => id !== projectId
+      );
+      if (name !== null) sidebarPersonalProjects.push(next);
+      publishHq105VisibilityUpdate({
+        kind: "realtime",
+        realtimeUpdate: { type: "project_changed", projectId, project: next }
+      });
     },
     recordPrompt: (value) => record("prompts", value),
     recordProposal: (value) => record("proposals", value),
@@ -947,6 +1045,7 @@ export function HqValidationApp() {
       statusStoreOverride={settingsStatusStore}
       onboardingComplete
       personalMemoryApi={sidebarPersonalMemoryApi}
+      projectsApi={sidebarProjectsApi}
       managedConversations={hq104ManagedConversations}
       statusReadyOverride
       teamCollaborationEnabled

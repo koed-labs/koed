@@ -1202,6 +1202,8 @@ export interface LcmGraphThread {
   sourceAiClient: SourceAiClient | null;
   originDeviceId?: string | null;
   projectId: string;
+  personalProjectId: string | null;
+  conversationTrashedAt: string | null;
   projectName: string;
   projectPath: string | null;
   projectAssignmentSource: "detected" | "user_override" | null;

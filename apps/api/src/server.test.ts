@@ -4887,6 +4887,8 @@ const createFakeRepository = () => {
             id: string;
             name: string;
             sessionId: string | null;
+            personalProjectId: string | null;
+            conversationTrashedAt: string | null;
             sourceAiClient: CapturedSessionRecord["sourceRuntime"] | null;
             projectId: string;
             projectName: string;
@@ -4909,6 +4911,8 @@ const createFakeRepository = () => {
           id: string;
           name: string;
           sessionId: string | null;
+          personalProjectId: string | null;
+          conversationTrashedAt: string | null;
           sourceAiClient: CapturedSessionRecord["sourceRuntime"] | null;
           projectId: string;
           projectName: string;
@@ -4952,6 +4956,8 @@ const createFakeRepository = () => {
               event.sessionId ??
               "Untitled conversation",
             sessionId: event.sessionId,
+            personalProjectId: null,
+            conversationTrashedAt: null,
             sourceAiClient:
               session?.sourceRuntime ?? event.sourceRuntime ?? null,
             projectId,
@@ -5040,6 +5046,8 @@ const createFakeRepository = () => {
               session.externalSessionId ??
               "Untitled conversation",
             sessionId: session.id,
+            personalProjectId: null,
+            conversationTrashedAt: null,
             sourceAiClient: session.sourceRuntime,
             projectId,
             projectName,

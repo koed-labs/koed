@@ -1,4 +1,6 @@
 import pg from "pg";
+import { randomUUID } from "node:crypto";
+import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 
 export interface VerifiedLocalProjectContext {
   sourceKind: "codex" | "claude-code" | "pi";
@@ -134,6 +136,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         };
       }
       let projectId = exact.rows[0]?.project_id ?? null;
+      let createdProjectId: string | null = null;
       let reason: string | undefined;
       const exactActive = Boolean(
         projectId &&
@@ -258,6 +261,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
             [input.ownerUserId, input.displayName, candidate]
           );
           projectId = created.rows[0]!.id;
+          createdProjectId = projectId;
         }
         await client.query(
           `insert into project_local_contexts
@@ -304,6 +308,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         !found.project_override_personal_project_id &&
         !found.project_override_id
       );
+      let firstAssigned = false;
       if (
         assignableId &&
         !found.automatic_personal_project_id &&
@@ -319,7 +324,24 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
           [found.id, input.ownerUserId, input.externalSessionId, assignableId]
         );
         assigned = Boolean(updated.rowCount);
+        firstAssigned = assigned;
       }
+      if (projectId && (createdProjectId === projectId || firstAssigned))
+        await appendCollaborationOutboxEventWithClient(client, {
+          family: "project_changed",
+          scope: "personal",
+          personalOwnerUserId: input.ownerUserId,
+          teamId: null,
+          teamWorkspaceId: null,
+          threadId: null,
+          messageId: null,
+          shareGrantId: null,
+          logicalMemoryId: null,
+          resourceType: "project",
+          resourceId: projectId,
+          actorPrincipalId: input.ownerUserId,
+          mutationId: randomUUID()
+        });
       await client.query("commit");
       return {
         state: projectId ? "resolved" : "unresolved",

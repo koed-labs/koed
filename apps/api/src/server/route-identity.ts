@@ -385,7 +385,7 @@ export const routeIdentityContracts = [
     "/v1/projects",
     "session_or_device_credential",
     "projects",
-    "List owned Personal Projects.",
+    "List owned Personal Projects; local Desktop read credentials are also accepted on loopback.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -485,7 +485,7 @@ export const routeIdentityContracts = [
     "/v1/projects/{id}/hq",
     "session_or_device_credential",
     "projects",
-    "Read authoritative Personal Project HQ counts.",
+    "Read authoritative Personal Project HQ counts; local Desktop read credentials are also accepted on loopback.",
     "none",
     "implemented",
     localEdgeDeploymentModes

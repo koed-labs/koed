@@ -1,4 +1,9 @@
 import { hostname } from "node:os";
+import { createProjectsClient } from "./projects-client.js";
+import type {
+  ProjectsRequest,
+  ProjectsResult
+} from "../ipc/projects-protocol.js";
 import {
   readPersonalDeviceNames,
   writePersonalDeviceName
@@ -245,6 +250,7 @@ export interface KoedServerManagerOptions {
 export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
+  projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
   localAiClients: LocalAiClientDesktopHandler;
   hardwareAcceleration: {
     get: () => Promise<HardwareAccelerationState>;
@@ -775,6 +781,8 @@ const personalProjectsData = (
                 }
               : null,
           projectId: thread.projectId,
+          personalProjectId: thread.personalProjectId,
+          conversationTrashedAt: thread.conversationTrashedAt,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
@@ -3731,7 +3739,8 @@ export const createKoedServerManager = ({
     });
   };
 
-  const managedProjectAccess = async () => {
+  const managedProjectAccess = async (refreshOrigin = false) => {
+    if (refreshOrigin) retainedPersonalApiOrigin = null;
     const current = retainedPersonalApiOrigin
       ? null
       : await runJson(["status"], statusCommandTimeoutMs);
@@ -3777,6 +3786,14 @@ export const createKoedServerManager = ({
     }
     return remote.payload;
   };
+
+  const projects = createProjectsClient(
+    (path) => managedProjectJson(path, { method: "GET" }, 8_000_000),
+    async () => {
+      const access = await managedProjectAccess(true);
+      return `${access.apiOrigin}\u0000${access.authorization}`;
+    }
+  );
 
   const managedTerminalConnectionKey = (
     ownerId: string,
@@ -5499,6 +5516,7 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     managedProject,
+    projects,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,

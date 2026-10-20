@@ -7,6 +7,7 @@ import type { ManagedConversationListEntry } from "../../../ipc/managed-conversa
 import type { CollaborationActionGrantProjection } from "../../../collaboration/renderer-client.js";
 import type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
 import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
+import type { ProjectNavigationRow } from "../project-navigation.js";
 
 export type NowNeed = {
   id: string;
@@ -70,7 +71,7 @@ export function nowNeedsFromRuntime(
         title: hqRuntimeItemTitle(item),
         context: draft.thread.name || "Conversation",
         projectId: draft.conversation.projectId,
-        sessionId: executionId,
+        sessionId: draft.conversation.capturedSessionId ?? executionId,
         executionId,
         threadId: draft.conversation.threadId,
         createdAt: item.createdAt
@@ -146,6 +147,27 @@ export function nowProjectStatus(
   ).length;
   const conversationLabel = `${conversations} ${conversations === 1 ? "Conversation" : "Conversations"}`;
   return { pending, conversations: conversationLabel };
+}
+
+export function nowPersonalProjectStatus(
+  project: ProjectNavigationRow,
+  needs: readonly NowNeed[]
+): { pending: number; conversations: string } {
+  const pending = needs.filter((need) =>
+    project.conversations.some(
+      ({ technicalProjectId, thread }) =>
+        technicalProjectId === need.projectId &&
+        (thread.sessionId === need.sessionId ||
+          sessionSelectionId(thread) === need.sessionId)
+    )
+  ).length;
+  const conversations = project.conversations.filter(
+    ({ thread }) => thread.threadKind !== "subagent"
+  ).length;
+  return {
+    pending,
+    conversations: `${conversations} ${conversations === 1 ? "Conversation" : "Conversations"}`
+  };
 }
 
 export function nowConversationDestination(

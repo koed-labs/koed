@@ -978,7 +978,7 @@ const reportSkippedCases = () => {
   }
 };
 
-const waitForHqFixture = async (window) => {
+const waitForHqFixture = async (window, expectedProjectCount = 4) => {
   let last = null;
   for (let attempt = 0; attempt < 200; attempt += 1) {
     last = await window.webContents.executeJavaScript(`(() => {
@@ -1010,7 +1010,8 @@ const waitForHqFixture = async (window) => {
       last.ready &&
       last.fixtureReady &&
       last.shellCount === 1 &&
-      (last.sidebarProjectCount === 4 || last.hasProjectLoadError) &&
+      (last.sidebarProjectCount === expectedProjectCount ||
+        last.hasProjectLoadError) &&
       last.fixtureId === expectedFixtureId &&
       last.hasSummary &&
       last.hasReset &&
@@ -1151,7 +1152,7 @@ const runValidation = async () => {
     // Context is a Project capability; exercise HQ102 layout in a real
     // Project route rather than keeping its panel on Home or Conversations.
     await window.webContents.executeJavaScript(
-      `document.querySelector('[data-hq-project-link="hq103-koed"]')?.click()`
+      `document.querySelector('[data-hq-project-link="00000000-0000-4000-8000-000000002031"]')?.click()`
     );
     for (let attempt = 0; attempt < 40; attempt += 1) {
       mounted = await waitForHqFixture(window);
@@ -1278,7 +1279,7 @@ const runValidation = async () => {
         })()`);
         assert.deepEqual(initialSidebar.projectNames, [
           "Koed",
-          "Research notes",
+          "Research archive",
           "Travel planning",
           "Work"
         ]);
@@ -1443,13 +1444,25 @@ const runValidation = async () => {
           { background: "rgb(19, 19, 23)", foreground: "rgb(244, 244, 245)" }
         ]);
         await window.webContents.executeJavaScript(
-          `document.querySelector('[id="hq-search-project:hq103-koed"]')?.click()`
+          `(() => { const target = document.querySelector('[id="hq-search-project:00000000-0000-4000-8000-000000002031"]'); if (!target) throw new Error('First-class Project search result is missing'); target.click(); })()`
         );
         await waitForPalette(false);
-        const searchSelection = await window.webContents.executeJavaScript(
-          "document.querySelector('[data-hq-route=project]')?.getAttribute('data-hq-project-id')"
+        let searchSelection = null;
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          searchSelection = await window.webContents.executeJavaScript(
+            "document.querySelector('[data-hq-route=project]')?.getAttribute('data-hq-project-id')"
+          );
+          if (searchSelection) break;
+          await delay(25);
+        }
+        const selectionState = await window.webContents.executeJavaScript(
+          `(() => ({ route: document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route'), project: document.querySelector('[data-hq-route]')?.getAttribute('data-hq-project-id'), sidebarSelected: [...document.querySelectorAll('[data-hq-project-link]')].filter((row) => row.getAttribute('data-selected') === 'true').map((row) => row.getAttribute('data-hq-project-link')) }))()`
         );
-        assert.equal(searchSelection, "hq103-koed");
+        assert.equal(
+          searchSelection,
+          "00000000-0000-4000-8000-000000002031",
+          JSON.stringify(selectionState)
+        );
         assert.equal(
           await window.webContents.executeJavaScript(
             "Boolean(document.querySelector('[data-personal-route-focus], .native-inspect-event'))"
@@ -1724,17 +1737,17 @@ const runValidation = async () => {
           )
         );
         await window.webContents.executeJavaScript(
-          `document.querySelector('[data-hq-project-link="hq103-notes"]')?.click()`
+          `document.querySelector('[data-hq-project-link="00000000-0000-4000-8000-000000002032"]')?.click()`
         );
         let selectedProject = "";
         for (let attempt = 0; attempt < 40; attempt += 1) {
           selectedProject = await window.webContents.executeJavaScript(
             "document.querySelector('[data-hq-route=project]')?.getAttribute('aria-label')?.trim() ?? ''"
           );
-          if (selectedProject.includes("Research notes")) break;
+          if (selectedProject.includes("Research archive")) break;
           await delay(25);
         }
-        assert.ok(selectedProject.includes("Research notes"));
+        assert.ok(selectedProject.includes("Research archive"));
         assert.equal(
           await window.webContents.executeJavaScript(
             "Boolean(document.querySelector('[data-hq-sidebar-dialog][role=\"dialog\"]'))"
@@ -1775,7 +1788,7 @@ const runValidation = async () => {
         );
         await openNavigation();
         await window.webContents.executeJavaScript(
-          `document.querySelector('[data-hq-project-link="hq103-koed"]')?.click()`
+          `document.querySelector('[data-hq-project-link="00000000-0000-4000-8000-000000002031"]')?.click()`
         );
         assert.equal(
           await window.webContents.executeJavaScript(
@@ -2436,6 +2449,93 @@ const runValidation = async () => {
         );
         await captureScreenshot("hq105-blank-desktop.png");
       }
+    );
+
+    await debuggerClient.sendCommand("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false
+    });
+    await window.loadFile(pagePath, {
+      query: { view: "hq", hq203Empty: "yes" }
+    });
+    await waitForHqFixture(window, 5);
+    const personalId = "00000000-0000-4000-8000-000000002032";
+    let hq203 = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      hq203 = await window.webContents.executeJavaScript(`(() => ({
+        sidebar: [...document.querySelectorAll('[data-hq-project-link]')].map((row) => [row.getAttribute('data-hq-project-link'), row.textContent?.trim()]),
+        now: [...document.querySelectorAll('.hq-now [aria-label="Projects"] .hq-now__row strong')].map((row) => row.textContent?.trim()),
+        technicalConversation: Boolean(document.querySelector('[data-hq-chat-project="hq103-notes"]'))
+      }))()`);
+      if (hq203.sidebar.length === 5 && hq203.now.includes("New empty Project"))
+        break;
+      await delay(25);
+    }
+    assert.deepEqual(
+      hq203.sidebar.find(([id]) => id === personalId),
+      [personalId, "Research archive"]
+    );
+    assert.ok(
+      hq203.now.includes("Research archive") &&
+        hq203.now.includes("New empty Project")
+    );
+    assert.equal(hq203.technicalConversation, true);
+    await window.webContents.executeJavaScript(`(() => {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('light');
+      document.documentElement.dataset.theme = 'light';
+    })()`);
+    await captureScreenshot("hq203-projects-desktop-light.png");
+    await window.webContents.executeJavaScript(`(() => {
+      document.documentElement.classList.remove('light');
+      document.documentElement.classList.add('dark');
+      document.documentElement.dataset.theme = 'dark';
+    })()`);
+    await captureScreenshot("hq203-projects-desktop-dark.png");
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-hq-chat-project="hq103-notes"]')?.click()`
+    );
+    const technicalRoute = await window.webContents.executeJavaScript(
+      `document.querySelector('[data-hq-route="conversation"]')?.getAttribute('data-hq-project-id')`
+    );
+    assert.equal(technicalRoute, "hq103-notes");
+    await window.webContents.executeJavaScript(
+      `window.__koedHqFixture.changePersonalProject(${JSON.stringify(personalId)}, "Renamed Personal Project")`
+    );
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-project-link="${personalId}"]')?.textContent?.includes("Renamed Personal Project")`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('[data-hq-project-link="${personalId}"]')?.textContent?.includes("Renamed Personal Project")`
+      ),
+      true
+    );
+    await window.webContents.executeJavaScript(
+      `window.__koedHqFixture.changePersonalProject(${JSON.stringify(personalId)}, null)`
+    );
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `!document.querySelector('[data-hq-project-link="${personalId}"]')`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `!document.querySelector('[data-hq-project-link="${personalId}"]')`
+      ),
+      true
     );
 
     process.stdout.write(

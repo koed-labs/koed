@@ -63,6 +63,7 @@ import {
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
+import type { ProjectsDesktopApi } from "../ipc/projects-protocol.js";
 import { ThemeStore } from "./state/theme.js";
 import { useDesktopStatus } from "./state/use-status.js";
 import {
@@ -551,6 +552,7 @@ export type AppProps = {
   onboardingComplete?: boolean;
   managedConversations?: ManagedConversationDesktopApi | null;
   managedProject?: ManagedProjectDesktopApi | null;
+  projectsApi?: ProjectsDesktopApi | null;
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
@@ -565,6 +567,7 @@ export function App({
   onboardingComplete = false,
   managedConversations = window.koedDesktop?.managedConversations ?? null,
   managedProject = window.koedDesktop?.managedProject ?? null,
+  projectsApi = window.koedDesktop?.projects ?? null,
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
   statusStoreOverride,
@@ -1171,8 +1174,10 @@ export function App({
       <HqApplication
         personalMemoryStore={personalMemoryStore}
         personalMemoryReady={personalMemoryReady}
+        projectsApi={projectsApi}
         visibilityClient={client}
         visibilityOwnerId={snapshot?.navigation.personalOwner.id ?? null}
+        visibilityProfileKey={`${snapshot?.connection.backendId ?? "local"}|${snapshot?.connection.connectedAt ?? ""}|${client.currentRemoteUrl() ?? ""}`}
         visibilityRevision={snapshot?.snapshotRevision ?? null}
         visibilityConnected={snapshot?.connection.state === "live"}
         managedConversations={managedConversations}

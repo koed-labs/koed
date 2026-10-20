@@ -380,6 +380,7 @@ const mapLcmGraphEvent = (row: {
 
 const mapLcmGraphThreadRow = (row: {
   project_id: string;
+  personal_project_id: string | null;
   project_name: string;
   project_path: string | null;
   project_assignment_source: "detected" | "user_override" | null;
@@ -387,6 +388,7 @@ const mapLcmGraphThreadRow = (row: {
   thread_id: string;
   thread_name: string;
   session_id: string | null;
+  conversation_trashed_at: Date | null;
   source_ai_client: SourceAiClient | null;
   origin_device_id?: string | null;
   event_count: string | number;
@@ -418,9 +420,11 @@ const mapLcmGraphThreadRow = (row: {
     id: row.thread_id,
     name,
     sessionId: row.session_id,
+    conversationTrashedAt: row.conversation_trashed_at?.toISOString() ?? null,
     sourceAiClient: row.source_ai_client,
     originDeviceId: row.origin_device_id ?? null,
     projectId: row.project_id,
+    personalProjectId: row.personal_project_id,
     projectName: row.project_name,
     projectPath: row.project_path,
     projectAssignmentSource: row.project_assignment_source,
@@ -7802,6 +7806,7 @@ export const createMemorySourceRepository = (
               case when s.id is null then me.payload ->> 'projectId' end,
               'unassigned'
             ) as project_id,
+            case when s.project_override_id is not null then s.project_override_personal_project_id else s.automatic_personal_project_id end as personal_project_id,
             coalesce(
               s.project_override_name,
               s.automatic_project_name,
@@ -7822,6 +7827,7 @@ export const createMemorySourceRepository = (
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
+            s.trashed_at as conversation_trashed_at,
             coalesce(s.source_runtime, me.source_runtime) as source_ai_client,
             case
               when coalesce(
@@ -7890,6 +7896,7 @@ export const createMemorySourceRepository = (
             s.id::text as id,
             'session' as row_kind,
             coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            case when s.project_override_id is not null then s.project_override_personal_project_id else s.automatic_personal_project_id end as personal_project_id,
             coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
             coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             case
@@ -7901,6 +7908,7 @@ export const createMemorySourceRepository = (
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
+            s.trashed_at as conversation_trashed_at,
             s.source_runtime as source_ai_client,
             case
               when coalesce(
@@ -7951,6 +7959,7 @@ export const createMemorySourceRepository = (
         ranked_threads as (
           select
             project_id,
+            (array_agg(personal_project_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as personal_project_id,
             (array_agg(project_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_name,
             (array_agg(project_path order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_path,
             (array_agg(project_assignment_source order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_assignment_source,
@@ -7958,6 +7967,7 @@ export const createMemorySourceRepository = (
             thread_id,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
+            (array_agg(conversation_trashed_at order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as conversation_trashed_at,
             (array_agg(source_ai_client order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null and source_ai_client is not null))[1] as source_ai_client,
             (array_agg(thread_kind order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_kind,
             (array_agg(parent_thread_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_thread_id is not null))[1] as parent_thread_id,
@@ -8028,9 +8038,11 @@ export const createMemorySourceRepository = (
           id: thread.id,
           name: thread.name,
           sessionId: thread.sessionId,
+          conversationTrashedAt: thread.conversationTrashedAt,
           sourceAiClient: thread.sourceAiClient,
           originDeviceId: thread.originDeviceId,
           projectId: thread.projectId,
+          personalProjectId: thread.personalProjectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
