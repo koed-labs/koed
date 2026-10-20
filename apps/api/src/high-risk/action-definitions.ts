@@ -34,6 +34,8 @@ export type HighRiskActionDefinitionRepository = Pick<
   | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryShareReview"
   | "getSharedMemoryRevokeReview"
+  | "getSourceAdmission"
+  | "inspectSourceAdmissionProvenance"
   | "getSharedMemoryFidelityChangeReview"
   | "getTeamConversationSourceGrantReview"
   | "getConversationSourceArtifactByGeneration"
@@ -56,6 +58,7 @@ interface HighRiskActionDefinitionAdmissionInput {
   userId: string;
   upstreamBackendId?: string;
   currentDeviceInstanceId?: string;
+  deviceCredentialId?: string;
   clientRequestId: string;
   hashSecret(secret: string): string;
   intent: HighRiskActionGrantIntent;

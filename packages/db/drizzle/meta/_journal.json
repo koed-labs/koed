@@ -351,6 +351,13 @@
       "when": 1792457062216,
       "tag": "0049_round_sinister_six",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792462162505,
+      "tag": "0050_red_lifeguard",
+      "breakpoints": true
     }
   ]
 }

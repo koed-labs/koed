@@ -49,6 +49,7 @@ type ContextRow = {
   folder_hash: string | null;
   association_state: "resolved" | "unresolved";
   lifecycle: "active" | "deleted" | null;
+  deletion_phase: string | null;
   last_confirmation_version: number;
 };
 
@@ -116,7 +117,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         [`personal-project-owner-key:${input.ownerUserId}`]
       );
       const exact = await client.query<ContextRow>(
-        `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,c.last_confirmation_version,p.lifecycle
+        `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,c.last_confirmation_version,p.lifecycle,p.deletion_phase
            from project_local_contexts c
            left join projects p on p.id=c.project_id and p.owner_user_id=c.owner_user_id
           where c.owner_user_id=$1 and c.device_id=$2 and c.local_project_id=$3
@@ -135,7 +136,9 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
       let projectId = exact.rows[0]?.project_id ?? null;
       let reason: string | undefined;
       const exactActive = Boolean(
-        projectId && exact.rows[0]?.lifecycle === "active"
+        projectId &&
+        exact.rows[0]?.lifecycle === "active" &&
+        exact.rows[0]?.deletion_phase === null
       );
       const requestedConfirmation = Boolean(
         input.confirmedProjectId || input.confirmedSeparate
@@ -162,7 +165,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         : undefined;
       if (exact.rows[0] && confirmedProjectId) {
         const chosen = await client.query<{ id: string }>(
-          `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active'`,
+          `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null`,
           [confirmedProjectId, input.ownerUserId]
         );
         projectId = chosen.rows[0]?.id ?? null;
@@ -183,7 +186,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
       } else if (!exact.rows[0] || confirmedSeparate) {
         const candidates = input.commonDirHash
           ? await client.query<ContextRow>(
-              `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,p.lifecycle
+              `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,p.lifecycle,p.deletion_phase
                  from project_local_contexts c
                  left join projects p on p.id=c.project_id and p.owner_user_id=c.owner_user_id
                 where c.owner_user_id=$1 and c.device_id=$2 and c.common_dir_hash=$3
@@ -206,7 +209,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         );
         if (confirmedProjectId) {
           const chosen = await client.query<{ id: string }>(
-            `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active'`,
+            `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null`,
             [confirmedProjectId, input.ownerUserId]
           );
           projectId = chosen.rows[0]?.id ?? null;
@@ -218,7 +221,9 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
           uniqueProjects.length === 1 &&
           candidates.rows.every(
             (row) =>
-              row.association_state === "resolved" && row.lifecycle === "active"
+              row.association_state === "resolved" &&
+              row.lifecycle === "active" &&
+              row.deletion_phase === null
           )
         ) {
           projectId = uniqueProjects[0]!;
@@ -287,7 +292,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
       // delete either waits for this transaction or commits before this read.
       const active = projectId
         ? await client.query<{ id: string }>(
-            `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active'
+            `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
                for share`,
             [projectId, input.ownerUserId]
           )

@@ -1552,6 +1552,8 @@ export const createCollaborationRendererClient = (
       "collaboration.preview_shared_memory": "Preview Shared Memory",
       "collaboration.share_memory": "Share Memory",
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
+      "collaboration.freeze_shared_memory_grant": "Freeze Shared Memory grant",
+      "collaboration.source_admission": "Prepare Project source deletion",
       "collaboration.change_shared_memory_fidelity":
         "Change Shared Memory fidelity",
       "collaboration.share_conversation_source": "Share Conversation source",

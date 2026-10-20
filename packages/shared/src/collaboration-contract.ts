@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { workItemSchema } from "./work-item-contract.js";
+import { projectSchema } from "./project-contract.js";
 import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
@@ -1898,6 +1899,23 @@ export const collaborationActionGrantIntentSchema = z
         .max(120)
         .regex(/^[A-Za-z0-9_.:-]+$/)
     }),
+    actionGrantIntent("collaboration.freeze_shared_memory_grant", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema
+    }),
+    actionGrantIntent("collaboration.source_admission", {
+      source: sharedMemorySourceRefSchema,
+      sourceDeploymentProtocolId: z.uuid(),
+      sourceOwnerPrincipalId: z.uuid(),
+      logicalMemoryId: z.uuid(),
+      batchId: z.uuid(),
+      expectedGeneration: z.number().int().safe().nonnegative(),
+      expectedHoldVersion: z.number().int().safe().nonnegative(),
+      operation: z.enum(["prepare", "seal", "cancel"])
+    }),
     actionGrantIntent("collaboration.share_conversation_source", {
       mutationId: z.uuid(),
       teamId: z.uuid(),
@@ -3341,7 +3359,8 @@ const realtimeResourceSchema = z
     messageId: z.uuid().nullable(),
     sharedSessionId: z.uuid().nullable(),
     shareGrantId: z.uuid().nullable(),
-    workItemId: z.uuid().nullable().optional()
+    workItemId: z.uuid().nullable().optional(),
+    projectId: z.uuid().nullable().optional()
   })
   .strict()
   .superRefine((resource, context) => {
@@ -3385,6 +3404,13 @@ const teamRealtimeEventResourceV2Schema = z
   .strict();
 
 export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("project_changed"),
+      projectId: z.uuid(),
+      project: projectSchema.nullable()
+    })
+    .strict(),
   z
     .object({
       type: z.literal("work_item_changed"),
@@ -3630,6 +3656,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "pending_share_lifecycle",
   "managed_conversation_changed",
   "work_item_changed",
+  "project_changed",
   "access_revoked"
 ]);
 
@@ -3796,6 +3823,7 @@ const realtimeUpdateDeliverySchema = z
       pending_share_lifecycle: new Set(["owned_share_status_changed"]),
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
       work_item_changed: new Set(["work_item_changed"]),
+      project_changed: new Set(["project_changed"]),
       access_revoked: new Set(["shared_session_removed"])
     };
 
@@ -3824,6 +3852,25 @@ const realtimeUpdateDeliverySchema = z
         code: "custom",
         path: ["update"],
         message: "Work Item update must match its Personal resource"
+      });
+    }
+
+    if (
+      update.type === "project_changed" &&
+      (resource.scope !== "personal" ||
+        resource.teamId !== null ||
+        resource.workspaceId !== null ||
+        resource.threadId !== null ||
+        resource.messageId !== null ||
+        resource.sharedSessionId !== null ||
+        resource.shareGrantId !== null ||
+        resource.projectId !== update.projectId ||
+        (update.project !== null && update.project.id !== update.projectId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update"],
+        message: "Project update must match its Personal resource"
       });
     }
 

@@ -1291,6 +1291,13 @@ export const createCrossIdentitySyncRepository = (
              from sessions
             where id=$1 and owner_user_id=$2 and visibility='personal'
               and invalidated_at is null and personal_deleted_at is null
+              and trashed_at is null
+              and not exists (select 1 from projects project
+                where project.id=(case when sessions.project_override_id is not null
+                  then sessions.project_override_personal_project_id
+                  else sessions.automatic_personal_project_id end)
+                  and project.owner_user_id=sessions.owner_user_id
+                  and (project.lifecycle<>'active' or project.deletion_phase is not null))
          ), inserted as (
            insert into sync_semantic_changes (
              session_id,memory_event_id,origin_event_id,operation,revision_hash

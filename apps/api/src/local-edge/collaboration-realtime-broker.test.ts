@@ -1073,6 +1073,7 @@ const createHarness = async (
           ? options.workItem
           : null
     }),
+    requireProjectRepository: () => null,
     resolveActiveLocalUser: async (userId) =>
       !activeLocalOwner
         ? null
@@ -1522,6 +1523,66 @@ describe("local collaboration realtime broker", () => {
     });
     expect(stream).not.toContain(remoteSubscriptionId);
     expect(stream).not.toContain("remote-secret");
+  });
+
+  it("relays a bound remote Personal Project change to the desktop", async () => {
+    const base = remoteEvent(eventA, eventCursorA);
+    const projectId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const personalProjectEvent = {
+      ...base,
+      type: "project_changed",
+      resource: {
+        ...base.resource,
+        scope: "personal",
+        type: "project",
+        id: projectId,
+        teamId: null,
+        threadId: null,
+        messageId: null,
+        projectId
+      },
+      update: {
+        type: "project_changed",
+        projectId,
+        project: {
+          id: projectId,
+          name: "Project",
+          key: "PROJECT",
+          folderPath: null,
+          lifecycle: "active",
+          deletionPhase: null,
+          deleteBatchId: null,
+          deletedAt: null,
+          createdAt: "2026-10-20T00:00:00.000Z",
+          updatedAt: "2026-10-20T00:00:00.000Z",
+          version: 1
+        }
+      }
+    };
+    const harness = await createHarness({
+      remotePersonal: true,
+      stream: () =>
+        sseResponse([
+          { event: "collaboration_event", data: personalProjectEvent }
+        ])
+    });
+    harnesses.push(harness);
+    const { body } = await createPersonalSnapshot(harness);
+    await acknowledgePersonalSnapshot(harness, body);
+    const { response } = await openPersonalStream(
+      harness,
+      body.subscription.id
+    );
+    const stream = await readStream(response);
+    expect(eventPayload(stream)).toMatchObject({
+      family: "project_changed",
+      resource: { scope: "personal", projectId },
+      update: {
+        type: "project_changed",
+        projectId,
+        project: { id: projectId, version: 1 }
+      }
+    });
   });
 
   it("denies remote Personal Work Items without the Personal read operation family", async () => {

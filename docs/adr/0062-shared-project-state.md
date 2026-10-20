@@ -2,13 +2,14 @@
 
 ## Status
 
-Accepted design; grant-freeze foundation is implemented. Project lifecycle
-workflows remain pending.
+Accepted design; exact grant freeze and the Personal Project lifecycle are
+implemented. Workspace Project lifecycle workflows remain pending.
 
 This ADR defines target behavior. HQ-715 implements the exact owner-reviewed
 Share Grant freeze, immutable published closure, and current Team lifecycle
-parent integration. Workspace Project records, Project routes, and their
-Personal lifecycle callers remain pending.
+parent integration. HQ-202 implements local Personal Project routes and their
+Captured Session lifecycle coordination. Workspace Project records and Team
+Project lifecycle routes remain pending.
 
 Related decisions:
 
@@ -249,11 +250,33 @@ restores another User's Personal data or membership.
 
 ## Current implementation boundary
 
+HQ-202 now implements owner-only local Personal Project create, rename, folder,
+delete, restore, and HQ summary routes. Deletion records an exact local child
+and execution batch, stops confirmed executions, and waits for each known Team
+backend to acknowledge a source admission seal and every active exact grant to
+receive separate Native-review freeze. New sharing is held while deletion is
+pending. An uncertain or offline backend leaves the operation incomplete.
+Restoration is local and keeps jobs paused and grants frozen. Release of its
+old source hold is durable and retryable; a later sharing action needs fresh
+normal consent at the current generation. Project Sources, Notes, Decks,
+scheduled jobs, Workspace Project collaboration, and later HQ sections remain
+separate implementation work. If their schema capability is enabled without a
+lifecycle adapter, Project deletion fails closed.
+
+The local manifest also consults retained owner enrollment records for
+historical Team backends, including revoked enrollments, so an explicit grant
+without a Sync relationship cannot be omitted when its backend leaves the
+current registry. Unreachable backends leave deletion pending. Native freeze
+review commands are reserved durably per exact batch, source, backend, grant,
+and reviewed version before dispatch. Batch-specific status reports the
+selected operation's state, even if a later batch changed the Project.
+
 The repository supports user-owned Share Grants, revisioned Personal Notes
 and their `personal_note` sharing adapter, and local Project-to-Workspace
 recall mapping. It does not currently implement the Workspace Project and
-Project Source collaboration model or the target `shared_memory.grant.freeze`
-and `project.lifecycle.freeze_grant` actions. ADR 0024 and the
+Project Source collaboration model or the target
+`project.lifecycle.freeze_grant` action. The exact
+`shared_memory.grant.freeze` action is implemented for HQ-202. ADR 0024 and the
 Project-sharing lifecycle describe their intended approval and lifecycle
 contracts; they are not evidence that the routes exist. HQ-011 defines the
 target contract, and later implementation tickets must add the records,

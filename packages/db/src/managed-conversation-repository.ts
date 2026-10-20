@@ -1372,6 +1372,35 @@ export const createManagedConversationRepository = (
     return mapDiff(row, parsed as Record<string, unknown>);
   };
 
+  const assertExecutionProjectWritable = async (
+    client: pg.PoolClient,
+    execution: ExecutionRow
+  ) => {
+    const result = await client.query<{
+      lifecycle: string;
+      deletion_phase: string | null;
+    }>(
+      `select p.lifecycle,p.deletion_phase from projects p
+        left join project_local_contexts context on context.project_id=p.id
+          and context.owner_user_id=p.owner_user_id
+          and context.device_id=$2 and context.local_project_id=$3
+          and context.association_state='resolved'
+       where p.owner_user_id=$1 and (p.id::text=$3 or context.local_project_id=$3)
+       for share of p`,
+      [
+        execution.owner_user_id,
+        execution.runner_device_id,
+        execution.project_id
+      ]
+    );
+    if (
+      result.rows.some(
+        (row) => row.lifecycle !== "active" || row.deletion_phase !== null
+      )
+    )
+      throw statusError("Project is unavailable for managed execution", 409);
+  };
+
   return {
     async createManagedConversation(actor, input) {
       const projectId = input.projectId.trim();
@@ -1389,6 +1418,26 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const projectAvailability = await client.query<{
+          lifecycle: string;
+          deletion_phase: string | null;
+        }>(
+          `select p.lifecycle,p.deletion_phase from projects p
+             left join project_local_contexts c on c.project_id=p.id and c.owner_user_id=p.owner_user_id
+              and c.device_id=$2 and c.local_project_id=$3 and c.association_state='resolved'
+            where p.owner_user_id=$1 and (p.id::text=$3 or c.local_project_id=$3)
+            for share of p`,
+          [actor.userId, input.runnerDeviceId, projectId]
+        );
+        if (
+          projectAvailability.rows.some(
+            (row) => row.lifecycle !== "active" || row.deletion_phase !== null
+          )
+        )
+          throw statusError(
+            "Project is unavailable for managed execution",
+            409
+          );
         const existing = await client.query<CommandRow>(
           `select ${COMMAND_COLUMNS}
              from managed_conversation_commands
@@ -1570,6 +1619,7 @@ export const createManagedConversationRepository = (
           [actor.userId, input.executionId]
         );
         const current = execution.rows[0];
+        if (current) await assertExecutionProjectWritable(client, current);
         if (
           !current ||
           !["starting", "running"].includes(current.state) ||
@@ -1789,6 +1839,7 @@ export const createManagedConversationRepository = (
           [actor.userId, input.executionId]
         );
         const current = execution.rows[0];
+        if (current) await assertExecutionProjectWritable(client, current);
         if (
           !current ||
           current.execution_generation !== input.executionGeneration
@@ -1882,7 +1933,16 @@ export const createManagedConversationRepository = (
         if (
           !execution ||
           execution.execution_generation !== input.executionGeneration ||
-          !["starting", "running", "reconciling"].includes(execution.state)
+          !(input.commandKind === "stop"
+            ? [
+                "starting",
+                "running",
+                "reconciling",
+                "quiesce_requested",
+                "quiesced",
+                "stopping"
+              ].includes(execution.state)
+            : ["starting", "running", "reconciling"].includes(execution.state))
         ) {
           throw statusError("Managed Conversation is not controllable", 409);
         }
@@ -1965,6 +2025,7 @@ export const createManagedConversationRepository = (
           [actor.userId, input.executionId]
         );
         const execution = executionResult.rows[0];
+        if (execution) await assertExecutionProjectWritable(client, execution);
         if (
           !execution ||
           execution.execution_generation !== input.executionGeneration ||
@@ -2587,6 +2648,18 @@ export const createManagedConversationRepository = (
                 )
               )
               and execution.state not in ('stopped','failed','fenced')
+              and not exists (
+                select 1 from projects project
+                  left join project_local_contexts context
+                    on context.project_id=project.id
+                   and context.owner_user_id=project.owner_user_id
+                   and context.device_id=execution.runner_device_id
+                   and context.local_project_id=execution.project_id
+                   and context.association_state='resolved'
+                 where project.owner_user_id=execution.owner_user_id
+                   and (project.id::text=execution.project_id or context.local_project_id=execution.project_id)
+                   and (project.lifecycle<>'active' or project.deletion_phase is not null)
+              )
               and (
                 command.command_kind in ('verify_target','fork_create')
                 or
@@ -2744,6 +2817,18 @@ export const createManagedConversationRepository = (
               and ($6::uuid is null or command.owner_user_id = $6)
               and execution.runner_device_id = $4
               and execution.runner_deployment_id = $5
+              and not exists (
+                select 1 from projects project
+                  left join project_local_contexts context
+                    on context.project_id=project.id
+                   and context.owner_user_id=project.owner_user_id
+                   and context.device_id=execution.runner_device_id
+                   and context.local_project_id=execution.project_id
+                   and context.association_state='resolved'
+                 where project.owner_user_id=execution.owner_user_id
+                   and (project.id::text=execution.project_id or context.local_project_id=execution.project_id)
+                   and (project.lifecycle<>'active' or project.deletion_phase is not null)
+              )
             order by command.created_at, command.sequence
             for update of command skip locked
             limit $1

@@ -83,6 +83,10 @@ closed.
 | `shared_memory.change_fidelity`            | Step-up when fidelity increases or Curated Memory is enabled; Native review when fidelity decreases            |
 | `shared_memory.conversation_source_grant`  | Step-up because it exposes exact source records independently of semantic fidelity                             |
 | `shared_memory.conversation_source_revoke` | Native review                                                                                                  |
+| `shared_memory.grant.freeze`               | Native review for each exact owner Share Grant; pinned authorization cannot resume on Project restore          |
+| `shared_memory.source_admission.prepare`   | Direct for the exact owner/source/batch/generation; reserves admission and activates no access                 |
+| `shared_memory.source_admission.seal`      | Direct for the exact held source/batch/version after independently reviewed grant freezes                      |
+| `shared_memory.source_admission.cancel`    | Direct for exact old-batch hold release; old pending generations remain stale                                  |
 | `managed_conversation.handoff`             | Native review; Step-up for an untrusted or newly enrolled target                                               |
 | `managed_conversation.fork`                | Native review; Step-up for an untrusted or newly enrolled target                                               |
 | `conversation_source.discover`             | Direct only within an enrolled sync relationship; otherwise fail closed                                        |
@@ -96,9 +100,21 @@ closed.
 
 ## Intended Project Sharing and Lifecycle Action Matrix (Implementation Pending)
 
+HQ-202 implements the two exact source controls above. Source admission uses
+the existing `share_grant_management` Action Grant family, not a device-only
+mutation. The Team Backend derives source ownership from its stored source,
+credential, deployment, and principal records and rechecks it at consumption.
+Each preparation, seal, or release binds one opaque batch, backend, source,
+device, request hash, generation, and expected version to one-use authority.
+Preparation and seal fence new access; they do not freeze an existing grant.
+Every existing grant receives its own Native review before freeze. A restored
+Personal Project releases only its old admission hold. Earlier previews and
+Pending Shares retain their old generation and cannot acquire new access.
+
 The following exact allowlisted action names and tiers are the target contract
-for Project sharing and lifecycle work. They do not mean that the actions,
-endpoints, or APIs exist today. As with the accepted matrix above, the Team
+for Project sharing and lifecycle work. Except for the exact grant freeze
+identified above, the remaining Project collaboration actions are pending.
+As with the accepted matrix above, the Team
 Backend selects the tier from the allowlisted action and authoritative state;
 callers cannot select or downgrade a tier. Bind every request to the exact
 User, source owner, Team, Workspace, resource identity, destination when
@@ -118,7 +134,6 @@ completion. It cannot invoke or impersonate a Team lifecycle action.
 | `workspace_project.member_remove`                        | Step-up       | Workspace Project owner with current Team membership and Workspace authority; reject the Project owner as the target, including self-removal. Disable only another named member's access to this Project, never global Team Membership.                                      |
 | `workspace_project.leave`                                | Step-up       | Self-service only for a current non-owner member with Workspace Project access; reject the Workspace Project owner. Disable only the caller's access and freeze only their affected grants. It does not change Team Membership or another member's access.                   |
 | `project_source.team_metadata.delete`                    | Step-up       | Source uploader or Workspace Project owner with current authority; delete Team metadata only, not the owner's Personal Note content.                                                                                                                                         |
-| `shared_memory.grant.freeze`                             | Native review | Exact source owner and one exact Share Grant; pin published authorization without revoking the grant or changing consent.                                                                                                                                                    |
 | `project.lifecycle.freeze_grant`                         | Bundled stage | Backend-only substage of the exact outer lifecycle action; inherits its target, authority, request binding, and approval. It cannot be requested as a standalone action.                                                                                                     |
 | `shared_memory.project_share_policy.enable`              | Native review | Review summary-sharing disclosure and bind a versioned policy plus a bounded manifest built by the source owner's trusted local edge from authoritative local capture and Project state; it never shares another member's sources.                                           |
 | `shared_memory.project_share_policy.revoke`              | Native review | Exact source owner and current policy version; disable future policy-based grant issuance. Existing Share Grants continue under their own consent and lifecycle unless separately frozen or revoked.                                                                         |

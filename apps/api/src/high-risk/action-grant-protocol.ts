@@ -57,6 +57,7 @@ import {
   bindSharedMemoryRevokeOperation,
   bindSharedMemoryFreezeOperation
 } from "./shared-memory-action-definitions.js";
+import { sourceAdmissionActionGrantBinding } from "@koed/shared";
 import {
   bindConversationSourceDiscoveryOperation,
   bindConversationSourceDownloadOperation,
@@ -299,6 +300,25 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       teamWorkspaceId: uuidSchema,
       shareGrantId: uuidSchema,
       expectedGrantVersion: freezeShareGrantSchema.shape.expectedGrantVersion
+    })
+    .strict(),
+  z
+    .object({
+      action: z.enum([
+        "shared_memory.source_admission.prepare",
+        "shared_memory.source_admission.seal",
+        "shared_memory.source_admission.cancel"
+      ]),
+      source: createSharedMemoryCandidatePreviewSchema.shape.source,
+      sourceDeploymentProtocolId:
+        createSharedMemoryCandidatePreviewSchema.shape
+          .sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId:
+        createSharedMemoryCandidatePreviewSchema.shape.sourceOwnerPrincipalId,
+      logicalMemoryId: uuidSchema,
+      batchId: uuidSchema,
+      expectedGeneration: z.number().int().safe().nonnegative(),
+      expectedHoldVersion: z.number().int().safe().nonnegative()
     })
     .strict(),
   z
@@ -738,6 +758,26 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         expectedGrantVersion: intent.expectedGrantVersion,
         reasonCode: intent.reasonCode
       };
+    case "collaboration.freeze_shared_memory_grant":
+      return {
+        action: "shared_memory.grant.freeze",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        teamWorkspaceId: intent.workspaceId,
+        shareGrantId: intent.shareGrantId,
+        expectedGrantVersion: intent.expectedGrantVersion
+      };
+    case "collaboration.source_admission":
+      return {
+        action: `shared_memory.source_admission.${intent.operation}`,
+        source: intent.source,
+        sourceDeploymentProtocolId: intent.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: intent.sourceOwnerPrincipalId,
+        logicalMemoryId: intent.logicalMemoryId,
+        batchId: intent.batchId,
+        expectedGeneration: intent.expectedGeneration,
+        expectedHoldVersion: intent.expectedHoldVersion
+      };
     case "collaboration.share_conversation_source":
       return {
         action: "shared_memory.conversation_source_grant",
@@ -894,6 +934,20 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
     case "shared_memory.grant.freeze":
       return bindSharedMemoryFreezeOperation(intent, clientRequestId);
+    case "shared_memory.source_admission.prepare":
+    case "shared_memory.source_admission.seal":
+    case "shared_memory.source_admission.cancel":
+      return sourceAdmissionActionGrantBinding({
+        referenceId: clientRequestId,
+        source: intent.source,
+        sourceDeploymentProtocolId: intent.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: intent.sourceOwnerPrincipalId,
+        logicalMemoryId: intent.logicalMemoryId,
+        batchId: intent.batchId,
+        expectedGeneration: intent.expectedGeneration,
+        expectedHoldVersion: intent.expectedHoldVersion,
+        operation: intent.action.split(".")[2] as "prepare" | "seal" | "cancel"
+      });
     case "shared_memory.conversation_source_grant":
       return bindConversationSourceGrantOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_revoke":

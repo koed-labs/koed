@@ -78,6 +78,7 @@ export type CollaborationEventFamily =
   | "pending_share_lifecycle"
   | "managed_conversation_changed"
   | "work_item_changed"
+  | "project_changed"
   | "access_revoked";
 
 export interface CollaborationParticipantRecord {

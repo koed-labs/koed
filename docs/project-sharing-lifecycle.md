@@ -243,10 +243,11 @@ action. It does not require Team enrollment or browser approval. The batch
 includes its HQ Conversation, Conversations, Work Items, Project Sources, and
 Decks as one batch. Before reporting success, freeze every active Team grant
 attached to a child Conversation's exact Captured Session or a supported
-Project Source Note revision. The source owner requests a target
-`shared_memory.grant.freeze` Native-review operation for each exact grant; this
-includes explicit grants created outside the Project Share Policy. This
-Personal Project deletion caller is still pending. Wait for every required Team freeze
+Project Source Note revision when its adapter is available. The source owner
+requests `shared_memory.grant.freeze` Native review for each exact grant,
+including explicit grants created outside the Project Share Policy. HQ-202
+implements the Personal Project deletion caller for Captured Sessions and
+waits for every required Team freeze
 before reporting deletion complete or purging child records. Personal Memory
 assertions remain and keep the Project label. After confirmation, stop local
 Agent work running in the Project and pause its Scheduled Jobs. Show an Undo
@@ -254,6 +255,17 @@ toast; only the Personal Project owner may restore the batch, for 30 days.
 Restored jobs stay paused, and restored sources, Conversations, or Projects do
 not resume any frozen grant. A retry is idempotent; already-completed freezes
 stay in place.
+
+The local delete manifest includes every backend in the owner's retained
+Shared Memory enrollment history, including revoked enrollments and backends
+removed from the current registry. This covers explicit grants without a Sync
+relationship. If a historical backend cannot be reached, deletion remains
+pending until its exact source and grants can be checked and sealed. A Native
+freeze request reserves its command identity in the local batch before remote
+dispatch; retries reuse that identity for the same reviewed grant version, and
+a changed version requires a new review. Delete status names the selected
+batch and its state, so an older cancelled batch never reports a later batch's
+completion.
 
 ### Forget a Conversation, source, or Memory item
 
@@ -563,12 +575,27 @@ paths.
 
 ## Implementation boundary
 
+HQ-202 local Personal Project deletion uses a durable batch and admission
+generation for each exact Captured Session source on every known Team backend.
+The backend serializes first grant admission and later activation against the
+same source ledger. An old approved preview or Pending Share cannot activate
+after preparation, including when a replacement preview is supplied. Existing
+grants continue their unrelated activity until each exact grant receives its
+own Native-review freeze. Sealing acknowledges that no unfrozen grant remains;
+transport uncertainty is retried from status and never treated as success.
+The local owner can restore within 30 days while offline. Restore keeps frozen
+grants frozen and old Pending Shares stale, then durably reconciles release of
+only that batch's source hold. A later explicit share goes through fresh normal
+review at the new source generation. A second delete waits for outstanding
+release acknowledgments before claiming a new batch.
+
 These rules specify behavior, not routes, database columns, or a particular
 API. A Team-authoritative Project lifecycle operation must not claim success
 until the Team Backend has completed its required grant and access changes. A
 Personal command remains a local owner operation; when it affects a Team grant,
 it must wait for the exact owner-authorized freeze or revocation to complete
-before reporting success. The freeze route and current Team parent integration
-exist; Project-specific callers and Project Share Policy do not. Existing code
+before reporting success. The exact freeze route and HQ-202 Personal Project
+coordinator exist; Project Share Policy and the Workspace Project lifecycle do
+not. Existing code
 for personal forgetting, Workspace Access, or source access does not implement
 those pending Project workflows.

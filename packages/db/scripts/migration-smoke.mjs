@@ -75,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0049_round_sinister_six";
+const expectedLatestMigrationTag = "0050_red_lifeguard";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 49;
+const expectedLatestMigrationIndex = 50;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1420,6 +1420,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preProjectApiFolder = await createMigrationSlice(journal, 49, {
+    folderPrefix: "koed-pre-project-api-"
+  });
+  temporaryFolders.add(preProjectApiFolder);
+  const preProjectApiRecords = await migrationRecords(
+    preProjectApiFolder,
+    journal.entries.slice(0, 50)
+  );
   const preWorkItemsFolder = await createMigrationSlice(journal, 48, {
     folderPrefix: "koed-pre-work-items-"
   });
@@ -2379,6 +2387,74 @@ try {
       await stableFixtureFingerprint(pool, oldShapeFixture);
       await assertUpgradedStableDefaults(pool, oldShapeFixture);
       await assertMigrationLedger(pool, through0020Records);
+    });
+  });
+
+  await runScenario("project-api-0050-upgrade-and-rollback", async () => {
+    const target = await createDisposableDatabase("project_api_upgrade");
+    const ownerId = randomUUID();
+    const projectId = randomUUID();
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preProjectApiFolder });
+      await assertMigrationLedger(pool, preProjectApiRecords);
+      await pool.query("insert into users(id,email) values ($1,$2)", [
+        ownerId,
+        `${ownerId}@example.test`
+      ]);
+      await pool.query(
+        `insert into projects(id,owner_user_id,name,key,lifecycle,deleted_at)
+        values ($1,$2,'Legacy deleted','LEGACY','deleted',now())`,
+        [projectId, ownerId]
+      );
+    });
+    const interrupted = await createMigrationSlice(journal, 50, {
+      folderPrefix: "koed-project-api-interrupted-",
+      transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+    });
+    temporaryFolders.add(interrupted);
+    await withPool(target.url, async (pool) => {
+      let failed = false;
+      try {
+        await runDbMigrations(pool, { migrationsFolder: interrupted });
+      } catch {
+        failed = true;
+      }
+      if (!failed)
+        throw new Error(
+          "Interrupted Project API migration unexpectedly succeeded"
+        );
+      const rollback = await pool.query(
+        `select
+        to_regclass('public.project_delete_operations')::text as operations,
+        exists(select 1 from information_schema.columns where table_name='projects'
+          and column_name='deletion_phase') as phase,
+        exists(select 1 from projects where id=$1 and lifecycle='deleted') as retained`,
+        [projectId]
+      );
+      if (
+        rollback.rows[0]?.operations !== null ||
+        rollback.rows[0]?.phase !== false ||
+        rollback.rows[0]?.retained !== true
+      )
+        throw new Error(
+          "Interrupted Project API migration changed retained state"
+        );
+      await assertMigrationLedger(pool, preProjectApiRecords);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const upgraded = await pool.query(
+        `select lifecycle,deletion_phase,delete_batch_id
+        from projects where id=$1`,
+        [projectId]
+      );
+      if (
+        upgraded.rows[0]?.lifecycle !== "deleted" ||
+        upgraded.rows[0]?.deletion_phase !== "complete" ||
+        upgraded.rows[0]?.delete_batch_id !== null
+      )
+        throw new Error(
+          "Legacy deleted Project was assigned a restorable batch"
+        );
     });
   });
 

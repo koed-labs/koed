@@ -1,5 +1,12 @@
 export { createAuditRepository } from "./audit-repository.js";
 export {
+  createProjectApiRepository,
+  ProjectCapabilityError,
+  ProjectConflictError,
+  ProjectNotFoundError,
+  type ProjectApiRepository
+} from "./project-api-repository.js";
+export {
   createProjectRepository,
   type ProjectRepository,
   type ProjectAssociationResult,
